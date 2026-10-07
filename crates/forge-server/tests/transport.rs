@@ -940,6 +940,10 @@ fn a_reporting_seat(fleet: &Fleet, reading: ContextUsage) -> mpsc::UnboundedRece
         ViewFacts {
             session_id: Some(SessionId::new("reporting")),
             context: Some(reading),
+            // A snapshot of none, so these cases read one ask apiece: the
+            // unreported-MCP ask is a test's own subject where it appears,
+            // and here it would ride every read as an extra command.
+            mcp: Some(forge_workspace::McpServers { servers: Vec::new(), error: None }),
             ..ViewFacts::default()
         },
     );
@@ -1016,6 +1020,9 @@ async fn a_seat_that_already_reports_usage_is_not_asked_again() {
         ViewFacts {
             session_id: Some(SessionId::new("already-reporting")),
             context: Some(ContextUsage { percent: Some(41), max_tokens: Some(200_000) }),
+            // Reported too, so the ONLY silence this window can hear is the
+            // reading's own: the MCP twin is the next test's subject.
+            mcp: Some(forge_workspace::McpServers { servers: Vec::new(), error: None }),
             ..ViewFacts::default()
         },
     );
@@ -1039,6 +1046,82 @@ async fn a_seat_that_already_reports_usage_is_not_asked_again() {
     // waiting, and a probe wrongly fired lands a scheduling hop after the ask.
     let command = next_agent_command(&mut asked, 250).await;
     assert!(command.is_none(), "a seat that reports a reading is not probed again: {command:?}");
+}
+
+/// The MCP snapshot is the context reading's twin (#1844): it exists only once
+/// the bridge has answered one, the terminal's connect paths are what asked
+/// before, and a seat only a client watches would otherwise report `mcp: None`
+/// for the life of its session. The usage reading is seeded, so the ONLY ask
+/// this read can fire is the MCP one.
+#[tokio::test]
+async fn a_seat_a_client_opens_with_no_mcp_snapshot_asks_the_core_for_one() {
+    let (url, fleet) = a_server().await;
+    let mut asked = fleet.install_agent("TestOrg", "proj", "lead");
+    fleet.seed_view_facts(
+        &lead_seat(),
+        ViewFacts {
+            session_id: Some(SessionId::new("no-mcp-yet")),
+            context: Some(ContextUsage { percent: Some(41), max_tokens: Some(200_000) }),
+            ..ViewFacts::default()
+        },
+    );
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            browser: false,
+        },
+    )
+    .await;
+    let (_, data, _) = snapshot_answering(&mut socket).await;
+    assert!(
+        data["mcp"].is_null(),
+        "precondition: the seat reports no MCP snapshot, which is the state that draws no row: {data}",
+    );
+
+    let command = next_agent_command(&mut asked, 5_000).await;
+    assert!(
+        matches!(command, Some(AgentCommand::GetMcpSnapshot { .. })),
+        "a seat a client opened reports no MCP snapshot, so the bridge is asked for one: {command:?}",
+    );
+}
+
+/// The other half, as for the reading: a seat that already reports a snapshot
+/// is not asked again - an empty set included, which is a snapshot carrying
+/// none rather than no snapshot.
+#[tokio::test]
+async fn a_seat_that_already_reports_an_mcp_snapshot_is_not_asked_again() {
+    let (url, fleet) = a_server().await;
+    let mut asked = fleet.install_agent("TestOrg", "proj", "lead");
+    fleet.seed_view_facts(
+        &lead_seat(),
+        ViewFacts {
+            session_id: Some(SessionId::new("already-reported")),
+            context: Some(ContextUsage { percent: Some(41), max_tokens: Some(200_000) }),
+            mcp: Some(forge_workspace::McpServers { servers: Vec::new(), error: None }),
+            ..ViewFacts::default()
+        },
+    );
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            browser: false,
+        },
+    )
+    .await;
+    let (_, data, _) = snapshot_answering(&mut socket).await;
+    assert!(
+        data["mcp"]["servers"].is_array(),
+        "precondition: the seat reports a snapshot, so there is nothing to ask for: {data}",
+    );
+
+    let command = next_agent_command(&mut asked, 250).await;
+    assert!(command.is_none(), "a seat that reports a snapshot is not asked again: {command:?}");
 }
 
 /// A turn finishing on a seat a page is holding is the moment its reading

@@ -918,6 +918,7 @@ pub async fn encode_subject(state: &TransportState, subject: &Subject) -> Result
             // is the one the hold just read, and the seat's loop keeps it
             // fresh for as long as somebody is showing it.
             request_context_usage_if_unreported(surface, slot);
+            request_mcp_snapshot_if_unreported(surface, slot);
             Ok(serde_json::to_value(session(state, surface, slot, &cwd).await?)?)
         }
         // The pool's own report, scanned here rather than carried in another
@@ -954,6 +955,36 @@ fn request_context_usage_if_unreported(surface: &ViewSurface, slot: &SessionSlot
             %error,
             slot = %slot.display(),
             "a seat a client reads reports no context usage and its probe was not requested",
+        );
+    }
+}
+
+/// Ask the core for an MCP snapshot on `slot` when the seat reports none.
+///
+/// The snapshot exists only once the bridge has answered one, and only the
+/// terminal's connect, poll and `/mcp` paths ask for it. A client subscribing
+/// to a seat is that same act, so the ask belongs on the read that encodes the
+/// subject: a seat only a client watches would otherwise report `mcp: None`
+/// for the life of its session, and the strip's MCP row would never draw.
+///
+/// Guarded on the reading rather than on the ask having happened, so a seat
+/// that already reports one - an empty set included, which is a snapshot
+/// carrying none rather than no snapshot - is not probed again by every
+/// subscribe, reconnect and second tab. The answer arrives as
+/// [`SessionUpdate::McpSnapshot`](crate::SessionUpdate::McpSnapshot) on the
+/// stream the subscriber is already reading. A seat replacement clears the
+/// snapshot, which is the one re-ask this guard makes on its own: the field
+/// reads `None` again and the next read asks.
+fn request_mcp_snapshot_if_unreported(surface: &ViewSurface, slot: &SessionSlot) {
+    if surface.mcp_servers(slot).is_some() {
+        return;
+    }
+    if let Err(error) = surface.refresh_mcp_snapshot(slot) {
+        tracing::debug!(
+            event_name = "mcp_snapshot_request_failed",
+            %error,
+            slot = %slot.display(),
+            "a seat a client reads reports no MCP snapshot and its ask was not requested",
         );
     }
 }
