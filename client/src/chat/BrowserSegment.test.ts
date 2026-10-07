@@ -23,7 +23,7 @@ vi.mock('../browser/host', async (importOriginal) => {
     listProfiles: vi.fn(() => Promise.resolve([])),
     closeProfile: vi.fn(() => Promise.resolve(undefined)),
     browserUsed: vi.fn(() => Promise.resolve(false)),
-    showBrowser: vi.fn(() => Promise.resolve(true)),
+    showBrowser: vi.fn(() => Promise.resolve(null)),
   };
 });
 
@@ -176,14 +176,14 @@ describe('the browser segment', () => {
     shown.stop();
   });
 
-  it('keeps the panel and says why when the window cannot open', async () => {
-    vi.mocked(showBrowser).mockResolvedValueOnce(false);
+  it("keeps the panel and says the shell's own reason when the window cannot open", async () => {
+    vi.mocked(showBrowser).mockResolvedValueOnce('no browser to drive: install Brave');
     const shown = show(false, true);
     click(shown.target.querySelector('.bz-tog'));
     click(shown.target.querySelector('.bz-show'));
 
     await vi.waitFor(() => {
-      expect(shown.target.textContent).toContain('could not be opened');
+      expect(shown.target.textContent).toContain('no browser to drive: install Brave');
     });
     expect(list(shown.target), 'the row stays for a door that failed').not.toBeNull();
     shown.stop();

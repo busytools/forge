@@ -110,20 +110,21 @@ async function defaultInvoke(_command: 'browser_call', request: InvokeArgs): Pro
  * the person's own browser window over the profile the agents drive
  * (headless until then).
  *
- * **Answers whether a browser was really raised.** `false` outside the shell
- * and on a failed raise - an unvendored build, a host that cannot start -
- * and the caller draws that truth rather than claiming a window is up. A
- * dock that said the browser is up over a raise that never happened would
- * have the person press Done and tell the session they acted.
+ * **Answers why it could not be raised, or `null` when it was.** The shell
+ * carries the actionable sentence - a machine with no browser to drive is
+ * told which one to install - and a caller that drew a reason of its own
+ * would throw that away. Outside the shell the reason is the page's own.
+ * A dock that claimed a window was up over a raise that never happened
+ * would have the person press Done and tell the session they acted.
  */
-export async function showBrowser(): Promise<boolean> {
-  if (!canHost()) return false;
+export async function showBrowser(): Promise<string | null> {
+  if (!canHost()) return 'this page is not the client';
   try {
     const { invoke } = await import('@tauri-apps/api/core');
     await invoke('browser_show');
-    return true;
-  } catch {
-    return false;
+    return null;
+  } catch (why) {
+    return whyText(why);
   }
 }
 

@@ -448,6 +448,23 @@ fn windowed_page(profile: &Path) -> Option<String> {
     (!carried.is_empty()).then(|| carried.to_owned())
 }
 
+/// Bring the running browser's window to the front. `open` on the app bundle
+/// activates an app that is already running; a failure here is not the
+/// raise's failure - the window is up either way.
+fn activate(binary: &Path) {
+    let Some(bundle) = app_bundle(binary) else { return };
+    let _ = std::process::Command::new("open").arg(bundle).spawn();
+}
+
+/// The `.app` bundle a browser binary lives in, from its
+/// `.../Contents/MacOS/<name>` path; `None` for a binary outside one.
+fn app_bundle(binary: &Path) -> Option<PathBuf> {
+    binary
+        .ancestors()
+        .find(|at| at.extension().is_some_and(|ext| ext == "app"))
+        .map(Path::to_path_buf)
+}
+
 /// Bring the browser up VISIBLY, for a hand-off's Open or the strip's show:
 /// the person's own installed browser, over the same profile the agents
 /// drive, **opened on the page the sessions were driving**.
@@ -472,6 +489,10 @@ pub async fn show(binary: &Path, profile: &Path) -> Result<ActivePort, String> {
         && let Some(active) = verified(profile).await
         && page_url(active.port).await.is_some()
     {
+        // **A window already up is BROUGHT FORWARD, not answered as it is.**
+        // The dock's word is "raise", and the early return alone made a
+        // second Open a silent no-op - measured live, 2026-10-07.
+        activate(binary);
         return Ok(active);
     }
     let page = match read_active_port(profile) {
@@ -753,6 +774,18 @@ mod tests {
             "not json at all",
             "a prefs file this cannot parse is left exactly as it was",
         );
+    }
+
+    /// The bundle a browser binary lives in, which is what activation opens:
+    /// Brave's binary is under its `.app`, and a path outside one leaves
+    /// nothing to bring forward.
+    #[test]
+    fn a_browser_binary_resolves_to_its_app_bundle() {
+        assert_eq!(
+            app_bundle(Path::new("/Applications/Brave Browser.app/Contents/MacOS/Brave Browser")),
+            Some(PathBuf::from("/Applications/Brave Browser.app")),
+        );
+        assert_eq!(app_bundle(Path::new("/tmp/plain-binary")), None);
     }
 
     /// The answer's own `Content-Length` is what says it is complete, since

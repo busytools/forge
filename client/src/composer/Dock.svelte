@@ -513,8 +513,13 @@
   );
   /** Which hand-off's view Open was asked for and did not open, by its id. */
   let raiseFailedFor = $state<string | null>(null);
+  /** Why the raise failed, in the shell's own words - a machine with no
+   *  browser to drive is told which one to install. */
+  let raiseWhy = $state<string | null>(null);
   const raiseFailed = $derived(
-    ask.kind === 'browser_hand_off' && raiseFailedFor === ask.request.id,
+    ask.kind === 'browser_hand_off' && raiseFailedFor === ask.request.id
+      ? (raiseWhy ?? 'The browser window could not be opened - act where the browser is up, then press Done.')
+      : null,
   );
 
   /**
@@ -529,9 +534,10 @@
   function open(): void {
     if (ask.kind !== 'browser_hand_off') return;
     const id = ask.request.id;
-    void showBrowser().then((raised) => {
-      if (!raised) {
+    void showBrowser().then((why) => {
+      if (why !== null) {
         raiseFailedFor = id;
+        raiseWhy = why;
       }
     });
   }
@@ -808,9 +814,8 @@
          and a summary of it would be the client guessing at the act. -->
     <div class="d-q">{ask.request.reason}</div>
     <div class="desc">
-      {raiseFailed
-        ? 'The browser window could not be opened - act where the browser is up, then press Done.'
-        : 'Open browser raises the window over the profile the session drives; until then the browser is headless. The session waits, with no timeout, until Done or Not now.'}
+      {raiseFailed ??
+        'Open browser raises the window over the profile the session drives; until then the browser is headless. The session waits, with no timeout, until Done or Not now.'}
     </div>
   {/if}
 

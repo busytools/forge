@@ -238,13 +238,13 @@
    * door Ved asked for (2026-10-07), and closing the window disturbs nothing.
    */
   function show(): void {
-    void showBrowser().then((raised) => {
-      if (!raised) {
+    void showBrowser().then((reason) => {
+      if (reason !== null) {
         // A read in flight was issued before this failure and must not
         // erase it when it lands.
         readToken += 1;
         read = 'failed';
-        why = 'the browser window could not be opened';
+        why = reason;
       }
     });
   }

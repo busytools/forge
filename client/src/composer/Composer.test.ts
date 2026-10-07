@@ -15,7 +15,7 @@ vi.mock('../browser/host', async (importOriginal) => {
   return {
     ...actual,
     // No window in tests: a raise that fails says so on the dock.
-    showBrowser: vi.fn(() => Promise.resolve(false)),
+    showBrowser: vi.fn(() => Promise.resolve(null)),
   };
 });
 
@@ -4266,7 +4266,7 @@ describe('the dock', () => {
   /** **The window, not an overlay** (Ved, 2026-10-07): Open raises the
    * person's own browser over the profile the agents drive. */
   it('opens the browser window', async () => {
-    vi.mocked(showBrowser).mockResolvedValueOnce(true);
+    vi.mocked(showBrowser).mockResolvedValueOnce(null);
     open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
 
     action('Open browser').click();
@@ -4275,13 +4275,18 @@ describe('the dock', () => {
     );
   });
 
-  /** A window that will not open says so rather than pretending. */
-  it('says the window could not be opened when the raise fails', async () => {
+  /** A window that will not open says why, in the shell's own words: the
+   *  sentence a machine with no browser to drive carries names what to
+   *  install, and a dock that replaced it with boilerplate would throw the
+   *  one actionable line away. */
+  it("says the raise failed in the shell's own words", async () => {
     const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
-    vi.mocked(showBrowser).mockResolvedValueOnce(false);
+    vi.mocked(showBrowser).mockResolvedValueOnce(
+      'no browser to drive: this client drives the browser already on the machine - install Brave or Google Chrome',
+    );
 
     action('Open browser').click();
-    await vi.waitFor(() => expect(drawn()).toContain('The browser window could not be opened'));
+    await vi.waitFor(() => expect(drawn()).toContain('install Brave or Google Chrome'));
 
     expect(commands(harness), 'and no answer crossed: Open answers nothing').toEqual([]);
   });
