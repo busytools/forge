@@ -131,6 +131,13 @@ describe('the session the floor sends', () => {
       draft: false,
     });
     expect(held.closes).toEqual([{ number: 1200, url: 'https://example.test/issues/1200' }]);
+    // A v4 record carries no git field at all: the tree reads as nothing to
+    // state rather than as a missing read.
+    expect(held.git, 'a record without git did not read as an empty tree').toEqual({
+      defaultBranch: null,
+      worktree: null,
+      ahead: null,
+    });
   });
 
   it('reads the conversation it was handed', () => {
