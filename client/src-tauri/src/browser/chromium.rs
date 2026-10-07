@@ -33,7 +33,13 @@ const LAUNCH_TIMEOUT: Duration = Duration::from_secs(15);
 /// the person says Open - and the headed launch is the same launch without
 /// that flag, against the person's installed browser when one is there (Ved,
 /// 2026-10-07: it must look like a real browser, not an automation tool).
-pub fn launch_args(profile: &Path, headed: bool) -> Vec<String> {
+///
+/// `page` is the tab the launch opens on: **the page the sessions were
+/// driving**, carried across the relaunch Open makes, because a person who
+/// pressed Open to act on a page must not land on a blank one. `None` for a
+/// cold launch, which opens `about:blank` (a browser with no tab makes the
+/// first navigation depend on the driver inventing one).
+pub fn launch_args(profile: &Path, headed: bool, page: Option<&str>) -> Vec<String> {
     let mut args = vec![
         // Let the browser choose, and read the choice from its port file:
         // handed a number it writes no file, which is a browser nothing can
@@ -62,10 +68,8 @@ pub fn launch_args(profile: &Path, headed: bool) -> Vec<String> {
         // A first-run flow is a dialog nothing can see and nothing answers.
         "--no-first-run".to_owned(),
         "--no-default-browser-check".to_owned(),
-        // A page to drive: with no tab at all, the first navigation depends
-        // on the driver inventing one.
-        "about:blank".to_owned(),
     ]);
+    args.push(page.unwrap_or("about:blank").to_owned());
     args
 }
 
@@ -106,6 +110,24 @@ pub fn read_active_port(profile: &Path) -> Option<ActivePort> {
 /// holding the port answers it with nothing that parses.
 pub async fn probe(port: u16) -> bool {
     probe_identity(port).await.is_some()
+}
+
+/// The first page target's URL on `port`, from the browser's own HTTP
+/// endpoint: the page the sessions were driving, which Open carries across
+/// its relaunch. `None` when nothing answers, or when no tab is open - a
+/// window whose last tab was closed is a browser with nothing to carry.
+pub async fn page_url(port: u16) -> Option<String> {
+    let url = format!("http://127.0.0.1:{port}/json/list");
+    let answer = tokio::task::spawn_blocking(move || http_get(&url)).await.ok().flatten()?;
+    let body = answer.split_once("\r\n\r\n")?.1;
+    let parsed: serde_json::Value = serde_json::from_str(body).ok()?;
+    parsed
+        .as_array()?
+        .iter()
+        .find(|entry| entry.get("type").and_then(serde_json::Value::as_str) == Some("page"))
+        .and_then(|entry| entry.get("url"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
 }
 
 /// The browser target path an answering port reports - `/devtools/browser/
@@ -200,12 +222,17 @@ const STDERR_TAIL: usize = 4096;
 /// over the same profile, so the person is dropped into the very browser the
 /// sessions drive rather than a second one.
 pub async fn launch(binary: &Path, profile: &Path) -> Result<ActivePort, String> {
-    launch_with(binary, profile, false).await
+    launch_with(binary, profile, false, None).await
 }
 
-/// The same launch with `headed` asked for: the hand-off's own window,
-/// brought up by [`show`].
-async fn launch_with(binary: &Path, profile: &Path, headed: bool) -> Result<ActivePort, String> {
+/// The same launch with `headed` asked for - and, when the relaunch is Open's,
+/// the page the sessions were driving, so the window opens on it.
+async fn launch_with(
+    binary: &Path,
+    profile: &Path,
+    headed: bool,
+    page: Option<&str>,
+) -> Result<ActivePort, String> {
     if !binary.is_file() {
         return Err(format!("the browser is not there at {} any more", binary.display()));
     }
@@ -216,7 +243,7 @@ async fn launch_with(binary: &Path, profile: &Path, headed: bool) -> Result<Acti
     forget_launch(profile);
 
     let mut command = tokio::process::Command::new(binary);
-    for arg in launch_args(profile, headed) {
+    for arg in launch_args(profile, headed, page) {
         command.arg(arg);
     }
     command
@@ -264,9 +291,11 @@ async fn launch_with(binary: &Path, profile: &Path, headed: bool) -> Result<Acti
             }
             // Written only now, with the browser answering: `show` reads it as
             // "a window is up", and a marker for a launch that failed is a
-            // claim nobody can check.
+            // claim nobody can check. It carries the page the launch opened
+            // on, so an Open after the person closed the window reopens that
+            // page rather than a blank one.
             if headed {
-                let _ = std::fs::write(windowed_marker(profile), b"");
+                let _ = std::fs::write(windowed_marker(profile), page.unwrap_or(""));
             }
             return Ok(ActivePort { pid, ..active });
         }
@@ -368,25 +397,53 @@ pub fn launched_windowed(profile: &Path) -> bool {
     windowed_marker(profile).is_file()
 }
 
-/// Bring the browser up VISIBLY, for a hand-off's Open: the person's own
-/// installed browser, over the same profile the agents drive.
+/// The page the last headed launch opened on, when it carried one: the
+/// fallback an Open uses once the person has closed the window (the tab goes
+/// with it, so there is no live page left to read).
+fn windowed_page(profile: &Path) -> Option<String> {
+    let carried = std::fs::read_to_string(windowed_marker(profile)).ok()?;
+    let carried = carried.trim();
+    (!carried.is_empty()).then(|| carried.to_owned())
+}
+
+/// Bring the browser up VISIBLY, for a hand-off's Open or the strip's show:
+/// the person's own installed browser, over the same profile the agents
+/// drive, **opened on the page the sessions were driving**.
 ///
 /// **A window is a launch flag, not something a running browser can be
-/// told**, so the running headless launch is closed and the same profile is
-/// relaunched headed. The cost is the relaunch itself: open driver
+/// told**, so the running launch is closed and the same profile is
+/// relaunched headed. The relaunch is a fresh browser, so the page is
+/// carried across explicitly - Chromium's own session restore is guesswork,
+/// and a person who pressed Open to act on the session's page (a CAPTCHA,
+/// say) must not land on a blank tab. The cost of the relaunch: open driver
 /// transports die with the old browser and rebuild on the next call, and the
-/// current page reloads - the profile keeps logins and cookies. A window
-/// already up is answered as it is; nothing here can reach the OS focus.
+/// profile keeps logins and cookies.
+///
+/// **A window with a page in it is the only thing answered as it is.** The
+/// headed marker alone lied once (Ved, 2026-10-07, live): he closed the
+/// window with the X, the process survived on Chrome's keep-alive with the
+/// marker still set, and the next Open concluded a window was up and raised
+/// nothing. A window the person closed holds no tab - measured: the targets
+/// empty with the window - so "a window is up" means marker AND a page.
 pub async fn show(binary: &Path, profile: &Path) -> Result<ActivePort, String> {
     if launched_windowed(profile)
         && let Some(active) = verified(profile).await
+        && page_url(active.port).await.is_some()
     {
         return Ok(active);
     }
-    if let Some(port) = read_active_port(profile).map(|active| active.port) {
-        close(profile, port).await;
-    }
-    launch_with(binary, profile, true).await
+    let page = match read_active_port(profile) {
+        Some(active) => {
+            // The live tab first; the last carried page otherwise - a window
+            // the person closed took its tab with it, and reopening on the
+            // page they were looking at is the recovery the X-close needs.
+            let page = page_url(active.port).await.or_else(|| windowed_page(profile));
+            close(profile, active.port).await;
+            page
+        }
+        None => windowed_page(profile),
+    };
+    launch_with(binary, profile, true, page.as_deref()).await
 }
 
 /// Take the window back down: the browser is closed, and the next agent call
@@ -532,17 +589,19 @@ mod tests {
     }
 
     /// The launch asks the browser to choose its own port - handed a number,
-    /// the browser writes no port file and nothing can find the launch again
-    /// - carries the profile that keeps logins, opens a page
-    /// (because a browser with no tab makes the first navigation depend on
-    /// the driver inventing one), runs **headless** (nothing appears on the
-    /// person's screen until a hand-off's Open raises the window), and
-    /// **never reaches for the OS keychain**: that dialog is raised at
-    /// whoever is at the machine, once per ask, and a headless browser has
-    /// nobody to answer it.
+    /// the browser writes no port file and nothing can find the launch again;
+    /// it carries the profile that keeps logins, opens a page (because a
+    /// browser with no tab makes the first navigation depend on the driver
+    /// inventing one), runs **headless** (nothing appears on the person's
+    /// screen until a hand-off's Open raises the window), and **never reaches
+    /// for the OS keychain**: that dialog is raised at whoever is at the
+    /// machine, once per ask, and a headless browser has nobody to answer it.
+    ///
+    /// **And an Open's relaunch opens on the session's page**, not a blank
+    /// tab: the page rides as the launch's own argument.
     #[test]
     fn a_launch_lets_the_browser_choose_its_port_and_carries_its_profile_and_a_page() {
-        let args = launch_args(Path::new("/tmp/forge-profile"), false);
+        let args = launch_args(Path::new("/tmp/forge-profile"), false, None);
         assert!(
             args.contains(&"--remote-debugging-port=0".to_owned()),
             "the port is the browser's choice, read back from its own file: {args:?}",
@@ -559,6 +618,14 @@ mod tests {
             args.contains(&"--password-store=basic".to_owned()),
             "and the store behind the mock is the plain one: {args:?}",
         );
+
+        let carried =
+            launch_args(Path::new("/tmp/forge-profile"), true, Some("https://example.com/x"));
+        assert_eq!(
+            carried.last().map(String::as_str),
+            Some("https://example.com/x"),
+            "Open's relaunch opens on the page the sessions were driving: {carried:?}",
+        );
     }
 
     /// **The headed launch survives its own window closing** (measured on
@@ -566,8 +633,8 @@ mod tests {
     /// it, and the X must not take the agents' browser down with the window.
     #[test]
     fn a_headed_launch_drops_headless_and_keeps_the_browser_alive() {
-        let headless = launch_args(Path::new("/tmp/forge-profile"), false);
-        let headed = launch_args(Path::new("/tmp/forge-profile"), true);
+        let headless = launch_args(Path::new("/tmp/forge-profile"), false, None);
+        let headed = launch_args(Path::new("/tmp/forge-profile"), true, None);
         assert!(headless.contains(&"--headless".to_owned()), "{headless:?}");
         assert!(!headed.contains(&"--headless".to_owned()), "{headed:?}");
         assert!(
@@ -578,6 +645,25 @@ mod tests {
             !headless.contains(&"--keep-alive-for-test".to_owned()),
             "the headless launch has no window to keep it alive past: {headless:?}",
         );
+    }
+
+    /// The page a closed window's Open reopens on: the last headed launch
+    /// carries it in the marker, and an empty or missing marker is a launch
+    /// that opened blank.
+    #[test]
+    fn the_marker_carries_the_page_a_closed_window_reopens_on() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        assert_eq!(windowed_page(dir.path()), None, "no marker, no page");
+
+        std::fs::write(windowed_marker(dir.path()), b"https://example.com/x").expect("a marker");
+        assert_eq!(
+            windowed_page(dir.path()),
+            Some("https://example.com/x".to_owned()),
+            "the page the launch carried rides the marker",
+        );
+
+        std::fs::write(windowed_marker(dir.path()), b"").expect("a blank marker");
+        assert_eq!(windowed_page(dir.path()), None, "a blank launch reopens blank");
     }
 
     /// The answer's own `Content-Length` is what says it is complete, since
