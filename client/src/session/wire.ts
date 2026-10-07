@@ -239,10 +239,37 @@ export interface SessionRecord {
   has_dispatches: boolean;
   /** The working tree's branch and count, and whether git could read it. */
   work: WorkState;
+  /** The tree behind the git row's depth, as the scan classified it. */
+  git: GitWorkRecord;
   /** The open pull request this seat's branch is on. */
-  pr: { number: number; url: string } | null;
+  pr: { number: number; url: string; draft: boolean } | null;
   /** The issues that pull request closes. */
   closes: { number: number; url: string }[];
+}
+
+/** How git classified one file's change, as the wire spells it. */
+export type FileStatusWire =
+  'modified' | 'added' | 'deleted' | 'renamed' | 'copied' | 'typechange' | 'unmerged' | 'untracked';
+
+/** One changed file's mark and counts. */
+export interface GitFileRecord {
+  path: string;
+  added: number;
+  removed: number;
+  status: FileStatusWire;
+}
+
+/**
+ * The tree behind the git row's depth: the uncommitted files, the
+ * branch's chain ahead of its default, and which branch that is.
+ *
+ * A `null` layer is nothing to state - a clean tree, an unscanned one -
+ * which is the layer's own meaning on the wire.
+ */
+export interface GitWorkRecord {
+  defaultBranch: string | null;
+  worktree: { files: GitFileRecord[] } | null;
+  ahead: { count: number; commits: { sha: string; subject: string }[] } | null;
 }
 
 /** The axes' vocabularies, as `forge.toml` and the normalizer name them. */
@@ -418,6 +445,7 @@ export function sessionFrom(data: unknown): SessionRecord {
     },
     has_dispatches: held['has_dispatches'] === true,
     work: workFrom(held['work']),
+    git: gitFrom(held['git']),
     pr: prFrom(held['pr']),
     closes: issuesFrom(held['closes']),
   };
@@ -633,16 +661,70 @@ export function monitorFrom(value: unknown): MonitorRecord {
  * frame.
  */
 export function issuesFrom(value: unknown): { number: number; url: string }[] {
-  return list(value)
-    .map(prFrom)
-    .filter((issue): issue is { number: number; url: string } => issue !== null);
+  // `prFrom` narrows the same two fields; an issue carries no draft, so
+  // that one is dropped here rather than inventing a third narrow.
+  return list(value).flatMap((entry) => {
+    const issue = prFrom(entry);
+    return issue === null ? [] : [{ number: issue.number, url: issue.url }];
+  });
 }
 
-export function prFrom(value: unknown): { number: number; url: string } | null {
+export function prFrom(value: unknown): { number: number; url: string; draft: boolean } | null {
   if (value === null || value === undefined) return null;
   const held = record(value);
   const count = number(held['number']);
-  return count === null ? null : { number: count, url: text(held['url']) ?? '' };
+  return count === null
+    ? null
+    : { number: count, url: text(held['url']) ?? '', draft: held['draft'] === true };
+}
+
+const FILE_STATUSES: FileStatusWire[] = [
+  'modified',
+  'added',
+  'deleted',
+  'renamed',
+  'copied',
+  'typechange',
+  'unmerged',
+  'untracked',
+];
+
+/**
+ * The tree behind the git row's depth, as the record and a pushed frame
+ * carry it - the same fields from both, like the three above.
+ */
+export function gitFrom(value: unknown): GitWorkRecord {
+  const held = record(value);
+  const worktree = held['worktree'];
+  const ahead = held['ahead'];
+  const aheadHeld = record(ahead);
+  const files = list(record(worktree)['files']).flatMap((entry) => {
+    const file = record(entry);
+    const path = text(file['path']);
+    return path === null
+      ? []
+      : [
+          {
+            path,
+            added: number(file['added']) ?? 0,
+            removed: number(file['removed']) ?? 0,
+            status: narrow(file['status'], FILE_STATUSES, 'modified'),
+          },
+        ];
+  });
+  const commits = list(aheadHeld['commits']).flatMap((entry) => {
+    const commit = record(entry);
+    const sha = text(commit['sha']);
+    return sha === null ? [] : [{ sha, subject: text(commit['subject']) ?? '' }];
+  });
+  return {
+    defaultBranch: text(held['default_branch']),
+    worktree: worktree === null || worktree === undefined ? null : { files },
+    ahead:
+      ahead === null || ahead === undefined
+        ? null
+        : { count: number(aheadHeld['commit_count']) ?? commits.length, commits },
+  };
 }
 
 const GATES: WorkState['gate'][] = ['in_repo', 'not_a_repository', 'gone', 'scanner_failed'];

@@ -2109,7 +2109,7 @@ async fn a_held_seats_moved_tree_reaches_the_client() {
     for edit in 1..12 {
         std::fs::write(repo.join("kept.txt"), "x".repeat(edit)).expect("write");
         if let Some(ServerMessage::Update { update }) = next_server_within(&mut socket, 700).await {
-            let SessionUpdate::WorkChanged { key, work, pr, closes } = *update else {
+            let SessionUpdate::WorkChanged { key, work, git: _, pr, closes } = *update else {
                 continue;
             };
             assert_eq!(key, lead_seat(), "the row goes to the seat that was held");
@@ -2287,7 +2287,11 @@ fn a_scan(
     use forge_primitives::git_diff::{GitDiffSnapshot, GitDiffStats, LayerState, RepoGate};
     let (pr, closes) = match with_pr {
         Some((number, closing)) => (
-            Some(GitPrInfo { number, url: format!("https://example.test/pull/{number}") }),
+            Some(GitPrInfo {
+                number,
+                url: format!("https://example.test/pull/{number}"),
+                draft: false,
+            }),
             vec![GitIssueRef { number: closing, url: format!("https://example.test/{closing}") }],
         ),
         None => (None, Vec::new()),

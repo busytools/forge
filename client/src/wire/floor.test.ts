@@ -125,7 +125,11 @@ describe('the session the floor sends', () => {
 
   it('reads the work, the pull request and the issues it closes', () => {
     expect(held.work).toEqual({ branch: 'protocol-4', changed: 3, gate: 'in_repo' });
-    expect(held.pr).toEqual({ number: 1234, url: 'https://example.test/pull/1234' });
+    expect(held.pr).toEqual({
+      number: 1234,
+      url: 'https://example.test/pull/1234',
+      draft: false,
+    });
     expect(held.closes).toEqual([{ number: 1200, url: 'https://example.test/issues/1200' }]);
   });
 

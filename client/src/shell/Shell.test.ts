@@ -349,6 +349,31 @@ describe('a forge that is not the protocol this client speaks', () => {
   });
 
   /**
+   * A session page draws its copy in the rail footer, where the build facts
+   * live - the shell's strip is an in-flow row, and an in-flow row above a
+   * `100dvh` page is a page that scrolls (the stray window scrollbar over
+   * the chat's own).
+   */
+  it('draws the skew in the rail footer on a session route', async () => {
+    const forge = await stubForge({ mark: null, theme: null, font: null }, 'now', MIN_PROTOCOL);
+    forges.push(forge);
+    await openAt('/session/TestOrg/proj/w1', forge.address);
+    await crossed();
+
+    const said = drawn();
+    expect(said, 'the skew named no way out').toContain('just install');
+    expect(said.split('just install').length - 1, 'the skew was drawn twice').toBe(1);
+    expect(
+      document.querySelector('.rfoot .notice')?.textContent,
+      'the skew did not land in the footer',
+    ).toContain('just install');
+    expect(
+      document.querySelector('p.stale'),
+      'the shell still drew its in-flow strip above the page',
+    ).toBeNull();
+  });
+
+  /**
    * The door draws its own copy - one line, in its own column - and the
    * shell stands down there rather than stacking a second identical strip
    * above it.

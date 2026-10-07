@@ -11,6 +11,7 @@
  */
 
 import type { Command, ServerMessage, Subject } from '../protocol';
+import { PROTOCOL_VERSION } from '../protocol';
 import type { Connection, ConnectionStatus } from '../socket';
 import { Stores } from '../stores';
 import { modelsFrom, type DictateModelsWire } from '../wire/models';
@@ -209,6 +210,7 @@ export function fakeConnection() {
     store: () => undefined,
     settings: () => null,
     skew: () => null,
+    serverProtocol: () => PROTOCOL_VERSION,
     status: () => 'open',
     close: () => {},
     onBrowserAsk: () => () => {},

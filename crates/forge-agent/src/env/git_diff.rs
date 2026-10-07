@@ -35,7 +35,7 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use super::git_command;
-use forge_primitives::git::{GitBranch, GitIssueRef, GitPrInfo};
+use forge_primitives::git::{FileStatus, GitBranch, GitIssueRef, GitPrInfo};
 use forge_primitives::git_diff::{
     GitBranchAhead, GitDiffFile, GitDiffSnapshot, GitDiffStats, LayerState, RepoGate,
 };
@@ -403,7 +403,19 @@ pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot
         None => LayerState::ScanFailed,
         Some(false) => LayerState::Clean,
         Some(true) => match numstat(cwd, &["diff", "--numstat", "HEAD"]).await {
-            Ok(stats) => LayerState::Populated(stats),
+            Ok(mut stats) => {
+                // One more read of the same tree state for the glyphs the
+                // counts cannot carry; a failed pass leaves every file
+                // `Modified` rather than failing the layer.
+                if let Some(marks) = name_statuses(cwd, "HEAD").await {
+                    for file in &mut stats.files {
+                        if let Some(status) = marks.get(&file.path) {
+                            file.status = *status;
+                        }
+                    }
+                }
+                LayerState::Populated(stats)
+            }
             Err(_) => LayerState::ScanFailed,
         },
     };
@@ -432,7 +444,12 @@ pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot
                         // case where commit_count == 0 but stats
                         // showed files, producing a "0 commits vs
                         // main" subtitle that read oddly to the user.
-                        LayerState::Populated(GitBranchAhead { commit_count, stats })
+                        // The chain itself, for the view that draws what
+                        // the branch is working on rather than only how
+                        // far it runs.
+                        let commits =
+                            commits_in_range(cwd, default, "HEAD").await.unwrap_or_default();
+                        LayerState::Populated(GitBranchAhead { commit_count, stats, commits })
                     }
                 },
                 Err(_) => LayerState::ScanFailed,
@@ -628,6 +645,10 @@ async fn numstat(cwd: &Path, args: &[&str]) -> Result<GitDiffStats, NumstatError
 /// Parse `<added>\t<removed>\t<path>` lines. Skips binary entries
 /// (`added` or `removed` reported as `-`). Uses `splitn(3, '\t')`
 /// so paths containing tabs survive intact.
+///
+/// `--numstat` carries no status code, so every file lands `Modified`
+/// and [`name_statuses`] corrects what it can afterwards: a file the
+/// merge never reaches keeps the least-alarming class.
 fn parse_numstat(raw: &str) -> Vec<GitDiffFile> {
     raw.lines()
         .filter_map(|line| {
@@ -640,10 +661,65 @@ fn parse_numstat(raw: &str) -> Vec<GitDiffFile> {
             }
             let added = added.parse::<u32>().ok()?;
             let removed = removed.parse::<u32>().ok()?;
-            Some(GitDiffFile { path: path.to_owned(), added, removed })
+            Some(GitDiffFile {
+                path: path.to_owned(),
+                added,
+                removed,
+                status: forge_primitives::git::FileStatus::Modified,
+            })
         })
         .collect()
 }
+
+/// One changed path's status against `target`, from
+/// `git diff --name-status` - the same classifier the hunks pass
+/// reads, so the glyph beside a file matches the one its diff body
+/// would draw. Best-effort: a failed read leaves the counts alone.
+async fn name_statuses(cwd: &Path, target: &str) -> Option<HashMap<String, FileStatus>> {
+    match run_git(cwd, &["diff", "--name-status", target]).await {
+        GitOutput::Ok(raw) => Some(
+            self::hunks::parse_name_status_entries(&raw)
+                .into_iter()
+                .map(|entry| (entry.path, entry.status))
+                .collect(),
+        ),
+        GitOutput::Empty => Some(HashMap::new()),
+        GitOutput::Failed | GitOutput::Oversize => None,
+    }
+}
+
+/// The branch's commit chain ahead of `base`, newest first, capped at
+/// [`COMMITS_WALK_CAP`]: the count says how many there are, these say
+/// what they are. `%h` is the short sha, `%s` the subject; the unit
+/// separator cannot occur in either, so one line splits cleanly.
+async fn commits_in_range(
+    cwd: &Path,
+    base: &str,
+    head: &str,
+) -> Option<Vec<forge_primitives::git::GitCommit>> {
+    let range = format!("{base}..{head}");
+    let cap = format!("--max-count={COMMITS_WALK_CAP}");
+    match run_git(cwd, &["log", &cap, "--format=%h%x1f%s", &range]).await {
+        GitOutput::Ok(raw) => Some(
+            raw.lines()
+                .filter_map(|line| {
+                    let (sha, subject) = line.split_once('\u{1f}')?;
+                    Some(forge_primitives::git::GitCommit {
+                        sha: sha.to_owned(),
+                        subject: subject.to_owned(),
+                    })
+                })
+                .collect(),
+        ),
+        GitOutput::Empty => Some(Vec::new()),
+        GitOutput::Failed | GitOutput::Oversize => None,
+    }
+}
+
+/// How many commits the chain walk reads. Past it the count above the
+/// list still tells the truth; the list is what a reader scans, not
+/// what they count.
+const COMMITS_WALK_CAP: u32 = 20;
 
 /// Whether the previous snapshot's PR block is still reusable: the
 /// branch name and pushed sha both match the current scan AND the
@@ -794,9 +870,9 @@ async fn fetch_pr_for_pushed_sha(cwd: &Path, pushed_sha: Option<&str>) -> PrLook
             PrLookup::Failed
         }
         Ok(None) => PrLookup::None,
-        Ok(Some((number, url))) => {
+        Ok(Some((number, url, draft))) => {
             let closes = fetch_closing_issues(cwd, number).await;
-            PrLookup::Found(GitPrInfo { number, url }, closes)
+            PrLookup::Found(GitPrInfo { number, url, draft }, closes)
         }
     }
 }
@@ -810,13 +886,13 @@ async fn fetch_pr_for_pushed_sha(cwd: &Path, pushed_sha: Option<&str>) -> PrLook
 ///
 /// `updated_at` compares lexicographically, which is chronological
 /// for GitHub's uniform RFC3339 `Z`-suffixed format.
-fn pick_open_pr(raw: &str) -> Result<Option<(u64, String)>, serde_json::Error> {
+fn pick_open_pr(raw: &str) -> Result<Option<(u64, String, bool)>, serde_json::Error> {
     let entries: Vec<GhApiPull> = serde_json::from_str(raw)?;
     Ok(entries
         .into_iter()
         .filter(|pr| pr.state == "open")
         .max_by(|a, b| (&a.updated_at, a.number).cmp(&(&b.updated_at, b.number)))
-        .map(|pr| (pr.number, pr.html_url)))
+        .map(|pr| (pr.number, pr.html_url, pr.draft)))
 }
 
 /// `commits/<sha>/pulls` REST entry shape. Only the fields the
@@ -828,6 +904,10 @@ struct GhApiPull {
     state: String,
     html_url: String,
     updated_at: String,
+    /// The row says draft or open; the two read differently to a
+    /// reviewer, and GitHub's own word for it is here.
+    #[serde(default)]
+    draft: bool,
 }
 
 /// Fetch the PR's closing-issue list via
@@ -1599,10 +1679,30 @@ mod tests {
     #[test]
     fn top_files_sort_by_total_changes_then_alpha() {
         let mut files = [
-            GitDiffFile { path: "small.rs".into(), added: 1, removed: 0 },
-            GitDiffFile { path: "big-b.rs".into(), added: 50, removed: 10 },
-            GitDiffFile { path: "big-a.rs".into(), added: 50, removed: 10 },
-            GitDiffFile { path: "medium.rs".into(), added: 10, removed: 5 },
+            GitDiffFile {
+                path: "small.rs".into(),
+                added: 1,
+                removed: 0,
+                status: FileStatus::Modified,
+            },
+            GitDiffFile {
+                path: "big-b.rs".into(),
+                added: 50,
+                removed: 10,
+                status: FileStatus::Modified,
+            },
+            GitDiffFile {
+                path: "big-a.rs".into(),
+                added: 50,
+                removed: 10,
+                status: FileStatus::Modified,
+            },
+            GitDiffFile {
+                path: "medium.rs".into(),
+                added: 10,
+                removed: 5,
+                status: FileStatus::Modified,
+            },
         ];
         files.sort_by(|a, b| {
             let a_total = a.added.saturating_add(a.removed);
@@ -1658,7 +1758,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn pr_for_head_reuses_prev_when_cache_fresh() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let pr = GitPrInfo { number: 42, url: "https://example/pull/42".into() };
+        let pr = GitPrInfo { number: 42, url: "https://example/pull/42".into(), draft: false };
         let closes = vec![GitIssueRef { number: 7, url: "https://example/issues/7".into() }];
         let prev = GitDiffSnapshot {
             branch: GitBranch::Named("feat/x".into()),
@@ -1696,7 +1796,7 @@ mod tests {
             pushed_sha: Some("aaaa".into()),
             worktree: LayerState::Clean,
             branch_ahead: LayerState::Clean,
-            pr: Some(GitPrInfo { number: 42, url: "https://example/pull/42".into() }),
+            pr: Some(GitPrInfo { number: 42, url: "https://example/pull/42".into(), draft: false }),
             closes: Vec::new(),
             pr_fetched_at: Some(stale_at),
         };
@@ -1727,7 +1827,7 @@ mod tests {
             pushed_sha: Some("aaaa".into()),
             worktree: LayerState::Clean,
             branch_ahead: LayerState::Clean,
-            pr: Some(GitPrInfo { number: 42, url: "https://example/pull/42".into() }),
+            pr: Some(GitPrInfo { number: 42, url: "https://example/pull/42".into(), draft: false }),
             closes: Vec::new(),
             pr_fetched_at: Some(stale_at),
         };
@@ -1845,7 +1945,7 @@ mod tests {
         let picked = pick_open_pr(raw).expect("parses");
         assert_eq!(
             picked,
-            Some((859, "https://example/pull/859".to_owned())),
+            Some((859, "https://example/pull/859".to_owned(), false)),
             "open filter first, then most recently updated wins"
         );
     }
@@ -1860,7 +1960,7 @@ mod tests {
         );
         assert_eq!(
             pick_open_pr(raw).expect("parses"),
-            Some((402, "https://example/pull/402".to_owned()))
+            Some((402, "https://example/pull/402".to_owned(), false))
         );
     }
 
@@ -1884,7 +1984,7 @@ mod tests {
     }
 
     fn snapshot_with_pr_at(number: u64, fetched_secs_ago: Option<u64>) -> GitDiffSnapshot {
-        let pr = GitPrInfo { number, url: format!("https://example/pull/{number}") };
+        let pr = GitPrInfo { number, url: format!("https://example/pull/{number}"), draft: false };
         let pr_fetched_at = fetched_secs_ago
             .map(|secs| std::time::SystemTime::now() - std::time::Duration::from_secs(secs));
         GitDiffSnapshot {
@@ -1931,7 +2031,8 @@ mod tests {
         write_file(&dir, "feat.rs", "fn x() {}\n");
         commit_all(&dir, "feat commit");
 
-        let synthetic_pr = GitPrInfo { number: 99, url: "https://example/pull/99".into() };
+        let synthetic_pr =
+            GitPrInfo { number: 99, url: "https://example/pull/99".into(), draft: false };
         let synthetic_closes =
             vec![GitIssueRef { number: 1, url: "https://example/issues/1".into() }];
         let prev = GitDiffSnapshot {
@@ -1970,7 +2071,7 @@ mod tests {
             pushed_sha: None,
             worktree: LayerState::Clean,
             branch_ahead: LayerState::Clean,
-            pr: Some(GitPrInfo { number: 1, url: "url".into() }),
+            pr: Some(GitPrInfo { number: 1, url: "url".into(), draft: false }),
             closes: Vec::new(),
             pr_fetched_at: Some(std::time::SystemTime::now()),
         };

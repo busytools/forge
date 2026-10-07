@@ -54,6 +54,9 @@ function untouched(): Connection {
     store: refuse,
     settings: refuse,
     skew: refuse,
+    // The footer reads the protocol pair as it RENDERS, so this one answers:
+    // refusing it would be refusing the page, not the connection.
+    serverProtocol: () => PROTOCOL_VERSION,
     status: refuse,
     close: refuse,
   };
@@ -61,7 +64,9 @@ function untouched(): Connection {
 
 const footer = render(Rail, {
   props: {
-    home: homeWire,
+    // The fixture's own version stands in a placeholder that renders
+    // escaped, so this reads the build the way the wire does.
+    home: { ...homeWire, forge_version_short: '1.0.105' },
     current: LEAD,
     now: Date.now(),
     connection: untouched(),
@@ -78,17 +83,16 @@ function rule(selector: string): string {
 }
 
 describe('the rail footer', () => {
-  it('names the socket protocol with the two builds it binds', () => {
+  it('states the server and client protocol pair above the CLI it binds', () => {
     // **The client and a server that disagrees on the protocol refuse each
-    // other** (`socket.ts` checks the greeting), so the number reads beside
-    // the builds rather than only inside a refusal's own words.
-    expect(footer, 'the protocol this app speaks').toContain(`>socket v${PROTOCOL_VERSION}<`);
-    expect(footer.indexOf('socket v'), 'after the build serving the socket').toBeGreaterThan(
-      footer.indexOf('forge v'),
-    );
-    expect(footer.indexOf('socket v'), 'and before the CLI it binds').toBeLessThan(
+    // other** (`socket.ts` checks the greeting), so both sides read here as a
+    // pair rather than only inside a refusal's own words.
+    expect(footer, 'the server build').toContain('v1.0.105');
+    expect(footer.split(`socket v${PROTOCOL_VERSION}`).length - 1, 'both sides state it').toBe(2);
+    expect(footer.indexOf('server'), 'the pair leads the versions').toBeLessThan(
       footer.indexOf('claude v'),
     );
+    expect(footer, 'the build must elide so the socket keeps its lane').toContain('class="vt"');
   });
 
   it('separates the installed version from the one it moves to', () => {

@@ -123,7 +123,7 @@ pub struct GitDiffSnapshot {
 /// Shared between [`GitDiffSnapshot::worktree`] (layer 1, HEAD vs
 /// workdir) and [`GitBranchAhead::stats`] (layer 2, default vs
 /// branch tip).
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct GitDiffStats {
     pub files: Vec<GitDiffFile>,
     pub total_files: usize,
@@ -133,7 +133,7 @@ pub struct GitDiffStats {
 
 /// Layer 2 payload: how far the branch is ahead of the default
 /// branch, alongside the corresponding numstat.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GitBranchAhead {
     /// Number of commits between the merge-base with `default_branch`
     /// and the branch tip. The renderer surfaces this so the user
@@ -142,16 +142,43 @@ pub struct GitBranchAhead {
     pub commit_count: u32,
     /// File-level numstat for the same commit range.
     pub stats: GitDiffStats,
+    /// The chain itself, newest first, capped at the scan's own bound:
+    /// the count above says how many there are, these say what they are.
+    #[serde(default)]
+    pub commits: Vec<crate::git::GitCommit>,
 }
 
 /// One file's diff stats. `added` / `removed` are git's `--numstat`
 /// line counts; binary files (which numstat reports as `-`) are
 /// dropped by the parser rather than appearing here.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GitDiffFile {
     pub path: String,
     pub added: u32,
     pub removed: u32,
+    /// How git classified the change. `--numstat` carries no code, so
+    /// the scan merges it in from `--name-status`; a file the merge did
+    /// not reach keeps the default.
+    #[serde(default)]
+    pub status: crate::git::FileStatus,
+}
+
+/// The tree behind a git row's depth, bundled: what a hover over the
+/// row draws beyond the branch and the count.
+///
+/// `None` layers read as nothing to state - a clean tree, an unscanned
+/// one - the same way [`LayerState`] means it; the row above still
+/// carries the gate that says which.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct GitWorkView {
+    /// The branch this tree is measured against, when it resolved; the
+    /// row names it (`3 commits vs main`) and hides itself when this
+    /// tree IS it.
+    pub default_branch: Option<String>,
+    /// The uncommitted files, with marks and counts.
+    pub worktree: Option<GitDiffStats>,
+    /// The branch's chain ahead of its default.
+    pub ahead: Option<GitBranchAhead>,
 }
 
 #[cfg(test)]

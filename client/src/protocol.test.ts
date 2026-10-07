@@ -2,7 +2,14 @@ import { readFileSync } from 'node:fs';
 
 import { describe, expect, it } from 'vitest';
 
-import { CLIENT_VERSION, MIN_PROTOCOL, PROTOCOL_VERSION, skewMessage, skewOf } from './protocol';
+import {
+  CLIENT_VERSION,
+  MIN_PROTOCOL,
+  PROTOCOL_VERSION,
+  releaseOf,
+  skewMessage,
+  skewOf,
+} from './protocol';
 import { DEFAULT_SETTINGS } from './wire/types';
 
 /**
@@ -68,8 +75,13 @@ function clientRelease(): string {
 }
 
 describe('the release the client names itself by', () => {
-  it('is the number `just release` sets on the client half', () => {
-    expect(CLIENT_VERSION).toBe(clientRelease());
+  it('is the number `just release` sets on the client half, stamped with the build', () => {
+    // The stamp is the server's own shape (`+<short sha>`); the RELEASE half
+    // stays the manifest's number, which is what a reinstall is named by.
+    expect(releaseOf(CLIENT_VERSION)).toBe(clientRelease());
+    expect(CLIENT_VERSION, 'the stamp is not the server-shaped one').toMatch(
+      /^[0-9.]+\+[0-9a-f]+$/,
+    );
   });
 });
 
@@ -204,10 +216,11 @@ describe('what a skew says', () => {
    * known.
    */
   it('calls one release speaking two protocols a mixed install, with both commands', () => {
-    expect(skewMessage({ serverProtocol: 4, serverVersion: `${CLIENT_VERSION}+abc1234` })).toBe(
-      `this forge server and this client are both v${CLIENT_VERSION}, but they speak protocols ` +
+    const release = releaseOf(CLIENT_VERSION);
+    expect(skewMessage({ serverProtocol: 4, serverVersion: `${release}+abc1234` })).toBe(
+      `this forge server and this client are both v${release}, but they speak protocols ` +
         `4 and ${PROTOCOL_VERSION}: a mixed install of one build. Reinstall both: in the forge ` +
-        `checkout run \`just install\` and \`just client-release ${CLIENT_VERSION}\`, then ` +
+        `checkout run \`just install\` and \`just client-release ${release}\`, then ` +
         'restart.',
     );
   });

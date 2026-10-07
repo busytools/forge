@@ -29,6 +29,8 @@ const { WebSocketServer, WebSocket: ClientSocket } = createRequire(import.meta.u
 import { get, writable } from 'svelte/store';
 
 import { cronNames } from '../chat/cron-names.svelte';
+import { git } from '../chat/git.svelte';
+import { installResizeObserver } from '../chat/testing/viewport';
 import { homeWire } from '../dev/fixture.data';
 import sessionFixture from '../dev/fixtures/session.json';
 import type { ServerMessage, SessionUpdate, Subject } from '../protocol';
@@ -61,6 +63,10 @@ vi.mock('../chat/conversation', async (importOriginal) => {
  * identity rather than by key, and a Slack target narrowed against an object
  * the socket never sends.
  */
+// The column's list is `virtua`'s, and a Router-mounted page draws it: jsdom
+// has no ResizeObserver to offer it.
+installResizeObserver();
+
 const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
 
 /** A forge that answers the two subjects a session page watches. */
@@ -85,6 +91,21 @@ async function stubServer(session: unknown) {
       const message = JSON.parse(text(data)) as Subscribe;
       if (message.kind === 'unsubscribe') {
         gone.push(message);
+        return;
+      }
+      // The column pages for its history on the way up, so a stub that never
+      // answers holds it in its loading state and nothing under the header
+      // draws - the strip and the queue included.
+      if (message.kind === 'more') {
+        const turns = (session as { conversation: { turns: unknown[] } }).conversation.turns;
+        socket.send(
+          JSON.stringify({
+            kind: 'page',
+            conversation: LEAD,
+            turns,
+            cursor: null,
+          } satisfies ServerMessage),
+        );
         return;
       }
       if (message.kind !== 'subscribe') return;
@@ -202,7 +223,9 @@ describe('the session page over a socket', () => {
   it('draws the seat record the server answered with', async () => {
     await open(sessionFixture);
 
-    expect(sections(), 'the seat record never reached the page').toContain('git');
+    // The tree row is the page's own reader of the record, so its store
+    // holding the fixture's branch is the record reaching the page.
+    expect(git.strip()?.label, 'the seat record never reached the page').toContain('worktree-pr');
     const facts = document.querySelector('.sess .facts');
     expect(facts?.textContent, 'the header drew no facts from the record').toContain('max');
   });
@@ -307,16 +330,20 @@ describe('the session page over a socket', () => {
     });
     await settle();
 
-    expect(sections()).toContain('git');
-    expect(drawn()).toContain('aria-label="inspector"');
+    expect(git.strip()?.label, 'the URL-reached page drew no seat record').toContain('worktree-pr');
+    expect(document.querySelector('.sess .nm')?.textContent, 'the page drew its seat').toBe('proj');
   });
+
+  /* The queue-above-strip order is pinned where the column itself draws it:
+     `Chat.test.ts` mounts the chat with a queue snippet and reads the two
+     rows' document order. */
 
   /**
    * **The narrow bands are page state now, not checkboxes**, and jsdom has no
    * `matchMedia` at all, so both rails take the wide default in every other
    * test. This is the one case that sees the state the sheet folds by.
    */
-  it('folds both rails away below the width they stop being columns at', async () => {
+  it('folds the rail away below the width it stops being a column at', async () => {
     matchMediaTo(true);
     await open(sessionFixture);
 
@@ -324,8 +351,7 @@ describe('the session page over a socket', () => {
     // own state is the assertion, and its class is how that state is stated.
     const app = document.querySelector('.app')?.className ?? '';
     expect(app, 'the rail ignored a narrow page').toContain('left-hidden');
-    expect(app).toContain('right-hidden');
-    expect(document.querySelector('.rail-tog.tog-r')?.getAttribute('aria-expanded')).toBe('false');
+    expect(document.querySelector('.rail-tog.tog-r'), 'the inspector handle is gone').toBeNull();
   });
 
   /**
@@ -393,7 +419,9 @@ describe('the session page over a socket', () => {
     revisit();
     flushSync();
 
-    expect(sections(), 'the return drew nothing until the server answered again').toContain('git');
+    expect(git.strip()?.label, 'the return drew nothing until the server answered again').toContain(
+      'worktree-pr',
+    );
   });
 
   /**
@@ -431,13 +459,6 @@ function matchMediaTo(matches: boolean): void {
     addEventListener: () => {},
     removeEventListener: () => {},
   });
-}
-
-/** The `data-k` of every section the page drew, in the order it drew them. */
-function sections(): string[] {
-  return [...document.querySelectorAll('[data-k^="sec-"]')].map(
-    (el) => el.getAttribute('data-k')?.slice('sec-'.length) ?? '',
-  );
 }
 
 /**
@@ -615,6 +636,7 @@ function drivable(refused = false): Driveable {
     store: () => undefined,
     settings: () => null,
     skew: () => null,
+    serverProtocol: () => PROTOCOL_VERSION,
     status: () => 'open',
     close: () => {},
     land: (message) => {

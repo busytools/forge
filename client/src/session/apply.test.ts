@@ -310,13 +310,29 @@ describe('applyUpdate', () => {
         work_changed: {
           key: SLOT,
           work: { branch: 'main', changed: 2, gate: 'in_repo' },
-          pr: { number: 1249, url: 'https://example.test/pull/1249' },
+          git: {
+            default_branch: 'main',
+            worktree: {
+              files: [{ path: 'a.rs', added: 1, removed: 0, status: 'modified' }],
+            },
+            ahead: { commit_count: 1, commits: [{ sha: 'a1b2c3d', subject: 'the commit' }] },
+          },
+          pr: { number: 1249, url: 'https://example.test/pull/1249', draft: true },
           closes: [{ number: 1215, url: 'https://example.test/1215' }],
         },
       });
 
       expect(next.work).toEqual({ branch: 'main', changed: 2, gate: 'in_repo' });
-      expect(next.pr).toEqual({ number: 1249, url: 'https://example.test/pull/1249' });
+      expect(next.git, 'the tree behind the row rides the same frame').toEqual({
+        defaultBranch: 'main',
+        worktree: { files: [{ path: 'a.rs', added: 1, removed: 0, status: 'modified' }] },
+        ahead: { count: 1, commits: [{ sha: 'a1b2c3d', subject: 'the commit' }] },
+      });
+      expect(next.pr).toEqual({
+        number: 1249,
+        url: 'https://example.test/pull/1249',
+        draft: true,
+      });
       expect(next.closes).toEqual([{ number: 1215, url: 'https://example.test/1215' }]);
     });
 

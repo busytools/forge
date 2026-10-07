@@ -54,7 +54,7 @@
        detail takes the data size. */
     --fs-prose: 15.5px; --fs-base: 15.5px; --fs-group: 15.5px;
     --fs-data: 14px; --fs-label: 12.5px; --fs-title: 18px;
-    --ins: 10px; --rail-l: 312px; --rail-r: 366px;
+    --ins: 10px; --rail-l: 312px;
   }
 
   html, body { height: 100%; }
@@ -138,26 +138,21 @@
 
   /* ---------- panes: checked is COLLAPSED, and the handle lives in the
      chat header so it stays clickable while the pane is gone ---------- */
-  .app { display: grid; grid-template-columns: var(--rail-l) minmax(0,1fr) var(--rail-r);
+  .app { display: grid; grid-template-columns: var(--rail-l) minmax(0,1fr);
     gap: var(--ins); padding: var(--ins); height: 100vh; overflow: hidden; }
   /* Placed rather than auto-flowed: a collapsed pane leaves its column empty,
      and auto-flowing the rest along moves the conversation into the rail's
      column and blanks the page. */
   .app > .rail.left { grid-column: 1; }
   .app > main.chat { grid-column: 2; }
-  .app > .rail.right { grid-column: 3; }
   #l:checked ~ .app { --rail-l: 0px; }
-  #r:checked ~ .app { --rail-r: 0px; }
-  #l:checked ~ .app .rail.left, #r:checked ~ .app .rail.right { display: none; }
+  #l:checked ~ .app .rail.left { display: none; }
   .pane-tog { display: flex; align-items: center; justify-content: center;
     width: 30px; height: 30px; flex: none; border-radius: 8px; cursor: pointer;
     color: var(--muted); border: 1px solid transparent; }
   .pane-tog:hover { color: var(--text); background: var(--s2); border-color: var(--line); }
   .pane-tog svg { width: 16px; height: 16px; display: block; }
-  /* Both handles sit with the title on a phone; on a wide screen the
-     inspector's goes to the far right, past the settings. */
-  .sess .tog-r { order: 99; }
-  #l:checked ~ .app .pane-tog.tog-l, #r:checked ~ .app .pane-tog.tog-r {
+  #l:checked ~ .app .pane-tog.tog-l {
     color: var(--accent); background: rgba(244,118,0,.1); border-color: rgba(244,118,0,.3); }
 
   .dot { width: 11px; height: 11px; flex: 0 0 11px; }
@@ -829,10 +824,16 @@
     overflow-wrap: anywhere; }
   .sg-sub.bad { color: var(--bad); }
   /* A row that leads with its name: the accent name takes what is left and
-     elides, so a long key - a cron's description, a process headline - gives
-     way instead of pushing the right figure out. */
+     elides, so a long key - a cron's description, a process headline -
+     gives way instead of pushing the right figure out. */
   .sg-list .sg-it .nm.lead { flex: 1 1 auto; min-width: 0; overflow: hidden;
     text-overflow: ellipsis; white-space: nowrap; }
+  /* A task nothing has started: the ring's own shape, hollow and still. */
+  .sg-list .sg-it .hollow { width: 9px; height: 9px; flex: none; border-radius: 50%;
+    border: 1px solid var(--dim); }
+  /* A task that moved since the last read: the reveal's own tint for a beat. */
+  .sg-list .sg-it.hit { animation: sg-flash 6s ease-out 1; }
+  @keyframes sg-flash { 0% { background: rgba(244,118,0,.16); } 100% { background: transparent; } }
   .tibody { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 26px;
     padding: 6px 0 0 18px; width: max-content;
     font-family: var(--mono); font-size: var(--fs-data); }
@@ -1016,63 +1017,6 @@
   .mopt.sel .lbl { color: var(--text); font-weight: 600; }
   .mkeys { display: flex; justify-content: center; gap: 16px; font-family: var(--mono);
     font-size: var(--fs-label); color: var(--dim); }
-  /* ---------- inspector ---------- */
-  .sec { border-bottom: 1px solid rgba(34,42,60,.55); }
-  .sec:last-child { border-bottom: 0; }
-  details.sec > summary { list-style: none; display: flex; align-items: center; gap: 10px;
-    padding: 11px 14px; font-size: var(--fs-label); font-weight: 700; letter-spacing: .12em;
-    text-transform: uppercase; color: var(--muted); cursor: pointer; }
-  details.sec > summary::-webkit-details-marker { display: none; }
-  details.sec > summary:hover { background: rgba(27,33,48,.4); }
-  details.sec > summary .gl { color: var(--dim); }
-  details.sec > summary .c2 { color: var(--dim); font-family: var(--mono); font-size: var(--fs-data);
-    letter-spacing: 0; text-transform: none; font-weight: 400;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  details.sec > summary .arw { margin-left: auto; color: var(--dim); font-size: var(--fs-data); }
-  details.sec[open] > summary .arw { color: var(--accent); }
-  details.sec[open] > summary { border-bottom: 1px solid var(--line); }
-  .sb { padding: 10px 14px 14px; }
-  .file { display: flex; align-items: center; gap: 8px; padding: 2px 0;
-    font-family: var(--mono); font-size: var(--fs-data); }
-  .file .p { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    cursor: pointer; }
-  .file .p:hover { color: var(--accent); }
-  .file .st { color: var(--accent); width: 12px; flex: 0 0 12px; }
-  .file .st.a { color: var(--ok); }
-  .file .pm { margin-left: auto; color: var(--ok); }
-  .file .mm { color: var(--bad); }
-  .dir { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); padding: 5px 0 1px; }
-
-  /* A task row, scoped to a section body as the app scopes it: bare, this
-     rule also matched the context bar's track and gave it `display: flex` and
-     five pixels of vertical padding, which under border-box left the 5px
-     track with no content height for its fill at all. */
-  .sb .tk { display: flex; align-items: flex-start; gap: 9px; padding: 5px 0; }
-  .sb .tk .b { width: 3px; align-self: stretch; border-radius: 99px; background: var(--s3); flex: none; }
-  .sb .tk.now .b { background: var(--accent); }
-  .sb .tk.done .b { background: var(--ok); }
-  .sb .tk.blocked .b { background: var(--warn); }
-  .sb .tk .s { font-size: var(--fs-base); color: var(--muted); }
-  .sb .tk.done .s { color: var(--dim); text-decoration: line-through; }
-  .sb .tk .meta { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); margin-top: 1px; }
-  .sb .tk .meta b { color: var(--muted); font-weight: 500; }
-
-  .sa { border: 1px solid var(--line); border-radius: 10px; background: rgba(13,17,26,.5);
-    margin: 6px 0; overflow: hidden; }
-  .sa .sh { display: flex; align-items: center; gap: 9px; padding: 8px 12px;
-    font-family: var(--mono); font-size: var(--fs-data); min-width: 0; }
-  .sa .sh .st { color: var(--ok); }
-  .sa .sh .gl { color: var(--violet); }
-  .sa .sh .nm { color: var(--accent); font-weight: 700; white-space: nowrap;
-    overflow: hidden; text-overflow: ellipsis; }
-  .sa .sh .n { margin-left: auto; color: var(--dim); font-size: var(--fs-data);
-    white-space: nowrap; flex: none; }
-  .sa .tt { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); padding: 0 12px 3px 12px; }
-  .sa .tt .tg { color: var(--muted); }
-  .sa .settled { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim);
-    padding: 0 12px 9px; font-style: italic; }
-  .sa .note { font-size: var(--fs-data); color: var(--dim); padding: 0 12px 9px; }
-
   /* ---------- the diff page ---------- */
   #diff { display: none; }
   #diff:checked ~ .page { display: flex; }
@@ -1121,32 +1065,16 @@
   .pfoot .key { color: var(--accent); }
   .pfoot .sep { padding: 0 8px; opacity: .5; }
 
-  /* Narrow: one column, each pane a sheet over the chat. The checkbox
+  /* Narrow: one column, the pane a sheet over the chat. The checkbox
      inverts meaning here - unchecked is hidden, not open - so a phone
-     opens on the conversation and the header's two handles reach the
-     panes. */
-  @media (max-width: 1280px) { .app { grid-template-columns: var(--rail-l) minmax(0,1fr); }
-    /* The inspector stops being a column and becomes a sheet over the chat,
-       rather than disappearing: the handle that reaches it stays a control,
-       and the sheet carries the handle that closes it. */
-    .rail.right { display: none; }
-    #r:checked ~ .app .rail.right {
-      display: flex; position: fixed; inset: 0; z-index: 40; border-radius: 0;
-    } }
+     opens on the conversation and the header's handle reaches the pane. */
   @media (max-width: 980px) {
     .app { grid-template-columns: minmax(0,1fr); }
     .app > main.chat { grid-column: 1; }
-    /* The inspector handle keeps its place at the row's far end at every
-       width: moving it beside the title on a phone made it jump ends as the
-       layout folded, which reads as the control moving under the reader. */
     .rail { position: fixed; inset: 0; z-index: 40; border-radius: 0; }
-    .rail.left, .rail.right { display: none; }
+    .rail.left { display: none; }
     #l:checked ~ .app .rail.left { display: flex; }
-    #r:checked ~ .app .rail.right { display: flex; }
-    #l:checked ~ .app, #r:checked ~ .app { --rail-l: 0px; --rail-r: 0px; }
-    .pbody { grid-template-columns: minmax(0,1fr); }
-    .prail { display: none; }
-    .pmain { grid-column: 1; }
+    #l:checked ~ .app { --rail-l: 0px; }
   }
   /* The reach a finger needs, keyed on the pointer rather than the width:
      the brand is a way home and the more disclosure is a chevron, so both
@@ -1308,8 +1236,11 @@
 </svg>
 
 <input type="checkbox" id="l" hidden>
-<input type="checkbox" id="r" hidden>
 <input type="checkbox" id="diff" hidden>
+<!-- The diff page keeps its specimen and this opener even though the
+     inspector's file list, which used to open it, is gone: the page is a
+     design-phase drawing with no client surface behind it yet, and removing
+     it - or re-homing its opener - is its own call. -->
 
 <div class="app">
 
@@ -1455,8 +1386,8 @@
       <div class="vers">
         <!-- The socket protocol the client and server must agree on, shown
              with the two builds it binds. -->
-        <div class="v">forge v1.0.105</div>
-        <div class="v">socket v3</div>
+        <div class="v">server v1.0.105 &#183; socket v6</div>
+        <div class="v">client v1.0.108 &#183; socket v6</div>
         <div class="v">claude v2.1.280 <span class="up">&#8594; v2.1.286</span></div>
       </div>
     </div>
@@ -1476,10 +1407,6 @@
       <label class="pane-tog tog-l" for="l" title="projects">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
              stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
-      </label>
-      <label class="pane-tog tog-r" for="r" title="inspector">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-             stroke-linecap="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg>
       </label>
       <span class="dot live"></span>
       <span class="nm">forge</span>
@@ -2505,6 +2432,40 @@ branch main, nothing to commit</div>
               <svg class="ic"><use href="#i-mcp"/></svg>
               3 servers</button>
           </span>
+          <!-- The tree row, sixth: this seat's branch and what moved in it.
+               The hover opens on what the tree IS (the project's, or a
+               worker's worktree), then the branch's commit chain ahead of
+               its default (short sha and subject per commit), then the
+               uncommitted files - a status mark, the path, and +N -M - and
+               the pull request as a link with its state and what it closes.
+               On the default branch with nothing on it the row does not draw
+               at all: that is where work lands, not work. Drawn CLOSED here,
+               like its siblings. -->
+          <span class="sg-seg">
+            <button type="button" class="sg-tog">
+              <svg class="ic"><use href="#i-git"/></svg>
+              web-home-layout &#183; 3 files</button>
+          </span>
+          <!-- The tasks row, seventh: the PROJECT's set, how much of it is
+               done on the toggle, a mark per state in the open list. A task
+               that moved lights its row for a beat - the reveal's own tint -
+               so the change is known without the list being watched. -->
+          <span class="sg-seg">
+            <button type="button" class="sg-tog">
+              <svg class="ic"><use href="#i-tasks"/></svg>
+              1 of 3</button>
+          </span>
+          <!-- The monitors row, eighth: the commands this session is
+               watching. Monitors live here and not in the chat, so this row
+               is the surface that says it - and the tail under a monitor
+               stays uncarried, because a tail is read off the machine
+               running forge and this client does not read the server's
+               disk. -->
+          <span class="sg-seg">
+            <button type="button" class="sg-tog">
+              <svg class="ic"><use href="#i-monitors"/></svg>
+              1 running</button>
+          </span>
           </span>
         </div>
       </div>
@@ -2643,92 +2604,9 @@ branch main, nothing to commit</div>
     </div>
   </main>
 
-  <!-- ============ INSPECTOR ============ -->
-  <aside class="rail right">
-    <div class="banner">
-      <span class="t">inspector</span>
-      <span class="n ml">forge</span>
-      <label class="close" for="r" title="close">&#215;</label>
-    </div>
-    <div class="scroll">
-
-      <!-- A shut section draws its summary and nothing behind it, so its
-           body here is marked for the preview gate: a new section left shut
-           without the mark reports its body as a class the page lacks. -->
-      <details class="sec" open>
-        <summary><svg class="ic gl"><use href="#i-git"/></svg> git
-          <span class="c2">web-home-layout &#183; 8 files</span>
-          <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-        <div class="sb">
-          <div class="kv"><span class="k">PR #1203</span><span class="v a">&#8594; closes #1200</span></div>
-          <div class="kv" style="padding-top:6px"><span class="k">uncommitted</span>
-            <span class="v"><span style="color:var(--ok)">+122</span> <span style="color:var(--bad)">&minus;79</span></span></div>
-          <div class="dir">crates/forge-web/src/</div>
-          <div class="file"><span class="st">M</span><label class="p" for="diff">home.css</label>
-            <span class="pm">+12</span><span class="mm">&minus;4</span></div>
-          <div class="file"><span class="st">M</span><label class="p" for="diff">home.rs</label>
-            <span class="pm">+66</span><span class="mm">&minus;31</span></div>
-          <div class="dir">crates/forge-server/src/</div>
-          <div class="file"><span class="st">M</span><label class="p" for="diff">surface/agents.rs</label>
-            <span class="pm">+28</span><span class="mm">&minus;9</span></div>
-          <div class="file"><span class="st">M</span><label class="p" for="diff">surface.rs</label>
-            <span class="pm">+9</span><span class="mm">&minus;2</span></div>
-          <div class="dir">crates/forge-tui/src/</div>
-          <div class="file"><span class="st">M</span><label class="p" for="diff">app/cli_version.rs</label>
-            <span class="pm">+4</span><span class="mm">&minus;31</span></div>
-          <div class="dir">docs/mockups/</div>
-          <div class="file"><span class="st a">A</span><label class="p" for="diff">web-session.html</label>
-            <span class="pm">+812</span></div>
-        </div>
-      </details>
-
-      <details class="sec">
-        <summary><svg class="ic gl"><use href="#i-tasks"/></svg> tasks
-          <span class="c2">2 of 7</span>
-          <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-        <div class="sb" data-mock-ignore>
-          <div class="tk now"><span class="b"></span><span>
-            <div class="s">Land the Claude version on the core</div>
-            <div class="meta"><b>cli-version</b> &#183; in review &#183; PR #1204</div></span></div>
-          <div class="tk now"><span class="b"></span><span>
-            <div class="s">Redesign the session page against the TUI&#39;s structure</div>
-            <div class="meta"><b>lead</b> &#183; in progress</div></span></div>
-          <div class="tk"><span class="b"></span><span>
-            <div class="s">Read the inspector&#39;s sections from the book</div>
-            <div class="meta"><b>lead</b> &#183; pending &#183; 2h</div></span></div>
-          <div class="tk blocked"><span class="b"></span><span>
-            <div class="s">Decide the subagent card&#39;s collapse rule</div>
-            <div class="meta"><b>lead</b> &#183; blocked on a design call</div></span></div>
-          <div class="tk done"><span class="b"></span><span>
-            <div class="s">Merge, release and install the layout pass</div>
-            <div class="meta"><b>lead</b> &#183; completed 24m ago</div></span></div>
-        </div>
-      </details>
-
-      <details class="sec">
-        <summary><svg class="ic gl"><use href="#i-monitors"/></svg> monitors
-          <span class="c2">1 running</span>
-          <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-        <div class="sb" data-mock-ignore>
-          <div class="sa">
-            <div class="sh"><span class="st"><span class="ring" style="width:8px;height:8px"></span></span>
-              <svg class="ic gl"><use href="#i-monitors"/></svg>
-              <span class="nm">ci-watch</span><span class="n">persistent</span></div>
-            <div class="tt"><span class="tg">$</span> gh run watch 18234567</div>
-          </div>
-          <div class="sa">
-            <div class="sh"><svg class="ic st"><use href="#i-check"/></svg><svg class="ic gl"><use href="#i-monitors"/></svg>
-              <span class="nm">deploy-gate</span><span class="n">completed 12m</span></div>
-            <div class="tt"><span class="tg">$</span> gh run watch 2</div>
-            <div class="tt">build &#183; in_progress</div>
-            <div class="tt">lint &#183; success</div>
-            <div class="tt">deploy &#183; queued</div>
-            <div class="tt">notify &#183; queued</div>
-          </div>
-        </div>
-      </details>
-    </div>
-  </aside>
+  <!-- The inspector is gone. Its sections live on the strip's rows now -
+       see the git, tasks and monitors rows in `.sg-fill` above - and the
+       panel it was has no replacement to draw. -->
 </div>
 
 <!-- ============ THE DIFF, AS ITS OWN PAGE ============ -->

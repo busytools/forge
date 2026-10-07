@@ -186,6 +186,14 @@ export interface Connection {
    * here rather than from a number they have no build for.
    */
   skew(): Skew | null;
+  /**
+   * The protocol the last greeting carried, or `null` before one lands.
+   *
+   * The number behind `skew()`, kept whether or not there is a skew: the
+   * footer draws both sides of the pair, so a match is a fact to show and
+   * not the absence of a notice.
+   */
+  serverProtocol(): number | null;
   status(): ConnectionStatus;
   close(): void;
 }
@@ -301,6 +309,8 @@ export function connect(url: string): Connection {
   let status: ConnectionStatus = 'connecting';
   let settings: ClientSettings | null = null;
   let protocolSkew: Skew | null = null;
+  /** The greeting's own number, kept whether or not it skews. */
+  let greetingProtocol: number | null = null;
   let nextReplyId = 1;
   let retry: ReturnType<typeof setTimeout> | null = null;
   let retryDelay = RETRY_MS;
@@ -400,6 +410,7 @@ export function connect(url: string): Connection {
         // prevent. Recorded either way, because a refusal has to name the
         // server it is refusing.
         protocolSkew = skewOf(message);
+        greetingProtocol = typeof message.version === 'number' ? message.version : null;
         if (protocolSkew === null) return;
         // One step back is READ rather than refused, because a floor whose
         // read is pinned by `wire/floor.test.ts` beats a client that cannot
@@ -777,6 +788,9 @@ export function connect(url: string): Connection {
     },
     skew() {
       return protocolSkew;
+    },
+    serverProtocol() {
+      return greetingProtocol;
     },
     status() {
       return status;

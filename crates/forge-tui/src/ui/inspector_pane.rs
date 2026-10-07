@@ -3215,7 +3215,12 @@ pub(crate) mod tests {
     }
 
     fn file(path: &str, added: u32, removed: u32) -> GitDiffFile {
-        GitDiffFile { path: path.to_owned(), added, removed }
+        GitDiffFile {
+            path: path.to_owned(),
+            added,
+            removed,
+            status: forge_primitives::git::FileStatus::Modified,
+        }
     }
 
     /// One row in the flattened tree shape used by the tree-builder
@@ -3334,7 +3339,11 @@ pub(crate) mod tests {
     }
 
     fn pr(number: u64) -> GitPrInfo {
-        GitPrInfo { number, url: format!("https://github.com/example/repo/pull/{number}") }
+        GitPrInfo {
+            number,
+            url: format!("https://github.com/example/repo/pull/{number}"),
+            draft: false,
+        }
     }
 
     fn issue(number: u64) -> GitIssueRef {

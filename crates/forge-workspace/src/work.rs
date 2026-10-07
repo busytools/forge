@@ -23,7 +23,7 @@ use forge_agent::env::file_index::start_change_watch;
 use forge_agent::env::processes::SCAN_STALENESS;
 use forge_primitives::SessionSlot;
 use forge_primitives::git::{GitIssueRef, GitPrInfo};
-use forge_primitives::git_diff::GitDiffSnapshot;
+use forge_primitives::git_diff::{GitDiffSnapshot, GitWorkView, LayerState};
 
 use crate::protocol::SessionUpdate;
 use crate::workspace::Workspace;
@@ -161,14 +161,26 @@ fn reads_again(read_at: Option<Instant>, dirty: bool, now: Instant, window: Dura
 #[derive(Clone, PartialEq)]
 struct Announced {
     work: WorkState,
+    git: GitWorkView,
     pr: Option<GitPrInfo>,
     closes: Vec<GitIssueRef>,
 }
 
 impl Announced {
     fn of(held: &WorkSnapshot) -> Self {
+        // The two layers a row's depth draws; `Clean` and `ScanFailed` both
+        // read as nothing to state, which is what the layer means.
+        let worktree = match &held.diff.worktree {
+            LayerState::Populated(stats) => Some(stats.clone()),
+            LayerState::Clean | LayerState::ScanFailed => None,
+        };
+        let ahead = match &held.diff.branch_ahead {
+            LayerState::Populated(chain) => Some(chain.clone()),
+            LayerState::Clean | LayerState::ScanFailed => None,
+        };
         Self {
             work: work_from_scan(&held.diff, &held.cwd),
+            git: GitWorkView { default_branch: held.diff.default_branch.clone(), worktree, ahead },
             pr: held.diff.pr.clone(),
             closes: held.diff.closes.clone(),
         }
@@ -648,6 +660,7 @@ fn spawn_work_watch(
             workspace.update_tx.send(SessionUpdate::WorkChanged {
                 key: slot.clone(),
                 work: row.work.clone(),
+                git: row.git.clone(),
                 pr: row.pr.clone(),
                 closes: row.closes.clone(),
             });

@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
-import { flushSync, mount, unmount } from 'svelte';
+import { createRawSnippet, flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { Chat as HandedChat, type Conversation } from './conversation';
 import { echoes } from './echoes.svelte';
+import { git } from './git.svelte';
 import { freeze } from './testing/frozen';
 import { subjectKey } from '../protocol';
 import type { ClientMessage, ServerMessage, SessionUpdate } from '../protocol';
@@ -169,9 +170,43 @@ afterEach(async () => {
   if (app !== null) await unmount(app);
   app = null;
   document.body.innerHTML = '';
+  git.sync(null);
 });
 
 describe('the chat column as it draws', () => {
+  /**
+   * **The queue sits above the pin, and both above the box.** The queue's
+   * DATA is the page's, but its place is the column's: what is waiting reads
+   * against what is running, and the strip keeps its place right above the
+   * composer.
+   */
+  it('draws the queue snippet above the strip', () => {
+    const server = stub();
+    const queue = createRawSnippet(() => ({ render: () => '<span class="pile"></span>' }));
+    git.sync({
+      label: 'feat/x',
+      head: "the project's tree",
+      ahead: null,
+      files: [],
+      pr: null,
+      gate: null,
+    });
+    draw({ queue }, server);
+    // A page with a turn on it: the column's empty state owns a seat with no
+    // history, and the strip and the queue live in the drawn column.
+    server.answer([{ key: 't1', messages: [] }]);
+
+    const pile = document.querySelector('.pile');
+    const strip = document.querySelector('.strip');
+    expect(pile, 'the queue snippet did not draw').not.toBeNull();
+    expect(strip, 'the strip did not draw').not.toBeNull();
+    if (pile === null || strip === null) return;
+    expect(
+      pile.compareDocumentPosition(strip) & Node.DOCUMENT_POSITION_FOLLOWING,
+      'the strip did not follow the queue in the column',
+    ).not.toBe(0);
+  });
+
   it('asks for the newest page before it draws anything', () => {
     const server = stub();
     draw({}, server);

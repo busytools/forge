@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { untrack } from 'svelte';
+  import { untrack, type Snippet } from 'svelte';
   import { SvelteMap } from 'svelte/reactivity';
   import { VList, type VListHandle } from 'virtua/svelte';
 
@@ -48,6 +48,7 @@
     waking = false,
     spawning = false,
     reason = null,
+    queue = undefined,
   }: {
     slot: SessionSlot;
     connection: Connection;
@@ -57,6 +58,9 @@
     spawning?: boolean;
     /** Why, when it does. */
     reason?: string | null;
+    /** The waiting prompts, drawn above the pinned row: the page owns the
+     *  queue's data, and its place is the column's foot. */
+    queue?: Snippet | undefined;
   } = $props();
 
   /** How near the top the reader has to be before the turns above are asked for. */
@@ -1132,6 +1136,10 @@
       </div>
     {/snippet}
   </VList>
+  <!-- The waiting prompts, above the pinned row and under the turns: what
+       is queued reads against what is running, and the strip keeps its place
+       right above the box. -->
+  {#if queue !== undefined}{@render queue()}{/if}
   <!-- Outside the list rather than in it, which is what makes the row pinned:
        the turns scroll under it, and the answer to whether the turn is still
        being written stops depending on where the reader is looking. It is a

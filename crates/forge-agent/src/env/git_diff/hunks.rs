@@ -67,21 +67,10 @@ pub struct FileHunks {
 /// codes (`X` - internal error indicator, `B` - broken pairing)
 /// fire a WARN log and skip the entry rather than collapsing to
 /// `Modified`; legitimate user-visible types stay distinct.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FileStatus {
-    Modified,
-    Added,
-    Deleted,
-    Renamed,
-    Copied,
-    /// File mode changed (regular ↔ symlink, file ↔ submodule).
-    Typechange,
-    /// Unmerged - caught mid-merge-conflict. Common when the user
-    /// runs `/diff` while resolving a merge.
-    Unmerged,
-    Untracked,
-}
+///
+/// The definition moved to primitives because it crosses to views
+/// now; this re-export keeps every existing reader.
+pub use forge_primitives::git::FileStatus;
 
 /// A single `@@`-delimited hunk inside one file's diff. `lines`
 /// preserves the original unified-diff ordering with each line

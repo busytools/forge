@@ -4,6 +4,7 @@ import { render } from 'svelte/server';
 import { describe, expect, it } from 'vitest';
 
 import { homeWire } from '../dev/fixture.data';
+import { PROTOCOL_VERSION } from '../protocol';
 import type { Connection } from '../socket';
 import type { AgentRow, HomeWire } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
@@ -43,6 +44,9 @@ function untouched(): Connection {
     store: refuse,
     settings: refuse,
     skew: refuse,
+    // The rail's footer reads the protocol pair as it RENDERS, so this one
+    // answers: refusing it would be refusing the page, not the socket.
+    serverProtocol: () => PROTOCOL_VERSION,
     status: refuse,
     close: refuse,
   };
@@ -139,13 +143,14 @@ describe('the session shell as it draws', () => {
   });
 
   /**
-   * Both handles are real controls: a rail folded away leaves no edge behind,
-   * so the header is the only way back to it.
+   * The handle is a real control: a rail folded away leaves no edge behind, so
+   * the header is the only way back to it - and the inspector's handle is gone
+   * with the inspector.
    */
-  it('draws both rail handles as buttons that state what they do', () => {
+  it('draws the projects handle as a button that states what it does', () => {
     const body = draw();
     expect(body).toContain('aria-label="projects"');
-    expect(body).toContain('aria-label="inspector"');
+    expect(body).not.toContain('aria-label="inspector"');
     expect(body).toContain('aria-expanded="true"');
   });
 
@@ -195,7 +200,11 @@ describe('the session shell as it draws', () => {
     }
     expect(foot).toContain('$1.50');
     expect(foot).toContain('$50.00');
-    expect(foot).toContain('forge v1.0.105');
+    // The pair, both sides stated: the server's build beside the protocol it
+    // speaks, and this client's beside its own. A mismatch is then a
+    // difference the reader sees rather than a notice they must decode.
+    expect(foot).toContain('v1.0.105');
+    expect(foot.split(`socket v${PROTOCOL_VERSION}`).length - 1, 'both sides state it').toBe(2);
     expect(foot).toContain('claude v1.0.0');
     expect(foot, 'a newer claude was not offered').toContain('\u{2192} v1.1.0');
   });
@@ -214,12 +223,6 @@ describe('the session shell as it draws', () => {
     expect(draw({ wire: withAccount() }), 'the account chip is still in the header').not.toContain(
       'class="acct"',
     );
-  });
-
-  it('draws the inspector banner with the project it is showing', () => {
-    const body = draw();
-    expect(body).toContain('<span class="n ml">proj</span>');
-    expect(body).toContain('aria-label="close the inspector"');
   });
 });
 
@@ -523,18 +526,16 @@ describe('the rail footer as the sheet lays it out', () => {
 
 describe('the app grid', () => {
   /**
-   * The rails are placed by COLUMN, and auto-flow drops a column-only item in
+   * The rail is placed by COLUMN, and auto-flow drops a column-only item in
    * the first row. The composer's row then ends under the chat alone and leaves
-   * a band of bare page beneath both rails.
+   * a band of bare page beneath the rail.
    */
-  it('runs both rails to the last row the app declares', () => {
+  it('runs the rail to the last row the app declares', () => {
     const rowCount = rows(/grid-template-rows:\s*([^;]+)/.exec(body('.app'))?.[1] ?? '1fr');
-    for (const side of ['left', 'right']) {
-      expect(
-        reaches(/grid-row:\s*([^;]+)/.exec(body(`.app .rail.${side}`))?.[1], rowCount),
-        `the ${side} rail stops short of the app's last row`,
-      ).toBe(true);
-    }
+    expect(
+      reaches(/grid-row:\s*([^;]+)/.exec(body('.app .rail.left'))?.[1], rowCount),
+      "the projects rail stops short of the app's last row",
+    ).toBe(true);
   });
 
   /**

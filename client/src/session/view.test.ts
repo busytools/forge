@@ -10,13 +10,15 @@ import {
   compactionFigure,
   copyReason,
   fleetCount,
-  gitSection,
+  gitStrip,
+  markOf,
   headerFacts,
   failedLine,
   mcpRows,
   mcpState,
   memoryLabel,
   monitorLabel,
+  monitorRows,
   railFooter,
   railGroups,
   railMark,
@@ -26,7 +28,7 @@ import {
   seatConnectorRows,
   seatScheduleRows,
   seatState,
-  tasksSection,
+  taskRows,
   untilOf,
 } from './view';
 import { sessionFrom, type SessionRecord } from './wire';
@@ -446,62 +448,160 @@ describe('the seat', () => {
   });
 });
 
-describe('the git section', () => {
-  it('leads with the branch and the count the record carries', () => {
-    const git = gitSection({
-      ...record,
-      work: { branch: 'web-home-layout', changed: 8, gate: 'in_repo' },
-      pr: { number: 1203, url: 'https://example.test/pull/1203' },
-      closes: [{ number: 1200, url: 'https://example.test/issues/1200' }],
+describe('the tree the strip draws', () => {
+  /** The fixture's record with the scan's own view laid over it. */
+  const withGit = (
+    git: Partial<SessionRecord['git']>,
+    over: Partial<SessionRecord> = {},
+  ): SessionRecord => ({
+    ...record,
+    git: { defaultBranch: 'main', worktree: null, ahead: null, ...git },
+    ...over,
+  });
+
+  it('leads with the branch, and carries the tree whole: chains, files, marks', () => {
+    const strip = gitStrip(
+      withGit(
+        {
+          worktree: {
+            files: [
+              { path: 'client/src/lib.rs', added: 12, removed: 4, status: 'modified' },
+              { path: 'docs/new.md', added: 3, removed: 0, status: 'added' },
+            ],
+          },
+          ahead: {
+            count: 2,
+            commits: [
+              { sha: 'a1b2c3d', subject: 'the first commit' },
+              { sha: 'd4e5f6a', subject: 'the second commit' },
+            ],
+          },
+        },
+        {
+          work: { branch: 'web-home-layout', changed: 2, gate: 'in_repo' },
+        },
+      ),
+      LEAD,
+    );
+
+    expect(strip?.label).toBe('web-home-layout \u{b7} 2 files');
+    expect(strip?.head, 'what the tree IS leads the hover').toBe("the project's tree");
+    expect(strip?.ahead, 'the chain, its count and the branch it is ahead of').toEqual({
+      count: 2,
+      base: 'main',
+      commits: [
+        { sha: 'a1b2c3d', subject: 'the first commit' },
+        { sha: 'd4e5f6a', subject: 'the second commit' },
+      ],
     });
-    expect(git?.summary).toBe('web-home-layout \u{b7} 8 files');
-    expect(git?.pr).toBe(1203);
-    expect(git?.closes).toBe('#1200');
+    expect(strip?.files, 'the uncommitted files with their marks').toEqual([
+      { path: 'client/src/lib.rs', added: 12, removed: 4, status: 'modified' },
+      { path: 'docs/new.md', added: 3, removed: 0, status: 'added' },
+    ]);
+  });
+
+  it('states the pull request with its state and what it closes', () => {
+    const strip = gitStrip(
+      withGit(
+        {},
+        {
+          work: { branch: 'web-home-layout', changed: 0, gate: 'in_repo' },
+          pr: { number: 1203, url: 'https://example.test/pull/1203', draft: true },
+          closes: [{ number: 1200, url: 'https://example.test/issues/1200' }],
+        },
+      ),
+      LEAD,
+    );
+
+    expect(strip?.pr).toEqual({
+      number: 1203,
+      url: 'https://example.test/pull/1203',
+      draft: true,
+      closes: '#1200',
+    });
   });
 
   /**
    * A seat outside a repository has no branch and no count, and the gate line
-   * is then the whole of what the section says. Drawing nothing would read as
-   * a seat with nothing to report rather than as a tree that could not be
-   * read.
+   * is then the whole of what the row says under its toggle. Drawing nothing
+   * would read as a seat with nothing to report rather than as a tree that
+   * could not be read.
    */
   it('draws the reason a tree could not be read', () => {
-    const git = gitSection({
-      ...record,
-      work: { branch: null, changed: null, gate: 'gone' },
-      pr: null,
-      closes: [],
-    });
-    expect(git?.gate).toBe('its working directory is not there');
-    expect(git?.summary).toBe('');
+    const strip = gitStrip(
+      withGit({}, { work: { branch: null, changed: null, gate: 'gone' }, pr: null, closes: [] }),
+      LEAD,
+    );
+    expect(strip?.label, 'the toggle says there is no branch, not why').toBe('no branch');
+    expect(strip?.gate).toBe('its working directory is not there');
   });
 
   /**
-   * The section is drawn for every seat with a tree, and OPENS only when there
-   * is something under it: a clean tree on no pull request would otherwise
-   * lead the inspector with an open section and nothing in it.
+   * **On the default branch with nothing on it there is no row at all.**
+   * The branch everything lands on with a clean tree is where work goes, not
+   * work: a row there would state that nothing is happening, on every seat,
+   * forever. A dirty default branch still draws - there is something to see.
    */
-  it('opens the section only when there is a body to open on', () => {
-    expect(
-      gitSection({
-        ...record,
-        work: { branch: 'main', changed: 0, gate: 'in_repo' },
-        pr: null,
-        closes: [],
-      }).open,
-      'a clean tree with nothing to show opened its section',
-    ).toBe(false);
+  it('hides itself on the default branch, and draws once the tree is dirty', () => {
+    const clean = gitStrip(
+      withGit({}, { work: { branch: 'main', changed: 0, gate: 'in_repo' }, pr: null, closes: [] }),
+      LEAD,
+    );
+    expect(clean, 'a clean default branch drew a row').toBeNull();
+
+    const dirty = gitStrip(
+      withGit(
+        { worktree: { files: [{ path: 'a.rs', added: 1, removed: 0, status: 'modified' }] } },
+        { work: { branch: 'main', changed: 1, gate: 'in_repo' }, pr: null, closes: [] },
+      ),
+      LEAD,
+    );
+    expect(dirty, 'a dirty default branch went unstated').not.toBeNull();
+    expect(dirty?.files).toHaveLength(1);
   });
 
-  it('draws the section closed, with its branch, for a tree nothing moved in', () => {
-    const git = gitSection({
-      ...record,
-      work: { branch: 'main', changed: 0, gate: 'in_repo' },
-      pr: null,
-      closes: [],
-    });
-    expect(git.summary).toBe('main');
-    expect(git.pr).toBeNull();
+  it('names the worktree a seat is on, and whose tree it is when it is not one', () => {
+    const worktree = gitStrip(
+      {
+        ...withGit({}, { work: { branch: 'work/schedule-row', changed: 0, gate: 'in_repo' } }),
+        state: { scan_cwd: '/w/forge/.claude/worktrees/session-design' },
+        pr: null,
+        closes: [],
+      },
+      { ...LEAD, label: 'session-design' },
+    );
+    expect(worktree?.head).toBe('worktree \u{b7} session-design');
+
+    const worker = gitStrip(
+      withGit(
+        {},
+        { work: { branch: 'feat/x', changed: 0, gate: 'in_repo' }, pr: null, closes: [] },
+      ),
+      { ...LEAD, label: 'builder' },
+    );
+    expect(worker?.head, "a worker's own path is still the worker's").toBe("a worker's tree");
+  });
+
+  it('reads a changed count of one in the singular', () => {
+    const strip = gitStrip(
+      withGit(
+        {},
+        { work: { branch: 'feat/x', changed: 1, gate: 'in_repo' }, pr: null, closes: [] },
+      ),
+      LEAD,
+    );
+    expect(strip?.label, 'one file reads as one').toBe('feat/x \u{b7} 1 file');
+  });
+
+  it('maps every status to the mark the terminal draws for it', () => {
+    expect(markOf('modified')).toEqual({ letter: 'M', klass: 'mark' });
+    expect(markOf('added')).toEqual({ letter: 'A', klass: 'ok' });
+    expect(markOf('deleted')).toEqual({ letter: 'D', klass: 'bad' });
+    expect(markOf('renamed')).toEqual({ letter: 'R', klass: 'mark' });
+    expect(markOf('copied')).toEqual({ letter: 'C', klass: 'mark' });
+    expect(markOf('typechange')).toEqual({ letter: 'T', klass: 'mark' });
+    expect(markOf('unmerged')).toEqual({ letter: '!', klass: 'bad' });
+    expect(markOf('untracked')).toEqual({ letter: 'U', klass: 'warn' });
   });
 });
 
@@ -516,9 +616,9 @@ describe('the schedule countdown', () => {
   });
 });
 
-describe('the tasks section', () => {
-  it('reads in-progress first and counts what is done', () => {
-    const view = tasksSection([
+describe('the tasks the strip draws', () => {
+  it('reads in-progress first, and keys each row by its own id', () => {
+    const rows = taskRows([
       {
         id: 't1',
         project_name: 'proj',
@@ -548,11 +648,14 @@ describe('the tasks section', () => {
         updated_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
       },
     ]);
-    expect(view.summary).toBe('1 of 2');
-    expect(view.rows[0]?.subject).toBe('still going');
-    expect(view.rows[0]?.klass).toBe('tk now');
-    expect(view.rows[0]?.meta).toBe('in progress \u{b7} PR 1204 \u{b7} 2h');
-    expect(view.rows[1]?.klass).toBe('tk done');
+    expect(rows[0]?.subject).toBe('still going');
+    expect(rows[0]?.status, 'in progress leads, and the row draws its own mark').toBe(
+      'in_progress',
+    );
+    expect(rows[0]?.id, 'the row is keyed by the task its own id').toBe('t2');
+    expect(rows[0]?.owner, 'the owner rides its own cell').toBe('lead');
+    expect(rows[0]?.meta).toBe('in progress \u{b7} PR 1204 \u{b7} 2h');
+    expect(rows[1]?.status).toBe('completed');
   });
 });
 
@@ -565,7 +668,46 @@ describe('process figures', () => {
   });
 });
 
-describe('the monitors section', () => {
+describe('the monitors the strip draws', () => {
+  it('keys each row by its own call and states whether it is running', () => {
+    const rows = monitorRows(
+      [
+        {
+          tool_use_id: 'm1',
+          task_id: null,
+          description: 'ci-watch',
+          command: 'gh run watch',
+          persistent: true,
+          timeout_ms: 0,
+          status: 'running',
+          output_file: null,
+          ended_at: null,
+        },
+        {
+          tool_use_id: 'm2',
+          task_id: null,
+          description: 'log-tail',
+          command: 'tail -f forge.log',
+          persistent: false,
+          timeout_ms: 0,
+          status: 'timed_out',
+          output_file: null,
+          ended_at: null,
+        },
+      ],
+      0,
+    );
+    expect(rows[0]).toEqual({
+      id: 'm1',
+      running: true,
+      name: 'ci-watch',
+      label: 'persistent',
+      command: 'gh run watch',
+    });
+    expect(rows[1]?.running, 'a settled monitor does not read as live').toBe(false);
+    expect(rows[1]?.label).toBe('timed out');
+  });
+
   it('draws an age only when the record stated an instant', () => {
     const base = {
       tool_use_id: 'm1',
@@ -611,6 +753,30 @@ const withPool = (snapshot: unknown): HomeWire =>
   });
 
 describe('the rail footer', () => {
+  /**
+   * The pair, both sides stated whether or not they agree: a mismatch is
+   * then a difference the reader sees, not the absence of a notice. The
+   * `skewed` flag is that difference, stated once.
+   */
+  it('states the server and client protocol pair, and marks a mismatch', () => {
+    const agreed = railFooter(homeWire, LEAD, PROTOCOL_VERSION);
+    expect(agreed.versions).toMatchObject({
+      serverProtocol: PROTOCOL_VERSION,
+      clientProtocol: PROTOCOL_VERSION,
+      skewed: false,
+    });
+
+    const oneBack = railFooter(homeWire, LEAD, PROTOCOL_VERSION - 1);
+    expect(oneBack.versions.serverProtocol, 'the server did not state its own').toBe(
+      PROTOCOL_VERSION - 1,
+    );
+    expect(oneBack.versions.skewed, 'a mismatch read as agreement').toBe(true);
+
+    const early = railFooter(homeWire, LEAD);
+    expect(early.versions.serverProtocol, 'no greeting yet claimed a protocol').toBeNull();
+    expect(early.versions.skewed).toBe(false);
+  });
+
   it('states the five figures a spend-billed account reports', () => {
     const footer = railFooter(
       withPool({
@@ -678,8 +844,8 @@ describe('the rail footer', () => {
 
   it('names the versions, and the newer CLI only when npm has one', () => {
     const footer = railFooter(withPool(null), LEAD);
-    expect(footer.versions.forge).toBe(homeWire.forge_version_short);
-    expect(footer.versions.socket, 'the protocol this app speaks').toBe(PROTOCOL_VERSION);
+    expect(footer.versions.serverForge).toBe(homeWire.forge_version_short);
+    expect(footer.versions.clientProtocol, 'the protocol this app speaks').toBe(PROTOCOL_VERSION);
     expect(footer.versions.claude).toBe('1.0.0');
     expect(footer.versions.update, 'a newer claude went unstated').toBe('1.1.0');
 

@@ -3,6 +3,7 @@ import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import Pinned from './Pinned.svelte';
+import { git } from './git.svelte';
 import type { Connection } from '../socket';
 import type { TurnInfo } from './units';
 
@@ -82,6 +83,7 @@ afterEach(async () => {
   if (app !== null) await unmount(app);
   app = null;
   document.body.innerHTML = '';
+  git.sync(null);
   vi.useRealTimers();
 });
 
@@ -121,9 +123,30 @@ describe('the strip pinned above the box', () => {
     expect(words(), 'the clock the tick moved').toContain('2.0s');
   });
 
-  it('draws nothing where the column holds no row for it', () => {
+  it('draws nothing where the column holds no row for it and the rows hold nothing', () => {
     draw(null);
 
-    expect(row(), 'no row, no strip').toBe('');
+    expect(row(), 'no row and nothing to say, no strip').toBe('');
+  });
+
+  /**
+   * **The strip outlives the turn.** An idle seat draws the rows it holds -
+   * this used to draw nothing at all, which is what left a reader with no way
+   * into a sleeping seat's tree, tasks or watchers on the page itself.
+   */
+  it('draws the rows on an idle seat, with no turn row above them', () => {
+    git.sync({
+      label: 'feat/x \u{b7} 3 files',
+      head: "the project's tree",
+      ahead: null,
+      files: [],
+      pr: null,
+      gate: null,
+    });
+    draw(null);
+
+    expect(row(), 'the strip stands without a turn').not.toBe('');
+    expect(row(), 'the tree row drew').toContain('i-git');
+    expect(row(), 'and no turn row was invented').not.toContain('class="ring"');
   });
 });

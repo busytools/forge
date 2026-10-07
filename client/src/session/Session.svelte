@@ -9,27 +9,33 @@
   import type { HomeWire } from '../wire/home';
   import type { SessionSlot } from '../wire/types';
   import SessionId from './SessionId.svelte';
-  import Inspector from './Inspector.svelte';
   import Rail from './Rail.svelte';
   import { closingSeat } from './close';
   import { chosenAfterPop, railEntry, railOnTop, type RailSide } from './rail-history';
   import Queue from '../chat/Queue.svelte';
   import { connectors } from '../chat/connectors.svelte';
+  import { git } from '../chat/git.svelte';
   import { mcp } from '../chat/mcp.svelte';
+  import { monitors } from '../chat/monitors.svelte';
   import { outcomesFrom } from '../chat/outcomes';
   import { processes } from '../chat/processes.svelte';
   import { schedules } from '../chat/schedules.svelte';
   import { subagents } from '../chat/subagents.svelte';
+  import { tasks } from '../chat/tasks.svelte';
   import { watchSession, type SessionRead } from './live';
   import { askCompaction } from './scroll-ask';
   import {
     compactionFigure,
+    gitStrip,
     headerFacts,
     mcpRows,
+    monitorRows,
     orgNeeded,
+    projectOf,
     seatConnectorRows,
     seatScheduleRows,
     seatState,
+    taskRows,
     type ComposerProps,
     type ConversationProps,
   } from './view';
@@ -51,6 +57,7 @@
     mark = null,
     conversation = null,
     composer = null,
+    notice = null,
   }: {
     slot: SessionSlot;
     connection: Connection;
@@ -62,6 +69,13 @@
     conversation?: Snippet<[ConversationProps]> | null;
     /** The box under it, which replaces itself while the seat cannot take keys. */
     composer?: Snippet<[ComposerProps]> | null;
+    /**
+     * The connection's own line for this page - a protocol skew, or a
+     * reconnect - drawn in the rail footer where the build facts live. The
+     * shell's strip would be an in-flow row above a `100dvh` page, which is
+     * a page that scrolls.
+     */
+    notice?: string | null;
   } = $props();
 
   // Raw: a read answers with a whole new record, so nothing here is mutated in
@@ -133,6 +147,24 @@
    */
   $effect(() => {
     mcp.sync(mcpRows(record));
+  });
+
+  /** The project's own row on the home, which the tasks row reads. */
+  const project = $derived(projectOf(wire, slot));
+
+  /**
+   * The tree and the monitors are the seat's own reads; the tasks are the
+   * project's set on the home. The monitors read `now` so a settled one's age
+   * re-derives on the page's clock rather than going stale between reads.
+   */
+  $effect(() => {
+    git.sync(record === null ? null : gitStrip(record, slot));
+  });
+  $effect(() => {
+    tasks.sync(taskRows(project?.tasks ?? []));
+  });
+  $effect(() => {
+    monitors.sync(record === null ? null : monitorRows(record.monitors, now));
   });
   const seat = $derived(seatState(wire, slot));
   /** Whether this seat's name needs its org on the header line (#1707). */
@@ -220,35 +252,27 @@
    * rather than inverting the word.
    */
   const BELOW_980 = '(max-width: 980px)';
-  const BELOW_1280 = '(max-width: 1280px)';
   const hasDom = typeof window !== 'undefined' && typeof window.matchMedia === 'function';
   const matches = (query: string) => hasDom && window.matchMedia(query).matches;
 
   let narrow = $state(matches(BELOW_980));
-  let inspectorNarrow = $state(matches(BELOW_1280));
 
   $effect(() => {
     if (!hasDom) return;
     const rails = window.matchMedia(BELOW_980);
-    const inspector = window.matchMedia(BELOW_1280);
     const sync = () => {
       narrow = rails.matches;
-      inspectorNarrow = inspector.matches;
     };
     rails.addEventListener('change', sync);
-    inspector.addEventListener('change', sync);
     return () => {
       rails.removeEventListener('change', sync);
-      inspector.removeEventListener('change', sync);
     };
   });
 
   // `null` is "whatever this band does by default", which is the state a
-  // reader who has never touched the handles is in.
+  // reader who has never touched the handle is in.
   let leftChosen = $state<boolean | null>(null);
-  let rightChosen = $state<boolean | null>(null);
   const leftShown = $derived(leftChosen ?? !narrow);
-  const rightShown = $derived(rightChosen ?? !inspectorNarrow);
 
   /**
    * A covering rail opens onto history, so Back closes what it opened; a rail
@@ -258,35 +282,30 @@
   let lastRail: RailSide | null = hasDom ? railOnTop(history.state) : null;
   let closedUnder: RailSide | null = null;
 
-  function openRail(side: RailSide) {
-    if (side === 'left' ? narrow : inspectorNarrow) {
-      // One entry covers the open state: a second rail opened over the first
-      // joins it rather than stacking a step of its own.
+  /** The projects pane, which is the one rail left: the inspector is gone. */
+  function openRail() {
+    if (narrow) {
+      // One entry covers the open state: a second opening joins it rather
+      // than stacking a step of its own.
       if (lastRail === null) {
-        history.pushState(railEntry(history.state, side), '', location.href);
-        lastRail = side;
+        history.pushState(railEntry(history.state, 'left'), '', location.href);
+        lastRail = 'left';
       }
     }
     closedUnder = null;
-    if (side === 'left') leftChosen = true;
-    else rightChosen = true;
+    leftChosen = true;
   }
 
-  function closeRail(side: RailSide) {
-    if (side === 'left') leftChosen = false;
-    else rightChosen = false;
-    // A covering rail still open keeps the entry earned: the press closes the
-    // side it names, and the step stays for the Back that closes the last one.
-    const stillCovering = side === 'left' ? inspectorNarrow && rightShown : narrow && leftShown;
-    if (stillCovering) return;
-    if (railOnTop(history.state) === side) {
+  function closeRail() {
+    leftChosen = false;
+    if (railOnTop(history.state) === 'left') {
       history.back();
       return;
     }
     // The entry sits beneath another navigation's, where no pop can reach it
     // without leaving that page: it is stepped down instead, and the Back
     // that walks past it drops it without re-opening anything.
-    closedUnder = side;
+    closedUnder = 'left';
   }
 
   $effect(() => {
@@ -305,7 +324,6 @@
       closedUnder = null;
       if (chosen === null) return;
       leftChosen = chosen.left;
-      rightChosen = chosen.right;
     };
     addEventListener('popstate', restore);
     return () => removeEventListener('popstate', restore);
@@ -330,17 +348,12 @@
     reason: seat.reason,
     slot,
     connection,
+    queue: seatQueue,
   });
 </script>
 
-<div
-  class="app"
-  class:left-shown={leftShown}
-  class:left-hidden={!leftShown}
-  class:right-shown={rightShown}
-  class:right-hidden={!rightShown}
->
-  <Rail home={wire} current={slot} {now} {connection} onclose={() => closeRail('left')} />
+<div class="app" class:left-shown={leftShown} class:left-hidden={!leftShown}>
+  <Rail home={wire} current={slot} {now} {connection} {notice} onclose={() => closeRail()} />
 
   <main class="chat">
     <div class="sess">
@@ -361,7 +374,7 @@
         title="projects"
         aria-label="projects"
         aria-expanded={leftShown}
-        onclick={() => (leftShown ? closeRail('left') : openRail('left'))}
+        onclick={() => (leftShown ? closeRail() : openRail())}
       >
         <svg
           viewBox="0 0 24 24"
@@ -369,23 +382,6 @@
           stroke="currentColor"
           stroke-width="2"
           stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18" /></svg
-        >
-      </button>
-      <button
-        class="rail-tog tog-r"
-        type="button"
-        title="inspector"
-        aria-label="inspector"
-        aria-expanded={rightShown}
-        onclick={() => (rightShown ? closeRail('right') : openRail('right'))}
-      >
-        <svg
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          ><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M15 4v16" /></svg
         >
       </button>
       <span class="dot {seat.mark}"></span>
@@ -520,14 +516,18 @@
     {/if}
   </main>
 
-  <Inspector {wire} {record} {slot} {now} onclose={() => closeRail('right')} />
-
   {#if composer !== null && record !== null}
     <div class="composer">
-      <!-- The queue sits between the pinned turn row (drawn by the chat
-           column above) and the box: what is waiting, then what you type. -->
-      <Queue rows={record.queue} ended={record.queue_ended} {slot} {connection} />
       {@render composer({ record, slot, seat, connection })}
     </div>
   {/if}
 </div>
+
+<!-- The waiting prompts. The page owns the data; the chat column owns the
+     place - between the turns and the pinned row, so the queue reads against
+     what is running and the strip keeps its place right above the box. -->
+{#snippet seatQueue()}
+  {#if record !== null}
+    <Queue rows={record.queue} ended={record.queue_ended} {slot} {connection} />
+  {/if}
+{/snippet}

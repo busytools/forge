@@ -20,6 +20,7 @@ import type { SessionUpdate } from '../protocol';
 import { METER_CELLS } from '../wire/limits';
 import {
   backgroundTaskFrom,
+  gitFrom,
   issuesFrom,
   monitorFrom,
   prFrom,
@@ -142,6 +143,7 @@ export const HANDLERS: Record<string, Apply> = {
   work_changed: (held, payload) => ({
     ...held,
     work: workFrom(payload['work']),
+    git: gitFrom(payload['git']),
     pr: prFrom(payload['pr']),
     closes: issuesFrom(payload['closes']),
   }),

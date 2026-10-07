@@ -61,8 +61,13 @@ export interface Skew {
   serverVersion: string | null;
 }
 
-/** The release part of a build stamp, without the sha the build adds. */
-function releaseOf(version: string): string {
+/**
+ * The release part of a build stamp, without the sha the build adds.
+ *
+ * Exported because the tests word the same sentences from it: a message
+ * naming a release to install names the bare number, never the stamp.
+ */
+export function releaseOf(version: string): string {
   const [release] = version.split(/[+ ]/);
   return release ?? version;
 }
