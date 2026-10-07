@@ -10,19 +10,19 @@
  * calls them.
  */
 
-/** The one rail left, which is what an entry of ours names. */
-export type RailSide = 'left';
+/** What an entry of ours opened: the projects rail, or the palette. */
+export type RailSide = 'left' | 'palette';
 
-/** The entry an opening covering rail pushes, over whatever was there. */
-export function railEntry(current: unknown): { forgeRail: RailSide } {
+/** The entry an opening overlay pushes, over whatever was there. */
+export function railEntry(current: unknown, side: RailSide = 'left'): { forgeRail: RailSide } {
   const held = typeof current === 'object' && current !== null ? current : {};
-  return { ...held, forgeRail: 'left' };
+  return { ...held, forgeRail: side };
 }
 
-/** The side the entry on top opened, where it is one of ours. */
+/** What the entry on top opened, where it is one of ours. */
 export function railOnTop(state: unknown): RailSide | null {
   const side = (state as { forgeRail?: unknown } | null)?.forgeRail;
-  return side === 'left' ? side : null;
+  return side === 'left' || side === 'palette' ? side : null;
 }
 
 /**
@@ -40,9 +40,11 @@ export function chosenAfterPop(
   closedUnder: RailSide | null,
 ): { left: boolean | null } | null {
   const side = railOnTop(state);
-  if (side !== null) {
+  // A palette landing says nothing about the rail; the page closes the
+  // palette on it and asks no further question here.
+  if (side === 'left') {
     return { left: side !== closedUnder };
   }
-  if (leftRail === 'left') return { left: false };
+  if (side === null && leftRail === 'left') return { left: false };
   return null;
 }

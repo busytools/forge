@@ -19,7 +19,7 @@
  * and a value rather than a bare type, so the census can assert membership in it
  * rather than a box's word for itself.
  */
-export const EDITORS = ['composer', 'dock', 'connect', 'nowhere'] as const;
+export const EDITORS = ['composer', 'dock', 'connect', 'palette', 'nowhere'] as const;
 
 export type Editor = (typeof EDITORS)[number];
 
@@ -34,6 +34,8 @@ export type Where = {
   /** Whether each route's box is on screen at all. */
   composerPresent?: boolean;
   connectPresent?: boolean;
+  /** The palette's search box, which is on screen only while it is open. */
+  palettePresent?: boolean;
   /**
    * Whether the dock's own box - the prompt's free-text row - is open.
    *
@@ -61,6 +63,8 @@ export function focusOf(where: Where): Editor {
       return where.connectPresent === false ? fallback(where) : 'connect';
     case 'composer':
       return where.composerPresent === false ? 'nowhere' : 'composer';
+    case 'palette':
+      return where.palettePresent === false ? fallback(where) : 'palette';
     case 'nowhere':
       return 'nowhere';
     default: {

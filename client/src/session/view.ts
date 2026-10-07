@@ -31,7 +31,7 @@ import type { Row, RowState } from '../home/view';
 import { CLIENT_VERSION, PROTOCOL_VERSION } from '../protocol';
 import { hrefForSlot } from '../routes';
 import type { Connection } from '../socket';
-import type { CronEntry, HomeWire, Lifecycle, ProjectWire, Task } from '../wire/home';
+import type { AgentRow, CronEntry, HomeWire, Lifecycle, ProjectWire, Task } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
 import type {
   FileStatusWire,
@@ -116,6 +116,197 @@ export interface GitStats {
   totalFiles: number;
   totalAdded: number;
   totalRemoved: number;
+}
+
+/** One row the palette can land on. */
+export interface PaletteRow {
+  id: string;
+  kind: 'seat' | 'command' | 'doing';
+  /** The word the row leads with. */
+  label: string;
+  /** The quiet line beside it: the seat's state, or what the action does. */
+  detail: string;
+  /** Where a seat or the home row goes, as a real href. */
+  href?: string;
+  /** What a command row sends, exactly as the composer sends it. */
+  text?: string;
+  /** Which doing a doing row runs. */
+  doing?: 'peek' | 'copy' | 'close';
+  /** The current project's lead, which is where the cursor starts. */
+  lead?: boolean;
+  /** A seat row's dot class, in the home's own vocabulary. */
+  mark?: string;
+}
+
+export interface PaletteSection {
+  title: string;
+  rows: PaletteRow[];
+}
+
+/** A seat's state in the palette's two or three words. */
+function paletteWord(row: AgentRow, unseen: SessionSlot[]): string {
+  if (row.pending !== null) return 'needs you';
+  const state = stateOf(row, unseen);
+  switch (state.kind) {
+    case 'failed-turn':
+      return 'failed';
+    case 'unseen':
+      return 'finished';
+    case 'never-started':
+      return 'never started';
+    case 'lifecycle':
+      switch (state.lifecycle) {
+        case 'Attention':
+          return 'needs you';
+        case 'AuthRequired':
+          return 'sign-in needed';
+        case 'Failed':
+          return 'failed';
+        case 'Running':
+          return 'working';
+        case 'Spawning':
+          return 'starting';
+        case 'Sleeping':
+          return 'asleep';
+        default:
+          return 'idle';
+      }
+  }
+}
+
+/**
+ * **The palette's rows**: the fleet grouped its own way - the seats that
+ * want a person, the ones working, the ones asleep - then forge's commands,
+ * then the doings. Every seat's state is searchable in its detail line, the
+ * current project's lead carries `lead` (where the cursor starts, so Cmd+K
+ * then Enter lands on it), and a command row's `text` is exactly what the
+ * composer sends.
+ */
+export function paletteRows(wire: HomeWire, slot: SessionSlot): PaletteSection[] {
+  const unseen = wire.unseen;
+  const wants = (row: AgentRow): boolean => {
+    if (row.pending !== null || row.failed_turn !== null) return true;
+    const state = stateOf(row, unseen);
+    return (
+      state.kind === 'lifecycle' &&
+      (state.lifecycle === 'Attention' ||
+        state.lifecycle === 'AuthRequired' ||
+        state.lifecycle === 'Failed')
+    );
+  };
+  const working = (row: AgentRow): boolean => {
+    const state = stateOf(row, unseen);
+    return state.kind === 'lifecycle' && state.lifecycle === 'Running';
+  };
+  const seat = (row: AgentRow): PaletteRow => ({
+    id: `${row.slot.org}/${row.slot.project}/${row.label}`,
+    kind: 'seat',
+    label: row.slot.label,
+    detail: `${row.slot.project} \u{b7} ${paletteWord(row, unseen)}`,
+    href: hrefForSlot(row.slot),
+    lead: row.slot.project === slot.project && row.slot.label === 'lead',
+    mark: railMark(stateOf(row, unseen)),
+  });
+  const seats = wire.agents;
+  const sections: PaletteSection[] = [
+    { title: 'wants you', rows: seats.filter(wants).map(seat) },
+    {
+      title: 'working',
+      rows: seats.filter((row) => !wants(row) && working(row)).map(seat),
+    },
+    {
+      title: 'asleep',
+      rows: seats.filter((row) => !wants(row) && !working(row)).map(seat),
+    },
+    {
+      title: 'commands',
+      rows: [
+        {
+          id: 'cmd-compact',
+          kind: 'command',
+          label: '/compact',
+          detail: 'compact the conversation',
+          text: '/compact',
+        },
+        {
+          id: 'cmd-diff',
+          kind: 'command',
+          label: '/diff',
+          detail: "this tree's diff",
+          text: '/diff',
+        },
+        {
+          id: 'cmd-model',
+          kind: 'command',
+          label: '/model',
+          detail: 'show or set the model',
+          text: '/model',
+        },
+        {
+          id: 'cmd-mode',
+          kind: 'command',
+          label: '/mode',
+          detail: 'show or set the permission mode',
+          text: '/mode',
+        },
+        {
+          id: 'cmd-new',
+          kind: 'command',
+          label: '/new',
+          detail: 'start a new session here',
+          text: '/new',
+        },
+        {
+          id: 'cmd-resume',
+          kind: 'command',
+          label: '/resume',
+          detail: 'resume an earlier session',
+          text: '/resume',
+        },
+        {
+          id: 'cmd-usage',
+          kind: 'command',
+          label: '/usage',
+          detail: 'the token and cost pool',
+          text: '/usage',
+        },
+      ],
+    },
+    {
+      title: 'doings',
+      rows: [
+        {
+          id: 'do-peek',
+          kind: 'doing',
+          label: 'peek at the fleet',
+          detail: 'the projects rail, over this page',
+          doing: 'peek',
+        },
+        {
+          id: 'do-home',
+          kind: 'doing',
+          label: 'go home',
+          detail: 'every project and every seat',
+          href: '/',
+        },
+        {
+          id: 'do-copy',
+          kind: 'doing',
+          label: 'copy the session id',
+          detail: "this seat's occupant",
+          doing: 'copy',
+        },
+        {
+          id: 'do-close',
+          kind: 'doing',
+          label: 'close this seat',
+          detail: 'the session ends; the row stays',
+          doing: 'close',
+        },
+      ],
+    },
+  ];
+  return sections.filter((section) => section.rows.length > 0);
 }
 
 /** The projects chip's state: the seats that want a person, fleet-wide. */

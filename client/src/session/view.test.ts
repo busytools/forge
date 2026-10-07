@@ -9,6 +9,7 @@ import {
   accountChip,
   chipState,
   compactionFigure,
+  paletteRows,
   copyReason,
   fleetCount,
   gitStrip,
@@ -841,6 +842,62 @@ describe('the projects chip', () => {
       href: '/',
       label: 'projects',
     });
+  });
+});
+
+describe("the palette's rows", () => {
+  const agent = (label: string, over: Partial<AgentRow> = {}): AgentRow => ({
+    slot: { org: 'TestOrg', project: 'proj', label },
+    label,
+    lifecycle: 'Idle',
+    has_background_work: false,
+    pending: null,
+    pending_depth: 0,
+    last_activity: null,
+    reason: null,
+    failed_turn: null,
+    work: null,
+    ...over,
+  });
+
+  /**
+   * **The fleet grouped its own way**: the seats that want a person, the ones
+   * working, the ones asleep - then forge's commands, then the doings. The
+   * current project's lead wears `lead`, which is where the cursor starts, so
+   * Cmd+K then Enter lands on it.
+   */
+  it('groups wants-you, working, asleep, commands and doings, in order', () => {
+    const wire = withHome({
+      agents: [
+        agent('waiter', { lifecycle: 'Attention', pending: 'permission' }),
+        agent('runner', { lifecycle: 'Running' }),
+        agent('sleeper'),
+        agent('lead'),
+      ],
+    });
+    const sections = paletteRows(wire, LEAD);
+    expect(sections.map((section) => section.title)).toEqual([
+      'wants you',
+      'working',
+      'asleep',
+      'commands',
+      'doings',
+    ]);
+    expect(sections[0]?.rows.map((row) => row.label)).toEqual(['waiter']);
+    expect(sections[0]?.rows[0]?.mark, 'a wanting seat wears the needs mark').toBe('needs');
+    expect(sections[1]?.rows.map((row) => row.label)).toEqual(['runner']);
+    expect(sections[2]?.rows.map((row) => row.label)).toEqual(['sleeper', 'lead']);
+    const leadRow = sections[2]?.rows.find((row) => row.label === 'lead');
+    expect(leadRow?.lead, 'the lead is the row the cursor starts on').toBe(true);
+    expect(leadRow?.href).toBe('/session/TestOrg/proj/lead');
+    // The command rows send exactly what the composer sends.
+    const compact = sections[3]?.rows.find((row) => row.label === '/compact');
+    expect(compact?.text, 'a command row carries its prompt text').toBe('/compact');
+    const doings = sections[4]?.rows.map((row) => row.label) ?? [];
+    expect(doings).toContain('peek at the fleet');
+    expect(doings).toContain('close this seat');
+    const home = sections[4]?.rows.find((row) => row.label === 'go home');
+    expect(home?.href, 'the home doing is a href').toBe('/');
   });
 });
 

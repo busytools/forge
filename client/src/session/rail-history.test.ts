@@ -6,6 +6,10 @@ describe('the covering rail takes a history step', () => {
   it('pushes its side over whatever the entry held', () => {
     expect(railEntry({ scroll: 12 })).toEqual({ scroll: 12, forgeRail: 'left' });
     expect(railEntry(null)).toEqual({ forgeRail: 'left' });
+    expect(railEntry({}, 'palette'), 'the palette rides the same channel').toEqual({
+      forgeRail: 'palette',
+    });
+    expect(railOnTop({ forgeRail: 'palette' })).toBe('palette');
   });
 
   it('reads back only its own side', () => {

@@ -9,6 +9,7 @@
   import type { HomeWire } from '../wire/home';
   import type { SessionSlot } from '../wire/types';
   import SessionId from './SessionId.svelte';
+  import Palette from './Palette.svelte';
   import Rail from './Rail.svelte';
   import { closingSeat } from './close';
   import { chosenAfterPop, railEntry, railOnTop, type RailSide } from './rail-history';
@@ -319,6 +320,8 @@
 
   $effect(() => {
     const restore = () => {
+      // Any pop is a navigation: the palette goes with the page it was over.
+      paletteOpen = false;
       const landed = railOnTop(history.state);
       if (landed !== null && landed === closedUnder) {
         // The inert entry a close stepped down: dropped here, so it is
@@ -340,6 +343,32 @@
   });
 
   /**
+   * The palette: Cmd+K's own door, and the magnifier beside the chip where
+   * there is no keyboard. Its entry rides the same history channel as the
+   * rail's, so Android's Back closes what it opened.
+   */
+  let paletteOpen = $state(false);
+  /** Where the keyboard was before the palette took it. */
+  let opener: HTMLElement | null = null;
+
+  function openPalette() {
+    if (paletteOpen) return;
+    opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    if (railOnTop(history.state) === null) {
+      history.pushState(railEntry(history.state, 'palette'), '', location.href);
+    }
+    paletteOpen = true;
+  }
+
+  function closePalette() {
+    paletteOpen = false;
+    const back = opener;
+    opener = null;
+    if (back !== null && back.isConnected) back.focus();
+    if (railOnTop(history.state) === 'palette') history.back();
+  }
+
+  /**
    * The rail's keyboard doors: Cmd+Left (or Ctrl+Left) opens the peek and
    * closes it again, and Escape closes it. Both stand down while a field has
    * the keyboard - Cmd+Left is the caret's own key and Escape belongs to
@@ -353,7 +382,17 @@
         target instanceof HTMLInputElement ||
         target instanceof HTMLTextAreaElement ||
         (target instanceof HTMLElement && target.isContentEditable);
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        if (paletteOpen) closePalette();
+        else openPalette();
+        return;
+      }
       if (event.key === 'Escape') {
+        if (paletteOpen) {
+          closePalette();
+          return;
+        }
         if (typing || !leftShown) return;
         event.preventDefault();
         closeRail();
@@ -407,6 +446,15 @@
     onenter={summon}
     onleave={unsummon}
   />
+  <Palette
+    open={paletteOpen}
+    {wire}
+    {slot}
+    {connection}
+    sessionId={facts?.sessionId ?? null}
+    onclose={() => closePalette()}
+    onpeek={() => openRail()}
+  />
 
   <main class="chat">
     <div class="sess">
@@ -442,6 +490,17 @@
           <span class="ch-n">{chip.count}</span>
         {/if}
       </a>
+      <!-- The palette's door where there is no keyboard (a coarse pointer
+           only): the same palette Cmd+K opens. -->
+      <button
+        class="pal-btn"
+        type="button"
+        title="search seats and commands (Cmd+K)"
+        aria-label="search seats and commands"
+        onclick={() => openPalette()}
+      >
+        <Icon name="search" class="ic" />
+      </button>
       <span class="dot {seat.mark}"></span>
       <!-- **The name leads and the org qualifies it** (#1707): the org shows
            only where the fleet makes the name ambiguous - a lead's seat shows
