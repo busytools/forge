@@ -598,9 +598,9 @@ describe('the models page as it draws', () => {
    */
   it('draws the pressed role and says when one has no proposal', () => {
     const host = open();
-    const roles = [...host.querySelectorAll<HTMLButtonElement>('button.role')];
+    const roles = [...host.querySelectorAll<HTMLButtonElement>('button.pick')];
     const word = (text: string) =>
-      roles.find((button) => button.textContent?.includes(text) === true);
+      roles.find((button) => button.getAttribute('aria-label')?.includes(text) === true);
 
     const transcribing = word('transcribing');
     const cleanup = word('cleanup');
@@ -681,8 +681,8 @@ describe('the models page as it draws', () => {
       installed: [record],
       results: [run(0.04, 60)],
     });
-    const cleanup = [...host.querySelectorAll<HTMLButtonElement>('button.role')].find((button) =>
-      button.textContent?.includes('cleanup'),
+    const cleanup = [...host.querySelectorAll<HTMLButtonElement>('button.pick')].find((button) =>
+      button.getAttribute('aria-label')?.includes('cleanup'),
     );
     cleanup?.click();
     flushSync();

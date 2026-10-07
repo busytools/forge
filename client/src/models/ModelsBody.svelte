@@ -256,19 +256,23 @@
         {@const chip = modelChip(model.state)}
         {@const factsOf = inUseRowFacts(model)}
         {@const source = activeSource(model.from)}
-        <div class="model">
-          <!-- The role is the selector: pressing it shows that role's own
-               proposal below, the way a row in a list picks what the pane
-               beside it draws. A button rather than the row itself, for the
-               same reason a row's name is the link: the row carries its own
-               controls, and a control inside a control is not HTML. -->
+        <div class="model" class:shown={shownRole === model.role}>
+          <!-- **The whole row is the selector.** A card that only answers on
+               one word reads as furniture; this one takes the press anywhere
+               on it and answers like a button - the ground under the pointer,
+               a focus ring, and the pressed state on its edge. The row also
+               carries a control of its own, so the hit target is an overlay
+               rather than the card itself: a button inside a button is not
+               HTML. -->
           <button
-            class="role"
+            class="pick"
             type="button"
             aria-pressed={shownRole === model.role}
+            aria-label="show the {roleWord(model.role)} updates"
+            title="show the {roleWord(model.role)} updates"
             onclick={() => (selected = model.role)}
-            title="show this role's updates">{roleWord(model.role)}</button
-          >
+          ></button>
+          <span class="role">{roleWord(model.role)}</span>
           <div class="facts">
             <div class="nm">{model.file}</div>
             <div class="meta">{@render facts(factsOf.pinned)}</div>
@@ -570,7 +574,9 @@
         <p class="note">
           the run scores the candidate against your own takes - its words against the words the
           model in use recorded beside each one - and against the read-aloud passage once you have
-          recorded that &middot; every number measured on this machine
+          recorded that &middot; the candidate takes its own role's slot and the other role runs
+          what you have now, so a cleanup run is this transcribing model plus that normalizer
+          &middot; every number measured on this machine
         </p>
       {/if}
 

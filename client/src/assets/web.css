@@ -2259,18 +2259,27 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
   text-transform: none; color: var(--dim); font-weight: 400; }
 
 /* the model rows: the band card's own ground, grown to a full-width row */
-.models .model { display: flex; align-items: center; gap: 14px;
+.models .model { display: flex; align-items: center; gap: 14px; position: relative;
   background: linear-gradient(180deg, rgba(20,25,38,.75), rgba(13,17,26,.75));
   border: 1px solid var(--line); border-radius: var(--r);
   padding: 13px 15px; margin-bottom: 10px; }
-/* The role is the row's selector, so it is a button: the browser's chrome
-   comes off, and the pressed one is what says the section below is that
-   role's - a colour as well as a weight, never colour alone. */
-.models .role { font-size: var(--fs-label); letter-spacing: .1em; text-transform: uppercase;
-  color: var(--dim); flex: 0 0 118px; text-align: left; background: none; border: 0;
-  padding: 0; cursor: pointer; }
-.models .role:hover { color: var(--muted); }
-.models .role[aria-pressed="true"] { color: var(--accent); font-weight: 600; }
+/* The row is the selector, so the whole card takes the press: the hit target
+   is an overlay behind the content, the card answers under the pointer like
+   any button, and the pressed one is ringed and named in the accent - a
+   colour AND an edge, never colour alone. The row's own controls sit above
+   the overlay, so they stay pressable. */
+.models .model .pick { position: absolute; inset: 0; z-index: 1; background: none; border: 0;
+  padding: 0; cursor: pointer; border-radius: var(--r); }
+.models .model:hover { background: linear-gradient(180deg, rgba(27,33,48,.9), rgba(17,22,33,.9)); }
+.models .model.shown { border-color: rgba(244,118,0,.45); }
+.models .model .pick:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.models .model .role { font-size: var(--fs-label); letter-spacing: .1em; text-transform: uppercase;
+  color: var(--dim); flex: 0 0 118px; }
+.models .model.shown .role { color: var(--accent); font-weight: 600; }
+/* The row's own controls sit ABOVE the overlay so they stay pressable, and a
+   state chip is a label rather than a control: it lets the press through. */
+.models .model .side { position: relative; z-index: 2; }
+.models .model .side span.chip { pointer-events: none; }
 /* The row's middle column. Not `.body`: that name is the chat turn's own
    drawing, and the sheet's sweeps read a rule by its class name wherever it
    sits. */
