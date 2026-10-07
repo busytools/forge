@@ -740,12 +740,12 @@ async fn commits_in_range(
 ) -> Option<Vec<forge_primitives::git::GitCommit>> {
     let range = format!("{base}..{head}");
     let cap = format!("--max-count={COMMITS_WALK_CAP}");
-    let listed = match run_git(cwd, &["log", &cap, "--numstat", "--format=%h%x1f%s", &range]).await
-    {
-        GitOutput::Ok(raw) => raw,
-        GitOutput::Empty => return Some(Vec::new()),
-        GitOutput::Failed | GitOutput::Oversize => return None,
-    };
+    let listed =
+        match run_git(cwd, &["log", &cap, "--numstat", "--format=%h%x1f%s%x1f%ct", &range]).await {
+            GitOutput::Ok(raw) => raw,
+            GitOutput::Empty => return Some(Vec::new()),
+            GitOutput::Failed | GitOutput::Oversize => return None,
+        };
     // Best-effort: a failed marks walk leaves every file `Modified`
     // rather than failing the chain.
     let marks =
@@ -755,26 +755,33 @@ async fn commits_in_range(
         };
 
     let mut commits = Vec::new();
-    let mut open: Option<(String, String)> = None;
+    let mut open: Option<(String, String, u64)> = None;
     let mut files: Vec<GitDiffFile> = Vec::new();
     for line in listed.lines() {
-        if let Some((sha, subject)) = line.split_once('\u{1f}') {
+        let fields: Vec<&str> = line.split('\u{1f}').collect();
+        if let [sha, subject, secs] = fields[..] {
             // The format line opens a commit; the numstat lines under it
             // are that commit's own files.
-            if let Some((sha, subject)) = open.take() {
+            if let Some((sha, subject, time)) = open.take() {
                 commits.push(forge_primitives::git::GitCommit {
                     sha,
                     subject,
                     stats: stats_of(std::mem::take(&mut files)),
+                    time,
                 });
             }
-            open = Some((sha.to_owned(), subject.to_owned()));
+            open = Some((sha.to_owned(), subject.to_owned(), secs.parse().unwrap_or(0)));
         } else if let Some(file) = parse_numstat_line(line) {
             files.push(file);
         }
     }
-    if let Some((sha, subject)) = open.take() {
-        commits.push(forge_primitives::git::GitCommit { sha, subject, stats: stats_of(files) });
+    if let Some((sha, subject, time)) = open.take() {
+        commits.push(forge_primitives::git::GitCommit {
+            sha,
+            subject,
+            stats: stats_of(files),
+            time,
+        });
     }
     for commit in &mut commits {
         if let Some(by_path) = marks.get(&commit.sha) {
@@ -1642,6 +1649,7 @@ mod tests {
             "with the commit's own mark"
         );
         assert_eq!(ahead.commits[0].stats.files[0].added, 1, "and the commit's own count");
+        assert!(ahead.commits[0].time > 0, "the commit carries its instant");
     }
 
     #[tokio::test(flavor = "current_thread")]
