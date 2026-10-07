@@ -19,6 +19,10 @@
    * control nothing reads.
    */
   import Icon from '../components/Icon.svelte';
+  import { watchModels } from '../models/live';
+  import { roleModels, roleWord } from '../models/view';
+  import type { DictateModelsWire, ModelRole } from '../wire/models';
+  import type { ComposerConnection } from './view';
   import type { DictateAxes } from '../session/wire';
   import type { Bind, Mode } from './dictate-key';
   import {
@@ -35,6 +39,7 @@
   import { inputLine, inputs, type Input } from './mic';
 
   let {
+    connection = null,
     axes,
     defaults,
     bind,
@@ -43,6 +48,9 @@
     onaxes,
     ondevice,
   }: {
+    /** The connection the models read and the switch ride on, when there is
+     * one: a panel without it draws the axes and the input alone. */
+    connection?: ComposerConnection | null;
     /** The axes in force for this seat, which this client holds. */
     axes: DictateAxes;
     /** What `forge.toml` set, which a deviation is marked against. */
@@ -56,6 +64,46 @@
     onaxes: (axes: DictateAxes) => void;
     ondevice: (device: string | null) => void;
   } = $props();
+
+  /**
+   * The models in use, read from the core like the models page reads them.
+   *
+   * The panel draws which model each role runs and lets a press switch it -
+   * the same load the models page dispatches - unless `forge.toml` sets the
+   * role, where the row states the key instead: the core refuses that
+   * dispatch, and a control that is always refused reads as broken.
+   */
+  let snapshot = $state<DictateModelsWire | null>(null);
+  /** Which role's list is open, when one is. */
+  let modelsOpen = $state<ModelRole | null>(null);
+
+  $effect(() => {
+    const open = connection;
+    if (open === null) return;
+    return watchModels(open).subscribe((read) => {
+      snapshot = read.wire;
+    });
+  });
+
+  function switchTo(role: ModelRole, file: string): void {
+    const open = connection;
+    modelsOpen = null;
+    if (open === null || snapshot === null) return;
+    try {
+      void open.dispatch({ dictate_activate: { role, file } });
+    } catch {
+      // A closed socket: the read the panel holds stands, and the next open
+      // re-reads it.
+    }
+    open.refresh('dictate_models');
+  }
+
+  /** One role's models, from the read the panel holds. */
+  function roleOf(role: ModelRole) {
+    const wire = snapshot;
+    if (wire === null) return null;
+    return roleModels(role, wire.in_use, wire.installed, wire.rows);
+  }
 
   /** Whether this platform delivers Cmd, which is what the hint names. */
   const mac = navigator.platform.toLowerCase().includes('mac');
@@ -262,6 +310,63 @@
     </div>
     <div class="note">{RULES[mode]}</div>
   </div>
+
+  {#if snapshot !== null}
+    <!-- The models each role runs, in the panel that already says what a
+         take is set to: the same read the models page draws, and the same
+         activation its rows dispatch. A role `forge.toml` sets is STATED -
+         the chip and the key - because the core refuses the load. -->
+    {#each ['transcribing', 'normalization'] as const as role (role)}
+      {@const held = roleOf(role)}
+      {#if held !== null && held.current !== null}
+        <div class="ax">
+          <div class="lbl">
+            {roleWord(role).toUpperCase()}
+            {#if held.pinned}<span class="src">&#183; from forge.toml</span>{/if}
+          </div>
+          {#if held.pinned}
+            <div class="chips">
+              <span class="chip on" aria-current="true">{held.current.file}</span>
+            </div>
+            <div class="note">
+              set by <code>[dictate] {held.pinKey}</code> &middot; remove the key to change it here
+            </div>
+          {:else}
+            <button
+              class="dev"
+              type="button"
+              aria-expanded={modelsOpen === role}
+              onclick={() => (modelsOpen = modelsOpen === role ? null : role)}
+            >
+              <span class="nm">{held.current.file}</span>
+              <span class="chev">&#9656;</span>
+            </button>
+            {#if modelsOpen === role}
+              <div class="list" aria-label="{roleWord(role)} model">
+                {#each held.choices as choice (choice.file)}
+                  <button
+                    class="drow"
+                    class:on={choice.current}
+                    type="button"
+                    aria-pressed={choice.current}
+                    onclick={() => switchTo(role, choice.file)}
+                  >
+                    <span class="nm">{choice.file}</span>
+                  </button>
+                {/each}
+                {#if held.choices.length === 1}
+                  <div class="note">
+                    nothing else on this machine takes this role &middot; the models page installs
+                    more
+                  </div>
+                {/if}
+              </div>
+            {/if}
+          {/if}
+        </div>
+      {/if}
+    {/each}
+  {/if}
 
   <div class="ax">
     <div class="lbl">INPUT DEVICE</div>

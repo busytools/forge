@@ -18,6 +18,7 @@ import type {
   BenchTier,
   CandidateRow,
   CatalogueCheck,
+  CatalogueKind,
   CatalogueRow,
   InstallState,
   InstalledModel,
@@ -557,6 +558,53 @@ export function benchTargets(
   return rows;
 }
 
+/** One role's models, as the dictation panel offers them. */
+export interface RoleModels {
+  /** The model the role runs now, when it runs one. */
+  current: InUseModel | null;
+  /** Whether `forge.toml` sets the role, which no runtime press can move. */
+  pinned: boolean;
+  /** The key that sets it, named so a reader knows what to remove. */
+  pinKey: string | null;
+  /** Every model this machine has that could take the role, the current one
+   * first. */
+  choices: { file: string; current: boolean }[];
+}
+
+/**
+ * The models one role can run.
+ *
+ * **An installed record carries no role of its own**, so the join is the
+ * feed's row for the variant it was recorded under - the same join the bench
+ * list makes. A record whose variant the feed does not carry is left to the
+ * role it already runs rather than guessed at, and the model the role runs
+ * now is always offered so the list reads as a list rather than as a
+ * difference.
+ */
+export function roleModels(
+  role: ModelRole,
+  inUse: InUseModel[],
+  installed: InstalledModel[],
+  rows: CatalogueRow[],
+): RoleModels {
+  const current = inUse.find((model) => model.role === role) ?? null;
+  const wanted: Exclude<CatalogueKind, 'other'> = role === 'normalization' ? 'normalizer' : 'asr';
+  const choices: { file: string; current: boolean }[] = [];
+  if (current !== null) choices.push({ file: current.file, current: true });
+  for (const record of installed) {
+    if (choices.some((choice) => choice.file === record.file)) continue;
+    const entry = rows.find((row) => row.variant === record.variant);
+    if (entry?.kind !== wanted) continue;
+    choices.push({ file: record.file, current: false });
+  }
+  return {
+    current,
+    pinned: current?.from.from === 'config',
+    pinKey: current !== null && current.from.from === 'config' ? current.from.key : null,
+    choices,
+  };
+}
+
 /** One cleanup candidate as its row draws: the feed's row, this machine's
  * record of it, and what the bench has measured on it. */
 export interface CleanupCandidate {
@@ -593,11 +641,13 @@ export function cleanupCandidates(
  * The cleanup role's own proposal: the candidate the bench measured best.
  *
  * **The feed cannot rank this role** - it publishes no speed and no error
- * for a normalizer - so the bench does. Two runs are only compared on one
- * tier and one corpus, so the pick comes from the corpus this role has the
- * most results on, and only when at least two of them are there: one run is
- * a number, not a comparison, and the page says so rather than proposing
- * the only thing it has.
+ * for a normalizer - so the bench does. Two rules keep that honest: only
+ * runs carrying an ACCURACY figure are compared, because the takes tier has
+ * no known words and a faster normalizer is not a better one; and two runs
+ * are only compared on one tier and one corpus, so the pick comes from the
+ * corpus this role has the most such results on, at least two of them. No
+ * pick otherwise - one run is a number, not a comparison, and the card says
+ * so rather than proposing the only thing it has.
  */
 export function cleanupPick(
   candidates: CleanupCandidate[],
@@ -605,6 +655,7 @@ export function cleanupPick(
   const groups = new Map<string, { candidate: CleanupCandidate; result: BenchResult }[]>();
   for (const candidate of candidates) {
     for (const result of candidate.results) {
+      if (result.metrics.wer === null && result.metrics.term_accuracy === null) continue;
       const key = `${result.tier}/${result.corpus.sha256}`;
       groups.set(key, [...(groups.get(key) ?? []), { candidate, result }]);
     }

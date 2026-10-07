@@ -694,7 +694,7 @@ describe('the models page as it draws', () => {
     );
     expect(host.textContent, 'its own run is on its row').toContain('WER 4.0%');
     expect(host.textContent, 'one run is a number, not a comparison').toContain(
-      'nothing is benched twice over one corpus yet',
+      'nothing here is benched twice over one corpus with words known to be true',
     );
   });
 

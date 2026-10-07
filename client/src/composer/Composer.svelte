@@ -1054,6 +1054,7 @@
     </div>
     {#if panel}
       <DictationPanel
+        {connection}
         axes={seatAxes}
         {defaults}
         bind={composer.bind}

@@ -1706,6 +1706,10 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .pop .drow:last-child { border-bottom: 0; }
 .pop .drow:hover { background: var(--s2); }
 .pop .drow .nm { font-size: var(--fs-base); color: var(--text); }
+/* The row the role already runs is the one in force, marked without hue: the
+   chip's own fill, and a word a screen reader hears. */
+.pop .drow.on { background: rgba(244,118,0,.08); }
+.pop .drow.on .nm { color: var(--accent); }
 .pop .drow .def { margin-left: auto; font-family: var(--mono); font-size: var(--fs-label);
   color: var(--dim); }
 .pop .ft { padding: 13px 15px 14px; }

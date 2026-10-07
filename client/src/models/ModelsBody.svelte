@@ -335,8 +335,9 @@
         </div>
       {:else if cleanupRows.length > 0}
         <p class="note">
-          nothing is benched twice over one corpus yet &middot; run a candidate and the numbers land
-          on its row
+          nothing here is benched twice over one corpus with words known to be true &middot; the
+          takes tier reads speed and agreement and a faster normalizer is not a better one, so the
+          pick waits for the read-aloud tier &middot; a run lands its numbers on the candidate's row
         </p>
       {/if}
       {#if cleanupRows.length === 0}

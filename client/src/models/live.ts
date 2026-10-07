@@ -32,13 +32,24 @@ export interface ModelsRead {
 const NOTHING: ModelsRead = { wire: null, refused: null };
 
 /**
+ * What watching the models needs of a socket: the subject, its pushes, the
+ * read a bare signal is answered with, and the unsubscribe that goes with
+ * the subscribe. The composer's panel watches from its own seat, which is
+ * why the contract is stated here rather than taking the whole connection.
+ */
+export type ModelsConnection = Pick<
+  Connection,
+  'subscribe' | 'unsubscribe' | 'onMessage' | 'onStatus' | 'refresh'
+>;
+
+/**
  * Watch the models page.
  *
  * The subscription, the message listener and the status listener are all let
  * go with the last subscriber, so a page the reader has left stops asking a
  * forge to encode a catalogue nobody draws.
  */
-export function watchModels(connection: Connection): Readable<ModelsRead> {
+export function watchModels(connection: ModelsConnection): Readable<ModelsRead> {
   let held: Store | null = null;
   // A read is a full encode on the server, so one already in flight is the
   // fresher answer and a second is not queued behind it.
