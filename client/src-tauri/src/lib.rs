@@ -74,19 +74,12 @@ pub fn run() {
     ]);
 
     // **`invoke_handler` REPLACES the handler, it does not add to it** - so
-    // the Android arm carries every command the desktop arm does, the
-    // browser's among them. The host is the client's on the phone too, and a
-    // webview that declares `browser: true` while its commands are
-    // unregistered would hold the exclusive role and fail every ask on a
-    // missing invoke.
+    // the Android arm carries every command the desktop arm does, and the
+    // browser's set stays desktop-only with the host itself: the phone's
+    // engine is its system WebView, a later phase, and a page that cannot
+    // host never invokes these (its `canHost` answers false there).
     #[cfg(target_os = "android")]
     let builder = builder.plugin(android::init()).invoke_handler(tauri::generate_handler![
-        browser::browser_call,
-        browser::browser_profile_close,
-        browser::browser_profiles,
-        browser::browser_show,
-        browser::browser_hide,
-        browser::browser_used,
         check_update,
         install_update
     ]);
@@ -94,36 +87,51 @@ pub fn run() {
     let run = builder
         .setup(|app| {
             tauri_plugin_log::log::info!("forge client started");
-            // The browser host is handed to the frontend whether or not its
-            // directories resolve: a client that cannot host says so when it
-            // is asked, rather than refusing to start.
-            let host = match browser::StackPaths::resolve(app.handle()) {
-                Ok(paths) => {
-                    tauri_plugin_log::log::info!("browser stack at {}", paths.stack.display());
-                    std::sync::Arc::new(browser::BrowserHost::new(paths))
-                }
-                Err(why) => {
-                    tauri_plugin_log::log::warn!("browser host unavailable: {why}");
-                    std::sync::Arc::new(browser::BrowserHost::unavailable(why))
-                }
-            };
-            // **The browser comes up with the app**, so it is there before
-            // any session asks for it: the launch takes seconds and a tool
-            // call should not pay for it, and a browser that cannot start
-            // says so here, in the client's log, rather than as a failed tool
-            // call nobody can attribute. Spawned rather than awaited - the
-            // window does not wait on a browser - and the driver stays lazy,
-            // since it exists to serve calls.
-            let starting = std::sync::Arc::clone(&host);
-            tauri::async_runtime::spawn(async move {
-                match starting.start().await {
-                    Ok(active) => {
-                        tauri_plugin_log::log::info!("the browser is up on port {}", active.port)
+            // **The browser host is desktop-only until the Android phase.**
+            // The phone's engine is its system WebView, which this build has
+            // no path to yet: a host here would answer every call with a
+            // macOS-shaped sentence (install Brave) and warn once per launch
+            // about a browser it was never going to start, while the
+            // capability the page declares would hold the role and fail every
+            // ask. With the host absent the phone simply is not a browser
+            // client, and a session reads the named "no browser-capable
+            // client connected" instead.
+            #[cfg(desktop)]
+            {
+                // The host is handed to the frontend whether or not its
+                // directories resolve: a client that cannot host says so when
+                // it is asked, rather than refusing to start.
+                let host = match browser::StackPaths::resolve(app.handle()) {
+                    Ok(paths) => {
+                        tauri_plugin_log::log::info!("browser stack at {}", paths.stack.display());
+                        std::sync::Arc::new(browser::BrowserHost::new(paths))
                     }
-                    Err(why) => tauri_plugin_log::log::warn!("the browser did not start: {why}"),
-                }
-            });
-            app.manage(host);
+                    Err(why) => {
+                        tauri_plugin_log::log::warn!("browser host unavailable: {why}");
+                        std::sync::Arc::new(browser::BrowserHost::unavailable(why))
+                    }
+                };
+                // **The browser comes up with the app**, so it is there
+                // before any session asks for it: the launch takes seconds
+                // and a tool call should not pay for it, and a browser that
+                // cannot start says so here, in the client's log, rather than
+                // as a failed tool call nobody can attribute. Spawned rather
+                // than awaited - the window does not wait on a browser - and
+                // the driver stays lazy, since it exists to serve calls.
+                let starting = std::sync::Arc::clone(&host);
+                tauri::async_runtime::spawn(async move {
+                    match starting.start().await {
+                        Ok(active) => tauri_plugin_log::log::info!(
+                            "the browser is up on port {}",
+                            active.port
+                        ),
+                        Err(why) => {
+                            tauri_plugin_log::log::warn!("the browser did not start: {why}")
+                        }
+                    }
+                });
+                app.manage(host);
+            }
             Ok(())
         })
         .build(context);

@@ -32,7 +32,15 @@ export type Invoke = (command: 'browser_call', request: InvokeArgs) => Promise<u
 
 /** Whether this page runs inside the shell that owns a browser host. */
 export function canHost(): boolean {
-  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+  return (
+    typeof window !== 'undefined' &&
+    '__TAURI_INTERNALS__' in window &&
+    // **The phone is not a browser client yet.** Its engine is the system
+    // WebView, a later phase; a page that declared the capability there would
+    // hold the exclusive role and fail every ask on a command this build does
+    // not register.
+    !/Android/i.test(navigator.userAgent)
+  );
 }
 
 /** The bytes a base64 string carries. */

@@ -22,7 +22,7 @@
    * surviving strip lands, this mounts into it unchanged.
    *
    * Two controls live here and each is the person's, never a session's:
-   * **Take over** (the force override, where a click can honestly serve it)
+   * **Override** (the force override, where a click can honestly serve it)
    * and a profile row's **close** (which is what makes a profile whose
    * owning session is gone recoverable).
    *
@@ -334,7 +334,7 @@
           <button
             type="button"
             class="bz-take bz-show"
-            aria-label="show the browser in this app"
+            aria-label="show the browser"
             onclick={show}
             onkeydown={esc}
           >

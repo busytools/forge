@@ -68,7 +68,7 @@ starts; passing `--ci` explicitly overrides it. And `npm` swallows a bare
 The client hosts the browser a session's `browser_*` tools drive: it owns
 the browser process, its profile and the driver, and answers the asks the
 socket routes to it. `just vendor-browser-stack` fetches and verifies the
-the driver into the gitignored `src-tauri/browser-stack/` directory - node
+driver into the gitignored `src-tauri/browser-stack/` directory - node
 and `@playwright/mcp` - and `bundle.resources` carries that tree into the
 bundle, so nothing downloads at first use. **The browser itself is the
 machine's own**: the host drives the installed Brave, else Google Chrome,

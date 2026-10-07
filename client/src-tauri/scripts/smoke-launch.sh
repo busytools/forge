@@ -3,9 +3,13 @@
 #
 # **A client that dies on launch is a shipped-broken artifact**, and neither
 # the compiler nor the bundler can see it. This runs the app's own binary,
-# watches it live in a window of seconds, reads its words, and exits
-# non-zero when it crashed or when its browser host never came up. The e2e
-# and release flows call THIS script; they do not re-implement it.
+# watches it live, reads its words, and exits non-zero when it crashed or
+# when its browser host never came up. The e2e flow calls THIS script; run it
+# by hand against a release bundle before shipping one.
+#
+# **The wait is on the browser's own line, bounded by the launch timeout**:
+# the app boots in about a second but the browser behind it is given fifteen,
+# so a fixed six-second window failed a slow-but-fine start.
 #
 # Usage: smoke-launch.sh <forge.app>
 set -uo pipefail
@@ -19,7 +23,10 @@ LOG=$(mktemp /tmp/forge-smoke.XXXXXX.log)
 "$BIN" > "$LOG" 2>&1 &
 PID=$!
 echo "client pid: $PID (log $LOG)"
-sleep 6
+for _ in $(seq 1 20); do
+    grep -q "the browser is up on port" "$LOG" && break
+    sleep 1
+done
 ALIVE=$(ps -p "$PID" -o pid= | tr -d ' ')
 echo "alive: $ALIVE"
 echo "=== stderr ==="
