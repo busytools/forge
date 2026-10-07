@@ -353,18 +353,18 @@ describe('the session page over a socket', () => {
      rows' document order. */
 
   /**
-   * **The narrow bands are page state now, not checkboxes**, and jsdom has no
-   * `matchMedia` at all, so both rails take the wide default in every other
-   * test. This is the one case that sees the state the sheet folds by.
+   * **The rail is summoned now, at every width, and the width decides
+   * nothing.** It is drawn parked off-canvas and slides over when the chip,
+   * Cmd+Left or the palette opens it - never a column, so a page that has
+   * not summoned it owns the full width.
    */
-  it('folds the rail away below the width it stops being a column at', async () => {
+  it('keeps the rail parked at every width until it is summoned', async () => {
     matchMediaTo(true);
     await open(sessionFixture);
 
-    // The sheet does the hiding, and jsdom performs no layout - so the page's
-    // own state is the assertion, and its class is how that state is stated.
     const app = document.querySelector('.app')?.className ?? '';
-    expect(app, 'the rail ignored a narrow page').toContain('left-hidden');
+    expect(app, 'the rail claimed a column on a narrow page').not.toContain('rail-open');
+    expect(document.querySelector('.rail.left'), 'the rail is drawn, to summon').not.toBeNull();
     expect(document.querySelector('.rail-tog.tog-r'), 'the inspector handle is gone').toBeNull();
   });
 

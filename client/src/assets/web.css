@@ -103,7 +103,7 @@ html::-webkit-scrollbar-thumb:active,
      is what you read, a row is data, and a label sits on data. */
   --fs-prose: 15.5px; --fs-base: 15.5px; --fs-group: 15.5px;
   --fs-data: 14px; --fs-label: 12.5px; --fs-title: 18px;
-  --ins: 10px; --rail-l: 312px;
+  --ins: 10px;
   /* one line per entity: state | name | where | what | when.
      no action column - the whole row is the target.
      name and where are capped because their content is short; the surplus
@@ -466,31 +466,32 @@ details[open] > summary .arw { transform: rotate(90deg); }
 /* `dvh` rather than `vh`: a phone's URL bar hides and shows, and a frame sized
    to `vh` is taller than the window it is in whenever the bar is showing. */
 .app {
-  display: grid; grid-template-columns: var(--rail-l) minmax(0,1fr);
+  display: grid; grid-template-columns: minmax(0,1fr);
   gap: var(--ins); padding: var(--ins); height: 100dvh; overflow: hidden;
   font-size: var(--fs-prose);
 }
-/* Placed rather than auto-flowed: a collapsed column leaves its grid slot
-   empty, and auto-flowing the rest along moves the conversation into the
-   rail's column and blanks the page. A rail takes the rows as well as the
-   column, or the composer's row ends under the chat alone and leaves a band
-   of bare page beneath it. */
-.app .rail.left { grid-column: 1; grid-row: 1 / -1; }
-.app main.chat { grid-column: 2; }
-/* A folded column says so on the app rather than in a hidden box beside it.
-   The server held this in checkboxes because a page with no script had
-   nowhere else to put it; the class is the same fact stated once, and it
-   means what it says at every width - the media queries below turn a shown
-   rail into a sheet rather than inverting the word. */
-.app.left-hidden { --rail-l: 0px; }
-.app.left-hidden .rail.left { display: none; }
+/* The projects rail is SUMMONED: off-canvas at every width over a scrim, so
+   it costs the conversation nothing while it is away. The chip opens it by
+   hover (the peek - no scrim under a mouse that only crossed the chip);
+   Cmd+Left and the palette open it to stay (scrim, history, Esc). */
+.app .rail.left {
+  position: fixed; inset: 10px auto 10px 10px; width: 340px; z-index: 55;
+  transform: translateX(calc(-100% - 24px)); visibility: hidden;
+  transition: transform .2s ease, visibility 0s .2s;
+}
+.app.rail-open .rail.left {
+  transform: translateX(0); visibility: visible; transition: transform .2s ease;
+}
+.scrim { position: fixed; inset: 0; z-index: 50; background: rgba(4,5,10,.55);
+  backdrop-filter: blur(2px); opacity: 0; pointer-events: none;
+  transition: opacity .18s ease; }
+.app.rail-open:not(.rail-peek) .scrim { opacity: 1; pointer-events: auto; }
+.app main.chat { grid-column: 1; }
 .rail-tog { display: flex; align-items: center; justify-content: center;
   width: 30px; height: 30px; flex: none; border-radius: 8px; cursor: pointer;
   color: var(--muted); background: none; border: 1px solid transparent; padding: 0; }
 .rail-tog:hover { color: var(--text); background: var(--s2); border-color: var(--line); }
 .rail-tog svg { width: 16px; height: 16px; display: block; }
-.app.left-hidden .rail-tog.tog-l {
-  color: var(--accent); background: rgba(244,118,0,.1); border-color: rgba(244,118,0,.3); }
 
 .rail { display: flex; flex-direction: column; overflow: hidden; border-radius: 16px;
   border: 1px solid rgba(34,42,60,.9);
@@ -565,13 +566,24 @@ main.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; 
    so the session's name still leads, in a real anchor so the keyboard reaches
    it, the URL stays real and the router follows it in place. The hairline is
    what separates the app's brand from the seat's own. */
-.sess .brand { display: flex; align-items: center; gap: 7px; flex: none;
-  color: inherit; text-decoration: none; }
-.sess .brand .mark { width: 18px; height: 18px; flex: 0 0 18px; color: var(--accent);
-  position: relative; top: -1px; }
-.sess .brand .word { font-size: 15px; font-weight: 650; letter-spacing: -.02em; }
-.sess .brand:hover .word { text-decoration: underline; }
-.sess .mastsep { width: 1px; height: 16px; background: var(--line); flex: none; }
+/* The chip: the brand's own mark as the face of the one projects control -
+   the mark with the count of seats that want a person beside it, and a quiet
+   `projects` word when none do. Warn-tinted while anyone waits, bad on a
+   failed one, plain when calm. */
+.needchip { display: flex; align-items: center; gap: 6px; flex: none;
+  font-family: var(--mono); font-size: var(--fs-data); color: var(--warn);
+  border: 1px solid rgba(201,161,59,.4); background: rgba(201,161,59,.08);
+  border-radius: 99px; padding: 2px 9px; cursor: pointer; text-decoration: none; }
+.needchip:hover { color: var(--text); }
+.needchip .ch-mk { width: 14px; height: 14px; flex: 0 0 14px; color: inherit;
+  display: flex; }
+.needchip .ch-mk svg { width: 14px; height: 14px; display: block; }
+.needchip .ch-ic { width: 13px; height: 13px; }
+.needchip.bad { color: var(--bad); border-color: rgba(224,104,62,.4);
+  background: rgba(224,104,62,.08); }
+.needchip.calm { color: var(--muted); border-color: var(--line); background: none; }
+/* A thumb, not a cursor: the chip opens up on a coarse pointer. */
+@media (pointer: coarse) { .needchip { min-height: 44px; padding: 0 12px; } }
 .sess .f-org { overflow: hidden; text-overflow: ellipsis; }
 .sess .facts { margin-left: auto; display: flex; align-items: center; gap: 13px;
   min-width: 0; overflow: hidden;
@@ -703,21 +715,6 @@ details.sfold div.wk:hover { background: none; }
   text-align: right; }
 .bar .eta { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); width: 60px;
   text-align: right; }
-
-/* ---------- narrow: the session page loses its column ---------- */
-
-@media (max-width: 980px) {
-  .app { grid-template-columns: minmax(0,1fr); }
-  /* One column, so the chat goes back to the first. Named through the app,
-     or the placement rule's own grid-column wins and the chat lands in an
-     implicit second column that takes the width, leaving the composer -
-     which is on column one - zero pixels wide. */
-  .app main.chat { grid-column: 1; }
-  /* One column, so a shown rail covers it rather than sitting beside it. */
-  .rail { position: fixed; inset: 0; z-index: 40; border-radius: 0; }
-  .rail.left { display: none; }
-  .app.left-shown .rail.left { display: flex; }
-}
 
 /* ---------- narrow: a phone is a client too ---------- */
 
@@ -1411,9 +1408,7 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
      height in the line, so a long label still ellipsises. */
   .row .what a { display: inline-block; min-width: 44px; min-height: 44px;
     line-height: 44px; }
-  /* The header's brand is a way home, and the session's more disclosure is a
-     chevron: neither is 44 by its own box. */
-  .sess .brand { display: inline-flex; align-items: center; min-height: 44px; }
+  /* The session's more disclosure is a chevron: not 44 by its own box. */
   .sess > .more > summary { min-width: 44px; }
 }
 

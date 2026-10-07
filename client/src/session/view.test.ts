@@ -7,6 +7,7 @@ import type { AgentRow, CronEntry, HomeWire, ProjectWire, Task } from '../wire/h
 import type { SessionSlot } from '../wire/types';
 import {
   accountChip,
+  chipState,
   compactionFigure,
   copyReason,
   fleetCount,
@@ -776,6 +777,70 @@ describe('the tasks the strip draws', () => {
     expect(rows[0]?.owner, 'the owner rides its own cell').toBe('lead');
     expect(rows[0]?.meta).toBe('in progress \u{b7} PR 1204 \u{b7} 2h');
     expect(rows[1]?.status).toBe('completed');
+  });
+});
+
+describe('the projects chip', () => {
+  const agent = (label: string, over: Partial<AgentRow> = {}): AgentRow => ({
+    slot: { org: 'TestOrg', project: 'proj', label },
+    label,
+    lifecycle: 'Idle',
+    has_background_work: false,
+    pending: null,
+    pending_depth: 0,
+    last_activity: null,
+    reason: null,
+    failed_turn: null,
+    work: null,
+    ...over,
+  });
+
+  /**
+   * **Never a mere change.** A busy or idle seat counts for nothing; the
+   * chip is only the seats that want a PERSON, and one such seat - with no
+   * failure among them - is the case its click goes straight to it.
+   */
+  it('counts only the seats that want a person', () => {
+    const wire = withHome({
+      agents: [agent('busy'), agent('waiter', { pending: 'permission' })],
+    });
+    expect(chipState(wire), 'a seat that does not want a person counted').toEqual({
+      state: 'one',
+      count: 1,
+      href: '/session/TestOrg/proj/waiter',
+      label: '1 seat needs you',
+    });
+  });
+
+  /** Several, any failure among them, or none: the home is where you pick. */
+  it('goes home for several, for any failure and for none', () => {
+    const many = chipState(
+      withHome({
+        agents: [agent('a', { pending: 'permission' }), agent('b', { pending: 'permission' })],
+      }),
+    );
+    expect(many.state, 'two wanting seats did not read as several').toBe('many');
+    expect(many.href, 'several did not go home').toBe('/');
+    expect(many.label).toBe('2 seats need you');
+
+    const failed = chipState(
+      withHome({
+        agents: [agent('a', { failed_turn: { secs_since_epoch: 1, nanos_since_epoch: 0 } })],
+      }),
+    );
+    expect(failed, 'a lone failure did not go home').toMatchObject({
+      state: 'failed',
+      href: '/',
+      count: 1,
+    });
+
+    const none = chipState(withHome({ agents: [agent('busy')] }));
+    expect(none, 'a quiet fleet did not read as the calm word').toEqual({
+      state: 'none',
+      count: 0,
+      href: '/',
+      label: 'projects',
+    });
   });
 });
 

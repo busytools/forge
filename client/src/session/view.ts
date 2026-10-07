@@ -29,6 +29,7 @@ import {
 } from '../home/view';
 import type { Row, RowState } from '../home/view';
 import { CLIENT_VERSION, PROTOCOL_VERSION } from '../protocol';
+import { hrefForSlot } from '../routes';
 import type { Connection } from '../socket';
 import type { CronEntry, HomeWire, Lifecycle, ProjectWire, Task } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
@@ -115,6 +116,42 @@ export interface GitStats {
   totalFiles: number;
   totalAdded: number;
   totalRemoved: number;
+}
+
+/** The projects chip's state: the seats that want a person, fleet-wide. */
+export interface ChipState {
+  /** `one` goes straight to that seat; everything else goes to the home. */
+  state: 'one' | 'many' | 'failed' | 'none';
+  count: number;
+  /** Where the chip's own click lands, as a real href. */
+  href: string;
+  /** The words a screen reader hears, which is also the title. */
+  label: string;
+}
+
+/**
+ * **The chip counts seats that want a PERSON**: a question, a permission, a
+ * died turn - never a mere change. Exactly one, and it is not an error, is
+ * the one case its click goes straight to that seat; several, or any failure
+ * among them, goes to the home page so the reader picks; none goes home too,
+ * from a quiet `projects` label.
+ */
+export function chipState(wire: HomeWire | null): ChipState {
+  const rows = wire === null ? [] : wire.agents;
+  const wanting = rows.filter((row) => row.pending !== null || row.failed_turn !== null);
+  const failed = wanting.some((row) => row.failed_turn !== null);
+  if (wanting.length === 0) {
+    return { state: 'none', count: 0, href: '/', label: 'projects' };
+  }
+  const label = wanting.length === 1 ? '1 seat needs you' : `${wanting.length} seats need you`;
+  if (failed) {
+    return { state: 'failed', count: wanting.length, href: '/', label };
+  }
+  const only = wanting[0];
+  if (wanting.length === 1 && only !== undefined) {
+    return { state: 'one', count: 1, href: hrefForSlot(only.slot), label: '1 seat needs you' };
+  }
+  return { state: 'many', count: wanting.length, href: '/', label };
 }
 
 /** The seat's working tree, as the strip's row draws it. */

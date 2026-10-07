@@ -143,32 +143,63 @@ describe('the session shell as it draws', () => {
   });
 
   /**
-   * The handle is a real control: a rail folded away leaves no edge behind, so
-   * the header is the only way back to it - and the inspector's handle is gone
-   * with the inspector.
+   * **The chip is the one projects control**: the brand's mark as its face,
+   * the seats that want a person on its own label, and no inspector handle
+   * beside it - that died with the inspector.
    */
-  it('draws the projects handle as a button that states what it does', () => {
+  it('draws the projects chip as a real link stating who waits', () => {
     const body = draw();
-    expect(body).toContain('aria-label="projects"');
+    expect(body, 'a real anchor').toContain('<a class="needchip"');
+    expect(body, 'the count in its label').toContain('aria-label="1 seat needs you"');
+    expect(body, 'the mark as its face').toContain('ch-mk');
     expect(body).not.toContain('aria-label="inspector"');
-    expect(body).toContain('aria-expanded="true"');
   });
 
   /**
-   * **The wordmark in the header is the way home.** A real anchor, so the
-   * keyboard reaches it, the URL stays real and the router follows it in place
-   * (it is the only way back to the home inside a desktop shell, which has no
-   * browser chrome); the hairline is what separates the app's brand from the
-   * seat's own, and the band leads with it.
+   * **The chip's click is smart**: exactly one waiting seat goes straight
+   * there, and the band leads with it - the seat's own name behind.
    */
-  it('draws the wordmark in the header as the way home', () => {
+  it("sends the chip's one waiting seat straight to it", () => {
     const body = draw();
-    expect(body, 'a real anchor to the home').toContain('<a class="brand" href="/"');
-    expect(body, "the home's own word").toContain('>forge</span>');
-    expect(body, 'and the hairline after it').toContain('class="mastsep"');
-    expect(body.indexOf('class="brand"'), 'the band leads with it').toBeLessThan(
-      body.indexOf('rail-tog'),
+    expect(body, 'the single waiting seat').toContain('href="/session/TestOrg/proj/lead"');
+    // The band alone, so the rail's own rows cannot answer for it.
+    const band = body.slice(body.indexOf('class="sess"'));
+    expect(band.indexOf('class="needchip"'), 'the band leads with the chip').toBeLessThan(
+      band.indexOf('class="nm"'),
     );
+  });
+
+  /** Everything but a lone clean waiter goes to the home page to pick. */
+  it('sends a several, a failed and an empty set to the home', () => {
+    const agent = (label: string, over: Partial<AgentRow> = {}): AgentRow => ({
+      slot: { org: 'TestOrg', project: 'proj', label },
+      label,
+      lifecycle: 'Idle',
+      has_background_work: false,
+      pending: 'permission',
+      pending_depth: 1,
+      last_activity: null,
+      reason: null,
+      failed_turn: null,
+      work: null,
+      ...over,
+    });
+    const many = draw({ wire: { ...homeWire, agents: [agent('a'), agent('b')] } });
+    expect(many, 'several pick at home').toContain('href="/"');
+    expect(many, 'counted').toContain('aria-label="2 seats need you"');
+
+    const failed = draw({
+      wire: {
+        ...homeWire,
+        agents: [agent('a', { failed_turn: { secs_since_epoch: 1, nanos_since_epoch: 0 } })],
+      },
+    });
+    expect(failed, 'a failure goes home even alone').toContain('href="/"');
+    expect(failed, 'and wears the cross').toContain('needchip bad');
+
+    const calm = draw({ wire: { ...homeWire, agents: [] } });
+    expect(calm, 'nothing waits: home from a quiet word').toContain('aria-label="projects"');
+    expect(calm, 'calm').toContain('needchip calm');
   });
 
   it('draws the seat state rather than an empty column when nothing is running', () => {
@@ -238,22 +269,22 @@ function ruleText(source: string, selector: string): string {
 describe('the header brand as both sheets draw it', () => {
   /**
    * **The drawing is the visual truth, so a rule edited in one sheet alone is
-   * one surface described two ways.** The wordmark's size relative to the
-   * session's own name, and the hairline that separates them, are exactly the
-   * kind of numbers a later pass tweaks in one file - so they are read rule
-   * for rule, whitespace-normalised, the way the row rules are.
+   * one surface described two ways.** The chip's pill and the summoned rail's
+   * park-and-slide are exactly the kind of numbers a later pass tweaks in one
+   * file - so they are read rule for rule, whitespace-normalised, the way the
+   * row rules are.
    */
-  it('mirrors the brand and hairline rules in both sheets', () => {
+  it('mirrors the chip and summoned-rail rules in both sheets', () => {
     const page = readFileSync(
       new URL('../../../docs/book/src/ui/client/web-session.html', import.meta.url),
       'utf8',
     );
     const book = /<style>([\s\S]*?)<\/style>/.exec(page)?.[1] ?? '';
     for (const selector of [
-      '.sess .brand',
-      '.sess .brand .mark',
-      '.sess .brand .word',
-      '.sess .mastsep',
+      '.needchip',
+      '.needchip.calm',
+      '.app .rail.left',
+      '.app.rail-open .rail.left',
     ]) {
       const app = ruleText(sheet, selector);
       // The denominator: a scan that reaches no rule reports both sheets
@@ -289,27 +320,6 @@ function shownMarkRules(): { selector: string; declares: string }[] {
     rules.push({ selector, declares: match[2] ?? '' });
   }
   return rules;
-}
-
-/**
- * The rows a `grid-template-rows` value declares: `minmax(0, 1fr) auto` is two.
- * A `repeat()` counts as the single value it is written as, which reads one
- * row short - enough to miss a defect, never enough to fail a sound sheet.
- */
-function rows(track: string): number {
-  return track
-    .replace(/\([^)]*\)/g, 'x')
-    .trim()
-    .split(/\s+/).length;
-}
-
-/** Whether a `grid-row` value reaches the last of `rowCount` rows, counting `-1` as the last. */
-function reaches(declared: string | undefined, rowCount: number): boolean {
-  if (declared === undefined) return false;
-  const [head, tail] = declared.trim().split(/\s*\/\s*/);
-  const start = Number(head);
-  const end = tail === undefined ? start : Number(tail) < 0 ? rowCount : Number(tail);
-  return start === 1 && end >= rowCount;
 }
 
 /** A row for the fixture's lead, in the state named. */
@@ -526,16 +536,19 @@ describe('the rail footer as the sheet lays it out', () => {
 
 describe('the app grid', () => {
   /**
-   * The rail is placed by COLUMN, and auto-flow drops a column-only item in
-   * the first row. The composer's row then ends under the chat alone and leaves
-   * a band of bare page beneath the rail.
+   * **The rail is summoned, so the grid carries one column.** Parked
+   * off-canvas at every width and slid in over a scrim, it costs the
+   * conversation nothing while it is away; the chat owns the only column.
    */
-  it('runs the rail to the last row the app declares', () => {
-    const rowCount = rows(/grid-template-rows:\s*([^;]+)/.exec(body('.app'))?.[1] ?? '1fr');
-    expect(
-      reaches(/grid-row:\s*([^;]+)/.exec(body('.app .rail.left'))?.[1], rowCount),
-      "the projects rail stops short of the app's last row",
-    ).toBe(true);
+  it('keeps the rail off-canvas until it is summoned', () => {
+    expect(body('.app .rail.left'), 'the rail is fixed').toContain('position: fixed');
+    expect(body('.app .rail.left'), 'and parked off-canvas').toContain(
+      'translateX(calc(-100% - 24px))',
+    );
+    expect(body('.app.rail-open .rail.left'), 'sliding in when summoned').toContain(
+      'translateX(0)',
+    );
+    expect(body('.app main.chat'), 'the chat owns the only column').toContain('grid-column: 1');
   });
 
   /**

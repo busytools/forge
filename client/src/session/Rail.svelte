@@ -31,6 +31,8 @@
     connection,
     notice = null,
     onclose,
+    onenter = null,
+    onleave = null,
   }: {
     home: HomeWire;
     /** The seat the page is showing, which is the one row the rail marks. */
@@ -43,6 +45,10 @@
     notice?: string | null;
     /** Brings the header's handle back, which the collapsed rail has covered. */
     onclose: () => void;
+    /** The pointer arriving here holds a hover-summoned peek open. */
+    onenter?: (() => void) | null;
+    /** And leaving arms its close, the chip's own grace again. */
+    onleave?: (() => void) | null;
   } = $props();
 
   const groups = $derived(railGroups(home, current, now, closingSeat));
@@ -67,7 +73,16 @@
   landmarks with the same implicit name are one landmark to a screen reader,
   and neither can be navigated to by name.
 -->
-<aside class="rail left" aria-label="projects">
+<aside
+  class="rail left"
+  aria-label="projects"
+  onpointerenter={(event) => {
+    if (event.pointerType === 'mouse') onenter?.();
+  }}
+  onpointerleave={(event) => {
+    if (event.pointerType === 'mouse') onleave?.();
+  }}
+>
   <div class="banner">
     <span class="t">projects</span>
     <span class="n ml">{fleetCount(home)}</span>

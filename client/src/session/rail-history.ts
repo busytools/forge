@@ -31,13 +31,11 @@ export function railOnTop(state: unknown): RailSide | null {
  * Landing on the rail's entry shows it, and an entry whose rail was closed
  * while another navigation sat on top of it (`closedUnder`) shows nothing:
  * the press that walks past it cannot re-open what a close already closed.
- * Landing anywhere else closes the rail where it covers, and at a wide width
- * closes it only where the pop left its entry (`leftRail`) - the band opening
- * back up under an open rail - so that press still closes what it opened.
+ * Landing anywhere else closes it where its entry was left (`leftRail`) -
+ * the summoned rail covers, so that press still closes what it opened.
  */
 export function chosenAfterPop(
   state: unknown,
-  narrow: boolean,
   leftRail: RailSide | null,
   closedUnder: RailSide | null,
 ): { left: boolean | null } | null {
@@ -45,7 +43,6 @@ export function chosenAfterPop(
   if (side !== null) {
     return { left: side !== closedUnder };
   }
-  if (narrow) return { left: false };
   if (leftRail === 'left') return { left: false };
   return null;
 }
