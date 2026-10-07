@@ -1211,9 +1211,10 @@ export class Chat {
   /** One frame, folded into the turn it belongs to. */
   private takeUpdate(update: SessionUpdate): void {
     // An update naming a seat that is not this one is another conversation's.
-    // **A KEYLESS update is everyone's** - the service status rides every
-    // seat's stream by design - so it passes this door and the arms below
-    // decide whether it draws here.
+    // **A KEYLESS update is everyone's** - the service report and the fatal
+    // are app-level and arrive on the connection's home read, which the shell
+    // always holds - so it passes this door and the arms below decide whether
+    // it draws here.
     const at = slotOf(update);
     if (at !== null && !sameSlot(at, this.slot)) return;
     const variant = variantOf(update);
@@ -1306,6 +1307,22 @@ export class Chat {
                 text: `Connection failed: ${why}`,
               },
         );
+      }
+      return;
+    }
+    // The core's fatal, announced before the process goes (#1638): keyless,
+    // so every open conversation draws it, and the words are the server's own
+    // - what the terminal prints on exit. A repeat is one row.
+    if (variant === 'fatal_error') {
+      const fatal = (update as { fatal_error?: { message?: unknown } }).fatal_error;
+      const said = fatal?.message;
+      if (typeof said === 'string' && said !== '') {
+        this.appendOnce({
+          type: 'system',
+          subtype: 'forge_notice',
+          severity: 'error',
+          text: `forge stopped: ${said}`,
+        });
       }
       return;
     }

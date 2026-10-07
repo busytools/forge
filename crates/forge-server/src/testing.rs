@@ -177,6 +177,12 @@ impl Fleet {
         self.workspace.seed_test_cli_version(installed, latest);
     }
 
+    /// Hold the core's last fatal, as the boot spawn's failure records it, so
+    /// a test can read the home's encoding without a dying spawn.
+    pub fn set_fatal_error(&self, error: forge_primitives::error::AppError) {
+        self.workspace.seed_test_fatal_error(error);
+    }
+
     /// Hold the CLI's per-user preferences document, so a view test reads a
     /// preference of its own rather than the machine's.
     pub fn set_user_preferences(&self, preferences: serde_json::Value) {

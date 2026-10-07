@@ -132,8 +132,9 @@ body {
 
 /* ---------- header ---------- */
 
-/* The core's last fatal, above everything: the page it lands on is served by
-   a forge that has stopped, and the row it otherwise reads as is healthy. */
+/* The core's last fatal, as a home read carries it (#1638): the record a view
+   attaching in the wind-down window finds. The live announcement is the
+   fatal's frame, drawn in the chat. */
 .stopped {
   border: 1px solid rgba(224,104,62,.4); border-left: 3px solid var(--bad);
   background: rgba(224,104,62,.07); color: var(--bad);

@@ -1985,6 +1985,31 @@ mod tests {
         );
     }
 
+    /// The home's fatal carries the words the terminal prints, not the serde
+    /// tag: a view drawing the line words it from the field (#1638).
+    #[tokio::test]
+    async fn a_home_fatal_carries_the_terminals_words() {
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        fleet.start("TestOrg", "proj").expect("the project starts");
+        fleet.set_fatal_error(forge_primitives::error::AppError::ConnectionFailed);
+        let state = TransportState {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            client: forge_primitives::ClientConfig::default(),
+            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+        };
+
+        let encoded = encode_subject(&state, &Subject::Home).await.expect("encode");
+        assert_eq!(
+            encoded["fatal_error"],
+            serde_json::json!("Failed to establish or maintain the Agent SDK bridge connection."),
+            "the home's fatal is the terminal's own words"
+        );
+    }
+
     /// The rows the processes feed leads with: the CLI's background-task
     /// registry, which no read answered.
     ///
