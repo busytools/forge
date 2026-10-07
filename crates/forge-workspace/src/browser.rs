@@ -2,6 +2,7 @@
 //! the asks the browser MCP family sends through it.
 
 use std::sync::{Mutex, MutexGuard};
+use std::time::Duration;
 
 use forge_primitives::SessionSlot;
 use forge_primitives::browser::{BrowserPart, HandOff, HandOffEnding};
@@ -15,6 +16,15 @@ pub const NO_BROWSER_CLIENT: &str = "no browser-capable client connected";
 
 /// The error an ask answers with when the host it was sent to went away.
 const HOST_GONE: &str = "the browser-capable client went away before answering";
+
+/// **The longest one ask may wait on a host, derived from the layers under
+/// it**: the client's own bounds are a launch (15 s), a driver handshake
+/// (15 s, `chromium`/`driver`'s START_TIMEOUT values in `client/`), and one
+/// tool call (150 s) - a host slower than their sum is the host's own defect,
+/// and the call fails naming it rather than holding the session for ever.
+/// A late answer is already handled (`browser_answer_unmatched`), so a
+/// timeout here never steals a reply.
+const ASK_TIMEOUT: Duration = Duration::from_secs(15 + 15 + 150 + 20);
 
 /// One ask, on its way to the registered host.
 #[derive(Debug)]
@@ -233,7 +243,42 @@ impl BrowserRelay {
             );
             return Err(HOST_GONE.to_owned());
         }
-        answer.await.unwrap_or_else(|_| Err(HOST_GONE.to_owned()))
+        // **A parked host is named rather than waited on for ever.** The
+        // bound sits above every layer that legitimately takes time, so
+        // reaching it is the host's own machinery wedged - measured live
+        // 2026-10-07: a call parked with the frame written and the client's
+        // Rust path never entered, and the session held the whole time.
+        // The role is NOT freed here: a slow host is not a dead one, and its
+        // late answer is already handled by name.
+        match tokio::time::timeout(ASK_TIMEOUT, answer).await {
+            Ok(Ok(parts)) => parts,
+            Ok(Err(_)) => {
+                tracing::debug!(
+                    event_name = "browser_answer_dropped",
+                    ask = id,
+                    host = host_id,
+                    tool = %tool,
+                    slot = %seat.display(),
+                    "the host's answer channel dropped without an answer",
+                );
+                Err(HOST_GONE.to_owned())
+            }
+            Err(_) => {
+                tracing::warn!(
+                    event_name = "browser_ask_timeout",
+                    ask = id,
+                    host = host_id,
+                    tool = %tool,
+                    slot = %seat.display(),
+                    wait_seconds = ASK_TIMEOUT.as_secs(),
+                    "the browser host did not answer inside the ask's bound",
+                );
+                Err(format!(
+                    "the browser host (connection {host_id}) did not answer {tool} within {} s",
+                    ASK_TIMEOUT.as_secs(),
+                ))
+            }
+        }
     }
 
     /// Forget a host whose channel has no receiver left - and a waiter whose
@@ -489,6 +534,46 @@ mod tests {
             Ok(vec![BrowserPart::Text { text: "navigated".to_owned() }]),
             "the host's parts are what the caller gets",
         );
+    }
+
+    /// **The bound clears every layer that legitimately takes time.** The
+    /// client's own bounds are a launch (15 s), a driver handshake (15 s) and
+    /// one tool call (150 s) - a bound under their sum would fail slow-but-fine
+    /// calls, which is the one change someone would plausibly make here.
+    #[test]
+    fn the_ask_bound_clears_the_client_layers_below_it() {
+        assert!(
+            ASK_TIMEOUT >= Duration::from_secs(15 + 15 + 150),
+            "the ask's bound must clear the client's launch, handshake and call bounds: {ASK_TIMEOUT:?}",
+        );
+    }
+
+    /// **A host that parks is named, not waited on for ever.** The bound sits
+    /// above every layer that legitimately takes time, so a call that reaches
+    /// it is the host's own machinery wedged - measured live 2026-10-07,
+    /// where the session held for minutes. The sentence carries the host
+    /// connection, the tool and the wait, and the role is NOT freed: a slow
+    /// host is not a dead one.
+    #[tokio::test(start_paused = true)]
+    async fn a_host_that_never_answers_fails_the_call_by_name() {
+        let relay = BrowserRelay::new();
+        let (to_host, mut asks) = mpsc::unbounded_channel();
+        assert!(relay.register(7, to_host, notices()));
+        // The host takes the ask and holds it: nothing answers.
+        let held = tokio::spawn(async move {
+            let _request = asks.recv().await.expect("the ask arrives");
+            std::future::pending::<()>().await;
+        });
+
+        let refused = relay.ask(&seat(), "browser_navigate", args()).await;
+        held.abort();
+
+        let Err(why) = refused else {
+            panic!("a host that never answers must not hold the call");
+        };
+        assert!(why.contains("connection 7"), "the host connection is named: {why}");
+        assert!(why.contains("browser_navigate"), "and the tool: {why}");
+        assert!(why.contains("within"), "and the wait it blew: {why}");
     }
 
     /// A host whose connection is gone fails the call rather than hanging it,
