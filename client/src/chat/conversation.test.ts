@@ -896,6 +896,18 @@ describe('the conversation the chat draws', () => {
       counted(7),
       said('the turn it belongs to'),
     ]);
+
+    // The wait ENDS with the turn that took it: a reset that never fired would
+    // ride the spent counter into every later turn, the seen-twice shape this
+    // whole mechanism exists to prevent.
+    server.update({ chat_appended: { key: LEAD, msg: ended() } });
+    server.update({ chat_appended: { key: LEAD, msg: typed('a second ask') } });
+
+    const after = get(chat.value).turns;
+    expect(after, 'the second ask opened its own turn').toHaveLength(2);
+    expect(after[1]?.messages, 'and the spent counter did not ride again').toEqual([
+      typed('a second ask'),
+    ]);
   });
 
   /**
@@ -920,6 +932,41 @@ describe('the conversation the chat draws', () => {
       counted(3),
       said('the page had it'),
     ]);
+  });
+
+  /**
+   * An older page takes none of the frames waiting for a turn.
+   *
+   * They are newer than everything in it, so drawn there they would land in a
+   * turn that ran before they were reported - and the wait outlives the page:
+   * the next turn that opens still takes them.
+   */
+  it('leaves a waiting frame off an older page, and the next turn takes it', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+
+    // An empty newest page - a cursor and no rows - so the frame has no turn
+    // to join and the walk still has somewhere above to go.
+    server.update({ chat_appended: { key: LEAD, msg: counted(9) } });
+    server.send(page([], '5'));
+    expect(chat.older(), 'the empty page left somewhere to walk').toBe(true);
+
+    server.send(page([turn('t0', 'older')], null));
+
+    const held = get(chat.value).turns;
+    expect(held, 'the older page drew its own row').toHaveLength(1);
+    expect(
+      JSON.stringify(held[0]?.messages),
+      'and carries none of the frame that was waiting',
+    ).not.toContain('thinking-9');
+
+    // Still waiting, not spent: the next turn that opens takes it.
+    server.update({ chat_appended: { key: LEAD, msg: typed('the next ask') } });
+    expect(
+      JSON.stringify(get(chat.value).turns.at(-1)?.messages),
+      'and the next turn takes it',
+    ).toContain('thinking-9');
   });
 
   it('opens no row for a frame of any type the fold draws nothing out of', () => {
@@ -1282,6 +1329,31 @@ describe('the conversation the chat draws', () => {
     expect(after.turns, 'the previous occupant turns are gone').toEqual([]);
     expect(after.loaded, 'and the column is not claiming to hold a page').toBe(false);
     expect(server.more().length, 'and it asks for the new occupant page').toBe(2);
+  });
+
+  /**
+   * A frame waiting for a turn does not survive the occupant that reported it.
+   *
+   * The swap clears the held conversation, and the frames still waiting for a
+   * turn are part of it: carried over, the last run's counter would ride into
+   * the next occupant's first turn as a fact of a run that is not its own.
+   */
+  it('drops a waiting frame when the seat changes occupant', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+
+    // Between the subscribe and its first page: no turn to join, so it waits.
+    server.update({ chat_appended: { key: LEAD, msg: counted(5) } });
+    server.update({ session_replaced: { key: LEAD, session_id: 'new-occupant' } });
+
+    server.update({ chat_appended: { key: LEAD, msg: typed('the new occupant speaks') } });
+
+    const fresh = get(chat.value).turns;
+    expect(fresh, 'the new frame opened its own turn').toHaveLength(1);
+    expect(fresh[0]?.messages, 'with none of the last occupant frames in it').toEqual([
+      typed('the new occupant speaks'),
+    ]);
   });
 
   it('drops a page an abandoned ask answered after the seat changed occupant', () => {
