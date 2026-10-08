@@ -1,22 +1,31 @@
 use clap::{CommandFactory, Parser};
 use forge_tui::Cli;
 use forge_tui::error::AppError;
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::info_span;
 
-// Binary entry - `process::exit` is the only way to set a non-zero
-// exit code without unwinding, which matters for clean tty restoration.
+// Binary entry - `process::exit` carries the exit code out without
+// unwinding. Clean tty restoration no longer depends on that: the TUI's guard
+// restores the terminal on every path, unwinding included.
 #[allow(clippy::exit)]
 fn main() {
     if let Err(err) = run() {
         if let Some(app_error) = extract_app_error(&err) {
-            eprintln!("{}", app_error.user_message());
+            report_error(app_error.user_message());
             std::process::exit(app_error.exit_code());
         }
-        eprintln!("{err}");
+        report_error(&format!("{err}"));
         std::process::exit(1);
     }
+}
+
+/// Say why forge is exiting, without panicking on the way out: `eprintln!`
+/// panics when the write fails, and by the time forge is here stderr can be
+/// gone already.
+fn report_error(message: &str) {
+    let _ = writeln!(std::io::stderr(), "{message}");
 }
 
 fn run() -> anyhow::Result<()> {
