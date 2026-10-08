@@ -365,12 +365,13 @@ export const HANDLERS: Record<string, Apply> = {
   dictate_ended: (held, payload) => {
     const take = heldTake(held.composer);
     const outcome = outcomeOf(payload['outcome']);
-    // A refusal resolves no take - it is the answer to one that never ran -
-    // and a tail from a take that is gone is not this one.
-    if (take === null && !('refused' in outcome)) return held;
-    if (take !== null && !('refused' in outcome) && !ofThisTake(take, payload)) {
-      return held;
-    }
+    // **A refusal resolves no take - it answers a start that never ran** -
+    // so a take drawn here is this connection's own and still live on the
+    // server. Clearing it would empty the screen while the recording runs
+    // (#1880); only a seat with nothing drawn takes the refusal's notice.
+    if ('refused' in outcome && take !== null) return held;
+    // A tail from a take that is gone is not this one.
+    if (!('refused' in outcome) && (take === null || !ofThisTake(take, payload))) return held;
     const floor =
       take === null ? FALLBACK_FLOOR_DB : (number(take['floor_db']) ?? FALLBACK_FLOOR_DB);
     return {

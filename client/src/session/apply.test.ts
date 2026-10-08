@@ -840,14 +840,12 @@ describe('applyUpdate', () => {
       expect(ended.composer.notice).toBeNull();
     });
 
-    it("draws the core's own refusal line for a take the server refused", () => {
-      // The client starts the take locally and the server refuses it - a
-      // second take on a busy seat, or on another seat of this connection -
-      // so the line is the core's wording, passed through.
-      const started = applyUpdate(empty(), {
-        dictate_started: { key: SLOT, floor_db: -50, generation: 1 },
-      });
-      const ended = applyUpdate(started, {
+    it('answers a refusal with the notice, and never with the drawn take', () => {
+      // The refusal a client meets: it started a take locally and the server
+      // turned the start down - a second take on a busy seat, or on another
+      // seat of this connection - so nothing was ever drawn, and the line is
+      // the core's wording, passed through.
+      const ended = applyUpdate(empty(), {
         dictate_ended: {
           key: SLOT,
           outcome: {
@@ -866,6 +864,24 @@ describe('applyUpdate', () => {
         tone: 'bad',
         text: 'another client is already dictating on this session \u{b7} dictation did not start',
       });
+
+      // **And the state a refusal must never resolve**: a take IS drawn -
+      // this connection's own, still live on the server - so a line about a
+      // start that never ran must not clear it and empty the screen while
+      // the recording runs (#1880). A future path that dispatches a start
+      // while a take is drawn lands here.
+      const started = applyUpdate(empty(), {
+        dictate_started: { key: SLOT, floor_db: -50, generation: 1 },
+      });
+      const kept = applyUpdate(started, {
+        dictate_ended: {
+          key: SLOT,
+          outcome: { refused: { message: 'another client is already dictating on this session' } },
+          generation: 0,
+        },
+      });
+
+      expect(kept, 'a refusal resolved the take this connection is recording').toBe(started);
     });
 
     it('keeps the take for a progress report that carries no counts', () => {

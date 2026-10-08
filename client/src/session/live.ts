@@ -369,7 +369,7 @@ function createSeat(
     }
     const data = seat.held.snapshot();
     if (data === null) return;
-    publish(sessionFrom(data), null);
+    publish(withHeldTake(sessionFrom(data), seat.wire), null);
   }
 
   /**
@@ -517,6 +517,13 @@ function createSeat(
         // record, so one is wanted.
         seat.asking = false;
         seat.replaceWanted = true;
+        // The take goes with the socket: the core drops a take whose reader
+        // went away, so the fold's own claim dies here - left standing, the
+        // record draws a recording that is over (#1880).
+        if (seat.wire !== null && seat.wire.composer.take !== null) {
+          seat.wire = { ...seat.wire, composer: { ...seat.wire.composer, take: null } };
+          soon();
+        }
       }
     });
   }
@@ -542,4 +549,22 @@ function createSeat(
 
   watch();
   return seat;
+}
+
+/**
+ * A whole-record answer carries no take, and the fold's own must not go with
+ * it: the row is drawn off the record, so a replace that dropped the take
+ * this connection's own updates had drawn emptied the screen while the
+ * recording stayed live (#1880). The take is this connection's, and the
+ * socket leaving `open` is what ends that claim.
+ *
+ * The take is carried and its sibling NOTICE is not: a take is live state a
+ * replace must not touch, while a notice is a moment - and only a take is
+ * owed back to a reader who was away - so a refusal line landing just before
+ * a snapshot is the one thing this can wipe.
+ */
+function withHeldTake(next: SessionRecord, previous: SessionRecord | null): SessionRecord {
+  const held = previous?.composer.take ?? null;
+  if (held === null) return next;
+  return { ...next, composer: { ...next.composer, take: held } };
 }

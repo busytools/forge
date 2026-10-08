@@ -21,7 +21,7 @@ use super::batch::{self, Batch};
 use super::envelope::{ClientMessage, ClientSettings, ServerMessage, Subject};
 use super::wire::{conversation_for, encode_subject, page};
 use crate::live::Live;
-use crate::surface::ViewSurface;
+use crate::surface::{DictateOutcome, ViewSurface};
 use crate::{Command, DispatchError, SessionUpdate};
 
 /// The seats this connection is holding, each given back when this drops.
@@ -213,13 +213,13 @@ async fn drive(socket: &mut WebSocket, state: &Arc<TransportState>) -> anyhow::R
     // so giving back a hold this connection never took would spend one another
     // connection is still using.
     let mut holds = Holds::new(&state.surface);
-    // The seats this connection has started takes for, oldest first, and
+    // The seats this connection has claimed takes for, oldest first, and
     // whether it is recording the read-aloud set: a dictation frame carries
     // no seat of its own, so these are what address it, and the teardown
     // below closes every one of them. A refused start adds its seat here
     // too - the dispatch cannot tell a registration from a refusal, both
-    // answering through the stream - and the take's own end takes it back
-    // out.
+    // answering through the stream - and only a take that ENDS takes it
+    // back out; a refusal leaves it, because the take it answers never ran.
     let mut dictate = Streaming::default();
     // None until the client's first SUBSCRIBE, which is what decides whether
     // this connection answers - not its first message, so a client whose first
@@ -249,12 +249,12 @@ async fn drive(socket: &mut WebSocket, state: &Arc<TransportState>) -> anyhow::R
     // would land anywhere - and the seat is free for the next take. A
     // DEVICE take is not touched - its audio is this machine's, and its
     // recording task outlives any one client.
-    for seat in &dictate.seats {
-        if state.surface.dictate_close(seat, me) {
+    for claim in &dictate.seats {
+        if state.surface.dictate_close(&claim.seat, me) {
             tracing::debug!(
                 target: "forge_server::transport",
                 event_name = "dictate_take_dropped",
-                slot = %seat.display(),
+                slot = %claim.seat.display(),
                 "the connection that was streaming a take went away; the take was dropped",
             );
         }
@@ -292,20 +292,64 @@ async fn drive(socket: &mut WebSocket, state: &Arc<TransportState>) -> anyhow::R
     outcome
 }
 
-/// What this connection is streaming: the seats it has started takes for,
-/// and whether it is recording the read-aloud set. A dictation frame carries
-/// no seat of its own - and the recording carries none at all - so these are
-/// what address one.
+/// What this connection is streaming: the seats it has claimed takes for -
+/// a start's seat is claimed as soon as its dispatch answers, so a refused
+/// one keeps its entry, and a frame that follows a start always finds the
+/// seat - and whether it is recording the read-aloud set. A dictation frame
+/// carries no seat of its own - and the recording carries none at all - so
+/// these are what address one.
 #[derive(Default)]
 struct Streaming {
-    seats: Vec<SessionSlot>,
+    seats: Vec<Claim>,
     read_aloud: bool,
+}
+
+/// One seat's claim: the seat, and the generation of the take that holds it.
+///
+/// The generation is stamped by the take's own `DictateStarted` (the
+/// dispatch answers before one can be known), and it is what tells THIS
+/// take's end from an older one's - a stop leaves the take finishing while
+/// the reader can start the next at once, so the stale end arrives after the
+/// newer take has registered under the same seat (#1886).
+struct Claim {
+    seat: SessionSlot,
+    generation: u64,
 }
 
 impl Streaming {
     /// Whether a frame from this connection has anything to land in.
     fn any(&self) -> bool {
         !self.seats.is_empty() || self.read_aloud
+    }
+
+    /// Claim a seat for a start that is on its way, generation unknown: the
+    /// dispatch answers before one can be known, and the frame that follows
+    /// the start must find the seat already here. **An existing claim is
+    /// reset to unknown**: the newer take's `DictateStarted` has not arrived
+    /// yet, and an end still in flight for the older one must not retire the
+    /// claim the newer take is about to stamp.
+    fn claim(&mut self, seat: &SessionSlot) {
+        match self.seats.iter_mut().find(|claim| &claim.seat == seat) {
+            Some(claim) => claim.generation = 0,
+            None => self.seats.push(Claim { seat: seat.clone(), generation: 0 }),
+        }
+    }
+
+    /// Stamp the claim with the generation its own `DictateStarted` carried.
+    fn stamp(&mut self, seat: &SessionSlot, generation: u64) {
+        if let Some(claim) = self.seats.iter_mut().find(|claim| &claim.seat == seat) {
+            claim.generation = generation;
+        }
+    }
+
+    /// Retire the claim an end names, and only that one: a refusal answers a
+    /// start that never ran, and an older take's end must not strip the
+    /// claim a newer take of the same seat registered under.
+    fn retire(&mut self, seat: &SessionSlot, outcome: &DictateOutcome, generation: u64) {
+        if matches!(outcome, DictateOutcome::Refused { .. }) {
+            return;
+        }
+        self.seats.retain(|claim| &claim.seat != seat || claim.generation != generation);
     }
 }
 
@@ -342,17 +386,36 @@ async fn run_connection(
                 let Some(update) = heard else { break };
                 // A take of this connection's that ends takes its seat back
                 // out: with the take gone, the seat has no stream a frame
-                // could belong to. Read before the watch gate, because the
-                // list is the connection's own bookkeeping rather than
-                // something a subscriber hears.
-                if let SessionUpdate::DictateEnded { key, initiator: Some(id), .. } = &update
+                // could belong to. Only the claim that take NAMES is retired
+                // - a refusal answers a start that never ran, and a stale
+                // end must not strip the seat a newer take registered under
+                // (#1880, #1886); the generation comes from the take's own
+                // `DictateStarted`, read just below. Read before the watch
+                // gate, because the list is the connection's own bookkeeping
+                // rather than something a subscriber hears.
+                if let SessionUpdate::DictateStarted {
+                    key,
+                    generation,
+                    initiator: Some(id),
+                    ..
+                } = &update
                     && *id == me
                 {
-                    dictate.seats.retain(|seat| seat != key);
+                    dictate.stamp(key, *generation);
+                }
+                if let SessionUpdate::DictateEnded {
+                    key,
+                    initiator: Some(id),
+                    outcome,
+                    generation,
+                } = &update
+                    && *id == me
+                {
+                    dictate.retire(key, outcome, *generation);
                 }
                 // The fold is the transport's, not this connection's: it runs
                 // once for the whole socket in `transport::fold_the_stream`.
-                if watched.iter().any(|what| what.covers(&update)) && ours_to_hear(&update, me) {
+                if forwards(&update, watched, me) {
                     // **A fatal goes out now, not on the batch's clock.** The
                     // exit it announces is already on its way - `workspace.
                     // shutdown` follows `run_tui`'s return - and a frame still
@@ -628,7 +691,7 @@ async fn handle_client(
             // taken, and the client reads them in the order it receives them.
             let mut queued = Vec::new();
             for update in open_stream(state, updates, answering) {
-                if watched.iter().any(|what| what.covers(&update)) && ours_to_hear(&update, me) {
+                if forwards(&update, watched, me) {
                     queued.push(update);
                 }
             }
@@ -801,17 +864,16 @@ async fn handle_client(
                 }
                 (None, false) => match state.surface.dispatch(command) {
                     Ok(()) => {
-                        // Remembered optimistically: the dispatch answers Ok
-                        // for a refusal too - a refused take's reason rides
-                        // the stream as its own `DictateEnded` - so the seat
-                        // is added here and taken back out when that end
-                        // arrives. It has to be added BEFORE the next message
-                        // on this socket, or the frame that follows a start
-                        // would find no seat to address.
-                        if let Some(seat) = streamed
-                            && !dictate.seats.contains(&seat)
-                        {
-                            dictate.seats.push(seat);
+                        // Claimed as soon as the dispatch answers - Ok for a
+                        // refusal too, whose reason rides the stream as its
+                        // own `DictateEnded` - so the frame that follows a
+                        // start finds the seat, which is what makes the claim
+                        // run AFTER the dispatch rather than before it. The
+                        // generation stays unknown until the take's own
+                        // `DictateStarted` stamps it, and only an end naming
+                        // that generation retires it.
+                        if let Some(seat) = streamed {
+                            dictate.claim(&seat);
                         }
                         if let Some(recording) = recording {
                             dictate.read_aloud = recording;
@@ -1120,6 +1182,34 @@ fn ours_to_hear(update: &SessionUpdate, me: u64) -> bool {
     }
 }
 
+/// Whether this update is one of a take's own.
+///
+/// The family `ours_to_hear` stamps by connection: a take's meter, its
+/// phases and the end that settles it.
+fn is_take_news(update: &SessionUpdate) -> bool {
+    matches!(
+        update,
+        SessionUpdate::DictateStarted { .. }
+            | SessionUpdate::DictateLevel { .. }
+            | SessionUpdate::DictateTranscribing { .. }
+            | SessionUpdate::DictateProgress { .. }
+            | SessionUpdate::DictateEnded { .. }
+    )
+}
+
+/// Whether this connection forwards one update.
+///
+/// **A take's own news reaches its connection whether or not the seat is
+/// showing.** The reader may be on another seat while their recording runs,
+/// and the fold that draws the take - and the end settling it - is this
+/// connection's: filtered by the watch, the record would go on drawing a
+/// recording that is over (#1880). Every other update keeps the watch rule
+/// alone.
+fn forwards(update: &SessionUpdate, watched: &[Subject], me: u64) -> bool {
+    ours_to_hear(update, me)
+        && (is_take_news(update) || watched.iter().any(|what| what.covers(update)))
+}
+
 /// Where one binary message went, decided without touching a take.
 #[derive(Debug, PartialEq)]
 enum FrameRoute {
@@ -1141,9 +1231,9 @@ enum FrameRoute {
 /// connection that sent it started - or to the read-aloud recording it is
 /// feeding - and its messages are ordered, so a frame can only arrive between
 /// a start of its own and that take's end. It is offered to every seat the
-/// connection started - a refused start's seat is among them until the
-/// refusal reaches the client - and the push below keeps it only where the
-/// live take is THAT connection's.
+/// connection has claimed - a refused start's seat stays among them, holding
+/// nothing - and the push below keeps it only where the live take is THAT
+/// connection's.
 fn frame_route(bytes: &[u8], dictate: &Streaming) -> FrameRoute {
     let decoded = match super::frame::decode(bytes) {
         Ok(decoded) => decoded,
@@ -1176,9 +1266,11 @@ fn take_frame(surface: &ViewSurface, dictate: &Streaming, me: u64, route: FrameR
             // Offered to each seat this connection started, kept only where
             // the live take is THIS connection's - a seat's take can be
             // another connection's, and its audio is not this one's to feed.
-            let kept =
-                dictate.seats.iter().any(|seat| surface.dictate_push(seat, &samples, Some(me)))
-                    || (dictate.read_aloud && surface.dictate_read_aloud_push(&samples, Some(me)));
+            let kept = dictate
+                .seats
+                .iter()
+                .any(|claim| surface.dictate_push(&claim.seat, &samples, Some(me)))
+                || (dictate.read_aloud && surface.dictate_read_aloud_push(&samples, Some(me)));
             if !kept {
                 tracing::debug!(
                     event_name = "dictate_frame_dropped",
@@ -1756,6 +1848,86 @@ mod tests {
         );
     }
 
+    /// The claim is reset while a newer take's `DictateStarted` is on its
+    /// way: without that, the newer start inherits the older take's
+    /// generation, the older take's end retires the claim in the window, and
+    /// its `DictateStarted` then stamps nothing - the live take is unclaimed,
+    /// every frame drops as `NoTake`, and the meter is dead under a record
+    /// that still draws it (#1886).
+    #[test]
+    fn a_new_claim_resets_before_the_older_take_ends() {
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        let mut streaming = Streaming::default();
+        streaming.claim(&seat);
+        streaming.stamp(&seat, 1);
+
+        // Take 2's start, and take 1's end processed in the window before
+        // take 2's `DictateStarted`.
+        streaming.claim(&seat);
+        streaming.retire(&seat, &DictateOutcome::Cancelled, 1);
+        let claimed = streaming.seats.len();
+        assert_eq!(claimed, 1, "the seat the live take streams into was stripped");
+
+        // And take 2's own `DictateStarted` stamps it, its own end retiring
+        // it, whatever order the end lands in.
+        streaming.stamp(&seat, 2);
+        streaming.retire(&seat, &DictateOutcome::Cancelled, 2);
+        assert!(streaming.seats.is_empty(), "take 2's own end must retire the claim");
+    }
+
+    /// A stale end leaves a claim a newer take registered under.
+    ///
+    /// A stop leaves the take finishing while the reader can start the next
+    /// take at once, so an older take's end arrives after the newer take has
+    /// claimed the seat - and read as an end OF THE CLAIM it strips the seat
+    /// the live take streams into: frames drop as `NoTake` and the teardown
+    /// has nothing to close (#1886). The generation the claim was stamped
+    /// with is what tells the two ends apart.
+    #[test]
+    fn a_stale_end_leaves_a_newer_claim() {
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        let mut streaming = Streaming::default();
+        streaming.claim(&seat);
+        streaming.stamp(&seat, 1);
+        // The next take claims the seat while the older one is finishing -
+        // the claim stands, so the stamp is what the newer start moves.
+        streaming.claim(&seat);
+        streaming.stamp(&seat, 2);
+
+        streaming.retire(&seat, &DictateOutcome::Cancelled, 1);
+        assert_eq!(
+            streaming.seats.len(),
+            1,
+            "the older take's end stripped the claim the newer take holds",
+        );
+        assert_eq!(streaming.seats[0].generation, 2, "and the stamp is the newer take's");
+
+        // The claim's own end retires it - and with it the seat is free.
+        streaming.retire(&seat, &DictateOutcome::Cancelled, 2);
+        assert!(streaming.seats.is_empty(), "the claim's own end must retire it");
+    }
+
+    /// A refusal never retires a claim: it answers a start that never ran, so
+    /// a live take under the seat keeps its entry (#1880).
+    #[test]
+    fn a_refusal_never_retires_a_claim() {
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        let mut streaming = Streaming::default();
+        streaming.claim(&seat);
+
+        // A first-ever refused start: the claim was added optimistically for
+        // it, and it stays - the take it answered never ran.
+        streaming.retire(&seat, &DictateOutcome::Refused { message: "busy".to_owned() }, 0);
+        assert_eq!(streaming.seats.len(), 1, "a refused start's end moved the claim");
+
+        // And a refusal arriving under a LIVE take's stamp moves nothing
+        // either.
+        streaming.stamp(&seat, 1);
+        streaming.retire(&seat, &DictateOutcome::Refused { message: "busy".to_owned() }, 0);
+        assert_eq!(streaming.seats.len(), 1, "a refusal's end moved the live claim");
+        assert_eq!(streaming.seats[0].generation, 1, "and left its stamp alone");
+    }
+
     /// A binary message at the wire's shape: the kind tag, then the
     /// samples.
     fn payload(samples: &[i16]) -> Vec<u8> {
@@ -1772,7 +1944,7 @@ mod tests {
     #[test]
     fn a_frame_is_the_samples_its_own_connection_sent() {
         let seat = SessionSlot::lead("TestOrg", "proj");
-        let streaming = Streaming { seats: vec![seat], read_aloud: false };
+        let streaming = Streaming { seats: vec![Claim { seat, generation: 0 }], read_aloud: false };
         assert_eq!(
             frame_route(&payload(&[16384]), &streaming),
             FrameRoute::Audio(vec![0.5]),
@@ -1810,7 +1982,7 @@ mod tests {
     #[test]
     fn a_binary_message_that_is_not_a_frame_is_refused_by_its_reason() {
         let seat = SessionSlot::lead("TestOrg", "proj");
-        let streaming = Streaming { seats: vec![seat], read_aloud: false };
+        let streaming = Streaming { seats: vec![Claim { seat, generation: 0 }], read_aloud: false };
         assert_eq!(
             frame_route(&[], &streaming),
             FrameRoute::Refused(super::super::frame::Refusal::ShortHeader)
