@@ -1322,6 +1322,43 @@ describe('the models route as it draws', () => {
   });
 
   /**
+   * The same shape one arm over: a standing INSTALL failure - on a variant
+   * this sweep never asked for - must not end it before it has asked for
+   * anything.
+   */
+  it('sweeps over a standing install failure it never asked for', async () => {
+    const forge = fakeConnection();
+    const host = route(forge);
+    await tick();
+    forge.arrive({
+      kind: 'snapshot',
+      subject: MODELS,
+      data: {
+        ...modelsWire,
+        rows: [normRow('a/norm-a', 900)],
+        install: {
+          state: 'failed',
+          file: 'a/norm-old.gguf',
+          reason: 'No such file or directory (os error 2)',
+        },
+      },
+    });
+    await tick();
+
+    const button = [...host.querySelectorAll<HTMLButtonElement>('button')].find(
+      (c) => c.textContent === 'run the benchmark',
+    );
+    button?.click();
+    flushSync();
+    await tick();
+
+    // The plan's own fetch goes out: the stale failure is not this sweep's.
+    expect(forge.dispatched.at(-1)).toEqual({
+      dictate_install: { variant: 'a/norm-a' },
+    });
+  });
+
+  /**
    * **A take landing mid-sweep moves the corpus under the runs**, and the
    * core recomputes it per run: the chain would bench every run again on
    * every push, forever. The move ends the sweep by name instead.

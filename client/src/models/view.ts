@@ -1067,6 +1067,11 @@ export function failureKey(bench: BenchState): string | null {
   return bench.state === 'failed' ? `${bench.target.file}|${bench.reason}` : null;
 }
 
+/** [`failureKey`] for the install's own failed state, on the same terms. */
+export function installKey(install: InstallState): string | null {
+  return install.state === 'failed' ? `${install.file}|${install.reason}` : null;
+}
+
 /** The bench's line: what is running, or what stopped it. */
 export function benchLine(bench: BenchState): OpLine | null {
   switch (bench.state) {

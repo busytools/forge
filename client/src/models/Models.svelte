@@ -14,6 +14,7 @@
   import ModelsBody from './ModelsBody.svelte';
   import {
     failureKey,
+    installKey,
     sweepPlan,
     sweepVerdicts,
     type SweepPlan,
@@ -205,6 +206,7 @@
   let sweepStamp = $state<string | null>(null);
   let sweepCorpus = $state<string | null>(null);
   let sweepStaleFailure = $state<string | null>(null);
+  let sweepStaleInstall = $state<string | null>(null);
   /** The installs this sweep has already asked for, so a push that lands
    * mid-flight cannot ask twice. Nothing draws from it; the reactive set is
    * what the sheet's lint takes for a mutable one, and it costs nothing. */
@@ -221,6 +223,7 @@
     sweepStamp = wire.results[0]?.at ?? null;
     sweepCorpus = null;
     sweepStaleFailure = failureKey(wire.bench);
+    sweepStaleInstall = installKey(wire.install);
     sweep = plan;
     // The feeds are read fresh at the press: the sweep installs what the
     // newest read named, not what a cache held.
@@ -283,17 +286,26 @@
 
     const missing = plan.runs.find((run) => run.file === null);
     if (missing !== undefined) {
-      if (wire.install.state === 'failed') {
+      // A failure that was standing when the press happened is not this
+      // sweep's to die on, and it must not read as busy either: the step
+      // below is what replaces it with this sweep's own attempt.
+      const standingInstall =
+        sweepStaleInstall !== null && installKey(wire.install) === sweepStaleInstall;
+      if (wire.install.state === 'failed' && !standingInstall) {
         sweepNotice = `${wire.install.file}: ${wire.install.reason}`;
         sweep = null;
         return;
       }
-      if (wire.install.state !== 'idle') return;
+      if (wire.install.state !== 'idle' && !standingInstall) return;
       const record = wire.installed.find((model) => model.variant === missing.variant);
       if (record === undefined) {
         if (!sweepAsked.has(missing.variant)) {
           sweepAsked.add(missing.variant);
           sweepLine = `fetching ${missing.variant}`;
+          // From here the standing failure is gone: whatever answers next is
+          // answerable by this sweep, even a byte-for-byte repeat of the old
+          // one.
+          sweepStaleInstall = null;
           act({ dictate_install: { variant: missing.variant } });
         }
         return;
