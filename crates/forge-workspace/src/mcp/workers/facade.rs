@@ -200,6 +200,13 @@ pub fn classify_worker_spawn_failure(
     if message.contains("worker limit reached") {
         return WorkerSpawnError::DispatchFailed { message: message.to_owned() };
     }
+    // The cleanup refusal is forge's own sentence, so it is recognised by
+    // its own closing phrase - the part no label interpolated into the
+    // sentence can split - and whatever that label happens to spell cannot
+    // turn it into a worktree-creation failure.
+    if message.contains("is still cleaning up; retry once it finishes") {
+        return WorkerSpawnError::DispatchFailed { message: message.to_owned() };
+    }
     let lower = message.to_lowercase();
     let mentions_worktree = lower.contains("worktree");
     let resembles_branch_resolve = lower.contains("failed to resolve base branch");
@@ -442,6 +449,19 @@ impl WorkerFacade for ProdWorkerFacade {
         let ws = self.workspace.upgrade().ok_or_else(|| WorkerSpawnError::DispatchFailed {
             message: "workspace dropped".into(),
         })?;
+        // A label whose despawn cleanup is still running is refused here,
+        // before anything mints a worktree: that cleanup is deleting the
+        // directory a resume would re-create, and re-attaching its branch
+        // would leave the despawn reporting a branch it could not reap - a
+        // failure this spawn made. The spawn handler reads the same mark;
+        // this half is what keeps a refused spawn from minting anything.
+        if ws.despawn_cleanup_pending(&cp.project_key, &label) {
+            return Err(WorkerSpawnError::DispatchFailed {
+                message:
+                    "this label's previous despawn is still cleaning up; retry once it finishes"
+                        .to_owned(),
+            });
+        }
         // The project view's path answers the is_git_repo probe the
         // failure classifier reads (the WorkerEntry is gone by the time
         // we see a spawn error).
@@ -1696,6 +1716,21 @@ mod worktree_creation_failed_tests {
             classify_worker_spawn_failure(&message, true, SpawnFailureKind::Unclassified),
             WorkerSpawnError::DispatchFailed { message },
             "the cap refusal stays DispatchFailed even when the project key carries 'worktree'",
+        );
+    }
+
+    /// The despawn-cleanup refusal is recognised by its own phrase, so a
+    /// label the sentence might come to carry ("worktree-fix" here, the
+    /// shape the LabelLive refusal already has) cannot route it to a
+    /// worktree-creation failure it did not suffer.
+    #[test]
+    fn the_cleanup_refusal_stays_a_dispatch_failure_whatever_the_label_spells() {
+        let message =
+            "the previous despawn of 'worktree-fix' is still cleaning up; retry once it finishes";
+        assert_eq!(
+            classify_worker_spawn_failure(message, true, SpawnFailureKind::Unclassified),
+            WorkerSpawnError::DispatchFailed { message: message.to_owned() },
+            "the cleanup refusal stays DispatchFailed however its label reads",
         );
     }
 }

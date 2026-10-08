@@ -1,6 +1,6 @@
 //! The orchestrator.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -374,6 +374,14 @@ pub struct Workspace {
     /// forge UI level; their JSONLs persist on disk). Mutated via
     /// `insert_live_worker` / `remove_latest_worker` / `drain_live_workers`.
     live_workers: Mutex<HashMap<ProjectKey, Vec<crate::mcp::workers::types::WorkerEntry>>>,
+    /// The `(project, label)` pairs whose despawn cleanup is still running.
+    /// The label's worktree is being torn down for that whole window, so a
+    /// spawn taking the label now would enter a directory the removal is
+    /// about to delete. Held from the cleanup's handoff until it finishes,
+    /// and released by its own `Drop` so a panicking cleanup cannot leave a
+    /// label blocked forever. In-memory only, like the rest of the worker
+    /// registry.
+    despawn_cleanups: Mutex<HashSet<(ProjectKey, String)>>,
     /// Why the last spawn or connection for a slot failed, keyed by slot.
     /// Survives the failed attempt itself, which is what a `DomainSession`
     /// cannot: a connection failure releases the session, so by the time a
@@ -657,9 +665,35 @@ pub(crate) struct PooledAgent {
 pub enum LiveWorkerRefusal {
     /// A live (non-`Failed`) worker already holds the label.
     LabelLive(SessionSlot),
+    /// The label's previous despawn is still cleaning up: its worktree is
+    /// mid-removal, so a worker admitted onto the label now would be handed
+    /// the very directory the removal is about to delete.
+    CleanupPending,
     /// The project's worker cap is reached: `live` workers are up
     /// against a cap of `cap`.
     AtCap { live: usize, cap: usize },
+}
+
+/// One label's in-flight despawn cleanup, released when it drops.
+///
+/// Held from the despawn's mark (taken before its teardown) until the
+/// cleanup finishes, so a spawn for the same label is refused rather than
+/// handed a worktree that the removal is deleting. `Drop` rather than a
+/// plain clear at the end: a cleanup that unwinds mid-removal must not
+/// leave the label unspawnable for the rest of the run.
+pub(crate) struct DespawnCleanupPending {
+    workspace: Arc<Workspace>,
+    project_key: ProjectKey,
+    label: String,
+}
+
+impl Drop for DespawnCleanupPending {
+    fn drop(&mut self) {
+        self.workspace
+            .despawn_cleanups
+            .lock()
+            .remove(&(self.project_key.clone(), self.label.clone()));
+    }
 }
 
 /// The session a worker label resumes onto.
@@ -1582,6 +1616,7 @@ impl Workspace {
             update_tx,
             command_senders: Mutex::new(HashMap::new()),
             live_workers: Mutex::new(HashMap::new()),
+            despawn_cleanups: Mutex::new(HashSet::new()),
             spawn_failures: Mutex::new(HashMap::new()),
             held_work_seats: crate::work::HeldSeats::default(),
             domain_handles: Mutex::new(HashMap::new()),
@@ -6228,7 +6263,15 @@ impl Workspace {
         entry: crate::mcp::workers::types::WorkerEntry,
         cap: Option<usize>,
     ) -> Result<(), LiveWorkerRefusal> {
+        // The cleanup marker is read while holding the live registry's lock,
+        // in the same order `mark_despawn_cleanup_pending` writes it, so a
+        // spawn cannot pass between "the label is free" and "the cleanup is
+        // remembered". A despawn marks before it tears its entry down; from
+        // then until the cleanup ends, this refuses.
         let mut workers = self.live_workers.lock();
+        if self.despawn_cleanup_pending(project_key, &entry.label) {
+            return Err(LiveWorkerRefusal::CleanupPending);
+        }
         if let Some(existing) = workers.get(project_key).and_then(|entries| {
             crate::mcp::workers::types::live_worker_with_label(entries, &entry.label)
         }) {
@@ -6244,6 +6287,35 @@ impl Workspace {
         }
         workers.entry(project_key.clone()).or_default().push(entry);
         Ok(())
+    }
+
+    /// Mark `label`'s despawn cleanup as in flight in `project_key`, and
+    /// hand back the guard that releases it.
+    ///
+    /// A despawn takes this BEFORE its teardown, under the live registry's
+    /// lock: from here until the cleanup ends the label must not read as
+    /// free to a spawn, because the worktree that cleanup will delete is
+    /// still on disk. `Drop` does the releasing, so a cleanup that returns
+    /// early or panics cannot leave the label unspawnable for the run.
+    pub(crate) fn mark_despawn_cleanup_pending(
+        self: &Arc<Self>,
+        project_key: &ProjectKey,
+        label: &str,
+    ) -> DespawnCleanupPending {
+        {
+            let _live = self.live_workers.lock();
+            self.despawn_cleanups.lock().insert((project_key.clone(), label.to_owned()));
+        }
+        DespawnCleanupPending {
+            workspace: Arc::clone(self),
+            project_key: project_key.clone(),
+            label: label.to_owned(),
+        }
+    }
+
+    /// Whether `label`'s despawn cleanup is still running in `project_key`.
+    pub(crate) fn despawn_cleanup_pending(&self, project_key: &ProjectKey, label: &str) -> bool {
+        self.despawn_cleanups.lock().contains(&(project_key.clone(), label.to_owned()))
     }
 
     /// The project's cap-relevant worker count: the same number
@@ -11956,6 +12028,7 @@ mod workers_state_tests {
             .expect_err("a second live worker for the same label is rejected");
         let existing = match existing {
             LiveWorkerRefusal::LabelLive(session_key) => session_key,
+            LiveWorkerRefusal::CleanupPending => panic!("no despawn cleanup is in flight"),
             LiveWorkerRefusal::AtCap { .. } => panic!("no cap was supplied"),
         };
         assert_eq!(existing.label(), "first", "the live holder is returned");

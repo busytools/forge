@@ -15,6 +15,7 @@ use crate::protocol::{
     Command, PromptSource, SessionUpdate, WorkerSpawnReply, WorkerStatusAction, WorktreeDisposition,
 };
 use crate::target::ProjectKey;
+use crate::workspace::DespawnCleanupPending;
 use crate::workspace::LiveWorkerRefusal;
 use crate::workspace::Workspace;
 use crate::{SessionSlot, SessionTarget};
@@ -1460,6 +1461,22 @@ pub(crate) fn handle_spawn_worker(
                     "a worker labeled '{label}' is already live (session {existing_session}); message it with agents__send_message or close it first (one live worker per label)"
                 )));
             }
+            LiveWorkerRefusal::CleanupPending => {
+                tracing::info!(
+                    target: "forge_workspace::spawn",
+                    project = %project_key.as_str(),
+                    label = %label,
+                    "spawn_worker: refused, the label's previous despawn is still cleaning up",
+                );
+                // No "worktree" in this sentence, and no interpolated
+                // label either (a label may carry the word): the facade's
+                // failure classifier routes that word to a
+                // worktree-creation failure, which is not what happened.
+                let _ = return_to.send(Err(
+                    "this label's previous despawn is still cleaning up; retry once it finishes"
+                        .to_owned(),
+                ));
+            }
             LiveWorkerRefusal::AtCap { live, cap } => {
                 tracing::info!(
                     target: "forge_workspace::spawn",
@@ -1833,9 +1850,10 @@ pub(crate) fn handle_close_worker(
 /// session, which drops the worker's command sender; the disconnect
 /// itself runs asynchronously on the worker's own task and can take
 /// up to the 5s close-wait budget to reap the child. The worktree
-/// removal runs immediately on the command loop, so it may overlap
-/// the claude child's final seconds. A post-teardown worktree-removal
-/// failure is surfaced as a warning in the
+/// removal then runs on the blocking pool (see [`DespawnCleanup`]), so it
+/// overlaps the claude child's final seconds without holding the caller's
+/// runtime. A post-teardown worktree-removal failure is surfaced as a
+/// warning in the
 /// [`DespawnResult`](crate::protocol::DespawnResult) but never rolls back
 /// the kill - teardown and worktree cleanup are independent.
 pub(crate) fn handle_despawn_worker(
@@ -1952,6 +1970,15 @@ pub(crate) fn handle_despawn_worker(
         return;
     }
 
+    // The label stays reserved for the whole cleanup: marked here, before
+    // the teardown frees the entry, so no spawn can take the label in
+    // between and be handed the worktree this despawn is about to delete.
+    // The guard rides into the cleanup below and releases the label when
+    // the cleanup ends (or unwinds). Every refusal path above this point
+    // returns before the mark, so a blocked or absent despawn frees
+    // nothing it did not take.
+    let cleanup_pending = workspace.mark_despawn_cleanup_pending(project_key, label);
+
     // Teardown. A live worker goes through `teardown_worker`, which kills
     // the subprocess on drop, removes the entry, deletes the row and
     // clears the records and payloads addressed to it.
@@ -2009,143 +2036,244 @@ pub(crate) fn handle_despawn_worker(
         );
     }
 
-    // Resolve the torn-down worktree's `(project name, branch)` while
-    // the path still exists, so its persisted review state can be judged
-    // once the worktree is gone. Keyed by the forge.toml project NAME to
-    // match what the diff overlay saved under.
-    let review_key = worktree_path.as_ref().and_then(|path| {
-        let Some(branch) = forge_agent::env::worktree::worktree_branch(path) else {
-            tracing::warn!(
-                target: "forge_workspace::spawn",
-                project = %project_key.as_str(),
-                label = %label,
-                "despawn: could not resolve the worktree branch (detached HEAD or git error); its review threads are not cleaned up and may resurrect on a later worktree reusing the branch",
-            );
-            return None;
-        };
-        let Some(name) = project_view.as_ref().map(|v| v.name.clone()) else {
-            tracing::warn!(
-                target: "forge_workspace::spawn",
-                project = %project_key.as_str(),
-                label = %label,
-                branch = %branch,
-                "despawn: could not resolve the project name; the branch's review threads are not cleaned up",
-            );
-            return None;
-        };
-        Some((name, branch))
-    });
-
-    // Worktree cleanup runs AFTER teardown on a verified-clean (or
-    // forced) worktree. A failure here is reported but never rolls
-    // back the already-completed teardown.
-    let mut branch_cleanup_warning = None;
-    let worktree_cleanup_warning = match worktree_path.as_ref() {
-        // A stranded row whose worktree is already gone is the definition
-        // of that state - it is why the boot wave skips the row - so there
-        // is nothing to remove and git's failure over an untracked path
-        // would be a warning about nothing. A live worker's worktree
-        // vanishing is the opposite: anomalous, and the live shape below
-        // keeps reporting what git said.
-        //
-        // The BRANCH is a different matter, and it is still there: `git
-        // worktree remove` never deletes one. With the directory gone the
-        // branch is certainly not checked out, so this is the one place
-        // reaping it is unambiguously safe.
-        Some(_) if worktree_already_gone => {
-            tracing::debug!(
-                target: "forge_workspace::spawn",
-                event_name = "despawn_stranded_worktree_already_gone",
-                project = %project_key.as_str(),
-                label = %label,
-                worktree = %worktree_display,
-                "despawn: the stranded row's worktree is already gone; nothing to remove",
-            );
-            branch_cleanup_warning = reap_branch_and_reviews(
-                workspace,
-                project_view.as_ref(),
-                review_key.as_ref(),
-                label,
-            );
-            None
-        }
-        Some(path) => {
-            // git refuses a worktree holding initialized submodules
-            // however clean it is (git-worktree(1)), so its refusal is
-            // not a verdict on the disk and cannot stand as one. Re-judge
-            // it against the worktree as it is now: `--force` discards
-            // uncommitted work, so it stands in only for a verdict taken
-            // here rather than one taken before the worker was torn down.
-            let removal = match forge_agent::env::worktree::remove_worktree(path, force) {
-                Err(err)
-                    if !force
-                        && forge_agent::env::worktree::worktree_dirty_reason(path).is_none() =>
-                {
-                    tracing::debug!(
-                        target: "forge_workspace::spawn",
-                        event_name = "despawn_worktree_removal_forced",
-                        project = %project_key.as_str(),
-                        label = %label,
-                        worktree = %path.display(),
-                        error = %err,
-                        "despawn: git refused the removal of a clean worktree; retrying with --force",
-                    );
-                    forge_agent::env::worktree::remove_worktree(path, true)
-                }
-                other => other,
-            };
-            match removal {
-                Ok(()) => {
-                    tracing::info!(
-                        target: "forge_workspace::spawn",
-                        project = %project_key.as_str(),
-                        label = %label,
-                        worktree = %path.display(),
-                        "despawn: worktree removed",
-                    );
-                    // Only after a successful removal: while the worktree
-                    // stands it holds the branch checked out, and git refuses
-                    // to delete a checked-out branch.
-                    branch_cleanup_warning = reap_branch_and_reviews(
-                        workspace,
-                        project_view.as_ref(),
-                        review_key.as_ref(),
-                        label,
-                    );
-                    None
-                }
-                Err(err) => {
+    // Everything from here runs `git` or walks the tree, and the removal
+    // alone can take minutes: inline on a runtime worker it holds the
+    // socket's own work for the whole time (#1633), so it goes to the
+    // blocking pool, as the subagent worktree reap does. The reply, the
+    // pane's event and any warning still go out when the cleanup finishes.
+    let log_project = project_key.clone();
+    let log_label = label.to_owned();
+    let cleanup = DespawnCleanup {
+        workspace: Arc::clone(workspace),
+        project_key: project_key.clone(),
+        label: label.to_owned(),
+        force,
+        worktree_path,
+        worktree_display,
+        worktree_already_gone,
+        project_view,
+        live,
+        is_git_repo,
+        respond,
+    };
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => {
+            // A wrapper task awaits the blocking handle, so a panic in the
+            // cleanup names its site in the log instead of vanishing with
+            // the JoinHandle; the caller still sees the dropped reply.
+            let task = handle.spawn_blocking(move || cleanup.run(cleanup_pending));
+            handle.spawn(async move {
+                if let Err(join_err) = task.await {
                     tracing::warn!(
                         target: "forge_workspace::spawn",
-                        project = %project_key.as_str(),
-                        label = %label,
-                        error = %err,
-                        "despawn: worker torn down but worktree cleanup failed"
+                        event_name = "despawn_cleanup_panicked",
+                        project = %log_project.as_str(),
+                        label = %log_label,
+                        error = %join_err,
+                        "despawn: the worktree cleanup panicked part-way through",
                     );
-                    Some(err.to_string())
+                }
+            });
+        }
+        // No runtime to hand it to - a caller outside one: the cleanup runs
+        // where it is, the way this path always did.
+        Err(_) => cleanup.run(cleanup_pending),
+    }
+}
+
+/// The despawn's filesystem half, handed to the blocking pool.
+///
+/// Split out of [`handle_despawn_worker`] so the fast part - the peek, the
+/// dirty verdict and the teardown - keeps its ordering on the calling task
+/// while the cleanup's own `git` calls, the `git worktree remove` above
+/// all, run off the runtime. The dirty verdict is the one `git` call that
+/// stays inline.
+struct DespawnCleanup {
+    workspace: Arc<Workspace>,
+    project_key: ProjectKey,
+    label: String,
+    force: bool,
+    worktree_path: Option<std::path::PathBuf>,
+    worktree_display: String,
+    worktree_already_gone: bool,
+    project_view: Option<crate::views::ProjectView>,
+    live: Option<crate::mcp::workers::types::WorkerEntry>,
+    is_git_repo: bool,
+    respond: tokio::sync::oneshot::Sender<crate::protocol::DespawnResult>,
+}
+
+impl DespawnCleanup {
+    /// Run the cleanup, holding `pending` - the label's in-flight mark -
+    /// until the end, so the label is reserved for every step that touches
+    /// the worktree and released only once the removal is done and its
+    /// outcome has been announced.
+    fn run(self, pending: DespawnCleanupPending) {
+        use crate::protocol::DespawnResult;
+
+        let Self {
+            workspace,
+            project_key,
+            label,
+            force,
+            worktree_path,
+            worktree_display,
+            worktree_already_gone,
+            project_view,
+            live,
+            is_git_repo,
+            respond,
+        } = self;
+        let label = label.as_str();
+        // Resolve the torn-down worktree's `(project name, branch)` while
+        // the path still exists, so its persisted review state can be judged
+        // once the worktree is gone. Keyed by the forge.toml project NAME to
+        // match what the diff overlay saved under.
+        let review_key = worktree_path.as_ref().and_then(|path| {
+            let Some(branch) = forge_agent::env::worktree::worktree_branch(path) else {
+                tracing::warn!(
+                    target: "forge_workspace::spawn",
+                    project = %project_key.as_str(),
+                    label = %label,
+                    "despawn: could not resolve the worktree branch (detached HEAD or git error); its review threads are not cleaned up and may resurrect on a later worktree reusing the branch",
+                );
+                return None;
+            };
+            let Some(name) = project_view.as_ref().map(|v| v.name.clone()) else {
+                tracing::warn!(
+                    target: "forge_workspace::spawn",
+                    project = %project_key.as_str(),
+                    label = %label,
+                    branch = %branch,
+                    "despawn: could not resolve the project name; the branch's review threads are not cleaned up",
+                );
+                return None;
+            };
+            Some((name, branch))
+        });
+
+        // Worktree cleanup runs AFTER teardown on a verified-clean (or
+        // forced) worktree. A failure here is reported but never rolls
+        // back the already-completed teardown.
+        let mut branch_cleanup_warning = None;
+        let worktree_cleanup_warning = match worktree_path.as_ref() {
+            // A stranded row whose worktree is already gone is the definition
+            // of that state - it is why the boot wave skips the row - so there
+            // is nothing to remove and git's failure over an untracked path
+            // would be a warning about nothing. A live worker's worktree
+            // vanishing is the opposite: anomalous, and the live shape below
+            // keeps reporting what git said.
+            //
+            // The BRANCH is a different matter, and it is still there: `git
+            // worktree remove` never deletes one. With the directory gone the
+            // branch is certainly not checked out, so this is the one place
+            // reaping it is unambiguously safe.
+            Some(_) if worktree_already_gone => {
+                tracing::debug!(
+                    target: "forge_workspace::spawn",
+                    event_name = "despawn_stranded_worktree_already_gone",
+                    project = %project_key.as_str(),
+                    label = %label,
+                    worktree = %worktree_display,
+                    "despawn: the stranded row's worktree is already gone; nothing to remove",
+                );
+                branch_cleanup_warning = reap_branch_and_reviews(
+                    &workspace,
+                    project_view.as_ref(),
+                    review_key.as_ref(),
+                    label,
+                );
+                None
+            }
+            Some(path) => {
+                // git refuses a worktree holding initialized submodules
+                // however clean it is (git-worktree(1)), so its refusal is
+                // not a verdict on the disk and cannot stand as one. Re-judge
+                // it against the worktree as it is now: `--force` discards
+                // uncommitted work, so it stands in only for a verdict taken
+                // here rather than one taken before the worker was torn down.
+                let removal = match forge_agent::env::worktree::remove_worktree(path, force) {
+                    Err(err)
+                        if !force
+                            && forge_agent::env::worktree::worktree_dirty_reason(path)
+                                .is_none() =>
+                    {
+                        tracing::debug!(
+                            target: "forge_workspace::spawn",
+                            event_name = "despawn_worktree_removal_forced",
+                            project = %project_key.as_str(),
+                            label = %label,
+                            worktree = %path.display(),
+                            error = %err,
+                            "despawn: git refused the removal of a clean worktree; retrying with --force",
+                        );
+                        forge_agent::env::worktree::remove_worktree(path, true)
+                    }
+                    other => other,
+                };
+                match removal {
+                    Ok(()) => {
+                        tracing::info!(
+                            target: "forge_workspace::spawn",
+                            project = %project_key.as_str(),
+                            label = %label,
+                            worktree = %path.display(),
+                            "despawn: worktree removed",
+                        );
+                        // Only after a successful removal: while the worktree
+                        // stands it holds the branch checked out, and git refuses
+                        // to delete a checked-out branch.
+                        branch_cleanup_warning = reap_branch_and_reviews(
+                            &workspace,
+                            project_view.as_ref(),
+                            review_key.as_ref(),
+                            label,
+                        );
+                        None
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            target: "forge_workspace::spawn",
+                            project = %project_key.as_str(),
+                            label = %label,
+                            error = %err,
+                            "despawn: worker torn down but worktree cleanup failed"
+                        );
+                        Some(err.to_string())
+                    }
                 }
             }
+            None => None,
+        };
+
+        // Ground-truthed against the directory rather than git's exit code:
+        // git errors for a path it no longer tracks whether or not the
+        // directory survives, and the toast's only claim is what is on disk.
+        let worktree = match (worktree_path.as_ref(), worktree_cleanup_warning.as_ref()) {
+            (None, _) => WorktreeDisposition::untouched(is_git_repo),
+            (Some(path), Some(_)) if path.exists() => WorktreeDisposition::RemovalFailed,
+            (Some(_), _) => WorktreeDisposition::Removed,
+        };
+        // Only a torn-down live worker has a pane row to remove; a stranded
+        // row's label reaches the launchpad by reading the store per frame, so
+        // it needs no event.
+        //
+        // The event is keyed by label and lands here, after the removal, so
+        // it evicts whichever occupant holds the seat when a viewer reads it.
+        // The in-flight mark is load-bearing for that: it keeps a same-label
+        // spawn from putting a new occupant under the seat this event is
+        // about to clear, and it is held until the guard below drops.
+        if let Some(entry) = live.as_ref() {
+            emit_worker_removed(&workspace, &project_key, entry, worktree);
         }
-        None => None,
-    };
 
-    // Ground-truthed against the directory rather than git's exit code:
-    // git errors for a path it no longer tracks whether or not the
-    // directory survives, and the toast's only claim is what is on disk.
-    let worktree = match (worktree_path.as_ref(), worktree_cleanup_warning.as_ref()) {
-        (None, _) => WorktreeDisposition::untouched(is_git_repo),
-        (Some(path), Some(_)) if path.exists() => WorktreeDisposition::RemovalFailed,
-        (Some(_), _) => WorktreeDisposition::Removed,
-    };
-    // Only a torn-down live worker has a pane row to remove; a stranded
-    // row's label reaches the launchpad by reading the store per frame, so
-    // it needs no event.
-    if let Some(entry) = live.as_ref() {
-        emit_worker_removed(workspace, project_key, entry, worktree);
+        // The label is free from here, before the reply: the worktree this
+        // held it for is gone (or the failure to remove it was reported),
+        // and a caller that re-admits the label the moment its reply lands
+        // must find it free by ordering, not by luck.
+        drop(pending);
+        let _ = respond
+            .send(DespawnResult::Despawned { worktree_cleanup_warning, branch_cleanup_warning });
     }
-
-    let _ =
-        respond.send(DespawnResult::Despawned { worktree_cleanup_warning, branch_cleanup_warning });
 }
 
 /// Reap the worker's branch and, once that is gone, the review state keyed
@@ -5340,6 +5468,144 @@ provider = "anthropic"
         );
     }
 
+    /// A despawn hands back with the worktree still on disk: its cleanup
+    /// runs off the caller, and the removal happens behind it.
+    ///
+    /// The #1633 shape. The cleanup used to run inline in the caller's
+    /// task, so a whole `git worktree remove` - minutes for a worker's
+    /// build tree - sat on a runtime worker, and every timer in the
+    /// process, the socket's frame delivery above all, stopped for the
+    /// removal's entire duration.
+    ///
+    /// **The assertion is an ordering, not a clock, but it is not free of
+    /// scheduling.** The gap it measures is the removal below - ~130ms for
+    /// the 3,000 files here - against the caller's return, which is
+    /// microseconds of its own work; the window it cannot close is a
+    /// machine that deschedules THIS thread for longer than the whole
+    /// removal, and the file count below is what keeps that window small.
+    #[tokio::test]
+    async fn a_despawn_hands_back_before_the_worktree_is_gone() {
+        let (workspace, project_key, wt, _repo, _config) = git_despawn_fixture("slow");
+        let target = wt.join("target").join("debug");
+        std::fs::create_dir_all(&target).expect("target dir");
+        for i in 0..3_000 {
+            std::fs::write(target.join(format!("obj{i}.o")), b"x").expect("filler");
+        }
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_despawn_worker(&workspace, &project_key, "slow", true, tx);
+        assert!(
+            wt.exists(),
+            "the despawn ran its cleanup on the caller: the worktree is already gone by the \
+             time it hands back",
+        );
+        let result = rx.await.expect("the cleanup answers");
+        assert!(
+            matches!(result, crate::protocol::DespawnResult::Despawned { .. }),
+            "the cleanup still runs to completion behind the caller: {result:?}"
+        );
+        assert!(!wt.exists(), "and it still removes the worktree");
+    }
+
+    /// A despawn's cleanup reserves its label: a spawn offered the same
+    /// label while the worktree is mid-removal is refused by name, and the
+    /// label frees again once the cleanup finishes.
+    ///
+    /// The window this closes is minutes long for a worker's build tree.
+    /// Teardown frees the label the instant it removes the entry, while the
+    /// removal it hands off is still deleting the directory a spawn
+    /// admitted in that window would be handed (and the spawn path's own
+    /// guards treat the surviving worktree as reusable).
+    #[tokio::test]
+    async fn a_despawn_reserves_its_label_until_the_cleanup_finishes() {
+        let (workspace, project_key, wt, _repo, _config) = git_despawn_fixture("reserved");
+        let target = wt.join("target").join("debug");
+        std::fs::create_dir_all(&target).expect("target dir");
+        for i in 0..3_000 {
+            std::fs::write(target.join(format!("obj{i}.o")), b"x").expect("filler");
+        }
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_despawn_worker(&workspace, &project_key, "reserved", true, tx);
+        assert!(
+            workspace.despawn_cleanup_pending(&project_key, "reserved"),
+            "the label is reserved from the handoff, before the cleanup ends",
+        );
+
+        let (spawn_tx, spawn_rx) = tokio::sync::oneshot::channel();
+        handle_spawn_worker(
+            &workspace,
+            project_key.clone(),
+            WorkerSpawnArgs {
+                label: "reserved".to_owned(),
+                charter: "c".to_owned(),
+                kick: None,
+                resume_kick: None,
+                interactive: false,
+                mcp_families: None,
+            },
+            SessionSlot::lead("Default", "forge"),
+            None,
+            false,
+            spawn_tx,
+        );
+        let refusal = spawn_rx.await.expect("the spawn answers").expect_err("refused");
+        assert!(
+            refusal.contains("still cleaning up"),
+            "the refusal names the cleanup rather than racing it: {refusal}",
+        );
+        assert!(
+            wt.exists(),
+            "and the refusal came before anything touched the worktree being removed",
+        );
+
+        let result = rx.await.expect("the cleanup answers");
+        assert!(
+            matches!(result, crate::protocol::DespawnResult::Despawned { .. }),
+            "the cleanup still runs to completion: {result:?}",
+        );
+        assert!(
+            !workspace.despawn_cleanup_pending(&project_key, "reserved"),
+            "and the label frees when the cleanup ends",
+        );
+    }
+
+    /// A resume for a label whose despawn cleanup is still running is
+    /// refused before anything mints a worktree.
+    ///
+    /// Most of the cleanup is spent in exactly the state
+    /// `ensure_worker_worktree` will act on: the directory gone while git
+    /// still holds the registration. Minting there re-attaches the branch
+    /// the cleanup is about to reap, and the reap then reports a branch it
+    /// could not delete for a reason this spawn made. The facade refuses on
+    /// the mark, so the ensure never runs; without that refusal this call
+    /// comes back as a worktree-creation failure instead of naming the
+    /// cleanup.
+    #[tokio::test]
+    async fn a_resume_is_refused_before_it_mints_a_worktree_for_a_pending_cleanup() {
+        let (workspace, project_key, wt, _repo, _config) = git_despawn_fixture("resumed");
+        std::fs::remove_dir_all(&wt).expect("clear the worktree directory");
+        let held = workspace.mark_despawn_cleanup_pending(&project_key, "resumed");
+        let facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(&workspace);
+        let refusal = facade
+            .spawn_worker(
+                &SessionSlot::lead("Default", "forge"),
+                "resumed".to_owned(),
+                "c".to_owned(),
+                None,
+                None,
+                false,
+                true,
+                None,
+            )
+            .await
+            .expect_err("a spawn for a label mid-cleanup is refused");
+        let crate::mcp::workers::facade::WorkerSpawnError::DispatchFailed { message } = refusal
+        else {
+            panic!("the refusal names the cleanup, not a worktree failure: {refusal:?}");
+        };
+        assert!(message.contains("still cleaning up"), "{message}");
+        drop(held);
+    }
+
     /// A git worker with a clean worktree despawns AND removes the
     /// worktree AND reaps the `worktree-<label>` branch behind it.
     #[tokio::test]
@@ -5950,6 +6216,10 @@ provider = "anthropic"
             "worker stays live when blocked"
         );
         assert!(wt.exists(), "worktree intact when blocked");
+        assert!(
+            !workspace.despawn_cleanup_pending(&project_key, "reviewer"),
+            "a blocked despawn reserves nothing: no cleanup was handed off",
+        );
     }
 
     /// A dirty worktree WITH `force` tears down + discards the worktree.

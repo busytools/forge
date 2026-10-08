@@ -2,7 +2,7 @@
 //! `Workspace`, so tests here and in `forge-tui` can drive a workspace
 //! without a real subprocess.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -387,6 +387,7 @@ impl Workspace {
             update_tx,
             command_senders: Mutex::new(HashMap::new()),
             live_workers: Mutex::new(HashMap::new()),
+            despawn_cleanups: Mutex::new(HashSet::new()),
             spawn_failures: Mutex::new(HashMap::new()),
             held_work_seats: crate::work::HeldSeats::default(),
             domain_handles: Mutex::new(HashMap::new()),
