@@ -1,6 +1,7 @@
 <script lang="ts">
   import Brand from '../components/Brand.svelte';
   import { FALLBACK_FLOOR_DB, fractionOf, meterWindow } from '../composer/meter';
+  import GroupFold from '../session/GroupFold.svelte';
   import type { SetRecorder } from './recorder.svelte';
   import type {
     BenchResult,
@@ -164,6 +165,23 @@
   /** The cleanup role's candidates, and the best of the runs on them. */
   const cleanupRows = $derived(cleanupCandidates(wire.rows, wire.installed, wire.results));
   const cleanupPick = $derived(cleanupPickOf(cleanupRows));
+
+  /** The material a bench scores on, in the line the section opens with: the
+   * takes the last run over them scored, and the recordings this machine
+   * holds. Both are counts off the read, never a promise. */
+  const fixturesLine = $derived.by(() => {
+    const last = wire.results.find((result) => result.tier === 'consensus');
+    const takes =
+      last === undefined
+        ? 'no run has scored the takes here yet'
+        : `the last run scored ${last.corpus.clips} takes`;
+    const held = wire.read_aloud.recordings.length;
+    const recordings =
+      held === 0
+        ? 'no read-aloud recording'
+        : `${held} read-aloud ${held === 1 ? 'recording' : 'recordings'}`;
+    return `fixtures \u{b7} ${takes} \u{b7} ${recordings}`;
+  });
 
   /** What a press would do right now, priced from this read: the card says
    * what will run, what it costs and what it scores on, before it spends. */
@@ -549,53 +567,58 @@
         forge, and the catalogue loads here
       </p>
     {:else}
-      <!-- `nowhere` is the editors table's name for a box a take's words are
-           not routed to: this one takes typing, and the reader's dictation
-           stays where it was. -->
-      <input
-        class="find"
-        type="search"
-        bind:value={query}
-        data-editor="nowhere"
-        aria-label="Search the model catalogue"
-        {placeholder}
-      />
+      <!-- The catalogue is a lookup, not the page's subject: it folds, with
+           the row count on the door so a shut one never reads as an empty
+           feed. -->
+      <GroupFold heading="the catalogue" count={wire.rows.length}>
+        <!-- `nowhere` is the editors table's name for a box a take's words are
+             not routed to: this one takes typing, and the reader's dictation
+             stays where it was. -->
+        <input
+          class="find"
+          type="search"
+          bind:value={query}
+          data-editor="nowhere"
+          aria-label="Search the model catalogue"
+          {placeholder}
+        />
 
-      <div aria-live="polite">
-        {#if query.trim() === ''}
-          <p class="note">
-            type a name &middot; the feed's whole catalogue is already here, so this reads nothing
-            off the network
-          </p>
-        {:else if results.length === 0}
-          <p class="note">no entry matches <code>{query}</code> &middot; try a family name</p>
-        {:else}
-          <p class="note">
-            {results.length} of {wire.rows.length} entries &middot; each opens its catalogue entry
-          </p>
-          <ul class="list" aria-label="Catalogue results">
-            {#each results as entry (entry.variant)}
-              {@const face = candidateFacts(entry)}
-              <li>
-                <a
-                  class="cand"
-                  href={entryUrl(entry)}
-                  target="_blank"
-                  rel="noreferrer"
-                  title="the catalogue entry, on github"
-                >
-                  <span class="nm">{entry.variant}</span>
-                  <span class="col">{@render facts(face.spec)}</span>
-                  <span class="col">{@render facts(face.kind)}</span>
-                  <span class="go" aria-hidden="true">&#8599;</span>
-                </a>
-                {@render control(entry)}
-              </li>
-            {/each}
-          </ul>
-          <p class="note">size, speed and error are the catalogue's own m4-max measurements</p>
-        {/if}
-      </div>
+        <div aria-live="polite">
+          {#if query.trim() === ''}
+            <p class="note">
+              type a name &middot; the feed's whole catalogue is already here, so this reads nothing
+              off the network
+            </p>
+          {:else if results.length === 0}
+            <p class="note">no entry matches <code>{query}</code> &middot; try a family name</p>
+          {:else}
+            <p class="note">
+              {results.length} of {wire.rows.length} entries &middot; each opens its catalogue entry
+            </p>
+            <ul class="list" aria-label="Catalogue results">
+              {#each results as entry (entry.variant)}
+                {@const face = candidateFacts(entry)}
+                <li>
+                  <a
+                    class="cand"
+                    href={entryUrl(entry)}
+                    target="_blank"
+                    rel="noreferrer"
+                    title="the catalogue entry, on github"
+                  >
+                    <span class="nm">{entry.variant}</span>
+                    <span class="col">{@render facts(face.spec)}</span>
+                    <span class="col">{@render facts(face.kind)}</span>
+                    <span class="go" aria-hidden="true">&#8599;</span>
+                  </a>
+                  {@render control(entry)}
+                </li>
+              {/each}
+            </ul>
+            <p class="note">size, speed and error are the catalogue's own m4-max measurements</p>
+          {/if}
+        </div>
+      </GroupFold>
     {/if}
   </section>
 
@@ -610,132 +633,12 @@
         takes forge has recorded here
       </p>
     {:else}
-      <!-- One press, one verdict. The card prices the press before it
-           spends, says where the sweep is while it runs, and stands the
-           verdict afterwards: whether what this machine runs is the best of
-           what was scored, and what to switch to when it is not. -->
-      {#if sweep !== null}
-        <div class="status" role="status">
-          <span class="dot live"></span>
-          <span class="t">{sweepLine ?? 'drawing up the runs'}</span>
-          <span class="when">{tierWord(sweep.tier)} &middot; {sweep.runs.length} runs</span>
-          <span class="spacer"></span>
-          <button class="chip" type="button" onclick={onsweepcancel}>stop the sweep</button>
-          <span class="detail">
-            each run loads one model and scores it on the same corpus &middot; what the sweep
-            downloaded and nobody kept goes back off the disk when the verdict is in
-          </span>
-        </div>
-      {:else if verdicts.length > 0}
-        {#each verdicts as verdict (verdict.role)}
-          <div class="status">
-            <span class="dot {verdict.onBest ? 'ok' : 'warn'}"></span>
-            <span class="t">{sweepHeadline(verdict)}</span>
-            <span class="when">{benchRoleWord(verdict.role)}</span>
-            <span class="spacer"></span>
-            {#if !verdict.onBest}
-              <button
-                class="chip"
-                type="button"
-                disabled={busy}
-                onclick={() =>
-                  onadopt(
-                    verdict.best.run.variant,
-                    verdict.role === 'cleanup' ? 'normalization' : 'transcribing',
-                  )}>switch to it</button
-              >
-            {/if}
-            <span class="detail">{sweepScope(verdict)}</span>
-            <span class="detail">{@render facts(resultFacts(verdict.best.result))}</span>
-            {#if verdict.baseline !== null && !verdict.onBest}
-              <span class="detail">
-                what you run, {verdict.baseline.target.file}: {@render facts(
-                  resultFacts(verdict.baseline),
-                )}
-              </span>
-            {/if}
-            {#if !verdict.onBest}
-              <span class="detail">
-                {adoptCost(verdict) === 0
-                  ? 'already on this machine'
-                  : `switching downloads ${sizeLabel(adoptCost(verdict))} again - the sweep took the file back when the verdict came in`}
-              </span>
-            {/if}
-          </div>
-        {/each}
-        {#if verdicts[0]?.tier === 'consensus'}
-          <p class="note">
-            scored on your takes, where a run reads as agreement with the words the model in use
-            recorded beside each one, not as correctness &middot; record the read-aloud passage
-            above and press again to score against known words
-          </p>
-        {/if}
-        <button class="chip add" type="button" disabled={busy} onclick={onsweep}
-          >benchmark again</button
-        >
-      {:else}
-        <div class="status">
-          <span class="dot off"></span>
-          <span class="t">score the picks on this machine</span>
-          <span class="spacer"></span>
-          <button
-            class="chip"
-            type="button"
-            disabled={busy || nextSweep.runs.length === 0}
-            onclick={onsweep}>benchmark</button
-          >
-          <span class="detail">{sweepShape}</span>
-          <span class="detail">{sweepPrice}</span>
-        </div>
-      {/if}
-
-      {#if bench !== null}{@render op(bench)}{/if}
-
-      {#if targets.length === 0}
-        <p class="note">
-          nothing here can be benched yet &middot; a model in use or installed lands in this list,
-          and the run loads it from disk
-        </p>
-      {:else}
-        <ul class="list" aria-label="Models a bench can run">
-          {#each targets as row (`${row.target.role}/${row.target.file}`)}
-            <li>
-              <span class="bench-row">
-                <span class="nm">{row.target.file}</span>
-                <span class="col">{benchRoleWord(row.target.role)}</span>
-                {#if row.current}<span class="chip">in use</span>{/if}
-                {#if row.recommended}<span class="chip">recommended</span>{/if}
-                {#if row.target.pinned}<span class="col">pinned by [dictate]</span>{/if}
-              </span>
-              {#if benchState.state === 'running' && benchState.target.file === row.target.file}
-                <button class="chip" type="button" onclick={onbenchstop}>stop the bench</button>
-              {:else}
-                <button
-                  class="chip"
-                  type="button"
-                  disabled={busy}
-                  onclick={() => onbench(row.target, 'consensus')}>bench it</button
-                >
-                {#if wire.read_aloud.recordings.length > 0}
-                  <button
-                    class="chip"
-                    type="button"
-                    disabled={busy}
-                    onclick={() => onbench(row.target, 'read_aloud')}>score the read-aloud</button
-                  >
-                {/if}
-              {/if}
-            </li>
-          {/each}
-        </ul>
-        <p class="note">
-          the run scores the candidate against your own takes - its words against the words the
-          model in use recorded beside each one - and against the read-aloud passage once you have
-          recorded that &middot; the candidate takes its own role's slot and the other role runs
-          what you have now, so a cleanup run is this transcribing model plus that normalizer
-          &middot; every number measured on this machine
-        </p>
-      {/if}
+      <!-- The material first, then the one button, then the verdict: what a
+           run scores on, what it will do, and what it measured. The long
+           lists - every saved run, every model a bench can load - live in
+           the doors at the bottom, so the section reads as three things
+           rather than seven. -->
+      <p class="note">{fixturesLine}</p>
 
       {#if recorder !== null || wire.read_aloud.recording}
         <div class="status" role="status">
@@ -821,20 +724,160 @@
         {#if recordingLine !== null}<p class="note bad">{recordingLine}</p>{/if}
       {/if}
 
-      {#each wire.results as result (`${result.target.role}/${result.target.file}/${result.tier}/${result.corpus.sha256}`)}
-        <div class="status">
-          <span class="dot ok"></span>
-          <span class="t">{result.target.file}</span>
-          <span class="when">{tierWord(result.tier)}</span>
+      <!-- One press, one verdict. The card prices the press before it
+           spends, says where the sweep is while it runs, and stands the
+           verdict afterwards: whether what this machine runs is the best of
+           what was scored, and what to switch to when it is not. -->
+      {#if sweep !== null}
+        <div class="status" role="status">
+          <span class="dot live"></span>
+          <span class="t">{sweepLine ?? 'drawing up the runs'}</span>
+          <span class="when">{tierWord(sweep.tier)} &middot; {sweep.runs.length} runs</span>
           <span class="spacer"></span>
-          {#if resultWhen(result) !== null}<span class="when">{resultWhen(result)}</span>{/if}
-          <button class="chip" type="button" disabled={busy} onclick={() => onbenchdelete(result)}
-            >delete</button
-          >
-          <span class="detail">{@render facts(resultFacts(result))}</span>
-          <span class="detail">{resultVerdict(result, wire.in_use, wire.results)}</span>
+          <button class="chip" type="button" onclick={onsweepcancel}>stop the sweep</button>
+          <span class="detail">
+            each run loads one model and scores it on the same corpus &middot; what the sweep
+            downloaded and nobody kept goes back off the disk when the verdict is in
+          </span>
         </div>
-      {/each}
+      {:else if verdicts.length > 0}
+        {#each verdicts as verdict (verdict.role)}
+          <div class="status">
+            <span class="dot {verdict.onBest ? 'ok' : 'warn'}"></span>
+            <span class="t">{sweepHeadline(verdict)}</span>
+            <span class="when">{benchRoleWord(verdict.role)}</span>
+            <span class="spacer"></span>
+            {#if !verdict.onBest}
+              <button
+                class="chip"
+                type="button"
+                disabled={busy}
+                onclick={() =>
+                  onadopt(
+                    verdict.best.run.variant,
+                    verdict.role === 'cleanup' ? 'normalization' : 'transcribing',
+                  )}>switch to it</button
+              >
+            {/if}
+            <span class="detail">{sweepScope(verdict)}</span>
+            <span class="detail">{@render facts(resultFacts(verdict.best.result))}</span>
+            {#if verdict.baseline !== null && !verdict.onBest}
+              <span class="detail">
+                what you run, {verdict.baseline.target.file}: {@render facts(
+                  resultFacts(verdict.baseline),
+                )}
+              </span>
+            {/if}
+            {#if !verdict.onBest}
+              <span class="detail">
+                {adoptCost(verdict) === 0
+                  ? 'already on this machine'
+                  : `switching downloads ${sizeLabel(adoptCost(verdict))} again - the sweep took the file back when the verdict came in`}
+              </span>
+            {/if}
+          </div>
+        {/each}
+        {#if verdicts[0]?.tier === 'consensus'}
+          <p class="note">
+            scored on your takes, where a run reads as agreement with the words the model in use
+            recorded beside each one, not as correctness &middot; record the read-aloud passage
+            above and press again to score against known words
+          </p>
+        {/if}
+        <button class="chip add" type="button" disabled={busy} onclick={onsweep}
+          >benchmark again</button
+        >
+      {:else}
+        <div class="status">
+          <span class="dot off"></span>
+          <span class="t">select the best models, and score them here</span>
+          <span class="spacer"></span>
+          <button
+            class="chip"
+            type="button"
+            disabled={busy || nextSweep.runs.length === 0}
+            onclick={onsweep}>run the benchmark</button
+          >
+          <span class="detail">{sweepShape}</span>
+          <span class="detail">{sweepPrice}</span>
+        </div>
+      {/if}
+
+      {#if bench !== null}{@render op(bench)}{/if}
+
+      <!-- The doors: what a run measured, and what can be run by hand. Both
+           lists are long, and neither is what the section is for, so they
+           fold - the door carries the count so a shut one never reads as an
+           empty one. -->
+      <GroupFold heading="every run scored here" count={wire.results.length}>
+        {#if wire.results.length === 0}
+          <p class="note">
+            nothing has been scored on this machine yet &middot; a press above leaves its runs here
+          </p>
+        {/if}
+        {#each wire.results as result (`${result.target.role}/${result.target.file}/${result.tier}/${result.corpus.sha256}`)}
+          <div class="status">
+            <span class="dot ok"></span>
+            <span class="t">{result.target.file}</span>
+            <span class="when">{tierWord(result.tier)}</span>
+            <span class="spacer"></span>
+            {#if resultWhen(result) !== null}<span class="when">{resultWhen(result)}</span>{/if}
+            <button class="chip" type="button" disabled={busy} onclick={() => onbenchdelete(result)}
+              >delete</button
+            >
+            <span class="detail">{@render facts(resultFacts(result))}</span>
+            <span class="detail">{resultVerdict(result, wire.in_use, wire.results)}</span>
+          </div>
+        {/each}
+      </GroupFold>
+
+      <GroupFold heading="models a bench can run" count={targets.length}>
+        {#if targets.length === 0}
+          <p class="note">
+            nothing here can be benched yet &middot; a model in use or installed lands in this list,
+            and the run loads it from disk
+          </p>
+        {:else}
+          <ul class="list" aria-label="Models a bench can run">
+            {#each targets as row (`${row.target.role}/${row.target.file}`)}
+              <li>
+                <span class="bench-row">
+                  <span class="nm">{row.target.file}</span>
+                  <span class="col">{benchRoleWord(row.target.role)}</span>
+                  {#if row.current}<span class="chip">in use</span>{/if}
+                  {#if row.recommended}<span class="chip">recommended</span>{/if}
+                  {#if row.target.pinned}<span class="col">pinned by [dictate]</span>{/if}
+                </span>
+                {#if benchState.state === 'running' && benchState.target.file === row.target.file}
+                  <button class="chip" type="button" onclick={onbenchstop}>stop the bench</button>
+                {:else}
+                  <button
+                    class="chip"
+                    type="button"
+                    disabled={busy}
+                    onclick={() => onbench(row.target, 'consensus')}>bench it</button
+                  >
+                  {#if wire.read_aloud.recordings.length > 0}
+                    <button
+                      class="chip"
+                      type="button"
+                      disabled={busy}
+                      onclick={() => onbench(row.target, 'read_aloud')}>score the read-aloud</button
+                    >
+                  {/if}
+                {/if}
+              </li>
+            {/each}
+          </ul>
+          <p class="note">
+            the run scores the candidate against your own takes - its words against the words the
+            model in use recorded beside each one - and against the read-aloud passage once you have
+            recorded that &middot; the candidate takes its own role's slot and the other role runs
+            what you have now, so a cleanup run is this transcribing model plus that normalizer
+            &middot; every number measured on this machine
+          </p>
+        {/if}
+      </GroupFold>
     {/if}
   </section>
 </main>

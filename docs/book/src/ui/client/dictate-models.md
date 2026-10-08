@@ -31,8 +31,8 @@ either.
 | The page's state | a refused action in the core's own words, and whichever download or activation is in flight with its progress | `refusal` (an `error` frame); `install`, `activate` |
 | In use | one row per model forge runs: its role - **the selector for the updates below** - its file, the facts the spec declares (size, quant, parameters, digest, licence), the feed's own measurement when it has one, the live state as a chip, and a line saying where the model came from | `in_use` |
 | Updates | the check's own line - up to date, an update, checking, unreachable, or a state this client cannot read - one line per proposal with the control that takes it, and the comparison table under it; the cleanup role's own view instead, where no feed measures a normalizer: its candidates with each one's own runs under it | `check`, `updates`, `rows`, `installed`, `results` |
-| Find a model | a box that filters the feed's rows as it is typed: the variant, the quant a machine would run, the measured speed and error, the licence, what it transcribes, and the row's control. Each row links to the entry's own document | `rows` |
-| Benchmark | the sweep card - one press that scores the picks on this machine and leaves a verdict - then one row per model a bench can run, with the controls that run it and stop it; the read-aloud set's own state, and the record control when there is none; one row per saved result, with its figures, its verdict against the model in use, and its delete | `bench`, `read_aloud`, `results` |
+| Find a model | a door carrying the catalogue's size, and behind it a box that filters the feed's rows as it is typed: the variant, the quant a machine would run, the measured speed and error, the licence, what it transcribes, and the row's control. Each row links to the entry's own document | `rows` |
+| Benchmark | the fixtures first - the read-aloud set's own state with the record control and the count line - then the one press that scores the picks on this machine and leaves a verdict, then two doors: every run scored here, and every model a bench can run | `bench`, `read_aloud`, `results` |
 
 **A model in use is drawn from its spec.** The first fact line comes off the
 `ModelSpec` - the size, quant, parameters, digest and licence the loader
@@ -136,8 +136,16 @@ and a stop that discards a partial corpus rather than saving one. Each saved
 result draws its figures, what it means against the model in use on the same
 corpus, and a delete.
 
-**The sweep is one press, and it leaves a verdict.** The card is the
-section's first thing: it prices the press before it spends - which runs,
+**The benchmark reads as three things, not seven.** The fixtures come
+first, in a count line and the set's own card - what a run scores on, which
+is the reader's to change. Then the one press. Then the verdict, and under
+it two doors: every run scored here, and every model a bench can run. Both
+lists are long and neither is what the section is for, so they fold behind
+a heading that carries their count, and the catalogue does the same in the
+section above.
+
+**The sweep is one press, and it leaves a verdict.** The card prices the
+press before it spends - which runs,
 what has to come off the network, which corpus they score on and what the
 last run over that corpus took - and then one button scores them all. The
 runs are the transcribing side's own pick, the cleanup role's

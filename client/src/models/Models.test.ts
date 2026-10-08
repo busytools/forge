@@ -1083,7 +1083,7 @@ describe('the models route as it draws', () => {
     await tick();
 
     const button = [...host.querySelectorAll<HTMLButtonElement>('button')].find(
-      (c) => c.textContent === 'benchmark',
+      (c) => c.textContent === 'run the benchmark',
     );
     button?.click();
     flushSync();
@@ -1152,7 +1152,7 @@ describe('the models route as it draws', () => {
     await tick();
 
     const button = [...host.querySelectorAll<HTMLButtonElement>('button')].find(
-      (c) => c.textContent === 'benchmark',
+      (c) => c.textContent === 'run the benchmark',
     );
     button?.click();
     flushSync();
@@ -1252,7 +1252,7 @@ describe('the models route as it draws', () => {
     expect(host.textContent).toContain('about 600 MB to download');
 
     const button = [...host.querySelectorAll<HTMLButtonElement>('button')].find(
-      (c) => c.textContent === 'benchmark',
+      (c) => c.textContent === 'run the benchmark',
     );
     expect(button, 'the sweep control did not draw').not.toBeUndefined();
     button?.click();
@@ -1329,7 +1329,7 @@ describe('the models route as it draws', () => {
     await tick();
 
     const button = [...host.querySelectorAll<HTMLButtonElement>('button')].find(
-      (c) => c.textContent === 'benchmark',
+      (c) => c.textContent === 'run the benchmark',
     );
     expect(button, 'the sweep control did not draw').not.toBeUndefined();
     button?.click();
