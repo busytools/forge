@@ -36,19 +36,20 @@ In a multi-stage chain (research -> verify -> implement -> review rounds), despa
 ### Long-lived vs task-scoped workers
 Every worker works the same way: you spawn it with a charter, and forge remembers it until you despawn it. The difference is only how long you keep one - most are task-scoped and get despawned once they have delivered, while a few are worth keeping around (a steward or reviewer you keep prompting across many tasks) and you simply never despawn those. If a project would genuinely benefit from a long-lived worker, raise it with the USER rather than deciding that yourself.
 
-## Keep the task list as the team's status surface
+## Keep the task board as the team's status surface - and dispatch from it
 
-The user reads your project's task list to see what you and your workers are doing, so it has to carry the workers and not just your own steps. Keep ONE task per live worker through `tasks__create`, and keep it current:
+The user reads your project's task board to see what you and your workers are doing, and the board is what drives the team: you dispatch from it, workers claim from it, and the user's verdicts land on it. It carries the workers, not just your own steps.
 
-- **Subject**: the worker's label and the phase it is in, so the list reads as status at a glance.
-- **Owner**: the worker's label, so the row belongs to that worker.
-- **Detail**: what it is doing now and what it is waiting on.
-- **Artifact**: the PR number once one exists.
-- **Status**: `in_progress` while it works. On despawn, remove the task with `tasks__delete` rather than marking it complete - a finished worker's row left behind is litter that makes the live ones harder to find.
+- **Cut the work.** An epic is a task with children, and you own the epics. Create each with `tasks__create`, with a `subject`, an `estimate` ("2h", "1d"), a `rank`, and `verify` - `user` for anything the user will see, `none` for internal work. Its tasks hang under it by `parent`; a task with no epic is a one-row campaign.
+- **Dispatch from the queue.** `tasks__list` with `ready: true` is what can be started, in rank order. Scope a worker to an epic when you spawn it (name the epic id in the charter or kick) and name the worker on its first row - a live worker holding no row is a miss the board shows.
+- **Workers claim the rest.** A worker pulls its next ready row with `tasks__claim` (by epic), one row in progress at a time.
+- **Keep every row true.** `tasks__update` on each state change - the update is also the worker's alive signal. Attach the PR the moment one exists and complete the row when it is merged. A row still reading `in_progress` for work that ended an hour ago is worse than no row, because it reads as progress when there is none.
+- **A blocked row says what it waits on.** `tasks__wait` with `kind: decision` (the user), `dependency` (another task - name it in `on`), or `resource` (an account, CI, a machine). Blockers come to you; a wait only the user can clear reaches them through your message.
+- **The chase is owed an answer.** When a row passes its estimate its owner is asked once, and you hear once at 1.5x. Your move then is authority, not a louder ping - rescope, reassign, take over, or restate the expectation.
+- **File everything you find, at once.** A defect, a follow-up, a deferred item becomes a row the moment it surfaces (`tasks__create`), owned or unowned - nothing is deferred and nothing lives only in a message.
+- **Close epics explicitly.** When every child is terminal and the retro has run, the board reads `to close`; completing the ROOT row closes it and archives the tree. `tasks__delete` is for a row created in error, never for work that finished.
 
-Update it with `tasks__update` on each state change rather than at the end: spawned, working, PR up, in review, findings sent, merged, despawned. A task still reading "working" for a worker that has been idle for an hour is worse than no task, because it reads as progress when there is none.
-
-**The invariant that makes it worth reading: if a worker is live it has a task, and if it has no task it should have been despawned.** Never let this list and the worker roster disagree. When they do, the list is what the user is reading, so the list is what is wrong.
+**The invariant that makes it worth reading: a live worker holds an open row, and a worker with nothing left is despawned or fed.** The board names a worker holding no row as unaccounted - never leave that mark standing.
 
 ## Reactive duties (in support of the loop, not your primary mode)
 
