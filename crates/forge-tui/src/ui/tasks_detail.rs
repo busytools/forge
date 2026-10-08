@@ -94,8 +94,10 @@ fn subject_line(task: &Task, running_glyph: char) -> Line<'static> {
         ),
     ];
     if let Some(estimate) = &task.estimate {
-        spans
-            .push(Span::styled(format!("  \u{00B7}  {estimate}"), Style::default().fg(theme::DIM)));
+        spans.push(Span::styled(
+            format!("  \u{00B7}  {}", estimate.words),
+            Style::default().fg(theme::DIM),
+        ));
     }
     Line::from(spans)
 }
@@ -116,7 +118,13 @@ fn identity_lines(task: &Task, all: &[Task]) -> Vec<Line<'static>> {
     {
         lines.push(label_line("parent", &parent.subject));
     }
-    if let Some(artifact) = &task.artifact {
+    if let Some(link) = task.links.iter().find(|l| {
+        matches!(
+            l.kind,
+            forge_primitives::tasks::LinkKind::Pr | forge_primitives::tasks::LinkKind::Path
+        )
+    }) {
+        let artifact = link.label.as_deref().unwrap_or(link.target.as_str());
         lines.push(label_line("artifact", artifact));
     }
     lines.push(label_line("created", &rfc3339(task.created_at)));
@@ -148,7 +156,9 @@ fn glyph(status: TaskStatus, running_glyph: char) -> String {
     match status {
         TaskStatus::Completed => "\u{2713}".to_owned(),
         TaskStatus::InProgress => running_glyph.to_string(),
-        TaskStatus::Blocked | TaskStatus::Pending => "\u{25cb}".to_owned(),
+        TaskStatus::Waiting | TaskStatus::Pending | TaskStatus::Failed | TaskStatus::Canceled => {
+            "\u{25cb}".to_owned()
+        }
     }
 }
 
@@ -156,7 +166,9 @@ fn color(status: TaskStatus) -> Color {
     match status {
         TaskStatus::Completed => Color::Green,
         TaskStatus::InProgress => theme::RUST_ORANGE,
-        TaskStatus::Blocked | TaskStatus::Pending => theme::DIM,
+        TaskStatus::Waiting | TaskStatus::Pending | TaskStatus::Failed | TaskStatus::Canceled => {
+            theme::DIM
+        }
     }
 }
 
@@ -164,8 +176,10 @@ fn status_text(status: TaskStatus) -> &'static str {
     match status {
         TaskStatus::Pending => "pending",
         TaskStatus::InProgress => "in progress",
-        TaskStatus::Blocked => "blocked",
+        TaskStatus::Waiting => "waiting",
         TaskStatus::Completed => "completed",
+        TaskStatus::Failed => "failed",
+        TaskStatus::Canceled => "canceled",
     }
 }
 

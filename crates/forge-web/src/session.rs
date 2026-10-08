@@ -1351,8 +1351,8 @@ fn task_class(status: TaskStatus) -> &'static str {
     match status {
         TaskStatus::InProgress => "tk now",
         TaskStatus::Completed => "tk done",
-        TaskStatus::Blocked => "tk blocked",
-        TaskStatus::Pending => "tk",
+        TaskStatus::Waiting => "tk blocked",
+        TaskStatus::Pending | TaskStatus::Failed | TaskStatus::Canceled => "tk",
     }
 }
 
@@ -1360,11 +1360,17 @@ fn task_class(status: TaskStatus) -> &'static str {
 /// produced, and how long it was thought to take.
 fn task_meta(task: &Task) -> String {
     let mut parts = vec![crate::home::chip_for(task.status).to_owned()];
-    if let Some(artifact) = &task.artifact {
-        parts.push(crate::home::artifact_label(artifact));
+    if let Some(link) = task.links.iter().find(|l| {
+        matches!(
+            l.kind,
+            forge_primitives::tasks::LinkKind::Pr | forge_primitives::tasks::LinkKind::Path
+        )
+    }) {
+        let artifact = link.label.clone().unwrap_or_else(|| link.target.clone());
+        parts.push(crate::home::artifact_label(&artifact));
     }
     if let Some(estimate) = &task.estimate {
-        parts.push(estimate.clone());
+        parts.push(estimate.words.clone());
     }
     parts.join(" \u{b7} ")
 }

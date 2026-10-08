@@ -22,7 +22,7 @@ use std::time::SystemTime;
 use forge_sdk::mcp::server::McpServerBuilder;
 use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput};
 
-use forge_primitives::tasks::{Task, TaskId, TaskStatus};
+use forge_primitives::tasks::{LinkKind, Task, TaskId, TaskStatus};
 
 use crate::SessionSlot;
 use crate::mcp::tasks::facade::{TaskDraft, TaskPatch, TasksError, TasksFacade};
@@ -60,8 +60,10 @@ fn status_str(status: TaskStatus) -> &'static str {
     match status {
         TaskStatus::Pending => "pending",
         TaskStatus::InProgress => "in_progress",
-        TaskStatus::Blocked => "blocked",
+        TaskStatus::Waiting => "waiting",
         TaskStatus::Completed => "completed",
+        TaskStatus::Failed => "failed",
+        TaskStatus::Canceled => "canceled",
     }
 }
 
@@ -77,11 +79,19 @@ fn task_to_json(task: &Task) -> serde_json::Value {
     // caller that reads the field back and filters on it would otherwise
     // find none, and a session actually labelled `unclaimed` would read the
     // same as nobody.
+    //
+    // The artifact a caller read before links existed: the first
+    // pull-request or path link, by its label when it has one.
+    let artifact = task
+        .links
+        .iter()
+        .find(|l| matches!(l.kind, LinkKind::Pr | LinkKind::Path))
+        .map(|l| l.label.clone().unwrap_or_else(|| l.target.clone()));
     for (key, value) in [
         ("active_form", task.active_form.as_deref()),
         ("detail", task.detail.as_deref()),
-        ("artifact", task.artifact.as_deref()),
-        ("estimate", task.estimate.as_deref()),
+        ("artifact", artifact.as_deref()),
+        ("estimate", task.estimate.as_ref().map(|e| e.words.as_str())),
         ("parent", task.parent.as_ref().map(TaskId::as_str)),
         ("owner", task.owner.as_ref().map(SessionSlot::label)),
     ] {
@@ -99,6 +109,9 @@ fn format_tasks_error(err: &TasksError) -> String {
         TasksError::UnknownCallerProject => {
             "couldn't resolve your project; is this session attached to a forge.toml project?"
                 .to_owned()
+        }
+        TasksError::BadEstimate(words) => {
+            format!("\"{words}\" is not a duration; use 30m, 2h, 1d or 1w")
         }
     }
 }
@@ -143,7 +156,7 @@ impl Tool for Create {
                 },
                 "status": {
                     "type": "string",
-                    "enum": ["pending", "in_progress", "blocked", "completed"],
+                    "enum": ["pending", "in_progress", "waiting", "completed", "failed", "canceled"],
                     "description": "Where the task starts. Defaults to pending.",
                 },
                 "owner": {
@@ -225,7 +238,7 @@ impl Tool for Update {
                 "detail": { "type": "string", "description": "New detail prose." },
                 "status": {
                     "type": "string",
-                    "enum": ["pending", "in_progress", "blocked", "completed"],
+                    "enum": ["pending", "in_progress", "waiting", "completed", "failed", "canceled"],
                     "description": "The task's new status.",
                 },
                 "owner": {
@@ -382,6 +395,7 @@ mod tests {
     use super::*;
     use crate::mcp::tasks::facade::{MockTasksFacade, RemovedTaskTree};
     use crate::mcp::test_support::text_of;
+    use forge_primitives::tasks::{Estimate, TaskLink};
 
     fn lead_slot() -> SessionSlot {
         SessionSlot::lead("TestOrg", "myproj")
@@ -520,11 +534,11 @@ mod tests {
         let facade = Arc::new(MockTasksFacade::default());
         *facade.update_result.lock() = Some(sample_task());
         let out = Update { facade: facade.clone(), slot: lead_slot() }
-            .call(input(serde_json::json!({ "id": "t-1", "status": "blocked", "artifact": "x" })))
+            .call(input(serde_json::json!({ "id": "t-1", "status": "waiting", "artifact": "x" })))
             .await;
         assert!(!out.is_error, "update succeeds: {out:?}");
         let patch = &facade.updated.lock()[0].2;
-        assert_eq!(patch.status, Some(TaskStatus::Blocked));
+        assert_eq!(patch.status, Some(TaskStatus::Waiting));
         assert_eq!(patch.artifact.as_deref(), Some("x"));
         assert_eq!(patch.subject, None, "an unstated field is left alone");
         assert_eq!(patch.owner, None, "an unstated field is left alone");
@@ -540,8 +554,13 @@ mod tests {
             status: TaskStatus::Pending,
             owner: None,
             parent: None,
-            artifact: None,
+            waiting_on: None,
             estimate: None,
+            rank: None,
+            verify: None,
+            links: Vec::new(),
+            attempt: 0,
+            archived_at: None,
             created_at: SystemTime::UNIX_EPOCH,
             updated_at: SystemTime::UNIX_EPOCH,
         }
@@ -556,8 +575,10 @@ mod tests {
         for (status, spelling) in [
             (TaskStatus::Pending, "pending"),
             (TaskStatus::InProgress, "in_progress"),
-            (TaskStatus::Blocked, "blocked"),
+            (TaskStatus::Waiting, "waiting"),
             (TaskStatus::Completed, "completed"),
+            (TaskStatus::Failed, "failed"),
+            (TaskStatus::Canceled, "canceled"),
         ] {
             assert_eq!(status_str(status), spelling, "a result reads {status:?} as {spelling}");
         }
@@ -573,7 +594,7 @@ mod tests {
                 .collect();
             assert_eq!(
                 spelled,
-                ["pending", "in_progress", "blocked", "completed"],
+                ["pending", "in_progress", "waiting", "completed", "failed", "canceled"],
                 "a caller must be able to send back what it read",
             );
         }
@@ -588,8 +609,14 @@ mod tests {
         let task = Task {
             active_form: Some("Merging".to_owned()),
             detail: Some("why".to_owned()),
-            artifact: Some("PR #9".to_owned()),
-            estimate: Some("1d".to_owned()),
+            estimate: Some(Estimate { words: "1d".to_owned(), secs: 86_400 }),
+            links: vec![TaskLink {
+                kind: LinkKind::Pr,
+                label: Some("PR #9".to_owned()),
+                target: "https://example.invalid/pull/9".to_owned(),
+                state: None,
+                added_at: SystemTime::UNIX_EPOCH,
+            }],
             parent: Some(TaskId::from("epic")),
             owner: Some(SessionSlot::lead("TestOrg", "myproj")),
             ..sample_task()

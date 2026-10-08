@@ -1634,7 +1634,10 @@ fn append_tasks_section(
         let (glyph, glyph_color) = match row.status {
             TaskStatus::Completed => ("\u{2713}".to_owned(), Color::Green),
             TaskStatus::InProgress => (active_glyph.to_string(), theme::RUST_ORANGE),
-            TaskStatus::Blocked | TaskStatus::Pending => ("\u{25cb}".to_owned(), theme::DIM),
+            TaskStatus::Waiting
+            | TaskStatus::Pending
+            | TaskStatus::Failed
+            | TaskStatus::Canceled => ("\u{25cb}".to_owned(), theme::DIM),
         };
         let text_style = match row.status {
             TaskStatus::Completed => {
@@ -1643,7 +1646,10 @@ fn append_tasks_section(
             TaskStatus::InProgress => {
                 Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
             }
-            TaskStatus::Blocked | TaskStatus::Pending => Style::default().fg(Color::Gray),
+            TaskStatus::Waiting
+            | TaskStatus::Pending
+            | TaskStatus::Failed
+            | TaskStatus::Canceled => Style::default().fg(Color::Gray),
         };
 
         if row.status == TaskStatus::InProgress {
