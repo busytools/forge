@@ -10,7 +10,9 @@
 use std::sync::{Arc, Weak};
 use std::time::SystemTime;
 
-use forge_primitives::tasks::{Estimate, LinkKind, Task, TaskId, TaskLink, TaskStatus};
+use forge_primitives::tasks::{
+    By, Estimate, LinkKind, Task, TaskId, TaskLink, TaskStatus, WaitingKind,
+};
 
 use crate::SessionSlot;
 use crate::mcp::caller_context::caller_context;
@@ -25,6 +27,8 @@ pub(crate) enum TasksError {
     /// The estimate words do not parse as a duration; named rather than
     /// stored so a caller hears it instead of losing the value.
     BadEstimate(String),
+    /// The core refused the move (open children on a close).
+    Refused(String),
 }
 
 /// A bare artifact string becomes a link; the kind is the target's shape.
@@ -164,6 +168,25 @@ pub(crate) trait TasksFacade: Send + Sync {
         caller: &SessionSlot,
         id: &TaskId,
     ) -> Result<Option<RemovedTaskTree>, TasksError>;
+
+    /// Claim `id`, or the first ready row of `epic` by rank, for the
+    /// caller. Backs `tasks__claim`.
+    fn claim_task(
+        &self,
+        caller: &SessionSlot,
+        id: Option<&str>,
+        epic: Option<&str>,
+    ) -> Result<Task, TasksError>;
+
+    /// Put the caller's row `id` into waiting. Backs `tasks__wait`.
+    fn wait_task(
+        &self,
+        caller: &SessionSlot,
+        id: &TaskId,
+        kind: WaitingKind,
+        detail: Option<String>,
+        on: Option<&TaskId>,
+    ) -> Result<Task, TasksError>;
 }
 
 /// Production facade over `Weak<Workspace>` (weak to avoid a cycle with
@@ -247,9 +270,10 @@ impl TasksFacade for ProdTasksFacade {
             None => None,
         };
         let at = SystemTime::now();
-        Ok(ws.update_task(&cx.project_name, id, |task| {
+        ws.update_task(&cx.project_name, id, By::Seat(caller.clone()), |task| {
             patch.apply(task, &cx.project_org, &cx.project_name, estimate, at);
-        }))
+        })
+        .map_err(|refused| TasksError::Refused(format!("{refused:?}")))
     }
 
     fn delete_task(
@@ -271,11 +295,64 @@ impl TasksFacade for ProdTasksFacade {
         };
         Ok(Some(RemovedTaskTree { task, descendants_removed: removed.len() - 1 }))
     }
+
+    fn claim_task(
+        &self,
+        caller: &SessionSlot,
+        id: Option<&str>,
+        epic: Option<&str>,
+    ) -> Result<Task, TasksError> {
+        let ws = self.workspace.upgrade().ok_or(TasksError::UnknownCallerProject)?;
+        let cx = caller_context(&ws, caller).ok_or(TasksError::UnknownCallerProject)?;
+        let by_id = id.map(TaskId::from);
+        let in_epic = epic.map(TaskId::from);
+        ws.claim_task(&cx.project_name, caller, by_id.as_ref(), in_epic.as_ref())
+            .map_err(|refused| TasksError::Refused(refused.to_string()))
+    }
+
+    fn wait_task(
+        &self,
+        caller: &SessionSlot,
+        id: &TaskId,
+        kind: WaitingKind,
+        detail: Option<String>,
+        on: Option<&TaskId>,
+    ) -> Result<Task, TasksError> {
+        let ws = self.workspace.upgrade().ok_or(TasksError::UnknownCallerProject)?;
+        let cx = caller_context(&ws, caller).ok_or(TasksError::UnknownCallerProject)?;
+        ws.wait_task(&cx.project_name, id, caller, kind, detail, on)
+            .map_err(|refused| TasksError::Refused(refused.to_string()))
+    }
 }
 
 /// One recorded `create_task` call: caller, draft, the record returned.
 #[cfg(test)]
 type CreateCall = (SessionSlot, TaskDraft, Task);
+
+/// A canned record for the mock's default result.
+#[cfg(test)]
+fn mock_task(caller: &SessionSlot) -> Task {
+    let now = SystemTime::UNIX_EPOCH;
+    Task {
+        id: TaskId::from("mock-task-id"),
+        project_name: caller.project().to_owned(),
+        subject: "mock".to_owned(),
+        active_form: None,
+        detail: None,
+        status: TaskStatus::Pending,
+        owner: None,
+        parent: None,
+        waiting_on: None,
+        estimate: None,
+        rank: None,
+        verify: None,
+        links: Vec::new(),
+        attempt: 0,
+        archived_at: None,
+        created_at: now,
+        updated_at: now,
+    }
+}
 
 /// Records calls + returns preloaded results so the tool tests can assert
 /// the tool correctly parses args, resolves the caller, and surfaces
@@ -289,6 +366,11 @@ pub(crate) struct MockTasksFacade {
     pub update_result: parking_lot::Mutex<Option<Task>>,
     pub deleted: parking_lot::Mutex<Vec<(SessionSlot, TaskId)>>,
     pub delete_result: parking_lot::Mutex<Option<RemovedTaskTree>>,
+    pub claimed: parking_lot::Mutex<Vec<(SessionSlot, Option<String>, Option<String>)>>,
+    pub claim_result: parking_lot::Mutex<Option<Result<Task, TasksError>>>,
+    pub waited:
+        parking_lot::Mutex<Vec<(SessionSlot, TaskId, WaitingKind, Option<String>, Option<TaskId>)>>,
+    pub wait_result: parking_lot::Mutex<Option<Result<Task, TasksError>>>,
 }
 
 #[cfg(test)]
@@ -329,6 +411,28 @@ impl TasksFacade for MockTasksFacade {
         };
         self.created.lock().push((caller.clone(), draft, task.clone()));
         Ok(task)
+    }
+
+    fn claim_task(
+        &self,
+        caller: &SessionSlot,
+        id: Option<&str>,
+        epic: Option<&str>,
+    ) -> Result<Task, TasksError> {
+        self.claimed.lock().push((caller.clone(), id.map(str::to_owned), epic.map(str::to_owned)));
+        self.claim_result.lock().clone().unwrap_or_else(|| Ok(mock_task(caller)))
+    }
+
+    fn wait_task(
+        &self,
+        caller: &SessionSlot,
+        id: &TaskId,
+        kind: WaitingKind,
+        detail: Option<String>,
+        on: Option<&TaskId>,
+    ) -> Result<Task, TasksError> {
+        self.waited.lock().push((caller.clone(), id.clone(), kind, detail, on.cloned()));
+        self.wait_result.lock().clone().unwrap_or_else(|| Ok(mock_task(caller)))
     }
 
     fn list_tasks(
@@ -507,7 +611,11 @@ mod prod_facade_tests {
     #[test]
     fn update_returns_the_record_it_wrote() {
         let (ws, facade, lead, _worker) = fixture();
-        ws.seed_test_task(seeded_task("t-1", "before"));
+        // A child row: completing a ROOT would close and archive it, which
+        // is a different behaviour with its own test.
+        let mut seeded = seeded_task("t-1", "before");
+        seeded.parent = Some(TaskId::from("epic"));
+        ws.seed_test_task(seeded);
 
         let updated = facade
             .update_task(
@@ -662,7 +770,9 @@ mod prod_facade_tests {
     #[test]
     fn update_moves_a_task_owned_by_another_session() {
         let (ws, facade, lead, worker) = fixture();
-        let task = facade.create_task(&worker, draft("review this", None, None)).expect("create");
+        // A child row: a completing root closes and archives (own test).
+        let task =
+            facade.create_task(&worker, draft("review this", None, Some("epic"))).expect("create");
         assert!(
             facade
                 .update_task(
