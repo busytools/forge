@@ -199,12 +199,23 @@ describe('a closed seat', () => {
       expect(closeSeat(closes(), wire, worker.slot, LEAD, 0), 'the close never went').toBe(true);
       const drawn = opened();
       expect(drawn, "the closed worker's row did not fold asleep").toContain('1 asleep');
-      expect(drawn, 'the settling dot is not on the closed row').toContain(
+      // The ROW's own dot, sliced to it: the fold's summary now wears the same
+      // span, so a containment anywhere would pass on the summary alone while
+      // the row sat there plain.
+      const rowAt = drawn.indexOf('<div class="wk"');
+      const row = drawn.slice(rowAt, drawn.indexOf('</div>', rowAt));
+      expect(row, 'the settling dot is not on the closed row').toContain(
         '<span class="dot off settling"></span>',
       );
       expect(drawn, 'the settling row did not fold with the closed worker').toContain(
         '<span class="nm">w1</span>',
       );
+      // And the summary carries it too: the fold is display, so the pulse
+      // cannot live only under it.
+      expect(
+        drawn.slice(drawn.indexOf('<summary class="wk"'), drawn.indexOf('</summary>')),
+        'the fold put the pulse away with the closed row',
+      ).toContain('<span class="dot off settling"></span>');
 
       // The roster catching up is the seat ARRIVING asleep, still named
       // (a worker's label persists that way), which is when the pulse goes.
@@ -229,6 +240,19 @@ describe('a closed seat', () => {
       expect(withLead, "the closed lead's project stayed out of asleep").toContain(
         '<span class="gh">asleep</span>',
       );
+      // The heading wears what it hides, between its own heading and its own
+      // chevron: collapsing the section cannot put the seat's settling away.
+      // Both anchors are asserted first, because a slice that found neither
+      // runs to the end of the body and the rows' own dots would answer for
+      // the heading.
+      const headingAt = withLead.indexOf('<span class="gh">asleep</span>');
+      const chevronAt = withLead.indexOf('<svg class="ic arw"', headingAt);
+      expect(headingAt, 'the asleep fold heading went').toBeGreaterThan(-1);
+      expect(chevronAt, 'the heading drew no chevron to bound it by').toBeGreaterThan(-1);
+      expect(
+        withLead.slice(headingAt, chevronAt),
+        'the fold heading lost the mark for the settling seat behind it',
+      ).toContain('<span class="dot off settling"></span>');
     } finally {
       forgetClosed({ ...homeWire, agents: [] });
     }

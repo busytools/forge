@@ -15,6 +15,7 @@
     railFooter,
     railGroups,
     railMark,
+    rowMark,
     type RailProject,
   } from './view';
 
@@ -111,9 +112,7 @@
     <!-- One project's block, drawn the same in a folded group and an open
          one: the asleep heading is the only thing a folded group changes. -->
     {#snippet projectBlock(project: RailProject)}
-      {@const leadDot = closingSeat(project.row.slot)
-        ? 'off settling'
-        : railMark(project.row.state)}
+      {@const leadDot = rowMark(project.row, closingSeat)}
       <!-- A row this client has just closed reads asleep AT ONCE, and its dot
            pulses while the core finishes: the seat leaves the reader's
            working section on the click rather than sitting there for the
@@ -165,7 +164,12 @@
           {@render projectBlock(project)}
         {/each}
       {:else}
-        <GroupFold heading={group.heading} count={group.hidden} holds={group.holds}>
+        <GroupFold
+          heading={group.heading}
+          count={group.hidden}
+          mark={group.mark}
+          holds={group.holds}
+        >
           {#each group.projects as project (project.org + '/' + project.name)}
             {@render projectBlock(project)}
           {/each}

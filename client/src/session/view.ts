@@ -66,6 +66,12 @@ export interface RailGroup {
    */
   hidden: number | null;
   /**
+   * The strongest signal among the rows behind this heading, drawn on the
+   * heading itself - or `null` when they carry none, since the quiet ring a
+   * sleeping row wears says nothing the heading has not already said (#1868).
+   */
+  mark: string | null;
+  /**
    * Whether the seat the page is showing is one of the rows behind this
    * heading, which is what a fold opens itself on: arriving on a sleeping seat
    * would otherwise draw the marked row inside a closed fold.
@@ -473,6 +479,29 @@ export function railMark(state: RowState): string {
 }
 
 /**
+ * The mark a rail row wears: a seat this client has just closed reads as
+ * settling until the core finishes shutting it down (#1712), and every other
+ * row wears its own state's mark. Every drawer of a row goes through this -
+ * the rail's lead row, a project's sleeping rows and the summary that folds
+ * them - so the three cannot drift apart.
+ */
+export function rowMark(row: Row, closing: (slot: SessionSlot) => boolean): string {
+  return closing(row.slot) ? 'off settling' : railMark(row.state);
+}
+
+/**
+ * The mark a fold's heading wears: the settling ring, when a seat this client
+ * has just closed is behind it, and nothing otherwise.
+ *
+ * Nothing else can be there: every mark the rail ranks above settling belongs
+ * to a row that has already been lifted out of the fold's own section, so a
+ * quiet ring says nothing the heading has not said and the rest cannot arrive.
+ */
+export function foldMark(marks: readonly string[]): string | null {
+  return marks.includes('off settling') ? 'off settling' : null;
+}
+
+/**
  * How much of the fleet is up: the projects whose own seat is running, of the
  * projects the roster declares.
  *
@@ -748,13 +777,20 @@ export function railGroups(
   closing: (slot: SessionSlot) => boolean = () => false,
 ): RailGroup[] {
   const groups: RailGroup[] = [
-    { heading: 'needs you', klass: 'state needs', hidden: null, holds: false, projects: [] },
-    { heading: 'working', klass: 'state', hidden: null, holds: false, projects: [] },
+    {
+      heading: 'needs you',
+      klass: 'state needs',
+      hidden: null,
+      holds: false,
+      mark: null,
+      projects: [],
+    },
+    { heading: 'working', klass: 'state', hidden: null, holds: false, mark: null, projects: [] },
     // The sleeping half of the fleet is the one nobody is working in, so it is
     // the one heading that folds: everything under it is still counted on the
     // heading, because a fold that reads as an empty section is worse than no
     // fold at all.
-    { heading: 'asleep', klass: 'state', hidden: 0, holds: false, projects: [] },
+    { heading: 'asleep', klass: 'state', hidden: 0, holds: false, mark: null, projects: [] },
   ];
 
   for (const entry of home.projects) {
@@ -791,7 +827,10 @@ export function railGroups(
     });
     // The rows the heading hides when it folds: the project's own row and
     // every worker under it, drawn or folded.
-    if (group.hidden !== null) group.hidden += 1 + workers.length;
+    if (group.hidden !== null) {
+      group.hidden += 1 + workers.length;
+      group.mark = foldMark([lead, ...workers].map((row) => rowMark(row, closing))) ?? group.mark;
+    }
   }
   return groups.filter((group) => group.projects.length > 0);
 }

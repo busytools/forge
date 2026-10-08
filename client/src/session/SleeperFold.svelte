@@ -2,7 +2,7 @@
   import type { Row } from '../home/view';
   import Chevron from '../components/Chevron.svelte';
   import type { SessionSlot } from '../wire/types';
-  import { railMark } from './view';
+  import { foldMark, rowMark } from './view';
 
   /**
    * A project's sleeping seats, behind one row that counts them.
@@ -29,6 +29,9 @@
     closing,
   }: { sleeping: Row[]; shown: string | null; closing: (slot: SessionSlot) => boolean } = $props();
 
+  /** What one sleeping row wears, which is what its fold's summary must too. */
+  const markOf = (row: Row): string => rowMark(row, closing);
+
   const holds = () => sleeping.some((row) => row.slot.label === shown);
   // Read once, through a call: the initial value is the whole of what the
   // first render is owed, as the inspector's own sections do it.
@@ -40,13 +43,15 @@
 
 <details class="sfold" bind:open>
   <summary class="wk">
-    <span class="dot off"></span>
+    <!-- The summary wears what the rows behind it wear, settling included:
+         the fold is display, so the pulse cannot live only under it. -->
+    <span class="dot {foldMark(sleeping.map(markOf)) ?? 'off'}"></span>
     <span class="nm">{sleeping.length} asleep</span>
     <Chevron />
   </summary>
   {#each sleeping as worker (worker.slot.label)}
     <div class="wk" class:on={shown === worker.slot.label}>
-      <span class="dot {closing(worker.slot) ? 'off settling' : railMark(worker.state)}"></span>
+      <span class="dot {markOf(worker)}"></span>
       <span class="nm">{worker.slot.label}</span>
     </div>
   {/each}
