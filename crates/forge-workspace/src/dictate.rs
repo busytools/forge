@@ -2280,8 +2280,9 @@ mod dictate_lifecycle_tests {
     async fn a_failed_take_records_debug_with_its_seat() {
         use tracing_subscriber::layer::SubscriberExt as _;
 
+        /// One record: its level, its target, and its fields.
         #[derive(Clone, Default)]
-        struct Caught(std::sync::Arc<std::sync::Mutex<Vec<(tracing::Level, String)>>>);
+        struct Caught(std::sync::Arc<std::sync::Mutex<Vec<(tracing::Level, String, String)>>>);
 
         #[derive(Default)]
         struct Fields(String);
@@ -2303,7 +2304,11 @@ mod dictate_lifecycle_tests {
             ) {
                 let mut fields = Fields::default();
                 event.record(&mut fields);
-                self.0.lock().expect("capture").push((*event.metadata().level(), fields.0));
+                self.0.lock().expect("capture").push((
+                    *event.metadata().level(),
+                    event.metadata().target().to_owned(),
+                    fields.0,
+                ));
             }
         }
 
@@ -2354,14 +2359,22 @@ mod dictate_lifecycle_tests {
         assert_eq!(ended, DictateOutcome::Failed, "a weightless engine fails the take");
 
         let records = caught.0.lock().expect("capture");
-        let (level, fields) = records
+        let (level, target, fields) = records
             .iter()
-            .find(|(_, fields)| fields.contains("dictate_failed"))
+            .find(|(_, _, fields)| fields.contains("dictate_failed"))
             .unwrap_or_else(|| panic!("a failed take records `dictate_failed`, saw {records:?}"));
         assert_eq!(
             *level,
             tracing::Level::DEBUG,
             "a take's own failure is not a warning about forge: {fields}",
+        );
+        // The directive that keeps this record readable names a module
+        // path, and a target one character off matches nothing, so the
+        // path is measured from the record rather than assumed.
+        assert_eq!(
+            target.as_str(),
+            "forge_workspace::dictate",
+            "the record's target is the module path the filter directive names: {fields}",
         );
         assert!(
             fields.contains("slot=TestOrg/test-project/solo"),

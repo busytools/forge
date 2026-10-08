@@ -475,12 +475,12 @@ mod tests {
         );
     }
 
-    /// Emit one record through the default directives and answer what the
-    /// sink caught. A directive names a target by module-path prefix, so
-    /// the record a demoted site emits is the one its own module path
-    /// names rather than the crate's. Measured rather than read: a
-    /// directive that matches nothing reads exactly like one that works.
-    fn emitted_under_defaults(emit: impl FnOnce()) -> String {
+    /// Emit one record through `directives` and answer what the sink
+    /// caught. A directive names a target by module-path prefix, so the
+    /// record a demoted site emits is the one its own module path names
+    /// rather than the crate's. Measured rather than read: a directive
+    /// that matches nothing reads exactly like one that works.
+    fn emitted_under(directives: &str, emit: impl FnOnce()) -> String {
         use std::sync::{Arc, Mutex};
 
         struct Sink(Arc<Mutex<Vec<u8>>>);
@@ -498,13 +498,18 @@ mod tests {
         let sink = Arc::clone(&written);
         let subscriber = tracing_subscriber::fmt()
             .json()
-            .with_env_filter(DEFAULT_LOG_DIRECTIVES)
+            .with_env_filter(directives)
             .with_writer(move || Sink(Arc::clone(&sink)))
             .with_ansi(false)
             .finish();
         tracing::subscriber::with_default(subscriber, emit);
         String::from_utf8(written.lock().expect("the sink is not poisoned").clone())
             .expect("the sink holds utf-8")
+    }
+
+    /// The same, through the default set.
+    fn emitted_under_defaults(emit: impl FnOnce()) -> String {
+        emitted_under(DEFAULT_LOG_DIRECTIVES, emit)
     }
 
     /// Driven through the site rather than through a target written here:
@@ -541,11 +546,15 @@ mod tests {
 
         for preset in carrying {
             let directives = preset.filter_directives();
-            assert!(
-                directives.contains("forge_server=debug"),
-                "{preset:?} carries a session's own records, so it must carry the crate \
-                 they live in: {directives}",
-            );
+            // Every crate whose demoted records this preset would otherwise
+            // drop: `forge_server`'s monitor tail, and dictation's two.
+            for target in ["forge_server", "forge_workspace::dictate", "forge_dictate"] {
+                assert!(
+                    directives.contains(&format!("{target}=debug")),
+                    "{preset:?} carries a session's own records, so it must carry {target}, \
+                     which is where the demoted ones live: {directives}",
+                );
+            }
         }
     }
 
@@ -563,6 +572,40 @@ mod tests {
         });
 
         assert!(absent.is_empty(), "no directive names this crate: {absent}");
+    }
+
+    /// The other half of that control: the baseline token is what decides
+    /// whether a record no directive names lands at all, and it sits one
+    /// character from `into` - which parses as a TRACE target of that
+    /// name, leaving every specific directive passing its own records
+    /// while the baseline is gone. One unread character, and the set goes
+    /// quiet for everything unnamed. Measured over every set forge ships,
+    /// not just the default one.
+    #[test]
+    fn every_shipped_filter_set_keeps_its_info_baseline() {
+        let presets = [
+            DiagnosticsPreset::Runtime,
+            DiagnosticsPreset::Session,
+            DiagnosticsPreset::Render,
+            DiagnosticsPreset::Bridge,
+            DiagnosticsPreset::Full,
+        ];
+        let sets = std::iter::once(("defaults".to_owned(), DEFAULT_LOG_DIRECTIVES))
+            .chain(presets.into_iter().map(|p| (format!("{p:?}"), p.filter_directives())));
+
+        for (label, directives) in sets {
+            let caught = emitted_under(directives, || {
+                tracing::info!(
+                    target: "a_web_view::nowhere",
+                    event_name = "baseline_check",
+                    "a record no directive names",
+                );
+            });
+            assert!(
+                caught.contains("baseline_check"),
+                "{label} has no working `info` baseline, so an unnamed target goes dark: {caught}",
+            );
+        }
     }
 
     #[test]
