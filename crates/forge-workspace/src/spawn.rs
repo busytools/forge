@@ -1468,12 +1468,14 @@ pub(crate) fn handle_spawn_worker(
                     label = %label,
                     "spawn_worker: refused, the label's previous despawn is still cleaning up",
                 );
-                // No "worktree" in this sentence: the facade's failure
-                // classifier routes that word to a worktree-creation
-                // failure, which is not what happened here.
-                let _ = return_to.send(Err(format!(
-                    "the previous despawn of '{label}' is still cleaning up; retry once it finishes"
-                )));
+                // No "worktree" in this sentence, and no interpolated
+                // label either (a label may carry the word): the facade's
+                // failure classifier routes that word to a
+                // worktree-creation failure, which is not what happened.
+                let _ = return_to.send(Err(
+                    "this label's previous despawn is still cleaning up; retry once it finishes"
+                        .to_owned(),
+                ));
             }
             LiveWorkerRefusal::AtCap { live, cap } => {
                 tracing::info!(
@@ -2264,13 +2266,13 @@ impl DespawnCleanup {
             emit_worker_removed(&workspace, &project_key, entry, worktree);
         }
 
+        // The label is free from here, before the reply: the worktree this
+        // held it for is gone (or the failure to remove it was reported),
+        // and a caller that re-admits the label the moment its reply lands
+        // must find it free by ordering, not by luck.
+        drop(pending);
         let _ = respond
             .send(DespawnResult::Despawned { worktree_cleanup_warning, branch_cleanup_warning });
-        // The label is free from here: the worktree this held it for is gone
-        // (or the failure to remove it was reported), and any spawn that
-        // takes it now starts from a directory the cleanup has finished
-        // with.
-        drop(pending);
     }
 }
 
@@ -5564,6 +5566,44 @@ provider = "anthropic"
             !workspace.despawn_cleanup_pending(&project_key, "reserved"),
             "and the label frees when the cleanup ends",
         );
+    }
+
+    /// A resume for a label whose despawn cleanup is still running is
+    /// refused before anything mints a worktree.
+    ///
+    /// Most of the cleanup is spent in exactly the state
+    /// `ensure_worker_worktree` will act on: the directory gone while git
+    /// still holds the registration. Minting there re-attaches the branch
+    /// the cleanup is about to reap, and the reap then reports a branch it
+    /// could not delete for a reason this spawn made. The facade refuses on
+    /// the mark, so the ensure never runs; without that refusal this call
+    /// comes back as a worktree-creation failure instead of naming the
+    /// cleanup.
+    #[tokio::test]
+    async fn a_resume_is_refused_before_it_mints_a_worktree_for_a_pending_cleanup() {
+        let (workspace, project_key, wt, _repo, _config) = git_despawn_fixture("resumed");
+        std::fs::remove_dir_all(&wt).expect("clear the worktree directory");
+        let held = workspace.mark_despawn_cleanup_pending(&project_key, "resumed");
+        let facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(&workspace);
+        let refusal = facade
+            .spawn_worker(
+                &SessionSlot::lead("Default", "forge"),
+                "resumed".to_owned(),
+                "c".to_owned(),
+                None,
+                None,
+                false,
+                true,
+                None,
+            )
+            .await
+            .expect_err("a spawn for a label mid-cleanup is refused");
+        let crate::mcp::workers::facade::WorkerSpawnError::DispatchFailed { message } = refusal
+        else {
+            panic!("the refusal names the cleanup, not a worktree failure: {refusal:?}");
+        };
+        assert!(message.contains("still cleaning up"), "{message}");
+        drop(held);
     }
 
     /// A git worker with a clean worktree despawns AND removes the
