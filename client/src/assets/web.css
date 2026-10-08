@@ -1074,7 +1074,7 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
    belongs to a row and carries that row's leave. A padded panel leaves strips
    with no listener, and a pointer leaving through one never arms the close. */
 .sg-list { position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 30;
-  min-width: 330px; max-width: calc(100vw - 26px); max-height: 60vh;
+  max-width: calc(100vw - 26px); max-height: 60vh;
   overflow-y: auto; background: var(--s2);
   outline: 1px solid var(--line); outline-offset: -1px; border-radius: 11px;
   box-shadow: 0 14px 38px rgba(0,0,0,.5); }
