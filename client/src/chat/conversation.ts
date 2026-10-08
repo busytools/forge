@@ -1298,7 +1298,10 @@ export class Chat {
     this.turnRunning = false;
     // Frames the last occupant's run left waiting for a turn go with it: they
     // are its conversation, and the new one's rows are not where they belong.
+    // The rides it left behind go too - their rows are gone with the swap, and
+    // the record is only ever read against rows this conversation holds.
     this.unturned = [];
+    this.ridden.clear();
     // A swap is not a frame's draw: the reset lands now, whatever any paint
     // was waiting for.
     this.held = NOTHING;

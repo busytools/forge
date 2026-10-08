@@ -1050,6 +1050,75 @@ describe('the conversation the chat draws', () => {
     ).toBe(1);
   });
 
+  /**
+   * A parked frame the page does NOT carry stays where it was placed.
+   *
+   * The heal takes a parked copy back only when the page has its own: a frame
+   * the page knows nothing about - a live-only counter - has no other copy,
+   * and healing it away would be the drop rule 25 forbids.
+   */
+  it('leaves a parked frame the page does not carry where it was placed', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+
+    server.update({ chat_appended: { key: LEAD, msg: counted(7) } });
+    server.update({ chat_appended: { key: LEAD, msg: typed('the ask') } });
+    server.send(page([turn('t1', 'an older row')], null));
+
+    const carried = get(chat.value).turns.flatMap((row) => row.messages);
+    expect(
+      carried.filter((message) => JSON.stringify(message).includes('thinking-7')).length,
+      'the parked counter survives a page that does not carry it',
+    ).toBe(1);
+  });
+
+  /**
+   * A page that took a waiting frame does not give it back to the next page.
+   *
+   * The first page is cut before the frame arrived, so it lands on that page's
+   * newest row; the second repeats the row without the frame, and the wait is
+   * over - placed again, the same counter would draw twice on one row.
+   */
+  it('a page that took a waiting frame does not give it back to the next page', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+
+    server.update({ chat_appended: { key: LEAD, msg: counted(9) } });
+    server.send(page([turn('t1', 'first')], '1'));
+    server.send(page([turn('t1', 'first')], null));
+
+    const carried = get(chat.value).turns.flatMap((row) => row.messages);
+    expect(
+      carried.filter((message) => JSON.stringify(message).includes('thinking-9')).length,
+      'the taken frame is not placed a second time',
+    ).toBe(1);
+  });
+
+  /**
+   * A frame the PAGE ride placed is healed too, by the page that owns it.
+   *
+   * The first page was cut before the frame arrived and placed it on its
+   * newest row; the next page carries the frame in the row it belongs to, so
+   * the parked copy goes and the page's own is the one that draws.
+   */
+  it('heals a frame the page ride placed, when a later page carries it', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+
+    server.update({ chat_appended: { key: LEAD, msg: boundary() } });
+    server.send(page([turn('t1', 'first')], '1'));
+    server.send(page([{ key: 't-old', messages: [boundary(), said('the older turn')] }], null));
+
+    const carried = get(chat.value).turns.flatMap((row) => row.messages);
+    expect(
+      carried.filter((message) => JSON.stringify(message).includes('compact-1')).length,
+      'the frame draws once, where the page put it',
+    ).toBe(1);
+  });
+
   it('opens no row for a frame of any type the fold draws nothing out of', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
