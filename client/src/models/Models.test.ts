@@ -325,7 +325,11 @@ describe('the models page as it draws', () => {
     const host = open({ ...modelsWire, check: { state: 'unknown' } as never, updates: [] });
 
     expect(host.textContent).toContain('this client');
-    expect(host.textContent).not.toContain('up to date');
+    // The check line's own title, not the whole page: the roles' news below
+    // it says a role is up to date, which is a fact about the role rather
+    // than a claim about a feed this client could not read.
+    const title = host.querySelector('.status .t');
+    expect(title?.textContent).not.toContain('up to date');
   });
 
   /** A feed that did not answer carries its own reason, in the error tone. */
@@ -1130,7 +1134,93 @@ describe('the models route as it draws', () => {
     expect(forge.dispatched.at(-1)).toBe('dictate_bench_stop');
   });
 
-  /** One cleanup candidate as the feed lists it: popularity and a size. */
+  /**
+   * The check line names both roles, and names them without a press: the
+   * feed proposes for the transcribing role and the bench decides the
+   * cleanup one, so a reader hears there is news before pressing anything.
+   */
+  it('names each role on the check line, with no press needed', () => {
+    const host = open(modelsWire);
+
+    expect(host.textContent).toContain('transcribing has an update');
+    expect(host.textContent).toContain('cleanup has nothing measured yet');
+
+    const clear = open({ ...modelsWire, updates: [] });
+    expect(clear.textContent).toContain('transcribing is up to date');
+  });
+
+  /**
+   * The bench's cleanup pick carries the control that takes it: a pick with
+   * no way to act on it is news a reader cannot use.
+   */
+  it("offers the switch on the bench's cleanup pick", () => {
+    const adopted: [string, ModelRole][] = [];
+    const host = open(
+      {
+        ...modelsWire,
+        rows: [normRow('a/norm-a', 900), normRow('a/norm-b', 500)],
+        installed: [
+          ...modelsWire.installed,
+          recordFor('a/norm-a', 'a-norm-a-Q4_K_M.gguf'),
+          recordFor('a/norm-b', 'a-norm-b-Q4_K_M.gguf'),
+        ],
+        results: [
+          benchResult('a-norm-a-Q4_K_M.gguf', 'cleanup', 0.07, 'gold', 'read_aloud'),
+          benchResult('a-norm-b-Q4_K_M.gguf', 'cleanup', 0.12, 'gold', 'read_aloud'),
+        ],
+      },
+      { onadopt: (variant, role) => adopted.push([variant, role]) },
+    );
+
+    // The cleanup role's view is the selected one, as the in-use row presses it.
+    const pick = [...host.querySelectorAll<HTMLButtonElement>('button.pick')].find((c) =>
+      (c.getAttribute('aria-label') ?? '').includes('cleanup'),
+    );
+    expect(pick, 'the cleanup selector did not draw').not.toBeUndefined();
+    pick?.click();
+    flushSync();
+
+    expect(host.textContent).toContain('a/norm-a');
+    expect(host.textContent).toContain('measured best on the read-aloud');
+
+    const button = [...host.querySelectorAll<HTMLButtonElement>('button')].find(
+      (c) => c.textContent === 'switch to it',
+    );
+    expect(button, 'the pick drew no control').not.toBeUndefined();
+    button?.click();
+    flushSync();
+
+    expect(adopted).toEqual([['a/norm-a', 'normalization']]);
+
+    // The pick that IS what runs offers no switch: the control would be one
+    // that changes nothing.
+    const settled = open({
+      ...modelsWire,
+      rows: [normRow('a/norm-a', 900), normRow('a/norm-b', 500)],
+      installed: [
+        ...modelsWire.installed,
+        recordFor('a/norm-a', 's1-mini-f16.gguf'),
+        recordFor('a/norm-b', 'a-norm-b-Q4_K_M.gguf'),
+      ],
+      results: [
+        benchResult('s1-mini-f16.gguf', 'cleanup', 0.07, 'gold', 'read_aloud'),
+        benchResult('a-norm-b-Q4_K_M.gguf', 'cleanup', 0.12, 'gold', 'read_aloud'),
+      ],
+    });
+    const settledPick = [...settled.querySelectorAll<HTMLButtonElement>('button.pick')].find((c) =>
+      (c.getAttribute('aria-label') ?? '').includes('cleanup'),
+    );
+    settledPick?.click();
+    flushSync();
+
+    expect(
+      [...settled.querySelectorAll<HTMLButtonElement>('button')].some(
+        (c) => c.textContent === 'switch to it',
+      ),
+      'a switch onto the model already running was drawn',
+    ).toBe(false);
+  });
+
   /**
    * An old result does not define the sweep's corpus. The takes can have
    * moved since it was measured, so its corpus is not today's - and a sweep
@@ -1208,10 +1298,11 @@ describe('the models route as it draws', () => {
     role: 'transcribing' | 'cleanup',
     wer: number,
     corpus = 'new',
+    tier: BenchTier = 'consensus',
   ): BenchResult {
     return {
       target: { file, role, pinned: false },
-      tier: 'consensus',
+      tier,
       metrics: {
         clips: 12,
         audio_seconds: 320,

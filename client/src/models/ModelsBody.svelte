@@ -165,6 +165,27 @@
   /** The cleanup role's candidates, and the best of the runs on them. */
   const cleanupRows = $derived(cleanupCandidates(wire.rows, wire.installed, wire.results));
   const cleanupPick = $derived(cleanupPickOf(cleanupRows));
+  /** The model the cleanup role runs, which the pick is read against. */
+  const inUseCleanup = $derived(
+    wire.in_use.find((model) => model.role === 'normalization') ?? null,
+  );
+
+  /** The check line's own news, per role: the feed proposes for the
+   * transcribing role and the bench decides the cleanup one, so each half is
+   * said by the thing that actually decides it - and both are said without a
+   * press, because a reader should not have to run a check to learn there is
+   * one. */
+  const roleNews = $derived.by(() => {
+    const proposed = wire.updates.some((update) => recommendation(update) !== null);
+    const transcribing = proposed ? 'transcribing has an update' : 'transcribing is up to date';
+    if (cleanupPick === null) {
+      return `${transcribing} \u{b7} cleanup has nothing measured yet`;
+    }
+    if (cleanupPick.candidate.installed?.file === inUseCleanup?.file) {
+      return `${transcribing} \u{b7} cleanup is on the model its bench picked`;
+    }
+    return `${transcribing} \u{b7} cleanup: ${cleanupPick.candidate.row.variant} read best in your bench`;
+  });
 
   /** The material a bench scores on, in the line the section opens with: the
    * takes the last run over them scored, and the recordings this machine
@@ -408,6 +429,7 @@
       {#if wire.enabled && wire.check.state !== 'checking'}
         <button class="chip" type="button" onclick={oncheck}>Check now</button>
       {/if}
+      {#if wire.enabled}<span class="detail">{roleNews}</span>{/if}
       {#if line.detail !== null}<span class="detail">{line.detail}</span>{/if}
     </div>
 
@@ -425,6 +447,16 @@
           <span class="dot ok"></span>
           <span class="t">{cleanupPick.candidate.row.variant}</span>
           <span class="when">measured best on {tierWord(cleanupPick.result.tier)}</span>
+          <span class="spacer"></span>
+          {#if cleanupPick.candidate.installed?.file !== inUseCleanup?.file}
+            <button
+              class="chip"
+              type="button"
+              disabled={busy}
+              onclick={() => onadopt(cleanupPick.candidate.row.variant, 'normalization')}
+              >switch to it</button
+            >
+          {/if}
           <span class="detail">{@render facts(resultFacts(cleanupPick.result))}</span>
         </div>
       {:else if cleanupRows.length > 0}

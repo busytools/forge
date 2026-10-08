@@ -50,7 +50,10 @@ a proposal reads `update available`, because they are one state of one
 thing. The line states when the check ran - as a local time, from the
 server's RFC 3339 stamp - and the release the feed stood at when it
 answered. An `unreachable` check carries the server's own error text, and
-the rows the last fetch left stand.
+the rows the last fetch left stand. **Under it the line names both roles,
+without a press**: the feed's own proposal for transcribing, and the
+bench's pick for cleanup - the thing that actually decides that role - so a
+reader learns there is news before pressing Check now.
 
 **A row's control is the rule the core enforces, drawn.** A variant this
 machine does not have offers `install <quant>`; the press fetches the
@@ -109,7 +112,10 @@ are the floor - one run is a number, not a comparison - and until then the
 view says so rather than naming a winner.
 A candidate with no run carries the control that makes one - this is the
 only role a bench's result can promote, and it is promoted here rather than
-anywhere the page claims a measurement the feed never made.
+anywhere the page claims a measurement the feed never made. The pick's own
+row carries the control that takes it, the same install-then-load press the
+sweep's verdict offers, and none at all when the pick IS the model that
+runs: a switch onto what is already running changes nothing.
 
 **The bench scores a model on this machine's own material, and nothing is
 embedded.** A shipped binary carries no audio: a machine with no material
