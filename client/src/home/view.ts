@@ -16,11 +16,13 @@
  */
 
 import { displayAddress } from '../connect/attempt';
+import { hrefFor } from '../routes';
 import type {
   AgentRow,
   Gate,
   HomeWire,
   Lifecycle,
+  MissRow,
   ProjectWire,
   Task,
   TaskStatus,
@@ -152,6 +154,101 @@ export interface HomeView {
   header: Header;
   band: BandCard[];
   orgs: OrgSection[];
+  /**
+   * The fleet: one row per project and nothing mixed, so the home is a
+   * glance and a project's world is its own board. A row's strongest
+   * seat state rides its mark; the counts and the named misses ride
+   * beside it.
+   */
+  fleet: FleetViewRow[];
+}
+
+/** One fleet row, as the home draws it. */
+export interface FleetViewRow {
+  org: string;
+  name: string;
+  /** Where the row opens: the project's own board. */
+  href: string;
+  /** The strongest seat state, drawn with the same `Mark` a seat row uses. */
+  state: RowState;
+  place: { branch: string | null; files: string | null };
+  gate: string | null;
+  seats: { label: string; state: RowState }[];
+  live: number;
+  slots: number | null;
+  queue: number;
+  onYou: number;
+  misses: MissRow[];
+}
+
+/**
+ * How strong a state is beside its neighbours, so a row's own mark can be
+ * the strongest among its seats: a failure outranks a question, a
+ * question a run.
+ */
+const MARK_ORDER: string[] = [
+  'failed',
+  'needs',
+  'auth',
+  'unseen',
+  'running',
+  'spawning',
+  'idle',
+  'asleep',
+  'never',
+];
+
+/**
+ * The fleet rows, from the snapshot and nothing else: the counts and the
+ * misses are the server's own, and the mark is the strongest of the
+ * project's seat marks - the same vocabulary a seat row draws, so the
+ * fleet cannot invent a state the roster does not say.
+ */
+export function fleetRows(wire: HomeWire): FleetViewRow[] {
+  return wire.fleet.map((row) => {
+    const project = wire.projects.find(
+      (entry) =>
+        keyOf(entry.project.org, entry.project.name) ===
+        keyOf(orgOf(wire, row.project), row.project),
+    );
+    const seats = wire.agents
+      .filter(
+        (agent) =>
+          agent.slot.project === row.project &&
+          (project === undefined || agent.slot.org === project.project.org),
+      )
+      .map((agent) => ({ label: agent.label, state: stateOf(agent, wire.unseen) }));
+    const strongest = seats.reduce<RowState>(
+      (best, seat) =>
+        MARK_ORDER.indexOf(markOf(seat.state).class) < MARK_ORDER.indexOf(markOf(best).class)
+          ? seat.state
+          : best,
+      { kind: 'never-started' },
+    );
+    return {
+      org: project?.project.org ?? orgOf(wire, row.project),
+      name: row.project,
+      href: hrefFor({
+        name: 'board',
+        org: project?.project.org ?? orgOf(wire, row.project),
+        project: row.project,
+      }),
+      state: strongest,
+      place: project === undefined ? { branch: null, files: null } : placeOf(project.work),
+      gate: project === undefined ? null : gateLine(project.work.gate),
+      seats,
+      live: row.live_workers,
+      slots: row.slots,
+      queue: row.queue,
+      onYou: row.waiting_on_user,
+      misses: row.misses,
+    };
+  });
+}
+
+/** The org a project row belongs to, from the projects list. */
+function orgOf(wire: HomeWire, project: string): string {
+  return wire.projects.find((entry) => entry.project.name === project)?.project.org ?? '';
 }
 
 /**
@@ -529,13 +626,24 @@ function statusRank(status: TaskStatus): number {
   switch (status) {
     case 'in_progress':
       return 0;
-    case 'blocked':
+    case 'waiting':
       return 1;
     case 'pending':
       return 2;
     case 'completed':
       return 3;
+    case 'failed':
+      return 4;
+    case 'canceled':
+      return 5;
   }
+}
+
+/** The artifact a row's cell shows: the first PR or path link, label first. */
+function firstArtifact(task: Task): string | null {
+  const link = task.links.find((entry) => entry.kind === 'pr' || entry.kind === 'path');
+  if (link === undefined) return null;
+  return link.label ?? link.target;
 }
 
 /**
@@ -566,7 +674,10 @@ function taskFor(tasks: Task[], label: string): Task | null {
  * than borrowing a tree it is not in.
  */
 function rowOf(agent: AgentRow, name: string, wire: ProjectWire, unseen: SessionSlot[]): Row {
-  const held = taskFor(wire.tasks, agent.label);
+  const held = taskFor(
+    wire.rows.map((entry) => entry.task),
+    agent.label,
+  );
   return {
     slot: agent.slot,
     state: stateOf(agent, unseen),
@@ -576,7 +687,11 @@ function rowOf(agent: AgentRow, name: string, wire: ProjectWire, unseen: Session
     task:
       held === null
         ? null
-        : { subject: held.subject, chip: chipFor(held.status), artifact: held.artifact },
+        : {
+            subject: held.subject,
+            chip: chipFor(held.status),
+            artifact: firstArtifact(held),
+          },
     pending: agent.pending,
     reason: agent.reason,
     lastActivity: agent.last_activity,
@@ -666,9 +781,10 @@ export function homeView(wire: HomeWire, address: string): HomeView {
   orgs.sort((a, b) => a.name.localeCompare(b.name));
 
   return {
+    fleet: fleetRows(wire),
     header: {
       liveAgents: wire.agents.length,
-      tasks: wire.projects.reduce((total, row) => total + row.tasks.length, 0),
+      tasks: wire.projects.reduce((total, row) => total + row.rows.length, 0),
       projects: wire.projects.length,
       installed: wire.cli_version?.installed ?? null,
       update: availableVersion(

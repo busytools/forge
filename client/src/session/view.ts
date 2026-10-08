@@ -1165,8 +1165,10 @@ export function taskRows(tasks: Task[], slot: SessionSlot): TaskStripRow[] {
  */
 function taskMeta(task: Task): string {
   const parts = [chipFor(task.status)];
-  if (task.artifact !== null) parts.push(artifactLabel(task.artifact));
-  if (task.estimate !== null) parts.push(task.estimate);
+  // The artifact a reader knew is now the row's first PR or path link.
+  const artifact = task.links.find((link) => link.kind === 'pr' || link.kind === 'path');
+  if (artifact !== undefined) parts.push(artifactLabel(artifact.label ?? artifact.target));
+  if (task.estimate !== null) parts.push(task.estimate.words);
   return parts.join(' \u{b7} ');
 }
 

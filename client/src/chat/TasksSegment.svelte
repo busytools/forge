@@ -178,8 +178,12 @@
             >
               {#if row.status === 'in_progress'}
                 <span class="ring"></span>
-              {:else if row.status === 'blocked'}
+              {:else if row.status === 'waiting'}
+                <span class="wait"></span>
+              {:else if row.status === 'failed'}
                 <Icon name="x" class="bad" />
+              {:else if row.status === 'canceled'}
+                <Icon name="x" class="off" />
               {:else if row.status === 'completed'}
                 <Icon name="check" class="ok" />
               {:else}

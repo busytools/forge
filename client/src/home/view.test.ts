@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { homeWire } from '../dev/fixture.data';
 import type {
   AgentRow,
+  BoardRow,
   DictateModel,
   HomeWire,
   Lifecycle,
@@ -14,7 +15,7 @@ import type {
   WireTime,
   WorkState,
 } from '../wire/home';
-import { homeFrom } from '../wire/home';
+import { homeFrom, missFrom } from '../wire/home';
 
 describe('an agent row from a server that names no failure', () => {
   /**
@@ -70,6 +71,7 @@ import {
   chipFor,
   countsOf,
   elapsedLabel,
+  fleetRows,
   gateLine,
   failureFile,
   failureKind,
@@ -143,8 +145,37 @@ const FLEET: HomeWire = {
   ],
 };
 
-/** One project row: the project, and the per-row reads the home draws it from. */
-function project(org: string, name: string, over: Partial<ProjectWire> = {}): ProjectWire {
+/** One board row for a task, with no derived facts - what a test overrides. */
+function boardRow(task: Task): BoardRow {
+  return {
+    task,
+    worked_secs: 0,
+    updated_secs_ago: 0,
+    marks: {
+      ready: false,
+      in_review: false,
+      overdue: false,
+      no_movement: false,
+      waiting_too_long: false,
+      stale: false,
+      to_close: false,
+    },
+    rollup: null,
+    parent_subject: null,
+  };
+}
+
+/**
+ * One project row: the project, and the per-row reads the home draws it
+ * from. A test still passes `tasks` (the records it reasons about); the
+ * helper wraps them as board rows, which is the wire's own shape.
+ */
+function project(
+  org: string,
+  name: string,
+  over: Partial<ProjectWire> & { tasks?: Task[] } = {},
+): ProjectWire {
+  const { tasks = [], ...rest } = over;
   return {
     project: {
       key: `${org}-${name}`,
@@ -158,12 +189,12 @@ function project(org: string, name: string, over: Partial<ProjectWire> = {}): Pr
       sessions: [],
     },
     work: { branch: null, changed: null, gate: 'in_repo' },
-    tasks: [],
+    rows: tasks.map(boardRow),
     crons: [],
     connectors: { gotify: [], slack: [] },
     would_bind: true,
     chip: null,
-    ...over,
+    ...rest,
   };
 }
 
@@ -178,8 +209,13 @@ function task(status: TaskStatus, subject: string): Task {
     status,
     owner: { org: 'TestOrg', project: 'proj', label: 'lead' },
     parent: null,
-    artifact: null,
+    waiting_on: null,
     estimate: null,
+    rank: null,
+    verify: null,
+    links: [],
+    attempt: 0,
+    archived_at: null,
     created_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
     updated_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
   };
@@ -289,6 +325,43 @@ describe('the fleet the snapshot describes', () => {
    * screen instead would count a subset, and the header draws one number for
    * the whole fleet.
    */
+  /**
+   * The fleet's misses are named, one per shape the wire sends: a stalled
+   * queue, a worker holding no row, and a shape this client is older than -
+   * which reads as `unknown` rather than vanishing, because a miss nobody
+   * can see is the failure this board exists to end.
+   */
+  it('names each fleet miss', () => {
+    const wire: HomeWire = {
+      ...homeWire,
+      fleet: [
+        {
+          project: 'proj',
+          live_workers: 1,
+          slots: 2,
+          queue: 3,
+          waiting_on_user: 1,
+          misses: [
+            { kind: 'stalled', label: 'queue is stalling' },
+            { kind: 'no-row', label: 'w1 holds no row' },
+            { kind: 'unknown', label: 'a miss this client does not know' },
+          ],
+        },
+      ],
+    };
+    const rows = fleetRows(wire);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.misses.map((miss) => miss.kind)).toEqual(['stalled', 'no-row', 'unknown']);
+    expect(rows[0]?.onYou).toBe(1);
+    // And the raw wire's own shapes narrow to those names.
+    expect(missFrom('stalled_queue')).toEqual({ kind: 'stalled', label: 'queue is stalling' });
+    expect(missFrom({ unaccounted_worker: 'w1' })).toEqual({
+      kind: 'no-row',
+      label: 'w1 holds no row',
+    });
+    expect(missFrom(7).kind).toBe('unknown');
+  });
+
   it('totals the tasks across every project, not the ones a row happens to show', () => {
     const wire: HomeWire = {
       ...homeWire,
@@ -477,10 +550,12 @@ describe('a row over the fleet', () => {
 
 describe('the cells the reshape made drawable', () => {
   /** One project of the fixture fleet, with its row's reads varied. */
-  const withRow = (over: Partial<ProjectWire>): HomeWire => ({
-    ...homeWire,
-    projects: [{ ...PROJECT, ...over }],
-  });
+  const withRow = (over: Partial<ProjectWire> & { tasks?: Task[] }): HomeWire => {
+    // A test reasons about task records; the wire carries board rows.
+    const { tasks = [], ...rest } = over;
+    const base = tasks.length > 0 ? { ...PROJECT, rows: tasks.map(boardRow) } : PROJECT;
+    return { ...homeWire, projects: [{ ...base, ...rest }] };
+  };
 
   /**
    * The fixture's one agent, with ITS row's reads varied. The tree a row
