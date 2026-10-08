@@ -900,14 +900,55 @@
     };
   });
 
+  /** A hold on the mic that opens the settings instead of firing a take. */
+  const MIC_HOLD_MS = 450;
   /**
-   * The mic is the door, not the trigger: pressing it shows what dictation is
-   * set to, and nothing on the page starts a take. The push-to-talk key is the
-   * trigger, which is the terminal's own shape - it has no record button
-   * either.
+   * How long after a hold fires its trailing click may still arrive. The
+   * swallow must expire: a hold whose click never reaches the button (a drag
+   * off, or a touch long-press whose platform sends none) would otherwise eat
+   * the NEXT keyboard or assistive activation of the mic.
+   */
+  const MIC_SWALLOW_MS = 800;
+  let holdTimer: ReturnType<typeof setTimeout> | null = null;
+  /** When the last hold fired, so its release does not also read as a press. */
+  let heldAt = 0;
+
+  /**
+   * The mic is the trigger and the door both: a press starts or ends a take -
+   * a phone has no push-to-talk key, so a mic that only SHOWED the settings
+   * would leave a finger no way to dictate - and a hold opens what dictation
+   * is set to (Ved, 2026-10-08: press once to dictate, hold for settings).
    */
   function mic(): void {
-    panel = !panel;
+    if (heldAt !== 0 && Date.now() - heldAt < MIC_SWALLOW_MS) {
+      heldAt = 0;
+      return;
+    }
+    heldAt = 0;
+    micTake();
+  }
+
+  function micHoldStart(event: PointerEvent): void {
+    // Primary button only: a right-click hold is not a hold.
+    if (event.button !== 0) return;
+    heldAt = 0;
+    holdTimer = setTimeout(() => {
+      holdTimer = null;
+      heldAt = Date.now();
+      panel = true;
+    }, MIC_HOLD_MS);
+  }
+
+  function micHoldEnd(): void {
+    if (holdTimer !== null) {
+      clearTimeout(holdTimer);
+      holdTimer = null;
+    } else if (heldAt !== 0) {
+      // The hold fired, so its release is when the trailing click arrives:
+      // re-anchor the swallow here, or a hold longer than its window would
+      // start a take on release.
+      heldAt = Date.now();
+    }
   }
 
   /** Abandon a take without submitting it, which the dock's Escape does. */
@@ -916,13 +957,9 @@
   }
 
   /**
-   * The mic on the dock's words row: press to begin a take, press to end it.
-   *
-   * A divergence from this composer's own "the mic is the door, not the
-   * trigger" rule, and the reason is rule 22's touch door: a phone has no
-   * push-to-talk key, so a row that could only SHOW a take would leave a finger
-   * no way to dictate an answer at all. Ending submits, so the words land in
-   * the row they were spoken into.
+   * The mic on the dock's words row: press to begin a take, press to end it -
+   * the same press semantics the composer's own mic carries. Ending submits,
+   * so the words land in the row they were spoken into.
    */
   function micTake(): void {
     const live = untrack(() => take);
@@ -1087,8 +1124,21 @@
           <button
             class="mic"
             type="button"
-            aria-label="dictation settings"
+            title="press to dictate, hold or Shift+Enter for settings"
+            aria-label={take === null && composer.take === null ? 'dictate' : 'stop dictating'}
             aria-expanded={panel}
+            onpointerdown={micHoldStart}
+            onpointerup={micHoldEnd}
+            onpointerleave={micHoldEnd}
+            onkeydown={(event: KeyboardEvent) => {
+              // **The hold's door for a keyboard.** The press is the button's
+              // own click; the settings need one modifier shape, said in the
+              // title so it is discoverable rather than folklore.
+              if (event.key === 'Enter' && event.shiftKey) {
+                event.preventDefault();
+                panel = true;
+              }
+            }}
             onclick={mic}
           >
             <Icon name="mic" />
@@ -1122,6 +1172,12 @@
         device={seatDevice}
         onaxes={setAxes}
         ondevice={setDevice}
+        onclose={() => {
+          panel = false;
+          // The keyboard goes back where Escape puts it, so closing by the
+          // button is not a dead end for a keyboard reader.
+          field?.focus();
+        }}
       />
     {/if}
   </div>

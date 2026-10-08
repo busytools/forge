@@ -973,7 +973,7 @@ describe('the box', () => {
     ).not.toBeNull();
   });
 
-  it('offers the way in only when this install can dictate, and the way in is the door', () => {
+  it('offers the way in only when this install can dictate, and a press is the trigger', async () => {
     open();
     expect(
       document.querySelector('.mic'),
@@ -987,16 +987,129 @@ describe('the box', () => {
     const mic = document.querySelector('.mic');
     if (!(mic instanceof HTMLElement))
       throw new Error('an install that can dictate draws no way in');
-    mic.click();
+    vi.useFakeTimers();
+    try {
+      // The press as a finger delivers it: down, up, then the click - with the
+      // release cancelling the hold, so advancing past the threshold after it
+      // must open nothing.
+      mic.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+      vi.advanceTimersByTime(100);
+      mic.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }));
+      mic.click();
+      vi.advanceTimersByTime(400);
+    } finally {
+      vi.useRealTimers();
+    }
+    for (let turn = 0; turn < 4; turn += 1) await Promise.resolve();
     flushSync();
 
-    expect(document.querySelector('.pop'), 'the mic is the door, not the trigger').not.toBeNull();
-    expect(harness.sent, 'and nothing on the page starts a take').toEqual([]);
+    expect(harness.sent.at(-1)?.command['dictate_stream'], 'a press is the trigger').toBeDefined();
+    expect(harness.sent, 'and only the one take began').toHaveLength(1);
+    expect(document.querySelector('.pop'), 'a quick press opens no panel').toBeNull();
+  });
+
+  it('opens the settings on a hold, and the release starts nothing', async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = open({ dictation: true });
+      const mic = document.querySelector('.mic');
+      if (!(mic instanceof HTMLElement))
+        throw new Error('an install that can dictate draws no way in');
+
+      mic.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+      vi.advanceTimersByTime(450);
+      for (let turn = 0; turn < 4; turn += 1) await Promise.resolve();
+      flushSync();
+
+      expect(document.querySelector('.pop'), 'the hold is the door').not.toBeNull();
+      expect(harness.sent, 'and the hold starts no take').toEqual([]);
+
+      mic.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }));
+      mic.click();
+      for (let turn = 0; turn < 4; turn += 1) await Promise.resolve();
+      flushSync();
+      expect(harness.sent, 'the release does not read as a press').toEqual([]);
+      expect(document.querySelector('.pop'), 'and the settings stay open').not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("re-anchors the swallow at the release, so a long hold's click is not a press", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = open({ dictation: true });
+      const mic = document.querySelector('.mic');
+      if (!(mic instanceof HTMLElement))
+        throw new Error('an install that can dictate draws no way in');
+
+      // A slow hold: past the threshold AND past the swallow's window measured
+      // from the fire - the release's click is still the hold's, not a press.
+      mic.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+      vi.advanceTimersByTime(450);
+      vi.advanceTimersByTime(900);
+      mic.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }));
+      mic.click();
+      for (let turn = 0; turn < 4; turn += 1) await Promise.resolve();
+      flushSync();
+
+      expect(document.querySelector('.pop'), 'the hold is still the door').not.toBeNull();
+      expect(harness.sent, 'a long hold does not start a take on release').toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('expires the swallow, so a hold with no trailing click does not eat the next press', async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = open({ dictation: true });
+      const mic = document.querySelector('.mic');
+      if (!(mic instanceof HTMLElement))
+        throw new Error('an install that can dictate draws no way in');
+
+      // A hold whose click never arrives (a drag off, or a touch long-press):
+      // the swallow must lapse, or the NEXT activation silently does nothing.
+      mic.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+      vi.advanceTimersByTime(450);
+      mic.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }));
+      vi.advanceTimersByTime(900);
+      mic.click();
+      for (let turn = 0; turn < 4; turn += 1) await Promise.resolve();
+      flushSync();
+
+      expect(
+        harness.sent.at(-1)?.command['dictate_stream'],
+        'a stale swallow ate the next press',
+      ).toBeDefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('opens the settings from the keyboard door, with no take', () => {
+    const harness = open({ dictation: true });
+    const mic = document.querySelector('.mic');
+    if (!(mic instanceof HTMLElement))
+      throw new Error('an install that can dictate draws no way in');
+
+    mic.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'Enter',
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    flushSync();
+
+    expect(document.querySelector('.pop'), 'Shift+Enter is the hold for a keyboard').not.toBeNull();
+    expect(harness.sent, 'and starting nothing').toEqual([]);
   });
 });
 
 /**
- * The push-to-talk key, which is the only thing that starts a take.
+ * The push-to-talk key, which starts a take from anywhere in the box.
  *
  * The binding and the mode are read off the record rather than assumed: they
  * are the user's `forge.toml`, and a page that hardcoded a chord would honour a
@@ -5065,13 +5178,24 @@ describe('the dictation panel', () => {
     flushSync();
   }
 
-  /** The panel, opened by the mic, which is the only way in. */
+  /** The panel, opened by holding the mic - a press is the trigger now. */
   function opened(over: Partial<ComposerProps> = {}, on?: Wire) {
     const harness = open({ dictation: true, ...over }, on);
     const mic = document.querySelector('.mic');
     if (!(mic instanceof HTMLElement)) throw new Error('the box drew no mic to open with');
-    mic.click();
+    vi.useFakeTimers();
+    try {
+      mic.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+      vi.advanceTimersByTime(450);
+      mic.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }));
+      // The click a browser sends after the release, which the swallow eats -
+      // leaving it un-sent would linger the flag into a later case.
+      mic.click();
+    } finally {
+      vi.useRealTimers();
+    }
     flushSync();
+    if (document.querySelector('.pop') === null) throw new Error('the hold drew no panel');
     return harness;
   }
 
@@ -5340,6 +5464,21 @@ describe('the dictation panel', () => {
 
     expect(document.querySelector('.pop'), 'the panel takes the Escape it is open for').toBeNull();
     expect(document.activeElement, 'and the reader is typing again').toBe(field());
+  });
+
+  it('hides on its own close, which is the way out a touch screen has', () => {
+    opened();
+
+    const x = document.querySelector('.pop .hd .x');
+    if (!(x instanceof HTMLElement)) throw new Error('the panel drew no close');
+    // The browser focuses what it activates: jsdom's click does not, and
+    // without this the mount's own field focus answers the assertion below.
+    x.focus();
+    x.click();
+    flushSync();
+
+    expect(document.querySelector('.pop'), 'the close is the door out').toBeNull();
+    expect(document.activeElement, 'the keyboard returns to the field').toBe(field());
   });
 
   /**

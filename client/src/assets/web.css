@@ -1606,8 +1606,13 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
 .line .mic { flex: none; margin-left: 6px; width: 24px; height: 24px;
   display: grid; place-items: center; color: var(--dim); background: none;
   border: 0; padding: 0; cursor: pointer; }
-/* The mic lifts like the sheet's other dim controls when pointed at. */
-.line .mic:hover { color: var(--text); }
+/* The mic lifts to the primary on hover, matching its sibling controls (the
+   send's accent), rather than the sheet's generic text lift. */
+.line .mic:hover { color: var(--accent); }
+/* The mic is the phone's primary dictate control and carries the hold, so its
+   width takes the same 44px floor as the dock's (the sheet's button rule gives
+   the height; a finger drifting off 24px would cancel the hold). */
+@media (pointer: coarse) { .line .mic { min-height: 44px; min-width: 44px; } .pop .hd .x { min-width: 44px; } }
 /* The send, at the same 24px pointer floor as the mic and centred in whatever
    box it gets, since the phone width gives every control a 44px floor and the
    icon would otherwise sit at the top of it. */
@@ -1767,9 +1772,15 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
   border: 1px solid var(--line); border-radius: 14px;
   box-shadow: 0 20px 48px rgba(0,0,0,.55); }
 .pop .hd { padding: 12px 15px 0; display: flex; align-items: center; gap: 9px; }
-.pop .hd .t { font-size: var(--fs-data); font-weight: 600; color: var(--text); }
-.pop .hd .k { margin-left: auto; font-family: var(--mono); font-size: var(--fs-label);
+.pop .hd .t { margin-right: auto; font-size: var(--fs-data); font-weight: 600; color: var(--text); }
+.pop .hd .k { font-family: var(--mono); font-size: var(--fs-label);
   color: var(--dim); }
+/* The visible way out: the mic press is the trigger now, and a phone has no
+   Escape - the panel needs a door of its own on touch. */
+.pop .hd .x { width: 22px; height: 22px; border-radius: 7px; display: grid;
+  place-items: center; color: var(--dim); background: none; border: 0;
+  padding: 0; cursor: pointer; }
+.pop .hd .x:hover { color: var(--text); }
 .pop .hd .k b { color: var(--hot); font-weight: 400; }
 .pop .scope { padding: 3px 15px 0; font-size: var(--fs-label); color: var(--dim); }
 .pop .ax { padding: 13px 15px 0; }
@@ -1977,7 +1988,7 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .dock .custom .micb { flex: none; width: 26px; height: 26px; border-radius: 8px;
   border: 1px solid var(--line); background: none; color: var(--dim);
   display: grid; place-items: center; cursor: pointer; }
-.dock .custom .micb:hover { color: var(--text); border-color: var(--ctl); }
+.dock .custom .micb:hover { color: var(--accent); border-color: var(--ctl); }
 /* The take's card is built for the composer - top left, its draft below it -
    and `align-self: flex-start` with the trailing margin is what that shape
    reserves. In the dock's row there is no draft under it and the mic stands

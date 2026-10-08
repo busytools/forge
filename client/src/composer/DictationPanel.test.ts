@@ -46,6 +46,7 @@ async function drawn(): Promise<void> {
       device: null,
       onaxes: () => undefined,
       ondevice: () => undefined,
+      onclose: () => undefined,
     },
   });
   flushSync();
@@ -93,6 +94,7 @@ describe('the model rows', () => {
         device: null,
         onaxes: () => undefined,
         ondevice: () => undefined,
+        onclose: () => undefined,
         connection: forge.connection,
       },
     });

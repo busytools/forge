@@ -192,7 +192,7 @@ describe('axe over the rendered pages', () => {
     // Inside the landmark its page gives it: the composer is a slot in the
     // session page's own `<main>`, and rendered alone every one of its states
     // reports the page-level `region` rule instead of anything about itself.
-    const draw = (held: ComposerRecord) =>
+    const draw = (held: ComposerRecord, dictation = false) =>
       `<main>${
         render(Composer, {
           props: {
@@ -200,12 +200,13 @@ describe('axe over the rendered pages', () => {
             slot: SLOT,
             seat: seatRead(),
             connection: wire().connection,
-            dictation: false,
+            dictation,
           } satisfies ComposerProps,
         }).body
       }</main>`;
 
     expect(await idsOf(draw(record())), 'the box').toEqual([]);
+    expect(await idsOf(draw(record(), true)), 'the box with the mic').toEqual([]);
     expect(await idsOf(draw(record({ pending_asks: [permissionAsk()] }))), 'a permission').toEqual(
       [],
     );

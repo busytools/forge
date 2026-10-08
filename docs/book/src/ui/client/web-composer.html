@@ -166,9 +166,11 @@
   .pop { background: var(--s1); border: 1px solid var(--line); border-radius: 14px;
     box-shadow: 0 20px 48px rgba(0,0,0,.55); overflow: hidden; }
   .pop .hd { padding: 12px 15px 0; display: flex; align-items: center; gap: 9px; }
-  .pop .hd .t { font-size: var(--fs-data); font-weight: 600; color: var(--text); }
-  .pop .hd .k { margin-left: auto; font-family: var(--mono); font-size: var(--fs-label);
+  .pop .hd .t { margin-right: auto; font-size: var(--fs-data); font-weight: 600; color: var(--text); }
+  .pop .hd .k { font-family: var(--mono); font-size: var(--fs-label);
     color: var(--dim); }
+  .pop .hd .x { width: 22px; height: 22px; border-radius: 7px; display: grid;
+    place-items: center; color: var(--dim); }
   .pop .hd .k b { color: var(--hot); font-weight: 400; }
   .pop .scope { padding: 3px 15px 0; font-size: var(--fs-label); color: var(--dim); }
   .pop .ax { padding: 13px 15px 0; }
@@ -565,11 +567,12 @@ graph, ready tally, frames, bytes, pace &#8212; and the dot and the way out are 
 </div>
 
 <h2>The dictation panel</h2>
-<p class="note">The microphone is the door rather than the trigger: pressing it shows what
-dictation is set to, and nothing on the page starts a take - the push-to-talk key is the
-trigger, which is the terminal's own shape. <b>The panel is not a port of the terminal's
-overlay</b>: the axes and their values are the same, and the form is the web's - each axis is a
-short exclusive set, so each is a row of chips rather than a list of rows.</p>
+<p class="note">The microphone is the trigger: pressing it starts or ends a take, and holding it
+(or Shift+Enter) opens what dictation is set to - a phone has no push-to-talk key, so a mic
+that only showed the settings would leave a finger no way to dictate. <b>The panel is not a
+port of the terminal's overlay</b>: the axes and their values are the same, and the form is
+the web's - each axis is a short exclusive set, so each is a row of chips rather than a list
+of rows.</p>
 <div class="stage">
   <div class="row">
     <div class="col">
@@ -579,7 +582,7 @@ short exclusive set, so each is a row of chips rather than a list of rows.</p>
           <div class="line"><span class="txt ph">Type a message...</span><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></div>
         </div>
         <div class="pop">
-          <div class="hd"><span class="t">Dictation</span><span class="k"><b>&#8984; right</b> to talk</span></div>
+          <div class="hd"><span class="t">Dictation</span><span class="k"><b>&#8984; right</b> to talk</span><span class="x"><svg class="ic"><use href="#i-x"/></svg></span></div>
           <div class="scope">axes this session &#183; input on this machine</div>
           <div class="ax">
             <div class="lbl">VOICE <span class="src">&#183; this session</span></div>
