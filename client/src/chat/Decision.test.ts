@@ -188,12 +188,14 @@ describe('the block one decision draws', () => {
       },
     });
     expect(body, 'the naming field draws as the line').toContain(
-      'Is the claim `just check` green?',
+      'Is the claim <code>just check</code> green?',
     );
     expect(body, 'and the disclosure says what it holds').toContain(
       'structured instructions - 2 fields',
     );
-    expect(body, 'with the value inside it').toContain('all green');
+    // The value itself waits behind the disclosure's own open; what the row
+    // composes closed is the label (`Decision.mount` reads the open).
+    expect(body, 'with the value behind the open, not under the row').not.toContain('all green');
   });
 
   it('draws a structured criterion behind its own disclosure, and a string one without', () => {
@@ -221,7 +223,7 @@ describe('the block one decision draws', () => {
     expect(body, 'the disclosure is labelled by what it holds').toContain(
       'structured value - 2 fields',
     );
-    expect(body, 'and the value draws inside it').toContain('a.rs');
+    expect(body, 'and the value waits behind that open, not under the row').not.toContain('a.rs');
     expect(
       [...body.matchAll(/class="raw"/g)],
       'one disclosure, for the one structured value - the string draws none',
@@ -317,7 +319,9 @@ describe('the block one decision draws', () => {
       .replaceAll('&amp;', '&')
       .replaceAll('&lt;', '<')
       .replaceAll('&gt;', '>');
-    expect(drawnText, 'the block prints the pretty form').toContain(printed);
+    // The printed form waits behind the disclosure's open now; what the block
+    // composes closed is the label, and `Decision.mount` reads the open.
+    expect(drawnText, 'the block prints the pretty form behind the open').not.toContain(printed);
     expect(PAGE, 'and the page draws it word for word').toContain('structured value - 2 fields');
     expect(PAGE, 'and the specimen is exactly what the block prints').toContain(printed);
   });

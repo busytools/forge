@@ -3,10 +3,12 @@ import { describe, expect, it } from 'vitest';
 
 import Leaves from './Leaves.svelte';
 import { leafOf } from './leaves';
+import PeerRow from './PeerRow.svelte';
+import Thought from './Thought.svelte';
 import type { PeerCard, WorkRow } from './units';
 
 /** One peer card, as the row the leaf list draws. */
-const card = (over: Partial<PeerCard> = {}): WorkRow => ({
+const card = (over: Partial<PeerCard> = {}): Extract<WorkRow, { tag: 'card' }> => ({
   tag: 'card',
   card: {
     id: 'm-1',
@@ -24,7 +26,26 @@ const card = (over: Partial<PeerCard> = {}): WorkRow => ({
 
 const draw = (rows: WorkRow[]): string => render(Leaves, { props: { rows } }).body;
 
+/** Card rows drawn the way their body needs them: open. */
+const drawOpen = (cards: Partial<PeerCard>[]): string =>
+  cards
+    .map((over) => render(PeerRow, { props: { card: card(over).card, open: true } }).body)
+    .join('\n');
+
 describe('the rows of peer traffic, drawn as tool rows', () => {
+  /**
+   * A closed card carries its summary and nothing else: the summary's own
+   * line is `firstLine`, and everything after it is the body's. The giant
+   * seat's cost is the bodies of rows nobody opened.
+   */
+  it('carries summary markup only while it is closed', () => {
+    const two = card({ body: 'the first line rides the summary\nand this one is the body alone' });
+    const closed = draw([two]);
+    const under = closed.slice(closed.indexOf('</summary>'));
+    expect(closed, 'the summary line still draws').toContain('the first line');
+    expect(under, 'and nothing under it').not.toContain('body alone');
+  });
+
   it('draws a card as its own row, with nothing above it', () => {
     // There is no count and no disclosure around the list - and no family row
     // either: the rows are the whole of what it draws.
@@ -69,14 +90,14 @@ describe('the rows of peer traffic, drawn as tool rows', () => {
   it('labels the message with its sender and its first line, and opens onto the body', () => {
     const body =
       'pgtemp, spawned per test binary rather than per test.\n\n' + 'The fixture is the example.';
-    const drawn = draw([card({ body })]);
+    const drawn = drawOpen([{ body }]);
 
     expect(drawn, 'the sender is the label the reader would have passed').toContain(
       '<span class="k">forge/steward</span>',
     );
-    // The label, up to the chevron that closes the summary: a body sits in the
-    // DOM whether or not the row is open, so the whole render cannot say what
-    // the row previews.
+    // The label, up to the chevron that closes the summary: the row is drawn
+    // open, so its body is in this render too and the whole of it cannot say
+    // what the summary previews.
     const at = drawn.indexOf('<span class="tn"');
     const label = drawn.slice(at, drawn.indexOf('<svg', at));
     expect(label, 'the label previews the first line').toContain(
@@ -87,7 +108,7 @@ describe('the rows of peer traffic, drawn as tool rows', () => {
   });
 
   it('opens a send onto the ack its own result carried', () => {
-    const drawn = draw([card({ row: 'sent', ack: 'id m-7f3a92e0 · to Busytools/forge/w1' })]);
+    const drawn = drawOpen([{ row: 'sent', ack: 'id m-7f3a92e0 · to Busytools/forge/w1' }]);
 
     expect(drawn, 'the ack is on the row').toContain('id m-7f3a92e0');
     expect(drawn, 'and names the seat it went to').toContain('to Busytools/forge/w1');
@@ -106,8 +127,8 @@ describe('the rows of peer traffic, drawn as tool rows', () => {
   });
 
   it('opens whoami onto this seat and list onto the seats it can reach', () => {
-    const drawn = draw([
-      card({
+    const drawn = drawOpen([
+      {
         row: 'whoami',
         peer: 'whoami',
         seat: {
@@ -117,8 +138,8 @@ describe('the rows of peer traffic, drawn as tool rows', () => {
           path: '/tmp/forge',
           status: 'running',
         },
-      }),
-      card({
+      },
+      {
         id: 'm-2',
         row: 'list',
         peer: 'list',
@@ -145,7 +166,7 @@ describe('the rows of peer traffic, drawn as tool rows', () => {
             liveness: '',
           },
         ],
-      }),
+      },
     ]);
 
     expect(drawn, 'whoami says what it is').toContain('whoami');
@@ -162,8 +183,8 @@ describe('the rows of peer traffic, drawn as tool rows', () => {
     // A project's own agent has no activity to report, so its row carries the
     // seat and what it is for - and a row that printed the third clause
     // unconditionally ended in a dangling separator.
-    const drawn = draw([
-      card({
+    const drawn = drawOpen([
+      {
         id: 'm-1',
         row: 'list',
         peer: 'list',
@@ -183,7 +204,7 @@ describe('the rows of peer traffic, drawn as tool rows', () => {
             liveness: 'idle',
           },
         ],
-      }),
+      },
     ]);
 
     const values = [...drawn.matchAll(/<span class="v">(.*?)<\/span>/g)].map(
@@ -226,8 +247,8 @@ describe('the rows of peer traffic, drawn as tool rows', () => {
    * for it. This one pins what the rows draw.
    */
   it('draws a list whose rows share the word lead', () => {
-    const drawn = draw([
-      card({
+    const drawn = drawOpen([
+      {
         id: 'm-1',
         row: 'list',
         peer: 'list',
@@ -247,7 +268,7 @@ describe('the rows of peer traffic, drawn as tool rows', () => {
             liveness: '',
           },
         ],
-      }),
+      },
     ]);
 
     expect(drawn.match(/>lead</g)?.length, 'both rows drew').toBe(2);
@@ -261,7 +282,7 @@ describe('the rows of peer traffic, drawn as tool rows', () => {
    * 2026-10-03).
    */
   it('draws a peer body as prose, not as the raw text it arrived as', () => {
-    const drawn = draw([card({ body: 'the **fold** joins, `cargo check` runs' })]);
+    const drawn = drawOpen([{ body: 'the **fold** joins, `cargo check` runs' }]);
     expect(drawn, 'the marks render').toContain('<strong>fold</strong>');
     expect(drawn, 'rather than sitting on the page').not.toContain('**fold**');
   });
@@ -322,8 +343,11 @@ describe('the thinking row', () => {
 
   it('draws the opened thought as markdown, which is how the model wrote it', () => {
     // The reasoning arrives with headings, lists and code, and drawn as plain
-    // paragraphs it showed its own asterisks and hashes.
-    const drawn = draw([thought('## what I found\n\n- one\n- two\n\n`cargo check`')]);
+    // paragraphs it showed its own asterisks and hashes. The row is drawn
+    // open: a closed one carries its summary and nothing else.
+    const drawn = render(Thought, {
+      props: { text: '## what I found\n\n- one\n- two\n\n`cargo check`', open: true },
+    }).body;
 
     expect(drawn, 'a heading is a heading').toContain('<h2>');
     expect(drawn, 'a list is a list').toContain('<li>');

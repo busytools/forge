@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
+
   import Chevron from '../components/Chevron.svelte';
   import Icon from '../components/Icon.svelte';
   import { renderInlineProse } from './prose';
@@ -29,7 +31,10 @@
    * the thought row's own line is: inline marks rendered, the layout's ellipsis
    * where they run out.
    */
-  let { run }: { run: HookRun } = $props();
+  let { run, open = false }: { run: HookRun; open?: boolean } = $props();
+
+  /** Whether the row is open; a closed row carries its summary and nothing else. */
+  let opened = $state(untrack(() => open));
 
   /** The closed row's tail: the hook's own words in one line, or null where it said nothing. */
   const tail = $derived(hookTail(run.body));
@@ -79,7 +84,7 @@
   }
 </script>
 
-<details class="leaf hookrow">
+<details class="leaf hookrow" bind:open={opened}>
   <summary>
     <Icon name="hook" class={`gl${run.failed ? ' err' : ' ok'}`} />
     <span class="tn"
@@ -92,7 +97,7 @@
     {/if}
     <Chevron />
   </summary>
-  {#if run.body !== null}
+  {#if opened && run.body !== null}
     <div class="body">
       <div class="term">{run.body}</div>
     </div>

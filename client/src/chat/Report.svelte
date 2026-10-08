@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
+
   import Chevron from '../components/Chevron.svelte';
   import { clock, duration, money, tokens } from './numbers';
   import { attributed, cached, elapsed } from './report';
@@ -17,7 +19,10 @@
    * the CLI attributing nothing arrives as a zero block, and a zero here reads
    * as a measurement.
    */
-  let { info }: { info: TurnInfo } = $props();
+  let { info, open = false }: { info: TurnInfo; open?: boolean } = $props();
+
+  /** Whether the row is open; a closed row carries its summary and nothing else. */
+  let opened = $state(untrack(() => open));
 
   /** The record with an unattributed usage block dropped, which is the rule the terminal applies. */
   const held = $derived(attributed(info));
@@ -31,7 +36,9 @@
    */
   let now = $state(Date.now());
   $effect(() => {
-    if (!held.running) return;
+    // Only while the body is on screen: a closed row carries no clock, and a
+    // tick that kept recomputing the facts for one would be work nobody sees.
+    if (!opened || !held.running) return;
     const id = setInterval(() => {
       now = Date.now();
     }, 1000);
@@ -94,20 +101,22 @@
   });
 </script>
 
-<details class="turninfo">
+<details class="turninfo" bind:open={opened}>
   <summary>
     <Strip info={held} />
     <Chevron />
   </summary>
-  <!-- Each fact is a pair of its own, placed where it is: the design kept a
-       cell in column with an empty span beside it, which is a grid auto-flowing
-       rather than a body saying what it holds. -->
-  <div class="tibody">
-    {#each facts as fact (fact.label)}
-      <span class="fact">
-        <b>{fact.label}</b>
-        <span>{fact.value}</span>
-      </span>
-    {/each}
-  </div>
+  {#if opened}
+    <!-- Each fact is a pair of its own, placed where it is: the design kept a
+         cell in column with an empty span beside it, which is a grid auto-flowing
+         rather than a body saying what it holds. -->
+    <div class="tibody">
+      {#each facts as fact (fact.label)}
+        <span class="fact">
+          <b>{fact.label}</b>
+          <span>{fact.value}</span>
+        </span>
+      {/each}
+    </div>
+  {/if}
 </details>

@@ -52,4 +52,48 @@ describe('the distribution the runtime draws', () => {
 
     expect(document.querySelectorAll('.opt')).toHaveLength(3);
   });
+
+  it('draws a structured value onto its own open, question and criterion alike', () => {
+    const value = { label: 'owns the ledger and the settlement path', files: ['a.rs'] };
+    const parsed: Parsed = {
+      model: 'jev-1.13.0',
+      usage: null,
+      answer: {
+        kind: 'choice',
+        choice: 'billing',
+        probabilities: [{ name: 'billing', value: 0.84 }],
+        confidence: null,
+      },
+      question: {
+        text: 'Is the claim `just check` green?',
+        raw: { evidence: { verdict: 'all green' } },
+      },
+      criteria: {
+        billing: { text: 'owns the ledger and the settlement path', raw: value },
+      },
+    };
+
+    app = mount(Decision, { target: document.body, props: { decision: parsed } });
+    flushSync();
+    expect(document.body.textContent ?? '', 'closed, the value waits').not.toContain('all green');
+
+    for (const raw of document.querySelectorAll('details.raw')) {
+      if (raw instanceof HTMLDetailsElement) {
+        raw.open = true;
+        raw.dispatchEvent(new Event('toggle'));
+      }
+    }
+    flushSync();
+
+    expect(document.body.textContent ?? '', 'the question raw draws onto its open').toContain(
+      'all green',
+    );
+    expect(document.body.textContent ?? '', 'and the criterion raw').toContain('a.rs');
+    // The PRETTY form, not a plain stringify: the page's specimen draws the
+    // indented shape, and a body that printed the compact one would still
+    // carry both words above.
+    expect(document.body.textContent ?? '', 'the pretty form, indentation and all').toContain(
+      JSON.stringify(value, null, 2),
+    );
+  });
 });

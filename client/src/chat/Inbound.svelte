@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
+
   import Chevron from '../components/Chevron.svelte';
   import Icon from '../components/Icon.svelte';
   import Prose from './Prose.svelte';
@@ -18,7 +20,10 @@
    * as prose - a delivery is a message meant to be read, so its marks render
    * rather than sitting on the page as themselves.
    */
-  let { row }: { row: InboundLeaf } = $props();
+  let { row, open = false }: { row: InboundLeaf; open?: boolean } = $props();
+
+  /** Whether the row is open; a closed row carries its summary and nothing else. */
+  let opened = $state(untrack(() => open));
 
   /**
    * The tail line, or null where it would only repeat the title.
@@ -51,7 +56,7 @@
   const glyph = $derived(row.kind === 'cron' ? 'schedules' : row.kind);
 </script>
 
-<details class="leaf inboundrow">
+<details class="leaf inboundrow" bind:open={opened}>
   <summary>
     <Icon name={glyph} class="gl" />
     {#if title !== null}
@@ -70,7 +75,7 @@
     {/if}
     <Chevron />
   </summary>
-  {#if row.body !== ''}
+  {#if opened && row.body !== ''}
     <div class="body">
       <Prose text={row.body} />
     </div>

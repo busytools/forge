@@ -19,6 +19,12 @@
    */
   let { decision }: { decision: Decision } = $props();
 
+  /** The question's own raw value, drawn onto its open like every row's body. */
+  let questionRaw = $state(false);
+
+  /** The options' raw values, by row, drawn onto their own open. */
+  let optionRaw = $state<Record<number, boolean>>({});
+
   /** More than half reads as yes; the number stays exactly as returned. */
   const YES = 0.5;
 
@@ -163,11 +169,11 @@
       {@html renderInlineProse(joinedLine(decision.question.text))}
     </div>
     {#if decision.question.raw !== null}
-      <details class="raw">
+      <details class="raw" bind:open={questionRaw}>
         <summary
           ><Chevron />{disclosureWords(decision.question.raw, 'structured instructions')}</summary
         >
-        <pre>{pretty(decision.question.raw)}</pre>
+        {#if questionRaw}<pre>{pretty(decision.question.raw)}</pre>{/if}
       </details>
     {/if}
   {/if}
@@ -202,9 +208,9 @@
             <div class="crit">{row.crit}</div>
           {/if}
           {#if row.raw !== null}
-            <details class="raw">
+            <details class="raw" bind:open={optionRaw[at]}>
               <summary><Chevron />{disclosureWords(row.raw, 'structured value')}</summary>
-              <pre>{pretty(row.raw)}</pre>
+              {#if optionRaw[at]}<pre>{pretty(row.raw)}</pre>{/if}
             </details>
           {/if}
         </div>

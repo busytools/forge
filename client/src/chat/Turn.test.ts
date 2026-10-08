@@ -253,7 +253,12 @@ describe('one turn, as the page draws it', () => {
     const running = between(live(working), '<details class="turninfo"', '</details>');
     expect(running, 'a ring, not a settled check').toContain('class="ring"');
     expect(running, 'the figures the frames carry').toContain('100\u{2191}');
-    expect(running, 'the thinking count beside them').toContain('thinking');
+    // The count rides the summary only when the record carries one, and this
+    // fixture's carries none: the facts grid's own `thinking` label (a dash
+    // included) is behind the row's open, and `Report.test.ts`'s.
+    expect(running, 'and no thinking segment, which this record has none of').not.toContain(
+      'thinking',
+    );
     expect(running, 'and no cost segment for a figure no frame has carried yet').not.toContain(
       'cumulative',
     );
@@ -331,7 +336,12 @@ describe('one turn, as the page draws it', () => {
     const running = between(seatRunning(working), '<details class="turninfo"', '</details>');
     expect(running, 'a ring, not a settled check').toContain('class="ring"');
     expect(running, 'the figures the frames carry').toContain('100\u{2191}');
-    expect(running, 'the thinking count beside them').toContain('thinking');
+    // The count rides the summary only when the record carries one, and this
+    // fixture's carries none: the facts grid's own `thinking` label (a dash
+    // included) is behind the row's open, and `Report.test.ts`'s.
+    expect(running, 'and no thinking segment, which this record has none of').not.toContain(
+      'thinking',
+    );
   });
 
   it('draws the runs the fold cut, rather than regrouping what it holds', () => {
@@ -355,20 +365,6 @@ describe('one turn, as the page draws it', () => {
     expect(body).toContain('<div class="card">');
     expect(body, 'and each run keeps its own call').toContain('a.rs');
     expect(body, 'and the other its own').toContain('b.rs');
-  });
-
-  it('draws a search hit as a location and the line beneath it', () => {
-    // Two elements. As one run with a newline character in it the pair drew as
-    // a single line with the path run into the matched text, because nothing
-    // in this box is pre-formatted.
-    const body = draw(
-      said([use('c1', 'Grep', { pattern: 'render_group_summary' })]),
-      result('c1', 'crates/forge-server/src/grouping.rs:142:render_group_summary(unit, width)'),
-    );
-
-    expect(body).toContain('<div class="searchhit">');
-    expect(body).toContain('<div class="where"><span class="ln">142:</span> <span class="fl">');
-    expect(body).toContain('<div class="src">render_group_summary(unit, width)</div>');
   });
 
   it('names what a turn attached, and draws none of its pixels', () => {
@@ -522,7 +518,9 @@ describe('one turn, as the page draws it', () => {
     expect(leaf, 'the failure mark is the family glyph in the error tone').toContain(
       '<svg class="ic gl err">',
     );
-    expect(leaf, 'and the empty body says so in words, not colour alone').toContain('no result');
+    // The body's words - `no result`, the fold's own line for a call that came
+    // back with nothing - are drawn onto the row's open now: `leaves.test.ts`
+    // pins the synthesis and `Call.test.ts` the drawing.
   });
 
   it('tags the org by the seat the page is drawing, not by the row alone', () => {

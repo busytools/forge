@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
+
   import Chevron from '../components/Chevron.svelte';
   import Icon from '../components/Icon.svelte';
   import Prose from './Prose.svelte';
@@ -16,10 +18,13 @@
    * line is that markdown rendered inline, from the same renderer and the
    * same escaping as the body, so a row and its open read the marks alike.
    */
-  let { text }: { text: string } = $props();
+  let { text, open = false }: { text: string; open?: boolean } = $props();
+
+  /** Whether the row is open; a closed row carries its summary and nothing else. */
+  let opened = $state(untrack(() => open));
 </script>
 
-<details class="leaf think">
+<details class="leaf think" bind:open={opened}>
   <summary>
     <Icon name="message-circle-more" class="gl" />
     <!--
@@ -30,7 +35,9 @@
     <span class="tn">{@html renderInlineProse(joinedLine(text))}</span>
     <Chevron />
   </summary>
-  <div class="body">
-    <Prose {text} />
-  </div>
+  {#if opened}
+    <div class="body">
+      <Prose {text} />
+    </div>
+  {/if}
 </details>

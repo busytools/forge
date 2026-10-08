@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
+
   import Chevron from '../components/Chevron.svelte';
   import Icon from '../components/Icon.svelte';
   import { duration } from './numbers';
@@ -11,8 +13,15 @@
    * The frame sends none of these when no hook fired, so a chip on the page
    * always has something behind it.
    */
-  let { actions, infos, errors }: { actions: number; infos: HookInfo[]; errors: string[] } =
-    $props();
+  let {
+    actions,
+    infos,
+    errors,
+    open = false,
+  }: { actions: number; infos: HookInfo[]; errors: string[]; open?: boolean } = $props();
+
+  /** Whether the chip is open; a closed one carries its summary and nothing else. */
+  let opened = $state(untrack(() => open));
 
   /** The summary's own words, errors counted on the closed chip too. */
   const label = $derived(
@@ -34,7 +43,7 @@
   }
 </script>
 
-<details class="hooks">
+<details class="hooks" bind:open={opened}>
   <summary>
     {#if errors.length > 0}
       <Icon name="x" class="st err" />
@@ -42,7 +51,7 @@
     <span>{label}</span>
     <Chevron />
   </summary>
-  {#if infos.length > 0 || errors.length > 0}
+  {#if opened && (infos.length > 0 || errors.length > 0)}
     <div class="body">
       {#each infos as info, at (at)}
         <div class="term">

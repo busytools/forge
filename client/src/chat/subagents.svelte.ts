@@ -130,6 +130,10 @@ export function callRow(callId: string, root: ParentNode = document): HTMLDetail
 export function reveal(callId: string, root: ParentNode = document): boolean {
   const row = callRow(callId, root);
   if (row === null) return false;
+  // The body is drawn onto the open, so setting the property alone is not the
+  // whole move: the native toggle event is what the row's binding hears and
+  // the body appears on its next paint - the callers' settle loop is sized
+  // for that round trip.
   row.open = true;
   // NEAREST, so a row the turn-scroll already put on screen is left exactly
   // where it is - the column moved the reader once, to the turn, and moving

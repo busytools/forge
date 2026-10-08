@@ -488,6 +488,14 @@ describe('the chat column as it draws', () => {
     ]);
 
     expect(drawn(), 'the message drew').toContain('forge/steward');
+
+    // The body is drawn onto the open: the row is opened the way a reader
+    // opens it, and then the paragraphs read.
+    const card = document.querySelector('details.leaf');
+    if (!(card instanceof HTMLDetailsElement)) throw new Error('the card row drew no details');
+    card.open = true;
+    card.dispatchEvent(new Event('toggle'));
+    flushSync();
     expect((document.body.innerHTML.match(/<p>same<\/p>/g) ?? []).length, 'both are drawn').toBe(2);
   });
 

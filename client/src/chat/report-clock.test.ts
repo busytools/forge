@@ -58,7 +58,7 @@ describe('the clock a running row draws in its body', () => {
     // the whole of it, which is the stretch a reader is watching it through.
     vi.useFakeTimers();
     vi.setSystemTime(new Date(AT));
-    app = mount(Report, { target: document.body, props: { info: running } });
+    app = mount(Report, { target: document.body, props: { info: running, open: true } });
     flushSync();
 
     expect(body(), 'the span the record carries at its last frame').toBe('0.0s');

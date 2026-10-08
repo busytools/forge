@@ -15,9 +15,21 @@ import Skill from './Skill.svelte';
 const BODY =
   '# Unslop\n\nEdit text to remove AI patterns, **especially** the tells.\n\n- one\n- two\n\n`cargo check`';
 
-const body = render(Skill, { props: { name: 'unslop', body: BODY } }).body;
+const body = render(Skill, { props: { name: 'unslop', body: BODY, open: true } }).body;
 
 describe('a skill the CLI loaded', () => {
+  /**
+   * A closed row carries its summary and nothing else: the skill's markdown
+   * is the body's, and it is drawn onto the open.
+   */
+  it('carries summary markup only while it is closed', () => {
+    const closed = render(Skill, { props: { name: 'unslop', body: BODY } }).body;
+    expect(closed, 'the summary still names the skill').toContain('skill /unslop');
+    const under = closed.slice(closed.indexOf('</summary>'));
+    expect(under, 'no body under a closed row').not.toContain('<h1>');
+    expect(body, 'and the body is drawn onto the open').toContain('<h1>');
+  });
+
   it('names the skill on its own row, with the shared chevron', () => {
     expect(body, 'the row says which skill loaded').toContain('skill /unslop');
     expect(body, 'and carries the disclosure chevron').toContain('#i-chev');

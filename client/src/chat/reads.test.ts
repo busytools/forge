@@ -146,6 +146,14 @@ describe('the chat column under a page that re-reads', () => {
 
     // The panel the fence in a message also draws, so a slip in the builder
     // leaves both surfaces wrong rather than one.
+    // The body is drawn onto the open: the row is opened the way a reader
+    // opens it, and then the panel reads.
+    const row = document.querySelector('details.leaf');
+    if (!(row instanceof HTMLDetailsElement)) throw new Error('the read row drew no details');
+    row.open = true;
+    row.dispatchEvent(new Event('toggle'));
+    flushSync();
+
     expect(document.body.innerHTML, 'the read body is the code panel').toContain(
       '<div class="code">',
     );

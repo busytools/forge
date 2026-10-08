@@ -81,8 +81,52 @@ describe('a family of calls, mounted', () => {
     const app = mount(Leaves, { target: document.body, props: { rows } });
     try {
       flushSync();
+      // The seats' facts ride the body, which a closed row no longer holds:
+      // the row is opened the way a reader opens it, then counted.
+      const card = document.querySelector('details.leaf');
+      if (!(card instanceof HTMLDetailsElement)) throw new Error('the card row drew no details');
+      card.open = true;
+      card.dispatchEvent(new Event('toggle'));
+      flushSync();
       expect(document.querySelectorAll('details.leaf .kv').length, 'both seat rows drew').toBe(2);
       expect(document.body.textContent, 'under their own projects').toContain('gateway-backend');
+    } finally {
+      void unmount(app);
+      document.body.innerHTML = '';
+    }
+  });
+
+  it('holds nothing under a closed card and draws its body onto the open', () => {
+    const rows: WorkRow[] = [
+      {
+        tag: 'card',
+        card: {
+          id: 'm-1',
+          row: 'arrived',
+          peer: 'forge/steward',
+          body: 'the summary line\nand the body alone',
+          org: null,
+          status: 'completed',
+          ack: null,
+          seat: null,
+          seats: [],
+        },
+      },
+    ];
+
+    const app = mount(Leaves, { target: document.body, props: { rows } });
+    try {
+      flushSync();
+      const card = document.querySelector('details.leaf');
+      if (!(card instanceof HTMLDetailsElement)) throw new Error('the card row drew no details');
+      expect(card.textContent ?? '', 'nothing under a closed card').not.toContain('the body alone');
+
+      card.open = true;
+      card.dispatchEvent(new Event('toggle'));
+      flushSync();
+      expect(card.textContent ?? '', 'and the body is drawn onto the open').toContain(
+        'the body alone',
+      );
     } finally {
       void unmount(app);
       document.body.innerHTML = '';

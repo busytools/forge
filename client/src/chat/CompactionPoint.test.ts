@@ -6,13 +6,15 @@ import { describe, expect, it } from 'vitest';
 import CompactionPoint from './CompactionPoint.svelte';
 import { tokens } from './numbers';
 
-/** The row, as a boundary's own frame fills it. */
+/** The row drawn open, which is the state its body needs. */
 const draw = (
   trigger: string | null,
   preTokens: number | null,
   postTokens: number | null,
   summary: string | null = null,
-): string => render(CompactionPoint, { props: { trigger, preTokens, postTokens, summary } }).body;
+  open = true,
+): string =>
+  render(CompactionPoint, { props: { trigger, preTokens, postTokens, summary, open } }).body;
 
 const PAGE = readFileSync(
   new URL('../../../docs/book/src/ui/client/web-session.html', import.meta.url),
@@ -40,13 +42,27 @@ const words = (html: string): string =>
     .trim();
 
 describe('the compaction point a boundary leaves in the conversation', () => {
+  /**
+   * A closed point carries its summary and nothing else: the account behind
+   * the cut is the body's.
+   */
+  it('carries summary markup only while it is closed', () => {
+    const text = 'the compacted account';
+    // No `open` prop: the production default, which is what a reader meets.
+    const closed = render(CompactionPoint, {
+      props: { trigger: 'auto', preTokens: 12_000, postTokens: 3_000, summary: text },
+    }).body;
+    const under = closed.slice(closed.indexOf('</summary>'));
+    expect(under, 'no body under a closed point').not.toContain(text);
+
+    const open = draw('auto', 12_000, 3_000, text);
+    expect(open, 'and the account is drawn onto the open').toContain(text);
+  });
+
   it('draws a hairline across the column, carrying the word and closed by default', () => {
-    const body = draw('auto', 68_031, 9_149);
+    const body = draw('auto', 68_031, 9_149, null, false);
 
     expect(body, 'the row the approved shape draws').toContain('<details class="cpoint">');
-    expect(body, 'collapsed, so the boundary is a hint rather than a block').not.toContain(
-      '<details class="cpoint" open>',
-    );
     // The hairline is two rules flanking the label, which is what makes the row
     // read across the column rather than as one more work row.
     expect(body.match(/class="rule"/g), 'one rule on each side of the word').toHaveLength(2);
@@ -114,7 +130,7 @@ describe('the compaction point a boundary leaves in the conversation', () => {
     // The bare shape is drift: the outer key renamed leaves the frame in the
     // CLI's generic bucket with no metadata anywhere in it. The row is the
     // compaction, and a chevron promising a body would open onto nothing.
-    const body = draw(null, null, null);
+    const body = draw(null, null, null, null, false);
 
     expect(body, 'the row still draws').toContain('<details class="cpoint">');
     expect(body, 'with the word it is named by').toContain('class="word">compaction<');
