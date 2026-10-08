@@ -23,14 +23,17 @@ const UPDATE: ServerMessage = { kind: 'update', update: { turn_cancelled: { key:
 function fakeConnection() {
   const stores = new Stores();
   const subscribed: Subject[] = [];
+  /** The options each subscribe went out with, which the role rides. */
+  const options: { answering?: boolean; browser?: boolean }[] = [];
   const unsubscribed: Subject[] = [];
   const refreshed: Subject[] = [];
   const messages = new Set<(message: ServerMessage) => void>();
   const statuses = new Set<(status: ConnectionStatus) => void>();
 
   const connection: Connection = {
-    subscribe(what) {
+    subscribe(what, chosen) {
       subscribed.push(what);
+      options.push(chosen ?? {});
       return stores.open(what);
     },
     unsubscribe(what) {
@@ -71,6 +74,7 @@ function fakeConnection() {
   return {
     connection,
     subscribed,
+    options,
     unsubscribed,
     refreshed,
     /** Everything still attached to the connection. */
@@ -88,6 +92,27 @@ async function settle(): Promise<void> {
 }
 
 describe('the home over a connection', () => {
+  /**
+   * **The connection is answerable from its first subscribe (#1885).** The
+   * role belongs to the connection and only ever rises, and this subscribe is
+   * the first the app makes - so a client that kept quiet here registered as
+   * an observer while the reader sat on the home, and the core, with nobody
+   * to park on, cancelled every ask raised then at birth. The reader never
+   * learned which seat asked.
+   */
+  it('declares the connection answerable, on the first subscribe it makes', () => {
+    const forge = fakeConnection();
+    const stop = watchHome(forge.connection).subscribe(() => {});
+
+    expect(forge.subscribed, 'the home was not subscribed').toEqual([HOME]);
+    expect(
+      forge.options[0]?.answering,
+      'the connection registers as an observer while the reader sits on the home',
+    ).toBe(true);
+
+    stop();
+  });
+
   /**
    * A read is a full encode on the server, so a subscription nobody draws from
    * must not be left asking for one. The last subscriber leaving is what

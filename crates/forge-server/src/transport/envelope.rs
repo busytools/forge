@@ -92,10 +92,18 @@ pub enum ClientMessage {
         ///
         /// Off unless the client says otherwise, because the core parks a
         /// turn on the reply of whoever registered as answering: a client
-        /// counted as able to answer a prompt it cannot display hangs the
-        /// turn rather than failing it. A client with a dock to answer from
-        /// says so here; the connection registers with the core accordingly
-        /// before it forwards anything.
+        /// counted as able to answer a prompt it has no surface to draw hangs
+        /// the turn rather than failing it. A client with a dock to answer
+        /// from says so here; the connection registers with the core
+        /// accordingly before it forwards anything.
+        ///
+        /// **It is the CONNECTION's role, not the subject's.** The core keeps
+        /// one role per connection and it only ever rises, so a client that
+        /// can answer states it on the first subscribe it makes - usually the
+        /// home - and not only while a seat it could draw is showing. A
+        /// client that waits registers as an observer everywhere else, and an
+        /// ask raised then has nobody to park on: the core cancels it at
+        /// birth rather than holding it for an answer.
         #[serde(default)]
         answering: bool,
         /// Whether this client can host the browser.

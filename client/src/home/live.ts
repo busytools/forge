@@ -70,12 +70,19 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
   }
 
   function watch(): void {
-    // The home's subscription is also where the connection declares whether
-    // this client can host the browser: it is the first subscribe the app
-    // makes, and the capability belongs to the CONNECTION rather than to a
-    // page - a host that only claimed it on a session page would not be the
-    // host while the reader sits on the home.
-    held = connection.subscribe('home', { browser: canHost() });
+    // The home's subscription is where the connection declares what belongs to
+    // it rather than to a page: it is the first subscribe the app makes, and
+    // both capabilities below are per CONNECTION - a host or an answerer that
+    // only claimed the role on a session page would not hold it while the
+    // reader sits on the home.
+    //
+    // **`answering` is the one that decides a turn.** It says this client can
+    // answer the prompts it is shown, which is true from the start: every seat
+    // page carries the composer. Declared only from a seat page, the
+    // connection registers as an observer while the reader is on the home -
+    // and the core, with no answerer to park on, cancels every ask at birth
+    // (#1885), so the reader never learns which seat asked.
+    held = connection.subscribe('home', { answering: true, browser: canHost() });
     reading = false;
     stopMessages = connection.onMessage((message) => {
       if (message.kind === 'snapshot' || message.kind === 'error') {

@@ -163,11 +163,19 @@ export function watchSession(
    * Whether this page can ANSWER the prompts it draws.
    *
    * **It is not a client's preference, and getting it wrong loses a turn
-   * either way.** A client counted as answering that cannot display a prompt
-   * hangs the turn, because the core parks it on a reply that never comes; a
-   * client drawing a dock while subscribed as an observer has every prompt it
-   * shows cancelled. So the caller states what it has: the page says yes
-   * exactly when its composer - the thing with the dock in it - is wired in.
+   * either way.** A client counted as answering with no surface to draw a
+   * prompt on hangs the turn, because the core parks it on a reply that never
+   * comes; a client that HAS the surface while subscribed as an observer has
+   * every prompt it would show cancelled. So the caller states what it has:
+   * the page says yes exactly when its composer - the thing with the dock in
+   * it - is wired in.
+   *
+   * **The role belongs to the connection rather than to this seat**, so this
+   * is the second statement of it rather than the first: the home's own
+   * subscribe declares the same yes once for the whole client, since every
+   * seat page carries a composer (#1885). This one matters on its own because
+   * the role only ever rises - a client that reached a seat page without the
+   * home's subscribe still registers as an answerer here.
    */
   answering: boolean,
 ): Readable<SessionRead> {

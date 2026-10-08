@@ -38,10 +38,15 @@ export interface Connection {
   /**
    * Watch a subject, and get the store it is answered into.
    *
-   * `answering` says whether this client can answer the prompts it is shown,
+   * `answering` says whether this client has the surface to answer prompts,
    * and it is off unless said otherwise: the core parks a turn on the reply of
    * whoever registered as answering, so a client counted as able to answer a
-   * prompt it cannot display hangs the turn rather than failing it.
+   * prompt it has no surface for hangs the turn rather than failing it. **The
+   * role belongs to the CONNECTION, not to the subject**, so a client that can
+   * answer says so once, on the first subscribe it makes - a client that waits
+   * for a seat page to say it registers as an observer while the reader is
+   * anywhere else, and every ask raised then is cancelled at birth instead of
+   * waiting for an answer (#1885).
    *
    * Counted rather than idempotent, because the server counts it too: two
    * subscribes to one subject are two subscriptions, and one unsubscribe must
