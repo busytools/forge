@@ -205,6 +205,9 @@ pub enum ChaseRung {
     Escalate,
     QueueStall,
     WaitStall,
+    /// A wait resolved: the waiter hears once that the thing it waited on
+    /// has ended.
+    WaitResolved,
     Unaccounted,
     Death,
     Retro,

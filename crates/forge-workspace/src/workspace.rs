@@ -433,6 +433,10 @@ pub struct Workspace {
     /// `usage_poller_started`). Started once at boot from the binary.
     /// `pub(crate)` so the impl block in [`crate::crons`] can reach it.
     pub(crate) cron_scheduler_started: std::sync::atomic::AtomicBool,
+    /// Guards against double-spawning the chase sweep (mirrors
+    /// `cron_scheduler_started`). Started once at boot from the binary.
+    /// `pub(crate)` so the impl block in [`crate::chase`] can reach it.
+    pub(crate) chase_sweep_started: std::sync::atomic::AtomicBool,
     /// Guards against double-spawning the auto-continue sweep (mirrors
     /// `cron_scheduler_started`). Started once at boot from the binary.
     auto_continue_sweep_started: std::sync::atomic::AtomicBool,
@@ -1624,6 +1628,7 @@ impl Workspace {
             review_activity: Mutex::new(HashMap::new()),
             usage_poller_started: std::sync::atomic::AtomicBool::new(false),
             cron_scheduler_started: std::sync::atomic::AtomicBool::new(false),
+            chase_sweep_started: std::sync::atomic::AtomicBool::new(false),
             auto_continue_sweep_started: std::sync::atomic::AtomicBool::new(false),
             kick_dispatcher_tx,
             kick_dispatcher_rx_slot: Mutex::new(Some(kick_dispatcher_rx)),

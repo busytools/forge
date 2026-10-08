@@ -70,6 +70,7 @@ pub mod bench;
 pub mod board;
 pub mod browser;
 pub mod catalogue;
+pub mod chase;
 mod config;
 pub mod conversation_turns;
 pub mod conversation_window;

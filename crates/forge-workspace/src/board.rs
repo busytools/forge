@@ -16,6 +16,17 @@ use crate::workspace::Workspace;
 /// The no-estimate no-movement window when `forge.toml` says nothing.
 pub const DEFAULT_STALE_SECS: u64 = 4 * 3600;
 
+/// A duration as the board's words: `3h`, `12m`, `45s`.
+pub(crate) fn fmt_secs(secs: u64) -> String {
+    if secs >= 3_600 {
+        format!("{}h", secs / 3_600)
+    } else if secs >= 60 {
+        format!("{}m", secs / 60)
+    } else {
+        format!("{secs}s")
+    }
+}
+
 /// The derived facts about one row, as the board draws them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Marks {

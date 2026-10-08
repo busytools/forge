@@ -463,6 +463,16 @@ impl Workspace {
         removed
     }
 
+    /// Tell every view to re-read its board: the set is unchanged, but
+    /// time-derived marks (ages, overdue, no movement) move with the
+    /// clock, and a held snapshot would otherwise draw them frozen.
+    /// Called by the chase sweep on every pass.
+    pub(crate) fn announce_board_refresh(&self) {
+        for view in self.list_projects() {
+            self.announce_tasks_changed(&view.name);
+        }
+    }
+
     /// Tell every view the project's task set moved, as the set the write
     /// just left. It routes on the project's lead seat, which is the seat a
     /// project-scoped section belongs to; a name no project carries has no
