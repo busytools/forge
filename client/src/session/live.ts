@@ -127,6 +127,17 @@ interface Seat {
 const SEATS = new WeakMap<Connection, Map<string, Seat>>();
 
 /**
+ * How long a publish waits for a paint before it goes out anyway.
+ *
+ * `requestAnimationFrame` is the coalescer, not the guarantee: a scheduled
+ * callback that never fires - whatever lost it, which is nothing this code
+ * can know - would leave the record dead until a read landed, because the
+ * flag clears only inside that callback. A painting page clears the deadline
+ * long before it: a frame is 16ms at 60Hz and this is a quarter second.
+ */
+const PAINT_WATCHDOG_MS = 250;
+
+/**
  * Watch one seat.
  *
  * **The seat's record is the client's; its subscription follows the page.**
@@ -276,6 +287,13 @@ function createSeat(
   let queued: number | null = null;
 
   /**
+   * The paint's own deadline, armed while `queued` is: see the chat's twin
+   * (`chat/conversation.ts`) - a callback the browser drops must cost one
+   * throttled publish, not every later row.
+   */
+  let watchdog: ReturnType<typeof setTimeout> | null = null;
+
+  /**
    * Whether a page is showing the seat, which is when a frame is waited for.
    *
    * A seat the client holds and nobody is drawing has no paint to wait for, so
@@ -297,6 +315,10 @@ function createSeat(
       cancelAnimationFrame(queued);
       queued = null;
     }
+    if (watchdog !== null) {
+      clearTimeout(watchdog);
+      watchdog = null;
+    }
     seat.view.set({ wire: seat.wire, refused: seat.refused });
   }
 
@@ -314,6 +336,7 @@ function createSeat(
       return;
     }
     queued = requestAnimationFrame(flush);
+    watchdog = setTimeout(flush, PAINT_WATCHDOG_MS);
   }
 
   /**

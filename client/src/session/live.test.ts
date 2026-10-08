@@ -679,6 +679,13 @@ function paint(): void {
 
 beforeEach(stubFrames);
 
+// A test that fails part-way through a fake-timer case would otherwise leave
+// every later case in this file on fake time - the twin carries the same
+// guard for the same reason (`chat/conversation.test.ts`).
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 /**
  * One seat's stream, without a socket.
  *
@@ -902,6 +909,53 @@ describe('the record a page holds over an update stream', () => {
     expect(page.read().wire, 'the update never reached the record').not.toBe(before);
     expect(page.read().wire?.conversation.turns, 'the frame is not in the record').toHaveLength(1);
     expect(page.reads(), 'the page asked for a read on an update').toBe(asked);
+    page.stop();
+  });
+
+  /**
+   * A paint that never comes must not stop the record either.
+   *
+   * Same flag, same callback-only clear as the chat's `soon()` - this is its
+   * twin, and a browser that drops one scheduled callback (a suspended page,
+   * a locked screen) must cost one throttled write, not every later frame.
+   */
+  it('a paint that never comes does not stop the record', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD));
+
+    page.land(updateOf({ chat_appended: { key: LEAD, msg: spoke('hello') } }));
+    expect(
+      page.read().wire?.conversation.turns,
+      'the update waits for the paint that is owed it',
+    ).toHaveLength(0);
+
+    vi.advanceTimersByTime(1_000);
+
+    expect(
+      page.read().wire?.conversation.turns,
+      'the watchdog writes it without the paint',
+    ).toHaveLength(1);
+
+    // And the deadline is spent, not just fired: a watchdog that wrote without
+    // clearing the flag would land this one and re-wedge on the next frame.
+    page.land(updateOf({ chat_appended: { key: LEAD, msg: spoke('after the deadline', 'u2') } }));
+    vi.advanceTimersByTime(1_000);
+    expect(spoken(page), 'and the next frame lands too').toContain('after the deadline');
+
+    // The other half of spending it: a paint that lands clears the deadline,
+    // so the stale timer must not write a second time behind it.
+    page.land(
+      updateOf({
+        chat_appended: { key: LEAD, msg: spoke('painted, and no timer behind it', 'u3') },
+      }),
+    );
+    paint();
+    expect(spoken(page), 'the paint lands it').toContain('painted, and no timer behind it');
+    const settled = page.publishes();
+    vi.advanceTimersByTime(1_000);
+    expect(page.publishes(), 'and the spent deadline writes nothing more').toBe(settled);
     page.stop();
   });
 
