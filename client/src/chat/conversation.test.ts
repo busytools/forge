@@ -582,6 +582,49 @@ describe('the conversation the chat draws', () => {
     stop();
   });
 
+  /**
+   * A paint that never comes must not stop the column.
+   *
+   * The publish waits for a painted frame (`soon()`), and the ONLY thing that
+   * clears the flag is the callback itself - so a callback the browser drops
+   * (a suspended page, a lock) would leave every later frame folded and
+   * undrawn: the column stops ADDING rows while the rows already drawn stay
+   * live, and only a read heals it. The watchdog publishes without the paint.
+   */
+  it('a paint that never comes does not stop the column', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1);
+    try {
+      const server = fakeConnection();
+      const chat = new Chat(server.connection, LEAD);
+      chat.start();
+      server.send(page([turn('t1', 'first')], null));
+      // Held, because a store nobody draws publishes at once by design - and
+      // this case is the page that IS drawing. The drawn value is read off the
+      // subscription rather than `get`, because attaching a reader flushes the
+      // held state by design (`value`'s own subscribe) and would heal the very
+      // wedge under test.
+      let drawn = '';
+      const stop = chat.value.subscribe((value) => {
+        drawn = JSON.stringify(value);
+      });
+
+      server.update({ chat_appended: { key: LEAD, msg: said('arrived while no paint came') } });
+      expect(drawn, 'the frame is folded, and its draw waits for the paint').not.toContain(
+        'arrived while no paint came',
+      );
+
+      vi.advanceTimersByTime(1_000);
+
+      expect(drawn, 'the watchdog draws it without the paint').toContain(
+        'arrived while no paint came',
+      );
+      stop();
+    } finally {
+      raf.mockRestore();
+    }
+  });
+
   it("joins a skill's body to the turn whose Skill call loaded it, not a row of its own", () => {
     // The CLI injects the body as a user frame, and it can arrive above a
     // settled turn - where it opened a second row telling the same thing the

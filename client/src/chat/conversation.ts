@@ -515,6 +515,17 @@ function textIn(update: SessionUpdate, variant: string, field: string): string |
 const RETRY_MS = 2_000;
 
 /**
+ * How long a publish waits for a paint before it goes out anyway.
+ *
+ * `requestAnimationFrame` is the coalescer, not the guarantee: a page the
+ * browser suspends (a locked screen, a backgrounded window) can lose a
+ * scheduled callback outright, and a publish whose flag only ever clears
+ * inside that callback would leave the column dead - new rows folded and
+ * never drawn - until a read landed. No paint of a live page is this slow.
+ */
+const PAINT_WATCHDOG_MS = 250;
+
+/**
  * One conversation, over one connection.
  *
  * It asks for a page, holds what comes back and follows the seat's frames.
@@ -541,6 +552,8 @@ export class Chat {
   private held: Conversation = NOTHING;
   /** The frame a publish is waiting for, or `null`. */
   private queued: number | null = null;
+  /** The paint's own deadline, armed while `queued` is: see [`PAINT_WATCHDOG_MS`]. */
+  private watchdog: ReturnType<typeof setTimeout> | null = null;
   private readonly inner = writable<Conversation>(NOTHING, () => {
     this.readers += 1;
     return () => {
@@ -634,6 +647,10 @@ export class Chat {
       cancelAnimationFrame(this.queued);
       this.queued = null;
     }
+    if (this.watchdog !== null) {
+      clearTimeout(this.watchdog);
+      this.watchdog = null;
+    }
     this.inner.set(this.held);
   }
 
@@ -649,6 +666,7 @@ export class Chat {
       return;
     }
     this.queued = requestAnimationFrame(() => this.flush());
+    this.watchdog = setTimeout(() => this.flush(), PAINT_WATCHDOG_MS);
   }
 
   /**

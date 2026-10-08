@@ -906,6 +906,34 @@ describe('the record a page holds over an update stream', () => {
   });
 
   /**
+   * A paint that never comes must not stop the record either.
+   *
+   * Same flag, same callback-only clear as the chat's `soon()` - this is its
+   * twin, and a browser that drops one scheduled callback (a suspended page,
+   * a locked screen) must cost one throttled write, not every later frame.
+   */
+  it('a paint that never comes does not stop the record', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD));
+
+    page.land(updateOf({ chat_appended: { key: LEAD, msg: spoke('hello') } }));
+    expect(
+      page.read().wire?.conversation.turns,
+      'the update waits for the paint that is owed it',
+    ).toHaveLength(0);
+
+    vi.advanceTimersByTime(1_000);
+
+    expect(
+      page.read().wire?.conversation.turns,
+      'the watchdog writes it without the paint',
+    ).toHaveLength(1);
+    page.stop();
+  });
+
+  /**
    * **A fired cron's schedule is on the frame and on no field of the record.**
    * The row's prose carries the prompt alone, so the pump keeps the pairing
    * the frame states - and it has to do so where the record's own early return
