@@ -254,7 +254,7 @@ census!(Subject,
 census!(SessionUpdate,
     [
         Spawning struct, Connected struct, HistoryReplayed struct, SessionReplaced struct,
-        ConnectionFailed struct,
+        ConnectionFailed struct, Releasing struct,
         AuthRequired struct, SlashCommandError struct, Notice struct,
         RuntimeReloadCompleted struct,
         RuntimeReloadFailed struct, SetModeFailed struct, SetModelFailed struct,

@@ -1212,6 +1212,17 @@ pub enum SessionUpdate {
         message: String,
         fatal: bool,
     },
+    /// The seat's release has begun: its session is being taken down, and a
+    /// view draws the seat as going to sleep until the roster lands it asleep
+    /// or gone.
+    ///
+    /// **Announced at the START of the release, not when the handles drop.**
+    /// The teardown is what takes the seconds, so a viewer that hears only the
+    /// end keeps the row reading as working through the whole gesture - and a
+    /// close made from another view is heard by no one at all without this.
+    Releasing {
+        key: SessionSlot,
+    },
     AuthRequired {
         key: SessionSlot,
         method_name: String,
@@ -1877,6 +1888,7 @@ impl SessionUpdate {
             | Self::HistoryReplayed { key, .. }
             | Self::SessionReplaced { key, .. }
             | Self::ConnectionFailed { key, .. }
+            | Self::Releasing { key }
             | Self::AuthRequired { key, .. }
             | Self::SlashCommandError { key, .. }
             | Self::Notice { key, .. }
@@ -1973,6 +1985,9 @@ impl std::fmt::Debug for SessionUpdate {
             }
             Self::ConnectionFailed { key, .. } => {
                 f.debug_struct("ConnectionFailed").field("key", key).finish_non_exhaustive()
+            }
+            Self::Releasing { key } => {
+                f.debug_struct("Releasing").field("key", key).finish_non_exhaustive()
             }
             Self::AuthRequired { key, .. } => {
                 f.debug_struct("AuthRequired").field("key", key).finish_non_exhaustive()

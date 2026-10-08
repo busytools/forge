@@ -45,11 +45,24 @@ function keyOf(slot: SessionSlot): string {
 const closedHere = new SvelteSet<string>();
 
 /**
- * Whether this client has closed `slot` and the roster has not caught up:
- * the row says where the seat is going rather than reading as still live.
+ * The seats the CORE has announced a release for, until the roster catches
+ * up.
+ *
+ * The set above covers a close made here, where the click is what starts it.
+ * A close made from another view - the terminal, a second client - has no
+ * click here, and arrives as the core's own `Releasing` frame (#1930); it is
+ * the same presentation, so it is the same mark, retiring the same way.
+ */
+const releasedHere = new SvelteSet<string>();
+
+/**
+ * Whether `slot` is closing - by this view's own click or by any other
+ * view's, both until the roster catches up: the row says where the seat is
+ * going rather than reading as still live.
  */
 export function closingSeat(slot: SessionSlot): boolean {
-  return closedHere.has(keyOf(slot));
+  const key = keyOf(slot);
+  return closedHere.has(key) || releasedHere.has(key);
 }
 
 /**
@@ -63,26 +76,43 @@ export function closingSeat(slot: SessionSlot): boolean {
  * shape: `home.agents` stops naming it, so its mark goes by the first arm.)
  */
 export function forgetClosed(home: HomeWire): void {
-  for (const key of closedHere) {
-    const agent = home.agents.find((candidate) => keyOf(candidate.slot) === key);
-    if (agent === undefined || agent.lifecycle === 'Sleeping' || agent.lifecycle === 'LoggedOut') {
-      closedHere.delete(key);
+  const forget = (marks: SvelteSet<string>): void => {
+    for (const key of marks) {
+      const agent = home.agents.find((candidate) => keyOf(candidate.slot) === key);
+      if (
+        agent === undefined ||
+        agent.lifecycle === 'Sleeping' ||
+        agent.lifecycle === 'LoggedOut'
+      ) {
+        marks.delete(key);
+      }
     }
-  }
+  };
+  forget(closedHere);
+  // The wire's marks retire on the same read: the roster landing a released
+  // seat asleep is the same fact whether the click was here or elsewhere.
+  forget(releasedHere);
 }
 
 /**
  * Whether a seat has a session behind it: named by the roster, awake, and
- * not one this client has just closed.
+ * not one this view has closed or the core has announced a release for.
  *
  * A landing on a seat with nothing behind it is a failure twice over: the
  * page for such a seat draws a refusal, or - for a lead the roster no
  * longer names - reads as "start this project" and spawns it, so what
  * looked like a close would have started something instead.
+ *
+ * **Both closing sets count, and the wire one is what makes a released LEAD
+ * unreachable.** The roster is a read that lags the release, so it still
+ * names the seat as live for the seconds the teardown takes; consulting only
+ * the click's set sends the reader - off a worker, or off the released lead
+ * itself, which `removedLanding` prefers - onto a seat that is going away,
+ * and the page left there re-spawns it once the roster catches up.
  */
 function behind(home: HomeWire, slot: SessionSlot): boolean {
   const key = keyOf(slot);
-  if (closedHere.has(key)) return false;
+  if (closedHere.has(key) || releasedHere.has(key)) return false;
   return home.agents.some(
     (agent) =>
       keyOf(agent.slot) === key &&
@@ -221,6 +251,38 @@ export function watchRemovals(
   return connection.onMessage((message) => {
     const removed = removedSeat(message);
     if (removed !== null) onRemoved(removed.seat, removed.spawnedBy);
+  });
+}
+
+/** The seat a `releasing` update takes down, or `null` for anything else. */
+export function releasedSeat(message: ServerMessage): SessionSlot | null {
+  if (message.kind !== 'update') return null;
+  const update = message.update;
+  if (typeof update === 'string') return null;
+  const payload = update['releasing'];
+  if (payload === null || typeof payload !== 'object') return null;
+  return asSlot((payload as Record<string, unknown>)['key']);
+}
+
+/**
+ * Watch for seats the core announces a release for.
+ *
+ * The other door to [`watchRemovals`], and the earlier one: a close made here
+ * sends this frame too, and one made from any other view sends it as the only
+ * word before the seat is gone (#1930). Every release draws the mark - that
+ * is this module's own job rather than the caller's - and the callback is
+ * what the caller wants to do about it, the landing [`watchRemovals`] callers
+ * already make.
+ */
+export function watchReleases(
+  connection: Connection,
+  onReleasing: (seat: SessionSlot) => void,
+): () => void {
+  return connection.onMessage((message) => {
+    const seat = releasedSeat(message);
+    if (seat === null) return;
+    releasedHere.add(keyOf(seat));
+    onReleasing(seat);
   });
 }
 

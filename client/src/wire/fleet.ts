@@ -63,6 +63,11 @@ export const REDRAWS = new Set([
   'accounts_changed',
   'dictate_availability',
   'connection_failed',
+  // The seat's release has begun: its row moves to the going-to-sleep mark
+  // until the roster lands it asleep or gone. A close made from ANOTHER view
+  // sends nothing else before the removal, so without this arm that viewer's
+  // rail keeps reading the row as working through the teardown (#1930).
+  'releasing',
   'auth_required',
   'turn_error',
   'turn_cancelled',

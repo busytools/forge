@@ -1524,6 +1524,18 @@ provider = "anthropic"
 
         workspace.release_session_with_cascade(&seat);
 
+        // The release announces itself (#1930), and that frame is where this
+        // window opens: what must NOT follow it is anything about the seat's
+        // work.
+        let released = tokio::time::timeout(Duration::from_secs(3), updates.recv())
+            .await
+            .expect("the release announces itself")
+            .expect("a live channel");
+        assert!(
+            matches!(released, SessionUpdate::Releasing { .. }),
+            "the release's own frame is what opens this window: {released:?}",
+        );
+
         // A move under the dead session says nothing: the rule refuses, so
         // nothing is scanned and nothing is announced.
         std::fs::write(dir.path().join("kept.txt"), "after the session").expect("write");

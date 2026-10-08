@@ -13,6 +13,7 @@ import {
   forgetClosed,
   removedLanding,
   removedSeat,
+  watchReleases,
   watchRemovals,
 } from './close';
 
@@ -319,6 +320,71 @@ function removed(seat: SessionSlot, by: SessionSlot | null, action = 'removed'):
     update: { worker_status_changed: { action, status: { slot: seat, spawned_by: by } } },
   };
 }
+
+/** A release announcement, as the core sends it when a seat goes down. */
+function releasing(seat: SessionSlot): ServerMessage {
+  return { kind: 'update', update: { releasing: { key: seat } } };
+}
+
+describe('a seat released by another view', () => {
+  /**
+   * **The wire's own release is what a viewer hears when the close was made
+   * somewhere else** (#1930): the row says where the seat is going from that
+   * frame, exactly as it does for a close made here, and the mark retires the
+   * same way - when the roster lands the seat asleep or stops naming it.
+   */
+  it('marks an announced seat, and hands it to the watcher', () => {
+    const seen: SessionSlot[] = [];
+    const { open, deliver } = connection();
+    const stop = watchReleases(open, (seat) => seen.push(seat));
+
+    deliver(releasing(W1));
+    expect(closingSeat(W1), 'the announced seat is not drawn as closing').toBe(true);
+    expect(seen, 'the release did not reach the watcher').toEqual([W1]);
+
+    // The roster catching up is what takes the mark away, here as for a
+    // close made in this view.
+    forgetClosed({ ...home(LEAD, W1), agents: [agent(LEAD), agentIn(W1, 'Sleeping')] });
+    expect(closingSeat(W1), 'the mark outlived the roster landing the seat asleep').toBe(false);
+
+    // And a frame that is not a release reaches nothing.
+    deliver({ kind: 'update', update: { chat_appended: {} } });
+    stop();
+    deliver(releasing(W2));
+    expect(closingSeat(W2), 'a frame reached a released watcher').toBe(false);
+  });
+
+  /**
+   * **A released seat is not a landing.** The roster is a read that lags the
+   * release, so it still names the seat as live for the seconds the teardown
+   * takes - and a walk that consulted only the click's set offered that seat
+   * to a reader moving off it: the released lead back to itself, or a worker
+   * onto the lead next door. The page left there reads as "start this
+   * project" once the roster catches up, which is a re-spawn.
+   */
+  it('never lands a reader on a seat the wire says is going', () => {
+    // One project, so every landing has exactly one right answer: the lead
+    // is the only other live row, and a walk that may not use it must fall
+    // through to the home rather than back onto it.
+    const wire = ground(['proj'], LEAD, W1);
+    const { open, deliver } = connection();
+    const stop = watchReleases(open, () => {});
+    try {
+      deliver(releasing(LEAD));
+      expect(
+        removedLanding(wire, W1, LEAD, NOW),
+        'a worker close landed the reader on the released lead',
+      ).toEqual({ name: 'home' });
+      expect(
+        removedLanding(wire, LEAD, null, NOW),
+        'the released lead landed the reader back on itself',
+      ).toEqual({ name: 'session', slot: W1 });
+    } finally {
+      stop();
+      forgetClosed({ ...homeWire, agents: [] });
+    }
+  });
+});
 
 describe('a seat removed under the reader', () => {
   it('reads the removed seat and the lead that spawned it from the update', () => {
