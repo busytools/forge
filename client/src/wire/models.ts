@@ -344,6 +344,7 @@ export function modelsFrom(data: DictateModelsWire): DictateModelsWire {
       role: narrow(update.role, ROLES, 'other'),
       candidates: (update.candidates ?? []).map((candidate) => ({
         ...candidate,
+        row: rowFrom(candidate.row),
         verdict: narrow(candidate.verdict, VERDICTS, 'unknown'),
       })),
     })),

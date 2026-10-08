@@ -98,7 +98,9 @@ describe("the models page's snapshot, narrowed once where it enters", () => {
             role: 'summarizing',
             file: 'x.gguf',
             current: {},
-            candidates: [{ row: {}, verdict: 'sideways' }],
+            candidates: [
+              { row: { kind: 'sideways', url: 7, download_count: 'many' }, verdict: 'sideways' },
+            ],
           },
         ],
       }),
@@ -107,6 +109,13 @@ describe("the models page's snapshot, narrowed once where it enters", () => {
     expect(wire.in_use[0]?.role).toBe('other');
     expect(wire.updates[0]?.role).toBe('other');
     expect(wire.updates[0]?.candidates[0]?.verdict).toBe('unknown');
+    // A candidate's row narrows like the feed's own rows do: the fields a
+    // renderer switches on are narrowed where they enter, whichever list
+    // they crossed in.
+    const row = wire.updates[0]?.candidates[0]?.row;
+    expect(row?.kind).toBe('other');
+    expect(row?.url).toBeNull();
+    expect(row?.download_count).toBeNull();
   });
 
   /**
