@@ -45,11 +45,11 @@ pub fn run() {
     // The updater plugin stops at the desktop; the phone's fetch, download,
     // signer check and installer handoff live in its own Kotlin plugin. Both
     // platforms answer the same commands, so the client's update line is one
-    // surface either way. The browser's commands are DESKTOP-ONLY with the
-    // host itself: the phone's engine is its system WebView, a later phase,
-    // and a page that cannot host never claims the capability - while a
-    // registered command set with no host behind it would hold the exclusive
-    // role and fail every ask.
+    // surface either way. The browser's commands are the desktop arm's here
+    // because the desktop host is built in this arm's setup; the phone serves
+    // the same set from its own host, `browser::android::init()`'s engine
+    // bridge (its engine is the system WebView, its driver runs under
+    // libnode in-process).
     #[cfg(desktop)]
     let builder = builder.plugin(tauri_plugin_updater::Builder::new().build()).invoke_handler(
         tauri::generate_handler![
@@ -65,10 +65,11 @@ pub fn run() {
             restart_app
         ],
     );
-    // The iOS arm is desktop-less too, and it registers nothing: the
-    // browser's set stays off there for the Android arm's own reason - no
-    // host exists to serve an ask - and the update commands are the Kotlin
-    // plugin's, which is Android's own.
+    // iOS lands here too, and it registers nothing: no host exists there to
+    // serve either set (the update commands are the Kotlin plugin's, which
+    // is Android's own, and the browser's engine is the phone's system
+    // WebView). Android passes through this arm and then REPLACES the
+    // handler below, with both sets real.
     #[cfg(not(desktop))]
     let builder = builder;
 

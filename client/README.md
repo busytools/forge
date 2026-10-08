@@ -275,13 +275,19 @@ APK is one command, and it builds the frontend first the same way the
 desktop build does:
 
 ```sh
-npm run tauri -- android build --debug --apk --ci
+npm run tauri -- android build --debug --apk --ci --target aarch64
 ```
 
 It lands at
 `src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk`,
 signed with the debug keystore under `~/.android/`, and side-loads onto a
-phone. `--target aarch64` builds one ABI rather than all four.
+phone. **`--target aarch64` is required, not a preference**: the vendored
+libnode is arm64-only, so the other ABIs have nothing to link against. The
+build fetches the SDK's CMake for the JNI shim on first run; the SDK, a JDK
+17+, and `rustup target add aarch64-linux-android` are the prerequisites.
+On a host that is not macOS, `just vendor-browser-stack`'s desktop half
+refuses (its node tarball is pinned for Apple Silicon) - run
+`just vendor-browser-stack-android` alone and build with the CLI directly.
 
 The manifest declares `RECORD_AUDIO` and `MODIFY_AUDIO_SETTINGS`: wry's
 `WebChromeClient` requests both together for a `getUserMedia` prompt, so one

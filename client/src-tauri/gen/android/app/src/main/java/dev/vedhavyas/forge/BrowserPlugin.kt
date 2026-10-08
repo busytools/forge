@@ -33,6 +33,30 @@ import java.security.SecureRandom
 
 private const val TAG = "FORGE-BROWSER"
 
+/**
+ * The relay's gate decision, pure so it is unit-testable (the release's
+ * correctness rests on it and it is only string work): **every request must
+ * carry the token.** The pinned driver sends `--cdp-header` on the
+ * discovery fetch AND the WebSocket upgrade alike (measured against a fake
+ * devtools server while reviewing this), so gating everything is strictly
+ * stronger than gating discovery alone - another app on the device cannot
+ * even open the socket, let alone learn the browser's path.
+ */
+internal fun relayAllows(headText: String, token: String): Boolean =
+    tokenHeaderMatches(headText, token)
+
+/** Whether the head carries `X-Forge-Token: <token>`, header name case-insensitive. */
+internal fun tokenHeaderMatches(headText: String, token: String): Boolean {
+    for (line in headText.split("\r\n")) {
+        val colon = line.indexOf(':')
+        if (colon <= 0) continue
+        if (line.substring(0, colon).trim().equals("x-forge-token", ignoreCase = true)) {
+            return line.substring(colon + 1).trim() == token
+        }
+    }
+    return false
+}
+
 @InvokeArg
 // Field for field with the shell's `browser::android` start call.
 class StartDriverArgs {
@@ -45,6 +69,10 @@ class StartDriverArgs {
  * itself. The desktop launches Brave/Chrome and spawns the driver; here the
  * engine is the app's OWN WebView (over its devtools socket) and the driver
  * is the vendored libnode running inside this process.
+ *
+ * The shell's tab pin and its refuse-a-client-page guard live in the Rust
+ * side's `browser/driver.rs` (`start_inapp` and `refuse_a_client_page`), not
+ * here - this side only reports the UI's origin for them.
  *
  * What this plugin owns:
  *
@@ -102,8 +130,18 @@ class BrowserPlugin(private val activity: Activity) : Plugin(activity) {
       try {
         engine.ensure()
         engine.unpackAssets()
-        engine.startDriver(args.socketPath, args.outputDir)
-        invoke.resolve(JSObject().put("relayPort", engine.relayPort).put("uiOrigin", engine.uiOrigin()))
+        val nodeStarted = engine.startDriver(args.socketPath, args.outputDir)
+        invoke.resolve(
+          JSObject()
+            .put("relayPort", engine.relayPort)
+            .put("uiOrigin", engine.uiOrigin())
+            // **Whether THIS call launched node**, so the shell can size its
+            // accept window honestly: a cold boot takes seconds (measured
+            // 8 s warm, 39 s loaded), while an already-running node redials
+            // every second - a later call that pays the cold window for a
+            // dead host waits 90 s for an answer that cannot come.
+            .put("nodeStarted", nodeStarted),
+        )
       } catch (err: Exception) {
         invoke.reject(err.message ?: err.toString())
       }
@@ -168,6 +206,7 @@ internal class BrowserEngine(private val activity: Activity) {
    * The WebView and the relay, once each. Called before anything acts; safe
    * to call again.
    */
+  @Synchronized
   fun ensure() {
     if (relayPort == 0) startRelay()
     activity.runOnUiThread {
@@ -209,9 +248,10 @@ internal class BrowserEngine(private val activity: Activity) {
   /**
    * Start libnode on the bootstrap. The driver talks MCP to the shell over
    * the unix socket it dials, and CDP to this side's relay; the argv carries
-   * both plus the token the relay gates on.
+   * both plus the token the relay gates on. **Answers whether THIS call
+   * launched node** - see the reply's `nodeStarted` where it is built.
    */
-  fun startDriver(socketPath: String, outputDir: String) {
+  fun startDriver(socketPath: String, outputDir: String): Boolean {
     val engineDir = File(activity.filesDir, "browser/engine")
     val argv =
       arrayOf(
@@ -235,11 +275,12 @@ internal class BrowserEngine(private val activity: Activity) {
     // app's to repair by restart (the shell's calls say so meanwhile).
     if (nodeUp) {
       Log.i(TAG, "in-app node is already up; not starting another")
-      return
+      return false
     }
     nodeUp = true
     Log.i(TAG, "starting in-app node (relay $relayPort)")
     Thread({ NodeHost.startNode(argv, engineDir.absolutePath) }, "forge-node").start()
+    return true
   }
 
   /**
@@ -280,23 +321,32 @@ internal class BrowserEngine(private val activity: Activity) {
         root.addView(view, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
       }
       takeover = true
+      // The strip's row re-reads on this word: the raise's UI body runs on
+      // the UI thread, so a caller's own read can land before it - the
+      // event is what makes the late state visible (measured).
+      notifyJs("raised")
       Log.i(TAG, "takeover raised")
     }
     return null
   }
 
-  /** Lower the takeover. Idempotent; the caller says what the client hears. */
+  /** Lower the takeover. Idempotent; every path says `lowered`, the bar's Done adds `done`. */
   fun lower() {
     activity.runOnUiThread {
       overlay?.let { over ->
         (over.parent as? ViewGroup)?.removeView(over)
       }
       takeover = false
+      notifyJs("lowered")
       Log.i(TAG, "takeover lowered")
     }
   }
 
-  /** The bar's back and the hardware Back share this door. */
+  /**
+   * The bar's back and the hardware Back share this door, `lower()`'s
+   * `lowered` included - a lower that sent no word left the collapsed row
+   * saying "hide" over a window already down (measured).
+   */
   fun lowerFromBar(): Boolean {
     if (!takeover) {
       return false
@@ -375,7 +425,6 @@ internal class BrowserEngine(private val activity: Activity) {
         minWidth = dp(96)
         setOnClickListener {
           lower()
-          notifyJs("lowered")
         }
       }
     val spacer = android.view.View(activity).apply { layoutParams = LinearLayout.LayoutParams(0, 1, 1f) }
@@ -436,14 +485,7 @@ internal class BrowserEngine(private val activity: Activity) {
       }
       val headText = String(head, Charsets.ISO_8859_1)
       Log.i(TAG, "relay request: " + headText.lineSequence().firstOrNull()?.take(90) + " hdr=" + (headText.contains("X-Forge-Token: ", ignoreCase = true)))
-      // **Only the discovery request is gated.** The token keeps another app
-      // on the device from learning the browser's WebSocket path; the
-      // WebSocket upgrade itself rides the uuid nobody can guess, and
-      // playwright sends the header on the discovery request alone -
-      // gating the upgrade refused the driver's own connection (measured:
-      // the handshake wedged until the start timed out).
-      val discovery = headText.lineSequence().firstOrNull()?.startsWith("GET /json") == true
-      if (discovery && !authorized(headText)) {
+      if (!relayAllows(headText, token)) {
         Log.w(TAG, "relay refused an ungated discovery request")
         val out = client.getOutputStream()
         out.write("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n".toByteArray())
@@ -508,16 +550,7 @@ internal class BrowserEngine(private val activity: Activity) {
     return buffer.toByteArray()
   }
 
-  private fun authorized(head: String): Boolean {
-    for (line in head.split("\r\n")) {
-      val colon = line.indexOf(':')
-      if (colon <= 0) continue
-      if (line.substring(0, colon).trim().equals("x-forge-token", ignoreCase = true)) {
-        return line.substring(colon + 1).trim() == token
-      }
-    }
-    return false
-  }
+  private fun authorized(head: String): Boolean = tokenHeaderMatches(head, token)
 
   private fun pump(from: InputStream, to: OutputStream) {
     val buffer = ByteArray(1 shl 16)

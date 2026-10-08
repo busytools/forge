@@ -32,9 +32,19 @@ export interface HostReply {
 /** How a tool call reaches the shell, injectable so the mapping is testable. */
 export type Invoke = (command: 'browser_call', request: InvokeArgs) => Promise<unknown>;
 
-/** Whether this page runs inside the shell that owns a browser host. */
+/**
+ * Whether this page runs inside the shell that owns a browser host: the
+ * Tauri marker is the one gate, and the two shells that register the browser
+ * commands are the desktop and Android. **iOS is excluded** - no iOS build
+ * registers a host, so a page there claiming the exclusive browser role
+ * would fail every ask routed to it.
+ */
 export function canHost(): boolean {
-  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+  return (
+    typeof window !== 'undefined' &&
+    '__TAURI_INTERNALS__' in window &&
+    !/iPhone|iPad|iPod/i.test(navigator.userAgent)
+  );
 }
 
 /**

@@ -107,9 +107,13 @@ impl StackPaths {
         }
     }
 
-    /// The phone's own derivation: no vendored stack on a filesystem path
-    /// (the driver tree lives unpacked under the data dir, put there by the
-    /// Kotlin engine), and the same three state directories as the desktop's.
+    /// The phone's own derivation: `data` is the app's data dir, and the
+    /// three state directories (socket, output, profiles) hang off it -
+    /// which is what the shell passes to the Kotlin engine as its working
+    /// directories. **The driver TREE is not here**: the Kotlin side unpacks
+    /// it under filesDir (`files/browser/engine`) and runs node against
+    /// that copy; `stack` names the same path only so logs point at the
+    /// tree a reader can go look at.
     pub fn for_android(data: &Path) -> Self {
         Self {
             stack: data.join("browser/engine"),

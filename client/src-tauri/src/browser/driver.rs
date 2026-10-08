@@ -32,15 +32,20 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(150);
 /// even [`CALL_TIMEOUT`]. A start that cannot answer names it instead.
 const START_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// The phone's bounds, its own: the in-app node's boot is seconds of real
-/// work (measured 8 s warm, 39 s on a loaded emulator) where the desktop's
-/// child spawn is immediate, and it redials every second until the shell is
-/// listening - so the accept window is generous, and the MCP handshake after
-/// it is wider than the desktop's because cli.js loads after the dial.
+/// The phone's bounds, its own, and they must fit the server's ask budget:
+/// `ASK_TIMEOUT` (15+15+150+20 s) is derived from the DESKTOP's launch,
+/// handshake and call bounds, and the phone's cold figures join it - 35 s to
+/// accept a node's FIRST dial (its boot is real work: measured 8 s warm,
+/// 39 s on a loaded emulator) + 10 s to hand shake + the driver's own 150 s
+/// call = 195 s, inside the bound. A node that was ALREADY up redials every
+/// second, so a later call waits only 6 s - a dead in-app node fails in
+/// seconds with the reason instead of paying the cold window per call.
 #[cfg(target_os = "android")]
-const IN_APP_ACCEPT_TIMEOUT: Duration = Duration::from_secs(90);
+const IN_APP_COLD_ACCEPT_TIMEOUT: Duration = Duration::from_secs(35);
 #[cfg(target_os = "android")]
-const IN_APP_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
+const IN_APP_WARM_ACCEPT_TIMEOUT: Duration = Duration::from_secs(6);
+#[cfg(target_os = "android")]
+const IN_APP_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// One part of a tool's answer, on its way to the socket.
 ///
@@ -165,13 +170,22 @@ impl Driver {
         let listener = tokio::net::UnixListener::bind(socket)
             .map_err(|why| format!("the driver socket could not be bound: {why}"))?;
         let relay = engine.start_driver(socket, output_dir).await?;
-        tauri_plugin_log::log::info!("the engine answers (relay port {})", relay.relay_port);
-        let accept = tokio::time::timeout(IN_APP_ACCEPT_TIMEOUT, listener.accept())
+        tauri_plugin_log::log::info!(
+            "the engine answers (relay port {}, node started: {})",
+            relay.relay_port,
+            relay.node_started
+        );
+        let accept_bound = if relay.node_started {
+            IN_APP_COLD_ACCEPT_TIMEOUT
+        } else {
+            IN_APP_WARM_ACCEPT_TIMEOUT
+        };
+        let accept = tokio::time::timeout(accept_bound, listener.accept())
             .await
             .map_err(|_| {
                 format!(
                     "the on-device driver did not dial its socket within {} s",
-                    IN_APP_ACCEPT_TIMEOUT.as_secs()
+                    accept_bound.as_secs()
                 )
             })?
             .map_err(|why| format!("the driver socket did not accept: {why}"))?;
@@ -206,8 +220,10 @@ impl Driver {
             .collect::<Vec<_>>()
             .join("\n");
         let tabs = browser_tabs_of(&text);
-        let Some((index, url)) =
-            tabs.iter().find(|(_, url)| !url.starts_with(self.ui_origin.as_str())).cloned()
+        let Some((index, url)) = tabs
+            .iter()
+            .find(|(_, url)| !origin_match(url, self.ui_origin.as_str()))
+            .cloned()
         else {
             return Err(format!(
                 "the browser page could not be told apart from the client's own screen \
@@ -221,21 +237,41 @@ impl Driver {
             .map(|_| ())
     }
 
-    /// The phone's page is not a tab: a select or close that resolves to the
-    /// UI's origin is refused before the driver runs it, whoever asked. The
-    /// pin keeps the driver off the UI by default; this keeps a session's own
-    /// tab call from putting it there.
+    /// The phone's page is not a tab, and the phone has no second page: a
+    /// session's own tab calls are refused where they could put the driver
+    /// on the client's screen or take the engine's only page away. The pin
+    /// keeps the driver off the UI by default; this keeps a session from
+    /// putting it there with `browser_tabs select`, and refuses `close`
+    /// outright - `close` with no index closes the CURRENT tab (which after
+    /// the pin IS the browser page), the pinned driver re-points its current
+    /// tab at whatever remains (the client's UI page), and every later call
+    /// would drive forge's own screen. `browser_close` is the same harm
+    /// behind the MCP's own close-page tool, and no relaunch exists here to
+    /// reopen what it closed.
     #[cfg(target_os = "android")]
     async fn refuse_a_client_page(&self, tool: &str, args: &Value) -> Result<(), String> {
+        if tool == "browser_close" {
+            return Err(
+                "the phone's browser page is the app's own screen and is never closed: \
+                 navigate it away instead (browser_navigate), or leave it where it is"
+                    .to_owned(),
+            );
+        }
         if tool != "browser_tabs" {
             return Ok(());
         }
         let action = args.get("action").and_then(Value::as_str).unwrap_or_default();
-        let index = args.get("index").and_then(Value::as_u64);
-        if action != "select" && !(action == "close" && index.is_some()) {
+        if action == "close" {
+            return Err(
+                "the phone hosts one browser page and closing it takes the engine's only \
+                 page: navigate it away instead (browser_navigate)"
+                    .to_owned(),
+            );
+        }
+        if action != "select" {
             return Ok(());
         }
-        let Some(index) = index else {
+        let Some(index) = args.get("index").and_then(Value::as_u64) else {
             return Ok(());
         };
         let listed = self.call_raw("browser_tabs", serde_json::json!({ "action": "list" })).await?;
@@ -248,7 +284,7 @@ impl Driver {
             .collect::<Vec<_>>()
             .join("\n");
         for (candidate, url) in browser_tabs_of(&text) {
-            if candidate == index as usize && url.starts_with(self.ui_origin.as_str()) {
+            if candidate == index as usize && origin_match(&url, self.ui_origin.as_str()) {
                 return Err(format!(
                     "tab {index} is this client's own screen, not a browser page: the browser \
                      tools drive the shared browser only"
@@ -390,6 +426,24 @@ pub fn browser_tabs_of(list_text: &str) -> Vec<(usize, String)> {
     tabs
 }
 
+/// A URL's origin (`scheme://authority`), or the whole thing when it has no
+/// path - compared by EQUALITY, never by prefix: `http://tauri.localhost` as
+/// a prefix would also match `http://tauri.localhost.evil.test`.
+pub fn origin_of(url: &str) -> &str {
+    let Some(scheme_end) = url.find("://") else {
+        return url;
+    };
+    let rest = &url[scheme_end + 3..];
+    let end = rest.find(['/', '?', '#']).map_or(url.len(), |i| scheme_end + 3 + i);
+    &url[..end]
+}
+
+/// Whether a page URL belongs to `origin` - by origin equality, so a page on
+/// a lookalike host does not read as the client's own.
+pub fn origin_match(url: &str, origin: &str) -> bool {
+    !origin.is_empty() && origin_of(url).eq_ignore_ascii_case(origin)
+}
+
 /// The CLI inside the vendored package, run by the vendored node.
 pub fn cli_path(stack: &Path) -> PathBuf {
     stack.join("playwright-mcp/node_modules/@playwright/mcp/cli.js")
@@ -475,6 +529,25 @@ mod tests {
         );
 
         assert!(browser_tabs_of("no tabs here").is_empty());
+    }
+
+    /// Origin extraction and the classifier built on it: equality, not a
+    /// prefix - `http://tauri.localhost.evil.test` IS a page a hostile site
+    /// could hold, and a prefix check would read it as the client's own.
+    #[test]
+    fn an_origin_is_compared_by_equality() {
+        assert_eq!(origin_of("http://tauri.localhost/session/x"), "http://tauri.localhost");
+        assert_eq!(origin_of("https://tauri.localhost"), "https://tauri.localhost");
+        assert_eq!(origin_of("http://10.0.2.2:8123/"), "http://10.0.2.2:8123");
+        assert_eq!(origin_of("about:blank"), "about:blank");
+
+        assert!(origin_match(
+            "http://tauri.localhost/session/Scratch/android-spike/lead",
+            "http://tauri.localhost",
+        ));
+        assert!(!origin_match("http://tauri.localhost.evil.test/x", "http://tauri.localhost"));
+        assert!(!origin_match("https://tauri.localhost/x", "http://tauri.localhost"));
+        assert!(!origin_match("about:blank", ""));
     }
 
     /// The driver's own paths are the vendoring's layout, pinned by name.

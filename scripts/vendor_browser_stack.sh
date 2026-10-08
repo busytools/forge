@@ -99,10 +99,15 @@ fi
 prune_generated_stack() {
     local gen="$REPO/client/src-tauri/gen/android/app/src/main/assets/browser-stack"
     [ -d "$gen" ] || return 0
-    for stale in "$gen/browser" "$gen/node"; do
-        if [ -d "$stale" ]; then
-            echo "[..] removing the stale generated copy $(basename "$stale")"
-            find "$stale" -depth -delete
+    # An allowlist, not a denylist: the Android bundle carries the driver
+    # tree and NOTHING else, so anything else a wider config ever copies
+    # dies here rather than shipping (a denylist has to learn every new
+    # name; the 516MB APK was one it had not learned).
+    for entry in "$gen"/*; do
+        [ -e "$entry" ] || continue
+        if [ "$(basename "$entry")" != "playwright-mcp" ]; then
+            echo "[..] removing the stale generated copy $(basename "$entry")"
+            find "$entry" -depth -delete
         fi
     done
 }

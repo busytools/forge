@@ -27,6 +27,11 @@ const HOST_GONE: &str = "the browser-capable client went away before answering";
 /// longer than this entirely - so the named failure and a retry is the
 /// answer. A late answer costs nothing: the ask keeps its entry registered,
 /// and the reply's send drops it (`.ok()`) once this waiter is gone.
+// The client's worst honest path: launch + handshake + one driver call, plus
+// slack. The desktop is 15+15+150; an Android client's in-app driver boots,
+// so its cold figures (35 s accept + 10 s handshake + 150 s call = 195 s)
+// must also clear this bound, and the slack above them is what absorbs the
+// rest.
 const ASK_TIMEOUT: Duration = Duration::from_secs(15 + 15 + 150 + 20);
 
 /// One ask, on its way to the registered host.
@@ -540,14 +545,22 @@ mod tests {
     }
 
     /// **The bound clears every layer that legitimately takes time.** The
-    /// client's own bounds are a launch (15 s), a driver handshake (15 s) and
-    /// one tool call (150 s) - a bound under their sum would fail slow-but-fine
-    /// calls, which is the one change someone would plausibly make here.
+    /// desktop client's own bounds are a launch (15 s), a driver handshake
+    /// (15 s) and one tool call (150 s); an Android client's in-app driver
+    /// BOOTS, so its cold figures are wider - 35 s to accept the node's
+    /// first dial, 10 s to hand shake, and the same 150 s call (195 s in
+    /// all). A bound under either sum would fail slow-but-fine calls, which
+    /// is the one change someone would plausibly make here.
     #[test]
     fn the_ask_bound_clears_the_client_layers_below_it() {
         assert!(
             ASK_TIMEOUT >= Duration::from_secs(15 + 15 + 150),
-            "the ask's bound must clear the client's launch, handshake and call bounds: {ASK_TIMEOUT:?}",
+            "the ask's bound must clear the desktop client's launch, handshake and call bounds: {ASK_TIMEOUT:?}",
+        );
+        assert!(
+            ASK_TIMEOUT >= Duration::from_secs(35 + 10 + 150),
+            "and the Android client's cold figures - accept, handshake, call - are wider; \
+             the bound must clear those too: {ASK_TIMEOUT:?}",
         );
     }
 

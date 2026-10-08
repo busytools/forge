@@ -14,14 +14,18 @@ use tauri::plugin::{Builder, PluginHandle, TauriPlugin};
 use tauri::{Manager as _, Runtime};
 
 /// What the Kotlin engine reported when the driver started: the relay the
-/// in-app node speaks CDP through, and the client UI's origin, which the
-/// driver's tab pin must steer off.
+/// in-app node speaks CDP through, the client UI's origin (the driver's tab
+/// pin must steer off it), and whether THIS call launched node - a cold
+/// boot takes seconds, while an already-running node redials every second,
+/// so the shell sizes its accept window by this.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Relay {
     #[serde(rename = "relayPort")]
     pub relay_port: u16,
     #[serde(rename = "uiOrigin")]
     pub ui_origin: String,
+    #[serde(rename = "nodeStarted")]
+    pub node_started: bool,
 }
 
 #[derive(Serialize)]

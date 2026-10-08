@@ -295,6 +295,10 @@ client-test:
 # crate it never touched. A cost choice rather than an impossibility.
 client-tauri-check:
     npm --prefix client run tauri -- build --no-bundle --ci -- --locked
+    # The shell's own Rust tests: the shell crate is its own workspace root,
+    # so `just check`'s cargo steps never reach them, and without this line
+    # they run in NO gate at all.
+    cargo nextest run --manifest-path client/src-tauri/Cargo.toml
 
 # Build the shell's bundles: `forge.app` and the dmg, under
 # client/src-tauri/target/release/bundle. `client-tauri-check` covers no
@@ -644,6 +648,22 @@ client-android-release version: vendor-browser-stack vendor-browser-stack-androi
     abi=$("$aapt2" dump badging "$built" | sed -n 's/^native-code: //p' | tr -d "'" || true)
     if [ "$abi" != "arm64-v8a" ]; then
         echo "[ERROR] the built APK's native code is '$abi', expected arm64-v8a" >&2
+        exit 1
+    fi
+
+    # **What the APK packs, not just that it built.** The Android bundle's
+    # assets are the driver tree alone; a stale browser/ or node/ under the
+    # generated assets once shipped a 516MB APK with every other check
+    # green (2026-10-08), so the readback asserts the shape here, every
+    # release.
+    packed=$(unzip -l "$built" | awk '{print $4}' | grep '^assets/browser-stack/' || true)
+    if echo "$packed" | grep -qE '^assets/browser-stack/(browser|node)/'; then
+        echo "[ERROR] the APK packs the desktop stack (node/browser) into Android assets:" >&2
+        echo "$packed" | grep -E '^assets/browser-stack/(browser|node)/' | head -5 >&2
+        exit 1
+    fi
+    if ! echo "$packed" | grep -q '^assets/browser-stack/playwright-mcp/'; then
+        echo "[ERROR] the APK carries no driver tree under assets/browser-stack/playwright-mcp" >&2
         exit 1
     fi
 
