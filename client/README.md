@@ -262,8 +262,15 @@ Gradle files are project source rather than build output, so its four
 local edits - the manifest's mic permissions and its
 `REQUEST_INSTALL_PACKAGES`, the activity's back handling, the update plugin
 (`app/src/main/java/dev/vedhavyas/forge/UpdatePlugin.kt`) and the release
-signing block in `app/build.gradle.kts` - survive a clean clone. Re-running
-`tauri android init` overwrites them, so re-apply them after one. The debug
+signing block in `app/build.gradle.kts` - survive a clean clone. The browser
+host's own files sit beside them as project source too -
+`app/src/main/java/dev/vedhavyas/forge/BrowserPlugin.kt` and `NodeHost.kt`,
+`app/src/main/cpp/` (the JNI shim the in-app libnode needs) and
+`app/src/main/assets/forge-browser/` (the driver's bootstrap); only
+`jniLibs/*.so` and `cpp/nodejs-mobile/` are vendored rather than committed,
+put there by `just vendor-browser-stack-android`. Re-running
+`tauri android init` overwrites the generated files, so re-apply the edits
+after one. The debug
 APK is one command, and it builds the frontend first the same way the
 desktop build does:
 
