@@ -159,22 +159,28 @@ body, or the user - name the evidence (the command and its output, the \
 diff you read, the test that ran). When the `systemone__*` tools are in \
 your list: make one `ask_noul` claim-check on the claim - the evidence \
 itself in `state`, the command's output or the file's bytes, not your \
-memory of them - and ask whether it holds; and when two readings both \
-survive your own reasoning and nothing outside you decides between \
-them - no file, no command, no test, no instruction from the user - \
-make one `ask_choice` over the options you have already enumerated \
-rather than deciding it in prose. A decisive answer is permission to \
-say it plainly, a near-0.5 means state the caveat or go verify first - \
-the trigger is the act of asserting, not a feeling of uncertainty; the \
+memory of them - and ask whether it holds; make one `ask_noul` on a \
+yes/no state you are about to act on where the evidence exists and a \
+second opinion is cheap; and when two or more options you have already \
+enumerated survive your own reasoning and nothing outside you decides \
+between them - no file, no command, no test, no instruction from the \
+user (a routing call with several plausible owners and no evidence \
+separating them is exactly that case) - make one `ask_choice` rather \
+than deciding it in prose; and when an ordered judgment has meaningful \
+levels - severity, quality, priority, risk - make one `ask_score` on \
+the rubric you define, and read the score as a position on the anchors, \
+not a unit of measure. A decisive answer is permission to say it \
+plainly, a near-0.5 means state the caveat or go verify first - the \
+trigger is the act of asserting, not a feeling of uncertainty; the \
 claims that matter most are the ones that feel settled. A decision is \
-never a substitute for evidence you do not have. It is a second opinion, \
-not a question to the user: for the small, quick decisions that are yours \
-to make - the ones not worth interrupting anyone for - it is the touch \
-that makes you sure. A decision a systemone ask produced: when it changed \
-what you did, report it where the work is reported - the task tools, when \
-your families have them - naming the decision, the choice, and its \
-probabilities. A claim-check \
-that confirmed a claim needs only the line that says so.";
+never a substitute for evidence you do not have. It is a second \
+opinion, not a question to the user: for the small, quick decisions \
+that are yours to make - the ones not worth interrupting anyone for - \
+it is the touch that makes you sure. A decision a systemone ask \
+produced: when it changed what you did, report it where the work is \
+reported - the task tools, when your families have them - naming the \
+decision, the choice, and its probabilities. A claim-check that \
+confirmed a claim needs only the line that says so.";
 
 /// Assemble the forge system-prompt append: server line, the peers
 /// paragraph when `has_peer_tools`, the trust block, the always-on
@@ -3122,7 +3128,8 @@ mod tests {
 
     /// The systemone cues reach every session, and the names in them are
     /// tools that can be renamed - pinned so a rename fails here instead of
-    /// shipping a cue that resolves to nothing.
+    /// shipping a cue that resolves to nothing. Each of the three tools is
+    /// pinned with the moment the cue gives it.
     #[test]
     fn the_conduct_block_carries_its_systemone_cues() {
         assert!(
@@ -3133,8 +3140,35 @@ mod tests {
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
-                .contains("make one `ask_choice` over the options you have already enumerated"),
-            "the enumerated-choice cue is pinned",
+                .contains("make one `ask_noul` on a yes/no state you are about to act on"),
+            "the yes/no act moment is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "when two or more options you have already enumerated survive your own reasoning \
+                 and nothing outside you decides between them"
+            ),
+            "the fork moment's evidence test is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "a routing call with several plausible owners and no evidence separating them \
+                 is exactly that case"
+            ),
+            "the routing case is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("make one `ask_choice` rather than deciding it in prose"),
+            "the choice tool is named with its moment",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "when an ordered judgment has meaningful levels - severity, quality, priority, \
+                 risk - make one `ask_score` on the rubric you define, and read the score as a \
+                 position on the anchors, not a unit of measure"
+            ),
+            "the score moment and its reading rule are pinned",
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
