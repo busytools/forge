@@ -1821,6 +1821,41 @@ describe('the models route as it draws', () => {
   });
 
   /**
+   * **What a switch costs is not always known.** A verdict's winner the feed
+   * no longer carries is neither on this machine nor on a row, and the line
+   * says so rather than reading as free.
+   */
+  it('says when the switch cost is not known', () => {
+    const host = open(modelsWire, {
+      verdicts: [
+        {
+          role: 'cleanup',
+          best: {
+            run: {
+              variant: 'a/norm-gone',
+              role: 'cleanup',
+              file: 'a-norm-gone-Q4_K_M.gguf',
+              size_bytes: 300_000_000,
+              installed: false,
+              why: 'candidate',
+            },
+            result: benchResult('a-norm-gone-Q4_K_M.gguf', 'cleanup', 0.08),
+          },
+          baseline: benchResult('s1-mini-f16.gguf', 'cleanup', 0.12),
+          onBest: false,
+          scored: 4,
+          beyond: 0,
+          tried: 1,
+          pick: false,
+          tier: 'consensus',
+        },
+      ],
+    });
+
+    expect(host.textContent).toContain('what switching costs is not known here');
+  });
+
+  /**
    * One press, and the sweep chains itself over the core's own pushes:
    * install the candidate that is not here, score every run on one corpus,
    * and hand the verdict back when the last one lands.
