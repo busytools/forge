@@ -366,6 +366,13 @@
         </div>
       {/if}
     {/each}
+  {:else}
+    <!-- The read has not landed: a panel that drew nothing here would read
+         as a session with no models rather than one still being read. -->
+    <div class="ax">
+      <div class="lbl">MODELS</div>
+      <div class="note">reading the models this session runs...</div>
+    </div>
   {/if}
 
   <div class="ax">

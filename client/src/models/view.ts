@@ -641,10 +641,14 @@ export function benchTargets(
   for (const record of installed) {
     if (rows.some((row) => row.target.file === record.file)) continue;
     const entry = feed.find((row) => row.variant === record.variant);
+    // The feed's row when the catalogue is read, the record's own runtime
+    // when it is not - the same join `roleModels` makes, so the two lists
+    // cannot disagree about what a file is.
+    const kind = entry === undefined || entry.kind === 'other' ? recordKind(record) : entry.kind;
     rows.push({
       target: {
         file: record.file,
-        role: entry?.kind === 'normalizer' ? 'cleanup' : 'transcribing',
+        role: kind === 'normalizer' ? 'cleanup' : 'transcribing',
         pinned: false,
       },
       variant: record.variant,
@@ -660,6 +664,23 @@ export function benchTargets(
     );
   }
   return rows;
+}
+
+/**
+ * What a recorded model is for, when the feed cannot say.
+ *
+ * **The record declares its own runtime**, and the runtime is what the role
+ * loads it with: llama.cpp is the cleanup stage's generator and
+ * transcribe.cpp the transcriber. With the catalogue unread - a first boot
+ * offline, a check that never landed - this is the join the page still has,
+ * and it is the SAME one for every list: a record that declares neither is
+ * not offered as a role's model at all, because a guessed role is a model
+ * running in the wrong slot.
+ */
+export function recordKind(record: InstalledModel): Exclude<CatalogueKind, 'other'> | null {
+  if (record.facts.runtime === 'llama.cpp') return 'normalizer';
+  if (record.facts.runtime === 'transcribe.cpp') return 'asr';
+  return null;
 }
 
 /** One run a sweep will make. */
@@ -935,7 +956,11 @@ export function roleModels(
   for (const record of installed) {
     if (choices.some((choice) => choice.file === record.file)) continue;
     const entry = rows.find((row) => row.variant === record.variant);
-    if (entry?.kind !== wanted) continue;
+    // The same join `benchTargets` makes: the feed's row when the catalogue
+    // is read, the record's own runtime when it is not, and nothing at all
+    // when the record declares neither.
+    const kind = entry === undefined || entry.kind === 'other' ? recordKind(record) : entry.kind;
+    if (kind !== wanted) continue;
     choices.push({ file: record.file, current: false });
   }
   return {

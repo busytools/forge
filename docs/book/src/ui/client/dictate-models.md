@@ -79,9 +79,9 @@ is the section below, not a second control in the line.
 carries both roles' news, and under it the selected role's recommendation
 is its own row: the model, its numbers against the one running, its licence
 and size, the rule it was picked on in words - it beats the model in use on
-both of the feed's own measurements, and its licence is not marked
-non-commercial - and what taking it does: downloads it if it is not here,
-then loads it as that role's model. The one control that takes it is the
+both of the feed's own measurements - and what taking it does: downloads it
+if it is not here, then loads it as that role's model. Its licence is a fact
+on the row rather than a filter: what runs here is this machine's own. The one control that takes it is the
 row's own - download then load, or the download alone where `forge.toml`
 pins the role. A role with nothing proposed says so rather than leaving a
 blank. The table below it is evidence, not the pick, so it folds.
@@ -104,9 +104,10 @@ own proposal below - the section follows the first role that has one until a
 press, so a role with news is never hidden behind one without. A role the
 feed has nothing for says so in words rather than leaving another role's
 table standing under its name, and a proposal whose candidate list is empty
-says that too. The role is a button rather than the row itself, for the
-reason a row's name is the link on the home: the row carries its own
-controls, and a control inside a control is not HTML.
+says that too. **The whole row is the selector**: a card that only answered
+on one word would read as furniture, so the press lands anywhere on it and
+the hit target is an overlay rather than the card itself - the row carries
+its own controls, and a button inside a button is not HTML.
 
 **The cleanup role has no feed to rank it, so the bench decides it.** No
 feed publishes speed or error for a normalizer, so selecting the cleanup
@@ -207,10 +208,11 @@ fetches from - because a list of rows that goes nowhere is what a reader
 clicks first, and the marker that says so is drawn at rest rather than
 uncovered by the pointer.
 
-**A download is never called verified.** These files publish no digest; the
-core checks a download against the feed's own byte length and the engine's
-own load, and the page's note says exactly that. Nothing on this page may
-print `verified`, `checksum` or a digest the spec did not declare.
+**A download is never called verified.** The core checks a download against
+what its entry declares - the byte length always, and the sha256 a cleanup
+feed's blobs publish, which the speech feed's files do not - plus the
+engine's own load, and the page's note says exactly that. Nothing on this
+page may print `verified`, `checksum` or a digest the spec did not declare.
 
 **The box is blind on its own, so the page offers what can be searched.**
 Before a name is typed it draws the feed's own families as chips - each one
@@ -299,6 +301,9 @@ entry matches" and chips pointing at nothing.
   uninstall on a file a role is running.
 - **A pinned role**: its row's source line names the `[dictate]` key, no
   row offers an activation for it, and the download controls stay.
+- **A role running an installed model**: its row carries `use the default`
+  beside the state chip - the swap back to the compiled pin, which is what
+  undoes a runtime pick.
 - **A connection that dropped**: the shell's own line stands above every
   page, and this one keeps what it last read.
 - **A search that matches nothing**: the query is named, with the hint that

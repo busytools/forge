@@ -18,6 +18,7 @@ import { modelsWire } from './testing';
 import {
   activateLine,
   activeSource,
+  benchTargets,
   candidateFacts,
   checkLine,
   clock,
@@ -30,6 +31,8 @@ import {
   languagesLabel,
   modelChip,
   paramsLabel,
+  resultVerdict,
+  roleModels,
   roleWord,
   rowAction,
   search,
@@ -676,6 +679,44 @@ describe('the operation lines', () => {
   });
 });
 
+describe("the panel's model choices", () => {
+  /**
+   * **A role's choices are joined the same way in both lists.** With the
+   * catalogue unread the feed cannot say what a record is for, and the
+   * record's own runtime can: llama.cpp is the cleanup stage's generator,
+   * transcribe.cpp the transcriber. A record that declares neither is in no
+   * role's list, because a guessed role runs a model in the wrong slot.
+   */
+  it('joins a record to its role by its own runtime when the feed cannot', () => {
+    const record = (variant: string, file: string, runtime: string | null): InstalledModel => ({
+      variant,
+      file,
+      url: `https://huggingface.co/${variant}`,
+      size: 300_000_000,
+      facts: { quant: 'Q4_K_M', params: null, license: null, runtime },
+      at: '2026-10-07T09:00:00Z',
+    });
+    const installed = [
+      record('a/norm', 'norm.gguf', 'llama.cpp'),
+      record('a/asr', 'asr.gguf', 'transcribe.cpp'),
+      record('a/mystery', 'mystery.gguf', null),
+    ];
+
+    const cleanup = roleModels('normalization', [], installed, []);
+    const transcribing = roleModels('transcribing', [], installed, []);
+
+    expect(cleanup.choices.map((choice) => choice.file)).toEqual(['norm.gguf']);
+    expect(transcribing.choices.map((choice) => choice.file)).toEqual(['asr.gguf']);
+    // The bench list agrees with the panel: the same join, so a file cannot
+    // sit under one role in one list and another role in the other.
+    expect(benchTargets([], installed, [], []).map((row) => row.target)).toEqual([
+      { file: 'norm.gguf', role: 'cleanup', pinned: false },
+      { file: 'asr.gguf', role: 'transcribing', pinned: false },
+      { file: 'mystery.gguf', role: 'transcribing', pinned: false },
+    ]);
+  });
+});
+
 describe('the sweep', () => {
   /** One cleanup candidate as the feed lists it: popularity and a size. */
   function normalizer(variant: string, downloads: number, size = 300_000_000): CatalogueRow {
@@ -855,9 +896,12 @@ describe('the sweep', () => {
     const plan = sweepPlan(wire);
     wire.results = [
       benchResult('a-norm-a-Q4_K_M.gguf', 'cleanup', 'new', { wer: 0.08, matched: [9, 12] }),
-      benchResult('s1-mini-f16.gguf', 'cleanup', 'new', { wer: 0.12, matched: [7, 12] }),
       // A better run from before the corpus moved: it must not win.
       benchResult('a-norm-a-Q4_K_M.gguf', 'cleanup', 'old', { wer: 0.01, matched: [12, 12] }),
+      // The baseline's own run is only on the old corpus: a verdict that
+      // read the plan's files without the corpus filter would compare it
+      // against a run it was never measured beside.
+      benchResult('s1-mini-f16.gguf', 'cleanup', 'old', { wer: 0.12, matched: [11, 12] }),
       benchResult('granite-speech-5.0-470m-turboctc-nc-Q4_K_M.gguf', 'transcribing', 'new', {
         wer: 0.06,
       }),
@@ -867,9 +911,10 @@ describe('the sweep', () => {
     if (cleanup === undefined) throw new Error('the cleanup verdict did not form');
 
     expect(cleanup.best.result.target.file).toBe('a-norm-a-Q4_K_M.gguf');
-    expect(cleanup.baseline?.target.file).toBe('s1-mini-f16.gguf');
+    expect(cleanup.best.result.corpus.sha256).toBe('new');
+    expect(cleanup.baseline).toBeNull();
     expect(cleanup.onBest).toBe(false);
-    expect(cleanup.scored).toBe(2);
+    expect(cleanup.scored).toBe(1);
     expect(cleanup.tried).toBe(1);
     expect(cleanup.beyond).toBe(0);
     expect(cleanup.tier).toBe('consensus');
@@ -877,9 +922,7 @@ describe('the sweep', () => {
     // The verdict may never say a bare best: the scope carries what it saw.
     expect(sweepScope(cleanup)).toContain('the most-downloaded cleanup candidate');
     expect(sweepScope(cleanup)).toContain('your takes, 12 clips');
-    expect(sweepHeadline(cleanup)).toContain(
-      'a-norm-a-Q4_K_M.gguf agreed with the baselines more often than',
-    );
+    expect(sweepHeadline(cleanup)).toContain('a-norm-a-Q4_K_M.gguf agreed most of the 1 scored');
   });
 
   /**
@@ -1002,6 +1045,27 @@ describe('the sweep', () => {
     if (cleanup === undefined) throw new Error('the cleanup verdict did not form');
 
     expect(cleanup.best.result.target.file).toBe('a-norm-b-Q4_K_M.gguf');
+  });
+
+  /**
+   * **Two runs are compared only when they share a corpus.** A run of the
+   * model in use from another take set is not a comparison: the line says
+   * what it is waiting for rather than reading the two side by side.
+   */
+  it('refuses to compare a run against another corpus', () => {
+    const here = benchResult('a-norm-a-Q4_K_M.gguf', 'cleanup', 'here', { matched: [9, 12] });
+    const elsewhere = benchResult('s1-mini-f16.gguf', 'cleanup', 'elsewhere', {
+      matched: [1, 12],
+    });
+
+    expect(resultVerdict(here, modelsWire.in_use, [here, elsewhere])).toContain(
+      'over this same corpus',
+    );
+
+    const same = benchResult('s1-mini-f16.gguf', 'cleanup', 'here', { matched: [4, 12] });
+    expect(resultVerdict(here, modelsWire.in_use, [here, same, elsewhere])).toContain(
+      'agrees with the baselines',
+    );
   });
 
   /** A cleanup verdict with no candidate in the plan says so, rather than

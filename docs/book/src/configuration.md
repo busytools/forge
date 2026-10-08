@@ -698,10 +698,12 @@ threads, the
 per-account usage cache, cached model pricing, and the `/usage` view's
 per-file token summaries.
 
-Dictation keeps three things outside the database, all machine-local
+Dictation keeps four things outside the database, all machine-local
 and never synced: each take's audio and transcripts, as plain files
 under `<app-support>/dictate-diagnostics/` - voice recordings outside
-the database - the record of verified model digests under
+the database - the read-aloud set the models page records under
+`<app-support>/dictate-read-aloud/`, which is the one corpus a bench can
+score on words that are known, the record of verified model digests under
 `<app-support>/dictate-digests/`, which is what lets a boot over
 unchanged models skip re-hashing them, and the last fetched model
 catalogue under `<app-support>/dictate-catalogue/`, which is what lets

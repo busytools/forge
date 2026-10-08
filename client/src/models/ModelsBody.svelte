@@ -79,6 +79,7 @@
     onrecorddelete,
     recorder = null,
     recordingLine = null,
+    recordStopped = false,
     onbenchdelete,
     onupdate,
     updated = null,
@@ -112,6 +113,9 @@
     /** This side's own line about the recording - a refused microphone, a
      * keep that never reached the socket. */
     recordingLine?: string | null;
+    /** This side just stopped the recording, and the core's read has not
+     * caught up yet: the card is ours rather than another client's. */
+    recordStopped?: boolean;
     onbenchdelete: (result: BenchResult) => void;
     onupdate: (variant: string) => void;
     updated?: { file: string; role: ModelRole } | null;
@@ -187,8 +191,18 @@
    * press, because a reader should not have to run a check to learn there is
    * one. */
   const roleNews = $derived.by(() => {
+    // **"Up to date" is a claim about a feed that answered.** A check that
+    // was never run, one that could not reach the feed, and a state this
+    // client cannot read all leave `updates` empty, and reading that as
+    // "nothing to propose" is the page saying fresh about a feed nothing
+    // read.
+    const answered = wire.check.state === 'fresh' || wire.check.state === 'checking';
     const proposed = wire.updates.some((update) => recommendation(update) !== null);
-    const transcribing = proposed ? 'transcribing has an update' : 'transcribing is up to date';
+    const transcribing = !answered
+      ? 'the feed has not answered, so what transcribing could take is not known'
+      : proposed
+        ? 'transcribing has an update'
+        : 'transcribing is up to date';
     if (cleanupPick === null) {
       return `${transcribing} \u{b7} cleanup has no pick yet`;
     }
@@ -442,8 +456,9 @@
       {/each}
       {#if wire.models_dir !== null}
         <p class="note">
-          files live in <code>{wire.models_dir}</code> &middot; a download is checked against the feed's
-          own byte length before any load; these files publish no digest
+          files live in <code>{wire.models_dir}</code> &middot; a download is checked against what its
+          entry declares: the byte length always, and the sha256 a cleanup feed's blobs publish - the
+          speech feed's files publish none, so those are checked by length and by the load
         </p>
       {/if}
     {/if}
@@ -577,9 +592,10 @@
             <span class="detail">{@render facts(updateFacts(update, proposal.row))}</span>
             <span class="detail">
               Proposed because it beats the model in use on both of the feed's own measurements -
-              fewer errors on its English test set, and a faster realtime factor on an m4-max - and
-              its licence is not marked non-commercial. Taking it downloads it here if it is not
-              already, and loads it as the {roleWord(update.role)} model.
+              fewer errors on its English test set, and a faster realtime factor on an m4-max.
+              Taking it downloads it here if it is not already, and loads it as the
+              {roleWord(update.role)} model. Its licence is a fact on the row above rather than a filter:
+              what runs here is this machine's own.
             </span>
           </div>
         {:else}
@@ -639,10 +655,11 @@
           </div>
         </GroupFold>
       {/each}
-      {#if shown.length === 0}
+      {#if shown.length === 0 && wire.enabled}
         <!-- The role has no entry at all: nothing in the feed joins the model
            it runs, so there is nothing this page could compare. The row's own
-           source line says `not in the feed` for that model already. -->
+           source line says `not in the feed` for that model already. An off
+           forge has no feed to have said anything either way. -->
         <p class="note">
           nothing to compare for the {roleWord(shownRole)} role &middot; the model in use has no measured
           rows in the feed
@@ -786,7 +803,11 @@
               {/each}
             </span>
           {:else}
-            <span class="detail">Another client is recording it.</span>
+            <span class="detail">
+              {recordStopped
+                ? 'This side stopped it, and the set is being written.'
+                : 'Another client is recording it.'}
+            </span>
           {/if}
           <span class="detail">
             Read the passage below aloud - the recording becomes the read-aloud set, the one corpus
@@ -795,6 +816,14 @@
           <span class="detail passage">{wire.read_aloud.passage}</span>
           {#if recordingLine !== null}<span class="detail bad">{recordingLine}</span>{/if}
         </div>
+      {:else if wire.read_aloud.unknown}
+        <!-- A set this client cannot read is not an empty one: the record
+             control over it would offer to make a first recording on a
+             machine that may have plenty. -->
+        <p class="note">
+          the read-aloud set is one this client cannot read &middot; this client is older than the
+          forge serving it
+        </p>
       {:else if wire.read_aloud.recordings.length === 0}
         <!-- The same card the recording draws, so the empty state and the
              running one share an edge: a centred box around a passage puts

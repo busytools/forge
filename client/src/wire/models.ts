@@ -203,6 +203,10 @@ export interface ReadAloudState {
   error: string | null;
   passage: string;
   terms: string[];
+  /** The field was absent where it entered: a server older than this client
+   * rather than a machine with no set. The card says so instead of offering
+   * a record control over a set it cannot read. */
+  unknown: boolean;
 }
 
 /**
@@ -393,6 +397,7 @@ function readAloudFrom(value: ReadAloudState | undefined): ReadAloudState {
     error: null,
     passage: '',
     terms: [],
+    unknown: true,
   };
   if (value === undefined || !Array.isArray(value.recordings)) return empty;
   return {
@@ -403,6 +408,7 @@ function readAloudFrom(value: ReadAloudState | undefined): ReadAloudState {
     error: typeof value.error === 'string' ? value.error : null,
     passage: typeof value.passage === 'string' ? value.passage : '',
     terms: Array.isArray(value.terms) ? value.terms.filter((t) => typeof t === 'string') : [],
+    unknown: false,
   };
 }
 

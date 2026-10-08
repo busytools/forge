@@ -549,9 +549,10 @@ describe('the models page as it draws', () => {
 
   /**
    * **A failed download says why, in the core's words, and nothing calls a
-   * downloaded file verified.** These files publish no digest, so the check
-   * was the feed's own byte length - the page must not upgrade that into a
-   * claim nobody can back.
+   * downloaded file verified.** The note says what is actually checked: the
+   * entry's byte length for every file, a digest for the ones whose source
+   * publishes one - the page must not upgrade that into a claim nobody can
+   * back.
    */
   it("draws a failed download in the core's words without claiming a verification", () => {
     const host = open({
@@ -566,7 +567,10 @@ describe('the models page as it draws', () => {
     expect(host.textContent).toContain('the download did not finish');
     expect(host.textContent).toContain('is 5 bytes, expected 6');
     expect(host.textContent?.toLowerCase()).not.toContain('verified');
-    expect(host.textContent).toContain('publish no digest');
+    // Both halves of the rule, because the cleanup feed's files DO publish
+    // one and a note that said otherwise would be false about them.
+    expect(host.textContent).toContain('publish none');
+    expect(host.textContent).toContain('sha256');
   });
 
   /**

@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Command } from '../protocol';
   import type { Connection } from '../socket';
+  import { onDestroy } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
   import type {
     BenchResult,
@@ -349,17 +350,44 @@
   /** A line for the card: this side's own failure - a refused microphone, a
    * keep that never reached the socket. */
   let recordingLine = $state<string | null>(null);
+  /** The microphone is opening: a second press waits for this one. */
+  let opening = $state(false);
+  /** Whether the stop this side just made is still the reason the core says
+   * a recording is running - the card must not read that as somebody else's
+   * until the read has caught up. */
+  let recordStopped = $state(false);
+
+  $effect(() => {
+    if (read.wire?.read_aloud.recording === false) recordStopped = false;
+  });
+
+  // **Leaving the page releases the microphone.** The socket survives a
+  // client-side route change, so a recording left running would hold the
+  // input with no page drawing it - and coming back would find a card that
+  // says a recording is on with no control to stop it.
+  onDestroy(() => {
+    recorder?.stop(false);
+    recorder = null;
+  });
 
   async function startRecording(): Promise<void> {
     const open = connection;
-    if (open === null || recorder !== null) return;
+    // **A second press while the microphone is opening is not a second
+    // recording.** `begin` is async, so the guard has to be set before the
+    // first await or two rapid presses both pass it.
+    if (open === null || recorder !== null || opening) return;
+    opening = true;
     refusal = null;
     recordingLine = null;
-    recorder = await SetRecorder.begin({
-      connection: open,
-      onLine: (line) => (recordingLine = line),
-      onEnded: () => (recorder = null),
-    });
+    try {
+      recorder = await SetRecorder.begin({
+        connection: open,
+        onLine: (line) => (recordingLine = line),
+        onEnded: () => (recorder = null),
+      });
+    } finally {
+      opening = false;
+    }
     if (recorder !== null) open.refresh('dictate_models');
   }
 
@@ -370,6 +398,7 @@
   function recordStop(keep: boolean): void {
     const running = recorder;
     recorder = null;
+    recordStopped = true;
     running?.stop(keep);
   }
 
@@ -410,6 +439,7 @@
     onrecorddelete={recordDelete}
     {recorder}
     {recordingLine}
+    {recordStopped}
     onbenchdelete={benchDelete}
     onupdate={updateTo}
     {updated}

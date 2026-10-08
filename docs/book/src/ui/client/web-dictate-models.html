@@ -224,6 +224,51 @@
     .models .cand { flex-wrap: wrap; }
     .models .cand .col { flex-basis: 100%; }
   }
+
+  /* **The whole row is the selector.** The hit target is an overlay rather
+     than the card itself, because the card carries controls of its own and a
+     button inside a button is not HTML; the row's own controls sit above it. */
+  .models .model { position: relative; }
+  .models .pick { position: absolute; inset: 0; width: 100%; border: 0; padding: 0;
+    background: none; border-radius: var(--r); cursor: pointer; }
+  .models .pick:hover { background: rgba(27,33,48,.45); }
+  .models .pick:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .models .model.shown { border-color: rgba(244,118,0,.45); }
+  .models .side { position: relative; z-index: 2; }
+
+  /* One recording's row: the length as its own column, the facts beside it. */
+  .models .rec { display: flex; align-items: center; gap: 14px; padding: 9px 0 9px 12px;
+    flex: 1 1 auto; min-width: 0; }
+  .models .rec .nm { font-family: var(--mono); font-size: var(--fs-data); color: var(--text);
+    flex: 0 0 42px; }
+  .models .rec .facts { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+    flex: 1 1 auto; min-width: 0; }
+  .models .rec .facts b { color: var(--muted); font-weight: 500; }
+  /* A candidate's own runs hang under it, and the group's hairline comes
+     after its last run rather than between a name and its own numbers. */
+  .models .list li.run { display: block; margin-left: 16px; padding: 0 12px 9px 10px;
+    border-left: 2px solid var(--line); border-bottom: 0;
+    font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+  .models .list li.run:not(:has(+ li.run)) { border-bottom: 1px solid var(--line); }
+  .models .list li:has(+ li.run) { border-bottom: 0; }
+  /* The bench list's own row: a name and its role, controls beside it. */
+  .models .bench-row { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0;
+    padding: 9px 0 9px 12px; }
+  .models .bench-row .nm { flex: 1 1 auto; }
+  .models .bench-row .col { font-family: var(--mono); font-size: var(--fs-label);
+    color: var(--dim); white-space: nowrap; }
+  /* The doors: a heading that carries its count, so a shut one is never an
+     empty one. */
+  details.gfold { margin-top: 10px; }
+  details.gfold > summary { list-style: none; cursor: pointer; display: flex;
+    align-items: center; gap: 8px; padding: 12px 8px 4px; }
+  details.gfold > summary::-webkit-details-marker { display: none; }
+  details.gfold > summary .gh { font-size: var(--fs-label); font-weight: 700;
+    letter-spacing: .12em; text-transform: uppercase; color: var(--dim); }
+  details.gfold > summary .cn { margin-left: auto; font-family: var(--mono);
+    font-size: var(--fs-data); letter-spacing: 0; color: var(--dim); }
+  details.gfold > summary .arw { color: var(--dim); font-size: var(--fs-data); }
+  details.gfold[open] > summary .arw { color: var(--accent); }
 </style>
 </head>
 <body>
@@ -235,7 +280,8 @@
   controls that bring a candidate onto the machine and make it the one dictation runs. One
   read of <span class="mono">Subject::DictateModels</span> fills all of it; a check landing, the
   models finishing their load, and a download or activation landing are the updates that move it.
-  The benchmark section's run is a separate piece of work, so this page ends there.</p>
+  The benchmark section's own runs - the takes, the read-aloud set, and the one press that
+  scores the picks - are on the same read.</p>
 
   <h2>The page</h2>
   <div class="tile">
@@ -256,7 +302,12 @@
       <section class="block">
         <h2 class="hd4">In use <span class="why">what dictation runs on this machine today</span></h2>
 
-        <div class="model">
+        <!-- **The whole row is the selector**: the overlay button takes the
+             press anywhere on the card, and the row's own control sits above
+             it rather than inside it, because a button inside a button is
+             not HTML. -->
+        <div class="model shown">
+          <button class="pick" type="button" aria-pressed="true" aria-label="show the transcribing updates" title="show the transcribing updates"></button>
           <span class="role">transcribing</span>
           <div class="facts">
             <div class="nm">cohere-transcribe-03-2026-Q4_K_M.gguf</div>
@@ -268,6 +319,7 @@
         </div>
 
         <div class="model">
+          <button class="pick" type="button" aria-pressed="false" aria-label="show the cleanup updates" title="show the cleanup updates"></button>
           <span class="role">cleanup</span>
           <div class="facts">
             <div class="nm">s1-mini-f16.gguf</div>
@@ -278,7 +330,7 @@
           <div class="side"><span class="chip"><span class="dot ok"></span>loaded</span></div>
         </div>
 
-        <p class="note">files live in <code>~/Library/Caches/forge-dictate</code> &middot; a download is checked against the feed's own byte length before any load; these files publish no digest</p>
+        <p class="note">files live in <code>~/Library/Caches/forge-dictate</code> &middot; a download is checked against what its entry declares: the byte length always, and the sha256 a cleanup feed's blobs publish - the speech feed's files publish none, so those are checked by length and by the load</p>
       </section>
 
       <section class="block">
@@ -299,9 +351,9 @@
           <span class="t">Granite Speech 5.0 470M TurboCTC</span>
           <span class="when">replaces the transcribing model</span>
           <span class="spacer"></span>
-          <button class="chip" type="button">use for transcribing</button>
+          <button class="chip" type="button">Update to this model</button>
           <span class="detail">473M &middot; Q4_K_M 279 MB &middot; <b>388.8&times; vs 72.9&times;</b> &middot; FLEURS-en 4.61 vs 5.08 &middot; Apache-2.0 &middot; English only, offline</span>
-          <span class="detail">Proposed because it beats the model in use on both of the feed's own measurements - fewer errors on its English test set, and a faster realtime factor on an m4-max - and its licence is not marked non-commercial. Taking it downloads it here if it is not already, and loads it as the transcribing model.</span>
+          <span class="detail">Proposed because it beats the model in use on both of the feed's own measurements - fewer errors on its English test set, and a faster realtime factor on an m4-max. Taking it downloads it here if it is not already, and loads it as the transcribing model. Its licence is a fact on the row above rather than a filter: what runs here is this machine's own.</span>
         </div>
       </section>
 
@@ -329,11 +381,82 @@
       </section>
 
       <section class="block">
-        <h2 class="hd4">Benchmark <span class="why">score a model on your own recordings</span></h2>
-        <div class="empty">
-          <p class="t">the benchmark is not built yet</p>
-          <p class="d">It will score each candidate on the takes forge has already recorded here, plus a read-aloud set - term accuracy first, speed second - and that score is what decides an update. Until it lands, every number on this page is the feed's own, measured on an m4 max and not on your machine.</p>
+        <h2 class="hd4">Benchmark <span class="why">score a model on this machine's own recordings</span></h2>
+
+        <p class="note">fixtures &middot; the last run scored 42 takes &middot; 1 read-aloud recording</p>
+
+        <p class="note">the read-aloud set &middot; every recording is scored against the one passage on 6 known terms &middot; a run over them reads term accuracy and word error, where the takes read agreement</p>
+        <ul class="list" aria-label="Read-aloud recordings">
+          <li>
+            <span class="rec"><span class="nm">0:41</span><span class="facts"><b>1 MB</b> &middot; sha 980227df &middot; recorded 06:04:23</span></span>
+            <button class="chip" type="button">delete</button>
+          </li>
+        </ul>
+        <button class="chip add" type="button">record another</button>
+
+        <!-- One press, priced before it spends: what the sweep will run, what
+             it costs, and which corpus it scores on. -->
+        <div class="status" style="margin-top:12px">
+          <span class="dot off"></span>
+          <span class="t">select the best models, and score them here</span>
+          <span class="spacer"></span>
+          <button class="chip" type="button">run the benchmark</button>
+          <span class="detail">the feed's transcribing pick + the 3 most-downloaded cleanup candidates of 18</span>
+          <span class="detail">up to 5 runs over your read-aloud set &middot; about 528 MB to download &middot; the last run over your read-aloud set took 2m 40s &middot; a run already measured on that corpus is kept, not repeated</span>
         </div>
+
+        <!-- The verdicts, one per role: what read best, whether it is what
+             runs, the scope in the same words, and the switch. -->
+        <div class="status">
+          <span class="dot ok"></span>
+          <span class="t">the transcribing model you run read best of the 2 scored</span>
+          <span class="when">transcribing</span>
+          <span class="detail">the feed's own pick, scored on your read-aloud set, 2 clips</span>
+          <span class="detail"><b>69.2&times; realtime</b> &middot; term accuracy 88% &middot; WER 6.1% &middot; 2 clips &middot; 41s of audio</span>
+        </div>
+        <div class="status warn">
+          <span class="dot warn"></span>
+          <span class="t">CeluneNorm-0.6B-v2.0-ctx2048 read better than the cleanup model you run</span>
+          <span class="when">cleanup</span>
+          <span class="spacer"></span>
+          <button class="chip" type="button">switch to it</button>
+          <span class="detail">best of the 3 most-downloaded cleanup candidates, scored on your read-aloud set, 2 clips &middot; 6 more candidates were not tried</span>
+          <span class="detail"><b>74.3&times; realtime</b> &middot; term accuracy 94% &middot; WER 4.2% &middot; 2 clips &middot; 41s of audio</span>
+          <span class="detail">what you run, s1-mini-f16.gguf: 69.2&times; realtime &middot; term accuracy 88% &middot; WER 6.1% &middot; 2 clips &middot; 41s of audio</span>
+          <span class="detail">switching downloads 396 MB again - the sweep took the file back when the verdict came in</span>
+        </div>
+
+        <!-- The doors: what a run measured, and what can be run by hand.
+             Both carry their count, so a shut one is never an empty one. -->
+        <details class="gfold" open>
+          <summary><span class="gh">every run scored here</span><span class="cn">5</span><span class="arw">&#8250;</span></summary>
+          <div class="status">
+            <span class="dot ok"></span>
+            <span class="t">CeluneNorm-0.6B-v2.0-ctx2048.Q4_K_M.gguf</span>
+            <span class="when">the read-aloud passage</span>
+            <span class="spacer"></span>
+            <span class="when">measured 06:08</span>
+            <button class="chip" type="button">delete</button>
+            <span class="detail"><b>74.3&times; realtime</b> &middot; term accuracy 94% &middot; WER 4.2% &middot; 2 clips &middot; 41s of audio</span>
+            <span class="detail">ahead of the model in use, which read 88% of the passage's terms at 69.2&times;</span>
+          </div>
+        </details>
+
+        <details class="gfold">
+          <summary><span class="gh">models a bench can run</span><span class="cn">4</span><span class="arw">&#8250;</span></summary>
+          <ul class="list" aria-label="Models a bench can run">
+            <li>
+              <span class="bench-row"><span class="nm">cohere-transcribe-03-2026-Q4_K_M.gguf</span><span class="col">transcribing</span><span class="chip">in use</span></span>
+              <button class="chip" type="button">bench it</button>
+              <button class="chip" type="button">score the read-aloud</button>
+            </li>
+            <li>
+              <span class="bench-row"><span class="nm">CeluneNorm-0.6B-v2.0-ctx2048.Q4_K_M.gguf</span><span class="col">cleanup</span></span>
+              <button class="chip" type="button">bench it</button>
+              <button class="chip" type="button">remove</button>
+            </li>
+          </ul>
+        </details>
       </section>
     </main>
   </div>
@@ -518,7 +641,7 @@
       <p class="note">size, speed and error are the catalogue's own m4-max measurements</p>
       <p class="note">no entry matches <code>wav2vec</code> &middot; try a family name</p>
     </div>
-    <div class="tnote">The search is the client's and follows the box: the whole feed arrives with the read, so a query filters what is here and nothing is asked of the server. Each row is a link to the entry's own document, in the tree the server fetches from, with its marker drawn at rest - and its control beside the link, never inside it. Nothing is filtered out for the reader - a non-commercial variant is listed and only ever excluded from a proposal.</div>
+    <div class="tnote">The search is the client's and follows the box: the whole feed arrives with the read, so a query filters what is here and nothing is asked of the server. Each row is a link to the entry's own document, in the tree the server fetches from, with its marker drawn at rest - and its control beside the link, never inside it. Nothing is filtered out for the reader - a non-commercial variant is listed and proposed like any other, with its licence drawn on the row, because what runs here is this machine's own.</div>
   </div>
 
 </div>
