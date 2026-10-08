@@ -8,7 +8,7 @@ import type { AddressInfo, RawData, WebSocket } from 'ws';
 import { DEFAULT_ADDRESS } from '../connect/attempt';
 import { rememberAddress } from '../connect/remembered';
 import { homeWire } from '../dev/fixture.data';
-import { MIN_PROTOCOL, PROTOCOL_VERSION } from '../protocol';
+import { PROTOCOL_VERSION } from '../protocol';
 import { closeSeat, closingSeat } from '../session/close';
 import type { Connection } from '../socket';
 import { fontStack } from '../theme';
@@ -328,24 +328,28 @@ describe('the shell at launch', () => {
 
 describe('a forge that is not the protocol this client speaks', () => {
   /**
-   * The floor, seen from the shell: a server one step back is READ rather
-   * than refused, and the degradation is never silent - which build is
-   * behind, and what to run, are on screen above the page.
+   * A version difference is never silent and never a gate: which build is
+   * behind, and what to run, are on screen above the live page.
    */
-  it('runs against a forge one step back and names it', async () => {
-    const forge = await stubForge({ mark: null, theme: null, font: null }, 'now', MIN_PROTOCOL);
+  it('runs against a forge a version behind and names it', async () => {
+    const forge = await stubForge(
+      { mark: null, theme: null, font: null },
+      'now',
+      PROTOCOL_VERSION - 1,
+    );
     forges.push(forge);
     await openAt('/', forge.address);
     await crossed();
 
-    expect(location.pathname, 'a forge one step back did not land on the home').toBe('/');
+    expect(location.pathname, 'a forge a version behind did not land on the home').toBe('/');
     const said = drawn();
-    expect(said, 'the skew named no protocol').toContain(`protocol ${MIN_PROTOCOL}`);
+    expect(said, 'the skew named no protocol').toContain(`protocol ${PROTOCOL_VERSION - 1}`);
     expect(said, 'the skew named no way out').toContain('just install');
-    // The home rendered BEHIND the notice: a refused floor draws the same
-    // sentence, so the text alone cannot tell one from the other - the page
-    // it was drawn over can, and this is the header only that page draws.
-    expect(said, 'the forge was refused rather than read').toContain(`socket v${PROTOCOL_VERSION}`);
+    // The home rendered BEHIND the notice: this is the header only that
+    // page draws.
+    expect(said, 'the home was not drawn behind the notice').toContain(
+      `socket v${PROTOCOL_VERSION}`,
+    );
   });
 
   /**
@@ -355,7 +359,11 @@ describe('a forge that is not the protocol this client speaks', () => {
    * the chat's own).
    */
   it('draws the skew in the rail footer on a session route', async () => {
-    const forge = await stubForge({ mark: null, theme: null, font: null }, 'now', MIN_PROTOCOL);
+    const forge = await stubForge(
+      { mark: null, theme: null, font: null },
+      'now',
+      PROTOCOL_VERSION - 1,
+    );
     forges.push(forge);
     await openAt('/session/TestOrg/proj/w1', forge.address);
     await crossed();
@@ -379,7 +387,11 @@ describe('a forge that is not the protocol this client speaks', () => {
    * above it.
    */
   it('draws the skew once on the door', async () => {
-    const forge = await stubForge({ mark: null, theme: null, font: null }, 'now', MIN_PROTOCOL);
+    const forge = await stubForge(
+      { mark: null, theme: null, font: null },
+      'now',
+      PROTOCOL_VERSION - 1,
+    );
     forges.push(forge);
     await openAt('/connect', forge.address);
     await crossed();
@@ -388,9 +400,7 @@ describe('a forge that is not the protocol this client speaks', () => {
     const said = drawn();
     expect(said).toContain('just install');
     expect(said.split('just install').length - 1, 'the skew was drawn twice on one screen').toBe(1);
-    // Drawn as the NOTICE and not as a failure: the two carry the same
-    // sentence, so the door's own mark is what tells a read forge from a
-    // refused one.
+    // Drawn as the NOTICE and not as a failure.
     expect(document.querySelector('.note'), 'the door drew no notice').not.toBeNull();
     expect(
       document.querySelector('.no'),
@@ -399,19 +409,22 @@ describe('a forge that is not the protocol this client speaks', () => {
   });
 
   /**
-   * A connection that STOPS while the door is up is still a refusal, and the
-   * door must not turn it into the milder notice: the socket is not coming
-   * back, so a reconnect line under it would be a claim nothing is keeping.
+   * A later greeting from far off the client's protocol redraws the notice
+   * on whatever page is up, the door included.
    */
-  it('keeps a refusal a refusal when the door is the page', async () => {
-    const forge = await stubForge({ mark: null, theme: null, font: null }, 'now', MIN_PROTOCOL);
+  it('redraws the notice on the door when a later greeting is far off', async () => {
+    const forge = await stubForge(
+      { mark: null, theme: null, font: null },
+      'now',
+      PROTOCOL_VERSION - 1,
+    );
     forges.push(forge);
     await openAt('/', forge.address);
     await crossed();
-    expect(location.pathname, 'the floor did not land on the home').toBe('/');
+    expect(location.pathname, 'the skewed forge did not land on the home').toBe('/');
 
-    // A later greeting from outside the range stops the connection, as a
-    // forge swapped underneath a running client does.
+    // A later greeting with a different protocol, as a forge swapped
+    // underneath a running client sends.
     forge.greet(PROTOCOL_VERSION + 1);
     await crossed();
 
@@ -420,29 +433,26 @@ describe('a forge that is not the protocol this client speaks', () => {
     await crossed();
 
     const said = drawn();
-    expect(said, 'the refusal was not named on the door').toContain(
+    expect(said, 'the notice was not named on the door').toContain(
       `protocol ${PROTOCOL_VERSION + 1}`,
     );
-    expect(said, 'the door claimed a reconnect that nothing is doing').not.toContain(
-      'Reconnecting',
-    );
-    expect(said.split('just client-release').length - 1, 'the refusal was drawn twice').toBe(1);
+    expect(said.split('just client-release').length - 1, 'the notice was drawn twice').toBe(1);
   });
 
   /**
-   * Below the floor the launch is refused, and the door it lands on carries
-   * the refusal: both halves and the command, rather than a number.
+   * A forge far from this client's own connects like any other; the notice
+   * carries both halves and the command, rather than a number.
    */
-  it('stops on a forge below the floor, with the halves and the command shown', async () => {
-    const forge = await stubForge({ mark: null, theme: null, font: null }, 'now', MIN_PROTOCOL - 1);
+  it('carries a forge below any former floor, with the halves and the command shown', async () => {
+    const forge = await stubForge({ mark: null, theme: null, font: null }, 'now', 3);
     forges.push(forge);
     await openAt('/', forge.address);
     await crossed();
 
     const said = drawn();
-    expect(said).toContain(`protocol ${MIN_PROTOCOL - 1}`);
+    expect(said).toContain('protocol 3');
     expect(said).toContain(`protocol ${PROTOCOL_VERSION}`);
-    expect(said, 'the refusal named no way out').toContain('just install');
+    expect(said).toContain('just install');
   });
 });
 

@@ -9,7 +9,6 @@
  */
 
 import { hostTheBrowser } from '../browser/host';
-import { readableProtocol, skewMessage, skewOf, type Skew } from '../protocol';
 import { connect, type Connection } from '../socket';
 import { DEFAULT_SERVER_PORT, settingsFrom, type ClientSettings } from '../wire/types';
 import { rememberAddress } from './remembered';
@@ -41,7 +40,7 @@ export type Attempt =
    * spelling correction. `version` is a forge that answered and speaks a
    * protocol this client does not, which nothing but an upgrade fixes.
    */
-  | { ok: false; kind: 'address' | 'unreachable' | 'version'; why: string };
+  | { ok: false; kind: 'address' | 'unreachable'; why: string };
 
 /**
  * The socket URL an address names.
@@ -173,7 +172,7 @@ export async function submitAttempt(
 function greeting(
   connection: Connection,
   handshakeMs: number,
-): Promise<{ settings: ClientSettings; version: number; skew: Skew | null }> {
+): Promise<{ settings: ClientSettings }> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       stop();
@@ -183,11 +182,7 @@ function greeting(
       if (message.kind !== 'greeting') return;
       clearTimeout(timer);
       stop();
-      resolve({
-        settings: settingsFrom(message.settings),
-        version: message.version,
-        skew: skewOf(message),
-      });
+      resolve({ settings: settingsFrom(message.settings) });
     });
   });
 }
@@ -212,16 +207,7 @@ export async function connectTo(
   // their way to the Rust side.
   hostTheBrowser(connection);
   try {
-    const { settings, version, skew } = await greeting(connection, handshakeMs);
-    // The protocol's only mismatch detector, and the range is the client's
-    // own: one step back is read - the connection already carries the skew
-    // for whatever draws it - and anything outside the range is refused with
-    // the way out named. A `why` of two protocol numbers alone names no
-    // build and no way out.
-    if (skew !== null && !readableProtocol(version)) {
-      connection.close();
-      return { ok: false, kind: 'version', why: skewMessage(skew) };
-    }
+    const { settings } = await greeting(connection, handshakeMs);
     return { ok: true, address: input.trim(), settings, connection };
   } catch (error) {
     // Nothing is going to draw through this one, and leaving it open would

@@ -201,17 +201,10 @@
    * The one line a protocol skew draws here, or `null` when this surface
    * draws none.
    *
-   * A REFUSED connection is drawn on every route: the connection stopped,
-   * and falling through to the reconnect line under it would claim a retry
-   * that nothing is making. The notice a tolerated skew draws stands down on
-   * the door, which draws its own copy in its own column rather than having
-   * a second identical strip stacked above it.
+   * The notice stands down on the door, which draws its own copy in its own
+   * column rather than having a second identical strip stacked above it.
    */
-  const skewLine = $derived(
-    skew === null || (connectionStatus !== 'mismatched' && route.name === 'connect')
-      ? null
-      : skewMessage(skew),
-  );
+  const skewLine = $derived(skew === null || route.name === 'connect' ? null : skewMessage(skew));
 
   /**
    * The same notice, for a session page: it draws the line in its rail
@@ -224,10 +217,8 @@
     route.name !== 'session' ? null : (skewLine ?? (stale ? staleLine : null)),
   );
 
-  /** The notice the door draws for itself: a skew being read, never a refusal. */
-  const doorNotice = $derived(
-    skew === null || connectionStatus === 'mismatched' ? null : skewMessage(skew),
-  );
+  /** The notice the door draws for itself. */
+  const doorNotice = $derived(skew === null ? null : skewMessage(skew));
 
   function go(next: Route) {
     route = next;
@@ -295,9 +286,9 @@
   </main>
 {:else}
   {#if skewLine && sessionNotice === null}
-    <!-- A refusal is an alert, because the connection stopped; a skew that
-         is being read is a status, because the page behind it is live. -->
-    <p class="stale" role={connectionStatus === 'mismatched' ? 'alert' : 'status'}>{skewLine}</p>
+    <!-- A status, because the page behind it is live: the notice reads the
+         two stamps, it does not stop anything. -->
+    <p class="stale" role="status">{skewLine}</p>
   {:else if stale && sessionNotice === null}
     <!-- A live region rather than a landmark: the pages below each carry the
          page's own `main`, and a second one would be a second page. -->

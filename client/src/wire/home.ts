@@ -262,9 +262,8 @@ export function homeFrom(data: HomeWire): HomeWire {
       ...agent,
       lifecycle: narrow(agent.lifecycle, LIFECYCLES, 'Idle'),
       pending: agent.pending === null ? null : narrow(agent.pending, PENDING, 'permission'),
-      // A server old enough not to state the failure - the floor included -
-      // leaves the field out, and it must read as `null` rather than as a
-      // failure.
+      // A server old enough not to state the failure leaves the field out,
+      // and it must read as `null` rather than as a failure.
       failed_turn: agent.failed_turn ?? null,
       // The gate inside the seat's tree, which is the one member of it that is
       // a union of literals: `WorkState` is a struct, so there is nothing else

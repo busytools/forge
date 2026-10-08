@@ -97,3 +97,32 @@ describe('the ask as the composer reads it', () => {
     expect(held.request.text).toBe('Deploy finished on staging.');
   });
 });
+
+describe('the v6 hand-off read', () => {
+  /**
+   * **The old field is READ, not dropped.** v6 called the hand-off's profile
+   * name `context` (the v7 bump renamed the field and the tool argument), and
+   * a v1.1.0 server is exactly what a mixed install sends: dropping the old
+   * name would drive the SHARED profile while the model asked for a named
+   * one, which is a silent wrong answer rather than a skew.
+   */
+  it('reads a v6 hand-off context as the profile, and a v7 profile as itself', () => {
+    const v6 = askFrom({
+      kind: 'browser_hand_off',
+      request: { id: 'h1', reason: 'solve the CAPTCHA', context: 'job-hunt' },
+    });
+    expect(v6).toEqual({
+      kind: 'browser_hand_off',
+      request: { id: 'h1', reason: 'solve the CAPTCHA', profile: 'job-hunt' },
+    });
+
+    const v7 = askFrom({
+      kind: 'browser_hand_off',
+      request: { id: 'h2', reason: 'solve the CAPTCHA', profile: 'job-hunt' },
+    });
+    expect(v7).toEqual({
+      kind: 'browser_hand_off',
+      request: { id: 'h2', reason: 'solve the CAPTCHA', profile: 'job-hunt' },
+    });
+  });
+});

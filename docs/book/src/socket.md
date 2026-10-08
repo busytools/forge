@@ -24,37 +24,27 @@ The first message a client receives is the greeting, before it has asked
 for anything:
 
 ```json
-{"kind": "greeting", "version": 6, "forge_version": "1.0.115 · abc1234", "forge_version_short": "1.0.115+abc1234", "settings": {"mark": null, "theme": null, "font": null, "dictate": {"styling": "semi_formal", "structure": "prose", "context": "general"}}}
+{"kind": "greeting", "version": 7, "forge_version": "1.0.115 · abc1234", "forge_version_short": "1.0.115+abc1234", "settings": {"mark": null, "theme": null, "font": null, "dictate": {"styling": "semi_formal", "structure": "prose", "context": "general"}}}
 ```
 
 `version` is the protocol the server speaks. It is fixed rather than
 negotiated, because the server changes far more slowly than a client's
-visuals do: a client reads a range of them and nothing outside it, and a
-mismatch fails plainly rather than silently. **The check is the client's**:
-the greeting carries the server's version, and a client that does not read
-it says so and closes - the server cannot refuse a client that is behind,
-because nothing a client sends carries the version it speaks.
-
-**A client reads a floor, not one exact version.** A server one step back
-is read rather than refused, because a client with no channel to its own
-forge is worse off than one reading a shape whose read its own tests pin.
-The floor is a literal in the client rather than "one below its own", so a
-bump keeps it where it is until the new step's read coverage lands; below
-the floor a client refuses. **Nothing is negotiated in either direction**:
-the server gates nothing, and the tolerance is a range the client carries.
+visuals do. **Nothing is gated on it**: the client records the server's
+number beside its own, and a difference is a fact the surface draws - the
+rail footer carries both halves' build and socket numbers, and a mismatch
+raises the notice beside them. Connection is never refused over a version.
+**Nothing is negotiated in either direction**: the server reads no version
+from a client, because nothing a client sends carries one.
 
 Every skew sentence says what the wire can carry. This client's build and
 the command that updates the stale half are always named. The server's
 build is named where the greeting carried it: a server ahead carries it,
-and one a step back speaks a protocol from before the field existed. A
-tolerated step is never silent: the surface that meets it draws the same
-sentence a refusal does.
+and an older one may speak a protocol from before the field existed.
 
 `forge_version` and `forge_version_short` are the build serving the
 socket, in the two forms the header draws. They ride here because the
-greeting is the only channel both halves are guaranteed to have: a client
-that refuses a protocol never receives a snapshot, so a skew that could
-name only a number would name nothing a person can act on.
+greeting is the only channel both halves are guaranteed to have, so a skew
+that could name only a number would name nothing a person can act on.
 
 `settings` is three of `forge.toml`'s `[client]` keys - `mark`, `theme` and
 `font` - which are a client's settings rather than this server's. They

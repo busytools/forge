@@ -2,26 +2,20 @@ import { readFileSync } from 'node:fs';
 
 import { describe, expect, it } from 'vitest';
 
-import {
-  CLIENT_VERSION,
-  MIN_PROTOCOL,
-  PROTOCOL_VERSION,
-  releaseOf,
-  skewMessage,
-  skewOf,
-} from './protocol';
+import { CLIENT_VERSION, PROTOCOL_VERSION, releaseOf, skewMessage, skewOf } from './protocol';
 import { DEFAULT_SETTINGS } from './wire/types';
 
 /**
  * The protocol version the server declares, read out of its source.
  *
  * The two are hand-kept and neither is generated from the other, so a drift
- * between them is a client that refuses every connection over a mismatch
- * naming neither file. Nothing else catches it: the greeting the client
- * compares against is built from this same constant, so the frames on the
- * wire carry whichever value `transport.rs` holds and agree with it by
- * construction. The one place the server's copy can be read from is its
- * source, the way `wire/fleet.test.ts` reads `live.rs`.
+ * between them is a pair whose stamps disagree - the footer draws the
+ * server's number beside this client's, and nothing generates the two from
+ * one another. Nothing else catches it: the greeting the client reads is
+ * built from this same constant, so the frames on the wire carry whichever
+ * value `transport.rs` holds and agree with it by construction. The one
+ * place the server's copy can be read from is its source, the way
+ * `wire/fleet.test.ts` reads `live.rs`.
  *
  * **The read assumes a shape, and changing it means re-checking this rather
  * than trusting a green:** the constant is still `PROTOCOL_VERSION`, still a
@@ -87,25 +81,12 @@ describe('the release the client names itself by', () => {
   });
 });
 
-describe('the floor this client tolerates', () => {
-  /**
-   * The floor is an act, not a derivation: one step back is kept only while
-   * that step's read coverage is pinned by the floor fixture, so a bump
-   * moves this deliberately or not at all. `PROTOCOL_VERSION - 1` would
-   * move it silently with every bump.
-   */
-  it('is pinned one step back, not derived from the version', () => {
-    expect(MIN_PROTOCOL).toBe(4);
-    expect(MIN_PROTOCOL).toBeLessThan(PROTOCOL_VERSION);
-  });
-});
-
 describe('the build a greeting names', () => {
   /** A greeting with the fields a skew reads, for the narrowing cases below. */
   function greeting(named: Record<string, unknown>): Parameters<typeof skewOf>[0] {
     return {
       kind: 'greeting',
-      version: MIN_PROTOCOL,
+      version: PROTOCOL_VERSION - 1,
       settings: DEFAULT_SETTINGS,
       ...named,
     } as unknown as Parameters<typeof skewOf>[0];
@@ -152,10 +133,9 @@ describe('what a skew says', () => {
   });
 
   /**
-   * Every server this client will refuse for a protocol reason predates the
-   * greeting's release fields, so the common case has no build to name -
-   * and a message that dropped the half it does know would leave the reader
-   * with nothing.
+   * An older server predates the greeting's release fields, so the common
+   * case has no build to name - and a message that dropped the half it does
+   * know would leave the reader with nothing.
    */
   it('names the half it knows when the server is too old to name its build', () => {
     expect(skewMessage({ serverProtocol: 3, serverVersion: null })).toBe(
