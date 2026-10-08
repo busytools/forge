@@ -188,8 +188,10 @@ itself - use the `browser_*` tools when your tool list carries them: \
 `browser_navigate` then `browser_snapshot` before concluding anything is \
 unreadable, and act through the snapshot rather than scraping HTML. \
 Anything only the person can do - a CAPTCHA, a sign-in, a confirmation - \
-goes through `browser_hand_off`: their screen raises the real window on \
-the page you were driving, Done lowers it, and it answers like any ask. A \
+goes through `browser_hand_off` - name the profile you drove, or the \
+shared browser is raised instead of your page: their screen raises the \
+real window on the page you were driving, Done lowers it, and it answers \
+like any ask. A \
 named `profile` is a browser of its own with its own logins, owned by the \
 session that first names it; omit it unless the work genuinely needs \
 those logins. The family drives the machine the client runs on: with no \
@@ -3221,6 +3223,13 @@ mod tests {
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains("goes through `browser_hand_off`"),
             "the hand-off moment is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "name the profile you drove, or the shared browser is raised instead of your \
+                 page"
+            ),
+            "the hand-off profile clause is pinned",
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
