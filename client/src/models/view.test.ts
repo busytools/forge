@@ -895,15 +895,15 @@ describe('the sweep', () => {
     };
     const plan = sweepPlan(wire);
     wire.results = [
-      benchResult('a-norm-a-Q4_K_M.gguf', 'cleanup', 'new', { wer: 0.08, matched: [9, 12] }),
+      benchResult('a-norm-a-Q4_K_M.gguf', 'cleanup', 'new', { matched: [9, 12] }),
       // A better run from before the corpus moved: it must not win.
-      benchResult('a-norm-a-Q4_K_M.gguf', 'cleanup', 'old', { wer: 0.01, matched: [12, 12] }),
+      benchResult('a-norm-a-Q4_K_M.gguf', 'cleanup', 'old', { matched: [12, 12] }),
       // The baseline's own run is only on the old corpus: a verdict that
       // read the plan's files without the corpus filter would compare it
       // against a run it was never measured beside.
-      benchResult('s1-mini-f16.gguf', 'cleanup', 'old', { wer: 0.12, matched: [11, 12] }),
+      benchResult('s1-mini-f16.gguf', 'cleanup', 'old', { matched: [11, 12] }),
       benchResult('granite-speech-5.0-470m-turboctc-nc-Q4_K_M.gguf', 'transcribing', 'new', {
-        wer: 0.06,
+        matched: [10, 12],
       }),
     ];
 
@@ -933,7 +933,9 @@ describe('the sweep', () => {
     const wire: DictateModelsWire = { ...modelsWire, updates: [], rows: [] };
     const plan = sweepPlan(wire);
     wire.results = [
-      benchResult('cohere-transcribe-03-2026-Q4_K_M.gguf', 'transcribing', 'now', { wer: 0.09 }),
+      benchResult('cohere-transcribe-03-2026-Q4_K_M.gguf', 'transcribing', 'now', {
+        matched: [10, 12],
+      }),
     ];
 
     const transcribing = sweepVerdicts(wire, plan).find(
@@ -956,7 +958,7 @@ describe('the sweep', () => {
     const plan = sweepPlan(wire);
     wire.results = [
       benchResult('granite-speech-5.0-470m-turboctc-nc-Q4_K_M.gguf', 'transcribing', 'now', {
-        wer: 0.06,
+        matched: [10, 12],
       }),
     ];
 
@@ -988,8 +990,10 @@ describe('the sweep', () => {
     };
     const plan = sweepPlan(wire);
     wire.results = [
-      benchResult('a-norm-a-Q4_K_M.gguf', 'cleanup', 'new', { wer: 0.14 }),
-      benchResult('s1-mini-f16.gguf', 'cleanup', 'new', { wer: 0.11 }),
+      // The run in use agrees more often: on the takes tier that is the
+      // signal, and the clock (equal here) is only the last word.
+      benchResult('a-norm-a-Q4_K_M.gguf', 'cleanup', 'new', { matched: [8, 12] }),
+      benchResult('s1-mini-f16.gguf', 'cleanup', 'new', { matched: [11, 12] }),
     ];
 
     const cleanup = sweepVerdicts(wire, plan).find((verdict) => verdict.role === 'cleanup');

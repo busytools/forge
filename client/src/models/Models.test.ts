@@ -690,7 +690,7 @@ describe('the models page as it draws', () => {
             wall_seconds: 3.4,
             xrt_wall: 45.7,
             term_accuracy: null,
-            wer: 0.036,
+            wer: null,
             matched: [9, 15],
             stages_ms: {
               model_load_ms: 398,
@@ -708,7 +708,6 @@ describe('the models page as it draws', () => {
     });
 
     expect(host.textContent).toContain('45.7\u{d7} realtime');
-    expect(host.textContent).toContain('WER 3.6%');
     expect(host.textContent).toContain('9 of 15 matched a baseline');
     expect(host.textContent).toContain('your own takes');
     expect(host.textContent).toContain('15 clips');
@@ -734,7 +733,7 @@ describe('the models page as it draws', () => {
             wall_seconds: 7.2,
             xrt_wall: 43.3,
             term_accuracy: null,
-            wer: 0.147,
+            wer: null,
             matched: [3, 30],
             stages_ms: {
               model_load_ms: 122,
@@ -817,7 +816,7 @@ describe('the models page as it draws', () => {
       facts: { quant: 'Q4_K_M', params: 600_000_000, license: 'MIT', runtime: 'llama.cpp' },
       at: '2026-10-07T02:00:00Z',
     };
-    const run = (wer: number, speed: number) => ({
+    const run = (speed: number) => ({
       target: { file: record.file, role: 'cleanup' as const, pinned: false },
       tier: 'consensus' as const,
       metrics: {
@@ -826,7 +825,7 @@ describe('the models page as it draws', () => {
         wall_seconds: 4,
         xrt_wall: speed,
         term_accuracy: null,
-        wer,
+        wer: null,
         matched: [5, 10] as [number, number],
         stages_ms: {
           model_load_ms: 100,
@@ -844,7 +843,7 @@ describe('the models page as it draws', () => {
       ...modelsWire,
       rows: [cleanupRow],
       installed: [record],
-      results: [run(0.04, 60)],
+      results: [run(60)],
     });
     const cleanup = [...host.querySelectorAll<HTMLButtonElement>('button.pick')].find((button) =>
       button.getAttribute('aria-label')?.includes('cleanup'),
@@ -857,7 +856,7 @@ describe('the models page as it draws', () => {
     expect(host.textContent, 'the candidate is installable or loadable').toContain(
       'use for cleanup',
     );
-    expect(host.textContent, 'its own run is on its row').toContain('WER 4.0%');
+    expect(host.textContent, 'its own run is on its row').toContain('5 of 10 matched a baseline');
     expect(host.textContent, 'one run is a number, not a comparison').toContain(
       'nothing here is benched twice over one corpus with words known to be true',
     );
@@ -1592,6 +1591,9 @@ describe('the models route as it draws', () => {
     // The run line names the corpus it was scored on: two runs under one
     // candidate are otherwise the same numbers about nothing in particular.
     expect(host.querySelector('li.run')?.textContent).toContain('the read-aloud passage');
+    // And it carries the numbers production puts on this tier - the error
+    // figure, which a take-scored run never has.
+    expect(host.querySelector('li.run')?.textContent).toContain('WER 7.0%');
 
     const button = [...host.querySelectorAll<HTMLButtonElement>('button')].find(
       (c) => c.textContent === 'switch to it',
