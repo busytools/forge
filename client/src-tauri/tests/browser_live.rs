@@ -445,10 +445,22 @@ async fn two_hosts_launching_at_once_produce_one_browser() {
     let b = BrowserHost::new(paths.clone());
 
     let (first, second) = tokio::join!(a.start(), b.start());
+    // **The guard BEFORE the unwraps**: a start that fails while the other
+    // launched would panic with the browser still running and nothing to
+    // reap it. The profile re-read inside the guard is what catches it when
+    // neither pid is known.
+    let guard = Launched::new(
+        first
+            .as_ref()
+            .ok()
+            .and_then(|active| active.pid)
+            .or(second.as_ref().ok().and_then(|active| active.pid)),
+        first.as_ref().ok().map_or(0, |active| active.port),
+        paths.user_data.clone(),
+    );
     let first = first.unwrap_or_else(|why| panic!("the first start must come up: {why}"));
     let second =
         second.unwrap_or_else(|why| panic!("the second start must attach, not fail: {why}"));
-    let guard = Launched::new(first.pid.or(second.pid), first.port, paths.user_data.clone());
 
     assert_eq!(
         first.port, second.port,
