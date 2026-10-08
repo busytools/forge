@@ -299,6 +299,26 @@ describe('the rail', () => {
   });
 
   /**
+   * **An ask is the seat's mark, whatever the lifecycle says.** The terminal
+   * draws its triangle from the prompt queue itself rather than from a
+   * lifecycle it has to trust, and the rail read its mark from the lifecycle
+   * alone - so a seat whose question was up while the CLI still called it idle
+   * drew no glyph, and the reader could not tell which worker was asking
+   * (#1885).
+   */
+  it('wears the ask mark on the seat that holds the question', () => {
+    for (const pending of ['question', 'permission'] as const) {
+      const asking: AgentRow = { ...lead(), lifecycle: 'Idle', pending };
+      const home = withHome({ agents: [asking] });
+      const row = railGroups(home, LEAD, 0).flatMap((group) => group.projects)[0]?.row;
+      expect(
+        row === undefined ? null : railMark(row.state),
+        `a seat holding a ${pending} drew no glyph`,
+      ).toBe('needs');
+    }
+  });
+
+  /**
    * A failed turn is the seat's own failure, and both surfaces say so from
    * one mapping: the row carries the line and the header takes the failure
    * mark. Each half had its own way to fall silent - the line through
