@@ -23,9 +23,9 @@
  *   own turn, and the three external kinds that carry something to read - a
  *   cron fire, a Slack message, a Gotify push - join the list as rows of
  *   their own kind, the same shape every other row draws;
- * - a call the terminal would draw only in the inspector - a monitor - is a
- *   row of the conversation here, the plain call row every other tool gets:
- *   the inspector this view had is gone, and rule 25 leaves no row skipped;
+ * - a monitor's call joins the run as a plain call row, where the terminal
+ *   stands its lifecycle block alone and breaks the run at it - the shape is
+ *   the divergence, and rule 25 leaves no row skipped;
  * - a compaction boundary is a row at the cut, where the terminal draws none:
  *   the count is the terminal's marker, the cut is unmarked there, and this
  *   fold's `push` ends a run of calls at it;
