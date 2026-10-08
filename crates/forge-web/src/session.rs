@@ -1044,8 +1044,9 @@ fn memory_label(bytes: u64) -> String {
     }
 }
 
-/// The monitors section. Monitors live here and not in the chat, so this
-/// is the only surface that says what a session is watching.
+/// The monitors section. A monitor's call draws in the chat as the call
+/// row it is; this section is the live watcher's surface, saying what a
+/// session is watching.
 ///
 /// Every card draws its command, and the output under it only when the
 /// record names a file. The CLI names one on the notification that ends the

@@ -1494,9 +1494,10 @@ mod tests {
     /// tool draws: it has no family of its own, so it folds under the
     /// generic row, and it does not break the run it sat inside.
     ///
-    /// The terminal draws a monitor's lifecycle block on its own and carves
-    /// it out of a collapsed run (`ui/collapse.rs`); the divergence is that
-    /// block, not a row skipped here, which is what rule 25 forbids.
+    /// The terminal breaks the run at a monitor and stands its lifecycle
+    /// block alone (`grouping`'s `is_run_breaker` reads it as a lifecycle
+    /// block); the divergence is that block, not a row skipped here, which
+    /// is what rule 25 forbids.
     #[test]
     fn a_monitor_joins_the_run_as_a_plain_call_row() {
         let monitor = assistant(vec![ContentBlock::ToolUse {
@@ -1526,6 +1527,40 @@ mod tests {
             families[1].row,
             KindRow::Family(ToolFamily::Tool),
             "under the row a name with no family of its own resolves to",
+        );
+    }
+
+    /// A monitor's call between two peer messages splits the pair: the
+    /// terminal's rule, so the two read as plain cards rather than one
+    /// messaging group, since the monitor stands in the run between them.
+    #[test]
+    fn a_monitor_between_two_peer_messages_splits_the_pair() {
+        let monitor = assistant(vec![ContentBlock::ToolUse {
+            id: "toolu_monitor".to_owned(),
+            name: "Monitor".to_owned(),
+            input: serde_json::json!({"description": "watch the deploy", "command": "tail -f log"}),
+            extras: serde_json::Map::new(),
+        }]);
+        let messages = [
+            peer_message("t-1", "steward", "IT IMPORTED. The window is lost"),
+            monitor,
+            peer_message("t-2", "planner", "picking up the migration now"),
+        ];
+
+        let units = render_units(&messages);
+
+        assert_eq!(units.len(), 3, "the pair splits around the monitor's run");
+        assert!(
+            matches!(&units[0], ChatUnit::PeerCard(card) if card.peer == "steward"),
+            "the first message is a card of its own",
+        );
+        assert!(
+            matches!(&units[1], ChatUnit::ToolGroup { .. }),
+            "with the monitor's call drawn between them",
+        );
+        assert!(
+            matches!(&units[2], ChatUnit::PeerCard(card) if card.peer == "planner"),
+            "and the second message too",
         );
     }
 

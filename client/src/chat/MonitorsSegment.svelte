@@ -7,10 +7,10 @@
    * The monitors row in the strip above the composer: the commands this
    * session is watching, and how each stands.
    *
-   * Monitors live here and not in the chat, so this row is the surface that
-   * says what a session is watching. The output under a monitor is not here:
-   * a tail is read off the machine running forge, and this client does not
-   * read the server's disk.
+   * A monitor's call draws in the chat as the call row it is; this row is
+   * the live watcher's surface, saying what a session is watching. The
+   * output under a monitor is not here: a tail is read off the machine
+   * running forge, and this client does not read the server's disk.
    */
   let open = $state(false);
   /** The segment and its list, so leaving and opening can be told apart. */
