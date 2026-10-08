@@ -180,7 +180,22 @@ it is the touch that makes you sure. A decision a systemone ask \
 produced: when it changed what you did, report it where the work is \
 reported - the task tools, when your families have them - naming the \
 decision, the choice, and its probabilities. A claim-check that \
-confirmed a claim needs only the line that says so.";
+confirmed a claim needs only the line that says so.\n\
+\n\
+To read or act on a real page - one a plain fetch cannot read (JS, \
+sign-in-walled, paginated), or where the work must happen in the page \
+itself - use the `browser_*` tools when your tool list carries them: \
+`browser_navigate` then `browser_snapshot` before concluding anything is \
+unreadable, and act through the snapshot rather than scraping HTML. \
+Anything only the person can do - a CAPTCHA, a sign-in, a confirmation - \
+goes through `browser_hand_off` - name the profile you drove, or the \
+shared browser is raised instead of your page: their screen raises the \
+real window on the page you were driving, Done lowers it, and it answers \
+like any ask. A \
+named `profile` is a browser of its own with its own logins, owned by the \
+session that first names it; omit it unless the work genuinely needs \
+those logins. The family drives the machine the client runs on: with no \
+client connected a call fails by name, so do not retry in a loop.";
 
 /// Assemble the forge system-prompt append: server line, the peers
 /// paragraph when `has_peer_tools`, the trust block, the always-on
@@ -3185,6 +3200,48 @@ mod tests {
                  them - naming the decision, the choice, and its probabilities"
             ),
             "the presentation rule is pinned",
+        );
+    }
+
+    /// The browser cues reach every session, and the names in them are the
+    /// family's own tools - pinned so a rename fails here instead of shipping
+    /// a cue that resolves to nothing. Each moment is pinned with its wording.
+    #[test]
+    fn the_conduct_block_carries_its_browser_cues() {
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("use the `browser_*` tools when your tool list carries them"),
+            "the browser family's guard and wording are pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "`browser_navigate` then `browser_snapshot` before concluding anything is \
+                 unreadable"
+            ),
+            "the read-a-page moment is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains("goes through `browser_hand_off`"),
+            "the hand-off moment is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "name the profile you drove, or the shared browser is raised instead of your \
+                 page"
+            ),
+            "the hand-off profile clause is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "named `profile` is a browser of its own with its own logins, owned by the \
+                 session that first names it"
+            ),
+            "the profile moment is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("with no client connected a call fails by name"),
+            "the no-client failure is pinned",
         );
     }
 
