@@ -13,6 +13,7 @@ use forge_primitives::tasks::Verify;
 use forge_primitives::tasks::{By, Task, TaskId, TaskStatus, TaskTransition, Waiting, WaitingKind};
 
 use crate::SessionSlot;
+use crate::protocol::RankMove;
 use crate::protocol::SessionUpdate;
 use crate::workspace::Workspace;
 
@@ -39,6 +40,18 @@ pub(crate) enum MoveError {
     NotOwner,
     /// No row carries the id.
     NotFound,
+    /// The user's verdict landed on a row that is not waiting on their
+    /// look.
+    NotWaitingVerification,
+    /// The user answered a row that is not waiting on a question.
+    NotWaitingQuestion,
+}
+
+/// Append the user's words to a row's detail, keeping what was there.
+fn append_words(task: &mut Task, words: &str) {
+    let prior = task.detail.take().unwrap_or_default();
+    task.detail =
+        Some(if prior.is_empty() { words.to_owned() } else { format!("{prior}\n{words}") });
 }
 
 impl std::fmt::Display for ClaimError {
@@ -60,6 +73,8 @@ impl std::fmt::Display for MoveError {
             }
             Self::NotOwner => write!(f, "you do not own this row"),
             Self::NotFound => write!(f, "no such row"),
+            Self::NotWaitingVerification => write!(f, "this row is not waiting on your look"),
+            Self::NotWaitingQuestion => write!(f, "this row is not waiting on a question"),
         }
     }
 }
@@ -126,6 +141,24 @@ impl Workspace {
         by: By,
         f: impl FnOnce(&mut Task),
     ) -> Result<Option<Task>, MoveError> {
+        self.move_task(project_name, id, by, true, |task| {
+            f(task);
+            Ok(())
+        })
+    }
+
+    /// The one commit path every task move runs through. `gate` is the
+    /// verify gate: it fires on a transition into `completed`, and the
+    /// user's own approval is the one move that passes it (approving IS
+    /// the verification). `f` may refuse before anything moves.
+    fn move_task(
+        &self,
+        project_name: &str,
+        id: &TaskId,
+        by: By,
+        gate: bool,
+        f: impl FnOnce(&mut Task) -> Result<(), MoveError>,
+    ) -> Result<Option<Task>, MoveError> {
         let at = SystemTime::now();
         let outcome = self.with_tasks_mut(|tasks| {
             let Some(index) =
@@ -135,9 +168,10 @@ impl Workspace {
             };
             let mut next = tasks[index].clone();
             let prior = next.status;
-            f(&mut next);
+            f(&mut next)?;
 
-            if next.status == TaskStatus::Completed
+            if gate
+                && next.status == TaskStatus::Completed
                 && effective_verify(tasks, index) == Verify::User
             {
                 next.waiting_on = Some(Waiting {
@@ -184,19 +218,17 @@ impl Workspace {
                     .filter(|t| t.project_name == project_name && doomed.contains(&t.id))
                     .cloned()
                     .collect();
-                for task in removed.iter_mut() {
+                for task in &mut removed {
                     task.archived_at = Some(at);
                 }
                 tasks.retain(|t| !(t.project_name == project_name && doomed.contains(&t.id)));
             }
 
             next.updated_at = at;
-            if !removed.is_empty() {
-                if let Some(row) = removed.iter_mut().find(|t| t.id == next.id) {
-                    *row = next.clone();
-                }
-            } else {
+            if removed.is_empty() {
                 tasks[index] = next.clone();
+            } else if let Some(row) = removed.iter_mut().find(|t| t.id == next.id) {
+                *row = next.clone();
             }
             Ok(Some((next, prior, removed)))
         })?;
@@ -227,6 +259,124 @@ impl Workspace {
     /// attempt ticks, and the claim is refused - by name - for a row a
     /// live seat holds, a row that is waiting, or a caller already
     /// working another row.
+    /// The user's approval of a row waiting on their look: the wait
+    /// clears, the verify gate is satisfied, and the row completes - a
+    /// root closing its tree like any completion.
+    pub(crate) fn approve_task(
+        &self,
+        project_name: &str,
+        id: &TaskId,
+    ) -> Result<Option<Task>, MoveError> {
+        self.move_task(project_name, id, By::User, false, |task| {
+            if task.status != TaskStatus::Waiting
+                || !task.waiting_on.as_ref().is_some_and(|wait| wait.verification)
+            {
+                return Err(MoveError::NotWaitingVerification);
+            }
+            task.waiting_on = None;
+            task.verify = Some(Verify::None);
+            task.status = TaskStatus::Completed;
+            Ok(())
+        })
+    }
+
+    /// The user sends a verified row back: it returns to its owner in
+    /// progress, the words land in the detail, and the attempt ticks.
+    pub(crate) fn send_back_task(
+        &self,
+        project_name: &str,
+        id: &TaskId,
+        words: &str,
+    ) -> Result<Option<Task>, MoveError> {
+        self.move_task(project_name, id, By::User, false, |task| {
+            if task.status != TaskStatus::Waiting
+                || !task.waiting_on.as_ref().is_some_and(|wait| wait.verification)
+            {
+                return Err(MoveError::NotWaitingVerification);
+            }
+            task.waiting_on = None;
+            task.status = TaskStatus::InProgress;
+            task.attempt += 1;
+            append_words(task, words);
+            Ok(())
+        })
+    }
+
+    /// The user answers a row waiting on a question: the row resumes in
+    /// progress with the words in its detail.
+    pub(crate) fn answer_task(
+        &self,
+        project_name: &str,
+        id: &TaskId,
+        words: &str,
+    ) -> Result<Option<Task>, MoveError> {
+        self.move_task(project_name, id, By::User, false, |task| {
+            if task.status != TaskStatus::Waiting
+                || task.waiting_on.as_ref().is_some_and(|wait| wait.verification)
+            {
+                return Err(MoveError::NotWaitingQuestion);
+            }
+            task.waiting_on = None;
+            task.status = TaskStatus::InProgress;
+            append_words(task, words);
+            Ok(())
+        })
+    }
+
+    /// Move a row in its queue: `Top` above everything, `Up` and `Down`
+    /// one place. The whole queue is renumbered in one write, so the
+    /// order a reader sees is the order the next read returns.
+    pub(crate) fn rank_task(
+        &self,
+        project_name: &str,
+        id: &TaskId,
+        to: RankMove,
+    ) -> Result<Option<Task>, MoveError> {
+        let at = SystemTime::now();
+        let outcome = self.with_tasks_mut(|tasks| {
+            let index = tasks.iter().position(|t| t.id == *id && t.project_name == project_name)?;
+            // The queue: this project's rows in the order the board reads
+            // them (rank, then creation).
+            let mut queue: Vec<usize> = tasks
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| t.project_name == project_name)
+                .map(|(i, _)| i)
+                .collect();
+            queue.sort_by_key(|i| (tasks[*i].rank.unwrap_or(i64::MAX), tasks[*i].created_at));
+            let position = queue.iter().position(|i| *i == index)?;
+            let target = match to {
+                RankMove::Top => 0,
+                RankMove::Up => position.saturating_sub(1),
+                RankMove::Down => (position + 1).min(queue.len() - 1),
+            };
+            let moved = queue.remove(position);
+            queue.insert(target, moved);
+            for (rank, i) in queue.iter().enumerate() {
+                tasks[*i].rank = Some(i64::try_from(rank).unwrap_or(i64::MAX));
+            }
+            tasks[index].updated_at = at;
+            Some(tasks[index].clone())
+        });
+        if outcome.is_some() {
+            self.announce_tasks_changed(project_name);
+        }
+        Ok(outcome)
+    }
+
+    /// Give a row an owner, or take it back.
+    pub(crate) fn assign_task(
+        &self,
+        project_name: &str,
+        id: &TaskId,
+        owner: Option<SessionSlot>,
+    ) -> Result<Option<Task>, MoveError> {
+        self.move_task(project_name, id, By::User, false, |task| {
+            task.owner = owner;
+            Ok(())
+        })
+    }
+
     pub(crate) fn claim_task(
         &self,
         project_name: &str,
@@ -777,6 +927,131 @@ mod tests {
             "a refused update and a refused delete announce nothing, and this was announced: \
              {announced:?}",
         );
+    }
+
+    /// A row waiting on the user's look, reached the way the gate produces
+    /// one: a verify=user row completing.
+    fn row_awaiting_look(ws: &Workspace, id: &str) {
+        ws.push_task(Task { verify: Some(Verify::User), ..sample_task(id, "proj") });
+        ws.update_task("proj", &TaskId::from(id), By::System, |task| {
+            task.status = TaskStatus::Completed;
+        })
+        .expect("no refusal")
+        .expect("the row is there");
+    }
+
+    #[test]
+    fn a_user_verdict_completes_with_by_user_in_the_history() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-approve");
+        install_db(&ws, dir.path());
+        row_awaiting_look(&ws, "t-1");
+
+        let approved = ws
+            .approve_task("proj", &TaskId::from("t-1"))
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(approved.status, TaskStatus::Completed, "approval completes the row");
+        assert_eq!(approved.waiting_on, None, "and clears the wait");
+        assert_eq!(approved.verify, Some(Verify::None), "the gate is satisfied, not re-armed");
+        let history = history_of(&ws, "proj");
+        let last = history.last().expect("a last transition");
+        assert_eq!((last.from, last.to), (Some(TaskStatus::Waiting), TaskStatus::Completed));
+        assert_eq!(last.by, By::User, "the verdict is stamped as the user's own move");
+    }
+
+    #[test]
+    fn a_send_back_returns_the_row_and_ticks_the_attempt() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-sendback");
+        install_db(&ws, dir.path());
+        row_awaiting_look(&ws, "t-1");
+
+        let sent = ws
+            .send_back_task("proj", &TaskId::from("t-1"), "the rail elides wrong")
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(sent.status, TaskStatus::InProgress, "back to its owner's hands");
+        assert_eq!(sent.attempt, 1, "the send-back ticks the attempt");
+        assert_eq!(
+            sent.detail.as_deref(),
+            Some("the rail elides wrong"),
+            "and the words are in the detail",
+        );
+    }
+
+    #[test]
+    fn an_answer_resumes_a_question_wait() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-answer");
+        let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
+        ws.push_task(Task { owner: Some(worker.clone()), ..sample_task("t-1", "proj") });
+        ws.claim_task("proj", &worker, Some(&TaskId::from("t-1")), None).expect("claim");
+        ws.wait_task("proj", &TaskId::from("t-1"), &worker, WaitingKind::Decision, None, None)
+            .expect("wait");
+
+        let answered = ws
+            .answer_task("proj", &TaskId::from("t-1"), "keep the window raise")
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(answered.status, TaskStatus::InProgress, "the answer resumes the row");
+        assert_eq!(answered.waiting_on, None);
+        assert_eq!(answered.detail.as_deref(), Some("keep the window raise"));
+    }
+
+    #[test]
+    fn a_verdict_on_a_row_not_waiting_for_look_is_refused() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-refuse-verdict");
+        ws.push_task(sample_task("t-1", "proj"));
+
+        assert_eq!(
+            ws.approve_task("proj", &TaskId::from("t-1")),
+            Err(MoveError::NotWaitingVerification),
+            "a pending row is not waiting on a look",
+        );
+        assert_eq!(
+            ws.answer_task("proj", &TaskId::from("t-1"), "words"),
+            Err(MoveError::NotWaitingQuestion),
+        );
+    }
+
+    #[test]
+    fn rank_up_swaps_against_the_neighbour() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-rank");
+        for (id, rank) in [("first", 0), ("second", 1), ("third", 2)] {
+            ws.push_task(Task { rank: Some(rank), ..sample_task(id, "proj") });
+        }
+
+        ws.rank_task("proj", &TaskId::from("third"), RankMove::Up).expect("no refusal");
+        let order: Vec<String> = {
+            let mut rows: Vec<(i64, String)> = ws
+                .tasks_for_project("proj")
+                .into_iter()
+                .map(|t| (t.rank.unwrap_or(i64::MAX), t.id.as_str().to_owned()))
+                .collect();
+            rows.sort();
+            rows.into_iter().map(|(_, id)| id).collect()
+        };
+        assert_eq!(
+            order,
+            vec!["first", "third", "second"],
+            "up moves the row one place toward the front, past its neighbour",
+        );
+
+        ws.rank_task("proj", &TaskId::from("third"), RankMove::Top).expect("no refusal");
+        let top = ws
+            .tasks_for_project("proj")
+            .into_iter()
+            .min_by_key(|t| t.rank.unwrap_or(i64::MAX))
+            .expect("a row");
+        assert_eq!(top.id, TaskId::from("third"), "top puts it above everything");
     }
 
     #[test]

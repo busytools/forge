@@ -10,6 +10,7 @@ use forge_agent::AgentHandle;
 use forge_agent::client::SessionLaunchSettings;
 use forge_agent::env::cli_version::CliVersionInfo;
 use forge_primitives::cloud::service_status::ServiceIssue;
+use forge_primitives::tasks::TaskId;
 use forge_primitives::{AvailableAgent, AvailableCommand, Message, SDKSessionInfo};
 
 use crate::mcp::peers::types::{MessageId, WrappedKind, WrappedPrompt};
@@ -4924,6 +4925,123 @@ impl Workspace {
                             origin,
                         ));
                     }
+                }
+                // The board's edits are the user's own moves: stamped
+                // `By::User` in the history, and no session routes them -
+                // the board is the user's surface, and each carries its
+                // project.
+                Command::TaskVerdict { project, id, approve, words } => {
+                    let id = TaskId::from(id.as_str());
+                    let moved = if approve {
+                        self.approve_task(&project, &id)
+                    } else {
+                        self.send_back_task(&project, &id, words.as_deref().unwrap_or(""))
+                    };
+                    match moved {
+                        Ok(Some(task)) => {
+                            // A send-back is news its owner wants: one
+                            // message, down the same ladder the chase
+                            // uses - a live owner hears it, a sleeping one
+                            // reads the row.
+                            if !approve
+                                && let Some(owner) = &task.owner
+                                && self.seat_is_live(owner)
+                            {
+                                let text = format!(
+                                    "task board: \"{}\" came back from the user's look - the \
+                                     words are in its detail; resume it.",
+                                    task.subject,
+                                );
+                                let _ = self.dispatch_workspace_prompt_from(
+                                    owner,
+                                    text,
+                                    PromptSource::Forge,
+                                );
+                            }
+                        }
+                        Ok(None) => tracing::debug!(
+                            target: "forge_workspace",
+                            project = %project,
+                            id = %id.as_str(),
+                            "a user verdict named a row that is not there",
+                        ),
+                        Err(refused) => tracing::debug!(
+                            target: "forge_workspace",
+                            project = %project,
+                            id = %id.as_str(),
+                            refusal = %refused,
+                            "a user verdict was refused",
+                        ),
+                    }
+                }
+                Command::TaskAnswer { project, id, words } => {
+                    let id = TaskId::from(id.as_str());
+                    match self.answer_task(&project, &id, &words) {
+                        Ok(Some(task)) => {
+                            if let Some(owner) = &task.owner
+                                && self.seat_is_live(owner)
+                            {
+                                let text = format!(
+                                    "task board: the user answered \"{}\" - the words are in its \
+                                     detail; resume it.",
+                                    task.subject,
+                                );
+                                let _ = self.dispatch_workspace_prompt_from(
+                                    owner,
+                                    text,
+                                    PromptSource::Forge,
+                                );
+                            }
+                        }
+                        Ok(None) => tracing::debug!(
+                            target: "forge_workspace",
+                            project = %project,
+                            id = %id.as_str(),
+                            "a user answer named a row that is not there",
+                        ),
+                        Err(refused) => tracing::debug!(
+                            target: "forge_workspace",
+                            project = %project,
+                            id = %id.as_str(),
+                            refusal = %refused,
+                            "a user answer was refused",
+                        ),
+                    }
+                }
+                Command::TaskRank { project, id, to } => {
+                    let _ = self.rank_task(&project, &TaskId::from(id.as_str()), to);
+                }
+                Command::TaskAssign { project, id, owner } => {
+                    let owner_slot = owner.map(|label| {
+                        self.config.projects.iter().find(|p| p.name == project).map_or_else(
+                            || SessionSlot::lead("", &project),
+                            |p| SessionSlot::new(&p.org, &project, label.clone()),
+                        )
+                    });
+                    let _ = self.assign_task(&project, &TaskId::from(id.as_str()), owner_slot);
+                }
+                Command::TaskCreate { project, subject, parent } => {
+                    let now = std::time::SystemTime::now();
+                    let task = forge_primitives::tasks::Task {
+                        id: TaskId::from(uuid::Uuid::new_v4().to_string()),
+                        project_name: project.clone(),
+                        subject,
+                        active_form: None,
+                        detail: None,
+                        status: forge_primitives::tasks::TaskStatus::Pending,
+                        owner: None,
+                        parent: parent.map(|id| TaskId::from(id.as_str())),
+                        waiting_on: None,
+                        estimate: None,
+                        rank: None,
+                        verify: None,
+                        links: Vec::new(),
+                        attempt: 0,
+                        archived_at: None,
+                        created_at: now,
+                        updated_at: now,
+                    };
+                    self.push_task(task);
                 }
                 other => {
                     tracing::warn!(
