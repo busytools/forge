@@ -172,6 +172,7 @@ quietly applying nothing.
 |---|---|---|---|
 | `env` | table | `{}` | Written as `[orgs.projects.env]` directly under the entry, or inline as `env = { ... }`. The block form attaches to the MOST RECENT `[[orgs.projects]]` header - place it directly under its own entry, before the next header, or it lands on a different project. |
 | `env_file` | string | none | Path to a `KEY=value` file whose entries join this project's env. |
+| `issues` | boolean | `true` | File this project's task rows as issues in its own tracker (github today, through `gh`), an epic as a parent issue and its tasks as sub-issues. The real gate is the probe: no `gh`, no repo, or issues disabled all file nothing. `false` opts the project out. |
 | `max_workers` | integer | `2` | Cap on this project's concurrently live dynamic workers. The count is per project: workers live in other projects neither consume this project's budget nor raise its cap. A spawn over the cap errors instead of queuing; despawning a worker frees its slot. Workers restored by the boot or lead-reconnect respawn of persisted rows are exempt, but still count toward the cap once live. `0` disables dynamic spawns for the project. |
 | `permission_mode` | string | `auto` | Stamps the CLI's permission mode onto every session this project spawns, overriding the session default. Absent means `auto`, not the session default, so a project's sessions run one mode however its org's accounts rotate. |
 | `model` | string | | The project's model. Fills the CLI's model slots at spawn (`ANTHROPIC_DEFAULT_HAIKU_MODEL`, `_OPUS_MODEL`, `_SONNET_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`, `CLAUDE_CODE_SUBAGENT_MODEL` all carry it) and is the session default a `/model` change overrides. Must be declared by at least one account in the org, or the load fails - a model no account serves would otherwise stamp every slot and 503 each session's first request. Required: the walk that picks a session's account matches on the model an account serves, so a project without one is refused at spawn. |
@@ -476,6 +477,17 @@ plugin to the recorded version keeps the record so it can be retried.
 Like `[dictate]`, an unrecognised key here fails the load rather than
 being ignored. Keys an older forge read here (`trusted_marketplaces`,
 `pins`) are rejected the same way: remove them.
+
+## `[tasks]`
+
+Optional. Absent leaves the defaults, which are the values below. These
+govern the task board's chase and its clocks.
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `stale_hours` | integer | `4` | The no-movement window: a row with no update for this long draws the `no movement` mark, a ready row with no owner this long asks the lead once, and a dependency or resource wait this long does too. The estimate is what arms the chase for a row that has one; this is the fallback for rows that have none. |
+| `escalate_at` | number | `1.5` | The multiplier on a row's estimate at which the chase tells the LEAD - once - that the row is past its estimate. The escalation is authority: rescope, reassign, take over, or restate the expectation. |
+| `chase` | boolean | `true` | Whether the chase runs at all. `false` leaves the board's marks and silences every message - the estimate nudge, the escalation, and the queue and wait reports. |
 
 ## `[server]`
 
