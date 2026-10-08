@@ -10,7 +10,7 @@
 use std::sync::{Arc, Weak};
 use std::time::SystemTime;
 
-use forge_primitives::tasks::{Task, TaskId, TaskStatus};
+use forge_primitives::tasks::{Estimate, LinkKind, Task, TaskId, TaskLink, TaskStatus};
 
 use crate::SessionSlot;
 use crate::mcp::caller_context::caller_context;
@@ -22,6 +22,38 @@ pub(crate) enum TasksError {
     /// The caller couldn't be mapped to a project (transient race, or the
     /// session ended). Shouldn't happen for a live session.
     UnknownCallerProject,
+    /// The estimate words do not parse as a duration; named rather than
+    /// stored so a caller hears it instead of losing the value.
+    BadEstimate(String),
+}
+
+/// Parse "30m" / "2h" / "1d" / "1w" into the estimate's two halves: the
+/// words a reader sees and the seconds the chase compares against worked
+/// time.
+fn parse_estimate(words: &str) -> Option<Estimate> {
+    let words = words.trim();
+    let split = words.find(|c: char| !c.is_ascii_digit())?;
+    let (digits, unit) = words.split_at(split);
+    let n: u64 = digits.parse().ok()?;
+    let secs = match unit.trim() {
+        "m" => 60,
+        "h" => 3_600,
+        "d" => 86_400,
+        "w" => 604_800,
+        _ => return None,
+    };
+    (n > 0).then(|| Estimate { words: words.to_owned(), secs: n * secs })
+}
+
+/// A bare artifact string becomes a link; the kind is the target's shape.
+fn artifact_link(target: &str, at: SystemTime) -> TaskLink {
+    TaskLink {
+        kind: LinkKind::for_target(target),
+        label: None,
+        target: target.to_owned(),
+        state: None,
+        added_at: at,
+    }
 }
 
 /// A task as `tasks__create` states it: the fields the caller supplies,
@@ -78,8 +110,17 @@ pub(crate) struct TaskPatch {
 
 impl TaskPatch {
     /// Apply the stated fields to `task`. `org` and `project` name the
-    /// caller's project, which is where an owner label is resolved.
-    fn apply(&self, task: &mut Task, org: &str, project: &str) {
+    /// caller's project, which is where an owner label is resolved;
+    /// `estimate` arrives pre-parsed so an unparseable one is refused
+    /// before any field moves.
+    fn apply(
+        &self,
+        task: &mut Task,
+        org: &str,
+        project: &str,
+        estimate: Option<Estimate>,
+        at: SystemTime,
+    ) {
         if let Some(subject) = &self.subject {
             task.subject.clone_from(subject);
         }
@@ -99,10 +140,10 @@ impl TaskPatch {
             task.parent = Some(TaskId::from(parent.as_str()));
         }
         if let Some(artifact) = &self.artifact {
-            task.artifact = Some(artifact.clone());
+            task.links.push(artifact_link(artifact, at));
         }
-        if let Some(estimate) = &self.estimate {
-            task.estimate = Some(estimate.clone());
+        if let Some(estimate) = estimate {
+            task.estimate = Some(estimate);
         }
     }
 }
@@ -160,6 +201,13 @@ impl TasksFacade for ProdTasksFacade {
         let ws = self.workspace.upgrade().ok_or(TasksError::UnknownCallerProject)?;
         let cx = caller_context(&ws, caller).ok_or(TasksError::UnknownCallerProject)?;
         let now = SystemTime::now();
+        let estimate = match draft.estimate.as_deref() {
+            Some(words) => Some(
+                parse_estimate(words).ok_or_else(|| TasksError::BadEstimate(words.to_owned()))?,
+            ),
+            None => None,
+        };
+        let links = draft.artifact.as_deref().map(|t| artifact_link(t, now)).into_iter().collect();
         let task = Task {
             id: TaskId::from(uuid::Uuid::new_v4().to_string()),
             project_name: cx.project_name.clone(),
@@ -171,8 +219,13 @@ impl TasksFacade for ProdTasksFacade {
                 .owner
                 .map(|label| SessionSlot::new(&cx.project_org, &cx.project_name, label)),
             parent: draft.parent.as_deref().map(TaskId::from),
-            artifact: draft.artifact,
-            estimate: draft.estimate,
+            waiting_on: None,
+            estimate,
+            rank: None,
+            verify: None,
+            links,
+            attempt: 0,
+            archived_at: None,
             created_at: now,
             updated_at: now,
         };
@@ -205,8 +258,15 @@ impl TasksFacade for ProdTasksFacade {
     ) -> Result<Option<Task>, TasksError> {
         let ws = self.workspace.upgrade().ok_or(TasksError::UnknownCallerProject)?;
         let cx = caller_context(&ws, caller).ok_or(TasksError::UnknownCallerProject)?;
+        let estimate = match patch.estimate.as_deref() {
+            Some(words) => Some(
+                parse_estimate(words).ok_or_else(|| TasksError::BadEstimate(words.to_owned()))?,
+            ),
+            None => None,
+        };
+        let at = SystemTime::now();
         Ok(ws.update_task(&cx.project_name, id, |task| {
-            patch.apply(task, &cx.project_org, &cx.project_name);
+            patch.apply(task, &cx.project_org, &cx.project_name, estimate, at);
         }))
     }
 
@@ -275,8 +335,13 @@ impl TasksFacade for MockTasksFacade {
                 .clone()
                 .map(|label| SessionSlot::new(caller.org(), caller.project(), label)),
             parent: draft.parent.as_deref().map(TaskId::from),
-            artifact: draft.artifact.clone(),
-            estimate: draft.estimate.clone(),
+            waiting_on: None,
+            estimate: draft.estimate.as_deref().and_then(parse_estimate),
+            rank: None,
+            verify: None,
+            links: draft.artifact.as_deref().map(|t| artifact_link(t, now)).into_iter().collect(),
+            attempt: 0,
+            archived_at: None,
             created_at: now,
             updated_at: now,
         };
@@ -347,8 +412,13 @@ mod prod_facade_tests {
             status: TaskStatus::Pending,
             owner: None,
             parent: None,
-            artifact: None,
+            waiting_on: None,
             estimate: None,
+            rank: None,
+            verify: None,
+            links: Vec::new(),
+            attempt: 0,
+            archived_at: None,
             created_at: SystemTime::UNIX_EPOCH,
             updated_at: SystemTime::UNIX_EPOCH,
         }
@@ -521,6 +591,46 @@ mod prod_facade_tests {
         assert_eq!(facade.list_tasks(&lead, None, None).len(), 1, "only the sibling survives");
     }
 
+    /// An estimate that is not a duration is refused with its own words,
+    /// and nothing else in the patch moves: the caller hears the mistake
+    /// instead of the value being dropped on the floor.
+    #[test]
+    fn an_unparseable_estimate_is_refused_and_moves_nothing() {
+        let (ws, facade, lead, _worker) = fixture();
+        let task = facade.create_task(&lead, draft("before", None, None)).expect("create");
+        let refused = facade.update_task(
+            &lead,
+            &task.id,
+            TaskPatch {
+                subject: Some("after".to_owned()),
+                estimate: Some("soonish".to_owned()),
+                ..TaskPatch::default()
+            },
+        );
+        assert_eq!(
+            refused,
+            Err(TasksError::BadEstimate("soonish".to_owned())),
+            "the refusal names the words it could not read",
+        );
+        assert_eq!(
+            ws.tasks_for_project("myproj")[0].subject,
+            "before",
+            "and no field moved on the refused write",
+        );
+    }
+
+    #[test]
+    fn create_refuses_an_estimate_it_cannot_parse() {
+        let (_ws, facade, lead, _worker) = fixture();
+        assert_eq!(
+            facade.create_task(
+                &lead,
+                TaskDraft { estimate: Some("tomorrow".to_owned()), ..draft("x", None, None) },
+            ),
+            Err(TasksError::BadEstimate("tomorrow".to_owned())),
+        );
+    }
+
     /// Every field `tasks__update` can state moves, not just the two the
     /// other tests happen to use.
     #[test]
@@ -536,7 +646,7 @@ mod prod_facade_tests {
                         subject: Some("after".to_owned()),
                         active_form: Some("doing".to_owned()),
                         detail: Some("why".to_owned()),
-                        status: Some(TaskStatus::Blocked),
+                        status: Some(TaskStatus::Waiting),
                         owner: Some("lead".to_owned()),
                         parent: Some("epic".to_owned()),
                         artifact: Some("PR #9".to_owned()),
@@ -551,11 +661,20 @@ mod prod_facade_tests {
         assert_eq!(stored.subject, "after");
         assert_eq!(stored.active_form.as_deref(), Some("doing"));
         assert_eq!(stored.detail.as_deref(), Some("why"));
-        assert_eq!(stored.status, TaskStatus::Blocked);
+        assert_eq!(stored.status, TaskStatus::Waiting);
         assert_eq!(stored.owner.as_ref().map(SessionSlot::label), Some("lead"));
         assert_eq!(stored.parent.as_ref().map(TaskId::as_str), Some("epic"));
-        assert_eq!(stored.artifact.as_deref(), Some("PR #9"));
-        assert_eq!(stored.estimate.as_deref(), Some("2d"));
+        assert_eq!(
+            stored.links.first().map(|l| l.target.as_str()),
+            Some("PR #9"),
+            "the stated artifact lands as a link",
+        );
+        assert_eq!(
+            stored.estimate.as_ref().map(|e| e.words.as_str()),
+            Some("2d"),
+            "and the estimate keeps its words with its seconds parsed",
+        );
+        assert_eq!(stored.estimate.as_ref().map(|e| e.secs), Some(172_800));
     }
 
     #[test]

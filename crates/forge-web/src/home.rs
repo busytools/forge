@@ -368,9 +368,11 @@ fn task_for<'a>(tasks: &'a [Task], label: &str) -> Option<&'a Task> {
 pub(crate) fn status_rank(status: TaskStatus) -> u8 {
     match status {
         TaskStatus::InProgress => 0,
-        TaskStatus::Blocked => 1,
+        TaskStatus::Waiting => 1,
         TaskStatus::Pending => 2,
         TaskStatus::Completed => 3,
+        TaskStatus::Failed => 4,
+        TaskStatus::Canceled => 5,
     }
 }
 
@@ -513,7 +515,17 @@ pub(crate) async fn row_for(home: &Home<'_>, roster: &Roster, seed: Seed<'_>) ->
         task: seed.task.map(|task| TaskCell {
             subject: task.subject.clone(),
             chip: chip_for(task.status),
-            artifact: task.artifact.clone(),
+            artifact: task
+                .links
+                .iter()
+                .find(|l| {
+                    matches!(
+                        l.kind,
+                        forge_primitives::tasks::LinkKind::Pr
+                            | forge_primitives::tasks::LinkKind::Path
+                    )
+                })
+                .map(|l| l.label.clone().unwrap_or_else(|| l.target.clone())),
         }),
         pending: seed.pending,
         reason: seed.reason,
@@ -585,8 +597,10 @@ pub(crate) fn chip_for(status: TaskStatus) -> &'static str {
     match status {
         TaskStatus::Pending => "pending",
         TaskStatus::InProgress => "in progress",
-        TaskStatus::Blocked => "blocked",
+        TaskStatus::Waiting => "waiting",
         TaskStatus::Completed => "done",
+        TaskStatus::Failed => "failed",
+        TaskStatus::Canceled => "canceled",
     }
 }
 
@@ -1014,8 +1028,13 @@ mod tests {
             status,
             owner: Some(SessionSlot::lead("Org", "forge")),
             parent: None,
-            artifact: None,
+            waiting_on: None,
             estimate: None,
+            rank: None,
+            verify: None,
+            links: Vec::new(),
+            attempt: 0,
+            archived_at: None,
             created_at: SystemTime::UNIX_EPOCH,
             updated_at: SystemTime::UNIX_EPOCH,
         };
