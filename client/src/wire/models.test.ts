@@ -119,8 +119,7 @@ describe("the models page's snapshot, narrowed once where it enters", () => {
     expect(row?.kind).toBe('other');
     expect(row?.url).toBeNull();
     expect(row?.download_count).toBeNull();
-    // A Hub row counts no parameters, and null crosses as itself.
-    expect(row?.params).toBeNull();
+    expect(row?.params, 'a Hub row counts no parameters, and null crosses as itself').toBeNull();
   });
 
   /**

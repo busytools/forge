@@ -875,10 +875,9 @@ fn frames_record() -> Value {
 /// its name - a field renamed on the server would leave a client's own literal
 /// writing a key nothing reads, with every suite green on both sides.
 ///
-/// All four dictation commands are sampled, because they carry the
-/// connection's own stamp and none may cross it: a `serde(skip)` dropped from
-/// one would put a transport-side token on this wire with every suite
-/// otherwise green.
+/// The four commands carrying the connection's own stamp are sampled,
+/// because none of them may cross it: a `serde(skip)` dropped from one would
+/// put a transport-side token on this wire with every suite otherwise green.
 fn command_sampled(seat: &SessionSlot) -> BTreeMap<String, BTreeMap<String, Value>> {
     let mut sampled: BTreeMap<String, BTreeMap<String, Value>> = BTreeMap::new();
     let sample = |command: Command| {

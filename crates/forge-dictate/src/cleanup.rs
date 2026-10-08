@@ -379,8 +379,16 @@ mod tests {
         assert_eq!(quant_of("model-Q4_K_S.gguf"), None);
         // The quant has to sit on its own token: inside a longer run of
         // letters it is part of another word, not this quant.
-        assert_eq!(quant_of("model-Q4_K_Mx.gguf"), None);
-        assert_eq!(quant_of("modelxQ4_K_M.gguf"), None);
+        assert_eq!(
+            quant_of("model-Q4_K_Mx.gguf"),
+            None,
+            "a quant with a letter after it is another word"
+        );
+        assert_eq!(
+            quant_of("modelxQ4_K_M.gguf"),
+            None,
+            "a quant with a letter before it is another word"
+        );
     }
 
     /// A live capture of the listing - the Hub's own answer to the default

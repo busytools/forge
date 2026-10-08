@@ -1669,9 +1669,19 @@ describe('the models route as it draws', () => {
     // The run line names the corpus it was scored on: two runs under one
     // candidate are otherwise the same numbers about nothing in particular.
     expect(host.querySelector('li.run')?.textContent).toContain('the read-aloud passage');
-    // And it carries the numbers production puts on this tier - the error
-    // figure, which a take-scored run never has.
-    expect(host.querySelector('li.run')?.textContent).toContain('WER 7.0%');
+    // The line carries the figure this tier produces: the term accuracy,
+    // where a take-scored run carries agreement.
+    expect(host.querySelector('li.run')?.textContent).toContain('term accuracy 90%');
+    // And the door's whole result row carries both figures - production
+    // emits them together on a read-aloud run, because both are read from
+    // the one passage whose words are known.
+    const doorRow = [...host.querySelectorAll('div.status')].find((el) =>
+      el.textContent?.includes('320s of audio'),
+    );
+    expect(doorRow?.textContent, 'the door drew no whole result row').toContain(
+      'term accuracy 90%',
+    );
+    expect(doorRow?.textContent).toContain('WER 7.0%');
 
     const button = [...host.querySelectorAll<HTMLButtonElement>('button')].find(
       (c) => c.textContent === 'switch to it',
@@ -1784,8 +1794,10 @@ describe('the models route as it draws', () => {
 
   /**
    * One finished run, in the shape its tier actually produces: a take-scored
-   * run carries agreement and no error figure, a read-aloud run the other way
-   * round. Fixtures that set an error figure on a take-scored run pin a shape
+   * run carries agreement and no error figure, a read-aloud run against the
+   * known words carries the error figure AND the term accuracy beside it -
+   * they come from the one place, so production never emits one without the
+   * other. Fixtures that set an error figure on a take-scored run pin a shape
    * production cannot make.
    */
   function benchResult(
@@ -1803,7 +1815,7 @@ describe('the models route as it draws', () => {
         audio_seconds: 320,
         wall_seconds: 210,
         xrt_wall: 30,
-        term_accuracy: null,
+        term_accuracy: tier === 'read_aloud' ? 0.9 : null,
         wer: tier === 'read_aloud' ? figure : null,
         matched: tier === 'consensus' ? [Math.round((1 - figure) * 12), 12] : null,
         stages_ms: {
