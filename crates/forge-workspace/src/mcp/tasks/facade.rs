@@ -27,24 +27,6 @@ pub(crate) enum TasksError {
     BadEstimate(String),
 }
 
-/// Parse "30m" / "2h" / "1d" / "1w" into the estimate's two halves: the
-/// words a reader sees and the seconds the chase compares against worked
-/// time.
-fn parse_estimate(words: &str) -> Option<Estimate> {
-    let words = words.trim();
-    let split = words.find(|c: char| !c.is_ascii_digit())?;
-    let (digits, unit) = words.split_at(split);
-    let n: u64 = digits.parse().ok()?;
-    let secs = match unit.trim() {
-        "m" => 60,
-        "h" => 3_600,
-        "d" => 86_400,
-        "w" => 604_800,
-        _ => return None,
-    };
-    (n > 0).then(|| Estimate { words: words.to_owned(), secs: n * secs })
-}
-
 /// A bare artifact string becomes a link; the kind is the target's shape.
 fn artifact_link(target: &str, at: SystemTime) -> TaskLink {
     TaskLink {
@@ -203,7 +185,7 @@ impl TasksFacade for ProdTasksFacade {
         let now = SystemTime::now();
         let estimate = match draft.estimate.as_deref() {
             Some(words) => Some(
-                parse_estimate(words).ok_or_else(|| TasksError::BadEstimate(words.to_owned()))?,
+                Estimate::parse(words).ok_or_else(|| TasksError::BadEstimate(words.to_owned()))?,
             ),
             None => None,
         };
@@ -260,7 +242,7 @@ impl TasksFacade for ProdTasksFacade {
         let cx = caller_context(&ws, caller).ok_or(TasksError::UnknownCallerProject)?;
         let estimate = match patch.estimate.as_deref() {
             Some(words) => Some(
-                parse_estimate(words).ok_or_else(|| TasksError::BadEstimate(words.to_owned()))?,
+                Estimate::parse(words).ok_or_else(|| TasksError::BadEstimate(words.to_owned()))?,
             ),
             None => None,
         };
@@ -336,7 +318,7 @@ impl TasksFacade for MockTasksFacade {
                 .map(|label| SessionSlot::new(caller.org(), caller.project(), label)),
             parent: draft.parent.as_deref().map(TaskId::from),
             waiting_on: None,
-            estimate: draft.estimate.as_deref().and_then(parse_estimate),
+            estimate: draft.estimate.as_deref().and_then(Estimate::parse),
             rank: None,
             verify: None,
             links: draft.artifact.as_deref().map(|t| artifact_link(t, now)).into_iter().collect(),

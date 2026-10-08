@@ -42,6 +42,9 @@ pub mod sessions;
 pub mod settings;
 pub mod slack;
 pub mod state;
+pub mod task_archive;
+pub mod task_chases;
+pub mod task_history;
 pub mod tasks;
 pub mod token_usage;
 
