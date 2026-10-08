@@ -219,8 +219,12 @@ mod tests {
              it here draws the same turn two ways",
         );
         assert!(
-            matches!(&message.content[0], ContentBlock::Thinking { .. }),
-            "the thought stays where the assistant frame carried it",
+            matches!(
+                &message.content[0],
+                ContentBlock::Thinking { thinking, .. } if thinking == "reasoning…"
+            ),
+            "the thought's own words stay where the assistant frame carried them - a block kept \
+             with its text blanked draws no row either",
         );
         assert!(
             matches!(&message.content[1], ContentBlock::Text { text, .. } if text == "after thought"),
