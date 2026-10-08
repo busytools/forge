@@ -337,6 +337,13 @@ client-tauri-bundle: vendor-browser-stack
 vendor-browser-stack:
     ./scripts/vendor_browser_stack.sh
 
+# The Android engine: libnode (gmaclennan/nodejs-mobile, Node 24, one ABI)
+# into the Gradle project's gitignored jniLibs and cpp headers. Idempotent at
+# its pin; the android build recipes run it themselves, so a fresh clone that
+# runs them gets the engine without a separate step.
+vendor-browser-stack-android:
+    ./scripts/vendor_browser_stack.sh --android
+
 
 # The Android half's own gate. Neither `just check` nor `client-tauri-check`
 # reaches it: the shell crate is its own workspace root, and the Kotlin lives
@@ -346,7 +353,7 @@ vendor-browser-stack:
 #
 # The target has to be installed (`rustup target add aarch64-linux-android`)
 # for the shell check.
-client-android-check:
+client-android-check: vendor-browser-stack vendor-browser-stack-android
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -531,7 +538,7 @@ client-release version: vendor-browser-stack
 # clean afterwards, so a Cargo.lock rewrite cannot ride out of a release.
 #
 # Build and stage the Android release APK.
-client-android-release version:
+client-android-release version: vendor-browser-stack vendor-browser-stack-android
     #!/usr/bin/env bash
     set -euo pipefail
 
