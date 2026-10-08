@@ -460,25 +460,29 @@
     }
     if (entry === undefined) {
       const chat = new Chat(open, slot);
-      // Written to the seat's own entry rather than straight to `held`: a
-      // conversation kept for a seat the reader has left must not draw.
-      const unsubscribe = chat.value.subscribe((value) => {
-        kept.set(which, value);
-        if (untrack(() => seat) === which) held = value;
-      });
       const stop = chat.start();
       entry = {
         connection: open,
         chat,
-        stop: () => {
-          unsubscribe();
-          stop();
-        },
+        stop,
       };
       live.set(which, entry);
       fresh = true;
     }
     working = entry.chat;
+    // **The shown seat folds and notifies; the seat left does neither.** A
+    // frame arrives for every visited seat through the home feed, so a kept
+    // conversation left subscribed would grow for every seat ever visited -
+    // and every return would re-mount all of it. Held back, the return's own
+    // reads (the re-subscribe's snapshot and the newest page `showing` asks
+    // for) put the seat current again. Written to the seat's own entry rather
+    // than straight to `held`: a conversation kept for a seat the reader has
+    // left must not draw.
+    entry.chat.showing();
+    const unsubscribe = entry.chat.value.subscribe((value) => {
+      kept.set(which, value);
+      if (untrack(() => seat) === which) held = value;
+    });
     // The placement belonged to the conversation that is going, and the two
     // clauses are the two ways one goes. `fresh` is a conversation this run
     // opened: a seat's first visit, or a seat re-opened on another connection.
@@ -521,6 +525,29 @@
     // The seat coming on screen is put there from what was kept, not from a
     // read, which is the whole point of holding it.
     held = untrack(() => kept.get(which)) ?? NOTHING;
+    // Leaving the seat: its store notifications stop with its frames.
+    return () => {
+      unsubscribe();
+    };
+  });
+
+  /**
+   * The seat the column last showed, so a real switch can hand the one it
+   * left back.
+   *
+   * **Not read from the effect's cleanup**: cleanup runs before the next run
+   * and cannot see whether the seat changed, while a re-run for the same seat
+   * (the page handing props over again) is not a leave - leaving there would
+   * answer with a refresh the handover never asked for.
+   */
+  let shownFor: string | null = null;
+  $effect(() => {
+    const which = seat;
+    const previous = shownFor;
+    shownFor = which;
+    if (previous !== null && previous !== which) {
+      untrack(() => live.get(previous))?.chat.leaving();
+    }
   });
 
   // The column's own teardown, which the effect above cannot do: it closes one

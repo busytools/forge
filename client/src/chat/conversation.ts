@@ -571,6 +571,9 @@ export class Chat {
    * the end of it.
    */
   private inFlight: 'newest' | 'older' | null = null;
+
+  /** Whether the seat's page is on screen: frames for it fold only then. */
+  private shown = true;
   /**
    * Answers still coming for asks this conversation stopped wanting.
    *
@@ -869,6 +872,21 @@ export class Chat {
   }
 
   /**
+   * The seat's page has come on screen: frames fold again, and a return asks
+   * the newest page for what arrived while the seat was away.
+   */
+  showing(): void {
+    if (this.shown) return;
+    this.shown = true;
+    this.refresh();
+  }
+
+  /** The seat's page has gone: frames for it are held back, not folded. */
+  leaving(): void {
+    this.shown = false;
+  }
+
+  /**
    * Where the reader is, which decides whether the newest turn is followed.
    *
    * **The rule is the terminal's, and it is exact.** `ChatViewport`'s
@@ -974,6 +992,14 @@ export class Chat {
         }
         return;
       case 'update':
+        // **A seat nobody is showing folds nothing.** The frames arrive for
+        // every visited seat anyway - the home subscription carries every
+        // seat's `chat_appended` for the fleet rows - so folding them here is
+        // what grew a conversation per seat ever visited, and what made every
+        // return re-mount all of it. What the seat missed comes back through
+        // its own reads on the return: the re-subscribe's snapshot, and the
+        // newest page `showing` asks for.
+        if (!this.shown) return;
         this.takeUpdate(message.update);
         return;
       default:

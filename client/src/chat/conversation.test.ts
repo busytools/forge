@@ -227,6 +227,54 @@ function fakeConnection() {
 
 describe('the conversation the chat draws', () => {
   /**
+   * A seat the reader has left folds nothing.
+   *
+   * **The frames keep arriving anyway** - the client holds the home
+   * subscription for the whole session, and it carries every seat's
+   * `chat_appended` for the fleet rows - so a kept conversation that folded
+   * them would grow for every seat ever visited, and a return would re-mount
+   * all of it. Held back, the return's own reads put the seat current again:
+   * the re-subscribe's snapshot and the newest page asked here.
+   */
+  it('folds nothing while unshown, and asks the newest page on the return', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    // The first ask's own answer: an ask that never landed would swallow the
+    // return's refresh under the in-flight guard.
+    server.send(page([turn('t1', 'kept')], null));
+    let notifies = 0;
+    const off = chat.value.subscribe(() => (notifies += 1));
+
+    server.update({ chat_appended: { key: LEAD, msg: said('while shown') } });
+    const shownNotifies = notifies;
+    expect(shownNotifies, 'a shown seat folds and notifies').toBeGreaterThan(0);
+
+    chat.leaving();
+    server.update({ chat_appended: { key: LEAD, msg: said('while away') } });
+    expect(notifies, 'an unshown seat neither folds nor notifies').toBe(shownNotifies);
+    // The notify alone is paint-gated, so the fold itself is read here too:
+    // the frame is dropped, not folded and left undrawn.
+    expect(
+      JSON.stringify(get(chat.value).turns),
+      'and the frame was dropped, not folded',
+    ).not.toContain('while away');
+
+    const asked = server.more().length;
+    chat.showing();
+    expect(server.more().length, 'the return asks the newest page').toBe(asked + 1);
+    expect(server.more().at(-1), 'for the newest page, this seat').toEqual({
+      kind: 'more',
+      conversation: LEAD,
+      before: null,
+      turns: 20,
+    });
+
+    off();
+    stop();
+  });
+
+  /**
    * The core's own line, which no transcript holds: the CLI never wrote a row
    * for it, so this store is the only place it can be drawn from.
    */
