@@ -36,7 +36,9 @@
    */
   let now = $state(Date.now());
   $effect(() => {
-    if (!held.running) return;
+    // Only while the body is on screen: a closed row carries no clock, and a
+    // tick that kept recomputing the facts for one would be work nobody sees.
+    if (!opened || !held.running) return;
     const id = setInterval(() => {
       now = Date.now();
     }, 1000);

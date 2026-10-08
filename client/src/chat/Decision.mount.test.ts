@@ -89,5 +89,11 @@ describe('the distribution the runtime draws', () => {
       'all green',
     );
     expect(document.body.textContent ?? '', 'and the criterion raw').toContain('a.rs');
+    // The PRETTY form, not a plain stringify: the page's specimen draws the
+    // indented shape, and a body that printed the compact one would still
+    // carry both words above.
+    expect(document.body.textContent ?? '', 'the pretty form, indentation and all').toContain(
+      JSON.stringify(value, null, 2),
+    );
   });
 });

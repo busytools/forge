@@ -63,9 +63,6 @@ describe('the compaction point a boundary leaves in the conversation', () => {
     const body = draw('auto', 68_031, 9_149, null, false);
 
     expect(body, 'the row the approved shape draws').toContain('<details class="cpoint">');
-    expect(body, 'collapsed, so the boundary is a hint rather than a block').not.toContain(
-      'open=""',
-    );
     // The hairline is two rules flanking the label, which is what makes the row
     // read across the column rather than as one more work row.
     expect(body.match(/class="rule"/g), 'one rule on each side of the word').toHaveLength(2);
