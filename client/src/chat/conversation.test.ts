@@ -592,8 +592,22 @@ describe('the conversation the chat draws', () => {
    * live, and only a read heals it. The watchdog publishes without the paint.
    */
   it('a paint that never comes does not stop the column', () => {
-    vi.useFakeTimers({ toFake: ['setTimeout'] });
-    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    // Captured rather than swallowed, so a case can ALSO paint: the deadline
+    // must be spent when the paint wins too, or a stale one publishes again.
+    const frames = new Map<number, () => void>();
+    let next = 1;
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      const id = next;
+      next += 1;
+      frames.set(id, callback as () => void);
+      return id;
+    });
+    const paint = (): void => {
+      const waiting = [...frames.values()];
+      frames.clear();
+      for (const run of waiting) run();
+    };
     try {
       const server = fakeConnection();
       const chat = new Chat(server.connection, LEAD);
@@ -605,8 +619,10 @@ describe('the conversation the chat draws', () => {
       // held state by design (`value`'s own subscribe) and would heal the very
       // wedge under test.
       let drawn = '';
+      let publishes = 0;
       const stop = chat.value.subscribe((value) => {
         drawn = JSON.stringify(value);
+        publishes += 1;
       });
 
       server.update({ chat_appended: { key: LEAD, msg: said('arrived while no paint came') } });
@@ -619,6 +635,22 @@ describe('the conversation the chat draws', () => {
       expect(drawn, 'the watchdog draws it without the paint').toContain(
         'arrived while no paint came',
       );
+
+      // And the deadline is spent, not just fired: a watchdog that published
+      // without clearing the flag would draw this one and re-wedge on the
+      // very next frame.
+      server.update({ chat_appended: { key: LEAD, msg: said('the frame after the deadline') } });
+      vi.advanceTimersByTime(1_000);
+      expect(drawn, 'and the next frame draws too').toContain('the frame after the deadline');
+
+      // The other half of spending it: a paint that lands clears the deadline,
+      // so the stale timer must not publish a second time behind it.
+      server.update({ chat_appended: { key: LEAD, msg: said('painted, and no timer behind it') } });
+      paint();
+      expect(drawn, 'the paint draws it').toContain('painted, and no timer behind it');
+      const settled = publishes;
+      vi.advanceTimersByTime(1_000);
+      expect(publishes, 'and the spent deadline publishes nothing more').toBe(settled);
       stop();
     } finally {
       raf.mockRestore();
