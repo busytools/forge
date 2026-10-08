@@ -139,6 +139,14 @@
   .models .status .detail { flex: 1 1 100%; font-family: var(--mono); font-size: var(--fs-label);
     color: var(--dim); padding-left: 19px; }
   .models .status .detail b { color: var(--muted); font-weight: 500; }
+  .models .status .detail.passage { max-width: 84ch; }
+  /* The recording's own meter: one bar per level reading, bottom-aligned. */
+  .models .status .bars.meter { display: flex; align-items: flex-end; gap: 1px;
+    height: 16px; flex: 0 0 200px; }
+  .models .status .bars.meter i { flex: 1 0 1px; border-radius: 1px;
+    min-height: 2px; background: linear-gradient(180deg, var(--hot), var(--accent)); }
+  .models .status .bars.meter i.mid { background: linear-gradient(180deg, #ffc98f, #ab6100); }
+  .models .status .bars.meter i.hot { background: var(--hot); }
   /* The download's bar: the figure the words beside it carry, drawn the way
      the platform draws it rather than as a div sized by a style attribute. */
   .models .status progress { flex: none; width: 140px; height: 7px;
@@ -612,6 +620,52 @@
       </ul>
       <div class="tnote">A pinned role refuses the activation dispatch by name, so no row draws an activation control for it - a control that is always refused reads as broken. The download stays: a pinned role can still pull candidates down and bench them. The active model draws as a state, never as a control.</div>
     </div>
+  </div>
+
+  <div class="tile">
+    <div class="tcap">the <b>benchmark</b>'s other states: <b>off</b>, the <b>read-aloud set empty</b>, a set <b>this client cannot read</b>, a <b>recording</b> in flight, a <b>sweep running</b>, the <b>consensus note</b> with <b>benchmark again</b>, a <b>sweep that ended on a corpus move</b>, and a <b>run that did not finish</b> with its close</div>
+    <div class="models">
+      <p class="note" style="margin-top:0">the bench runs only with <code>[dictate] enabled</code> set &middot; it scores a model on the takes forge has recorded here</p>
+      <div class="status" role="status">
+        <span class="dot off"></span>
+        <span class="t">the read-aloud set is not recorded yet</span>
+        <span class="spacer"></span>
+        <button class="chip" type="button">record the passage</button>
+        <span class="detail">Read the passage below aloud once and save the recording &middot; a bench over the takes compares two models' words, and this is the one corpus a bench can score on words that are known:</span>
+        <span class="detail passage">I want the forge session to pick up where it left off.</span>
+      </div>
+      <p class="note">the read-aloud set is one this client cannot read &middot; this client is older than the forge serving it</p>
+      <div class="status" role="status">
+        <span class="dot live"></span>
+        <span class="t">recording the passage</span>
+        <span class="when">0:06 &middot; 300 frames</span>
+        <span class="spacer"></span>
+        <button class="chip" type="button">stop and save</button>
+        <button class="chip" type="button">cancel</button>
+        <span class="bars meter" aria-hidden="true">
+          <i style="height:24%"></i><i style="height:52%"></i><i style="height:78%"></i><i class="mid" style="height:44%"></i><i style="height:18%"></i><i class="hot" style="height:88%"></i><i style="height:36%"></i><i style="height:62%"></i>
+        </span>
+      </div>
+      <div class="status" role="status">
+        <span class="dot live"></span>
+        <span class="t">scoring CeluneNorm-0.6B-v2.0-ctx2048.Q4_K_M.gguf</span>
+        <span class="when">your own takes &middot; 5 runs</span>
+        <span class="spacer"></span>
+        <button class="chip" type="button">stop the sweep</button>
+        <span class="detail">each run loads one model and scores it on the same corpus &middot; what the sweep downloaded and nobody kept goes back off the disk when the verdict is in</span>
+      </div>
+      <p class="note">scored on your takes, where a run reads as agreement with the words the model in use recorded beside each one, not as correctness &middot; record the read-aloud passage above and press again to score against known words</p>
+      <button class="chip add" type="button" style="margin-top:6px">benchmark again</button>
+      <p class="note bad">a take landed while the sweep ran, so its runs no longer share one corpus - press again to score on what is here now</p>
+      <div class="status failed" role="status" style="margin-top:12px">
+        <span class="dot failed"></span>
+        <span class="t">the bench did not finish</span>
+        <span class="spacer"></span>
+        <button class="chip" type="button" aria-label="close this">close</button>
+        <span class="when">CeluneNorm-0.6B-v2.0-ctx2048.Q4_K_M.gguf &middot; the model would not load</span>
+      </div>
+    </div>
+    <div class="tnote">The recording card is the passage itself, so the empty, running and recorded states share one edge; the meter is this side's own levels, one bar per frame reading. A set this client cannot read draws no record control over it - the offer would make a second set on a machine that may hold many. The failed run carries its own close: a reader who has read it puts it away, and a NEW failure draws rather than hiding behind that dismissal. The note over the failed card is a sweep that ended by name, not a failure.</div>
   </div>
 
   <div class="tile">
