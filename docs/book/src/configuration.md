@@ -316,6 +316,8 @@ Optional. Absent means dictation is off, which is also what an explicit
 |---|---|---|---|
 | `enabled` | boolean | `false` | Off unless asked for. Turning it on costs a 3.07 GB model download the first time and holds about 1.8 GB of resident memory for the run. |
 | `models_dir` | string | platform cache dir | Where the model files live. `~` is expanded. |
+| `transcribe_model` | string | none | The model the transcribing role runs, by the runtime's own variant name. Set, it wins over every runtime pick and refuses an activation for that role; absent leaves the role to the last pick made on this machine, else the compiled default. |
+| `cleanup_model` | string | none | The same for the cleanup role. Inert while `normalizer = false`. |
 | `device` | string | system default | Input the TERMINAL records from, by device id rather than name. A client that captures its own audio picks on its own machine and never reads this. |
 | `language` | string | autodetect | Spoken language hint. |
 | `normalizer` | boolean | `true` | Rewrite recognition output into clean text. Off halves the download and skips a pass per utterance. |
@@ -347,9 +349,41 @@ second for the pair, and checks an unchanged one with a stat. Then the
 weights load. Pressing `esc` during a download keeps what has landed
 and quits.
 
-The model files themselves are not configurable. Each carries a URL, a
-byte length and a digest, and a hand-edited one is a file nothing can
-verify.
+**A role's model is resolved fresh each boot, in this order**: the
+`transcribe_model` / `cleanup_model` key when set, else the last runtime
+pick made on this machine (kept in the state store beside forge's other
+machine-local state, not here), else the compiled default for this binary.
+Setting a key never clears the pick, so removing the key returns the role
+to the last runtime choice rather than to the compiled model.
+
+**A key names a variant, not a path** (`granite-speech-5.0-470m-turboctc`):
+this file syncs across machines and a path is per-machine. The variant
+resolves through the machine's installed models first - a local file, no
+network - and then through the runtime's catalogue, whose per-model doc
+carries the download URL. A variant that resolves through neither fails the
+boot, naming the key and the variant:
+
+    [dictate] transcribe_model names granite-470m, which is neither an installed model nor a catalogue entry
+
+A variant that resolves but is not on disk yet is fetched by the boot
+preflight, the way the compiled defaults already are, and records as
+installed.
+
+**A key pins the role**: the runtime cannot change it, and the models page
+refuses an activation for it, naming the key:
+
+    [dictate] transcribe_model pins this model in forge.toml; remove the key to change it here
+
+Downloads and benchmarks stay allowed on a pinned role - a pinned role can
+still pull candidates down and bench them; only the running model cannot
+change without editing this file.
+
+The compiled model files themselves are not configurable. Each carries a
+URL, a byte length and a digest, and a hand-edited one is a file nothing
+can verify. A model named by the keys above, or downloaded from the models
+page, is checked against the feed's own byte length and the engine's own
+load instead: those files publish no digest, and nothing forge prints calls
+one verified.
 
 ## `[gotify]`
 
@@ -664,10 +698,12 @@ threads, the
 per-account usage cache, cached model pricing, and the `/usage` view's
 per-file token summaries.
 
-Dictation keeps three things outside the database, all machine-local
+Dictation keeps four things outside the database, all machine-local
 and never synced: each take's audio and transcripts, as plain files
 under `<app-support>/dictate-diagnostics/` - voice recordings outside
-the database - the record of verified model digests under
+the database - the read-aloud set the models page records under
+`<app-support>/dictate-read-aloud/`, which is the one corpus a bench can
+score on words that are known, the record of verified model digests under
 `<app-support>/dictate-digests/`, which is what lets a boot over
 unchanged models skip re-hashing them, and the last fetched model
 catalogue under `<app-support>/dictate-catalogue/`, which is what lets

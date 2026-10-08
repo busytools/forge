@@ -465,10 +465,6 @@ describe('axe over the rendered pages', () => {
   });
 
   /**
-   * The models page with a feed in front of axe: the four sections, the
-   * proposal, the chips, the search form and the check's own control.
-   */
-  /**
    * **The palette's open dialog**, which no other case renders: the session
    * page draws it closed, so its combobox roles, the listbox's options and
    * the dialog's name would otherwise go unguarded.
@@ -490,9 +486,156 @@ describe('axe over the rendered pages', () => {
 
   it('draws the models page with no violations', async () => {
     const html = render(ModelsBody, {
-      props: { wire: modelsWire, oncheck: () => {} },
+      props: {
+        wire: modelsWire,
+        oncheck: () => {},
+        oninstall: () => {},
+        onactivate: () => {},
+        ondeactivate: () => {},
+        onbench: () => {},
+        onbenchstop: () => {},
+        onrecord: () => {},
+        onrecordstop: () => {},
+        onrecorddelete: () => {},
+        onbenchdelete: () => {},
+        onupdate: () => {},
+        onsweep: () => {},
+        onsweepcancel: () => {},
+        onadopt: () => {},
+        onuninstall: () => {},
+      },
     }).body;
     expect(html, 'the feed drew, so axe saw it').toContain('update available');
+    expect(await idsOf(html)).toEqual([]);
+  });
+
+  /**
+   * **The states this page gained, in front of axe**: a sweep's verdicts with
+   * their switches, a bench that failed with its close, and the read-aloud set
+   * being recorded. None of them is on the ordinary render, so without a case
+   * of their own their labels and controls would go unguarded.
+   */
+  it('draws a verdict, a failed bench and a recording with no violations', async () => {
+    const html = render(ModelsBody, {
+      props: {
+        wire: {
+          ...modelsWire,
+          bench: {
+            state: 'failed',
+            target: { file: 'a-norm-a.gguf', role: 'transcribing', pinned: false },
+            reason: 'No such file or directory (os error 2)',
+          },
+          read_aloud: {
+            recordings: [],
+            recording: true,
+            error: null,
+            passage: 'the passage',
+            terms: ['forge'],
+            unknown: false,
+          },
+        },
+        verdicts: [
+          {
+            role: 'cleanup',
+            best: {
+              run: {
+                variant: 'a/norm-a',
+                role: 'cleanup',
+                file: 'a-norm-a-Q4_K_M.gguf',
+                size_bytes: 1,
+                installed: false,
+                why: 'candidate',
+              },
+              result: {
+                target: { file: 'a-norm-a-Q4_K_M.gguf', role: 'cleanup', pinned: false },
+                tier: 'read_aloud',
+                metrics: {
+                  clips: 1,
+                  audio_seconds: 12,
+                  wall_seconds: 3,
+                  xrt_wall: 4,
+                  term_accuracy: 0.9,
+                  wer: 0.1,
+                  matched: null,
+                  stages_ms: {
+                    model_load_ms: 1,
+                    resample_ms: 1,
+                    mel_ms: 1,
+                    encode_ms: 1,
+                    decode_ms: 1,
+                    normalize_ms: 1,
+                  },
+                },
+                at: '2026-10-08T00:00:00Z',
+                corpus: { clips: 1, audio_seconds: 12, sha256: 'aa' },
+              },
+            },
+            baseline: null,
+            onBest: false,
+            scored: 1,
+            beyond: 4,
+            tried: 3,
+            pick: false,
+            tier: 'read_aloud',
+          },
+        ],
+        oncheck: () => {},
+        oninstall: () => {},
+        onactivate: () => {},
+        ondeactivate: () => {},
+        onbench: () => {},
+        onbenchstop: () => {},
+        onrecord: () => {},
+        onrecordstop: () => {},
+        onrecorddelete: () => {},
+        onbenchdelete: () => {},
+        onupdate: () => {},
+        onsweep: () => {},
+        onsweepcancel: () => {},
+        onadopt: () => {},
+        onuninstall: () => {},
+      },
+    }).body;
+    expect(html, 'the verdict drew, so axe saw it').toContain('switch to it');
+    expect(html).toContain('the bench did not finish');
+    expect(html).toContain('the read-aloud set is being recorded');
+    expect(await idsOf(html)).toEqual([]);
+  });
+
+  /**
+   * The page with a download running: the progress line, its bar and the
+   * disabled controls a second press would land on.
+   */
+  it('draws a download in flight with no violations', async () => {
+    const html = render(ModelsBody, {
+      props: {
+        wire: {
+          ...modelsWire,
+          install: {
+            state: 'downloading',
+            file: 'granite-speech-5.0-470m-turboctc-Q4_K_M.gguf',
+            got: 106_000_000,
+            total: 279_000_000,
+          },
+        },
+        oncheck: () => {},
+        oninstall: () => {},
+        onactivate: () => {},
+        ondeactivate: () => {},
+        onbench: () => {},
+        onbenchstop: () => {},
+        onrecord: () => {},
+        onrecordstop: () => {},
+        onrecorddelete: () => {},
+        onbenchdelete: () => {},
+        onupdate: () => {},
+        onsweep: () => {},
+        onsweepcancel: () => {},
+        onadopt: () => {},
+        onuninstall: () => {},
+      },
+    }).body;
+    expect(html).toContain('downloading');
     expect(await idsOf(html)).toEqual([]);
   });
 
@@ -512,6 +655,20 @@ describe('axe over the rendered pages', () => {
           rows: [],
         },
         oncheck: () => {},
+        oninstall: () => {},
+        onactivate: () => {},
+        ondeactivate: () => {},
+        onbench: () => {},
+        onbenchstop: () => {},
+        onrecord: () => {},
+        onrecordstop: () => {},
+        onrecorddelete: () => {},
+        onbenchdelete: () => {},
+        onupdate: () => {},
+        onsweep: () => {},
+        onsweepcancel: () => {},
+        onadopt: () => {},
+        onuninstall: () => {},
       },
     }).body;
     expect(html).toContain('dictation is off');

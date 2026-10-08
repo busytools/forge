@@ -64,6 +64,13 @@ impl ViewSurface {
         self.workspace.dictate_push(key, samples, initiator)
     }
 
+    /// [`Self::dictate_push`] for the read-aloud recording, which belongs to
+    /// no seat: the same data plane, kept only where the recording is the
+    /// pushing connection's.
+    pub fn dictate_read_aloud_push(&self, samples: &[f32], initiator: Option<u64>) -> bool {
+        self.workspace.read_aloud_push(samples, initiator)
+    }
+
     pub fn dictate(&self) -> DictateView {
         DictateView {
             enabled: self.workspace.dictate_enabled(),

@@ -101,11 +101,23 @@ export interface ComposerRecord {
  * The socket, as the composer and its panel use it: commands and drafts
  * through `dispatch`, the picker through `devices`, and - since dictation
  * moved to this side - the two a take reads (`status`, `onStatus`), the
- * binary path (`frame`) and the settings the axes reset to.
+ * binary path (`frame`) and the settings the axes reset to. The panel also
+ * reads the models and switches one, so a subject and its re-read come with
+ * it (`subscribe`, `refresh`).
  */
 export type ComposerConnection = Pick<
   Connection,
-  'dispatch' | 'onMessage' | 'devices' | 'store' | 'settings' | 'status' | 'onStatus' | 'frame'
+  | 'dispatch'
+  | 'onMessage'
+  | 'devices'
+  | 'store'
+  | 'settings'
+  | 'status'
+  | 'onStatus'
+  | 'frame'
+  | 'subscribe'
+  | 'unsubscribe'
+  | 'refresh'
 >;
 
 export interface ComposerProps {

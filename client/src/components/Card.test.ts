@@ -88,7 +88,29 @@ describe('the band card', () => {
     const page = document.createElement('div');
     document.body.append(page);
     hosts.push(page);
-    drawn.push(mount(ModelsBody, { target: page, props: { wire: modelsWire, oncheck: () => {} } }));
+    drawn.push(
+      mount(ModelsBody, {
+        target: page,
+        props: {
+          wire: modelsWire,
+          oncheck: () => {},
+          oninstall: () => {},
+          onactivate: () => {},
+          ondeactivate: () => {},
+          onbench: () => {},
+          onbenchstop: () => {},
+          onrecord: () => {},
+          onrecordstop: () => {},
+          onrecorddelete: () => {},
+          onbenchdelete: () => {},
+          onupdate: () => {},
+          onsweep: () => {},
+          onsweepcancel: () => {},
+          onadopt: () => {},
+          onuninstall: () => {},
+        },
+      }),
+    );
 
     const sheet = readFileSync('src/assets/web.css', 'utf8');
     const dom = new JSDOM(`<style>${sheet}</style>${band.outerHTML}${page.outerHTML}`);

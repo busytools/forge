@@ -712,6 +712,61 @@ async fn a_clients_frames_feed_the_take_it_started() {
     .await;
 }
 
+/// **A frame reaches the read-aloud recording, the destination with no seat.**
+/// The recording and the takes are two places a frame can land rather than
+/// one, and deleting the recording's half is silent: the seats path still
+/// answers, so nothing in this crate notices that a recording stopped
+/// hearing the microphone. The stop that keeps the set is what says so - a
+/// recording with no frame in it has nothing to write, and the set stays
+/// empty.
+#[tokio::test]
+async fn a_frame_lands_in_the_read_aloud_recording() {
+    let (url, fleet) = a_server().await;
+    fleet.install_agent("TestOrg", "proj", "lead");
+    let _models = fleet.arm_dictation(&lead_seat()).expect("dictation arms without weights");
+    let mut socket = connect(&url).await;
+    for what in [Subject::Session(lead_seat()), Subject::DictateModels] {
+        send(&mut socket, ClientMessage::Subscribe { what, answering: true, browser: false }).await;
+        let _ = snapshot_answering(&mut socket).await;
+    }
+
+    send(
+        &mut socket,
+        ClientMessage::Command {
+            command: Box::new(Command::DictateReadAloudStart { initiator: None }),
+            reply_to: None,
+        },
+    )
+    .await;
+
+    // Half-scale audio, at the wire's own shape.
+    let mut frame = vec![forge_server::transport::frame::Kind::Dictation.tag()];
+    for _ in 0..320 {
+        frame.extend_from_slice(&16384i16.to_le_bytes());
+    }
+    socket.send(Message::Binary(frame.into())).await.expect("the frame goes");
+
+    send(
+        &mut socket,
+        ClientMessage::Command {
+            command: Box::new(Command::DictateReadAloudStop { keep: true, initiator: None }),
+            reply_to: None,
+        },
+    )
+    .await;
+
+    // The keep writes the set off the runtime thread and re-reads the models
+    // behind it; a recording in that read is the frame having arrived.
+    update_until(&mut socket, "the read-aloud set", |update| {
+        matches!(
+            update,
+            SessionUpdate::DictateModelsChanged { models }
+                if !models.read_aloud.recordings.is_empty()
+        )
+    })
+    .await;
+}
+
 /// A client that drops mid-take leaves nothing behind: the take is DROPPED
 /// rather than submitted - its reader is gone, so nothing it streamed lands
 /// anywhere - and the seat is free, so the same client reconnecting and

@@ -1,0 +1,113 @@
+{
+ "id": "superwhisper/s1-mini-GGUF",
+ "cardData": {
+  "license": "other",
+  "license_name": "s1-mini-license",
+  "license_link": "LICENSE",
+  "base_model": "superwhisper/s1-mini",
+  "base_model_relation": "quantized",
+  "library_name": "gguf",
+  "pipeline_tag": "text-generation",
+  "language": [
+   "en"
+  ],
+  "tags": [
+   "asr",
+   "automatic-speech-recognition",
+   "text-normalization",
+   "inverse-text-normalization",
+   "punctuation",
+   "truecasing",
+   "speech-to-text",
+   "dictation",
+   "post-processing",
+   "qwen3",
+   "llama.cpp"
+  ]
+ },
+ "downloads": 287954,
+ "tags": [
+  "gguf",
+  "asr",
+  "automatic-speech-recognition",
+  "text-normalization",
+  "inverse-text-normalization",
+  "punctuation",
+  "truecasing",
+  "speech-to-text",
+  "dictation",
+  "post-processing",
+  "qwen3",
+  "llama.cpp",
+  "text-generation",
+  "en",
+  "arxiv:2505.09388",
+  "base_model:superwhisper/s1-mini",
+  "base_model:quantized:superwhisper/s1-mini",
+  "license:other",
+  "endpoints_compatible",
+  "region:us",
+  "conversational"
+ ],
+ "gguf": {
+  "total": 751632384,
+  "architecture": "qwen3",
+  "context_length": 40960,
+  "chat_template": "{%- if tools %}\n    {{- '<|im_start|>system\\n' }}\n    {%- if messages[0].role == 'system' %}\n        {{- messages[0].content + '\\n\\n' }}\n    {%- endif %}\n    {{- \"# Tools\\n\\nYou may call one or more functions to assist with the user query.\\n\\nYou are provided with function signatures within <tools></tools> XML tags:\\n<tools>\" }}\n    {%- for tool in tools %}\n        {{- \"\\n\" }}\n        {{- tool | tojson }}\n    {%- endfor %}\n    {{- \"\\n</tools>\\n\\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\\n<tool_call>\\n{\\\"name\\\": <function-name>, \\\"arguments\\\": <args-json-object>}\\n</tool_call><|im_end|>\\n\" }}\n{%- else %}\n    {%- if messages[0].role == 'system' %}\n        {{- '<|im_start|>system\\n' + messages[0].content + '<|im_end|>\\n' }}\n    {%- endif %}\n{%- endif %}\n{%- set ns = namespace(multi_step_tool=true, last_query_index=messages|length - 1) %}\n{%- for message in messages[::-1] %}\n    {%- set index = (messages|length - 1) - loop.index0 %}\n    {%- if ns.multi_step_tool and message.role == \"user\" and message.content is string and not(message.content.startswith('<tool_response>') and message.content.endswith('</tool_response>')) %}\n        {%- set ns.multi_step_tool = false %}\n        {%- set ns.last_query_index = index %}\n    {%- endif %}\n{%- endfor %}\n{%- for message in messages %}\n    {%- if message.content is string %}\n        {%- set content = message.content %}\n    {%- else %}\n        {%- set content = '' %}\n    {%- endif %}\n    {%- if (message.role == \"user\") or (message.role == \"system\" and not loop.first) %}\n        {{- '<|im_start|>' + message.role + '\\n' + content + '<|im_end|>' + '\\n' }}\n    {%- elif message.role == \"assistant\" %}\n        {%- set reasoning_content = '' %}\n        {%- if message.reasoning_content is string %}\n            {%- set reasoning_content = message.reasoning_content %}\n        {%- else %}\n            {%- if '</think>' in content %}\n                {%- set reasoning_content = content.split('</think>')[0].rstrip('\\n').split('<think>')[-1].lstrip('\\n') %}\n                {%- set content = content.split('</think>')[-1].lstrip('\\n') %}\n            {%- endif %}\n        {%- endif %}\n        {%- if loop.index0 > ns.last_query_index %}\n            {%- if loop.last or (not loop.last and reasoning_content) %}\n                {{- '<|im_start|>' + message.role + '\\n<think>\\n' + reasoning_content.strip('\\n') + '\\n</think>\\n\\n' + content.lstrip('\\n') }}\n            {%- else %}\n                {{- '<|im_start|>' + message.role + '\\n' + content }}\n            {%- endif %}\n        {%- else %}\n            {{- '<|im_start|>' + message.role + '\\n' + content }}\n        {%- endif %}\n        {%- if message.tool_calls %}\n            {%- for tool_call in message.tool_calls %}\n                {%- if (loop.first and content) or (not loop.first) %}\n                    {{- '\\n' }}\n                {%- endif %}\n                {%- if tool_call.function %}\n                    {%- set tool_call = tool_call.function %}\n                {%- endif %}\n                {{- '<tool_call>\\n{\"name\": \"' }}\n                {{- tool_call.name }}\n                {{- '\", \"arguments\": ' }}\n                {%- if tool_call.arguments is string %}\n                    {{- tool_call.arguments }}\n                {%- else %}\n                    {{- tool_call.arguments | tojson }}\n                {%- endif %}\n                {{- '}\\n</tool_call>' }}\n            {%- endfor %}\n        {%- endif %}\n        {{- '<|im_end|>\\n' }}\n    {%- elif message.role == \"tool\" %}\n        {%- if loop.first or (messages[loop.index0 - 1].role != \"tool\") %}\n            {{- '<|im_start|>user' }}\n        {%- endif %}\n        {{- '\\n<tool_response>\\n' }}\n        {{- content }}\n        {{- '\\n</tool_response>' }}\n        {%- if loop.last or (messages[loop.index0 + 1].role != \"tool\") %}\n            {{- '<|im_end|>\\n' }}\n        {%- endif %}\n    {%- endif %}\n{%- endfor %}\n{%- if add_generation_prompt %}\n    {{- '<|im_start|>assistant\\n' }}\n    {%- if enable_thinking is defined and enable_thinking is false %}\n        {{- '<think>\\n\\n</think>\\n\\n' }}\n    {%- endif %}\n{%- endif %}",
+  "bos_token": "<|endoftext|>",
+  "eos_token": "<|im_end|>",
+  "totalFileSize": 1509347232
+ },
+ "siblings": [
+  {
+   "rfilename": ".gitattributes",
+   "blobId": "d5c14e14dd25c4bb92ffdc24fad3e051b6f2a68c",
+   "size": 1604
+  },
+  {
+   "rfilename": "LICENSE",
+   "blobId": "ec0371e837c48cb3f02116a32f2d5821c3e86485",
+   "size": 12033
+  },
+  {
+   "rfilename": "NOTICE",
+   "blobId": "493d92b08a0cbe5078f75a095176545e73c22f79",
+   "size": 507
+  },
+  {
+   "rfilename": "README.md",
+   "blobId": "720d8c9ace30bf7c00c10ac23703ba0873cf914a",
+   "size": 14306
+  },
+  {
+   "rfilename": "banner.jpg",
+   "blobId": "392214bac622d7a459b44c0662e244b5c304c7d4",
+   "size": 154019,
+   "lfs": {
+    "sha256": "c17fc850506c928b2213cac6becec3b315fb96c0064b97a25de9be71964c5fbb",
+    "size": 154019,
+    "pointerSize": 131
+   }
+  },
+  {
+   "rfilename": "s1-mini-f16.gguf",
+   "blobId": "7545964cf4392f7477c372b4361f273075680b3c",
+   "size": 1509347232,
+   "lfs": {
+    "sha256": "0370da4f1bae19e3150bcafa33c5d396c15f97bf25519540a3e013db5cc00af4",
+    "size": 1509347232,
+    "pointerSize": 135
+   }
+  },
+  {
+   "rfilename": "s1-mini-q4_k_m.gguf",
+   "blobId": "59126c109b31821bb5abf8264c7720f195450cab",
+   "size": 484219808,
+   "lfs": {
+    "sha256": "3b41ebe2502cbd03e811d5d16b022f5ab551eda58d62597d152f89535003c634",
+    "size": 484219808,
+    "pointerSize": 134
+   }
+  }
+ ]
+}

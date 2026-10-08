@@ -2,6 +2,7 @@
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { fakeConnection, MODELS, modelsWire } from '../models/testing';
 import { DEFAULT_AXES } from '../session/wire';
 import DictationPanel from './DictationPanel.svelte';
 
@@ -70,5 +71,61 @@ describe('the panel rows', () => {
         false,
       );
     }
+  });
+});
+
+describe('the model rows', () => {
+  /**
+   * **The panel says which model each role holds, off the same read the
+   * models page draws**, and its press is that page's own activation. A
+   * panel that drew nothing while the read was out would read as a session
+   * with no models rather than one still being read.
+   */
+  it('draws each role from the read, and the press activates', async () => {
+    const forge = fakeConnection();
+    app = mount(DictationPanel, {
+      target: document.body,
+      props: {
+        axes: DEFAULT_AXES,
+        defaults: DEFAULT_AXES,
+        bind: 'right_cmd',
+        mode: 'auto',
+        device: null,
+        onaxes: () => undefined,
+        ondevice: () => undefined,
+        connection: forge.connection,
+      },
+    });
+    flushSync();
+    expect(document.body.textContent).toContain('reading the models this session runs');
+
+    forge.arrive({ kind: 'snapshot', subject: MODELS, data: modelsWire });
+    await vi.waitFor(() => {
+      if (!document.body.textContent?.includes('cohere-transcribe-03-2026-Q4_K_M.gguf')) {
+        throw new Error('the read has not landed');
+      }
+    });
+    expect(document.body.textContent).toContain('s1-mini-f16.gguf');
+
+    const dev = [...document.querySelectorAll<HTMLButtonElement>('.pop .dev')].find((button) =>
+      button.textContent?.includes('cohere-transcribe'),
+    );
+    expect(dev, 'the transcribing row drew no door').not.toBeUndefined();
+    dev?.click();
+    flushSync();
+
+    const choice = [...document.querySelectorAll<HTMLButtonElement>('.pop .list .drow')].find(
+      (button) => button.textContent?.includes('granite-speech-5.0-470m-turboctc-nc'),
+    );
+    expect(choice, 'the opened list drew no choices').not.toBeUndefined();
+    choice?.click();
+    flushSync();
+
+    expect(forge.dispatched).toContainEqual({
+      dictate_activate: {
+        role: 'transcribing',
+        file: 'granite-speech-5.0-470m-turboctc-nc-Q4_K_M.gguf',
+      },
+    });
   });
 });

@@ -38,8 +38,10 @@
 //! smoke test passes while dev crashes.
 
 mod audio;
+pub mod bench;
 mod capture;
 pub mod catalogue;
+pub mod cleanup;
 mod config;
 mod diagnostics;
 mod engine;
@@ -54,7 +56,7 @@ pub mod test_support;
 
 pub use audio::{AudioSource, SAMPLE_RATE, Samples};
 pub use capture::{Device, devices};
-pub use config::{Config, ConfigBuilder, ModelFacts, ModelSpec};
+pub use config::{Config, ConfigBuilder, ModelFacts, ModelSpec, spec_for_download};
 pub use engine::{
     Busy, Capture, CaptureMeter, Engine, FrameSink, Outcome, Stages, StreamCapture, Ticket,
     Transcript, WindowProgress,

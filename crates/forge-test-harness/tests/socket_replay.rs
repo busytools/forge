@@ -48,6 +48,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
+use forge_dictate::ModelFacts;
+use forge_dictate::bench::{CorpusId, Metrics, StageTotals, Tier};
+use forge_dictate::catalogue::EntryKind;
 use forge_primitives::{Message, SessionSlot};
 use forge_sdk::transport::codec::{DecodedLine, decode_dispatch};
 use forge_server::transport::PROTOCOL_VERSION;
@@ -55,6 +58,15 @@ use forge_server::transport::envelope::{ClientMessage, ClientSettings, ServerMes
 use forge_server::transport::wire::{DeviceWire, TurnWire};
 use forge_server::{Command, SessionUpdate};
 use forge_test_harness::sdk_wire::{baseline_dir, legacy_baseline_dir, load_baseline_from};
+use forge_workspace::DictateModelState;
+use forge_workspace::bench::{
+    BenchResult, BenchRole, BenchState, BenchTarget, ReadAloudRecording, ReadAloudState,
+};
+use forge_workspace::catalogue::{
+    CandidateRow, CatalogueCheck, CatalogueJoin, CatalogueRow, CurrentFacts, DictateModelsSnapshot,
+    DownloadFact, InUseModel, ModelUpdate, SpeedFact, UpdateVerdict,
+};
+use forge_workspace::install::{ActivateState, ActiveFrom, InstallState, InstalledModel};
 use serde_json::{Value, json};
 
 /// A variant's wire name under `rename_all = "snake_case"`.
@@ -283,7 +295,10 @@ census!(Command,
         ResumeSession struct, RespondPermission struct, RespondSlackPost struct,
         RespondBrowserHandOff struct,
         RespondQuestion struct, SetDictateOverride struct, ResetDictateOverrides struct,
-        SetDictateDevice struct, DictateCatalogueCheck struct,
+        SetDictateDevice struct, DictateCatalogueCheck struct, DictateInstall struct,
+        DictateActivate struct, DictateDeactivate struct, DictateBench struct,
+        DictateBenchStop struct, DictateReadAloudStart struct, DictateReadAloudStop struct,
+        DictateReadAloudDelete struct, DictateBenchDelete struct, DictateUninstall struct,
         ReconnectMcpServer struct, ToggleMcpServer struct,
         SpawnProject struct, SpawnSession struct, StartDefault struct, DeliverPeerPrompt struct,
         SpawnWorker struct, CloseWorker struct, OpenUrl struct, DespawnWorker struct,
@@ -307,9 +322,9 @@ census!(ClientMessage,
     client_message_census, CLIENT_MESSAGE_VARIANTS);
 
 /// **A unit command crosses as its own name, and the client writes that
-/// name.** The models page's Check now builds this frame by hand - the
-/// command is the core's one unit variant a client sends - so both halves
-/// are pinned here: what the core writes for the variant, and that the exact
+/// name.** The models page builds these frames by hand - a unit variant is
+/// the core's string form a client sends - so both halves are pinned for
+/// each of them: what the core writes for the variant, and that the exact
 /// frame the page hands the socket decodes back to it. A server that
 /// stopped accepting the string form would refuse the frame as a message it
 /// does not know, and the command would do nothing when it is pressed with
@@ -319,22 +334,33 @@ fn a_unit_command_crosses_as_its_name() {
     assert_eq!(
         serde_json::to_value(Command::DictateCatalogueCheck).expect("the variant encodes"),
         json!("dictate_catalogue_check"),
-        "the core's unit variant no longer crosses as its own name"
+        "a unit command no longer crosses as its own name"
+    );
+    assert_eq!(
+        serde_json::to_value(Command::DictateBenchStop).expect("the variant encodes"),
+        json!("dictate_bench_stop"),
+        "a unit command no longer crosses as its own name"
     );
 
-    let frame = json!({
-        "kind": "command",
-        "command": "dictate_catalogue_check",
-        "reply_to": null,
-    });
+    for name in ["dictate_catalogue_check", "dictate_bench_stop"] {
+        let frame = json!({
+            "kind": "command",
+            "command": name,
+            "reply_to": null,
+        });
 
-    let message: ClientMessage =
-        serde_json::from_value(frame).expect("the frame the models page writes parses");
-    let ClientMessage::Command { command, reply_to } = message else {
-        panic!("a command frame decoded as {message:?}");
-    };
-    assert!(matches!(*command, Command::DictateCatalogueCheck), "got {command:?}");
-    assert!(reply_to.is_none(), "the outcome rides the subscription, not a reply");
+        let message: ClientMessage =
+            serde_json::from_value(frame).expect("the frame the models page writes parses");
+        let ClientMessage::Command { command, reply_to } = message else {
+            panic!("a command frame decoded as {message:?}");
+        };
+        match (&*command, name) {
+            (Command::DictateCatalogueCheck, "dictate_catalogue_check")
+            | (Command::DictateBenchStop, "dictate_bench_stop") => {}
+            other => panic!("{name} decoded as {other:?}"),
+        }
+        assert!(reply_to.is_none(), "the outcome rides the subscription, not a reply");
+    }
 }
 
 /// Where the records live, named by the protocol the server speaks rather
@@ -454,6 +480,31 @@ fn sample_message() -> Message {
         }
     }
     panic!("no committed SDK baseline carries a decodable message");
+}
+
+/// One catalogue row with every field the page reads, so the models sample
+/// pins the row's whole key set and not just the snapshot's.
+fn sample_row() -> CatalogueRow {
+    CatalogueRow {
+        variant: "owner/norm-a".to_owned(),
+        display_name: "Norm A".to_owned(),
+        family: "owner".to_owned(),
+        params: None,
+        license: Some("MIT".to_owned()),
+        languages: vec!["en".to_owned()],
+        streaming: false,
+        download: Some(DownloadFact { quant: "Q4_K_M".to_owned(), size_bytes: 300_000_000 }),
+        speed: None,
+        wer: None,
+        kind: EntryKind::Normalizer,
+        url: Some("https://huggingface.co/owner/norm-a".to_owned()),
+        download_count: Some(449),
+    }
+}
+
+/// One bench target, for the sample's running and saved states alike.
+fn sample_target(file: &str) -> BenchTarget {
+    BenchTarget { file: file.to_owned(), role: BenchRole::Cleanup, pinned: false }
 }
 
 struct Contract {
@@ -679,6 +730,131 @@ fn frames_record() -> Value {
             }),
         }),
     );
+    // **The models read, whose payload the whole page is drawn from.** The
+    // census covers its variant name and nothing inside it: a rename among
+    // these - a fact key, a state tag, the digest a remove control quotes -
+    // would move no census line and draw undefined in the page. One of each
+    // member rides the sample, because an empty list pins nothing about the
+    // rows it would carry.
+    payload_sampled.insert(
+        "DictateModelsChanged".to_owned(),
+        shape_of(&ServerMessage::Update {
+            update: Box::new(SessionUpdate::DictateModelsChanged {
+                models: DictateModelsSnapshot {
+                    enabled: true,
+                    models_dir: Some(PathBuf::from("/tmp/models")),
+                    in_use: vec![InUseModel {
+                        role: forge_workspace::DictateRole::Transcribing,
+                        file: "cohere-transcribe-03-2026-Q4_K_M.gguf".to_owned(),
+                        size: 1_558_162_944,
+                        sha256: Some("0ea5".to_owned()),
+                        state: DictateModelState::Ready,
+                        facts: ModelFacts {
+                            quant: Some("Q4_K_M".to_owned()),
+                            params: Some(2_049_026_832),
+                            license: Some("Apache-2.0".to_owned()),
+                            runtime: Some("transcribe.cpp".to_owned()),
+                        },
+                        catalogue: Some(CatalogueJoin {
+                            variant: "cohere-transcribe-03-2026".to_owned(),
+                            display_name: "Cohere Transcribe".to_owned(),
+                            size_bytes: 1_558_162_944,
+                            streaming: false,
+                            languages: vec!["en".to_owned()],
+                            speed: Some(SpeedFact {
+                                machine: "m4-max".to_owned(),
+                                backend: "metal".to_owned(),
+                                quant: "Q8_0".to_owned(),
+                                xrt_wall: 72.9,
+                            }),
+                        }),
+                        from: ActiveFrom::Pin,
+                        at: None,
+                    }],
+                    check: CatalogueCheck::Fresh {
+                        at: "2026-10-06T06:12:00Z".to_owned(),
+                        release: Some("v0.3.1".to_owned()),
+                        skipped: 0,
+                    },
+                    updates: vec![ModelUpdate {
+                        role: forge_workspace::DictateRole::Transcribing,
+                        file: "cohere-transcribe-03-2026-Q4_K_M.gguf".to_owned(),
+                        current: CurrentFacts { speed_x: 72.9, fleurs_en_wer: 5.08 },
+                        candidates: vec![CandidateRow {
+                            row: sample_row(),
+                            verdict: UpdateVerdict::Recommended,
+                        }],
+                    }],
+                    rows: vec![sample_row()],
+                    install: InstallState::Downloading {
+                        file: "granite-Q4_K_M.gguf".to_owned(),
+                        got: 1,
+                        total: 6,
+                    },
+                    activate: ActivateState::Idle,
+                    installed: vec![InstalledModel {
+                        variant: "granite".to_owned(),
+                        file: "granite-Q4_K_M.gguf".to_owned(),
+                        url: "https://example.invalid/granite".to_owned(),
+                        size: 6,
+                        facts: ModelFacts {
+                            quant: Some("Q4_K_M".to_owned()),
+                            ..ModelFacts::default()
+                        },
+                        at: "2026-10-06T09:00:00Z".to_owned(),
+                    }],
+                    bench: BenchState::Running {
+                        target: sample_target("granite-Q4_K_M.gguf"),
+                        tier: Tier::Consensus,
+                        clip: 1,
+                        clips: 12,
+                        so_far: Some(0.5),
+                    },
+                    results: vec![BenchResult {
+                        target: sample_target("granite-Q4_K_M.gguf"),
+                        tier: Tier::ReadAloud,
+                        metrics: Metrics {
+                            clips: 12,
+                            audio_seconds: 320.0,
+                            wall_seconds: 210.0,
+                            xrt_wall: 30.0,
+                            term_accuracy: Some(0.88),
+                            wer: Some(0.061),
+                            matched: None,
+                            stages_ms: StageTotals {
+                                model_load_ms: 1200,
+                                resample_ms: 10,
+                                mel_ms: 20,
+                                encode_ms: 30,
+                                decode_ms: 40,
+                                normalize_ms: 50,
+                            },
+                        },
+                        at: "2026-10-06T19:11:38Z".to_owned(),
+                        corpus: CorpusId {
+                            clips: 12,
+                            audio_seconds: 320,
+                            sha256: "a414db2a".to_owned(),
+                        },
+                    }],
+                    read_aloud: ReadAloudState {
+                        recordings: vec![ReadAloudRecording {
+                            id: "take-1791363000000".to_owned(),
+                            duration_ms: 41_000,
+                            bytes: 1_312_000,
+                            sha256: "980227df".to_owned(),
+                            at: "2026-10-06T06:04:23Z".to_owned(),
+                        }],
+                        recording: false,
+                        error: None,
+                        passage: "I want the forge session to pick up where it left off."
+                            .to_owned(),
+                        terms: vec!["forge".to_owned()],
+                    },
+                },
+            }),
+        }),
+    );
 
     json!({
         "server_message": named(SERVER_MESSAGE_VARIANTS),
@@ -699,8 +875,8 @@ fn frames_record() -> Value {
 /// its name - a field renamed on the server would leave a client's own literal
 /// writing a key nothing reads, with every suite green on both sides.
 ///
-/// Both dictation commands are sampled, because both carry the connection's
-/// own stamp and neither may cross it: a `serde(skip)` dropped from one would
+/// The four commands carrying the connection's own stamp are sampled,
+/// because none of them may cross it: a `serde(skip)` dropped from one would
 /// put a transport-side token on this wire with every suite otherwise green.
 fn command_sampled(seat: &SessionSlot) -> BTreeMap<String, BTreeMap<String, Value>> {
     let mut sampled: BTreeMap<String, BTreeMap<String, Value>> = BTreeMap::new();
@@ -724,6 +900,14 @@ fn command_sampled(seat: &SessionSlot) -> BTreeMap<String, BTreeMap<String, Valu
     sampled.insert(
         "DictateStop".to_owned(),
         sample(Command::DictateStop { key: seat.clone(), submit: true, initiator: None }),
+    );
+    sampled.insert(
+        "DictateReadAloudStart".to_owned(),
+        sample(Command::DictateReadAloudStart { initiator: Some(1) }),
+    );
+    sampled.insert(
+        "DictateReadAloudStop".to_owned(),
+        sample(Command::DictateReadAloudStop { keep: true, initiator: Some(1) }),
     );
     sampled
 }

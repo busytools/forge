@@ -24,6 +24,8 @@ function payload(over: Partial<Record<string, unknown>> = {}): DictateModelsWire
           runtime: 'transcribe.cpp',
         },
         catalogue: null,
+        from: { from: 'pin' },
+        at: null,
       },
       {
         role: 'normalization',
@@ -33,11 +35,19 @@ function payload(over: Partial<Record<string, unknown>> = {}): DictateModelsWire
         state: 'loading',
         facts: { quant: 'F16', params: 596_000_000, license: 'Apache-2.0', runtime: 'llama.cpp' },
         catalogue: null,
+        from: { from: 'pin' },
+        at: null,
       },
     ],
     check: { state: 'fresh', at: '2026-10-06T06:12:00Z', release: 'v0.3.1', skipped: 2 },
     updates: [],
     rows: [],
+    install: { state: 'idle' },
+    activate: { state: 'idle' },
+    installed: [],
+    bench: { state: 'idle' },
+    results: [],
+    read_aloud: { recorded: false, recording: false, error: null, passage: '' },
     ...over,
   } as unknown as DictateModelsWire;
 }
@@ -83,12 +93,33 @@ describe("the models page's snapshot, narrowed once where it enters", () => {
     const wire = modelsFrom(
       payload({
         in_use: [{ ...(payload().in_use[0] as InUseModel), role: 'summarizing' }],
-        updates: [{ role: 'summarizing', file: 'x.gguf', current: {}, candidate: {} }],
+        updates: [
+          {
+            role: 'summarizing',
+            file: 'x.gguf',
+            current: {},
+            candidates: [
+              {
+                row: { kind: 'sideways', url: 7, download_count: 'many', params: null },
+                verdict: 'sideways',
+              },
+            ],
+          },
+        ],
       }),
     );
 
     expect(wire.in_use[0]?.role).toBe('other');
     expect(wire.updates[0]?.role).toBe('other');
+    expect(wire.updates[0]?.candidates[0]?.verdict).toBe('unknown');
+    // A candidate's row narrows like the feed's own rows do: the fields a
+    // renderer switches on are narrowed where they enter, whichever list
+    // they crossed in.
+    const row = wire.updates[0]?.candidates[0]?.row;
+    expect(row?.kind).toBe('other');
+    expect(row?.url).toBeNull();
+    expect(row?.download_count).toBeNull();
+    expect(row?.params, 'a Hub row counts no parameters, and null crosses as itself').toBeNull();
   });
 
   /**
@@ -134,6 +165,9 @@ describe("the models page's snapshot, narrowed once where it enters", () => {
       download: { quant: 'Q4_K_M', size_bytes: 279_000_000 },
       speed: { machine: 'm4-max', backend: 'metal', quant: 'Q8_0', xrt_wall: 388.8 },
       wer: { dataset: 'fleurs', split: 'test', language: 'en', err_pct: 4.61 },
+      kind: 'asr',
+      url: null,
+      download_count: null,
     };
     const wire = modelsFrom(
       payload({
@@ -143,7 +177,7 @@ describe("the models page's snapshot, narrowed once where it enters", () => {
             role: 'transcribing',
             file: 'cohere-transcribe-03-2026-Q4_K_M.gguf',
             current: { speed_x: 72.9, fleurs_en_wer: 5.08 },
-            candidate: row,
+            candidates: [{ row, verdict: 'recommended' }],
           },
         ],
       }),
@@ -159,6 +193,55 @@ describe("the models page's snapshot, narrowed once where it enters", () => {
     });
     expect(wire.rows).toEqual([row]);
     expect(wire.updates[0]?.current).toEqual({ speed_x: 72.9, fleurs_en_wer: 5.08 });
-    expect(wire.updates[0]?.candidate.speed?.xrt_wall).toBe(388.8);
+    expect(wire.updates[0]?.candidates[0]?.row.speed?.xrt_wall).toBe(388.8);
+  });
+
+  /**
+   * Where a role's model came from is the fourth union this page narrows. An
+   * unreadable source keeps the row - the model is still in use - and says
+   * only that this client cannot place it.
+   */
+  it('narrows an active-model source outside the shipped set, keeping its own', () => {
+    const sourced = (from: unknown) =>
+      modelsFrom(payload({ in_use: [{ ...(payload().in_use[0] as InUseModel), from }] })).in_use[0]
+        ?.from;
+
+    expect(sourced({ from: 'borrowed' })).toEqual({ from: 'unknown' });
+    expect(sourced({ from: 'pin' })).toEqual({ from: 'pin' });
+    expect(sourced({ from: 'installed', variant: 'granite' })).toEqual({
+      from: 'installed',
+      variant: 'granite',
+    });
+    expect(sourced({ from: 'config', key: 'transcribe_model', variant: 'granite' })).toEqual({
+      from: 'config',
+      key: 'transcribe_model',
+      variant: 'granite',
+    });
+  });
+
+  /**
+   * A download state this client is older than says so rather than reading as
+   * idle: `idle` here would claim nothing is downloading on a forge that is.
+   */
+  it('narrows a download state it cannot read rather than drawing idle', () => {
+    expect(modelsFrom(payload({ install: { state: 'paused' } })).install).toEqual({
+      state: 'unknown',
+    });
+    expect(
+      modelsFrom(payload({ install: { state: 'downloading', file: 'x.gguf', got: 1, total: 2 } }))
+        .install,
+    ).toEqual({ state: 'downloading', file: 'x.gguf', got: 1, total: 2 });
+  });
+
+  /** The activation state carries a role, and it is narrowed the same way. */
+  it('narrows an activation state and the role it names', () => {
+    const activating = modelsFrom(
+      payload({ activate: { state: 'activating', role: 'summarizing', file: 'x.gguf' } }),
+    );
+
+    expect(activating.activate).toEqual({ state: 'activating', role: 'other', file: 'x.gguf' });
+    expect(modelsFrom(payload({ activate: { state: 'queued' } })).activate).toEqual({
+      state: 'unknown',
+    });
   });
 });

@@ -197,7 +197,17 @@ export interface Wire {
   takes: boolean;
   connection: Pick<
     Connection,
-    'dispatch' | 'onMessage' | 'devices' | 'store' | 'status' | 'onStatus' | 'frame' | 'settings'
+    | 'dispatch'
+    | 'onMessage'
+    | 'devices'
+    | 'store'
+    | 'status'
+    | 'onStatus'
+    | 'frame'
+    | 'settings'
+    | 'subscribe'
+    | 'unsubscribe'
+    | 'refresh'
   >;
   /** Say something to every composer attached, as the server would. */
   say(message: ServerMessage): void;
@@ -254,6 +264,11 @@ export function wire(settings: ClientSettings = DEFAULT_SETTINGS): Wire {
         return () => statuses.delete(fn);
       },
       settings: () => settings,
+      // The panel watches the models from its own seat: these tests draw no
+      // catalogue, so the subject answers with the empty store's own read.
+      subscribe: (what) => stores.open(what),
+      unsubscribe: () => {},
+      refresh: () => {},
     },
     say(message) {
       for (const fn of listeners) fn(message);

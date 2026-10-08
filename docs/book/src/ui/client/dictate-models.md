@@ -1,10 +1,12 @@
 # Dictation models
 
 The page that shows which dictation models forge runs, what the runtime's
-own catalogue publishes, and what the feed proposes adopting. It is drawn
-from one snapshot of the `dictate_models` subject - the pins, the
-catalogue check, the proposals and every row of the feed - and redrawn from
-the update stream after it. The drawing it is held against is
+own catalogue publishes, which models this machine has downloaded, and how
+to bring a candidate onto the machine and make it the one dictation runs. It
+is drawn from one snapshot of the `dictate_models` subject - the models in
+use, the catalogue check, the proposals, every row of the feed, the installed
+set and the download/activation state - and redrawn from the update stream
+after it. The drawing it is held against is
 [web-dictate-models.html](./web-dictate-models.html), beside this page.
 
 It lives at `/models`, which is its own address rather than a session's: the
@@ -12,8 +14,13 @@ models belong to the forge, not to a seat, and the subject carries no slot.
 The header's way back is the home.
 
 This page is a client-only surface: the terminal draws no catalogue. The
-read and the check command are the server's (`Subject::DictateModels`,
-`Command::DictateCatalogueCheck`), and this page is the first view of
+read and the actions are the server's (`Subject::DictateModels`,
+`Command::DictateCatalogueCheck`, `Command::DictateInstall`,
+`Command::DictateActivate`, `Command::DictateDeactivate`,
+`Command::DictateUninstall`, `Command::DictateBench`,
+`Command::DictateBenchStop`, `Command::DictateBenchDelete`,
+`Command::DictateReadAloudStart`, `Command::DictateReadAloudStop` and
+`Command::DictateReadAloudDelete`), and this page is the first view of
 either.
 
 ## What it draws
@@ -21,17 +28,21 @@ either.
 | Region | Shows | Read from |
 |---|---|---|
 | Header | the brand mark, `forge`, the page's name, and the way back to the home | `ClientSettings.mark` from the greeting; the route |
-| In use | one row per pinned model: its role, its file, the facts the pin declares - size, quant, parameters, digest, licence - and the feed's own measurement when it has one, with the live state as a chip | `in_use` |
-| Updates | what a check reads, the check's own line - up to date, an update, checking, unreachable, or a state this client cannot read - and one line per proposal: its facts, the rule it was admitted on, and what taking it means | `check`, `updates` |
-| Find a model | a box that filters the feed's rows as it is typed, with the feed's families and its fastest rows offered before a name is known: the variant, the quant a machine would run, the measured speed and error, the licence, what it transcribes. Each row links to the entry's own document | `rows` |
-| Benchmark | the section and what the run will do; the run itself is a separate piece of work | - |
+| The page's state | a refused action in the core's own words, and whichever download or activation is in flight with its progress | `refusal` (an `error` frame); `install`, `activate` |
+| In use | one row per model forge runs: its role - **the selector for the updates below** - its file, the facts the spec declares (size, quant, parameters, digest, licence), the feed's own measurement when it has one, the live state as a chip, and a line saying where the model came from | `in_use` |
+| Updates | what a check reads, the check's own line - up to date, an update, checking, unreachable, or a state this client cannot read - with both roles' news under it, then the selected role's recommendation with the one control that takes it, then the comparison table behind a door; the cleanup role's own view instead, where no feed measures a normalizer: its candidates with each one's own runs under it | `check`, `updates`, `rows`, `installed`, `results` |
+| Find a model | a box that filters the feed's rows as it is typed, with the feed's families and its fastest rows offered before a name is known: the variant, the quant a machine would run, the measured speed and error, the licence, what it transcribes, and the row's control. Each row links to the entry's own document | `rows` |
+| Benchmark | the fixtures first - the read-aloud set's own state with the record control and the count line - then the one press that scores the picks on this machine and leaves a verdict, then two doors: every run scored here, and every model a bench can run, with the control that removes a downloaded model nothing runs | `bench`, `read_aloud`, `results` |
 
-**A pin is drawn from the pin.** The first fact line comes off the pinned
+**A model in use is drawn from its spec.** The first fact line comes off the
 `ModelSpec` - the size, quant, parameters, digest and licence the loader
-verifies before a load - and never off the feed, so a model the feed does
-not carry still draws whole. The second line is the feed's: its runtime
-measurement and its languages. A pin with no join says `not in the feed`
-rather than borrowing a measurement.
+checks before a load - and never off the feed, so a model the feed does not
+carry still draws whole. The second line is the feed's: its runtime
+measurement and its languages. A model with no join says `not in the feed`
+rather than borrowing a measurement. The third line says where the model
+came from: `compiled default`, `installed here`, or `pinned by [dictate]
+<key>` - naming the key, because that key is what has to go for the runtime
+to move the role.
 
 **The check's line is the feed's freshness and its proposal at once.** A
 fresh check with nothing to propose reads `up to date`; the same check with
@@ -39,21 +50,154 @@ a proposal reads `update available`, because they are one state of one
 thing. The line states when the check ran - as a local time, from the
 server's RFC 3339 stamp - and the release the feed stood at when it
 answered. An `unreachable` check carries the server's own error text, and
-the rows the last fetch left stand. **The note under the line says what a
-check is**, because the control does not: it reads the catalogue the
-runtime publishes - every variant with its sizes, licences and the speeds
-and error rates its maintainers measured - and compares that with the two
-models pinned here. Nothing is measured on this machine.
+the rows the last fetch left stand. **Under it the line names both roles,
+without a press**: the feed's own proposal for transcribing, and the
+bench's pick for cleanup - the thing that actually decides that role - so a
+reader learns there is news before pressing Check now.
 
-**An update line says what it is, why it was picked, and what taking it
-means.** It names the model it would replace, draws the comparison the
-server admitted it on - the candidate's speed and error against the model in
-use - states the rule in words (it beats the model in use on both of the
-feed's own measurements, and its licence allows forge to ship it), and says
-what taking it is: pinning it here and opening a pull request. The bench
-that re-checks a candidate on this machine's own recordings is the piece
-that is not built, and the line says so rather than leaving a reader to look
-for a control that is not there.
+**A row's control is the rule the core enforces, drawn.** A variant this
+machine does not have offers `install <quant>`; the press fetches the
+variant's doc, takes the quant the row draws, and downloads it. An installed
+variant that is not the active transcribing model offers `use for
+transcribing`; the press loads it while the current model keeps running -
+the core builds the new engine first, swaps, and only then drops the old
+one. The active model draws as a state (`active`) rather than a control, and
+an installed model under a config pin draws `installed` with no activation
+control at all: `forge.toml` wins over every runtime pick, so the core
+refuses that dispatch, and a control that is always refused reads as
+broken. The download stays on a pinned role - pulling candidates down is
+still allowed.
+
+**An update line carries its own control**, which is the recommendation made
+pressable: the candidate's comparison against the model in use, then the
+install or activation the rule above would draw - download when the variant
+is not here, then load it, one press, with the completion line when the role
+runs it. The bench that scores a candidate on this machine's own recordings
+is the section below, not a second control in the line.
+
+**A line that says there is an update shows the update.** The check line
+carries both roles' news, and under it the selected role's recommendation
+is its own row: the model, its numbers against the one running, its licence
+and size, the rule it was picked on in words - it beats the model in use on
+both of the feed's own measurements - and what taking it does: downloads it
+if it is not here, then loads it as that role's model. Its licence is a fact
+on the row rather than a filter: what runs here is this machine's own. The one control that takes it is the
+row's own - download then load, or the download alone where `forge.toml`
+pins the role. A role with nothing proposed says so rather than leaving a
+blank. The table below it is evidence, not the pick, so it folds.
+
+**The comparison table is the rule's own working**, one row per model and
+one column per axis. Its columns are fixed widths, so the geometry holds
+still as the state changes under it - the in-use row's file name, the pick's
+control - rather than the table re-laying itself out while it is being read.
+The baseline row is the model in use: it draws its licence like every row
+does, and the words saying it is what runs sit in the rule column. Every
+candidate is read against that baseline - speed and error as `vs` pairs, the
+licence as the feed spells it, and the rule's verdict: `recommended`, `also
+beats both, but slower`, `slower than this`, `no more accurate`, or a verdict
+this client is older than. The pick's control is drawn beside its verdict
+rather than in a last column of its own, so a row's action is labelled by the
+cell it sits in.
+
+**The role row is the selector.** Pressing a role in use draws that role's
+own proposal below - the section follows the first role that has one until a
+press, so a role with news is never hidden behind one without. A role the
+feed has nothing for says so in words rather than leaving another role's
+table standing under its name, and a proposal whose candidate list is empty
+says that too. **The whole row is the selector**: a card that only answered
+on one word would read as furniture, so the press lands anywhere on it and
+the hit target is an overlay rather than the card itself - the row carries
+its own controls, and a button inside a button is not HTML.
+
+**The cleanup role has no feed to rank it, so the bench decides it.** No
+feed publishes speed or error for a normalizer, so selecting the cleanup
+role draws its own view instead of a comparison table: the candidates the
+cleanup feed listed, each a link to its entry's own document with the quant
+and the Hub's own download count, and under each one the runs this machine
+has measured on it - the tier, the numbers, and what the run says against
+the cleanup model in use on the same corpus. The pick is the best of the
+runs that share one corpus, **and only runs carrying an accuracy figure
+count**: the takes tier reads agreement between two models' words, where a
+faster normalizer is not a better one, so it publishes no word error and the
+pick waits for a corpus with words known to be true. Two runs on one corpus
+are the floor - one run is a number, not a comparison - and until then the
+view says so rather than naming a winner.
+A candidate with no run carries the control that makes one - this is the
+only role a bench's result can promote, and it is promoted here rather than
+anywhere the page claims a measurement the feed never made. The pick's own
+row carries the control that takes it, the same install-then-load press the
+sweep's verdict offers, and none at all when the pick IS the model that
+runs: a switch onto what is already running changes nothing.
+
+**The bench scores a model on this machine's own material, and nothing is
+embedded.** A shipped binary carries no audio: a machine with no material
+says so, and the way to get material is to record it. Two tiers. The
+consensus tier is the takes forge has saved here, the candidate's words read
+against the words the model in use recorded beside each one - speed and
+agreement, and agreement is a signal rather than an error, because the other
+side is another model's output. The read-aloud tier is the one passage
+somebody read aloud on purpose: its words are known, so it is the only corpus
+that can score term accuracy and word error rate. **The page records that
+passage itself**: the section draws the passage and the record control, and a
+press opens this client's microphone through the composer's own capture. The
+recording is not a take - no session owns it and nothing is transcribed,
+because the passage's words are already known - and the card draws its clock,
+its frames and its levels while it runs, with stop and save and cancel. Every
+recording is KEPT: with one standing, the section draws the recordings
+themselves - each one's length, what it costs on disk, the digest of its own
+samples and when it was made, with a delete on the row - and a control to add
+another. The passage is not drawn again, because a reader who has read it
+does not need it under every state, and the note says what a run over them
+reads: term accuracy on the passage's known terms and word error, where the
+takes read agreement. A run names its target, its own progress,
+and a stop that discards a partial corpus rather than saving one. Each saved
+result draws its figures, what it means against the model in use on the same
+corpus, and a delete.
+
+**The benchmark reads as three things, not seven.** The fixtures come
+first, in a count line and the set's own card - what a run scores on, which
+is the reader's to change. Then the one press. Then the verdict, and under
+it two doors: every run scored here, and every model a bench can run. Both
+lists are long and neither is what the section is for, so they fold behind
+a heading that carries their count. The catalogue above does not fold: it
+is a lookup a reader opens the page for, not evidence for anything.
+
+**The sweep is one press, and it leaves a verdict.** The card prices the
+press before it spends - which runs,
+what has to come off the network, which corpus they score on and what the
+last run over that corpus took - and then one button scores them all. The
+runs are the transcribing side's own pick, the cleanup role's
+most-downloaded candidates, and **each role's model in use as the baseline
+the others are read against**, which is what makes "are you on the best"
+answerable at all. The chain is the core's own one-action-at-a-time states:
+install what is missing, bench each run in turn, and read the verdict off
+the one corpus every run shares - the corpus the sweep's own first run lands
+on, because a result that was already here was measured on the takes as they
+then were and cannot anchor a comparison against today's. Once that run has
+confirmed the corpus, a run already measured on it is kept rather than
+repeated, which answers a re-press in a moment. The card says where it is
+while it runs - fetching a file, or scoring one - and a stop leaves what it
+measured on the rows below rather than pretending it finished.
+
+**The verdict names what it saw.** A sweep cannot promise the best model; it
+promises the best of what it ran, and the verdict's own words carry that
+scope: the cleanup side says "best of the N most-downloaded cleanup
+candidates, scored on your takes, N clips", and says how many candidates it
+never tried. Where the read-aloud set exists the sweep scores on it, because
+that is the one corpus a run can be called better on; where it does not, the
+verdict says which tier it leaned on and points at the recorder above. When
+the model in use wins, the verdict says that. When something else does, the
+verdict carries the switch - the same install-then-load chain as an update,
+into the role the run was read in - and the cost of it, because **the files
+the sweep fetched and nobody adopted go back off the disk**: the sweep takes
+its own downloads back once the verdict is in, so a candidate it did not
+adopt costs its bytes again if the switch is pressed later.
+
+**The note under the check line says what a check is**, because the control
+does not: it reads the catalogue the runtime publishes - every variant with
+its sizes, licences and the speeds and error rates its maintainers measured
+- and compares that with the models pinned here. Nothing is measured on
+this machine.
 
 **The search is the client's, and it filters as the box is typed.** The
 whole feed arrives with the read, so there is no submit step and nothing is
@@ -63,6 +207,12 @@ catalogue entry** - the feed's own document, in the same tree the server
 fetches from - because a list of rows that goes nowhere is what a reader
 clicks first, and the marker that says so is drawn at rest rather than
 uncovered by the pointer.
+
+**A download is never called verified.** The core checks a download against
+what its entry declares - the byte length always, and the sha256 a cleanup
+feed's blobs publish, which the speech feed's files do not - plus the
+engine's own load, and the page's note says exactly that. Nothing on this
+page may print `verified`, `checksum` or a digest the spec did not declare.
 
 **The box is blind on its own, so the page offers what can be searched.**
 Before a name is typed it draws the feed's own families as chips - each one
@@ -81,10 +231,10 @@ entry matches" and chips pointing at nothing.
 
 ## The states the page can be in
 
-- **The ordinary case**: both pins loaded, a fresh check, nothing to
+- **The ordinary case**: both models loaded, a fresh check, nothing to
   propose.
 - **An update available**: one line per in-service model worth adopting,
-  which can be one or both.
+  which can be one or both, each with the control that takes it.
 - **Dictation off**: `[dictate] enabled` is unset, so no model is in use,
   none is proposed, and the feed has not been read at all - the server
   loads the catalogue only for an enabled section, so the read answers no
@@ -104,12 +254,56 @@ entry matches" and chips pointing at nothing.
 - **An unknown check state**: a `state` tag this client is older than is
   narrowed once, where the read enters (`wire/models.ts`), into the page's
   own `unknown` - which says so. It never draws as `never`, which would
-  claim nothing has fetched on a machine that has.
-- **A model mid-load**: the pin's chip carries the state the preflight
+  claim nothing has fetched on a machine that has. The download and
+  activation states take the same treatment, and so does a source for a
+  model in use this client has no case for.
+- **A model mid-load**: the row's chip carries the state the preflight
   snapshot reports - waiting, verifying, fetching with its fraction,
   loading, loaded, or failed. The page re-reads when the load finishes
   (`dictate_availability`), so chips do not stay on `waiting` until the
   next check.
+- **A download in flight**: one line under the header naming the file, the
+  whole percent and the bytes, with a progress element carrying the same
+  figure. Every install and activation control is disabled while it runs -
+  the core takes one download at a time - so a second press is not offered
+  and then refused.
+- **A download that did not finish**: the same line in the failed tone, with
+  the file and the core's own reason (a byte-length disagreement carries
+  both lengths).
+- **An activation in flight**: a line naming the file being loaded and the
+  role it will take, saying that dictation keeps running the current model
+  until the new one is up.
+- **An activation that did not load**: the failed line carries the reason
+  and says the current model is still running - the core builds the new
+  engine before it swaps, so a failure changes nothing.
+- **The sweep before a press**: the runs it would make, what they cost,
+  which corpus they score on, and - when no run has ever landed on that
+  corpus - that there is no clock to estimate by. Nothing here is promised;
+  every figure comes off the read.
+- **A sweep running**: the line names the file it is fetching or scoring,
+  the tier and the run count; the stop is beside it. A stop, or a run that
+  failed, leaves what it measured on the rows below and does not draw a
+  verdict - a verdict from half a plan would be a claim nobody made.
+- **A verdict**: whether the model in use read best, or which run read
+  better and by what, with the scope in the same words and the switch - and
+  its download cost - where one is offered. It stands until the next sweep.
+- **A bench that did not finish**: the core's own reason under the section,
+  with a close on the line. Closing hides that failure - keyed by what
+  failed, so the next one draws - because the state itself is the core's and
+  the page does not clear what it did not set.
+- **A model this machine downloaded and nothing runs**: the row carries the
+  control that removes the file and its record, refused by the core while a
+  role runs it. This is what clears a broken download, and what a sweep
+  leaves behind when its candidate lost.
+- **A refused action**: the core's own words under the header, on an
+  `error` frame the connection answered the dispatch with - a second
+  download while one runs, an activation on a role `forge.toml` pins, or an
+  uninstall on a file a role is running.
+- **A pinned role**: its row's source line names the `[dictate]` key, no
+  row offers an activation for it, and the download controls stay.
+- **A role running an installed model**: its row carries `use the default`
+  beside the state chip - the swap back to the compiled pin, which is what
+  undoes a runtime pick.
 - **A connection that dropped**: the shell's own line stands above every
   page, and this one keeps what it last read.
 - **A search that matches nothing**: the query is named, with the hint that
@@ -122,11 +316,16 @@ entry matches" and chips pointing at nothing.
   surface, and the `.svc` card's own shape for the check and update lines.
 - The empty box (`dictation is off`, and the benchmark section) from the
   home's own empty treatment.
-- The chip, at this page's scale, from the dictation panel's.
+- The chip, at this page's scale, from the dictation panel's - as a state
+  when it is a span and as an action when it is a button.
 - The state marks: the four shapes are the shared vocabulary
   (`web.css`), and the two this page needed - the verdict disc and the
   verdict triangle - were added to that vocabulary rather than to the page,
   because the band draws the same two.
+- The `.status` line, for the download and activation states, is the check
+  and update lines' own shape; the download's bar is the platform's
+  `progress` element, so the value it draws is the value the words beside it
+  carry.
 
 ## The two widths
 

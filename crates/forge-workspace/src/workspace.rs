@@ -325,15 +325,38 @@ pub struct Workspace {
     /// `start_dictate_catalogue` and `Command::DictateCatalogueCheck`, and
     /// read by the models page through `dictate_models`.
     pub(crate) dictate_catalogue: Mutex<crate::catalogue::CatalogueState>,
+    /// Where the last model install got to. Set by
+    /// `Command::DictateInstall`, read by the models page through
+    /// `dictate_install`.
+    pub(crate) dictate_install: Mutex<crate::install::InstallState>,
+    /// Where the last model activation got to. Set by
+    /// `Command::DictateActivate`, read by the models page through
+    /// `dictate_activate`.
+    pub(crate) dictate_activate: Mutex<crate::install::ActivateState>,
+    /// Where the last bench got to, and the flag its Stop sets. Read by
+    /// the models page through `dictate_bench` and `bench_results`.
+    pub(crate) dictate_bench: Mutex<crate::bench::BenchState>,
+    pub(crate) dictate_bench_cancel: std::sync::atomic::AtomicBool,
+    /// The last read-aloud write's failure, when there was one: a stop
+    /// whose write fails has no dispatch left to answer, so the page reads
+    /// it here instead. Cleared when the next recording starts.
+    pub(crate) read_aloud_error: Mutex<Option<String>>,
     /// A test's own catalogue source, so a check can run against a
     /// loopback server instead of GitHub. Not present in production
     /// builds.
     #[cfg(any(test, feature = "testing"))]
     pub(crate) test_catalogue_source: Mutex<Option<forge_dictate::catalogue::CatalogueSource>>,
+    /// A test's own cleanup source, on the same terms.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) test_cleanup_source: Mutex<Option<forge_dictate::cleanup::CleanupSource>>,
     /// A test's own catalogue directory, so a check never writes to the
     /// real app-support dir. Not present in production builds.
     #[cfg(any(test, feature = "testing"))]
     pub(crate) test_catalogue_dir: Mutex<Option<std::path::PathBuf>>,
+    /// A test's own read-aloud set directory, so an arming never writes to
+    /// the real app-support dir. Not present in production builds.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) test_read_aloud_dir: Mutex<Option<std::path::PathBuf>>,
     /// Fan-in [`SessionUpdate`] sender: every producer inside the
     /// workspace holds a clone, and it fans each update out to whatever
     /// subscribed at [`Self::subscribe`].
@@ -1543,10 +1566,19 @@ impl Workspace {
             dictate_device_pick: Mutex::new(None),
             browser: Arc::new(crate::browser::BrowserRelay::new()),
             dictate_catalogue: Mutex::new(crate::catalogue::CatalogueState::default()),
+            dictate_install: Mutex::new(crate::install::InstallState::default()),
+            dictate_activate: Mutex::new(crate::install::ActivateState::default()),
+            dictate_bench: Mutex::new(crate::bench::BenchState::default()),
+            dictate_bench_cancel: std::sync::atomic::AtomicBool::new(false),
+            read_aloud_error: Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]
             test_catalogue_source: Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]
+            test_cleanup_source: Mutex::new(None),
+            #[cfg(any(test, feature = "testing"))]
             test_catalogue_dir: Mutex::new(None),
+            #[cfg(any(test, feature = "testing"))]
+            test_read_aloud_dir: Mutex::new(None),
             update_tx,
             command_senders: Mutex::new(HashMap::new()),
             live_workers: Mutex::new(HashMap::new()),
@@ -2536,21 +2568,47 @@ impl Workspace {
     /// Fetch, verify and load the dictation models. One task per forge
     /// run, started beside the account loaders; a no-op when dictation
     /// is switched off.
+    ///
+    /// The active models are resolved first - the config key, the runtime
+    /// pick, or the compiled pin, per role - and the resolution's failure
+    /// is the same stop a failed fetch is, naming the config key that
+    /// could not be answered.
     pub fn start_dictate_preflight(self: &Arc<Self>) {
         let settings = self.config.dictate.clone();
         if !settings.enabled {
             return;
         }
         let state = Arc::clone(&self.dictate);
+        let this = Arc::clone(self);
         let updates = self.update_sender();
         let span = tracing::info_span!("dictate_preflight");
         tokio::spawn(
             async move {
-                crate::dictate::run_dictate_preflight(settings, state.clone()).await;
+                let resolved = match this.resolve_active(&settings).await {
+                    Ok(resolved) => resolved,
+                    Err(message) => {
+                        state.fail(crate::dictate::DictateFailure::Other { message }, None);
+                        let models = this.dictate_models();
+                        let _ = updates.send(SessionUpdate::DictateModelsChanged { models });
+                        return;
+                    }
+                };
+                state.set_active(&resolved);
+                // The page's rows move with the resolution: a role the
+                // config or a runtime pick names is not the pin it read a
+                // moment ago.
+                let models = this.dictate_models();
+                let _ = updates.send(SessionUpdate::DictateModelsChanged { models });
+
+                let cfg = crate::dictate::preflight_config(&settings, &resolved);
+                crate::dictate::run_dictate_preflight(cfg, Arc::clone(&state)).await;
                 // `run_dictate_preflight` parks the engine in the state
                 // only on success, and every failure path ends the run,
                 // so a held engine is the whole availability signal.
                 if state.engine.lock().is_some() {
+                    // A variant the config resolved from the feed is on
+                    // disk now: record it so the page and the bench see it.
+                    this.record_resolved_installs(&resolved);
                     let _ = updates.send(SessionUpdate::DictateAvailability);
                 }
             }
@@ -4664,6 +4722,46 @@ impl Workspace {
                 }
                 Command::DictateCatalogueCheck => {
                     return self.check_dictate_catalogue();
+                }
+                Command::DictateInstall { variant } => {
+                    return self.start_install(variant);
+                }
+                Command::DictateActivate { role, file } => {
+                    return self.start_activate(role, file);
+                }
+                Command::DictateDeactivate { role } => {
+                    return self.start_deactivate(role);
+                }
+                Command::DictateBench { target, tier } => {
+                    return self.start_bench(target, tier);
+                }
+                Command::DictateBenchStop => {
+                    return self.stop_bench();
+                }
+                Command::DictateReadAloudStart { initiator } => {
+                    let outcome = self.start_read_aloud(initiator);
+                    self.push_models();
+                    return outcome;
+                }
+                Command::DictateReadAloudStop { keep, initiator } => {
+                    let outcome = self.finish_read_aloud(keep, initiator);
+                    self.push_models();
+                    return outcome;
+                }
+                Command::DictateReadAloudDelete { id } => {
+                    let outcome = self.delete_read_aloud(&id);
+                    self.push_models();
+                    return outcome;
+                }
+                Command::DictateUninstall { file } => {
+                    let outcome = self.uninstall_model(&file);
+                    self.push_models();
+                    return outcome;
+                }
+                Command::DictateBenchDelete { target, tier, corpus } => {
+                    let outcome = self.delete_bench_result(&target, tier, &corpus);
+                    self.push_models();
+                    return outcome;
                 }
                 Command::DictateStart { key } => {
                     let ws = Arc::clone(self);

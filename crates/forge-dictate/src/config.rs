@@ -9,7 +9,7 @@ use crate::normalize::NormalizeOptions;
 ///
 /// The size and digest are what let [`crate::prepare`] reject a
 /// truncated or corrupt file before a runtime ever opens it.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelSpec {
     /// File name under the models directory.
     pub file: String,
@@ -17,12 +17,29 @@ pub struct ModelSpec {
     pub url: String,
     /// Exact byte length of the complete file.
     pub size: u64,
-    /// Lowercase hex SHA-256 of the complete file.
-    pub sha256: String,
+    /// Lowercase hex SHA-256 of the complete file, where one exists.
+    ///
+    /// **`None` is a file whose upstream publishes no digest** - a model
+    /// downloaded from the feed's own doc tables - and its check is the
+    /// size alone. Nothing may describe such a file as verified.
+    pub sha256: Option<String>,
     /// Described facts about the checkpoint, for readers that draw a
     /// model rather than run it. The normalizer is in no catalogue, so
     /// for it this is the only place these facts exist.
     pub facts: ModelFacts,
+}
+
+/// A spec for a file a feed names: its URL, the entry's own byte length, and
+/// the digest where the host publishes one - the Hub's blobs carry a sha256
+/// per file, and the speech feed's documents carry none.
+pub fn spec_for_download(
+    file: &str,
+    url: &str,
+    size: u64,
+    sha256: Option<String>,
+    facts: ModelFacts,
+) -> ModelSpec {
+    ModelSpec { file: file.to_owned(), url: url.to_owned(), size, sha256, facts }
 }
 
 /// Facts the pin declares about its checkpoint.
@@ -45,7 +62,7 @@ impl ModelSpec {
             file: "cohere-transcribe-03-2026-Q4_K_M.gguf".into(),
             url: "https://huggingface.co/handy-computer/cohere-transcribe-03-2026-gguf/resolve/main/cohere-transcribe-03-2026-Q4_K_M.gguf".into(),
             size: 1_558_162_944,
-            sha256: "0ea56826d8bd5d74b7143a4a04e022dc1bb75452cfae49d98b6acb0c1d16a1fb".into(),
+            sha256: Some("0ea56826d8bd5d74b7143a4a04e022dc1bb75452cfae49d98b6acb0c1d16a1fb".into()),
             facts: ModelFacts {
                 quant: Some("Q4_K_M".into()),
                 params: Some(2_049_026_832),
@@ -62,7 +79,7 @@ impl ModelSpec {
             url: "https://huggingface.co/superwhisper/s1-mini-GGUF/resolve/main/s1-mini-f16.gguf"
                 .into(),
             size: 1_509_347_232,
-            sha256: "0370da4f1bae19e3150bcafa33c5d396c15f97bf25519540a3e013db5cc00af4".into(),
+            sha256: Some("0370da4f1bae19e3150bcafa33c5d396c15f97bf25519540a3e013db5cc00af4".into()),
             facts: ModelFacts {
                 quant: Some("F16".into()),
                 params: Some(596_000_000),

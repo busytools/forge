@@ -213,13 +213,14 @@ async fn drive(socket: &mut WebSocket, state: &Arc<TransportState>) -> anyhow::R
     // so giving back a hold this connection never took would spend one another
     // connection is still using.
     let mut holds = Holds::new(&state.surface);
-    // The seats this connection has started takes for, oldest first: a
-    // dictation frame carries no seat of its own, so these are what address
-    // it, and the teardown below closes every one of them. A refused start
-    // adds its seat here too - the dispatch cannot tell a registration from
-    // a refusal, both answering through the stream - and the take's own end
-    // takes it back out.
-    let mut dictate: Vec<SessionSlot> = Vec::new();
+    // The seats this connection has started takes for, oldest first, and
+    // whether it is recording the read-aloud set: a dictation frame carries
+    // no seat of its own, so these are what address it, and the teardown
+    // below closes every one of them. A refused start adds its seat here
+    // too - the dispatch cannot tell a registration from a refusal, both
+    // answering through the stream - and the take's own end takes it back
+    // out.
+    let mut dictate = Streaming::default();
     // None until the client's first SUBSCRIBE, which is what decides whether
     // this connection answers - not its first message, so a client whose first
     // word is a `more` or a command is not locked into observing. Registering
@@ -248,7 +249,7 @@ async fn drive(socket: &mut WebSocket, state: &Arc<TransportState>) -> anyhow::R
     // would land anywhere - and the seat is free for the next take. A
     // DEVICE take is not touched - its audio is this machine's, and its
     // recording task outlives any one client.
-    for seat in &dictate {
+    for seat in &dictate.seats {
         if state.surface.dictate_close(seat, me) {
             tracing::debug!(
                 target: "forge_server::transport",
@@ -257,6 +258,20 @@ async fn drive(socket: &mut WebSocket, state: &Arc<TransportState>) -> anyhow::R
                 "the connection that was streaming a take went away; the take was dropped",
             );
         }
+    }
+    // A recording this connection was feeding dies with it: dropping it is
+    // the same answer as the page's cancel, and keeping it would leave a
+    // recording no connection can stop.
+    if dictate.read_aloud {
+        let stopped = state
+            .surface
+            .dispatch(Command::DictateReadAloudStop { keep: false, initiator: Some(me) });
+        tracing::debug!(
+            target: "forge_server::transport",
+            event_name = "read_aloud_recording_dropped",
+            stopped = stopped.is_ok(),
+            "the connection that was recording the read-aloud set went away",
+        );
     }
 
     // Every way out of the loop runs this, a failed read included: a client
@@ -277,6 +292,23 @@ async fn drive(socket: &mut WebSocket, state: &Arc<TransportState>) -> anyhow::R
     outcome
 }
 
+/// What this connection is streaming: the seats it has started takes for,
+/// and whether it is recording the read-aloud set. A dictation frame carries
+/// no seat of its own - and the recording carries none at all - so these are
+/// what address one.
+#[derive(Default)]
+struct Streaming {
+    seats: Vec<SessionSlot>,
+    read_aloud: bool,
+}
+
+impl Streaming {
+    /// Whether a frame from this connection has anything to land in.
+    fn any(&self) -> bool {
+        !self.seats.is_empty() || self.read_aloud
+    }
+}
+
 /// The connection's own loop, so that every way out of it runs the detach
 /// above rather than only the clean one.
 async fn run_connection(
@@ -285,7 +317,7 @@ async fn run_connection(
     watched: &mut Vec<Subject>,
     holds: &mut Holds<'_>,
     updates: &mut Option<(mpsc::UnboundedReceiver<SessionUpdate>, bool)>,
-    dictate: &mut Vec<SessionSlot>,
+    dictate: &mut Streaming,
     hosting: &mut Option<Hosting>,
     me: u64,
 ) -> anyhow::Result<()> {
@@ -316,7 +348,7 @@ async fn run_connection(
                 if let SessionUpdate::DictateEnded { key, initiator: Some(id), .. } = &update
                     && *id == me
                 {
-                    dictate.retain(|seat| seat != key);
+                    dictate.seats.retain(|seat| seat != key);
                 }
                 // The fold is the transport's, not this connection's: it runs
                 // once for the whole socket in `transport::fold_the_stream`.
@@ -519,7 +551,7 @@ async fn handle_client(
     watched: &mut Vec<Subject>,
     holds: &mut Holds<'_>,
     updates: &mut Option<(mpsc::UnboundedReceiver<SessionUpdate>, bool)>,
-    dictate: &mut Vec<SessionSlot>,
+    dictate: &mut Streaming,
     hosting: &mut Option<Hosting>,
     me: u64,
     msg: Message,
@@ -530,7 +562,7 @@ async fn handle_client(
         // answered: a take's audio has no reply channel, and an image frame
         // completes an answer that is already on its way back.
         Message::Binary(bytes) => {
-            match frame_route(&bytes, dictate.as_slice()) {
+            match frame_route(&bytes, dictate) {
                 FrameRoute::Image { id, bytes } => browser_image_bytes(hosting, id, &bytes),
                 FrameRoute::Refused(refusal) => {
                     // An image frame this server cannot take cannot fill the
@@ -551,14 +583,9 @@ async fn handle_client(
                             ),
                         );
                     }
-                    take_frame(
-                        &state.surface,
-                        dictate.as_slice(),
-                        me,
-                        FrameRoute::Refused(refusal),
-                    );
+                    take_frame(&state.surface, dictate, me, FrameRoute::Refused(refusal));
                 }
-                other => take_frame(&state.surface, dictate.as_slice(), me, other),
+                other => take_frame(&state.surface, dictate, me, other),
             }
             return Ok(());
         }
@@ -714,14 +741,26 @@ async fn handle_client(
                 Command::DictateStop { key, submit, .. } => {
                     Command::DictateStop { key, submit, initiator: Some(me) }
                 }
+                Command::DictateReadAloudStart { .. } => {
+                    Command::DictateReadAloudStart { initiator: Some(me) }
+                }
+                Command::DictateReadAloudStop { keep, .. } => {
+                    Command::DictateReadAloudStop { keep, initiator: Some(me) }
+                }
                 other => other,
             };
             // The seat a stream start names is this connection's to
             // remember: the dictation frames that follow carry no seat of
             // their own, and this is the one message that says which take
-            // they belong to.
+            // they belong to. A read-aloud recording is the same promise
+            // with no seat at all.
             let streamed = match &command {
                 Command::DictateStream { key, .. } => Some(key.clone()),
+                _ => None,
+            };
+            let recording = match &command {
+                Command::DictateReadAloudStart { .. } => Some(true),
+                Command::DictateReadAloudStop { .. } => Some(false),
                 _ => None,
             };
             // Where a command's answer goes, decided before anything acts.
@@ -770,9 +809,12 @@ async fn handle_client(
                         // on this socket, or the frame that follows a start
                         // would find no seat to address.
                         if let Some(seat) = streamed
-                            && !dictate.contains(&seat)
+                            && !dictate.seats.contains(&seat)
                         {
-                            dictate.push(seat);
+                            dictate.seats.push(seat);
+                        }
+                        if let Some(recording) = recording {
+                            dictate.read_aloud = recording;
                         }
                         Ok(())
                     }
@@ -1096,12 +1138,13 @@ enum FrameRoute {
 /// Decide one binary message's destination.
 ///
 /// **The frame carries no seat of its own**: it belongs to whatever take the
-/// connection that sent it started, and its messages are ordered, so a frame
-/// can only arrive between a start of its own and that take's end. It is
-/// offered to every seat the connection started - a refused start's seat is
-/// among them until the refusal reaches the client - and the push below keeps
-/// it only where the live take is THAT connection's.
-fn frame_route(bytes: &[u8], dictate: &[SessionSlot]) -> FrameRoute {
+/// connection that sent it started - or to the read-aloud recording it is
+/// feeding - and its messages are ordered, so a frame can only arrive between
+/// a start of its own and that take's end. It is offered to every seat the
+/// connection started - a refused start's seat is among them until the
+/// refusal reaches the client - and the push below keeps it only where the
+/// live take is THAT connection's.
+fn frame_route(bytes: &[u8], dictate: &Streaming) -> FrameRoute {
     let decoded = match super::frame::decode(bytes) {
         Ok(decoded) => decoded,
         Err(refusal) => return FrameRoute::Refused(refusal),
@@ -1112,7 +1155,7 @@ fn frame_route(bytes: &[u8], dictate: &[SessionSlot]) -> FrameRoute {
         // no take sent it.
         super::frame::Frame::Image { id, bytes } => FrameRoute::Image { id, bytes },
         super::frame::Frame::Audio(samples) => {
-            if dictate.is_empty() {
+            if !dictate.any() {
                 return FrameRoute::NoTake;
             }
             FrameRoute::Audio(samples)
@@ -1120,20 +1163,22 @@ fn frame_route(bytes: &[u8], dictate: &[SessionSlot]) -> FrameRoute {
     }
 }
 
-/// Push one dictation frame into this connection's takes, recording
-/// anything else.
+/// Push one dictation frame into this connection's takes or its read-aloud
+/// recording, recording anything else.
 ///
 /// Every refusal is a `debug` record rather than a warning: a client
 /// streaming into a server that cannot take it is information about that
 /// client, not a problem forge has, and the record is what makes it
 /// legible either way.
-fn take_frame(surface: &ViewSurface, dictate: &[SessionSlot], me: u64, route: FrameRoute) {
+fn take_frame(surface: &ViewSurface, dictate: &Streaming, me: u64, route: FrameRoute) {
     match route {
         FrameRoute::Audio(samples) => {
             // Offered to each seat this connection started, kept only where
             // the live take is THIS connection's - a seat's take can be
             // another connection's, and its audio is not this one's to feed.
-            let kept = dictate.iter().any(|seat| surface.dictate_push(seat, &samples, Some(me)));
+            let kept =
+                dictate.seats.iter().any(|seat| surface.dictate_push(seat, &samples, Some(me)))
+                    || (dictate.read_aloud && surface.dictate_read_aloud_push(&samples, Some(me)));
             if !kept {
                 tracing::debug!(
                     event_name = "dictate_frame_dropped",
@@ -1727,8 +1772,9 @@ mod tests {
     #[test]
     fn a_frame_is_the_samples_its_own_connection_sent() {
         let seat = SessionSlot::lead("TestOrg", "proj");
+        let streaming = Streaming { seats: vec![seat], read_aloud: false };
         assert_eq!(
-            frame_route(&payload(&[16384]), &[seat]),
+            frame_route(&payload(&[16384]), &streaming),
             FrameRoute::Audio(vec![0.5]),
             "the samples the bytes carry"
         );
@@ -1738,7 +1784,25 @@ mod tests {
     /// go, and is dropped rather than held for a take that may never come.
     #[test]
     fn a_frame_on_a_connection_with_no_take_goes_nowhere() {
-        assert_eq!(frame_route(&payload(&[0]), &[]), FrameRoute::NoTake);
+        assert_eq!(frame_route(&payload(&[0]), &Streaming::default()), FrameRoute::NoTake);
+    }
+
+    /// The read-aloud recording is a destination with no seat at all: a
+    /// frame lands while one is running and nowhere when it is not.
+    #[test]
+    fn a_frame_lands_in_the_read_aloud_recording_with_no_seat() {
+        let recording = Streaming { seats: Vec::new(), read_aloud: true };
+
+        assert_eq!(
+            frame_route(&payload(&[16384]), &recording),
+            FrameRoute::Audio(vec![0.5]),
+            "a recording is a destination for a frame with no seat behind it"
+        );
+        assert_eq!(
+            frame_route(&payload(&[16384]), &Streaming::default()),
+            FrameRoute::NoTake,
+            "a connection that is not recording has no destination for one"
+        );
     }
 
     /// A binary message that is not a frame is refused with its own
@@ -1746,12 +1810,13 @@ mod tests {
     #[test]
     fn a_binary_message_that_is_not_a_frame_is_refused_by_its_reason() {
         let seat = SessionSlot::lead("TestOrg", "proj");
+        let streaming = Streaming { seats: vec![seat], read_aloud: false };
         assert_eq!(
-            frame_route(&[], std::slice::from_ref(&seat)),
+            frame_route(&[], &streaming),
             FrameRoute::Refused(super::super::frame::Refusal::ShortHeader)
         );
         assert_eq!(
-            frame_route(&[9, 0], &[seat]),
+            frame_route(&[9, 0], &streaming),
             FrameRoute::Refused(super::super::frame::Refusal::UnknownKind(9))
         );
     }

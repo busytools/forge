@@ -192,7 +192,9 @@
   .pop .drow { display: flex; align-items: center; gap: 9px; width: 100%; padding: 8px 10px;
     border: 0; border-bottom: 1px solid var(--line); background: none; text-align: left; }
   .pop .drow:last-child { border-bottom: 0; }
+  .pop .drow.on { background: rgba(244,118,0,.08); }
   .pop .drow .nm { font-size: var(--fs-base); color: var(--text); }
+  .pop .drow.on .nm { color: var(--accent); }
   .pop .drow .def { margin-left: auto; font-family: var(--mono); font-size: var(--fs-label);
     color: var(--dim); }
   .pop .dev { margin-top: 9px; width: 100%; display: flex; align-items: center; gap: 9px;
@@ -602,6 +604,17 @@ short exclusive set, so each is a row of chips rather than a list of rows.</p>
             <div class="note">a quick tap toggles &#183; a hold transcribes on release</div>
           </div>
           <div class="ax">
+            <div class="lbl">TRANSCRIBING</div>
+            <div class="dev"><span class="nm">cohere-transcribe-03-2026-Q4_K_M.gguf</span><span class="chev">&#9656;</span></div>
+          </div>
+          <div class="ax">
+            <div class="lbl">CLEANUP <span class="src">&#183; from forge.toml</span></div>
+            <div class="chips">
+              <span class="chip on" aria-current="true">s1-mini-f16.gguf</span>
+            </div>
+            <div class="note">set by <span class="mono">[dictate] cleanup_model</span> &#183; remove the key to change it here</div>
+          </div>
+          <div class="ax">
             <div class="lbl">INPUT DEVICE</div>
             <div class="dev"><svg class="ic"><use href="#i-mic"/></svg><span class="nm">Shure SM7B</span><span class="chev">&#9656;</span></div>
           </div>
@@ -621,6 +634,45 @@ short exclusive set, so each is a row of chips rather than a list of rows.</p>
       records from its own machine, so it lists its own inputs rather than asking the server for its.
       Both are remembered per seat on this machine, and the values the reset row returns to are the
       ones <span class="mono">forge.toml</span> set, which reach the client in the greeting.</p>
+      <p class="note"><b>The model rows are a second stated row and a second door.</b>
+      Transcribing and cleanup are what a take runs through, so the panel says which model each
+      role holds, off the same read the models page draws. A role
+      <span class="mono">forge.toml</span> sets is stated the way MODE is - the file and the key -
+      because the core refuses the load. A role the config does not set opens a list of the models
+      this machine can put there, and the press is the same activation the models page dispatches.
+      Installing more is the models page's job, and the note under a one-model list says so.</p>
+    </div>
+  </div>
+  <div class="row">
+    <div class="col">
+      <div class="lab">the model list, opened</div>
+      <div class="pop">
+        <div class="ax" style="padding-bottom:14px">
+          <div class="lbl">TRANSCRIBING</div>
+          <div class="dev"><span class="nm">cohere-transcribe-03-2026-Q4_K_M.gguf</span><span class="chev">&#9656;</span></div>
+          <div class="list">
+            <div class="drow on"><span class="nm">cohere-transcribe-03-2026-Q4_K_M.gguf</span></div>
+            <div class="drow"><span class="nm">granite-speech-5.0-470m-turboctc-nc-Q4_K_M.gguf</span></div>
+          </div>
+        </div>
+      </div>
+      <p class="note" style="margin:8px 0 0"><b>The model in force is offered like any other</b>,
+      marked as the one running, so the list reads as a list rather than as a difference.</p>
+    </div>
+    <div class="col">
+      <div class="lab">a role with one model and nothing else on the machine</div>
+      <div class="pop">
+        <div class="ax" style="padding-bottom:14px">
+          <div class="lbl">CLEANUP</div>
+          <div class="dev"><span class="nm">s1-mini-q4_k_m.gguf</span><span class="chev">&#9656;</span></div>
+          <div class="list">
+            <div class="drow on"><span class="nm">s1-mini-q4_k_m.gguf</span></div>
+            <div class="note">nothing else on this machine takes this role &#183; the models page installs more</div>
+          </div>
+        </div>
+      </div>
+      <p class="note" style="margin:8px 0 0"><b>An empty list is a floor, not a failure</b>: the
+      note names where more models come from rather than leaving a box that opens onto nothing.</p>
     </div>
   </div>
   <div class="row">

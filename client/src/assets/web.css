@@ -1794,6 +1794,10 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .pop .drow:last-child { border-bottom: 0; }
 .pop .drow:hover { background: var(--s2); }
 .pop .drow .nm { font-size: var(--fs-base); color: var(--text); }
+/* The row the role already runs is the one in force, marked without hue: the
+   chip's own fill, and a word a screen reader hears. */
+.pop .drow.on { background: rgba(244,118,0,.08); }
+.pop .drow.on .nm { color: var(--accent); }
 .pop .drow .def { margin-left: auto; font-family: var(--mono); font-size: var(--fs-label);
   color: var(--dim); }
 .pop .ft { padding: 13px 15px 14px; }
@@ -2315,12 +2319,27 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
   text-transform: none; color: var(--dim); font-weight: 400; }
 
 /* the model rows: the band card's own ground, grown to a full-width row */
-.models .model { display: flex; align-items: center; gap: 14px;
+.models .model { display: flex; align-items: center; gap: 14px; position: relative;
   background: linear-gradient(180deg, rgba(20,25,38,.75), rgba(13,17,26,.75));
   border: 1px solid var(--line); border-radius: var(--r);
   padding: 13px 15px; margin-bottom: 10px; }
-.models .role { font-size: var(--fs-label); letter-spacing: .1em; text-transform: uppercase;
+/* The row is the selector, so the whole card takes the press: the hit target
+   is an overlay behind the content, the card answers under the pointer like
+   any button, and the pressed one is ringed and named in the accent - a
+   colour AND an edge, never colour alone. The row's own controls sit above
+   the overlay, so they stay pressable. */
+.models .model .pick { position: absolute; inset: 0; z-index: 1; background: none; border: 0;
+  padding: 0; cursor: pointer; border-radius: var(--r); }
+.models .model:hover { background: linear-gradient(180deg, rgba(27,33,48,.9), rgba(17,22,33,.9)); }
+.models .model.shown { border-color: rgba(244,118,0,.45); }
+.models .model .pick:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.models .model .role { font-size: var(--fs-label); letter-spacing: .1em; text-transform: uppercase;
   color: var(--dim); flex: 0 0 118px; }
+.models .model.shown .role { color: var(--accent); font-weight: 600; }
+/* The row's own controls sit ABOVE the overlay so they stay pressable, and a
+   state chip is a label rather than a control: it lets the press through. */
+.models .model .side { position: relative; z-index: 2; }
+.models .model .side span.chip { pointer-events: none; }
 /* The row's middle column. Not `.body`: that name is the chat turn's own
    drawing, and the sheet's sweeps read a rule by its class name wherever it
    sits. */
@@ -2332,13 +2351,19 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .models .meta b { color: var(--muted); font-weight: 500; }
 .models .side { display: flex; align-items: center; gap: 8px; flex: none; }
 
-/* the chip: the dictation panel's own chip, at this page's scale */
+/* the chip: the dictation panel's own chip, at this page's scale - a state
+   when it is a span, an action when it is a button */
 .models .chip { display: inline-flex; align-items: center; gap: 7px;
   font-family: var(--mono); font-size: var(--fs-label); padding: 4px 10px;
   border: 1px solid var(--line); border-radius: 9px; color: var(--muted);
   background: none; white-space: nowrap; }
-/* `go` and its hover left with the Search button: the box filters as it is
-   typed, so no chip on this page starts anything. */
+.models button.chip { cursor: pointer; }
+.models button.chip:hover { border-color: var(--ctl); color: var(--text); }
+/* One download and one activation run at a time, so a second control is
+   disabled rather than offered and then refused; a disabled one still says
+   what it would do. */
+.models button.chip:disabled { opacity: .5; cursor: default; }
+.models button.chip:disabled:hover { border-color: var(--line); color: var(--muted); }
 
 /* the check line and an update line: one shape, toned by what it says */
 .models .status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
@@ -2354,6 +2379,54 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .models .status .detail { flex: 1 1 100%; font-family: var(--mono); font-size: var(--fs-label);
   color: var(--dim); padding-left: 19px; }
 .models .status .detail b { color: var(--muted); font-weight: 500; }
+/* The download's bar: the figure the words beside it carry, drawn the way the
+   platform draws it rather than as a div sized by a style attribute. */
+.models .status progress { flex: none; width: 140px; height: 7px;
+  accent-color: var(--accent); }
+/* A line this side's own failure - a refused microphone, a keep that never
+   reached the socket - or the core's, drawn in the error tone. */
+.models .status .detail.bad, .models .empty .d.bad { color: var(--bad); }
+/* The passage is prose somebody reads aloud, so its lines read left to
+   right at a measure a voice can hold, not the full width of the card. */
+.models .status .detail.passage { max-width: 84ch; }
+
+/* The add control sits between the recordings list and the results below it,
+   so it carries the space on both sides: a bare chip there touches both. */
+.models .chip.add { margin: 10px 0 12px; }
+
+/* One recording's row: the length as its own column, the facts beside it
+   left-aligned rather than pushed to the far edge - a two-word row stretched
+   across the card reads as a table nobody claimed. */
+.models .rec { display: flex; align-items: center; gap: 14px; padding: 9px 0 9px 12px;
+  flex: 1 1 auto; min-width: 0; }
+.models .rec .nm { font-family: var(--mono); font-size: var(--fs-data); color: var(--text);
+  flex: 0 0 42px; }
+.models .rec .facts { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+  flex: 1 1 auto; min-width: 0; }
+.models .rec .facts b { color: var(--muted); font-weight: 500; }
+/* A candidate's own runs: one line each, hung under the candidate rather
+   than between two of them - a left rule and an indent say whose they are.
+   The hairline goes after the group's LAST run, never after the name: a
+   line under the name separates it from its own numbers. */
+.models .list li.run { display: block; margin-left: 16px; padding: 0 12px 9px 10px;
+  border-left: 2px solid var(--line); border-bottom: 0;
+  font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+.models .list li.run:not(:has(+ li.run)) { border-bottom: 1px solid var(--line); }
+.models .list li:has(+ li.run) { border-bottom: 0; }
+.models .list li.run b { color: var(--muted); font-weight: 500; }
+
+/* The recording's meter: the same readings the take card's graph draws, at
+   this card's own pitch - one bar per past reading, newest last, held at a
+   fixed length so the pitch stays still while the heights move. Capped at the
+   take card's own order of width, so it reads as a meter rather than as a
+   progress bar running under the words. */
+.models .status .bars.meter { display: flex; align-items: flex-end; gap: 1px;
+   height: 16px; flex: 0 0 200px; }
+.models .status .bars.meter i { flex: 1 0 1px; border-radius: 1px;
+  min-height: 2px; background: linear-gradient(180deg, var(--hot), var(--accent));
+  transition: height 90ms linear; }
+.models .status .bars.meter i.mid { background: linear-gradient(180deg, #ffc98f, #ab6100); }
+.models .status .bars.meter i.hot { background: var(--hot); }
 
 /* the search the page does on this side: the feed is already here, and the
    box filters as it is typed - a button over data this side already holds
@@ -2383,8 +2456,19 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
    it is an anchor, and an anchor is always its li's only child - a
    `:last-child` on the row would match every one of them and the separator
    would be dead in the whole list. */
-.models .list li { border-bottom: 1px solid var(--line); }
+.models .list li { display: flex; align-items: center; gap: 10px; padding-right: 12px;
+  border-bottom: 1px solid var(--line); }
 .models .list li:last-child { border-bottom: 0; }
+/* A row's control sits beside its link, never inside it: an anchor holding a
+   button is markup no browser will run. */
+.models .list li > .chip { flex: none; }
+/* The bench list's own row: a name and its role, with the controls beside
+   it - the same li shape the candidate list uses. */
+.models .bench-row { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0;
+  padding: 9px 0 9px 12px; }
+.models .bench-row .nm { flex: 1 1 auto; }
+.models .bench-row .col { font-family: var(--mono); font-size: var(--fs-label);
+  color: var(--dim); white-space: nowrap; }
 .models .cand { display: flex; align-items: center; gap: 12px; padding: 9px 12px;
   color: inherit; text-decoration: none; }
 .models .cand:hover { background: var(--s2); }
@@ -2394,6 +2478,36 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .models .cand .col b { color: var(--muted); font-weight: 500; }
 .models .cand .go { margin-left: auto; flex: none; color: var(--dim); }
 .models .cand:hover .go { color: var(--accent); }
+
+/* The comparison table: the rule's own working, drawn as a table because
+   that is what it is - one row per model, one column per axis. The columns
+   are fixed so the geometry holds still when a cell's content changes - the
+   in-use row's file name, the pick row's control - rather than the table
+   re-laying itself out under the reader each time the model changes. */
+.models .cmp-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  margin: 20px 0 8px; }
+.models .cmp-head .t { font-family: var(--mono); font-size: var(--fs-data); color: var(--text); }
+.models .cmp-head .when { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+.models .cmp-wrap { border: 1px solid var(--line); border-radius: var(--r);
+  background: rgba(13,17,26,.4); }
+.models table.cmp { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.models .cmp thead th:nth-child(1) { width: 24%; }
+.models .cmp thead th:nth-child(2) { width: 11%; }
+.models .cmp thead th:nth-child(3) { width: 11%; }
+.models .cmp thead th:nth-child(4) { width: 19%; }
+.models .cmp thead th:nth-child(5) { width: 35%; }
+.models .cmp td.rule .chip { margin-left: 10px; white-space: normal; }
+.models .cmp caption { text-align: left; font-family: var(--mono); font-size: var(--fs-label);
+  color: var(--dim); padding: 10px 13px; border-bottom: 1px solid var(--line); }
+.models .cmp th, .models .cmp td { text-align: left; font-family: var(--mono);
+  font-size: var(--fs-label); color: var(--dim); padding: 9px 13px;
+  border-bottom: 1px solid var(--line); vertical-align: top; }
+.models .cmp tbody tr:last-child th, .models .cmp tbody tr:last-child td { border-bottom: 0; }
+.models .cmp thead th { color: var(--muted); text-transform: uppercase; letter-spacing: .08em;
+  font-size: 11px; }
+.models .cmp th[scope="row"] { color: var(--text); font-size: var(--fs-data); font-weight: 400; }
+.models .cmp tr.base { background: rgba(27,33,48,.35); }
+.models .cmp tr.pick { background: rgba(130,199,107,.06); }
 
 @media (pointer: coarse) {
   /* A button and an input already take the 44 from the shared rule; these are

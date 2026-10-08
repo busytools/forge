@@ -438,6 +438,18 @@ mod tests {
                 check: forge_workspace::catalogue::CatalogueCheck::Never,
                 updates: Vec::new(),
                 rows: Vec::new(),
+                install: forge_workspace::install::InstallState::Idle,
+                activate: forge_workspace::install::ActivateState::Idle,
+                installed: Vec::new(),
+                bench: forge_workspace::bench::BenchState::Idle,
+                results: Vec::new(),
+                read_aloud: forge_workspace::bench::ReadAloudState {
+                    recordings: Vec::new(),
+                    recording: false,
+                    error: None,
+                    passage: String::new(),
+                    terms: Vec::new(),
+                },
             },
         };
 

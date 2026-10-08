@@ -19,9 +19,9 @@
   let {
     heading,
     count,
-    holds,
+    holds = false,
     children,
-  }: { heading: string; count: number; holds: boolean; children: Snippet } = $props();
+  }: { heading: string; count: number; holds?: boolean; children: Snippet } = $props();
 
   // Read once, through a call, as the inspector's own sections take theirs:
   // this is what the fold opens on first render, and the effect below is what

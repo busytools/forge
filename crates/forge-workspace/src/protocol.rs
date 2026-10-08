@@ -377,6 +377,73 @@ pub enum Command {
     /// [`SessionUpdate::DictateModelsChanged`], so a client watches its
     /// own subscription rather than a reply.
     DictateCatalogueCheck,
+    /// Download a feed variant into the models directory. App-level
+    /// (`key()` returns `None`), and its outcome rides
+    /// [`SessionUpdate::DictateModelsChanged`] the way a check's does.
+    ///
+    /// The variant is the feed's own verb for the model; its doc supplies
+    /// the download link, and nothing here constructs one.
+    DictateInstall {
+        variant: String,
+    },
+    /// Load one installed model and make it the role's active model on the
+    /// running forge. App-level, and its outcome rides
+    /// [`SessionUpdate::DictateModelsChanged`].
+    DictateActivate {
+        role: crate::dictate::DictateRole,
+        file: String,
+    },
+    /// Return one role to its `[dictate]` key or its compiled default.
+    /// App-level, same outcome channel as activation.
+    DictateDeactivate {
+        role: crate::dictate::DictateRole,
+    },
+    /// Run one model over one tier of this machine's own material.
+    /// App-level, and its outcome rides
+    /// [`SessionUpdate::DictateModelsChanged`] like the others: ticks as
+    /// it runs, then the result or the reason.
+    DictateBench {
+        target: crate::bench::BenchTarget,
+        tier: forge_dictate::bench::Tier,
+    },
+    /// Stop the bench in flight. What ran so far is discarded: a partial
+    /// corpus is not a result.
+    DictateBenchStop,
+    /// Begin recording the read-aloud set: the connection that sent this
+    /// feeds the audio as binary frames, like a take a client captures, and
+    /// no session owns it. App-level; the recording's own state rides the
+    /// models read.
+    DictateReadAloudStart {
+        /// The connection that sent this, stamped by the transport that
+        /// received it, as [`Command::DictateStream`]'s is: only that
+        /// connection can feed or stop the recording.
+        #[serde(skip)]
+        initiator: Option<u64>,
+    },
+    /// Stop the read-aloud recording. `keep` writes it into the set; a stop
+    /// that does not keeps nothing, which is the page's cancel.
+    DictateReadAloudStop {
+        keep: bool,
+        /// Stamped like [`Command::DictateReadAloudStart`]'s.
+        #[serde(skip)]
+        initiator: Option<u64>,
+    },
+    /// Drop one recording from the read-aloud set, by the id the page read.
+    DictateReadAloudDelete {
+        id: String,
+    },
+    /// Drop one saved bench result, named by its own key: the target, the
+    /// tier, and the corpus it ran over.
+    DictateBenchDelete {
+        target: crate::bench::BenchTarget,
+        tier: forge_dictate::bench::Tier,
+        corpus: String,
+    },
+    /// Remove one downloaded model - the file and its record - which is what
+    /// a sweep that scored a candidate it did not adopt leaves behind.
+    DictateUninstall {
+        file: String,
+    },
     /// Reconnect a configured MCP server.
     ReconnectMcpServer {
         key: SessionSlot,
@@ -701,6 +768,16 @@ impl Command {
             | Self::DeliverWorkerPromptToLead { .. }
             | Self::DeliverGotifyMessage { .. }
             | Self::DictateCatalogueCheck
+            | Self::DictateInstall { .. }
+            | Self::DictateActivate { .. }
+            | Self::DictateDeactivate { .. }
+            | Self::DictateBench { .. }
+            | Self::DictateBenchStop
+            | Self::DictateReadAloudStart { .. }
+            | Self::DictateReadAloudStop { .. }
+            | Self::DictateReadAloudDelete { .. }
+            | Self::DictateBenchDelete { .. }
+            | Self::DictateUninstall { .. }
             | Self::OpenUrl { .. }
             | Self::SaveReviewThreads { .. }
             | Self::RemoveReviewThread { .. }
@@ -849,6 +926,35 @@ impl std::fmt::Debug for Command {
                 .finish_non_exhaustive(),
             Self::OpenUrl { url } => f.debug_struct("OpenUrl").field("url", url).finish(),
             Self::DictateCatalogueCheck => f.write_str("DictateCatalogueCheck"),
+            Self::DictateInstall { variant } => {
+                f.debug_struct("DictateInstall").field("variant", variant).finish()
+            }
+            Self::DictateActivate { role, file } => {
+                f.debug_struct("DictateActivate").field("role", role).field("file", file).finish()
+            }
+            Self::DictateDeactivate { role } => {
+                f.debug_struct("DictateDeactivate").field("role", role).finish()
+            }
+            Self::DictateBench { target, tier } => {
+                f.debug_struct("DictateBench").field("target", target).field("tier", tier).finish()
+            }
+            Self::DictateBenchStop => f.write_str("DictateBenchStop"),
+            Self::DictateReadAloudStart { .. } => f.write_str("DictateReadAloudStart"),
+            Self::DictateReadAloudStop { keep, .. } => {
+                f.debug_struct("DictateReadAloudStop").field("keep", keep).finish()
+            }
+            Self::DictateReadAloudDelete { id } => {
+                f.debug_struct("DictateReadAloudDelete").field("id", id).finish()
+            }
+            Self::DictateUninstall { file } => {
+                f.debug_struct("DictateUninstall").field("file", file).finish()
+            }
+            Self::DictateBenchDelete { target, tier, corpus } => f
+                .debug_struct("DictateBenchDelete")
+                .field("target", target)
+                .field("tier", tier)
+                .field("corpus", corpus)
+                .finish(),
             Self::DictateStart { key } => f.debug_struct("DictateStart").field("key", key).finish(),
             Self::DictateStream { key, .. } => {
                 f.debug_struct("DictateStream").field("key", key).finish_non_exhaustive()
@@ -2191,6 +2297,42 @@ pub enum DispatchError {
     /// there are no pinned models for a check to be about.
     #[error("dictation is off, so there is no catalogue to check")]
     DictateOff,
+    /// An install is already running: one at a time, like a check.
+    #[error("a model install is already running")]
+    Installing,
+    /// An activation is already running; a second engine build would race
+    /// the first one's swap.
+    #[error("a model activation is already running")]
+    Activating,
+    /// A take is in flight on `holder` (a slot's display string), so the
+    /// engine cannot be swapped under it.
+    #[error("a dictation take is live on {holder}; wait for it to finish")]
+    TakeLive { holder: String },
+    /// `forge.toml` pins this role, so the runtime cannot move it; `key`
+    /// is the `[dictate]` key that does.
+    #[error("[dictate] {key} pins this model in forge.toml; remove the key to change it here")]
+    PinnedRole { key: String },
+    /// A bench holds the machine: it is measuring an engine, so a swap or
+    /// a second run waits for it to finish or stops it.
+    #[error("a bench is running; stop it before changing models")]
+    BenchRunning,
+    /// A stop arrived and nothing was running to stop.
+    #[error("no bench is running")]
+    BenchNotRunning,
+    /// No read-aloud recording is running, or it is another connection's:
+    /// only the connection that started one can stop it.
+    #[error("no read-aloud recording is running here")]
+    ReadAloudNotRecording,
+    /// The read-aloud set would not take the change, in the core's own words.
+    #[error("the read-aloud set could not be changed: {reason}")]
+    ReadAloudUnavailable { reason: String },
+    /// The model is what a role runs right now, and the engine holds it
+    /// loaded: the role has to be moved off it first.
+    #[error("the {role} runs this file; switch it first", role = role.label())]
+    ModelInUse { role: crate::dictate::DictateRole },
+    /// The model could not be removed, in the core's own words.
+    #[error("the model could not be removed: {reason}")]
+    UninstallRefused { reason: String },
     /// A check is already in flight; the one that lands is the answer,
     /// and a second fetch would answer the same thing twice.
     #[error("a catalogue check is already running")]

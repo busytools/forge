@@ -117,7 +117,14 @@
     font-family: var(--mono); font-size: var(--fs-label); padding: 4px 10px;
     border: 1px solid var(--line); border-radius: 9px; color: var(--muted);
     background: none; white-space: nowrap; }
-  /* `go` left with the Search button: the box filters as it is typed. */
+  /* A chip is a state when it is a span and an action when it is a button. */
+  .models button.chip { cursor: pointer; }
+  .models button.chip:hover { border-color: var(--ctl); color: var(--text); }
+  /* One download and one activation run at a time, so a second control is
+     disabled rather than offered and then refused; a disabled one still says
+     what it would do. */
+  .models button.chip:disabled { opacity: .5; cursor: default; }
+  .models button.chip:disabled:hover { border-color: var(--line); color: var(--muted); }
 
   .models .status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
     border: 1px solid var(--line); border-radius: var(--r); background: rgba(13,17,26,.6);
@@ -132,6 +139,18 @@
   .models .status .detail { flex: 1 1 100%; font-family: var(--mono); font-size: var(--fs-label);
     color: var(--dim); padding-left: 19px; }
   .models .status .detail b { color: var(--muted); font-weight: 500; }
+  .models .status .detail.passage { max-width: 84ch; }
+  /* The recording's own meter: one bar per level reading, bottom-aligned. */
+  .models .status .bars.meter { display: flex; align-items: flex-end; gap: 1px;
+    height: 16px; flex: 0 0 200px; }
+  .models .status .bars.meter i { flex: 1 0 1px; border-radius: 1px;
+    min-height: 2px; background: linear-gradient(180deg, var(--hot), var(--accent)); }
+  .models .status .bars.meter i.mid { background: linear-gradient(180deg, #ffc98f, #ab6100); }
+  .models .status .bars.meter i.hot { background: var(--hot); }
+  /* The download's bar: the figure the words beside it carry, drawn the way
+     the platform draws it rather than as a div sized by a style attribute. */
+  .models .status progress { flex: none; width: 140px; height: 7px;
+    accent-color: var(--accent); }
 
   .models .find { display: block; width: 100%; min-width: 0; font-family: var(--mono);
     font-size: var(--fs-data); color: var(--text); background: var(--s1);
@@ -148,11 +167,15 @@
 
   .models .list { margin-top: 12px; border: 1px solid var(--line); border-radius: var(--r);
     overflow: hidden; background: rgba(13,17,26,.4); }
-  /* The hairline is the li's: the row inside it is an anchor, and an anchor
-     is always its li's only child, so a `:last-child` on the row would match
-     every one of them. */
-  .models .list li { border-bottom: 1px solid var(--line); }
+  /* The hairline is the li's: the row inside it is an anchor with its control
+     beside it, so a `:last-child` on the row would match none of them and the
+     separator would die in the whole list. */
+  .models .list li { display: flex; align-items: center; gap: 10px; padding-right: 12px;
+    border-bottom: 1px solid var(--line); }
   .models .list li:last-child { border-bottom: 0; }
+  /* A row's control sits beside its link, never inside it: an anchor holding a
+     button is markup no browser will run. */
+  .models .list li > .chip { flex: none; }
   .models .cand { display: flex; align-items: center; gap: 12px; padding: 9px 12px;
     color: inherit; text-decoration: none; }
   .models .cand:hover { background: var(--s2); }
@@ -209,6 +232,51 @@
     .models .cand { flex-wrap: wrap; }
     .models .cand .col { flex-basis: 100%; }
   }
+
+  /* **The whole row is the selector.** The hit target is an overlay rather
+     than the card itself, because the card carries controls of its own and a
+     button inside a button is not HTML; the row's own controls sit above it. */
+  .models .model { position: relative; }
+  .models .pick { position: absolute; inset: 0; width: 100%; border: 0; padding: 0;
+    background: none; border-radius: var(--r); cursor: pointer; }
+  .models .pick:hover { background: rgba(27,33,48,.45); }
+  .models .pick:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .models .model.shown { border-color: rgba(244,118,0,.45); }
+  .models .side { position: relative; z-index: 2; }
+
+  /* One recording's row: the length as its own column, the facts beside it. */
+  .models .rec { display: flex; align-items: center; gap: 14px; padding: 9px 0 9px 12px;
+    flex: 1 1 auto; min-width: 0; }
+  .models .rec .nm { font-family: var(--mono); font-size: var(--fs-data); color: var(--text);
+    flex: 0 0 42px; }
+  .models .rec .facts { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+    flex: 1 1 auto; min-width: 0; }
+  .models .rec .facts b { color: var(--muted); font-weight: 500; }
+  /* A candidate's own runs hang under it, and the group's hairline comes
+     after its last run rather than between a name and its own numbers. */
+  .models .list li.run { display: block; margin-left: 16px; padding: 0 12px 9px 10px;
+    border-left: 2px solid var(--line); border-bottom: 0;
+    font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+  .models .list li.run:not(:has(+ li.run)) { border-bottom: 1px solid var(--line); }
+  .models .list li:has(+ li.run) { border-bottom: 0; }
+  /* The bench list's own row: a name and its role, controls beside it. */
+  .models .bench-row { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0;
+    padding: 9px 0 9px 12px; }
+  .models .bench-row .nm { flex: 1 1 auto; }
+  .models .bench-row .col { font-family: var(--mono); font-size: var(--fs-label);
+    color: var(--dim); white-space: nowrap; }
+  /* The doors: a heading that carries its count, so a shut one is never an
+     empty one. */
+  details.gfold { margin-top: 10px; }
+  details.gfold > summary { list-style: none; cursor: pointer; display: flex;
+    align-items: center; gap: 8px; padding: 12px 8px 4px; }
+  details.gfold > summary::-webkit-details-marker { display: none; }
+  details.gfold > summary .gh { font-size: var(--fs-label); font-weight: 700;
+    letter-spacing: .12em; text-transform: uppercase; color: var(--dim); }
+  details.gfold > summary .cn { margin-left: auto; font-family: var(--mono);
+    font-size: var(--fs-data); letter-spacing: 0; color: var(--dim); }
+  details.gfold > summary .arw { color: var(--dim); font-size: var(--fs-data); }
+  details.gfold[open] > summary .arw { color: var(--accent); }
 </style>
 </head>
 <body>
@@ -216,14 +284,16 @@
 
   <h1>Dictation models</h1>
   <p class="sub">The page at <span class="mono">/models</span>, as the client draws it: what is
-  pinned, what the transcribe.cpp catalogue proposes, and the feed's rows the search reads. One
-  read of <span class="mono">Subject::DictateModels</span> fills all of it; a check landing and the
-  models finishing their load are the two updates that move it. The benchmark section's run is a
-  separate piece of work, so this page ends there.</p>
+  pinned, what the transcribe.cpp catalogue proposes, the feed's rows the search reads, and the
+  controls that bring a candidate onto the machine and make it the one dictation runs. One
+  read of <span class="mono">Subject::DictateModels</span> fills all of it; a check landing, the
+  models finishing their load, and a download or activation landing are the updates that move it.
+  The benchmark section's own runs - the takes, the read-aloud set, and the one press that
+  scores the picks - are on the same read.</p>
 
   <h2>The page</h2>
   <div class="tile">
-    <div class="tcap">the ordinary case, with the feed proposing one model</div>
+    <div class="tcap">the ordinary case, with the feed proposing one model - the candidate already installed here, so its control is the activation</div>
     <main class="wrap models">
       <header class="top">
         <div class="brand">
@@ -240,27 +310,35 @@
       <section class="block">
         <h2 class="hd4">In use <span class="why">what dictation runs on this machine today</span></h2>
 
-        <div class="model">
+        <!-- **The whole row is the selector**: the overlay button takes the
+             press anywhere on the card, and the row's own control sits above
+             it rather than inside it, because a button inside a button is
+             not HTML. -->
+        <div class="model shown">
+          <button class="pick" type="button" aria-pressed="true" aria-label="show the transcribing updates" title="show the transcribing updates"></button>
           <span class="role">transcribing</span>
           <div class="facts">
             <div class="nm">cohere-transcribe-03-2026-Q4_K_M.gguf</div>
             <div class="meta"><b>1.56 GB</b> &middot; Q4_K_M &middot; 2.05B params &middot; sha 0ea56826 &middot; Apache-2.0</div>
             <div class="meta">metal &middot; <b>72.9&times; realtime on m4-max</b> &middot; 14 languages</div>
+            <div class="meta src">compiled default</div>
           </div>
           <div class="side"><span class="chip"><span class="dot ok"></span>loaded</span></div>
         </div>
 
         <div class="model">
+          <button class="pick" type="button" aria-pressed="false" aria-label="show the cleanup updates" title="show the cleanup updates"></button>
           <span class="role">cleanup</span>
           <div class="facts">
             <div class="nm">s1-mini-f16.gguf</div>
             <div class="meta"><b>1.51 GB</b> &middot; F16 &middot; 596M params &middot; sha 0370da4f &middot; Apache-2.0 + naming clause</div>
             <div class="meta">llama.cpp &middot; not in the feed</div>
+            <div class="meta src">compiled default</div>
           </div>
           <div class="side"><span class="chip"><span class="dot ok"></span>loaded</span></div>
         </div>
 
-        <p class="note">files live in <code>~/Library/Caches/forge-dictate</code> &middot; verified by size and sha-256 before any load</p>
+        <p class="note">files live in <code>~/Library/Caches/forge-dictate</code> &middot; a download is checked against what its entry declares: the byte length always, and the sha256 a cleanup feed's blobs publish - the speech feed's files publish none, so those are checked by length and by the load</p>
       </section>
 
       <section class="block">
@@ -280,8 +358,10 @@
           <span class="dot warn"></span>
           <span class="t">Granite Speech 5.0 470M TurboCTC</span>
           <span class="when">replaces the transcribing model</span>
+          <span class="spacer"></span>
+          <button class="chip" type="button">Update to this model</button>
           <span class="detail">473M &middot; Q4_K_M 279 MB &middot; <b>388.8&times; vs 72.9&times;</b> &middot; FLEURS-en 4.61 vs 5.08 &middot; Apache-2.0 &middot; English only, offline</span>
-          <span class="detail">Proposed because it beats the model in use on both of the feed's own measurements - fewer errors on its English test set, and a faster realtime factor on an m4-max - and its licence allows forge to ship it. Taking it means pinning it here and opening a pull request; the bench that re-checks a candidate on your own recordings is not built yet.</span>
+          <span class="detail">Proposed because it beats the model in use on both of the feed's own measurements - fewer errors on its English test set, and a faster realtime factor on an m4-max. Taking it downloads it here if it is not already, and loads it as the transcribing model. Its licence is a fact on the row above rather than a filter: what runs here is this machine's own.</span>
         </div>
       </section>
 
@@ -309,11 +389,82 @@
       </section>
 
       <section class="block">
-        <h2 class="hd4">Benchmark <span class="why">score a model on your own recordings</span></h2>
-        <div class="empty">
-          <p class="t">the benchmark is not built yet</p>
-          <p class="d">It will score each candidate on the takes forge has already recorded here, plus a read-aloud set - term accuracy first, speed second - and that score is what decides an update. Until it lands, every number on this page is the feed's own, measured on an m4 max and not on your machine.</p>
+        <h2 class="hd4">Benchmark <span class="why">score a model on this machine's own recordings</span></h2>
+
+        <p class="note">fixtures &middot; the last run scored 42 takes &middot; 1 read-aloud recording</p>
+
+        <p class="note">the read-aloud set &middot; every recording is scored against the one passage on 6 known terms &middot; a run over them reads term accuracy and word error, where the takes read agreement</p>
+        <ul class="list" aria-label="Read-aloud recordings">
+          <li>
+            <span class="rec"><span class="nm">0:41</span><span class="facts"><b>1 MB</b> &middot; sha 980227df &middot; recorded 06:04:23</span></span>
+            <button class="chip" type="button">delete</button>
+          </li>
+        </ul>
+        <button class="chip add" type="button">record another</button>
+
+        <!-- One press, priced before it spends: what the sweep will run, what
+             it costs, and which corpus it scores on. -->
+        <div class="status" style="margin-top:12px">
+          <span class="dot off"></span>
+          <span class="t">select the best models, and score them here</span>
+          <span class="spacer"></span>
+          <button class="chip" type="button">run the benchmark</button>
+          <span class="detail">the feed's transcribing pick + the 3 most-downloaded cleanup candidates of 18</span>
+          <span class="detail">up to 5 runs over your read-aloud set &middot; about 528 MB to download &middot; the last run over your read-aloud set took 2m 40s &middot; a run already measured on that corpus is kept, not repeated</span>
         </div>
+
+        <!-- The verdicts, one per role: what read best, whether it is what
+             runs, the scope in the same words, and the switch. -->
+        <div class="status">
+          <span class="dot ok"></span>
+          <span class="t">the transcribing model you run read best of the 2 scored</span>
+          <span class="when">transcribing</span>
+          <span class="detail">the feed's own pick, scored on your read-aloud set, 2 clips</span>
+          <span class="detail"><b>69.2&times; realtime</b> &middot; term accuracy 88% &middot; WER 6.1% &middot; 2 clips &middot; 41s of audio</span>
+        </div>
+        <div class="status warn">
+          <span class="dot warn"></span>
+          <span class="t">CeluneNorm-0.6B-v2.0-ctx2048 read better than the cleanup model you run</span>
+          <span class="when">cleanup</span>
+          <span class="spacer"></span>
+          <button class="chip" type="button">switch to it</button>
+          <span class="detail">best of the 3 most-downloaded cleanup candidates, scored on your read-aloud set, 2 clips &middot; 6 more candidates were not tried</span>
+          <span class="detail"><b>74.3&times; realtime</b> &middot; term accuracy 94% &middot; WER 4.2% &middot; 2 clips &middot; 41s of audio</span>
+          <span class="detail">what you run, s1-mini-f16.gguf: 69.2&times; realtime &middot; term accuracy 88% &middot; WER 6.1% &middot; 2 clips &middot; 41s of audio</span>
+          <span class="detail">switching downloads 396 MB again - the sweep took the file back when the verdict came in</span>
+        </div>
+
+        <!-- The doors: what a run measured, and what can be run by hand.
+             Both carry their count, so a shut one is never an empty one. -->
+        <details class="gfold" open>
+          <summary><span class="gh">every run scored here</span><span class="cn">5</span><span class="arw">&#8250;</span></summary>
+          <div class="status">
+            <span class="dot ok"></span>
+            <span class="t">CeluneNorm-0.6B-v2.0-ctx2048.Q4_K_M.gguf</span>
+            <span class="when">the read-aloud passage</span>
+            <span class="spacer"></span>
+            <span class="when">measured 06:08</span>
+            <button class="chip" type="button">delete</button>
+            <span class="detail"><b>74.3&times; realtime</b> &middot; term accuracy 94% &middot; WER 4.2% &middot; 2 clips &middot; 41s of audio</span>
+            <span class="detail">ahead of the model in use, which read 88% of the passage's terms at 69.2&times;</span>
+          </div>
+        </details>
+
+        <details class="gfold">
+          <summary><span class="gh">models a bench can run</span><span class="cn">4</span><span class="arw">&#8250;</span></summary>
+          <ul class="list" aria-label="Models a bench can run">
+            <li>
+              <span class="bench-row"><span class="nm">cohere-transcribe-03-2026-Q4_K_M.gguf</span><span class="col">transcribing</span><span class="chip">in use</span></span>
+              <button class="chip" type="button">bench it</button>
+              <button class="chip" type="button">score the read-aloud</button>
+            </li>
+            <li>
+              <span class="bench-row"><span class="nm">CeluneNorm-0.6B-v2.0-ctx2048.Q4_K_M.gguf</span><span class="col">cleanup</span></span>
+              <button class="chip" type="button">bench it</button>
+              <button class="chip" type="button">remove</button>
+            </li>
+          </ul>
+        </details>
       </section>
     </main>
   </div>
@@ -386,6 +537,7 @@
           <div class="nm">cohere-transcribe-03-2026-Q4_K_M.gguf</div>
           <div class="meta"><b>1.56 GB</b> &middot; Q4_K_M &middot; 2.05B params &middot; sha 0ea56826 &middot; Apache-2.0</div>
           <div class="meta">transcribe.cpp &middot; not in the feed</div>
+          <div class="meta src">compiled default</div>
         </div>
         <div class="side"><span class="chip"><span class="dot live"></span>fetching 38%</span></div>
       </div>
@@ -395,11 +547,127 @@
           <div class="nm">s1-mini-f16.gguf</div>
           <div class="meta"><b>1.51 GB</b> &middot; F16 &middot; 596M params &middot; sha 0370da4f &middot; Apache-2.0 + naming clause</div>
           <div class="meta">llama.cpp &middot; not in the feed</div>
+          <div class="meta src">compiled default</div>
         </div>
         <div class="side"><span class="chip"><span class="dot off"></span>waiting</span></div>
       </div>
     </div>
     <div class="tnote">A page open through a first download hears the models finish loading (<span class="mono">dictate_availability</span>) and reads again, so the chips do not stay on <span class="mono">waiting</span> until the next check.</div>
+  </div>
+
+  <div class="tile">
+    <div class="tcap">the page's own state, under the header: a <b>download in flight</b> with its bar, a <b>download that did not finish</b>, an <b>activation in flight</b>, and a <b>refused action</b> in the core's words</div>
+    <div class="models">
+      <div class="status" role="status">
+        <span class="dot live"></span>
+        <span class="t">downloading granite-speech-5.0-470m-turboctc-Q4_K_M.gguf</span>
+        <progress max="100" value="38" aria-label="download progress"></progress>
+        <span class="spacer"></span>
+        <span class="when">38% &middot; 106 MB of 279 MB</span>
+      </div>
+      <div class="status failed" role="status">
+        <span class="dot failed"></span>
+        <span class="t">the download did not finish</span>
+        <span class="spacer"></span>
+        <span class="when">granite-speech-5.0-470m-turboctc-Q4_K_M.gguf &middot; granite-speech-5.0-470m-turboctc-Q4_K_M.gguf is 5 bytes, expected 6</span>
+      </div>
+      <div class="status" role="status">
+        <span class="dot live"></span>
+        <span class="t">loading granite-speech-5.0-470m-turboctc-Q4_K_M.gguf</span>
+        <span class="spacer"></span>
+        <span class="when">transcribing &middot; dictation keeps running the current model until this one is up</span>
+      </div>
+      <div class="status failed" role="alert">
+        <span class="dot failed"></span>
+        <span class="t">[dictate] transcribe_model pins this model in forge.toml; remove the key to change it here</span>
+      </div>
+      <div class="tnote">One download and one activation run at a time, so every install and activation control is disabled while either is out - a second press is not offered and then refused. The refusal is the core's own sentence, arriving as an <span class="mono">error</span> frame the connection answered the dispatch with.</div>
+    </div>
+  </div>
+
+  <div class="tile">
+    <div class="tcap">a role <span class="mono">forge.toml</span> pins: the row names the key, the installed model draws as a state, and the download stays</div>
+    <div class="models">
+      <div class="model">
+        <span class="role">transcribing</span>
+        <div class="facts">
+          <div class="nm">granite-speech-5.0-470m-turboctc-Q4_K_M.gguf</div>
+          <div class="meta"><b>279 MB</b> &middot; Q4_K_M &middot; 470M params &middot; Apache-2.0</div>
+          <div class="meta">metal &middot; <b>388.8&times; realtime on m4-max</b> &middot; English only</div>
+          <div class="meta src">pinned by [dictate] transcribe_model</div>
+        </div>
+        <div class="side"><span class="chip"><span class="dot ok"></span>loaded</span></div>
+      </div>
+      <ul class="list" aria-label="Catalogue results" style="margin-top:0">
+        <li>
+          <a class="cand" href="#">
+            <span class="nm">granite-speech-5.0-470m-turboctc</span>
+            <span class="col">Q4_K_M 279 MB &middot; <b>388.8&times; realtime</b> &middot; FLEURS-en 4.61 &middot; Apache-2.0</span>
+            <span class="col">English only &middot; offline</span>
+            <span class="go" aria-hidden="true">&#8599;</span>
+          </a>
+          <span class="chip">active</span>
+        </li>
+        <li>
+          <a class="cand" href="#">
+            <span class="nm">parakeet-unified-en-0.6b</span>
+            <span class="col">Q4_K_M 477 MB &middot; <b>218.8&times; realtime</b> &middot; FLEURS-en 3.99 &middot; CC-BY-4.0</span>
+            <span class="col">English only &middot; streaming</span>
+            <span class="go" aria-hidden="true">&#8599;</span>
+          </a>
+          <button class="chip" type="button">install Q4_K_M</button>
+        </li>
+      </ul>
+      <div class="tnote">A pinned role refuses the activation dispatch by name, so no row draws an activation control for it - a control that is always refused reads as broken. The download stays: a pinned role can still pull candidates down and bench them. The active model draws as a state, never as a control.</div>
+    </div>
+  </div>
+
+  <div class="tile">
+    <div class="tcap">the <b>benchmark</b>'s other states: <b>off</b>, the <b>read-aloud set empty</b>, a set <b>this client cannot read</b>, a <b>recording</b> in flight, a <b>sweep running</b>, the <b>consensus note</b> with <b>benchmark again</b>, a <b>sweep that ended on a corpus move</b>, and a <b>run that did not finish</b> with its close</div>
+    <div class="models">
+      <p class="note" style="margin-top:0">the bench runs only with <code>[dictate] enabled</code> set &middot; it scores a model on the takes forge has recorded here</p>
+      <div class="status" role="status">
+        <span class="dot off"></span>
+        <span class="t">the read-aloud set is not recorded yet</span>
+        <span class="spacer"></span>
+        <button class="chip" type="button">record the passage</button>
+        <span class="detail">Read the passage below aloud once and save the recording &middot; a bench over the takes compares two models' words, and this is the one corpus a bench can score on words that are known:</span>
+        <span class="detail passage">I want the forge session to pick up where it left off.</span>
+      </div>
+      <p class="note">the read-aloud set is one this client cannot read &middot; this client is older than the forge serving it</p>
+      <div class="status" role="status">
+        <span class="dot live"></span>
+        <span class="t">recording the passage</span>
+        <span class="when">0:06 &middot; 300 frames</span>
+        <span class="spacer"></span>
+        <button class="chip" type="button">stop and save</button>
+        <button class="chip" type="button">cancel</button>
+        <span class="bars meter" aria-hidden="true">
+          <i style="height:24%"></i><i style="height:52%"></i><i style="height:78%"></i><i class="mid" style="height:44%"></i><i style="height:18%"></i><i class="hot" style="height:88%"></i><i style="height:36%"></i><i style="height:62%"></i>
+        </span>
+        <span class="detail">Read the passage below aloud - the recording becomes the read-aloud set, the one corpus a bench can score on words that are known.</span>
+        <span class="detail passage">I want the forge session to pick up where it left off.</span>
+      </div>
+      <div class="status" role="status">
+        <span class="dot live"></span>
+        <span class="t">scoring CeluneNorm-0.6B-v2.0-ctx2048.Q4_K_M.gguf</span>
+        <span class="when">your own takes &middot; 5 runs</span>
+        <span class="spacer"></span>
+        <button class="chip" type="button">stop the sweep</button>
+        <span class="detail">each run loads one model and scores it on the same corpus &middot; what the sweep downloaded and nobody kept goes back off the disk when the verdict is in</span>
+      </div>
+      <p class="note">scored on your takes, where a run reads as agreement with the words the model in use recorded beside each one, not as correctness &middot; record the read-aloud passage above and press again to score against known words</p>
+      <button class="chip add" type="button" style="margin-top:6px">benchmark again</button>
+      <p class="note bad">a take landed while the sweep ran, so its runs no longer share one corpus - press again to score on what is here now</p>
+      <div class="status failed" role="status" style="margin-top:12px">
+        <span class="dot failed"></span>
+        <span class="t">the bench did not finish</span>
+        <span class="spacer"></span>
+        <button class="chip" type="button" aria-label="close this">close</button>
+        <span class="when">CeluneNorm-0.6B-v2.0-ctx2048.Q4_K_M.gguf &middot; the model would not load</span>
+      </div>
+    </div>
+    <div class="tnote">The recording card is the passage itself, so the empty, running and recorded states share one edge; the meter is this side's own levels, one bar per frame reading. A set this client cannot read draws no record control over it - the offer would make a second set on a machine that may hold many. The failed run carries its own close: a reader who has read it puts it away, and a NEW failure draws rather than hiding behind that dismissal. The note over the failed card is a sweep that ended by name, not a failure.</div>
   </div>
 
   <div class="tile">
@@ -414,6 +682,7 @@
             <span class="col">English only &middot; offline</span>
             <span class="go" aria-hidden="true">&#8599;</span>
           </a>
+          <button class="chip" type="button">use for transcribing</button>
         </li>
         <li>
           <a class="cand" href="#">
@@ -422,12 +691,13 @@
             <span class="col">English only &middot; offline</span>
             <span class="go" aria-hidden="true">&#8599;</span>
           </a>
+          <button class="chip" type="button">install Q4_K_M</button>
         </li>
       </ul>
       <p class="note">size, speed and error are the catalogue's own m4-max measurements</p>
       <p class="note">no entry matches <code>wav2vec</code> &middot; try a family name</p>
     </div>
-    <div class="tnote">The search is the client's and follows the box: the whole feed arrives with the read, so a query filters what is here and nothing is asked of the server. Each row is a link to the entry's own document, in the tree the server fetches from, with its marker drawn at rest. Nothing is filtered out for the reader - a non-commercial variant is listed and only ever excluded from a proposal.</div>
+    <div class="tnote">The search is the client's and follows the box: the whole feed arrives with the read, so a query filters what is here and nothing is asked of the server. Each row is a link to the entry's own document, in the tree the server fetches from, with its marker drawn at rest - and its control beside the link, never inside it. Nothing is filtered out for the reader - a non-commercial variant is listed and proposed like any other, with its licence drawn on the row, because what runs here is this machine's own.</div>
   </div>
 
 </div>

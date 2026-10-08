@@ -1567,6 +1567,16 @@ pub(crate) fn execute_command_via_handle(
         | Command::RespondSlackPost { .. }
         | Command::RespondBrowserHandOff { .. }
         | Command::DictateCatalogueCheck
+        | Command::DictateInstall { .. }
+        | Command::DictateActivate { .. }
+        | Command::DictateDeactivate { .. }
+        | Command::DictateBench { .. }
+        | Command::DictateBenchStop
+        | Command::DictateReadAloudStart { .. }
+        | Command::DictateReadAloudStop { .. }
+        | Command::DictateReadAloudDelete { .. }
+        | Command::DictateBenchDelete { .. }
+        | Command::DictateUninstall { .. }
         | Command::OpenUrl { .. }
         | Command::SaveReviewThreads { .. }
         | Command::RemoveReviewThread { .. }

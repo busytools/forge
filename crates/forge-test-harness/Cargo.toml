@@ -35,6 +35,10 @@ forge-server = { workspace = true }
 # the `testing` feature flag. Dev-only dep so the harness's production
 # surface (forge-sdk + forge-primitives) stays minimal.
 forge-workspace = { workspace = true, features = ["testing", "test-helpers"] }
+# `socket_replay` samples the models read, whose snapshot carries the
+# dictate crate's own facts and bench metrics. Dev-only for the same
+# reason as the deps above.
+forge-dictate = { workspace = true }
 # `sdk_scenarios_worktree_spawn` needs a fresh git repo per run to give
 # `--worktree` something to fork off. Dev-only because it's a test fixture
 # concern.

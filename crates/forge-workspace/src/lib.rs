@@ -66,6 +66,7 @@
 
 mod account_cache;
 mod account_loader;
+pub mod bench;
 pub mod browser;
 pub mod catalogue;
 mod config;
@@ -77,6 +78,7 @@ mod domain_session;
 mod error;
 pub mod file_index;
 mod gotify;
+pub mod install;
 pub mod launch_settings;
 pub(crate) mod mcp;
 mod parked;

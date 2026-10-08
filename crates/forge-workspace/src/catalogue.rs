@@ -22,7 +22,7 @@ pub(crate) const REFRESH_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
 /// The quants a row's download size prefers, most preferred first: the Q4
 /// build is what a dictation machine runs, and the chain after it keeps a
 /// row that ships no Q4 sized rather than sizeless.
-const PREFERRED_DOWNLOADS: [&str; 4] = ["Q4_K_M", "Q8_0", "F16", "BF16"];
+pub(crate) use forge_dictate::catalogue::PREFERRED_DOWNLOADS;
 
 /// Everything the models page draws, in one read.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -42,6 +42,19 @@ pub struct DictateModelsSnapshot {
     pub updates: Vec<ModelUpdate>,
     /// The whole feed, for the page's search list.
     pub rows: Vec<CatalogueRow>,
+    /// Where the last model install got to.
+    pub install: crate::install::InstallState,
+    /// Where the last model activation got to.
+    pub activate: crate::install::ActivateState,
+    /// Every model downloaded from the feed on this machine, oldest first.
+    pub installed: Vec<crate::install::InstalledModel>,
+    /// Where the last bench got to: idle, running with its tick, or
+    /// failed with its reason.
+    pub bench: crate::bench::BenchState,
+    /// What benches have measured on this machine, newest first.
+    pub results: Vec<crate::bench::BenchResult>,
+    /// The read-aloud set: whether this machine has one, and its passage.
+    pub read_aloud: crate::bench::ReadAloudState,
 }
 
 /// What the last catalogue check did.
@@ -71,13 +84,20 @@ pub struct InUseModel {
     pub role: DictateRole,
     pub file: String,
     pub size: u64,
-    pub sha256: String,
+    /// The digest the spec declares, or `None` for an installed model whose
+    /// upstream publishes none: nothing may print a digest for one.
+    pub sha256: Option<String>,
     /// The preflight snapshot's own state: pending through ready.
     pub state: DictateModelState,
-    /// The facts the pin declares.
+    /// The facts the spec declares.
     pub facts: ModelFacts,
     /// The feed's entry for this file, when it carries one.
     pub catalogue: Option<CatalogueJoin>,
+    /// Where this role's model came from: the config key, the last runtime
+    /// pick, or the compiled pin.
+    pub from: crate::install::ActiveFrom,
+    /// RFC 3339, when a runtime pick chose it.
+    pub at: Option<String>,
 }
 
 /// What the feed says about a file the pin names.
@@ -108,7 +128,9 @@ pub struct CatalogueRow {
     pub variant: String,
     pub display_name: String,
     pub family: String,
-    pub params: u64,
+    /// The parameter count the source published, or `None` when it published
+    /// none - a row drawing `0M params` would claim a measurement.
+    pub params: Option<u64>,
     pub license: Option<String>,
     pub languages: Vec<String>,
     pub streaming: bool,
@@ -118,6 +140,16 @@ pub struct CatalogueRow {
     /// The comparison axis: FLEURS English where the entry carries it,
     /// else its own headline benchmark.
     pub wer: Option<WerFact>,
+    /// What the entry is for: which role's candidates it belongs in.
+    pub kind: forge_dictate::catalogue::EntryKind,
+    /// Where a reader can read about it, when the feed names its own page.
+    /// The Hub's entries do; the speech feed's leave this `None` and the
+    /// page opens the entry's document instead.
+    pub url: Option<String>,
+    /// How many times the Hub has served it - the only pre-run signal a
+    /// cleanup candidate carries, and what orders a sweep. The speech feed
+    /// carries no count.
+    pub download_count: Option<u64>,
 }
 
 /// One downloadable quantisation's size.
@@ -136,16 +168,47 @@ pub struct WerFact {
     pub err_pct: f64,
 }
 
-/// An update worth adopting for one in-service model.
+/// The comparison one role's model is read against: the model in use, and
+/// every English entry it can be compared with, ranked the way the rule
+/// ranks them.
+///
+/// **The whole comparison crosses, not just the winner.** The rule that
+/// picks a candidate is the thing a reader wants to check, and a page that
+/// showed only the pick would be asking to be trusted.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ModelUpdate {
     pub role: DictateRole,
     /// The in-service file this is about.
     pub file: String,
     /// The numbers the in-service model's own catalogue entry carries,
-    /// so the page can draw the comparison.
+    /// which is the baseline every candidate row is read against.
     pub current: CurrentFacts,
-    pub candidate: CatalogueRow,
+    /// The comparable entries other than the one in use, fastest first
+    /// with the sharper breaking a tie - the order the rule walks.
+    pub candidates: Vec<CandidateRow>,
+}
+
+/// One compared entry, and what the rule makes of it.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CandidateRow {
+    pub row: CatalogueRow,
+    pub verdict: UpdateVerdict,
+}
+
+/// Why a candidate is, or is not, the one the page proposes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateVerdict {
+    /// The fastest entry that beats the model in use on both axes: what the
+    /// page proposes adopting.
+    Recommended,
+    /// It beats the model in use on both axes, and something faster does
+    /// too.
+    BeatsBoth,
+    /// It is no faster than the model in use, whatever its error rate.
+    Slower,
+    /// It is faster and no more accurate.
+    Blunter,
 }
 
 /// The in-service side of an update's comparison.
@@ -168,6 +231,16 @@ pub(crate) fn row_for(entry: &CatalogueEntry) -> CatalogueRow {
         download: download_fact(entry),
         speed: speed_fact(entry),
         wer: wer_fact(entry),
+        kind: entry.kind,
+        // Only the Hub's entries name a page of their own; a speech entry's
+        // row keeps the document the page already opens for it.
+        url: match entry.kind {
+            forge_dictate::catalogue::EntryKind::Normalizer => {
+                entry.published_repo.as_ref().map(|repo| format!("https://huggingface.co/{repo}"))
+            }
+            forge_dictate::catalogue::EntryKind::Asr => None,
+        },
+        download_count: entry.download_count,
     }
 }
 
@@ -231,21 +304,22 @@ fn entry_for<'e>(entries: &'e [CatalogueEntry], spec: &ModelSpec) -> Option<&'e 
     entries.iter().find(|entry| entry.download_for(&spec.file).is_some())
 }
 
-/// The IN USE rows: the pin's declaration, the preflight state, and the
-/// feed's entry when there is one.
+/// The IN USE rows: the model's declaration, the preflight state, the
+/// feed's entry when there is one, and where the choice came from.
 pub(crate) fn in_use(
     entries: &[CatalogueEntry],
-    specs: &[(DictateRole, ModelSpec)],
+    active: &[(DictateRole, crate::install::ActiveModel)],
     states: &DictateSnapshot,
 ) -> Vec<InUseModel> {
-    specs
+    active
         .iter()
-        .map(|(role, spec)| {
+        .map(|(role, model)| {
+            let spec = &model.spec;
             let state = states
                 .models
                 .iter()
-                .find(|model| model.file == spec.file)
-                .map_or(DictateModelState::Pending, |model| model.state.clone());
+                .find(|row| row.file == spec.file)
+                .map_or(DictateModelState::Pending, |row| row.state.clone());
             InUseModel {
                 role: *role,
                 file: spec.file.clone(),
@@ -254,21 +328,30 @@ pub(crate) fn in_use(
                 state,
                 facts: spec.facts.clone(),
                 catalogue: join_for(entries, spec),
+                from: model.from.clone(),
+                at: model.at.clone(),
             }
         })
         .collect()
 }
 
-/// What the page proposes adopting, per in-service model.
+/// The comparison one role's model is read against: the model in use and
+/// every comparable entry, ranked the way the rule ranks them.
 ///
-/// A candidate beats the model in use only on the axis both sides were
-/// measured on: FLEURS English word error rate lower AND m4-max Metal
-/// wall-clock realtime factor higher, both from the feed's own rows. Among
-/// the entries that clear both, the fastest wins - the rank the page's
-/// line shows first - with the sharper of two equally fast entries taking
-/// it. A variant already in use is never its own candidate, and neither is
-/// a non-commercial one: a proposal is what an adoption would pin into a
-/// public repo, and that has to be a licence anyone may run.
+/// **The rule, in full, because the page tables it.** A candidate is
+/// comparable when it carries English and the feed measured it on the same
+/// two axes the model in use carries - m4-max Metal wall-clock realtime
+/// factor, and FLEURS English word error rate. Comparable entries rank
+/// fastest first, with the sharper breaking a tie. The first one that
+/// beats the model in use on BOTH axes is the pick; the ones behind it
+/// that also beat both are listed as such; the rest carry the one axis
+/// they lose on.
+///
+/// **A non-commercial licence is a fact on the row, not a filter.**
+/// Recommending a model used to mean pinning it into forge's shipped
+/// defaults, where `-nc` bars it; what the page does now is download and
+/// run one on this machine, which is the licence's own personal use. The
+/// row states the licence so the constraint is read where the decision is.
 pub(crate) fn updates_for(
     entries: &[CatalogueEntry],
     specs: &[(DictateRole, ModelSpec)],
@@ -287,7 +370,7 @@ pub(crate) fn updates_for(
             let current_speed = joined.m4_metal_xrt_wall()?;
             let current_wer = joined.fleurs_en_wer()?;
 
-            let mut best: Option<(&CatalogueEntry, f64, f64)> = None;
+            let mut ranked: Vec<(&CatalogueEntry, f64, f64)> = Vec::new();
             for entry in entries {
                 if entry.variant == joined.variant {
                     continue;
@@ -295,43 +378,45 @@ pub(crate) fn updates_for(
                 if !entry.languages.iter().any(|language| language == "en") {
                     continue;
                 }
-                if entry.license.as_ref().is_some_and(|license| non_commercial(&license.spdx)) {
-                    continue;
-                }
                 let (Some(speed), Some(wer)) = (entry.m4_metal_xrt_wall(), entry.fleurs_en_wer())
                 else {
                     continue;
                 };
-                if speed <= current_speed || wer >= current_wer {
-                    continue;
-                }
-                let better = best.is_none_or(|(_, best_speed, best_wer)| {
-                    match speed.total_cmp(&best_speed) {
-                        std::cmp::Ordering::Greater => true,
-                        std::cmp::Ordering::Equal => wer < best_wer,
-                        std::cmp::Ordering::Less => false,
-                    }
-                });
-                if better {
-                    best = Some((entry, speed, wer));
-                }
+                ranked.push((entry, speed, wer));
             }
+            ranked.sort_by(|(_, a_speed, a_wer), (_, b_speed, b_wer)| {
+                b_speed.total_cmp(a_speed).then(a_wer.total_cmp(b_wer))
+            });
 
-            let candidate = row_for(best?.0);
+            let mut recommended = false;
+            let candidates: Vec<CandidateRow> = ranked
+                .into_iter()
+                .map(|(entry, speed, wer)| {
+                    let beats = speed > current_speed && wer < current_wer;
+                    // The first beater in the ranked order is the fastest
+                    // one, which is the pick.
+                    let verdict = if beats && !recommended {
+                        recommended = true;
+                        UpdateVerdict::Recommended
+                    } else if beats {
+                        UpdateVerdict::BeatsBoth
+                    } else if speed <= current_speed {
+                        UpdateVerdict::Slower
+                    } else {
+                        UpdateVerdict::Blunter
+                    };
+                    CandidateRow { row: row_for(entry), verdict }
+                })
+                .collect();
+
             Some(ModelUpdate {
                 role: *role,
                 file: spec.file.clone(),
                 current: CurrentFacts { speed_x: current_speed, fleurs_en_wer: current_wer },
-                candidate,
+                candidates,
             })
         })
         .collect()
-}
-
-/// Whether an SPDX id names a non-commercial variant: the `-nc` element
-/// the Creative Commons licences carry.
-fn non_commercial(spdx: &str) -> bool {
-    spdx.split('-').any(|part| part.eq_ignore_ascii_case("nc"))
 }
 
 /// Whether a feed is old enough to fetch again: no feed at all, one
@@ -369,7 +454,9 @@ impl crate::Workspace {
     /// Everything the models page draws.
     pub fn dictate_models(&self) -> DictateModelsSnapshot {
         let settings = &self.config.dictate;
-        let specs = settings.model_specs();
+        let active = self.active_models();
+        let specs: Vec<(DictateRole, ModelSpec)> =
+            active.iter().map(|(role, model)| (*role, model.spec.clone())).collect();
         let preflight = self.dictate.snapshot.lock().clone();
         let state = self.dictate_catalogue.lock();
         let entries: &[CatalogueEntry] =
@@ -378,10 +465,20 @@ impl crate::Workspace {
         DictateModelsSnapshot {
             enabled: settings.enabled,
             models_dir: settings.models_dir(),
-            in_use: if settings.enabled { in_use(entries, &specs, &preflight) } else { Vec::new() },
+            in_use: if settings.enabled {
+                in_use(entries, &active, &preflight)
+            } else {
+                Vec::new()
+            },
             check: state.check.clone(),
             updates: if settings.enabled { updates_for(entries, &specs) } else { Vec::new() },
             rows: entries.iter().map(row_for).collect(),
+            install: self.dictate_install(),
+            activate: self.dictate_activate(),
+            installed: self.installed_models(),
+            bench: self.dictate_bench(),
+            results: self.bench_results(),
+            read_aloud: self.read_aloud_state(),
         }
     }
 
@@ -465,51 +562,9 @@ impl crate::Workspace {
             }
             state.check = CatalogueCheck::Checking;
         }
-        let source = self.catalogue_source();
         let this = std::sync::Arc::clone(self);
         tokio::spawn(async move {
-            let fetched = tokio::task::spawn_blocking(move || {
-                forge_dictate::catalogue::fetch_catalogue(&source)
-            })
-            .await;
-            let outcome = fetched.unwrap_or_else(|join| {
-                Err(forge_dictate::Error::Catalogue { message: join.to_string() })
-            });
-
-            match outcome {
-                Ok(catalogue) => {
-                    if let Some(dir) = this.catalogue_dir()
-                        && let Err(error) =
-                            forge_dictate::catalogue::write_catalogue_cache(&dir, &catalogue)
-                    {
-                        tracing::warn!(
-                            event_name = "dictate_catalogue_cache_write_failed",
-                            %error,
-                            "the fetched catalogue was not cached; the next boot fetches it again"
-                        );
-                    }
-                    let mut state = this.dictate_catalogue.lock();
-                    state.check = CatalogueCheck::Fresh {
-                        at: catalogue.fetched_at.clone(),
-                        release: catalogue.release.clone(),
-                        skipped: catalogue.skipped,
-                    };
-                    state.catalogue = Some(catalogue);
-                }
-                // The rows the last fetch left stand, and nothing in use
-                // changed: a failed check costs the freshness line, not
-                // the feed.
-                Err(error) => {
-                    tracing::warn!(
-                        event_name = "dictate_catalogue_check_failed",
-                        %error,
-                        "the catalogue check failed; the last-known feed stands"
-                    );
-                    this.dictate_catalogue.lock().check =
-                        CatalogueCheck::Unreachable { error: error.to_string() };
-                }
-            }
-
+            let _ = this.fetch_catalogue_once().await;
             let models = this.dictate_models();
             let _ =
                 this.update_sender().send(crate::SessionUpdate::DictateModelsChanged { models });
@@ -517,14 +572,131 @@ impl crate::Workspace {
         true
     }
 
+    /// Fetch the feed once and land it: the freshness line, the rows and
+    /// the cache. Answers the catalogue, or the error the fetch failed
+    /// with; the last-known feed stands either way.
+    ///
+    /// Shared by the background check and the active-model resolution,
+    /// which needs the feed's entry for a config key's variant.
+    pub(crate) async fn fetch_catalogue_once(
+        &self,
+    ) -> Result<forge_dictate::catalogue::Catalogue, forge_dictate::Error> {
+        let source = self.catalogue_source();
+        let cleanup = self.cleanup_source();
+        let fetched = tokio::task::spawn_blocking(move || {
+            let mut catalogue = forge_dictate::catalogue::fetch_catalogue(&source)?;
+            // **The cleanup feed is a second source, and its failure is its
+            // own.** The speech feed landing is the check; a cleanup fetch
+            // that could not be read costs its rows, not the check, and the
+            // candidates the last fetch left stand.
+            match forge_dictate::cleanup::fetch_cleanup(&cleanup) {
+                Ok(mut entries) => {
+                    catalogue.entries.append(&mut entries);
+                    Ok::<_, forge_dictate::Error>((catalogue, true))
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        event_name = "dictate_cleanup_feed_failed",
+                        %error,
+                        "the cleanup feed could not be read; the candidates the last fetch left stand"
+                    );
+                    Ok((catalogue, false))
+                }
+            }
+        })
+        .await;
+        let outcome = fetched
+            .unwrap_or_else(|join| {
+                Err(forge_dictate::Error::Catalogue { message: join.to_string() })
+            })
+            .map(|(mut catalogue, cleanup_ok)| {
+                if !cleanup_ok {
+                    let previous: Vec<forge_dictate::catalogue::CatalogueEntry> = self
+                        .dictate_catalogue
+                        .lock()
+                        .catalogue
+                        .as_ref()
+                        .map(|held| {
+                            held.entries
+                                .iter()
+                                .filter(|entry| {
+                                    entry.kind == forge_dictate::catalogue::EntryKind::Normalizer
+                                })
+                                .cloned()
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    catalogue.entries.splice(0..0, previous);
+                }
+                catalogue
+            });
+
+        match outcome {
+            Ok(catalogue) => {
+                if let Some(dir) = self.catalogue_dir()
+                    && let Err(error) =
+                        forge_dictate::catalogue::write_catalogue_cache(&dir, &catalogue)
+                {
+                    tracing::warn!(
+                        event_name = "dictate_catalogue_cache_write_failed",
+                        %error,
+                        "the fetched catalogue was not cached; the next boot fetches it again"
+                    );
+                }
+                let mut state = self.dictate_catalogue.lock();
+                state.check = CatalogueCheck::Fresh {
+                    at: catalogue.fetched_at.clone(),
+                    release: catalogue.release.clone(),
+                    skipped: catalogue.skipped,
+                };
+                state.catalogue = Some(catalogue.clone());
+                Ok(catalogue)
+            }
+            // The rows the last fetch left stand, and nothing in use
+            // changed: a failed check costs the freshness line, not
+            // the feed.
+            Err(error) => {
+                tracing::warn!(
+                    event_name = "dictate_catalogue_check_failed",
+                    %error,
+                    "the catalogue check failed; the last-known feed stands"
+                );
+                self.dictate_catalogue.lock().check =
+                    CatalogueCheck::Unreachable { error: error.to_string() };
+                Err(error)
+            }
+        }
+    }
+
     /// Where the feed is fetched from. Test builds can point this at a
     /// loopback server; production always takes the real one.
-    fn catalogue_source(&self) -> forge_dictate::catalogue::CatalogueSource {
+    pub(crate) fn catalogue_source(&self) -> forge_dictate::catalogue::CatalogueSource {
         #[cfg(any(test, feature = "testing"))]
         if let Some(source) = self.test_catalogue_source.lock().clone() {
             return source;
         }
         forge_dictate::catalogue::CatalogueSource::default()
+    }
+
+    /// Where the cleanup feed is fetched from, on the same terms - and a test
+    /// serving the speech feed serves this one from the same loopback, so a
+    /// check in a test reads one server rather than reaching the Hub.
+    pub(crate) fn cleanup_source(&self) -> forge_dictate::cleanup::CleanupSource {
+        #[cfg(any(test, feature = "testing"))]
+        if let Some(source) = self.test_cleanup_source.lock().clone() {
+            return source;
+        }
+        #[cfg(any(test, feature = "testing"))]
+        if let Some(base) = self.test_catalogue_source.lock().clone() {
+            return forge_dictate::cleanup::CleanupSource {
+                listing: format!("{}cleanup?filter=", base.entry_base),
+                listing_tail: "&filter=gguf".to_owned(),
+                tags: vec!["text-normalization".to_owned()],
+                blobs_base: format!("{}blobs/", base.entry_base),
+                files_base: format!("{}files/", base.entry_base),
+            };
+        }
+        forge_dictate::cleanup::CleanupSource::default()
     }
 
     /// Where the fetched feed is cached: forge's machine-local state
@@ -549,7 +721,7 @@ impl crate::Workspace {
 }
 
 #[cfg(test)]
-mod tests_catalogue_view {
+pub(crate) mod tests_catalogue_view {
     use super::*;
     use crate::dictate::{DictateModel, DictateModelState, DictateRole, DictateSnapshot};
     use forge_dictate::catalogue::parse_entry;
@@ -567,7 +739,10 @@ mod tests_catalogue_view {
     }
 
     /// [`entry`] with the download length and licence a test needs.
-    fn entry_under(
+    ///
+    /// `pub(crate)` so the install tests build their entries with the same
+    /// spelling rather than a second one.
+    pub(crate) fn entry_under(
         variant: &str,
         languages: &str,
         speed: f64,
@@ -609,13 +784,30 @@ mod tests_catalogue_view {
         spec
     }
 
+    /// One role's compiled pin, as the active list spells it: what a role
+    /// with no config key and no runtime pick runs.
+    fn active_pin(
+        role: DictateRole,
+        spec: forge_dictate::ModelSpec,
+    ) -> (DictateRole, crate::install::ActiveModel) {
+        (
+            role,
+            crate::install::ActiveModel {
+                role,
+                spec,
+                from: crate::install::ActiveFrom::Pin,
+                at: None,
+            },
+        )
+    }
+
     /// Every fact the candidate list draws comes off the row itself.
     #[test]
     fn a_row_carries_the_facts_the_candidate_list_draws() {
         let row = row_for(&entry("candidate", r#"["en", "fr"]"#, 388.8, 4.61));
 
         assert_eq!(row.variant, "candidate");
-        assert_eq!(row.params, 1_000_000);
+        assert_eq!(row.params, Some(1_000_000));
         assert_eq!(row.license.as_deref(), Some("MIT"));
         assert_eq!(row.languages, ["en", "fr"]);
         assert_eq!(
@@ -675,15 +867,31 @@ mod tests_catalogue_view {
 
         let updates = updates_for(&entries, &[(DictateRole::Transcribing, in_use_spec())]);
 
-        assert_eq!(updates.len(), 1, "one update for the one model that is in use");
+        assert_eq!(updates.len(), 1, "one comparison per model in use");
         let update = &updates[0];
-        assert_eq!(
-            update.candidate.variant, "granite-like",
-            "the fastest entry better on both axes, which is the number the page shows first"
-        );
         assert_eq!(update.file, "in-use-Q4_K_M.gguf");
         assert_eq!(update.current.speed_x, 72.9, "the in-use side of the comparison");
         assert_eq!(update.current.fleurs_en_wer, 5.08);
+
+        // The table: fastest first, the pick at its head, and every row
+        // carrying the axis it lost or won on.
+        let table: Vec<(&str, UpdateVerdict)> = update
+            .candidates
+            .iter()
+            .map(|candidate| (candidate.row.variant.as_str(), candidate.verdict))
+            .collect();
+        assert_eq!(
+            table,
+            vec![
+                ("fast-but-blunt", UpdateVerdict::Blunter),
+                ("faster-but-equal-wer", UpdateVerdict::Blunter),
+                ("granite-like", UpdateVerdict::Recommended),
+                ("parakeet-like", UpdateVerdict::BeatsBoth),
+                ("slower-but-sharper", UpdateVerdict::Slower),
+            ],
+            "the ranked comparison the page tables: fastest first, the pick flagged where it \
+             lands, and every other row carrying the axis it lost on"
+        );
     }
 
     /// Two candidates equally fast: the sharper takes the line.
@@ -699,9 +907,10 @@ mod tests_catalogue_view {
 
         assert_eq!(updates.len(), 1);
         assert_eq!(
-            updates[0].candidate.variant, "twin-sharper",
+            updates[0].candidates[0].row.variant, "twin-sharper",
             "equal speed is broken by the lower word error rate, not by list order"
         );
+        assert_eq!(updates[0].candidates[0].verdict, UpdateVerdict::Recommended);
     }
 
     /// FLEURS English is the comparison axis: a row without it cannot be
@@ -718,17 +927,21 @@ mod tests_catalogue_view {
         .expect("parse");
         let entries = vec![entry("in-use", r#"["en"]"#, 72.9, 5.08), headline_only];
 
+        let updates = updates_for(&entries, &[(DictateRole::Transcribing, in_use_spec())]);
+
+        assert_eq!(updates.len(), 1, "the baseline still stands");
         assert!(
-            updates_for(&entries, &[(DictateRole::Transcribing, in_use_spec())]).is_empty(),
-            "no common axis, no comparison - and no update line"
+            updates[0].candidates.is_empty(),
+            "no common axis, no comparison - and no row for it"
         );
     }
 
-    /// A proposal is what an adoption would pin, so it must be
-    /// adoptable: a non-commercial candidate is never proposed, even
-    /// when it is the fastest entry on the feed.
+    /// **A non-commercial licence is a fact on the row, not a filter.**
+    /// The fastest beater wins and the row carries the licence it would
+    /// run under - the page downloads and runs it on this machine, which
+    /// is the licence's own personal use.
     #[test]
-    fn a_non_commercial_candidate_is_never_proposed() {
+    fn a_non_commercial_candidate_is_recommended_with_its_licence_on_the_row() {
         let entries = vec![
             entry("in-use", r#"["en"]"#, 72.9, 5.08),
             entry_under(
@@ -747,39 +960,17 @@ mod tests_catalogue_view {
 
         assert_eq!(updates.len(), 1);
         assert_eq!(
-            updates[0].candidate.variant, "permissive",
-            "the fastest PERMISSIVE entry, not the fastest entry: what gets proposed is a pin \
-             into a public repo"
+            updates[0].candidates[0].row.variant, "faster-but-nc",
+            "the fastest entry that beats the model in use, licence and all"
         );
+        assert_eq!(updates[0].candidates[0].verdict, UpdateVerdict::Recommended);
         assert_eq!(
-            updates[0].candidate.license.as_deref(),
-            Some("Apache-2.0"),
-            "and the proposal carries the licence it would be adopted under"
+            updates[0].candidates[0].row.license.as_deref(),
+            Some("CC-BY-NC-SA-4.0"),
+            "and the row states the licence the decision is read under"
         );
-    }
-
-    /// When nothing permissive beats the model in use, the page proposes
-    /// nothing - it does not fall back to the non-commercial entry it
-    /// skipped.
-    #[test]
-    fn a_feed_with_only_a_non_commercial_better_entry_proposes_nothing() {
-        let entries = vec![
-            entry("in-use", r#"["en"]"#, 72.9, 5.08),
-            entry_under(
-                "faster-but-nc",
-                r#"["en"]"#,
-                401.64,
-                4.30,
-                100,
-                "cc-by-nc-sa-4.0",
-                "CC-BY-NC-SA-4.0",
-            ),
-        ];
-
-        assert!(
-            updates_for(&entries, &[(DictateRole::Transcribing, in_use_spec())]).is_empty(),
-            "nothing permissive beats it, so there is nothing to propose"
-        );
+        assert_eq!(updates[0].candidates[1].row.variant, "permissive");
+        assert_eq!(updates[0].candidates[1].verdict, UpdateVerdict::BeatsBoth);
     }
 
     /// The pin's own byte length is the witness an entry is about the
@@ -814,9 +1005,13 @@ mod tests_catalogue_view {
             entry("in-use", r#"["en"]"#, 900.0, 1.00),
         ];
 
+        let updates = updates_for(&entries, &[(DictateRole::Transcribing, in_use_spec())]);
+
+        assert_eq!(updates.len(), 1, "the comparison still stands");
         assert!(
-            updates_for(&entries, &[(DictateRole::Transcribing, in_use_spec())]).is_empty(),
-            "a variant already in use is not a candidate to adopt"
+            updates[0].candidates.is_empty(),
+            "and the variant in use is no row of it: {:?}",
+            updates[0].candidates
         );
     }
 
@@ -836,7 +1031,8 @@ mod tests_catalogue_view {
             failure: None,
         };
 
-        let rows = in_use(&entries, &[(DictateRole::Transcribing, in_use_spec())], &states);
+        let rows =
+            in_use(&entries, &[active_pin(DictateRole::Transcribing, in_use_spec())], &states);
 
         assert_eq!(rows.len(), 1);
         let row = &rows[0];
@@ -859,7 +1055,7 @@ mod tests_catalogue_view {
     fn a_model_in_no_catalogue_entry_still_crosses_whole() {
         let rows = in_use(
             &[],
-            &[(DictateRole::Normalization, forge_dictate::ModelSpec::s1_mini_f16())],
+            &[active_pin(DictateRole::Normalization, forge_dictate::ModelSpec::s1_mini_f16())],
             &DictateSnapshot::default(),
         );
 
@@ -938,7 +1134,10 @@ mod tests_catalogue_view {
 
     /// A stub whose `[dictate]` section is on, with the models directory
     /// a tempdir so nothing touches the real cache.
-    fn enabled_stub()
+    ///
+    /// `pub(crate)` for the install tests, which drive the same stub and
+    /// the same loopback server rather than carrying a second copy.
+    pub(crate) fn enabled_stub()
     -> (Arc<Workspace>, tokio::sync::mpsc::UnboundedReceiver<SessionUpdate>, tempfile::TempDir)
     {
         let config_dir = tempfile::tempdir().expect("a config dir");
@@ -954,10 +1153,25 @@ mod tests_catalogue_view {
 
     /// Loopback HTTP/1.1 server answering fixed paths, one request per
     /// connection. Anything unrouted answers 404.
-    fn serve(routes: Vec<(&'static str, u16, Vec<u8>)>) -> String {
+    pub(crate) fn serve(routes: Vec<(&'static str, u16, Vec<u8>)>) -> String {
+        serve_with(|_| {
+            routes
+                .into_iter()
+                .map(|(route, status, body)| (route.to_owned(), status, body))
+                .collect()
+        })
+    }
+
+    /// [`serve`] with the routes built from the bound address, for a body
+    /// that must carry the URL it is served from: an install's doc table
+    /// points its download links back at this same loopback.
+    pub(crate) fn serve_with(
+        routes_for: impl FnOnce(&str) -> Vec<(String, u16, Vec<u8>)>,
+    ) -> String {
         use std::io::{BufRead, BufReader, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback port");
         let base = format!("http://{}", listener.local_addr().expect("the bound address"));
+        let routes = routes_for(&base);
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { break };
@@ -973,7 +1187,7 @@ mod tests_catalogue_view {
                         break;
                     }
                 }
-                let (status, body) = match routes.iter().find(|(route, _, _)| *route == path) {
+                let (status, body) = match routes.iter().find(|(route, _, _)| route == &path) {
                     Some((_, status, body)) => (*status, body.clone()),
                     None => (404, Vec::new()),
                 };
@@ -989,16 +1203,18 @@ mod tests_catalogue_view {
         base
     }
 
-    fn source(base: &str) -> CatalogueSource {
+    pub(crate) fn source(base: &str) -> CatalogueSource {
         CatalogueSource {
             listing: format!("{base}/catalog"),
             entry_base: format!("{base}/catalog/"),
             release: format!("{base}/release"),
+            doc_base: format!("{base}/docs/"),
+            repo_base: format!("{base}/repos/"),
         }
     }
 
     /// One parseable entry, shaped like the feed's own documents.
-    fn feed_entry() -> Vec<u8> {
+    pub(crate) fn feed_entry() -> Vec<u8> {
         br#"{"schema": "transcribe-catalog-v1", "variant": "one", "languages": ["en"],
              "downloads": [{"quant": "Q4_K_M", "filename": "one-Q4_K_M.gguf", "size_bytes": 100}],
              "speed_benchmarks": [{"machine": "m4-max", "backend": "metal", "quant": "Q8_0", "xrt_wall": 100.0}],
@@ -1006,7 +1222,7 @@ mod tests_catalogue_view {
             .to_vec()
     }
 
-    fn listing() -> Vec<u8> {
+    pub(crate) fn listing() -> Vec<u8> {
         br#"[{"name": "one.json", "type": "file"}]"#.to_vec()
     }
 
@@ -1029,6 +1245,12 @@ mod tests_catalogue_view {
         assert!(matches!(view.check, CatalogueCheck::Never));
         assert!(view.rows.is_empty(), "no fetched feed is no rows");
         assert!(view.updates.is_empty(), "and no update to propose");
+        assert_eq!(
+            view.bench,
+            crate::bench::BenchState::Idle,
+            "no bench is running on a fresh read"
+        );
+        assert!(view.results.is_empty(), "and nothing has been measured yet");
     }
 
     /// With `[dictate]` off the page reads no models in use and no
@@ -1159,6 +1381,62 @@ mod tests_catalogue_view {
         assert!(
             matches!(&view.check, CatalogueCheck::Fresh { .. }),
             "the state a later reader gets agrees with the pushed one"
+        );
+    }
+
+    /// **The cleanup feed's own path runs in CI.** Its listing is fetched per
+    /// tag and merged, its blobs answer each file's size and digest, and the
+    /// rows carry both - a path until now only the ignored live reporter
+    /// exercised, so a broken merge or a dropped digest was invisible here.
+    #[tokio::test]
+    async fn a_check_lands_the_cleanup_feed_too() {
+        let (ws, _updates, _models) = enabled_stub();
+        let cleanup = br#"[{"id": "owner/norm-a", "downloads": 5000,
+            "pipeline_tag": "text-generation", "library_name": "gguf",
+            "tags": ["gguf", "text-generation", "text-normalization", "en",
+                     "base_model:owner/norm-base"]}]"#;
+        let blobs = br#"{"siblings": [{"rfilename": "norm-a-Q4_K_M.gguf", "size": 300000000,
+            "lfs": {"sha256": "abababab"}}],
+            "gguf": {"architecture": "qwen2"}}"#;
+        let base = serve(vec![
+            ("/catalog", 200, listing()),
+            ("/catalog/one.json", 200, feed_entry()),
+            ("/release", 200, br#"{"tag_name": "v0.3.1"}"#.to_vec()),
+            ("/catalog/cleanup?filter=text-normalization&filter=gguf", 200, cleanup.to_vec()),
+            ("/catalog/blobs/owner/norm-a?blobs=true", 200, blobs.to_vec()),
+        ]);
+        *ws.test_catalogue_source.lock() = Some(source(&base));
+
+        let landed = ws.fetch_catalogue_once().await.expect("both feeds land");
+        let cleanup_rows: Vec<_> = landed
+            .entries
+            .iter()
+            .filter(|entry| entry.kind == forge_dictate::catalogue::EntryKind::Normalizer)
+            .collect();
+        assert_eq!(cleanup_rows.len(), 1, "the cleanup listing lands its row");
+        let row = cleanup_rows[0];
+        assert_eq!(row.variant, "owner/norm-a");
+        assert_eq!(row.downloads.len(), 1, "the blobs answer the file");
+        assert_eq!(row.downloads[0].quant, "Q4_K_M");
+        assert_eq!(row.downloads[0].size_bytes, 300_000_000);
+        assert_eq!(
+            row.downloads[0].sha256.as_deref(),
+            Some("abababab"),
+            "the blobs' digest rides the download, which is what an install verifies"
+        );
+        assert!(
+            row.params.is_none(),
+            "a Hub entry counts no parameters; the row must not invent one"
+        );
+
+        // And the speech feed's own row stands beside it: one catalogue, two
+        // kinds, one read.
+        assert!(
+            landed
+                .entries
+                .iter()
+                .any(|entry| entry.kind == forge_dictate::catalogue::EntryKind::Asr),
+            "the speech feed's rows land in the same read"
         );
     }
 

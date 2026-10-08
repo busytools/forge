@@ -24,6 +24,12 @@ pub const SCHEMA: &str = "transcribe-catalog-v1";
 /// at, so a comparison across variants reads the same axis.
 const REFERENCE_QUANTS: [&str; 3] = ["Q8_0", "F16", "BF16"];
 
+/// The quantisations this runtime runs, best first: the order a download is
+/// picked in when a source offers several, and the set a cleanup candidate
+/// must offer at least one of. One ladder, so a row the feed admits and the
+/// download that row resolves to can never disagree.
+pub const PREFERRED_DOWNLOADS: [&str; 4] = ["Q4_K_M", "Q8_0", "F16", "BF16"];
+
 /// One variant's catalogue entry.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CatalogueEntry {
@@ -33,9 +39,11 @@ pub struct CatalogueEntry {
     pub display_name: String,
     #[serde(default)]
     pub family: String,
-    /// Parameter count of the upstream checkpoint.
+    /// Parameter count of the upstream checkpoint, absent when the source
+    /// publishes none - the Hub's listing does not carry one. A count of
+    /// zero is not a fact, and a row printing `0M params` claims one.
     #[serde(default)]
-    pub params: u64,
+    pub params: Option<u64>,
     #[serde(default)]
     pub license: Option<License>,
     #[serde(default)]
@@ -44,12 +52,28 @@ pub struct CatalogueEntry {
     pub capabilities: Capabilities,
     #[serde(default)]
     pub headline_benchmark: Option<HeadlineBenchmark>,
+    /// The feed's published Hugging Face repo for this variant
+    /// (`owner/name`), which is where its README's own download table lives
+    /// when the docs tree has no per-variant page.
+    #[serde(default)]
+    pub published_repo: Option<String>,
     #[serde(default)]
     pub downloads: Vec<Download>,
     #[serde(default)]
     pub speed_benchmarks: Vec<SpeedRow>,
     #[serde(default)]
     pub accuracy_benchmarks: Vec<AccuracyRow>,
+    /// What this entry is for. The speech feed's documents never spell it -
+    /// they are all speech models - and the Hub's feed sets it for every
+    /// entry it builds.
+    #[serde(default)]
+    pub kind: EntryKind,
+    /// How many times the Hub has served the repo. **The only pre-run signal
+    /// a cleanup candidate has** - the feed publishes no speed and no error
+    /// for a normalizer - so it is what orders a sweep. The speech feed
+    /// carries no count and leaves this `None`.
+    #[serde(default)]
+    pub download_count: Option<u64>,
 }
 
 impl CatalogueEntry {
@@ -145,6 +169,19 @@ pub struct HeadlineBenchmark {
     pub metric: String,
 }
 
+/// What one catalogue entry is FOR: the slot it can fill. **Exhaustive on
+/// purpose** - a consumer that ignores it does not compile, so the two feeds'
+/// entries can never be mixed up by an assumption.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EntryKind {
+    /// A speech model: what transcribes.
+    #[default]
+    Asr,
+    /// A normalizer: what cleans a transcript up. The Hub's feed.
+    Normalizer,
+}
+
 /// One downloadable quantisation of the variant.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Download {
@@ -154,6 +191,17 @@ pub struct Download {
     pub filename: String,
     #[serde(default)]
     pub size_bytes: u64,
+    /// The file's own digest, where its host publishes one: the Hub's blobs
+    /// carry a sha256 per file, and the speech feed's documents carry none -
+    /// which is the difference the install records as a fact.
+    #[serde(default)]
+    pub sha256: Option<String>,
+    /// The file itself, when the feed names it directly rather than through
+    /// a document's link table. The Hub's blobs carry no URL, so this is the
+    /// resolve path its own convention spells; a speech feed's row leaves
+    /// this `None` and the install reads the doc's table by file name.
+    #[serde(default)]
+    pub url: Option<String>,
 }
 
 /// One measured speed row. Many fields cross that nothing reads; the
@@ -218,7 +266,7 @@ pub fn parse_entry(raw: &str) -> Result<CatalogueEntry, Error> {
 /// Bytes any single catalogue response may carry before the fetch
 /// refuses to buffer more. The feed's documents are about 13 KiB; the
 /// cap is what keeps a broken mirror from growing this process.
-const MAX_RESPONSE_BYTES: u64 = 4 << 20;
+pub(crate) const MAX_RESPONSE_BYTES: u64 = 4 << 20;
 
 /// How many entry documents are fetched at once. The feed is roughly 75
 /// small files, so this is what turns a ten-second serial walk into one
@@ -234,6 +282,13 @@ pub struct CatalogueSource {
     pub entry_base: String,
     /// The project's latest release, whose tag labels the feed.
     pub release: String,
+    /// URL prefix a variant's per-model doc is appended to, which is where
+    /// the download links for its files live.
+    pub doc_base: String,
+    /// Where the feed's published model repos live, for the README that
+    /// carries a variant's own download table when the docs tree has no
+    /// per-variant page: `<repo_base><published_repo>/raw/main/README.md`.
+    pub repo_base: String,
 }
 
 impl Default for CatalogueSource {
@@ -246,8 +301,79 @@ impl Default for CatalogueSource {
                     .to_owned(),
             release: "https://api.github.com/repos/handy-computer/transcribe.cpp/releases/latest"
                 .to_owned(),
+            doc_base:
+                "https://raw.githubusercontent.com/handy-computer/transcribe.cpp/main/docs/models/"
+                    .to_owned(),
+            repo_base: "https://huggingface.co/".to_owned(),
         }
     }
+}
+
+/// The markers the feed wraps its machine-readable regions in.
+const DOWNLOADS_OPEN: &str = "<!-- catalog:downloads -->";
+const TABLE_CLOSE: &str = "<!-- /catalog -->";
+
+/// The download links one variant's doc carries, by file name.
+///
+/// **Read from the doc's marked region, never the whole prose.** A doc's
+/// intro may link the upstream repository holding the ORIGINAL weights,
+/// which is not the GGUF this runtime loads, so taking any URL on the page
+/// would offer an install that cannot work. A file name is the URL's own
+/// last segment, so the name a download is recorded under and the URL it
+/// came from cannot disagree.
+///
+/// A doc this build does not understand yields nothing rather than a guess,
+/// and the caller reports that the doc carried no table.
+pub fn doc_links(raw: &str) -> Vec<(String, String)> {
+    let Some(region) = raw
+        .split_once(DOWNLOADS_OPEN)
+        .and_then(|(_, rest)| rest.split_once(TABLE_CLOSE))
+        .map(|(table, _)| table)
+    else {
+        return Vec::new();
+    };
+    gguf_links(region)
+}
+
+/// Every `.gguf` link in a whole document, by file name.
+///
+/// The published repo's README is not a generated page and carries no
+/// marked region - its table IS the page - so this is the scan for it,
+/// with the same file-name rule [`doc_links`] uses.
+pub fn file_links(raw: &str) -> Vec<(String, String)> {
+    gguf_links(raw)
+}
+
+fn gguf_links(region: &str) -> Vec<(String, String)> {
+    let mut links = Vec::new();
+    for target in region.lines().flat_map(link_targets) {
+        let Some((_, file)) = target.rsplit_once('/') else {
+            continue;
+        };
+        let is_gguf = std::path::Path::new(file)
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("gguf"));
+        if !is_gguf {
+            continue;
+        }
+        links.push((file.to_owned(), target));
+    }
+    links
+}
+
+/// Every markdown link target on one line: the text between `](` and `)`.
+fn link_targets(line: &str) -> Vec<String> {
+    let mut targets = Vec::new();
+    let mut rest = line;
+    while let Some(at) = rest.find("](") {
+        let after = &rest[at + 2..];
+        let Some(end) = after.find(')') else {
+            break;
+        };
+        targets.push(after[..end].to_owned());
+        rest = &after[end..];
+    }
+    targets
 }
 
 /// The feed as one fetch found it.
@@ -270,14 +396,7 @@ pub struct Catalogue {
 /// document failed is refused rather than answered empty - a page drawn
 /// over an empty catalogue reads the same as a page over a healthy one.
 pub fn fetch_catalogue(source: &CatalogueSource) -> Result<Catalogue, Error> {
-    let client = reqwest::blocking::Client::builder()
-        .connect_timeout(Duration::from_secs(30))
-        .timeout(Duration::from_secs(60))
-        // api.github.com refuses any request without one, so a client
-        // without this reads every check as unreachable.
-        .user_agent(concat!("forge-dictate/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .map_err(|error| Error::Http { url: source.listing.clone(), source: error })?;
+    let client = feed_client(&source.listing)?;
     let listing = get_bounded_text(&client, &source.listing, MAX_RESPONSE_BYTES)?;
     let names = listed_files(&listing);
     if names.is_empty() {
@@ -370,9 +489,82 @@ fn fetch_chunk(
     (entries, skipped)
 }
 
+/// Fetch one variant's per-model doc, where its own download links live.
+///
+/// Blocking, like the feed's fetch, and worth calling only when a model is
+/// being installed or a config key names a variant that is not on disk.
+pub fn fetch_doc(source: &CatalogueSource, variant: &str) -> Result<String, Error> {
+    let client = feed_client(&source.doc_base)?;
+    let url = format!("{}{variant}.md", source.doc_base);
+    get_bounded_text(&client, &url, MAX_RESPONSE_BYTES)
+}
+
+/// The download links a variant's own documents carry, by file name.
+///
+/// **Two documents can carry them and either may answer.** A variant whose
+/// docs-tree page exists has its table there, read through the marked
+/// region; the language-specific fine-tunes - moonshine's Arabic and
+/// Japanese builds, breeze - have no page in the tree at all, and keep
+/// their table in the published repo's README instead. The doc is read
+/// first; a doc that is absent, or carries no table, falls through to the
+/// README. Both are parsed for their links, never constructed from the
+/// file name.
+///
+/// Blocking, like the feed's fetch, and worth calling only when a model is
+/// being installed or a config key names one that is not on disk.
+pub fn download_links(
+    source: &CatalogueSource,
+    variant: &str,
+    published_repo: Option<&str>,
+) -> Result<Vec<(String, String)>, Error> {
+    let mut tried = Vec::new();
+
+    let doc_url = format!("{}{variant}.md", source.doc_base);
+    match fetch_doc(source, variant) {
+        Ok(raw) => {
+            let links = doc_links(&raw);
+            if !links.is_empty() {
+                return Ok(links);
+            }
+            tried.push(format!("{doc_url} carries no download table"));
+        }
+        Err(error) => tried.push(error.to_string()),
+    }
+
+    if let Some(repo) = published_repo {
+        let readme_url = format!("{}{repo}/raw/main/README.md", source.repo_base);
+        let client = feed_client(&source.repo_base)?;
+        match get_bounded_text(&client, &readme_url, MAX_RESPONSE_BYTES) {
+            Ok(raw) => {
+                let links = file_links(&raw);
+                if !links.is_empty() {
+                    return Ok(links);
+                }
+                tried.push(format!("{readme_url} carries no .gguf link"));
+            }
+            Err(error) => tried.push(error.to_string()),
+        }
+    }
+
+    Err(Error::Catalogue {
+        message: format!("no download links for {variant}: {}", tried.join("; ")),
+    })
+}
+
+/// The client every feed request goes through: the timeouts, and the
+/// User-Agent api.github.com refuses a request without.
+pub(crate) fn feed_client(for_url: &str) -> Result<reqwest::blocking::Client, Error> {
+    reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(60))
+        .user_agent(concat!("forge-dictate/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|error| Error::Http { url: for_url.to_owned(), source: error })
+}
+
 /// GET one response, bounded: a status that is not success is its own
 /// error, and a body past `cap` is refused rather than buffered.
-fn get_bounded_text(
+pub(crate) fn get_bounded_text(
     client: &reqwest::blocking::Client,
     url: &str,
     cap: u64,
@@ -420,7 +612,15 @@ const CATALOGUE_CACHE_FILE: &str = "catalogue.json";
 
 /// The record's own layout version. A file written by a layout this
 /// build does not know is ignored rather than misread.
-const CATALOGUE_CACHE_VERSION: u32 = 1;
+///
+/// **Bump this whenever the entry shape grows a field the download path
+/// reads.** Every entry field defaults, so a cache written by an older
+/// build parses cleanly and answers the default - and a default is a
+/// silent wrong answer where a refetch is the right one. Bumped to 2 for
+/// `published_repo`: a cache written without it cannot find the download
+/// links of the variants whose only document is their repo's README, and
+/// the install failed a 404 on a doc that never existed.
+const CATALOGUE_CACHE_VERSION: u32 = 2;
 
 #[derive(Serialize, Deserialize)]
 struct CatalogueFile {
@@ -503,7 +703,7 @@ mod tests_catalogue {
             .expect("the published entry must parse");
 
         assert_eq!(entry.variant, "cohere-transcribe-03-2026");
-        assert_eq!(entry.params, 2_049_026_832, "the parameter count is the feed's own");
+        assert_eq!(entry.params, Some(2_049_026_832), "the parameter count is the feed's own");
         assert_eq!(
             entry.license.as_ref().map(|l| l.display.as_str()),
             Some("Apache-2.0"),
@@ -621,6 +821,59 @@ mod tests_catalogue {
         assert_eq!(entry.fleurs_en_wer(), None);
         assert!(!entry.streaming(), "absent capabilities are not a claim of support");
     }
+
+    /// **The doc's marked table is the only place a download URL comes
+    /// from.** The granite doc's own intro links an upstream Hugging Face
+    /// repo, which is not a file forge can fetch, so a parser that took any
+    /// URL in the prose would offer a dead install; the `catalog:downloads`
+    /// markers are the feed's own statement of where its files are.
+    #[test]
+    fn parses_the_docs_marked_table_into_filenames_and_urls() {
+        let raw = include_str!("../tests/fixtures/docs/granite-speech-5.0-470m-turboctc.md");
+        let links = doc_links(raw);
+
+        let expected = "granite-speech-5.0-470m-turboctc-Q4_K_M.gguf";
+        let (file, url) = links
+            .iter()
+            .find(|(file, _)| file == expected)
+            .expect("the table's Q4 row did not parse");
+        assert_eq!(file, expected, "the file is the URL's own last segment");
+        assert!(
+            url.starts_with("https://huggingface.co/handy-computer/"),
+            "the URL is the table's own, got {url}"
+        );
+        assert_eq!(links.len(), 6, "one link per quant row");
+        assert!(
+            links.iter().all(|(file, _)| std::path::Path::new(file)
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("gguf"))),
+            "a row without a .gguf file parsed as a download"
+        );
+    }
+
+    /// The second real doc, so the convention is pinned beyond one sample.
+    #[test]
+    fn parses_a_second_variants_table() {
+        let raw = include_str!("../tests/fixtures/docs/medasr.md");
+        let links = doc_links(raw);
+
+        assert_eq!(links.len(), 6);
+        assert!(
+            links.iter().any(|(file, _)| file == "medasr-Q8_0.gguf"),
+            "the second doc's own table did not parse"
+        );
+    }
+
+    /// A doc shape this build does not understand offers no links rather
+    /// than a guess - the caller reports that the doc carried no table.
+    #[test]
+    fn a_doc_with_no_marked_table_parses_to_nothing() {
+        assert!(doc_links("# a doc with prose only").is_empty());
+        assert!(
+            doc_links("see https://huggingface.co/some/repo for the weights").is_empty(),
+            "a URL in the prose is not a download link"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -633,6 +886,78 @@ mod tests_catalogue_fetch {
     fn fixture(name: &str) -> String {
         let path = format!("{}/fixtures/catalogue/{name}", env!("CARGO_MANIFEST_DIR"));
         std::fs::read_to_string(&path).expect("the fixture must be readable")
+    }
+
+    /// **The doc is fetched from the feed's own docs tree**, one URL the
+    /// source owns. A variant with no doc there answers with the HTTP
+    /// failure, naming the URL, rather than an empty doc - an install
+    /// reports why it could not find the file.
+    #[test]
+    fn fetches_a_variants_doc_and_refuses_a_missing_one() {
+        let (base, _seen) = serve(vec![(
+            "/docs/models/granite-speech-5.0-470m-turboctc.md",
+            200,
+            include_bytes!("../tests/fixtures/docs/granite-speech-5.0-470m-turboctc.md").to_vec(),
+        )]);
+        let source = CatalogueSource {
+            listing: format!("{base}/catalog"),
+            entry_base: format!("{base}/catalog/"),
+            release: format!("{base}/release"),
+            doc_base: format!("{base}/docs/models/"),
+            repo_base: format!("{base}/repos/"),
+        };
+
+        let doc =
+            fetch_doc(&source, "granite-speech-5.0-470m-turboctc").expect("the doc is served");
+        assert_eq!(doc_links(&doc).len(), 6, "the fetched doc's table parses");
+
+        let missing = fetch_doc(&source, "not-a-variant").expect_err("no doc, no fetch");
+        assert!(
+            format!("{missing}").contains("not-a-variant.md"),
+            "the failure must name the doc it could not read, got: {missing}"
+        );
+    }
+
+    /// A variant with no page in the docs tree answers from its published
+    /// repo's README instead - the shape moonshine's language fine-tunes
+    /// have - and a variant whose documents both fail names both URLs.
+    #[test]
+    fn a_variant_with_no_doc_answers_from_its_published_readme() {
+        let readme = b"# moonshine-base-ar\n\n| Quant | Download |\n\
+            | --- | --- |\n\
+            | Q8_0 | [moonshine-base-ar-Q8_0.gguf](https://huggingface.co/handy-computer/moonshine-base-ar-gguf/resolve/main/moonshine-base-ar-Q8_0.gguf) |\n"
+            .to_vec();
+        let (base, _seen) = serve(vec![(
+            "/repos/handy-computer/moonshine-base-ar-gguf/raw/main/README.md",
+            200,
+            readme,
+        )]);
+        let source = CatalogueSource {
+            listing: format!("{base}/catalog"),
+            entry_base: format!("{base}/catalog/"),
+            release: format!("{base}/release"),
+            doc_base: format!("{base}/docs/models/"),
+            repo_base: format!("{base}/repos/"),
+        };
+
+        let links = download_links(
+            &source,
+            "moonshine-base-ar",
+            Some("handy-computer/moonshine-base-ar-gguf"),
+        )
+        .expect("the README answers with the file's own URL");
+        assert_eq!(links.len(), 1, "one row, one link");
+        assert_eq!(links[0].0, "moonshine-base-ar-Q8_0.gguf");
+        assert!(links[0].1.contains("/resolve/main/moonshine-base-ar-Q8_0.gguf"));
+
+        let nothing =
+            download_links(&source, "not-a-variant", Some("handy-computer/not-a-variant-gguf"))
+                .expect_err("neither document answers");
+        let message = nothing.to_string();
+        assert!(
+            message.contains("not-a-variant.md") && message.contains("not-a-variant-gguf"),
+            "the failure names both documents it tried, got: {message}"
+        );
     }
 
     /// Loopback HTTP/1.1 server answering fixed paths, one request per
@@ -691,6 +1016,8 @@ mod tests_catalogue_fetch {
             listing: format!("{base}/catalog"),
             entry_base: format!("{base}/catalog/"),
             release: format!("{base}/release"),
+            doc_base: format!("{base}/docs/models/"),
+            repo_base: format!("{base}/repos/"),
         }
     }
 

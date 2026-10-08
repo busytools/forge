@@ -252,6 +252,17 @@ pub struct DictateSettings {
     /// default.
     #[serde(default)]
     pub device: Option<String>,
+    /// The model the transcribing role runs, as the feed's own variant
+    /// name. Set, it wins over every runtime pick and refuses Activate
+    /// for the role; absent leaves the role to the last pick or the
+    /// compiled pin.
+    #[serde(default)]
+    pub transcribe_model: Option<String>,
+    /// The model the cleanup role runs, by feed variant name, under the
+    /// same rule as [`Self::transcribe_model`]. Inert while
+    /// [`Self::normalizer`] is off.
+    #[serde(default)]
+    pub cleanup_model: Option<String>,
     /// Spoken language hint. Absent autodetects.
     #[serde(default)]
     pub language: Option<String>,
@@ -308,6 +319,8 @@ impl Default for DictateSettings {
             enabled: false,
             models_dir: None,
             device: None,
+            transcribe_model: None,
+            cleanup_model: None,
             language: None,
             normalizer: true,
             max_capture_minutes: DEFAULT_MAX_CAPTURE_MINUTES,
@@ -334,7 +347,7 @@ impl DictateSettings {
     }
 
     /// The engine configuration these settings describe.
-    fn to_config(&self) -> forge_dictate::Config {
+    pub(crate) fn to_config(&self) -> forge_dictate::Config {
         let mut builder = forge_dictate::ConfigBuilder::new()
             .max_capture(Duration::from_secs(self.max_capture_minutes.saturating_mul(60)));
         if let Some(dir) = self.models_dir.as_deref() {
@@ -370,6 +383,26 @@ impl DictateSettings {
         let cfg = self.to_config();
         std::iter::once((DictateRole::Transcribing, cfg.asr_model))
             .chain(cfg.normalizer.map(|spec| (DictateRole::Normalization, spec)))
+            .collect()
+    }
+
+    /// The compiled pins as active models: what every role runs before any
+    /// resolution has landed, and what a role with no key and no runtime
+    /// pick keeps running.
+    pub(crate) fn pin_active(&self) -> Vec<(DictateRole, crate::install::ActiveModel)> {
+        self.model_specs()
+            .into_iter()
+            .map(|(role, spec)| {
+                (
+                    role,
+                    crate::install::ActiveModel {
+                        role,
+                        spec,
+                        from: crate::install::ActiveFrom::Pin,
+                        at: None,
+                    },
+                )
+            })
             .collect()
     }
 
@@ -489,24 +522,53 @@ impl DictateSnapshot {
     }
 }
 
-/// Preflight's own handle on the work: the snapshot the TUI renders and
-/// the flag Escape sets.
+/// Preflight's own handle on the work: the snapshot the TUI renders, the
+/// flag Escape sets, and the active models the resolution landed.
 pub(crate) struct DictateState {
     pub(crate) snapshot: Mutex<DictateSnapshot>,
     pub(crate) cancelled: AtomicBool,
     /// The live engine, held for the whole run. Dropping it unloads the
     /// weights, which is the one thing preflight exists to avoid.
     pub(crate) engine: Mutex<Option<Arc<forge_dictate::Engine>>>,
+    /// Which model each role runs: the compiled pins until the preflight
+    /// resolves, then whatever the config, the runtime pick or the pin
+    /// answered.
+    pub(crate) active: Mutex<Vec<(DictateRole, crate::install::ActiveModel)>>,
 }
 
 impl DictateState {
     pub(crate) fn new(settings: &DictateSettings) -> Self {
         let models = if settings.enabled { settings.initial_models() } else { Vec::new() };
+        let active = if settings.enabled { settings.pin_active() } else { Vec::new() };
         Self {
             snapshot: Mutex::new(DictateSnapshot { models, failure: None }),
             cancelled: AtomicBool::new(false),
             engine: Mutex::new(None),
+            active: Mutex::new(active),
         }
+    }
+
+    /// Move the resolved models in, before the preflight fetches anything:
+    /// the rows follow the files the roles will actually run, keeping the
+    /// state a row already reached when its file is unchanged.
+    pub(crate) fn set_active(&self, models: &[(DictateRole, crate::install::ActiveModel)]) {
+        let rows = {
+            let snapshot = self.snapshot.lock();
+            models
+                .iter()
+                .map(|(role, model)| DictateModel {
+                    role: *role,
+                    file: model.spec.file.clone(),
+                    state: snapshot
+                        .models
+                        .iter()
+                        .find(|row| row.file == model.spec.file)
+                        .map_or(DictateModelState::Pending, |row| row.state.clone()),
+                })
+                .collect()
+        };
+        self.snapshot.lock().models = rows;
+        *self.active.lock() = models.to_vec();
     }
 
     fn set_state(&self, file: &str, state: DictateModelState) {
@@ -516,7 +578,16 @@ impl DictateState {
         }
     }
 
-    fn fail(&self, failure: DictateFailure, file: Option<&str>) {
+    /// Move every row to one state: preflight's Loading and Ready points,
+    /// and the same Ready after a runtime swap, where every role's model
+    /// is loaded by the engine that just came up.
+    pub(crate) fn mark_all(&self, state: &DictateModelState) {
+        for model in &mut self.snapshot.lock().models {
+            model.state = state.clone();
+        }
+    }
+
+    pub(crate) fn fail(&self, failure: DictateFailure, file: Option<&str>) {
         if let Some(file) = file {
             self.set_state(file, DictateModelState::Failed(failure.clone()));
         }
@@ -525,15 +596,18 @@ impl DictateState {
 }
 
 /// The config preflight builds the engine from: the `[dictate]`
-/// settings plus the always-on stores under forge's app-support dir -
-/// per-take diagnostics and the verified-digest record - machine-local
-/// and never synced.
+/// settings, the resolved active models, and the always-on stores under
+/// forge's app-support dir - per-take diagnostics and the
+/// verified-digest record - machine-local and never synced.
 ///
 /// A directory that cannot be resolved turns the capture off with a
 /// warning rather than failing preflight - diagnostics never break
 /// dictation, but the absence must not be silent either: a capability
 /// believed present and quietly missing is the failure nobody can see.
-fn preflight_config(settings: &DictateSettings) -> forge_dictate::Config {
+pub(crate) fn preflight_config(
+    settings: &DictateSettings,
+    active: &[(DictateRole, crate::install::ActiveModel)],
+) -> forge_dictate::Config {
     let mut cfg = settings.to_config();
     match forge_sdk::app_support_dir() {
         Ok(dir) => {
@@ -546,20 +620,24 @@ fn preflight_config(settings: &DictateSettings) -> forge_dictate::Config {
             "no app-support dir: dictate per-take diagnostics and the model-digest record are off"
         ),
     }
+    // The resolution replaces the pins the builder put in, per role.
+    if let Some((_, model)) = active.iter().find(|(role, _)| *role == DictateRole::Transcribing) {
+        cfg.asr_model = model.spec.clone();
+    }
+    cfg.normalizer = active
+        .iter()
+        .find(|(role, _)| *role == DictateRole::Normalization)
+        .map(|(_, model)| model.spec.clone());
     cfg
 }
 
-/// Fetch, verify and load every configured model, reporting progress
-/// into `state` as it goes.
+/// Fetch, verify and load the active models, reporting progress into
+/// `state` as it goes. The caller resolves the models and builds the
+/// config; a dictation-off run never gets here.
 ///
 /// Both legs are blocking and documented as panicking on a runtime
 /// thread in a debug build, so both run under `spawn_blocking`.
-pub(crate) async fn run_dictate_preflight(settings: DictateSettings, state: Arc<DictateState>) {
-    if !settings.enabled {
-        return;
-    }
-    let cfg = preflight_config(&settings);
-
+pub(crate) async fn run_dictate_preflight(cfg: forge_dictate::Config, state: Arc<DictateState>) {
     let prepare_state = Arc::clone(&state);
     let prepare_cfg = cfg.clone();
     let prepared = tokio::task::spawn_blocking(move || prepare(&prepare_cfg, &prepare_state)).await;
@@ -572,9 +650,7 @@ pub(crate) async fn run_dictate_preflight(settings: DictateSettings, state: Arc<
         }
     }
 
-    for model in &mut state.snapshot.lock().models {
-        model.state = DictateModelState::Loading;
-    }
+    state.mark_all(&DictateModelState::Loading);
 
     // `Engine::new` returns in microseconds having handed the load to a
     // worker; `wait_ready` is the part that takes the second.
@@ -589,11 +665,7 @@ pub(crate) async fn run_dictate_preflight(settings: DictateSettings, state: Arc<
     .await;
 
     match loaded {
-        Ok(Ok(())) => {
-            for model in &mut state.snapshot.lock().models {
-                model.state = DictateModelState::Ready;
-            }
-        }
+        Ok(Ok(())) => state.mark_all(&DictateModelState::Ready),
         Ok(Err(error)) => state.fail(failure_for(&load_cfg, &error), failing_file(&error)),
         Err(source) => state.fail(DictateFailure::Other { message: source.to_string() }, None),
     }
@@ -771,6 +843,19 @@ pub(crate) struct FinishingTake {
     pub(crate) initiator: Option<u64>,
 }
 
+/// The read-aloud set being recorded, when one is: the audio a client's
+/// own frames have fed so far, held until the stop that keeps or drops
+/// it. It belongs to no session - the words are known, so nothing is
+/// transcribed and nothing is routed - but it is a live capture like any
+/// other, and the guards that wait on captures count it.
+///
+/// The connection that started it is the only one that can feed or stop
+/// it, the same rule every framed take follows.
+pub(crate) struct SetRecording {
+    pub(crate) initiator: Option<u64>,
+    pub(crate) samples: Vec<f32>,
+}
+
 /// Dictation state across every session. A device take holds the one
 /// microphone, but takes fed by a client's own frames hold no device, so
 /// several seats can dictate at once; several takes can also be
@@ -779,6 +864,7 @@ pub(crate) struct FinishingTake {
 pub(crate) struct DictateRuntime {
     pub(crate) recordings: HashMap<SessionSlot, LiveRecording>,
     pub(crate) finishing: Vec<FinishingTake>,
+    pub(crate) set_recording: Option<SetRecording>,
     /// Handed out with every take's `DictateStarted` and echoed on its
     /// `DictateEnded`, so a resolver arriving after a newer take on the
     /// same key is recognisably stale. Starts at 1; 0 is the "matches
@@ -805,6 +891,7 @@ impl Default for DictateRuntime {
         Self {
             recordings: HashMap::new(),
             finishing: Vec::new(),
+            set_recording: None,
             next_generation: 1,
             stop_pending: None,
         }
@@ -829,6 +916,20 @@ impl DictateRuntime {
             .iter()
             .find(|take| &take.key == key && take.initiator == initiator)
             .map(|take| take.stop.clone())
+    }
+
+    /// The seat holding a live capture, when one is: a recording still
+    /// capturing, a submitted take still transcribing, or the read-aloud
+    /// set being recorded. A model swap and a bench are refused while one
+    /// is, and the refusal names this holder.
+    pub(crate) fn live_holder(&self) -> Option<String> {
+        let slot =
+            self.recordings.keys().next().or_else(|| self.finishing.first().map(|take| &take.key));
+        match slot {
+            Some(slot) => Some(slot.display()),
+            None if self.set_recording.is_some() => Some("the read-aloud recording".to_owned()),
+            None => None,
+        }
     }
 
     /// The live take a socket's frame belongs to, if `key` has one that is
@@ -1528,7 +1629,7 @@ mod tests {
     #[test]
     fn preflight_config_points_diagnostics_at_app_support() {
         let settings: DictateSettings = toml::from_str("enabled = true\n").expect("parse");
-        let cfg = preflight_config(&settings);
+        let cfg = preflight_config(&settings, &settings.pin_active());
         assert_eq!(
             cfg.diagnostics_dir.as_deref(),
             forge_sdk::app_support_dir().ok().map(|dir| dir.join("dictate-diagnostics")).as_deref(),
