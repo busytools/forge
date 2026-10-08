@@ -362,7 +362,7 @@ async fn run_connection(
                 }
                 // The fold is the transport's, not this connection's: it runs
                 // once for the whole socket in `transport::fold_the_stream`.
-                if watched.iter().any(|what| what.covers(&update)) && ours_to_hear(&update, me) {
+                if forwards(&update, watched, me) {
                     // **A fatal goes out now, not on the batch's clock.** The
                     // exit it announces is already on its way - `workspace.
                     // shutdown` follows `run_tui`'s return - and a frame still
@@ -638,7 +638,7 @@ async fn handle_client(
             // taken, and the client reads them in the order it receives them.
             let mut queued = Vec::new();
             for update in open_stream(state, updates, answering) {
-                if watched.iter().any(|what| what.covers(&update)) && ours_to_hear(&update, me) {
+                if forwards(&update, watched, me) {
                     queued.push(update);
                 }
             }
@@ -1128,6 +1128,34 @@ fn ours_to_hear(update: &SessionUpdate, me: u64) -> bool {
         | SessionUpdate::DictateEnded { initiator, .. } => *initiator == Some(me),
         _ => true,
     }
+}
+
+/// Whether this update is one of a take's own.
+///
+/// The family `ours_to_hear` stamps by connection: a take's meter, its
+/// phases and the end that settles it.
+fn is_take_news(update: &SessionUpdate) -> bool {
+    matches!(
+        update,
+        SessionUpdate::DictateStarted { .. }
+            | SessionUpdate::DictateLevel { .. }
+            | SessionUpdate::DictateTranscribing { .. }
+            | SessionUpdate::DictateProgress { .. }
+            | SessionUpdate::DictateEnded { .. }
+    )
+}
+
+/// Whether this connection forwards one update.
+///
+/// **A take's own news reaches its connection whether or not the seat is
+/// showing.** The reader may be on another seat while their recording runs,
+/// and the fold that draws the take - and the end settling it - is this
+/// connection's: filtered by the watch, the record would go on drawing a
+/// recording that is over (#1880). Every other update keeps the watch rule
+/// alone.
+fn forwards(update: &SessionUpdate, watched: &[Subject], me: u64) -> bool {
+    ours_to_hear(update, me)
+        && (is_take_news(update) || watched.iter().any(|what| what.covers(update)))
 }
 
 /// Where one binary message went, decided without touching a take.

@@ -963,6 +963,97 @@ async fn a_refused_restart_leaves_the_live_take_to_the_disconnect() {
     .await;
 }
 
+/// A take's own news reaches the connection that started it whether or not
+/// the seat is showing.
+///
+/// The reader is on another seat while their recording runs, and the fold
+/// that draws the take - and the end it must hear - is that connection's.
+/// Filtered by the watch, the record goes on drawing a recording that is
+/// over, and a press for it is answered by nothing at all (#1880).
+#[tokio::test]
+async fn a_take_ending_reaches_its_connection_with_the_seat_unsubscribed() {
+    let (url, fleet) = a_server().await;
+    fleet.install_agent("TestOrg", "proj", "lead");
+    let _models = fleet.arm_dictation(&lead_seat()).expect("dictation arms without weights");
+
+    let mut client = connect(&url).await;
+    send(
+        &mut client,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            browser: false,
+        },
+    )
+    .await;
+    let _ = snapshot_answering(&mut client).await;
+    send(
+        &mut client,
+        ClientMessage::Command {
+            command: Box::new(Command::DictateStream {
+                key: lead_seat(),
+                options: forge_workspace::DictateAxes::default(),
+                initiator: None,
+            }),
+            reply_to: None,
+        },
+    )
+    .await;
+    update_until(&mut client, "the take's start", |update| {
+        matches!(update, SessionUpdate::DictateStarted { .. })
+    })
+    .await;
+
+    // The reader moves to another seat: this seat's subscription goes back.
+    send(&mut client, ClientMessage::Unsubscribe { what: Subject::Session(lead_seat()) }).await;
+    // A turnstile, because an unsubscribe is answered by silence: the role
+    // claim answers at once and in order, so hearing it proves the seat was
+    // let go before anything below was emitted.
+    send(&mut client, ClientMessage::BrowserTakeRole).await;
+    loop {
+        match next_server_within(&mut client, 5_000).await {
+            Some(ServerMessage::BrowserRole { .. }) => break,
+            Some(_) => {}
+            None => panic!("waited for the role claim's answer, and never heard it"),
+        }
+    }
+
+    // A control on the way past, because the exemption must be NARROW: news
+    // about the seat that is not the take's is still the watch's to filter.
+    fleet.emit(SessionUpdate::RuntimeReloadCompleted { key: lead_seat() });
+
+    // The take ends while nothing here shows the seat - the cap, or a stop
+    // from whichever view can reach the seat.
+    send(
+        &mut client,
+        ClientMessage::Command {
+            command: Box::new(Command::DictateStop {
+                key: lead_seat(),
+                submit: false,
+                initiator: None,
+            }),
+            reply_to: None,
+        },
+    )
+    .await;
+
+    // The end is the first thing this connection hears: the take's news is
+    // its own, and the seat's other news is not.
+    loop {
+        match next_server_within(&mut client, 5_000).await {
+            Some(ServerMessage::Update { update }) => match *update {
+                SessionUpdate::DictateEnded { .. } => break,
+                SessionUpdate::RuntimeReloadCompleted { .. } => panic!(
+                    "a non-take update for an unwatched seat arrived: the exemption is too wide"
+                ),
+                _ => {}
+            },
+            Some(other) => panic!("waited for the take's end, and got {other:?}"),
+            None => panic!("waited for the take's end, and never heard it"),
+        }
+    }
+}
+
 /// The axes `forge.toml` set reach a client in the greeting. They are what a
 /// capturing client starts on and resets to, so a default standing in for the
 /// config's value would be invisible everywhere else - and the fixture's
