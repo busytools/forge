@@ -23,8 +23,9 @@
  *   own turn, and the three external kinds that carry something to read - a
  *   cron fire, a Slack message, a Gotify push - join the list as rows of
  *   their own kind, the same shape every other row draws;
- * - a monitor is not in the conversation at all, because the inspector is its
- *   surface;
+ * - a call the terminal would draw only in the inspector - a monitor - is a
+ *   row of the conversation here, the plain call row every other tool gets:
+ *   the inspector this view had is gone, and rule 25 leaves no row skipped;
  * - a compaction boundary is a row at the cut, where the terminal draws none:
  *   the count is the terminal's marker, the cut is unmarked there, and this
  *   fold's `push` ends a run of calls at it;
@@ -337,17 +338,6 @@ export type Unit =
     }
   /** What a settled turn did, under the work it did it with. */
   | { kind: 'report'; key: string; info: TurnInfo };
-
-/**
- * The tool a lifecycle block is drawn for, which the chat does not draw at all.
- *
- * Matched the way the terminal matches it, which is case-insensitively: a
- * lowercase `monitor` is the same call, and drawn as a tool row it duplicates
- * the inspector inside the turn it sits in.
- */
-function isMonitor(name: string): boolean {
-  return name.toLowerCase() === 'monitor';
-}
 
 /** Whether a call is a question the assistant asked. */
 function isQuestion(name: string): boolean {
@@ -2215,7 +2205,6 @@ export function fold(
       if (block.type === 'tool_use' || block.type === 'server_tool_use') {
         const name = typeof block.name === 'string' ? block.name : 'tool';
         const id = typeof block.id === 'string' ? block.id : '';
-        if (isMonitor(name)) continue;
 
         const card = outbound(
           name,

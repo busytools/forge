@@ -94,7 +94,7 @@ const result = (id: string): unknown => ({
   message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: 'ok' }] },
 });
 
-/** An `assistant` frame whose only call is a monitor, which the fold skips. */
+/** An `assistant` frame whose only call is a monitor, the call the fold draws. */
 const monitoring = (): unknown => ({
   type: 'assistant',
   message: {
@@ -878,23 +878,47 @@ describe('the conversation the chat draws', () => {
     // seat it arrives between one turn and the next, so a row apiece is a blank
     // row per tool call.
     //
-    // The last two draw nothing for a reason that is NOT their type - the
-    // fold's own monitor guard and its dispatch guard - so a rule keyed on
-    // types would open a row for each of them.
+    // The dispatched frame draws nothing for a reason that is NOT its type -
+    // the fold's own dispatch guard - so a rule keyed on types would open a row
+    // for it.
     //
     // **A thinking block used to be one of these and is not any more**: it
     // draws the row its words are carried on, which is why it is not in this
-    // set.
+    // set. **Nor is a monitor call**: it draws the plain call row every other
+    // tool gets (rule 25), which the case below pins.
     server.update({ chat_appended: { key: LEAD, msg: result('call-1') } });
-    server.update({ chat_appended: { key: LEAD, msg: monitoring() } });
     server.update({ chat_appended: { key: LEAD, msg: dispatched() } });
 
     const after = get(chat.value).turns;
     expect(after.length, 'none of the frames opened a row of its own').toBe(2);
     expect(
       after[after.length - 1]?.messages,
-      'and all of them are held in the turn they arrived in',
-    ).toEqual([...turn('t2', 'second').messages, result('call-1'), monitoring(), dispatched()]);
+      'and both are held in the turn they arrived in',
+    ).toEqual([...turn('t2', 'second').messages, result('call-1'), dispatched()]);
+  });
+
+  it('opens a row for a monitor call, which draws one now', () => {
+    // The converse of the rule above: a monitor is a call like any other, and
+    // a skipped one is a style nobody knows is missing.
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    server.update({ chat_appended: { key: LEAD, msg: monitoring() } });
+
+    const after = get(chat.value).turns;
+    expect(after, 'the call opened a row of its own').toHaveLength(2);
+    const units = fold(after[1]?.messages ?? []);
+    const calls = units.flatMap((unit) =>
+      unit.kind === 'leaves'
+        ? unit.rows.flatMap((row) => (row.tag === 'call' ? [row.leaf] : []))
+        : [],
+    );
+    expect(
+      calls.map((leaf) => leaf.name),
+      'and the row is the plain call row it is',
+    ).toEqual(['Monitor']);
   });
 
   it('opens a row for a thinking frame, which draws one now', () => {

@@ -946,15 +946,19 @@ describe('one turn folded into the units a view draws', () => {
     expect(kinds(units)).toEqual(['leaves', 'text', 'leaves']);
   });
 
-  it('draws nothing for a monitor', () => {
-    // The inspector owns monitors and the chat draws nothing for one, so a row
-    // here would put a watcher in the conversation beside the calls it watches.
+  it('draws a monitor call as the plain call row it is', () => {
+    // The inspector that owned monitors is gone from this view, and a skipped
+    // row is a style nobody knows is missing: a call the session made draws
+    // where it made it (rule 25), as the plain call row any other tool gets.
+    // The strip's monitors segment stays the watcher's live surface.
     const monitor = said([use('toolu_m', 'Monitor', { description: 'watch', command: 'tail -f' })]);
     const units = fold([call('read', 0), monitor, call('read', 1)]);
 
-    expect(units).toHaveLength(1);
-    const [group] = units;
-    expect(callsOf(group).length, 'the two reads drew and the monitor did not').toBe(2);
+    expect(kinds(units), 'one run, nothing broken by the monitor').toEqual(['leaves']);
+    expect(
+      callsOf(units[0]).map((row) => row.leaf.name),
+      'all three calls drew, the monitor among them',
+    ).toEqual(['Read', 'Monitor', 'Read']);
   });
 
   it('draws nothing for a dispatched agent, and the same frames without one are the chat', () => {
