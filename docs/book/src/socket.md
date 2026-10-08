@@ -92,10 +92,10 @@ variant's own name rather than on `kind`:
 {"kind": "command", "command": {"cancel": {"key": {"org": "Acme", "project": "proj", "label": "lead"}}}, "reply_to": null}
 ```
 
-A command's variant is its name around its field bag - `Command` has 39
-variants, 38 of them struct variants; the one unit variant,
-`dictate_catalogue_check`, crosses as the name alone. An update is the same
-shape one level in,
+A command's variant is its name around its field bag - `Command` has 49
+variants, 47 of them struct variants; the two unit variants,
+`dictate_catalogue_check` and `dictate_bench_stop`, cross as the name
+alone. An update is the same shape one level in,
 `{"kind": "update", "update": {"chat_appended": {"key": ..., "msg": ...}}}`,
 and 70 of `SessionUpdate`'s 75 variants are struct variants too. The other
 five are why the payload is not one shape: four are unit variants and cross
@@ -453,21 +453,25 @@ are the whole catalogue and only the models page draws them.
 |---|---|
 | `enabled` | Whether `[dictate] enabled` is set. Carried rather than inferred from an empty `in_use`, which a switched-off section and a failed preflight share. |
 | `models_dir` | Where the dictation models land, or `null` when the platform has no usable cache directory and none was configured. |
-| `in_use` | One row per pinned model: `role`, `file`, `size`, `sha256`, the preflight `state` (`pending`, `downloading`, `verifying`, `fetched`, `loading`, `ready`, `failed`), `facts` - what the pin declares about the checkpoint (quant, parameters, licence, runtime) - and `catalogue`, the feed's entry for this file joined by file name, with the pin's byte length as the witness, when the feed carries one. |
+| `in_use` | One row per model the role runs: `role`, `file`, `size`, `sha256` (the declared digest, or `null` for an installed model that publishes none), the preflight `state` (`pending`, `downloading`, `verifying`, `fetched`, `loading`, `ready`, `failed`), `facts` - what the pin declares about the checkpoint (quant, parameters, licence, runtime) - `catalogue`, the feed's entry for this file joined by file name, with the pin's byte length as the witness, when the feed carries one, and `from` / `at`, where the choice came from (a `[dictate]` config key, an installed pick, or the compiled pin) and when a runtime pick chose it. |
 | `check` | The last catalogue check, tagged on `state`: `never`, `checking`, `fresh` (`at`, `release`, `skipped`) or `unreachable` (`error`). The rows stand through an `unreachable`: a failed check costs the freshness line, not the feed. |
-| `updates` | One entry per in-service model the feed has a candidate for: `role`, `file`, `current` (the in-use model's own catalogue numbers, `speed_x` and `fleurs_en_wer`) and `candidate`, a catalogue row. |
-| `rows` | The whole feed, one row per variant: display identity, parameters, licence, languages, streaming, `download` (the preferred quant and its size), `speed` (the m4-max Metal row), and `wer` (FLEURS English where the feed carries it, else the entry's own headline). |
+| `updates` | One entry per in-service model the feed can read against: `role`, `file`, `current` (the in-use model's own catalogue numbers, `speed_x` and `fleurs_en_wer`) and `candidates`, every comparable row ranked, each with the rule's verdict on it and which one the rule picks. |
+| `rows` | The whole feed, one row per variant: display identity, parameters, licence, languages, streaming, `download` (the preferred quant and its size), `speed` (the m4-max Metal row), `wer` (FLEURS English where the feed carries it, else the entry's own headline), `kind` (which role's list the row belongs in), `url` (the entry's own page, where the feed names one) and `download_count` (the Hub's own count for a cleanup candidate, absent from the speech feed). |
+| `install`, `activate` | Where the last model download and the last role swap got to, tagged on `state` (`idle`, `downloading` with its bytes, `activating` with its role, `failed` with the core's own reason). |
+| `installed` | Every model this machine downloaded from the feed: `variant`, `file`, `url`, `size`, `facts` and when it landed. |
+| `bench`, `results` | The bench in flight - its target, its tier, its clip count and the agreement so far - and every finished run, each with its metrics, its tier, its target and the corpus it scored (clips, audio seconds, digest). Only runs sharing one tier and one corpus are comparable. |
+| `read_aloud` | The read-aloud set: the recordings kept here (id, duration, bytes, digest, when), whether one is being recorded right now, the passage they are read from, the terms a run scores them on, and the last write's failure when there was one. |
 
 **A candidate beats the model in use on both measured axes or it is not
 one**: lower FLEURS English word error rate and higher m4-max Metal
 wall-clock realtime factor, both from the feed's own rows. The entry must
-also carry English, must not be the variant already in use, and must not be
-a non-commercial licence - a proposal is what an adoption would pin into a
-public repo. An entry whose file name matches the pin at a different byte
-length has been rebuilt, and is never a comparison. Among the entries that
-clear all of it, the fastest wins. Nothing is ever adopted automatically -
-the page proposes, a person merges - so what this read states is a
-comparison, not a change.
+also carry English and must not be the variant already in use. An entry
+whose file name matches the pin at a different byte length has been
+rebuilt, and is never a comparison. Among the entries that clear all of it,
+the fastest wins; a non-commercial licence is a fact on the row rather than
+a filter, because what an adoption does now is download a model onto this
+machine. **Nothing is adopted without a press**: the page proposes, and the
+person presses - the core only ever does what a `dictate_activate` names.
 
 **The check's landing is the update.** `dictate_catalogue_check` starts a
 fetch, and `dictate_models_changed` carries the re-read view when it
