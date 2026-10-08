@@ -24,7 +24,7 @@ import type { ClientSettings, SessionSlot } from './wire/types';
  * not, and a mismatch fails plainly instead of silently. What is tolerated
  * below this one is `MIN_PROTOCOL`, and nothing above it is.
  */
-export const PROTOCOL_VERSION = 6;
+export const PROTOCOL_VERSION = 7;
 
 /**
  * The oldest protocol this client reads.

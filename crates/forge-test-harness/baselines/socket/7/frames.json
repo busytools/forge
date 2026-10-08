@@ -1,5 +1,7 @@
 {
   "server_message": {
+    "BrowserAsk": "browser_ask",
+    "BrowserRole": "browser_role",
     "Devices": "devices",
     "Error": "error",
     "Greeting": "greeting",
@@ -12,6 +14,8 @@
     "AccountsChanged": "accounts_changed",
     "AuthRequired": "auth_required",
     "BackgroundTasksChanged": "background_tasks_changed",
+    "BrowserHandOffPending": "browser_hand_off_pending",
+    "BrowserHandOffResolved": "browser_hand_off_resolved",
     "CatalogLoaded": "catalog_loaded",
     "ChatAppended": "chat_appended",
     "CliVersionChanged": "cli_version_changed",
@@ -99,10 +103,20 @@
     "DeliverWorkerPrompt": "deliver_worker_prompt",
     "DeliverWorkerPromptToLead": "deliver_worker_prompt_to_lead",
     "DespawnWorker": "despawn_worker",
+    "DictateActivate": "dictate_activate",
+    "DictateBench": "dictate_bench",
+    "DictateBenchDelete": "dictate_bench_delete",
+    "DictateBenchStop": "dictate_bench_stop",
     "DictateCatalogueCheck": "dictate_catalogue_check",
+    "DictateDeactivate": "dictate_deactivate",
+    "DictateInstall": "dictate_install",
+    "DictateReadAloudDelete": "dictate_read_aloud_delete",
+    "DictateReadAloudStart": "dictate_read_aloud_start",
+    "DictateReadAloudStop": "dictate_read_aloud_stop",
     "DictateStart": "dictate_start",
     "DictateStop": "dictate_stop",
     "DictateStream": "dictate_stream",
+    "DictateUninstall": "dictate_uninstall",
     "NewSession": "new_session",
     "OpenUrl": "open_url",
     "Prompt": "prompt",
@@ -111,6 +125,7 @@
     "RemoveReviewThread": "remove_review_thread",
     "ReplayConversation": "replay_conversation",
     "ResetDictateOverrides": "reset_dictate_overrides",
+    "RespondBrowserHandOff": "respond_browser_hand_off",
     "RespondPermission": "respond_permission",
     "RespondQuestion": "respond_question",
     "RespondSlackPost": "respond_slack_post",
@@ -130,6 +145,8 @@
     "UpsertReviewThread": "upsert_review_thread"
   },
   "client_message": {
+    "BrowserAnswer": "browser_answer",
+    "BrowserTakeRole": "browser_take_role",
     "Command": "command",
     "Devices": "devices",
     "More": "more",
@@ -137,6 +154,29 @@
     "Unsubscribe": "unsubscribe"
   },
   "payload_sampled": {
+    "BrowserAsk": {
+      "": [
+        "args",
+        "id",
+        "kind",
+        "seat",
+        "tool"
+      ],
+      "/args": [
+        "url"
+      ],
+      "/seat": [
+        "label",
+        "org",
+        "project"
+      ]
+    },
+    "BrowserRole": {
+      "": [
+        "hosting",
+        "kind"
+      ]
+    },
     "ChatAppended": {
       "": [
         "kind",
@@ -218,7 +258,43 @@
       ]
     }
   },
+  "client_sampled": {
+    "BrowserAnswer": {
+      "": [
+        "error",
+        "id",
+        "kind",
+        "parts"
+      ],
+      "/parts[]": [
+        "mime_type",
+        "text",
+        "type"
+      ]
+    },
+    "Subscribe": {
+      "": [
+        "answering",
+        "browser",
+        "kind",
+        "what"
+      ]
+    }
+  },
   "command_sampled": {
+    "DictateReadAloudStart": {
+      "": [
+        "dictate_read_aloud_start"
+      ]
+    },
+    "DictateReadAloudStop": {
+      "": [
+        "dictate_read_aloud_stop"
+      ],
+      "/dictate_read_aloud_stop": [
+        "keep"
+      ]
+    },
     "DictateStop": {
       "": [
         "dictate_stop"
@@ -253,27 +329,45 @@
       ]
     }
   },
-  "dictate_frame": {
+  "binary_frames": {
     "header_bytes": 1,
+    "image_header_bytes": 9,
     "max_payload_bytes": 16384,
-    "codecs": [
+    "max_image_bytes": 16777216,
+    "kinds": [
       {
-        "name": "PcmI16",
+        "name": "Dictation",
         "tag": 0
+      },
+      {
+        "name": "BrowserImage",
+        "tag": 1
       }
     ],
-    "fixture": {
-      "hex": "00000000400080002000e0ff7f00c00010",
-      "samples": [
-        0.0,
-        0.5,
-        -1.0,
-        0.25,
-        -0.25,
-        0.999969482421875,
-        -0.5,
-        0.125
-      ]
+    "fixtures": {
+      "dictation": {
+        "hex": "00000000400080002000e0ff7f00c00010",
+        "samples": [
+          0.0,
+          0.5,
+          -1.0,
+          0.25,
+          -0.25,
+          0.999969482421875,
+          -0.5,
+          0.125
+        ]
+      },
+      "browser_image": {
+        "hex": "01010203040506070889504e47",
+        "id": "72623859790382856",
+        "bytes": [
+          137,
+          80,
+          78,
+          71
+        ]
+      }
     }
   }
 }
