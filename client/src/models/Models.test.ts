@@ -1268,6 +1268,9 @@ describe('the models route as it draws', () => {
 
     expect(host.textContent).toContain('a/norm-a');
     expect(host.textContent).toContain('measured best on the read-aloud');
+    // The run line names the corpus it was scored on: two runs under one
+    // candidate are otherwise the same numbers about nothing in particular.
+    expect(host.querySelector('li.run')?.textContent).toContain('the read-aloud passage');
 
     const button = [...host.querySelectorAll<HTMLButtonElement>('button')].find(
       (c) => c.textContent === 'switch to it',

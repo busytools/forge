@@ -510,7 +510,7 @@
                    numbers with no name reads as nobody's. -->
               <li class="run">
                 <span class="facts">
-                  {@render facts(resultHeadline(result))} &middot; {resultVerdict(
+                  {tierWord(result.tier)} &middot; {@render facts(resultHeadline(result))} &middot; {resultVerdict(
                     result,
                     wire.in_use,
                     wire.results,

@@ -1159,29 +1159,38 @@ export function resultVerdict(
   return verdictAgainst(result.metrics, other.metrics);
 }
 
-/** The comparison itself, from two metric sets over one corpus. */
+/**
+ * The comparison itself, from two metric sets over one corpus.
+ *
+ * **Only the model in use's own figures are named here**: the run's own are
+ * the facts beside this sentence, and repeating them reads as two numbers
+ * about two things.
+ */
 function verdictAgainst(candidate: BenchMetrics, current: BenchMetrics): string {
-  const speed = `${candidate.xrt_wall.toFixed(1)}\u{d7} vs ${current.xrt_wall.toFixed(1)}\u{d7}`;
+  const speed = `${current.xrt_wall.toFixed(1)}\u{d7}`;
   if (candidate.term_accuracy !== null && current.term_accuracy !== null) {
-    const better = candidate.term_accuracy > current.term_accuracy;
-    const share = `${Math.round(candidate.term_accuracy * 100)}% vs ${Math.round(current.term_accuracy * 100)}% of the passage's terms`;
-    return better
-      ? `ahead of the model in use: ${share} survived, ${speed}`
-      : candidate.term_accuracy < current.term_accuracy
-        ? `behind the model in use: ${share} survived, ${speed}`
-        : `level with the model in use on term accuracy: ${share}, ${speed}`;
+    const theirs = `${Math.round(current.term_accuracy * 100)}% of the passage's terms at ${speed}`;
+    if (candidate.term_accuracy > current.term_accuracy) {
+      return `ahead of the model in use, which read ${theirs}`;
+    }
+    if (candidate.term_accuracy < current.term_accuracy) {
+      return `behind the model in use, which read ${theirs}`;
+    }
+    return `level with the model in use, which read ${theirs}`;
   }
   if (candidate.matched !== null && current.matched !== null) {
     const [agreed, of] = candidate.matched;
     const [agreedNow, ofNow] = current.matched;
-    const share = `${agreed} of ${of} vs ${agreedNow} of ${ofNow} matched a baseline`;
-    if (agreed * ofNow > agreedNow * of)
-      return `agrees with the baselines more often than the model in use (${share}, ${speed})`;
-    if (agreed * ofNow < agreedNow * of)
-      return `agrees with the baselines less often than the model in use (${share}, ${speed})`;
-    return `level with the model in use on agreement (${share}, ${speed})`;
+    const theirs = `${agreedNow} of ${ofNow} matched a baseline at ${speed}`;
+    if (agreed * ofNow > agreedNow * of) {
+      return `agrees with the baselines more often than the model in use, which matched ${theirs}`;
+    }
+    if (agreed * ofNow < agreedNow * of) {
+      return `agrees with the baselines less often than the model in use, which matched ${theirs}`;
+    }
+    return `level with the model in use on agreement, which matched ${theirs}`;
   }
-  return `no comparable figure against the model in use (${speed})`;
+  return `nothing comparable against the model in use, which ran at ${speed}`;
 }
 /**
  * The pinned facts, and what the feed says about the file.
