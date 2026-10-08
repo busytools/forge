@@ -191,7 +191,12 @@ impl Normalizer {
         let params = LlamaModelParams::default().with_n_gpu_layers(GPU_LAYERS);
         let model = LlamaModel::load_from_file(backend, path, &params)
             .map_err(|source| NormalizeError::Load { path: path.to_path_buf(), source })?;
-        tracing::debug!(path = %path.display(), params = model.n_params(), "loaded normalizer");
+        tracing::debug!(
+            event_name = "normalizer_loaded",
+            path = %path.display(),
+            params = model.n_params(),
+            "loaded normalizer"
+        );
         Ok(Self { model })
     }
 

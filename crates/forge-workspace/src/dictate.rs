@@ -1034,7 +1034,12 @@ pub(crate) async fn handle_dictate_start(ws: &Arc<crate::Workspace>, key: Sessio
             });
         }
         Err(source) => {
-            tracing::warn!(%source, "dictate start task failed to join");
+            tracing::warn!(
+                event_name = "dictate_start_task_unjoined",
+                slot = %key.display(),
+                %source,
+                "dictate start task failed to join"
+            );
         }
     }
 }
@@ -1231,7 +1236,12 @@ fn begin_capture(
         return Err("the session closed · dictation did not start".to_owned());
     }
     if let Some(error) = capture.open_error() {
-        tracing::warn!(?error, "dictation refused: the input device did not open");
+        tracing::warn!(
+            event_name = "dictate_device_open_refused",
+            slot = %key.display(),
+            ?error,
+            "dictation refused: the input device did not open"
+        );
         let message = refused_message(error);
         drop(capture);
         return Err(message);
@@ -1307,7 +1317,11 @@ async fn run_recording(
         TakeAxes::Fixed(options) => options,
     };
     let Ok(ticket) = capture.finish_with(options) else {
-        tracing::warn!("dictation could not submit its take");
+        tracing::warn!(
+            event_name = "dictate_submit_failed",
+            slot = %key.display(),
+            "dictation could not submit its take"
+        );
         clear_recording_if_ours(&ws, &key, initiator);
         let _ = updates.send(SessionUpdate::DictateEnded {
             key,
@@ -1332,11 +1346,21 @@ async fn run_recording(
         TakeResolution::Answered(resolved) => match resolved {
             Ok(Ok(outcome)) => map_outcome(outcome),
             Ok(Err(error)) => {
-                tracing::warn!(%error, "dictation failed");
+                tracing::debug!(
+                    event_name = "dictate_failed",
+                    slot = %key.display(),
+                    %error,
+                    "dictation failed"
+                );
                 DictateOutcome::Failed
             }
             Err(source) => {
-                tracing::warn!(%source, "dictation answer task failed to join");
+                tracing::warn!(
+                    event_name = "dictate_answer_task_unjoined",
+                    slot = %key.display(),
+                    %source,
+                    "dictation answer task failed to join"
+                );
                 DictateOutcome::Failed
             }
         },
@@ -2244,6 +2268,117 @@ mod dictate_lifecycle_tests {
         assert!(
             ws.dictate_runtime.lock().recordings.is_empty(),
             "a resolved take leaves no live entry behind"
+        );
+    }
+
+    /// One take's recognition failing is that session's own work rather
+    /// than a warning about forge, so the record is a `debug` - rule 20's
+    /// split - and it names the seat, which is what a reader acts on.
+    /// Both halves are the contract: re-raising the level, or dropping
+    /// the seat, silently undoes the call this pins.
+    #[tokio::test]
+    async fn a_failed_take_records_debug_with_its_seat() {
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        /// One record: its level, its target, and its fields.
+        #[derive(Clone, Default)]
+        struct Caught(std::sync::Arc<std::sync::Mutex<Vec<(tracing::Level, String, String)>>>);
+
+        #[derive(Default)]
+        struct Fields(String);
+
+        impl tracing::field::Visit for Fields {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                if !self.0.is_empty() {
+                    self.0.push(' ');
+                }
+                let _ = std::fmt::write(&mut self.0, format_args!("{}={value:?}", field.name()));
+            }
+        }
+
+        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Caught {
+            fn on_event(
+                &self,
+                event: &tracing::Event<'_>,
+                _ctx: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                let mut fields = Fields::default();
+                event.record(&mut fields);
+                self.0.lock().expect("capture").push((
+                    *event.metadata().level(),
+                    event.metadata().target().to_owned(),
+                    fields.0,
+                ));
+            }
+        }
+
+        let (ws, mut updates) = crate::Workspace::testing_stub();
+        let (_dir, engine) = synthetic_engine();
+        *ws.dictate.engine.lock() = Some(Arc::clone(&engine));
+        let session = key("solo");
+        live_session(&ws, &session);
+
+        // A take runs on a spawned task, and `#[tokio::test]` is a
+        // current-thread runtime, so a thread-local default still catches
+        // every record it emits.
+        let caught = Caught::default();
+        let subscriber = tracing_subscriber::registry().with(caught.clone());
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        ws.dispatch(Command::DictateStream {
+            key: session.clone(),
+            options: DictateAxes::default(),
+            initiator: Some(1),
+        })
+        .expect("dispatch");
+        // Without audio the take resolves as `NoAudio` before it ever
+        // reaches the engine, so the frame is what puts it on the
+        // failure path this test pins.
+        assert!(
+            ws.dictate_push(&session, &[0.5; 320], Some(1)),
+            "the frame after a start must find its take"
+        );
+        ws.dispatch(Command::DictateStop {
+            key: session.clone(),
+            submit: true,
+            initiator: Some(1),
+        })
+        .expect("dispatch");
+
+        let ended = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                match updates.recv().await {
+                    Some(SessionUpdate::DictateEnded { outcome, .. }) => break outcome,
+                    Some(_) => {}
+                    None => panic!("the update stream closed before the take resolved"),
+                }
+            }
+        })
+        .await
+        .expect("the take must resolve");
+        assert_eq!(ended, DictateOutcome::Failed, "a weightless engine fails the take");
+
+        let records = caught.0.lock().expect("capture");
+        let (level, target, fields) = records
+            .iter()
+            .find(|(_, _, fields)| fields.contains("dictate_failed"))
+            .unwrap_or_else(|| panic!("a failed take records `dictate_failed`, saw {records:?}"));
+        assert_eq!(
+            *level,
+            tracing::Level::DEBUG,
+            "a take's own failure is not a warning about forge: {fields}",
+        );
+        // The directive that keeps this record readable names a module
+        // path, and a target one character off matches nothing, so the
+        // path is measured from the record rather than assumed.
+        assert_eq!(
+            target.as_str(),
+            "forge_workspace::dictate",
+            "the record's target is the module path the filter directive names: {fields}",
+        );
+        assert!(
+            fields.contains("slot=TestOrg/test-project/solo"),
+            "the record names the seat it belongs to: {fields}",
         );
     }
 

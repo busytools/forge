@@ -107,6 +107,12 @@ impl LoggingRuntime {
 /// (HTML-strip in `preprocess_prose` at the call site) lands as
 /// a separate PR; this filter bump is defence-in-depth.
 ///
+/// `forge_dictate` and `forge_workspace::dictate` are there for the
+/// same reason again: a take that reaches its capture cap, a normalizer
+/// that runs out of token budget and a take whose recognition failed are
+/// one session's own work, not forge's health. They were demoted out of
+/// `WARN` for it, so they are named here to stay readable.
+///
 /// The two `llama` targets are the dictation engine's own log bridge,
 /// which reaches tracing through the llama-cpp-2 crate under both its
 /// hyphenated target and its module path. What it reports is the model
@@ -122,6 +128,8 @@ const DEFAULT_LOG_DIRECTIVES: &str = "info,\
     forge_server=debug,\
     forge_workspace::work=debug,\
     forge_workspace::browser=debug,\
+    forge_workspace::dictate=debug,\
+    forge_dictate=debug,\
     tui_markdown=error,\
     llama_cpp_2=error,\
     llama-cpp-2=error";
@@ -439,6 +447,16 @@ mod tests {
         // the only record of a seat whose tree is silently not being read, so
         // the target needs the directive or the silence has no explanation.
         assert!(DEFAULT_LOG_DIRECTIVES.contains("forge_workspace::work=debug"));
+        // Dictation's own records were demoted out of WARN for the same
+        // reason: a take reaching its capture cap, a normalizer hitting
+        // its token budget and a take whose recognition failed are one
+        // session's work, not forge's health. Without these two the
+        // records land nowhere at all, which is the state the levels
+        // moved away from. `forge_dictate` covers the leaf crate's sites
+        // by module-path prefix; `forge_workspace::dictate` the seat
+        // that runs a take.
+        assert!(DEFAULT_LOG_DIRECTIVES.contains("forge_workspace::dictate=debug"));
+        assert!(DEFAULT_LOG_DIRECTIVES.contains("forge_dictate=debug"));
         // The `[server] enabled = false` record is a `debug` on
         // `app.lifecycle` because a config choice is not a problem, so
         // the target needs the directive or that record never lands.
@@ -457,12 +475,12 @@ mod tests {
         );
     }
 
-    /// Emit one record through the default directives and answer what the
-    /// sink caught. A directive names a target by module-path prefix, so
-    /// the record a demoted site emits is the one its own module path
-    /// names rather than the crate's. Measured rather than read: a
-    /// directive that matches nothing reads exactly like one that works.
-    fn emitted_under_defaults(emit: impl FnOnce()) -> String {
+    /// Emit one record through `directives` and answer what the sink
+    /// caught. A directive names a target by module-path prefix, so the
+    /// record a demoted site emits is the one its own module path names
+    /// rather than the crate's. Measured rather than read: a directive
+    /// that matches nothing reads exactly like one that works.
+    fn emitted_under(directives: &str, emit: impl FnOnce()) -> String {
         use std::sync::{Arc, Mutex};
 
         struct Sink(Arc<Mutex<Vec<u8>>>);
@@ -480,13 +498,18 @@ mod tests {
         let sink = Arc::clone(&written);
         let subscriber = tracing_subscriber::fmt()
             .json()
-            .with_env_filter(DEFAULT_LOG_DIRECTIVES)
+            .with_env_filter(directives)
             .with_writer(move || Sink(Arc::clone(&sink)))
             .with_ansi(false)
             .finish();
         tracing::subscriber::with_default(subscriber, emit);
         String::from_utf8(written.lock().expect("the sink is not poisoned").clone())
             .expect("the sink holds utf-8")
+    }
+
+    /// The same, through the default set.
+    fn emitted_under_defaults(emit: impl FnOnce()) -> String {
+        emitted_under(DEFAULT_LOG_DIRECTIVES, emit)
     }
 
     /// Driven through the site rather than through a target written here:
@@ -523,11 +546,15 @@ mod tests {
 
         for preset in carrying {
             let directives = preset.filter_directives();
-            assert!(
-                directives.contains("forge_server=debug"),
-                "{preset:?} carries a session's own records, so it must carry the crate \
-                 they live in: {directives}",
-            );
+            // Every crate whose demoted records this preset would otherwise
+            // drop: `forge_server`'s monitor tail, and dictation's two.
+            for target in ["forge_server", "forge_workspace::dictate", "forge_dictate"] {
+                assert!(
+                    directives.contains(&format!("{target}=debug")),
+                    "{preset:?} carries a session's own records, so it must carry {target}, \
+                     which is where the demoted ones live: {directives}",
+                );
+            }
         }
     }
 
@@ -545,6 +572,40 @@ mod tests {
         });
 
         assert!(absent.is_empty(), "no directive names this crate: {absent}");
+    }
+
+    /// The other half of that control: the baseline token is what decides
+    /// whether a record no directive names lands at all, and it sits one
+    /// character from `into` - which parses as a TRACE target of that
+    /// name, leaving every specific directive passing its own records
+    /// while the baseline is gone. One unread character, and the set goes
+    /// quiet for everything unnamed. Measured over every set forge ships,
+    /// not just the default one.
+    #[test]
+    fn every_shipped_filter_set_keeps_its_info_baseline() {
+        let presets = [
+            DiagnosticsPreset::Runtime,
+            DiagnosticsPreset::Session,
+            DiagnosticsPreset::Render,
+            DiagnosticsPreset::Bridge,
+            DiagnosticsPreset::Full,
+        ];
+        let sets = std::iter::once(("defaults".to_owned(), DEFAULT_LOG_DIRECTIVES))
+            .chain(presets.into_iter().map(|p| (format!("{p:?}"), p.filter_directives())));
+
+        for (label, directives) in sets {
+            let caught = emitted_under(directives, || {
+                tracing::info!(
+                    target: "a_web_view::nowhere",
+                    event_name = "baseline_check",
+                    "a record no directive names",
+                );
+            });
+            assert!(
+                caught.contains("baseline_check"),
+                "{label} has no working `info` baseline, so an unnamed target goes dark: {caught}",
+            );
+        }
     }
 
     #[test]

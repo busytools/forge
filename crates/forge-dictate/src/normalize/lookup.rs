@@ -129,7 +129,11 @@ pub fn generate(
     // Stopping here rather than on an end-of-generation token means the text
     // is cut off mid-sentence, and nothing downstream can tell.
     if emitted.len() >= budget {
-        tracing::warn!(budget, "normalization hit its token ceiling; output is truncated");
+        tracing::debug!(
+            event_name = "normalization_token_budget_reached",
+            budget,
+            "normalization hit its token ceiling; output is truncated"
+        );
     }
 
     Ok(out)

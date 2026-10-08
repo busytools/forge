@@ -154,7 +154,11 @@ fn normalize_text(
             clean
         }
         Err(error) => {
-            tracing::warn!(%error, "normalization failed; returning raw text");
+            tracing::warn!(
+                event_name = "normalization_failed",
+                %error,
+                "normalization failed; returning raw text"
+            );
             asr.to_owned()
         }
     }
@@ -570,7 +574,11 @@ impl Engine {
         // open is a different question with a different answer.
         let failed_to_open = match started.recv() {
             Ok(Err(error)) => {
-                tracing::warn!(%error, "input device did not open");
+                tracing::warn!(
+                    event_name = "input_device_open_failed",
+                    %error,
+                    "input device did not open"
+                );
                 Some(error)
             }
             Ok(Ok(())) => None,
@@ -901,7 +909,11 @@ impl Capture {
         self.stop_recording();
         let truncated = self.recording.was_truncated();
         if truncated {
-            tracing::warn!(cap = ?self.max_capture, "capture reached its cap and stopped itself");
+            tracing::debug!(
+                event_name = "capture_cap_reached",
+                cap = ?self.max_capture,
+                "capture reached its cap and stopped itself"
+            );
         }
         let segmenter = self.segmenter.take();
         match (self.finish_tx.take(), self.answer_rx.take(), segmenter) {
@@ -1131,6 +1143,7 @@ fn worker(
         // Otherwise abandoning a ticket looks like it worked and silently
         // does not, with nothing in the log to explain the wait.
         tracing::info!(
+            event_name = "model_cancellation_unsupported",
             "this model does not honour cancellation; abandoning a ticket discards the result but does not stop the work"
         );
     }

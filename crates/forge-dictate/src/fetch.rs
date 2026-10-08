@@ -399,6 +399,7 @@ fn ensure(
 fn discard_unusable_partial(partial: &Path, failure: Error) -> Error {
     if !matches!(failure, Error::SizeMismatch { .. } | Error::HashMismatch { .. }) {
         tracing::warn!(
+            event_name = "dictate_partial_unchecked",
             path = %partial.display(),
             error = %failure,
             "could not check the partial; leaving it in place"
@@ -408,6 +409,7 @@ fn discard_unusable_partial(partial: &Path, failure: Error) -> Error {
     match fs::remove_file(partial) {
         Ok(()) => {
             tracing::warn!(
+                event_name = "dictate_partial_removed",
                 path = %partial.display(),
                 error = %failure,
                 "partial does not match its spec; removed"
@@ -416,6 +418,7 @@ fn discard_unusable_partial(partial: &Path, failure: Error) -> Error {
         }
         Err(source) => {
             tracing::error!(
+                event_name = "dictate_partial_removal_failed",
                 path = %partial.display(),
                 error = %failure,
                 remove_error = %source,
@@ -547,7 +550,12 @@ fn download(spec: &ModelSpec, partial: &Path, on_progress: &mut Reporter<'_>) ->
 
     let mut request = client.get(&spec.url);
     if have > 0 {
-        tracing::debug!(file = %spec.file, have, "resuming interrupted download");
+        tracing::debug!(
+            event_name = "dictate_download_resumed",
+            file = %spec.file,
+            have,
+            "resuming interrupted download"
+        );
         request = request.header(reqwest::header::RANGE, format!("bytes={have}-"));
     }
     let mut response = request.send().map_err(http)?;
