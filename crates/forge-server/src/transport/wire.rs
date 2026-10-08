@@ -1679,9 +1679,22 @@ mod tests {
     use crate::work::WorkCache;
     use forge_primitives::git_diff::GitDiffSnapshot;
 
-    /// Where the fixture fleet is built. Fixed rather than per-run, so the
-    /// fixture does not pin one machine's temp directory.
-    const FIXTURE_ROOT: &str = "/tmp/forge-wire-fixture";
+    /// Where a run builds its fixture fleet: a directory of its own, so two
+    /// runs overlapping on one machine share neither the store, the
+    /// single-instance lock, nor the tree the record reads. Under `/tmp`
+    /// rather than the ambient temp dir, which is the root the usage
+    /// fixture's own label rule folds to (`/tmp` paths read as `scratch`) -
+    /// a `$TMPDIR` root would pin a different label. Every form of the root
+    /// stands in as `<fixture>` before a fixture is compared - see
+    /// [`volatile`].
+    ///
+    /// The guard removes the directory when the test is done, and it does that
+    /// only because of where it is declared: locals drop in reverse order, so a
+    /// `dir` taken before `state` releases the tree after the store opened
+    /// under it has closed.
+    fn fixture_dir() -> tempfile::TempDir {
+        tempfile::Builder::new().tempdir_in("/tmp").expect("the fixture's directory")
+    }
 
     /// The fixture's own repository at `path`: `main` with one commit, a
     /// `worktree-pr` branch one commit ahead of it, and uncommitted work -
@@ -1732,14 +1745,13 @@ mod tests {
     /// The surface the fixtures are produced from, and both halves of the
     /// reason are deliberate.
     ///
-    /// DETERMINISTIC, because the wire carries absolute paths and a fleet
-    /// built in a per-run directory would pin the directory rather than the
+    /// DETERMINISTIC, because every form of `root` stands in as `<fixture>`
+    /// before anything is compared against a committed fixture - see
+    /// [`volatile`] - so which directory the fleet lives in does not pin the
     /// shape. POPULATED, because an empty fleet pins almost nothing: most of
     /// a session's fields would be `null`, and a field renamed to `null`
     /// would still pass.
-    async fn fixture_state() -> TransportState {
-        let root = Path::new(FIXTURE_ROOT);
-        let _ = std::fs::remove_dir_all(root);
+    async fn fixture_state(root: &Path) -> TransportState {
         let fleet =
             crate::testing::Fleet::in_dir(root, &[("TestOrg", &["proj"])]).expect("the fleet");
         fleet.start("TestOrg", "proj").expect("the project starts");
@@ -1825,7 +1837,7 @@ mod tests {
         // find one through.
         let surface = fleet.surface();
         let work = Arc::new(WorkCache::new());
-        let repo = Path::new(FIXTURE_ROOT).join("diff-repo");
+        let repo = root.join("diff-repo");
         fixture_repo(&repo);
         let mut diff = forge_workspace::env::git_diff::scan(&repo, None).await;
         diff.pr = Some(forge_primitives::git::GitPrInfo {
@@ -1940,8 +1952,9 @@ mod tests {
     #[tokio::test]
     #[ignore = "writes the fixtures; run deliberately"]
     async fn write_the_fixtures() {
-        let state = fixture_state().await;
-        let forms = volatile(Path::new(FIXTURE_ROOT));
+        let dir = fixture_dir();
+        let state = fixture_state(dir.path()).await;
+        let forms = volatile(dir.path());
         std::fs::create_dir_all(fixtures()[0].1.parent().expect("a directory")).expect("mkdir");
         for (subject, fixture) in fixtures() {
             let mut encoded = encode_subject(&state, &subject).await.expect("encode");
@@ -2288,9 +2301,9 @@ mod tests {
     /// The record carries the changed files' hunks, bounded and flagged: a
     /// review surface has no other read of them.
     ///
-    /// Its own fleet and its own repository rather than `fixture_state`'s
-    /// shared root: that root is one fixed path, and two tests calling it
-    /// in one binary's parallel run unlink it under each other.
+    /// Its own fleet and its own repository rather than `fixture_state`'s: what
+    /// this pins is the hunk shape of a three-file diff, and the shared
+    /// fixture's record is a tree of a different shape.
     #[tokio::test]
     async fn the_record_carries_the_changed_files_with_their_hunks() {
         let fleet =
@@ -2390,9 +2403,8 @@ mod tests {
     /// a second derivation is the only way the two could ever disagree.
     #[tokio::test]
     async fn the_pushed_row_is_the_records_own_fields() {
-        // Its OWN fleet rather than `fixture_state`'s shared root: that root is
-        // one fixed path, and two tests calling it in one binary's parallel
-        // run unlink it under each other.
+        // Its OWN fleet rather than `fixture_state`'s: what this pins is a
+        // snapshot built by `scanned()`, not the fixture's own tree.
         let fleet =
             crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
         fleet.start("TestOrg", "proj").expect("the project starts");
@@ -2493,9 +2505,9 @@ mod tests {
     /// Nothing carried it: the pool is scanned off-thread by the terminal,
     /// and a client had no way to ask for the same numbers.
     ///
-    /// Its own fleet rather than the shared fixture root, because the scan
-    /// reads that root's transcript pool: two tests building the same root at
-    /// once is a fight over one directory.
+    /// Its own fleet rather than `fixture_state`'s, whose transcript pool the
+    /// usage scan reads for a whole record: what this pins is a pool of one
+    /// transcript.
     #[tokio::test]
     async fn a_usage_subscription_is_answered_with_the_pools_report() {
         let fleet =
@@ -2582,8 +2594,9 @@ mod tests {
 
     #[tokio::test]
     async fn every_subject_round_trips_through_its_fixture() {
-        let state = fixture_state().await;
-        let forms = volatile(Path::new(FIXTURE_ROOT));
+        let dir = fixture_dir();
+        let state = fixture_state(dir.path()).await;
+        let forms = volatile(dir.path());
         let mut keys = 0usize;
         let mut nulls = 0usize;
         let mut empty: BTreeSet<String> = BTreeSet::new();
