@@ -1424,6 +1424,10 @@ pub(crate) mod tests_catalogue_view {
             Some("abababab"),
             "the blobs' digest rides the download, which is what an install verifies"
         );
+        assert!(
+            row.params.is_none(),
+            "a Hub entry counts no parameters; the row must not invent one"
+        );
 
         // And the speech feed's own row stands beside it: one catalogue, two
         // kinds, one read.
