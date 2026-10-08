@@ -73,6 +73,26 @@ pub struct Estimate {
     pub secs: u64,
 }
 
+impl Estimate {
+    /// Parse "30m" / "2h" / "1d" / "1w": digits then one unit, nothing
+    /// else. The one grammar the tools, the store's migration and the
+    /// board all read.
+    pub fn parse(words: &str) -> Option<Estimate> {
+        let words = words.trim();
+        let split = words.find(|c: char| !c.is_ascii_digit())?;
+        let (digits, unit) = words.split_at(split);
+        let n: u64 = digits.parse().ok()?;
+        let secs = match unit {
+            "m" => 60,
+            "h" => 3_600,
+            "d" => 86_400,
+            "w" => 604_800,
+            _ => return None,
+        };
+        (n > 0).then(|| Estimate { words: words.to_owned(), secs: n * secs })
+    }
+}
+
 /// Whether a row's completion waits on the user's look.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -152,6 +172,53 @@ pub struct Task {
     pub archived_at: Option<SystemTime>,
     pub created_at: SystemTime,
     pub updated_at: SystemTime,
+}
+
+/// Who moved a row: the seat that called, the user from the board, or the
+/// core itself (a cleared dependency, the verify gate, archiving).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum By {
+    Seat(SessionSlot),
+    User,
+    System,
+}
+
+/// One status transition, appended to the history the board's worked time
+/// and the retro's metrics are computed from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskTransition {
+    pub task_id: TaskId,
+    pub project_name: String,
+    pub from: Option<TaskStatus>,
+    pub to: TaskStatus,
+    pub at: SystemTime,
+    pub by: By,
+}
+
+/// A chase rung that fired. Each fires once per row (or seat) per
+/// threshold; the chase log is what makes that a fact rather than a hope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChaseRung {
+    EstimateNudge,
+    Escalate,
+    QueueStall,
+    WaitStall,
+    Unaccounted,
+    Death,
+    Retro,
+    EpicClose,
+}
+
+/// One fired chase: the row it was about (absent for a seat-level rung)
+/// and when.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskChase {
+    pub task_id: Option<TaskId>,
+    pub project_name: String,
+    pub rung: ChaseRung,
+    pub at: SystemTime,
 }
 
 #[cfg(test)]
@@ -252,6 +319,55 @@ mod tests {
             LinkKind::Pr,
         );
         assert_eq!(LinkKind::for_target("docs/superpowers/specs/x.md"), LinkKind::Path);
+    }
+
+    /// The grammar the tools and the store share: digits then one unit.
+    #[test]
+    fn an_estimate_parses_its_grammar() {
+        assert_eq!(Estimate::parse("30m"), Some(Estimate { words: "30m".to_owned(), secs: 1_800 }));
+        assert_eq!(Estimate::parse("2h"), Some(Estimate { words: "2h".to_owned(), secs: 7_200 }));
+        assert_eq!(Estimate::parse("1d"), Some(Estimate { words: "1d".to_owned(), secs: 86_400 }));
+        assert_eq!(Estimate::parse("1w"), Some(Estimate { words: "1w".to_owned(), secs: 604_800 }));
+        for refused in ["soonish", "1x", "0h", "d", "1 d", ""] {
+            assert_eq!(Estimate::parse(refused), None, "{refused:?} is not a duration");
+        }
+    }
+
+    #[test]
+    fn a_transition_records_from_to_at_and_by() {
+        let transition = TaskTransition {
+            task_id: TaskId::from("t-1"),
+            project_name: "forge".to_owned(),
+            from: Some(TaskStatus::Pending),
+            to: TaskStatus::InProgress,
+            at: std::time::SystemTime::UNIX_EPOCH,
+            by: By::Seat(SessionSlot::worker("Busytools", "forge", "task-board")),
+        };
+        let json = serde_json::to_vec(&transition).expect("serialize");
+        let back: TaskTransition = serde_json::from_slice(&json).expect("deserialize");
+        assert_eq!(back, transition);
+        let json = serde_json::to_vec(&By::System).expect("serialize");
+        assert_eq!(serde_json::from_slice::<By>(&json).expect("deserialize"), By::System);
+    }
+
+    /// A chase may belong to a seat rather than a row - the unaccounted
+    /// rung names a worker, not a task.
+    #[test]
+    fn a_chase_records_its_rung_and_may_have_no_task() {
+        let chase = TaskChase {
+            task_id: None,
+            project_name: "forge".to_owned(),
+            rung: ChaseRung::Unaccounted,
+            at: std::time::SystemTime::UNIX_EPOCH,
+        };
+        let json = serde_json::to_vec(&chase).expect("serialize");
+        let back: TaskChase = serde_json::from_slice(&json).expect("deserialize");
+        assert_eq!(back, chase);
+        assert_eq!(
+            serde_json::to_string(&ChaseRung::EstimateNudge).expect("serialize"),
+            "\"estimate_nudge\"",
+            "the rung's spelling is what the store reads back",
+        );
     }
 
     /// The spelling each status takes in the store and in the tools'
