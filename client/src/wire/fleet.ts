@@ -69,6 +69,18 @@ export const REDRAWS = new Set([
   'permission_request',
   'question_request',
   'pending_interaction_resolved',
+  // The turn's start, and the earliest frame that says a turn was accepted:
+  // the roster's `running` comes from `turn_pending`, stamped when the prompt
+  // is routed, so the read this asks for is answered with the turn already
+  // on. Every state earns it - `queued` and `started` are the start, and
+  // `state` is free-form by design, so a state this build has not seen has to
+  // move a page rather than be dropped; `completed` sits at the boundary the
+  // result frame also announces, and the terminal states are a prompt that
+  // will not run, where the read can only show what the core holds. The reads
+  // are coalesced, so the boundary ones fold into the read the result asks
+  // for. Without this arm a row kept the idle it last read until an unrelated
+  // frame happened to be news (#1887, measured at ~40s).
+  'prompt_lifecycle',
   // The third kind of ask (#1758): a held Slack draft moves its seat's row
   // exactly as the two above do, and the core now says so in the lifecycle -
   // the row can only draw it if this side re-reads on the news.

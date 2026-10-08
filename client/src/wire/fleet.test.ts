@@ -198,6 +198,15 @@ const NOT_NEWS: readonly string[] = [
   // its process walk and its two catalogues, which a page draws in its
   // inspector and its composer - and no home row does: a row's branch, count
   // and spinners come from the fleet's own read.
+  //
+  // The registry is the one of these a ROW reads, through
+  // `has_background_work`, and its frame asks for that read through the
+  // conversation the same event also arrives in: the CLI's
+  // `background_tasks_changed` is a `chat_appended`, which both sides already
+  // answer with a redraw (the server's own arm for it, and `chatNews` below),
+  // and the clear on a dead connection rides with `connection_failed`. This
+  // mirror is the inspector's copy of the same instant, so naming it here
+  // would be a second read of one change.
   'background_tasks_changed',
   'monitors_changed',
   'work_changed',
@@ -222,10 +231,9 @@ const NOT_NEWS: readonly string[] = [
   'cron_prompt_appended',
   'slack_message_appended',
   'prompt_queued_while_busy',
-  // The pile's own three: a seat's queued prompts, which the session page
-  // draws above its composer and no home row does.
+  // The pile's own: a seat's queued prompts, which the session page draws
+  // above its composer and no home row does.
   'prompt_queued',
-  'prompt_lifecycle',
   'prompt_cancel_resolved',
   'review_activity_notice',
   'dictate_started',
@@ -323,6 +331,10 @@ describe('what one update asks of the fleet', () => {
       { browser_hand_off_pending: { key: LEAD } },
       { browser_hand_off_resolved: { key: LEAD } },
       { worker_status_changed: {} },
+      // The turn's start (#1887). `queued` is the same news as `started`: the
+      // roster goes Running the moment the prompt is routed, so the read the
+      // first of the two asks for is answered with the turn already on.
+      { prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } },
     ];
     for (const update of redraws) {
       expect(fleetNews(update as SessionUpdate), JSON.stringify(update)).toEqual({
@@ -447,7 +459,7 @@ describe('the variant census', () => {
     ).toBe(true);
     expect(
       names.length,
-      'this count and the enum disagree, and `SessionUpdate` held 73 variants when it was last ' +
+      'this count and the enum disagree, and `SessionUpdate` held 75 variants when it was last ' +
         'set. Raise or lower it in the same edit that adds or removes one - the census below names ' +
         'the bucket an added variant belongs in - and if you moved no variant, the parse read a ' +
         'different set of names than the enum holds',

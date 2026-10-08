@@ -145,6 +145,54 @@ describe('the home over a connection', () => {
   });
 
   /**
+   * **The turn's start is a read, and #1887 is what a page that skipped it
+   * drew.** A prompt's lifecycle is the earliest frame that says a turn was
+   * accepted: the roster's `running` comes from `turn_pending`, stamped when
+   * the prompt is routed, so a read asked at `queued` or `started` is
+   * answered with the turn already on. Without it the row kept the idle it
+   * last read until some unrelated frame happened to be news, measured at
+   * ~40s while an agent ran underneath.
+   */
+  it("reads when a prompt's life moves", async () => {
+    const forge = fakeConnection();
+    const stop = watchHome(forge.connection).subscribe(() => {});
+
+    forge.arrive({
+      kind: 'update',
+      update: { prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } },
+    });
+    await settle();
+    expect(forge.refreshed, "a turn's start asked for no read").toEqual([HOME]);
+    stop();
+  });
+
+  /**
+   * The background registry moves a row too - `has_background_work` is the
+   * promotion that draws an idle session as running - and its read is asked
+   * for through the conversation frame the same CLI event arrives in. The
+   * registry's own mirror is the inspector's copy and stays out of the fleet
+   * table; this is the arm that keeps a backgrounded seat from reading as
+   * idle.
+   */
+  it('reads when the CLI announces background work', async () => {
+    const forge = fakeConnection();
+    const stop = watchHome(forge.connection).subscribe(() => {});
+
+    forge.arrive({
+      kind: 'update',
+      update: {
+        chat_appended: {
+          key: LEAD,
+          msg: { type: 'system', subtype: 'background_tasks_changed', tasks: [] },
+        },
+      },
+    } as unknown as ServerMessage);
+    await settle();
+    expect(forge.refreshed, 'a background task starting asked for no read').toEqual([HOME]);
+    stop();
+  });
+
+  /**
    * The other side of it: a frame the home does not cover is no reason to
    * read. A chat message moves no row, so the page must not ask again for it.
    */
