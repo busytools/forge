@@ -19,6 +19,8 @@ import type { BrowserAnswer, BrowserAnswerPart, BrowserAsk } from '../protocol';
 import type { Connection } from '../socket';
 
 /** One part as the shell returns it: an image's bytes are base64 there. */
+import { browserInflight } from './inflight.svelte';
+
 export type HostPart =
   { type: 'text'; text: string } | { type: 'image'; mime_type: string; data_base64: string };
 
@@ -76,6 +78,9 @@ export function answerPart(part: HostPart): BrowserAnswerPart {
  */
 export function hostTheBrowser(connection: Connection, invoke: Invoke = defaultInvoke): () => void {
   return connection.onBrowserAsk(async (ask: BrowserAsk): Promise<BrowserAnswer> => {
+    // The strip's live mark: up for exactly as long as the call runs, so the
+    // row says "the browser is working" from the same fact that makes it true.
+    browserInflight.calls += 1;
     try {
       const reply = (await invoke('browser_call', {
         seat: ask.seat,
@@ -85,6 +90,8 @@ export function hostTheBrowser(connection: Connection, invoke: Invoke = defaultI
       return { parts: reply.parts.map(answerPart) };
     } catch (why) {
       return { error: whyText(why) };
+    } finally {
+      browserInflight.calls -= 1;
     }
   });
 }

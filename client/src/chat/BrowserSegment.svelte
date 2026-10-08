@@ -9,7 +9,9 @@
     whyText,
     type ProfileRow,
   } from '../browser/host';
+  import { browserInflight } from '../browser/inflight.svelte';
   import type { Connection } from '../socket';
+  import type { SessionSlot } from '../wire/types';
 
   /**
    * The browser row in the strip above the composer: how many named profiles
@@ -29,11 +31,23 @@
    * The profiles are the CLIENT's own state - it owns the drivers - so the
    * row reads them from the host it runs in, never from the server.
    */
-  let { connection, capable = canHost() }: { connection: Connection; capable?: boolean } = $props();
+  let {
+    connection,
+    slot = null,
+    capable = canHost(),
+  }: { connection: Connection; slot?: SessionSlot | null; capable?: boolean } = $props();
 
   let open = $state(false);
   /** The strip's own snapshot: read at mount and when the list opens, not per frame. */
   let profiles = $state<ProfileRow[]>([]);
+  /**
+   * This seat's own key, in the shell's own join: a profile row's `owner` IS
+   * the owning seat's `org/project/label` (the shell's `Seat` display), so the
+   * list can say what THIS slot holds rather than what the client holds.
+   */
+  const mine = $derived(slot === null ? null : `${slot.org}/${slot.project}/${slot.label}`);
+  /** The rows this slot reads: its own, or all of them where there is no slot. */
+  const shown = $derived(mine === null ? profiles : profiles.filter((row) => row.owner === mine));
   /** Whether the browser has been driven this session up - Ved's activity mark. */
   let used = $state(false);
   /**
@@ -181,7 +195,7 @@
   });
 
   /**
-   * What the collapsed row says this client holds.
+   * What the collapsed row says this slot holds.
    *
    * A count is a claim about a read, so before one has answered - or when the
    * last one failed and nothing was ever read - the row says the count is not
@@ -189,8 +203,8 @@
    * keeps the last count, which something did measure.
    */
   const count = $derived(
-    profiles.length > 0 || read === 'ready'
-      ? `${profiles.length} profile${profiles.length === 1 ? '' : 's'}`
+    shown.length > 0 || read === 'ready'
+      ? `${shown.length} profile${shown.length === 1 ? '' : 's'}`
       : read === 'loading'
         ? '…'
         : 'count unknown',
@@ -280,7 +294,11 @@
     onkeydown={esc}
   >
     <Icon name="web" />
-    {#if used}
+    {#if browserInflight.calls > 0}
+      <!-- The work-in-flight mark, the same ring the conversation draws: a
+           call is running through this browser right now. -->
+      <span class="ring" title="the browser is working"></span>
+    {:else if used}
       <!-- The system band's flat idle disc: the browser has been driven,
            which is a state and not motion. -->
       <span class="dot idle" title="the browser has been used"></span>
@@ -343,7 +361,7 @@
         {/if}
       </div>
 
-      {#each profiles as row (row.name)}
+      {#each shown as row (row.name)}
         <div class="bz-it">
           {#if row.running}
             <span class="ring"></span>
@@ -379,8 +397,12 @@
         <div class="bz-it"><span class="tx">reading the profiles…</span></div>
       {:else if read === 'failed'}
         <div class="bz-it"><span class="tx bad">{why}</span></div>
-      {:else if profiles.length === 0}
-        <div class="bz-it"><span class="tx">no named profiles yet</span></div>
+      {:else if shown.length === 0}
+        <div class="bz-it">
+          <span class="tx"
+            >{mine === null ? 'no named profiles yet' : 'no profiles for this session'}</span
+          >
+        </div>
       {/if}
     </div>
   {/if}

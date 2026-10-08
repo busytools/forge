@@ -27,6 +27,7 @@ import {
   showBrowser,
   type HostReply,
 } from './host';
+import { browserInflight } from './inflight.svelte';
 import type { BrowserAsk } from '../protocol';
 import type { Connection } from '../socket';
 
@@ -72,6 +73,7 @@ beforeAll(() => {
 
 afterEach(() => {
   invoke.mockClear();
+  browserInflight.calls = 0;
 });
 
 describe('the shell command names', () => {
@@ -194,5 +196,36 @@ describe('the shell command names', () => {
     expect(answer, 'and the parts come back mapped').toEqual({
       parts: [{ type: 'text', text: 'ok' }],
     });
+  });
+
+  /** **The live mark**: up while the call runs, down the moment it answers -
+   * which is what makes the strip's ring mean "working right now" rather
+   * than "has worked at some point". */
+  it('marks the browser in flight while an ask runs', async () => {
+    let asked: (ask: BrowserAsk) => Promise<unknown> = () => Promise.resolve(undefined);
+    const connection = {
+      onBrowserAsk: (fn: (ask: BrowserAsk) => Promise<unknown>) => {
+        asked = fn;
+        return () => undefined;
+      },
+    } as unknown as Connection;
+    hostTheBrowser(connection);
+    let during = -1;
+    invoke.mockImplementationOnce(() => {
+      // Read from inside the call: exactly the moment the ring claims.
+      during = browserInflight.calls;
+      return Promise.resolve({ parts: [] });
+    });
+
+    const ask = {
+      seat: { org: 'o', project: 'p', label: 'l' },
+      tool: 'browser_navigate',
+      args: { url: 'https://example.com' },
+      id: 8,
+    } as unknown as BrowserAsk;
+    await asked(ask);
+
+    expect(during, 'the mark was up while the call ran').toBe(1);
+    expect(browserInflight.calls, 'and down the moment it answered').toBe(0);
   });
 });
