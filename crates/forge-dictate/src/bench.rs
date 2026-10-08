@@ -148,12 +148,20 @@ pub fn read_aloud(dir: &Path) -> Result<Vec<Clip>, Error> {
 /// than as a partial one. The outcome is the caller's to report, because the
 /// recording is a press somebody is watching.
 pub fn store_read_aloud(dir: &Path, samples: &[f32]) -> Result<(), Error> {
+    store_read_aloud_at(dir, samples, crate::diagnostics::take_stamp())
+}
+
+/// [`store_read_aloud`] for a caller that brings its own stamp, which is how
+/// two recordings in one millisecond are testable at all.
+fn store_read_aloud_at(dir: &Path, samples: &[f32], stamp: u128) -> Result<(), Error> {
     std::fs::create_dir_all(dir).map_err(|source| Error::Io { path: dir.to_path_buf(), source })?;
 
-    let take = format!("take-{:013}", crate::diagnostics::take_stamp());
-    let take_dir = dir.join(&take);
-    std::fs::create_dir_all(&take_dir)
-        .map_err(|source| Error::Io { path: take_dir.clone(), source })?;
+    // Two recordings in one millisecond are two takes, not one: the claim
+    // advances a millisecond per name already taken. See
+    // [`crate::diagnostics::claim_take_dir`] for why the claim is a
+    // `create_dir` and not a probe before one.
+    let (take, take_dir) = crate::diagnostics::claim_take_dir(dir, stamp)
+        .map_err(|source| Error::Io { path: dir.to_path_buf(), source })?;
     let wav = take_dir.join("output.wav");
     crate::diagnostics::write_wav(&wav, samples)
         .map_err(|message| Error::Bench { message: format!("{}: {message}", wav.display()) })?;
@@ -595,11 +603,9 @@ mod tests {
         assert!(gold.clips.is_empty(), "no passage recorded, no read-aloud tier");
     }
 
-    /// **A recording becomes the set, and a later one replaces it.** The
-    /// take carries the wav and its meta - what the reader needs to see it
-    /// as complete - the manifest names the wav's own sha, and the previous
-    /// take leaves with the previous recording rather than stacking under
-    /// one passage.
+    /// **A recording joins the set, and a later one adds to it.** The take
+    /// carries the wav and its meta - what the reader needs to see it as
+    /// complete - and the manifest names the wav's own sha.
     #[test]
     fn recordings_join_the_set_and_a_later_one_adds_to_it() {
         let dir = tempfile::tempdir().unwrap();
@@ -636,6 +642,23 @@ mod tests {
             clips.iter().all(|clip| clip.truth.as_deref() == Some(READ_ALOUD_PASSAGE)),
             "every recording is scored against the one passage"
         );
+    }
+
+    /// **Two recordings in one millisecond are two takes.** The name is the
+    /// clock's, so a set that stored both under one name kept only the later -
+    /// the flake #1920 was filed for, pinned by handing both the same stamp.
+    #[test]
+    fn two_recordings_in_one_millisecond_are_two_takes() {
+        let dir = tempfile::tempdir().unwrap();
+        let audio = vec![0.25_f32; 1_600];
+
+        store_read_aloud_at(dir.path(), &audio, 42).expect("the first writes");
+        store_read_aloud_at(dir.path(), &audio[..800], 42).expect("a second writes");
+
+        let clips = read_aloud(dir.path()).expect("the set reads");
+        assert_eq!(clips.len(), 2, "the same-millisecond take did not replace the first");
+        assert_eq!(clips[0].audio.len(), audio.len(), "oldest first");
+        assert_eq!(clips[1].audio.len(), 800, "and the newest is the last clip");
     }
 
     /// **Term accuracy counts the passage's terms that survived.** A miss

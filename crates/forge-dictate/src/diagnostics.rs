@@ -70,11 +70,62 @@ pub(crate) fn take_stamp() -> u128 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis())
 }
 
+/// Claim `dir/take-<stamp>/`, advancing a millisecond per name already taken,
+/// and answer the name and the directory it claimed.
+///
+/// **The claim is the `create_dir`, not a probe before it.** A name checked
+/// with `exists()` and made with `create_dir_all` lets two writers stamped in
+/// the same millisecond both pass the check and land in one directory, where
+/// the later silently replaces the earlier's wav and meta. `create_dir` is the
+/// one call that fails on a taken name, and its `AlreadyExists` is the loop's
+/// next candidate.
+///
+/// Advancing the stamp rather than suffixing the name keeps the shape every
+/// reader of a store directory goes by - `take-` followed by all digits (see
+/// [`starts_take`]) - and the order the names sort in.
+///
+/// **The parent has to exist.** `create_dir` makes one directory, so a caller
+/// whose store may not exist yet creates it first: `capture_take` and
+/// `store_read_aloud_at` both do.
+pub(crate) fn claim_take_dir(dir: &Path, stamp: u128) -> std::io::Result<(String, PathBuf)> {
+    let mut stamp = stamp;
+    loop {
+        let name = format!("take-{stamp:013}");
+        let take_dir = dir.join(&name);
+        match std::fs::create_dir(&take_dir) {
+            Ok(()) => return Ok((name, take_dir)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => stamp += 1,
+            Err(source) => return Err(source),
+        }
+    }
+}
+
 /// Write one take into `dir/take-<take_id>/` and prune the store to
 /// [`RETAINED_TAKES`]. Nothing here can fail the caller: every step
 /// logs its own failure and stops that take's capture.
 pub(crate) fn capture_take(dir: &Path, take_id: u128, take: &TakeRecord<'_>) {
-    let take_dir = dir.join(format!("take-{take_id:013}"));
+    // The store is lazily made: a first take is what brings it into being.
+    if let Err(error) = std::fs::create_dir_all(dir) {
+        tracing::warn!(
+            event_name = "diagnostics_store_uncreatable",
+            %error,
+            dir = %dir.display(),
+            "diagnostics: store directory could not be made"
+        );
+        return;
+    }
+    let take_dir = match claim_take_dir(dir, take_id) {
+        Ok((_, take_dir)) => take_dir,
+        Err(error) => {
+            tracing::warn!(
+                event_name = "diagnostics_take_dir_unclaimed",
+                %error,
+                dir = %dir.display(),
+                "diagnostics: store directory not claimed"
+            );
+            return;
+        }
+    };
     // meta.json is written LAST, which is what makes a take directory
     // without it incomplete: an early return above leaves a partial
     // directory that still counts for retention, but never reads as a
