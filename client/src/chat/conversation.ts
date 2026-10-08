@@ -592,6 +592,26 @@ export class Chat {
    * second frame.
    */
   private unturned: unknown[] = [];
+  /**
+   * The frames a ride PLACED in a row, so a page can heal them.
+   *
+   * A ridden frame sits in a row the page's own cut may not own - a notice
+   * that opened on an empty seat, a live turn - and only a live row is ever
+   * reconciled by the merge. So each placed frame is kept here, and a page
+   * that carries its own copy of one lets the placed copy go (from whichever
+   * row holds it) before the merge runs, which is what keeps one frame from
+   * being drawn twice through a later page. It also keeps a ridden frame from
+   * standing as the evidence `shares()` matches a live row to an older turn:
+   * the frame belongs where the page put it, not where the ride parked it.
+   *
+   * Unhealed entries are live-only frames no page will ever carry, so the set
+   * holds at most the frames that rode before the first page landed - no
+   * bound of its own, and nothing clears it on `connected`, where `waiting`
+   * and `drained` do: a reconnect re-reads the seat rather than replacing its
+   * conversation, so the first page after it heals what it can and the rest
+   * draw where they were placed.
+   */
+  private ridden = new Set<unknown>();
   /** Record that an ask which was in flight is now answered by nothing. */
   private forgot(): void {
     this.fold((held) => ({ ...held, dropped: held.dropped + 1 }));
@@ -970,6 +990,32 @@ export class Chat {
    * changed identity, so reusing the object is what keeps a repeated turn
    * from being drawn again.
    */
+  /**
+   * The record with every placed ride the page's own cut accounts for taken
+   * back out, and those frames released from the ridden set.
+   *
+   * A ride parks a frame in whatever row was there to take it, and the page's
+   * own copy of the same frame can sit in a row the merge never reconciles -
+   * a notice that opened on an empty seat is not live, and only live rows are
+   * matched. Removing the parked copy BEFORE the merge runs is what keeps one
+   * frame from drawing twice, and it also keeps the parked copy from tying a
+   * live row to a page row that ran before it.
+   *
+   * Answers the record it was handed when the page carries none of them, so a
+   * page that heals nothing leaves every row the object it was.
+   */
+  private healedOf(held: Conversation, fromPage: unknown[]): Conversation {
+    if (this.ridden.size === 0) return held;
+    const carried = new Set([...this.ridden].filter((message) => carries(fromPage, message)));
+    if (carried.size === 0) return held;
+    const turns = held.turns.map((turn) => {
+      const kept = turn.messages.filter((message) => !carried.has(message));
+      return kept.length === turn.messages.length ? turn : { ...turn, messages: kept };
+    });
+    for (const message of carried) this.ridden.delete(message);
+    return { ...held, turns };
+  }
+
   private takePage(rows: unknown, cursor: string | null, direction: 'newest' | 'older'): void {
     if (this.abandoned > 0) {
       // The answer to an ask the conversation stopped wanting: a seat that
@@ -983,11 +1029,14 @@ export class Chat {
     // A landed page is the refusal's ask answered: the timer that would ask
     // again is owed nothing, and the page's cursor is what the walk uses.
     this.clearRetry();
+    const pageRows = pageTurns(rows);
+    const fromPage = pageRows.flatMap((row) => messagesOf(row));
     this.fold((held) => {
-      const known = new Map(held.turns.map((turn) => [turn.key, turn]));
+      const healed = this.healedOf(held, fromPage);
+      const known = new Map(healed.turns.map((turn) => [turn.key, turn]));
       // A turn a page has settled is also known by the page's own name for it,
       // which is what the next page repeats it under.
-      for (const turn of held.turns) {
+      for (const turn of healed.turns) {
         for (const alias of turn.also ?? []) known.set(alias, turn);
       }
       const taken = new Set(known.keys());
@@ -1005,7 +1054,6 @@ export class Chat {
        * the words.
        */
       const answered = new Set<unknown>();
-      const pageRows = pageTurns(rows);
       for (const row of pageRows) {
         // What the turn is held under: the fold's own name where it gave one,
         // and the name this conversation gave it where it did not. Reading
@@ -1123,6 +1171,10 @@ export class Chat {
         // takes the exchange's row and gives it the repeat's opening frame,
         // which in the shorter shape leaves the exchange with no row at all.
         const words = unsettled && uuidOf(turn.messages[0]) === null;
+        // A frame the ride PLACED is already gone from these rows when the
+        // page carries its own copy: `healedOf` took it back out before this
+        // match runs, which is what keeps the parked copy from tying a live
+        // row to a page row that ran before it.
         return turn.messages.some((message) => carries(messages, message, words));
       };
       const replaced = new Set<Turn>();
@@ -1137,7 +1189,7 @@ export class Chat {
         // exchange a later row of the same page is an account of. It is this
         // that keeps two rows from landing under one key, which the virtualised
         // list throws on.
-        const live = held.turns.find(
+        const live = healed.turns.find(
           (turn) => turn.live && !replaced.has(turn) && shares(copy, turn, !settledRow(index)),
         );
         if (live === undefined) return row;
@@ -1171,7 +1223,6 @@ export class Chat {
       // which is the exchange that was being written when they arrived. An
       // older page takes none of them: they are newer than everything in it.
       if (direction === 'newest' && this.unturned.length > 0) {
-        const fromPage = pageRows.flatMap((row) => messagesOf(row));
         const riding = this.unturned.filter((message) => !carries(fromPage, message));
         const newest = drawn[drawn.length - 1];
         if (newest === undefined) {
@@ -1179,6 +1230,7 @@ export class Chat {
           this.unturned = riding;
         } else {
           if (riding.length > 0) {
+            for (const frame of riding) this.ridden.add(frame);
             drawn[drawn.length - 1] = { ...newest, messages: [...newest.messages, ...riding] };
           }
           this.unturned = [];
@@ -1191,7 +1243,7 @@ export class Chat {
       // A row being written is not the page's to drop either way: `live` is a
       // turn the frames built, and `running` is the newest row of a seat the
       // core says has a turn in flight.
-      const rest = held.turns.filter(
+      const rest = healed.turns.filter(
         (turn) => !(turn.live || turn.running === true) && !inPage.has(turn.key),
       );
       // A turn being written that no row of this page accounts for is kept - a
@@ -1203,11 +1255,11 @@ export class Chat {
       // the page's own names cover: a row the core says is running but the
       // frames did not build would otherwise be drawn beside its own repeat,
       // under one key - which a keyed list throws on.
-      const loose = held.turns.filter(
+      const loose = healed.turns.filter(
         (turn) => (turn.live || turn.running === true) && !inPage.has(turn.key),
       );
       return this.answered({
-        ...held,
+        ...healed,
         loaded: true,
         // A page that lands is the ask the refusal spoke for, answered - the
         // refusal is about THAT ask rather than about the conversation, and
@@ -1773,6 +1825,7 @@ export class Chat {
       // was reported for.
       const riding = this.unturned;
       this.unturned = [];
+      for (const frame of riding) this.ridden.add(frame);
       const key = nameIn({ key: liveName(message, held.turns.length), messages: [message] }, taken);
       // **A row opened for the core's own line is not a turn being written.**
       // The line is a command's answer, so there is no turn in flight and the

@@ -115,6 +115,23 @@ const dispatched = (): unknown => ({
   },
 });
 
+/** A compaction boundary, which the CLI persists to the transcript too. */
+const boundary = (): unknown => ({
+  type: 'system',
+  subtype: 'compact_boundary',
+  uuid: 'compact-1',
+  compact_metadata: { trigger: 'auto', pre_tokens: 10, post_tokens: 2 },
+});
+
+/** One hook run, which no page copy of a turn carries. */
+const hookRun = (): unknown => ({
+  type: 'system',
+  subtype: 'hook_started',
+  hook_id: 'hook-1',
+  hook_name: 'PreToolUse',
+  uuid: 'hook-1-uuid',
+});
+
 /**
  * A forged row with NO id: the arm a frame without one still reconciles
  * through.
@@ -967,6 +984,70 @@ describe('the conversation the chat draws', () => {
       JSON.stringify(get(chat.value).turns.at(-1)?.messages),
       'and the next turn takes it',
     ).toContain('thinking-9');
+  });
+
+  /**
+   * A ridden frame the page carries is not drawn twice.
+   *
+   * A ride parks a persisted frame in whatever row was there to take it, and
+   * the page's own copy of the same frame can sit in a row the merge never
+   * reconciles - a forge notice opens a row of its own on an empty seat, and
+   * it is not live. The parked copy is let go when the page that owns the
+   * frame lands, so the frame draws once, where the page put it.
+   */
+  it('heals a ridden frame the page carries, so it draws once', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+
+    // A persisted frame waits; a notice opens a row of its own and takes it.
+    server.update({ chat_appended: { key: LEAD, msg: boundary() } });
+    server.update({ notice: { key: LEAD, severity: 'info', text: 'Usage: /mode <id>' } });
+    // The page lands carrying the frame's own copy in the turn it belongs to.
+    server.send(page([{ key: 't1', messages: [boundary(), said('the real turn')] }], null));
+
+    const carried = get(chat.value).turns.flatMap((row) => row.messages);
+    expect(
+      carried.filter((message) => JSON.stringify(message).includes('compact-1')).length,
+      'the frame is carried once, by the page',
+    ).toBe(1);
+  });
+
+  /**
+   * A ridden frame never ties a live row to a page row that ran before it.
+   *
+   * The ride parks a persisted frame in the turn that opened next, and the
+   * page can place that same frame in an OLDER turn of its own. Matched
+   * through it, the live row would be replaced by the older turn account and
+   * the frames that had joined it - a hook run no page copy carries - would
+   * be lost, which is the drop rule 25 forbids.
+   */
+  it('does not let a ridden frame tie a live row to an older turn', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+
+    // The wait, the turn that takes it, and a hook run joining that turn.
+    server.update({ chat_appended: { key: LEAD, msg: boundary() } });
+    server.update({ chat_appended: { key: LEAD, msg: typed('the new ask') } });
+    server.update({ chat_appended: { key: LEAD, msg: hookRun() } });
+
+    // The page carries the frame's own older turn, then the new turn.
+    server.send(
+      page(
+        [
+          { key: 't-old', messages: [boundary(), said('the older turn')] },
+          { key: 't-new', messages: [typed('the new ask'), said('the new answer')] },
+        ],
+        null,
+      ),
+    );
+
+    const carried = get(chat.value).turns.flatMap((row) => row.messages);
+    expect(
+      carried.filter((message) => JSON.stringify(message).includes('hook-1-uuid')).length,
+      'the hook run the page did not carry is still drawn',
+    ).toBe(1);
   });
 
   it('opens no row for a frame of any type the fold draws nothing out of', () => {
