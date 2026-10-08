@@ -59,9 +59,10 @@ and a middot when none of those is true.
 
 ## The state a row carries
 
-The state is decided by the server and arrives decided; the client draws it
-and never recomputes one. It is drawn as a shape as well as a colour, so the
-row reads without colour:
+The state is decided by the server and arrives decided. The client promotes
+four cases of its own before drawing it - background work, a turn nobody
+watched, an unanswered ask, and a failure the seat has not been shown since -
+and draws it as a shape as well as a colour, so the row reads without colour:
 
 | State | Class | Means |
 |---|---|---|

@@ -71,9 +71,10 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
 
   function watch(): void {
     // The home's subscription is where the connection declares what belongs to
-    // it rather than to a page: it is the first subscribe the app makes, and
-    // both capabilities below are per CONNECTION - a host or an answerer that
-    // only claimed the role on a session page would not hold it while the
+    // it rather than to a page: it is usually the first subscribe the app
+    // makes (a deep link to a seat or to the models page gets there first),
+    // and both capabilities below are per CONNECTION - a host or an answerer
+    // that only claimed the role on a session page would not hold it while the
     // reader sits on the home.
     //
     // **`answering` is the one that decides a turn.** It says this client can
