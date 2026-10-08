@@ -602,6 +602,11 @@ impl Workspace {
     /// a stand-in and its weights are absent, so a take registers, meters
     /// and resolves without hardware or a model. The caller holds the
     /// directory for as long as the engine is wanted. Test-only.
+    ///
+    /// **The read-aloud set moves here too**, because its own resolution
+    /// falls back to the machine's app-support dir whatever config dir a
+    /// fixture gave the workspace: a test that kept a recording would write
+    /// into the real one and the next run would read it back.
     #[cfg(any(test, feature = "testing"))]
     pub fn install_test_dictate_engine(
         &self,
@@ -611,6 +616,7 @@ impl Workspace {
             forge_dictate::ConfigBuilder::new().models_dir(models_dir).normalizer(None).build(),
         )?;
         *self.dictate.engine.lock() = Some(engine);
+        *self.test_read_aloud_dir.lock() = Some(models_dir.join("dictate-read-aloud"));
         Ok(())
     }
 
