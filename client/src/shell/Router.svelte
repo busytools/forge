@@ -39,8 +39,7 @@
      * The protocol-skew line the door draws, already worded: the shell hands
      * it down because only the shell watches a skew appear and clear, and
      * the shell stands down on this route so this is the door's own copy.
-     * `null` when there is no skew, and when the connection was REFUSED -
-     * a stopped connection is the shell's line on every route, not a notice.
+     * `null` when there is no skew.
      */
     notice: string | null;
     /**

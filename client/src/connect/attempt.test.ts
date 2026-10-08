@@ -253,9 +253,8 @@ describe('one submit, as the screen sees it', () => {
    */
   it('never rejects, however the connection failed', async () => {
     const boom = () => Promise.reject(new Error('boom'));
-    // A socket that never greets, rather than one that greets a version this
-    // client cannot read: the deadline is what makes the promise settle at
-    // all, and the point of the test is that every arm settles.
+    // A socket that never greets: the deadline is what makes the promise
+    // settle at all, and the point of the test is that every arm settles.
     const silent = new WebSocketServer({ port: 0 });
     await new Promise((resolve) => silent.once('listening', resolve));
     const { port } = silent.address() as AddressInfo;

@@ -37,8 +37,7 @@ export type Attempt =
    * `address` is an address this app cannot use, and the reader can fix it.
    * `unreachable` is a well-formed address nothing answered on, where the
    * cause is on the far side and the reader needs a pointer rather than a
-   * spelling correction. `version` is a forge that answered and speaks a
-   * protocol this client does not, which nothing but an upgrade fixes.
+   * spelling correction.
    */
   | { ok: false; kind: 'address' | 'unreachable'; why: string };
 

@@ -168,10 +168,9 @@ export interface Connection {
    * What the last greeting said that this client's own protocol does not
    * agree with, or `null` when they agree.
    *
-   * Set for a server one step back, which is read with the skew drawn as a
-   * notice, and for one outside the range, where the status says the
-   * connection stopped. Either way the surfaces name the two builds from
-   * here rather than from a number they have no build for.
+   * Set for any server whose protocol differs from this client's own: the
+   * surfaces draw the notice and name the two builds from here rather than
+   * from a number they have no build for.
    */
   skew(): Skew | null;
   /**

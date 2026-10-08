@@ -83,9 +83,9 @@ function rule(selector: string): string {
 
 describe('the rail footer', () => {
   it('states the server and client protocol pair above the CLI it binds', () => {
-    // **The client and a server that disagrees on the protocol refuse each
-    // other** (`socket.ts` checks the greeting), so both sides read here as a
-    // pair rather than only inside a refusal's own words.
+    // **The pair is the fact the footer draws** (`socket.ts` records both
+    // sides' numbers), so both read here rather than only inside a notice's
+    // own words.
     expect(footer, 'the server build').toContain('v1.0.105');
     expect(footer.split(`socket v${PROTOCOL_VERSION}`).length - 1, 'both sides state it').toBe(2);
     expect(footer.indexOf('server'), 'the pair leads the versions').toBeLessThan(

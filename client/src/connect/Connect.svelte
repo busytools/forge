@@ -20,9 +20,8 @@
     launchFailure?: Extract<Attempt, { ok: false }> | null;
     /**
      * The protocol-skew notice, already worded: the forge this client is
-     * connected to speaks a protocol a step back and the connection is live.
-     * `null` when there is no skew, and when the connection was refused -
-     * the shell draws a refusal itself, on every route.
+     * connected to speaks another protocol and the connection is live.
+     * `null` when there is no skew.
      */
     notice?: string | null;
     onconnect: (connected: Extract<Attempt, { ok: true }>) => void;
@@ -116,8 +115,8 @@
             socket off refuses in silence, with nothing wrong at either end.
           </p>
         {/if}
-        <!-- A protocol refusal needs no second line: `why` is the skew
-             sentence itself, naming which half is behind and what to run. -->
+        <!-- The `why` names what to do; a protocol difference is the
+             notice above, not a second line here. -->
       </div>
     {/if}
   </div>

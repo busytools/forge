@@ -1041,7 +1041,7 @@ export function railFooter(
   const versions = {
     serverForge: home.forge_version_short,
     // The greeting's own number beside this client's, because the two are
-    // what a mismatch IS: `socket.ts` checks them against each other, and
+    // what a mismatch IS: `socket.ts` records them beside each other, and
     // the footer is where a reader sees both before one has to say so.
     serverProtocol,
     clientForge: CLIENT_VERSION,
