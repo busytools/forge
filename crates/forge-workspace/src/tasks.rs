@@ -477,7 +477,7 @@ impl Workspace {
     /// just left. It routes on the project's lead seat, which is the seat a
     /// project-scoped section belongs to; a name no project carries has no
     /// seat to route on and announces nothing.
-    fn announce_tasks_changed(&self, project_name: &str) {
+    pub(crate) fn announce_tasks_changed(&self, project_name: &str) {
         let Some(key) = self.lead_slot_for_project(project_name) else {
             tracing::debug!(
                 target: "forge_workspace::tasks",
