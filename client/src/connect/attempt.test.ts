@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { brandPath } from '../brand';
 import { PROTOCOL_VERSION } from '../protocol';
+import { type Connection } from '../socket';
 import { DEFAULT_MARK, DEFAULT_SERVER_PORT, MARK_NAMES } from '../wire/types';
 import {
   DEFAULT_ADDRESS,
@@ -39,9 +40,32 @@ async function stubServer(version = PROTOCOL_VERSION, release: string | null = n
 
 const servers: Awaited<ReturnType<typeof stubServer>>[] = [];
 
+/**
+ * Every connection a test was handed, closed before the server it spoke to
+ * goes.
+ *
+ * A client left reconnecting reports every failed attempt through socket.ts's
+ * console warn, which vitest carries over its worker rpc - a stream that
+ * outlives the file's last test and lands as an unhandled teardown error.
+ * Closing stops the reconnect, which is what ends the stream.
+ */
+const connections: Connection[] = [];
+
 afterEach(async () => {
+  for (const connection of connections.splice(0)) connection.close();
+  // The close loop lets each connection's close handshake finish, so the
+  // stub's terminate finds no live socket and the report never fires. This
+  // settle is the margin in which that handshake completes.
+  await new Promise((resolve) => setTimeout(resolve, 50));
   for (const server of servers.splice(0)) await server.close();
 });
+
+/** [`connectTo`], with the connection kept for the afterEach to close. */
+async function connectTracked(input: string, handshakeMs?: number) {
+  const answer = await connectTo(input, handshakeMs);
+  if (answer.ok) connections.push(answer.connection);
+  return answer;
+}
 
 describe('the address a person types', () => {
   it('takes a bare host and port, and adds the path the server serves', () => {
@@ -91,7 +115,15 @@ describe('the address a person types', () => {
   });
 });
 
-describe('one attempt', () => {
+/**
+ * The budget for the suites that drive a socket: a real handshake and round
+ * trip sit behind each of their tests, and a loaded machine can stretch one
+ * past vitest's five-second default - which the suite then reports as a bare
+ * timeout rather than as the shape it asserts.
+ */
+const SOCKET_SUITE_MS = 15_000;
+
+describe('one attempt', { timeout: SOCKET_SUITE_MS }, () => {
   /**
    * A real socket rejects, and a rejection the caller cannot classify is a
    * page that never leaves "Connecting". It has to arrive as the same arm a
@@ -119,7 +151,7 @@ describe('one attempt', () => {
     const server = await stubServer();
     servers.push(server);
 
-    const answer = await connectTo(server.address);
+    const answer = await connectTracked(server.address);
     expect(answer).toMatchObject({
       ok: true,
       address: server.address,
@@ -138,7 +170,7 @@ describe('one attempt', () => {
     const server = await stubServer(PROTOCOL_VERSION + 1);
     servers.push(server);
 
-    const answer = await connectTo(server.address);
+    const answer = await connectTracked(server.address);
     expect(answer.ok).toBe(true);
     expect(answer.ok && answer.connection.status()).toBe('open');
     expect(answer.ok && answer.connection.skew()).not.toBeNull();
@@ -152,7 +184,7 @@ describe('one attempt', () => {
     const server = await stubServer(PROTOCOL_VERSION - 1);
     servers.push(server);
 
-    const answer = await connectTo(server.address);
+    const answer = await connectTracked(server.address);
     expect(answer.ok).toBe(true);
     expect(answer.ok && answer.connection.status()).toBe('open');
     expect(answer.ok && answer.connection.skew()).toEqual({
@@ -169,7 +201,7 @@ describe('one attempt', () => {
     const server = await stubServer(3);
     servers.push(server);
 
-    const answer = await connectTo(server.address);
+    const answer = await connectTracked(server.address);
     expect(answer.ok).toBe(true);
     expect(answer.ok && answer.connection.skew()).toEqual({
       serverProtocol: 3,
@@ -185,7 +217,7 @@ describe('one attempt', () => {
     const server = await stubServer(PROTOCOL_VERSION + 1, '1.0.116+def5678');
     servers.push(server);
 
-    const answer = await connectTo(server.address);
+    const answer = await connectTracked(server.address);
     expect(answer.ok).toBe(true);
     expect(answer.ok && answer.connection.skew()?.serverVersion).toBe('1.0.116+def5678');
   });
@@ -198,7 +230,7 @@ describe('one attempt', () => {
     server.on('connection', () => undefined);
 
     try {
-      const answer = await attempt(`127.0.0.1:${port}`, (input) => connectTo(input, 20));
+      const answer = await attempt(`127.0.0.1:${port}`, (input) => connectTracked(input, 20));
       expect(answer.ok).toBe(false);
       expect(answer.ok === false && answer.kind).toBe('unreachable');
     } finally {
@@ -207,7 +239,7 @@ describe('one attempt', () => {
   });
 });
 
-describe('one submit, as the screen sees it', () => {
+describe('one submit, as the screen sees it', { timeout: SOCKET_SUITE_MS }, () => {
   /**
    * The button is re-enabled on BOTH paths. A transition that only cleared
    * `busy` on the way to the home is a button stuck reading "Connecting"
@@ -238,7 +270,7 @@ describe('one submit, as the screen sees it', () => {
 
     // The production deadline rather than a shortened one: the property here
     // is the pass path, and a tight budget races the machine under load.
-    const next = await submitAttempt(server.address, (input) => connectTo(input));
+    const next = await submitAttempt(server.address, (input) => connectTracked(input));
     expect(next.busy).toBe(false);
     expect(next.failure).toBeNull();
     expect(next.connected).toMatchObject({
@@ -263,7 +295,7 @@ describe('one submit, as the screen sees it', () => {
       await expect(submitAttempt('box:8790', boom)).resolves.toHaveProperty('busy', false);
       await expect(submitAttempt('::::', boom)).resolves.toHaveProperty('busy', false);
       await expect(
-        submitAttempt(`127.0.0.1:${port}`, (input) => connectTo(input, 20)),
+        submitAttempt(`127.0.0.1:${port}`, (input) => connectTracked(input, 20)),
       ).resolves.toHaveProperty('busy', false);
     } finally {
       await new Promise((resolve) => silent.close(resolve));
