@@ -786,6 +786,13 @@ provider = "anthropic"
         git(dir.path(), &["init", "-q", "-b", "main"]);
         git(dir.path(), &["config", "user.email", "test@example.test"]);
         git(dir.path(), &["config", "user.name", "test"]);
+        // The commit below leaves git's auto-maintenance behind (`git
+        // maintenance run --auto --detach`, gc --auto's modern form), which
+        // writes and removes `.git/objects/maintenance.lock` - the measured
+        // cause of the still-tree announce (#1818). A tree that has to be
+        // still runs no maintenance.
+        git(dir.path(), &["config", "maintenance.auto", "false"]);
+        git(dir.path(), &["config", "gc.auto", "0"]);
         std::fs::write(dir.path().join("kept.txt"), "one").expect("write");
         git(dir.path(), &["add", "."]);
         git(dir.path(), &["commit", "-qm", "first"]);
@@ -1327,21 +1334,114 @@ provider = "anthropic"
 
     /// **Two walks that find the same index say nothing.** Unlike the process
     /// entries, a `FileCandidate` carries only paths and depths - no memory
-    /// figure to drift as the tree works - so a still tree is genuinely still,
-    /// and the comparison can promise silence rather than near-silence. The
-    /// window is what makes this a walk: the poke at the far end of it takes
-    /// one whether anything moved or not.
+    /// figure to drift as the tree works - so a still tree is genuinely still:
+    /// the fixture repo runs no git maintenance, the one writer that moves
+    /// `.git` under a tree nobody touched. The window is what makes this a
+    /// walk: the poke at the far end of it takes one whether anything moved or
+    /// not.
     #[tokio::test]
     async fn a_still_tree_announces_nothing() {
         let dir = a_repo();
         let (workspace, mut updates, _config) = a_workspace(dir.path());
         let seat = seat();
         workspace.hold_seat(&seat).await;
+        // The index the hold left, so an announce names what moved rather than
+        // counting it - triage is a read, not a re-derivation.
+        let held = workspace.file_index(&seat).expect("the hold walks the index");
+        let held_at = held.read_at;
 
-        assert!(
-            tokio::time::timeout(Duration::from_secs(7), updates.recv()).await.is_err(),
-            "a still tree announced something",
+        // The wait is for the seat's own second walk, not for a clock: the
+        // property is that two walks of a still tree agree, and a re-walk that
+        // slipped past a fixed window would leave that unexercised - a quiet
+        // channel would then prove nothing. Every update before it is still a
+        // failure; none is due for a tree nobody touched.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while workspace.file_index(&seat).is_none_or(|seen| seen.read_at <= held_at) {
+            assert!(
+                Instant::now() < deadline,
+                "the seat walks its index again inside the deadline"
+            );
+            match tokio::time::timeout(Duration::from_millis(50), updates.recv()).await {
+                Ok(Some(update)) => announce_failure(&update, &held.index),
+                Ok(None) => panic!("the updates channel closed"),
+                Err(_) => {}
+            }
+        }
+
+        // And the spell past it, so the poke that took the walk is seen
+        // through: the walk and the comparison are one body, and a frame this
+        // tree never earned is due in neither.
+        match tokio::time::timeout(Duration::from_secs(2), updates.recv()).await {
+            Ok(Some(update)) => announce_failure(&update, &held.index),
+            Ok(None) => panic!("the updates channel closed"),
+            Err(_) => {}
+        }
+    }
+
+    /// The words a live announce fails with: the update itself, and for an
+    /// index change what entered or left the index the hold left behind.
+    fn announce_message(update: &SessionUpdate, held: &crate::file_index::FileIndex) -> String {
+        let SessionUpdate::FileIndexChanged { index, .. } = update else {
+            return format!("a still tree announced something: {update:?}");
+        };
+        format!(
+            "a still tree announced an index change: {} entries after {} before, added {} removed {}",
+            index.entries.len(),
+            held.entries.len(),
+            name_list(index.entries.keys().filter(|key| !held.entries.contains_key(key.as_str()))),
+            name_list(held.entries.keys().filter(|key| !index.entries.contains_key(key.as_str()))),
+        )
+    }
+
+    /// A live announce on a still tree, named rather than counted.
+    fn announce_failure(update: &SessionUpdate, held: &Arc<crate::file_index::FileIndex>) -> ! {
+        panic!("{}", announce_message(update, held));
+    }
+
+    /// Up to [`NAMES_SHOWN`] names, and the rest counted rather than trailing
+    /// off where the reader cannot tell a short list from a truncated one.
+    fn name_list(names: impl Iterator<Item = impl std::fmt::Display>) -> String {
+        const NAMES_SHOWN: usize = 30;
+        let all: Vec<String> = names.map(|name| name.to_string()).collect();
+        if all.len() > NAMES_SHOWN {
+            let rest = all.len() - NAMES_SHOWN;
+            return format!("{:?} and {rest} more", &all[..NAMES_SHOWN]);
+        }
+        format!("{all:?}")
+    }
+
+    /// **The announce names what moved**, which is what made this flake a
+    /// read rather than a re-derivation, so the words are pinned.
+    #[test]
+    fn an_announce_names_what_moved() {
+        let candidate = |rel: &str| crate::file_index::FileCandidate {
+            rel_path: rel.to_owned(),
+            rel_path_lower: rel.to_lowercase(),
+            basename_lower: rel.to_lowercase(),
+            depth: 0,
+        };
+        let held = crate::file_index::FileIndex {
+            entries: [("gone.rs".to_owned(), candidate("gone.rs"))].into_iter().collect(),
+        };
+        let index = crate::file_index::FileIndex {
+            entries: [("new.rs".to_owned(), candidate("new.rs"))].into_iter().collect(),
+        };
+        let message = announce_message(
+            &SessionUpdate::FileIndexChanged { key: seat(), index: Arc::new(index) },
+            &held,
         );
+        assert!(message.contains("added [\"new.rs\"]"), "{message}");
+        assert!(message.contains("removed [\"gone.rs\"]"), "{message}");
+
+        let mut long = crate::file_index::FileIndex::default();
+        for nth in 0..31 {
+            long.entries.insert(format!("f{nth}.rs"), candidate(&format!("f{nth}.rs")));
+        }
+        let capped = announce_message(
+            &SessionUpdate::FileIndexChanged { key: seat(), index: Arc::new(long) },
+            &held,
+        );
+        assert!(capped.contains("and 1 more"), "a capped list counts the rest: {capped}");
     }
 
     /// A walk is an answer for the preference it was built under, and the
