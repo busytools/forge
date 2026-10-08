@@ -157,10 +157,83 @@ pub(crate) fn suspend_terminal() {
     let _ = crossterm::terminal::disable_raw_mode();
 }
 
-/// Wrap ratatui's restore-on-panic hook so a *caught* render panic
-/// can't corrupt the live TUI.
+/// The terminal `run_tui` draws into, handed back on whatever path leaves
+/// it.
 ///
-/// ratatui's hook runs at the panic site, before the `catch_unwind` in
+/// The restore cannot sit at the end of `run_tui`: the loop returns `?` when
+/// a draw fails, and a draw is the first thing a lost pane makes fail. It
+/// cannot be left to the `Terminal`'s own `Drop` either, because that one
+/// reports a failed cursor restore with `std::eprintln!`, which panics once
+/// stderr is gone too - after which the restore-on-panic hook panics again
+/// and aborts the process.
+struct TerminalRestore<B: ratatui::backend::Backend>(std::mem::ManuallyDrop<ratatui::Terminal<B>>);
+
+impl<B: ratatui::backend::Backend> TerminalRestore<B> {
+    fn new(terminal: ratatui::Terminal<B>) -> Self {
+        Self(std::mem::ManuallyDrop::new(terminal))
+    }
+}
+
+impl<B: ratatui::backend::Backend> std::ops::Deref for TerminalRestore<B> {
+    type Target = ratatui::Terminal<B>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<B: ratatui::backend::Backend> std::ops::DerefMut for TerminalRestore<B> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl<B: ratatui::backend::Backend> Drop for TerminalRestore<B> {
+    fn drop(&mut self) {
+        restore_terminal(&mut self.0);
+    }
+}
+
+/// Leave raw mode and the alternate screen, best-effort: every write here
+/// can fail with the pane already gone, so a failure is a log line rather
+/// than the panic that would abort the process.
+fn leave_terminal_best_effort() {
+    suspend_terminal();
+    if let Err(error) = ratatui::try_restore() {
+        tracing::warn!(
+            target: crate::logging::targets::APP_LIFECYCLE,
+            event_name = "terminal_restore_failed",
+            message = "could not restore the terminal on exit",
+            outcome = "failure",
+            error_message = %error,
+        );
+    }
+}
+
+/// Give the terminal back on the way out, best-effort, cursor included.
+fn restore_terminal<B: ratatui::backend::Backend>(terminal: &mut ratatui::Terminal<B>) {
+    leave_terminal_best_effort();
+    if let Err(error) = terminal.show_cursor() {
+        tracing::warn!(
+            target: crate::logging::targets::APP_LIFECYCLE,
+            event_name = "cursor_restore_failed",
+            message = "could not restore the cursor on exit",
+            outcome = "failure",
+            error_message = %error,
+        );
+    }
+}
+
+/// Wrap the process's panic hook so a *caught* render panic can't corrupt
+/// the live TUI, and so a crash cannot abort on the way out.
+///
+/// Forge's hook restores the terminal itself rather than chaining into the
+/// one `ratatui::init` installs: that one reports a failed restore with an
+/// `eprintln!`, which panics once the terminal has gone, and a panic raised
+/// inside a panic hook is `process::abort`. `default` is the hook the process
+/// had before ratatui replaced it, so the backtrace still prints.
+///
+/// The hook runs at the panic site, before the `catch_unwind` in
 /// `ui::markdown::render_markdown_safe` swallows a markdown panic, and
 /// restores the terminal (raw mode off, leave alt-screen). That alone
 /// flips the terminal to cooked mode (which echoes input, rendering ESC
@@ -168,16 +241,16 @@ pub(crate) fn suspend_terminal() {
 /// motion sequences onto the screen. So: a panic inside the markdown
 /// guard is left untouched for `catch_unwind`; any other panic is a real
 /// crash and gets forge's full teardown (which also disables mouse
-/// capture, unlike ratatui's restore) before the captured hook prints
-/// the backtrace.
-fn install_panic_hook() {
-    let previous = std::panic::take_hook();
+/// capture, unlike ratatui's restore) before `default` prints.
+fn install_panic_hook(
+    default: Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Sync + Send + 'static>,
+) {
     std::panic::set_hook(Box::new(move |info| {
         if crate::ui::markdown::in_guarded_render() {
             return;
         }
-        suspend_terminal();
-        previous(info);
+        leave_terminal_best_effort();
+        default(info);
     }));
 }
 
@@ -377,15 +450,17 @@ fn next_queued_update(app: &mut App) -> Option<forge_workspace::SessionUpdate> {
 }
 
 pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
-    let mut terminal = ratatui::init();
+    // The process's own hook, taken before `ratatui::init` installs its own:
+    // forge's hook calls this one and never ratatui's, whose failed-restore
+    // report is the panic the exit path exists to avoid.
+    let default_hook = std::panic::take_hook();
+    let mut terminal = TerminalRestore::new(ratatui::init());
     let mut os_shutdown = Box::pin(wait_for_shutdown_signal());
 
     // Enable bracketed paste, mouse capture, and enhanced keyboard protocol
     resume_terminal();
 
-    // Wrap ratatui's restore-on-panic hook so a caught markdown render
-    // panic can't flip the terminal out of raw mode mid-session.
-    install_panic_hook();
+    install_panic_hook(default_hook);
 
     let mut events = EventStream::new();
     // Measured from the last render, so it only bounds the first wake
@@ -396,6 +471,10 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
     let tick_duration = loop_tick(app.repaint_cadence.frame_interval());
     let mut last_render = Instant::now();
     let mut last_spinner_repaint_tick = spinner_repaint_tick(app);
+    // A draw that fails - the pane went away - ends the loop through the
+    // normal tail rather than `?`-ing out of it, so the tab title and the
+    // rest of the teardown still happen. The error is returned at the end.
+    let mut draw_error: Option<std::io::Error> = None;
 
     loop {
         start_connection(app);
@@ -566,7 +645,10 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
             app.needs_redraw = true;
         }
         if app.force_redraw {
-            force_full_redraw(&mut terminal)?;
+            if let Err(error) = force_full_redraw(&mut terminal) {
+                draw_error = Some(error);
+                break;
+            }
             app.force_redraw = false;
             app.needs_redraw = true;
         }
@@ -582,7 +664,10 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
             // Cargo feature. `mark_frame_presented` keeps the EMA fresh so the
             // overlay shows real numbers in any build.
             app.mark_frame_presented(Instant::now());
-            draw_timed(&mut terminal, |f| crate::ui::render(f, app))?;
+            if let Err(error) = draw_timed(&mut terminal, |f| crate::ui::render(f, app)) {
+                draw_error = Some(error);
+                break;
+            }
             render_ms = Some(crate::perf::phase_ms(render_start));
             app.needs_redraw = false;
             last_render = Instant::now();
@@ -657,8 +742,10 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
 
     // Restore terminal
     tab_title::restore_tab_title(app.cwd().unwrap_or_default());
-    suspend_terminal();
-    ratatui::restore();
+
+    if let Some(error) = draw_error {
+        return Err(error.into());
+    }
 
     Ok(())
 }
@@ -1069,6 +1156,213 @@ mod tests {
             .expect("second draw");
         let repainted = completed.buffer.content().len();
         assert_eq!(repainted, 6, "every cell is redrawn after a forced redraw");
+    }
+
+    /// Set by the parent on the spawned probe; absent in an ordinary run,
+    /// where the probe tests below return without doing anything.
+    const TEARDOWN_PROBE_ENV: &str = "FORGE_TEARDOWN_PROBE";
+    /// The probe's readiness marker, on its stderr.
+    const TEARDOWN_PROBE_READY: &str = "teardown-probe-ready";
+    /// How long a probe may take per step before the parent kills it. Under
+    /// nextest's 30s slow threshold, so a wedged probe fails with the name of
+    /// the step it wedged on rather than as an anonymous slow test.
+    const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
+    /// Which of the probe's streams the parent cuts before releasing it:
+    /// stderr alone, so libtest can still report a clean exit through stdout,
+    /// or both - the fully silent shape a terminal leaves behind.
+    #[derive(Clone, Copy)]
+    enum ProbeStreams {
+        Stderr,
+        StderrAndStdout,
+    }
+
+    /// Spawn `child_test` in this test binary, cut its streams, and release
+    /// it - from there nothing it writes can be reported.
+    ///
+    /// Every wait is bounded: a wedged probe is killed and named rather than
+    /// hanging the suite.
+    fn run_probe(child_test: &str, streams: ProbeStreams) -> std::process::ExitStatus {
+        let exe = std::env::current_exe().expect("current_exe");
+        let mut child = std::process::Command::new(exe)
+            .arg(child_test)
+            .arg("--nocapture")
+            .env(TEARDOWN_PROBE_ENV, "1")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn the probe");
+
+        // The marker comes in on stderr, whose read end the parent then
+        // closes. A thread reads it so the wait can be bounded.
+        let mut probe_stderr = std::io::BufReader::new(child.stderr.take().expect("probe stderr"));
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut line = String::new();
+            for _ in 0..64 {
+                line.clear();
+                match std::io::BufRead::read_line(&mut probe_stderr, &mut line) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) if line.trim() == TEARDOWN_PROBE_READY => break,
+                    Ok(_) => {}
+                }
+            }
+            // Closed before the release goes out, so the probe cannot report
+            // anything from the moment it is let go.
+            drop(probe_stderr);
+            let _ = ready_tx.send(line.trim().to_owned());
+        });
+        let Ok(ready) = ready_rx.recv_timeout(PROBE_TIMEOUT) else {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("the probe never reported a live terminal within {PROBE_TIMEOUT:?}");
+        };
+        assert_eq!(
+            ready, TEARDOWN_PROBE_READY,
+            "the probe never reported a live terminal; last line {ready:?}",
+        );
+
+        // Both streams for the fully silent probe, which is the shape a real
+        // dead terminal leaves: libtest loses its report with stdout, which
+        // is what that probe's own assertion accounts for.
+        if let ProbeStreams::StderrAndStdout = streams {
+            drop(child.stdout.take());
+        }
+
+        let mut release = child.stdin.take().expect("probe stdin");
+        std::io::Write::write_all(&mut release, b"go\n").expect("release the probe");
+        drop(release);
+
+        let deadline = std::time::Instant::now() + PROBE_TIMEOUT;
+        loop {
+            if let Some(status) = child.try_wait().expect("poll the probe") {
+                return status;
+            }
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("the probe did not exit within {PROBE_TIMEOUT:?}");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    /// The exit path must survive a pane that has gone away: the teardown's
+    /// own failure reporting must not turn into a signal.
+    ///
+    /// The property cannot be pinned in-process - the probe needs its stderr
+    /// unwritable, and by then the harness reporting the result would panic on
+    /// it too. So the test spawns a child (this same test binary), closes the
+    /// read end of the child's stderr, and only then lets it run the teardown.
+    /// Fidelity is partial by construction: the failing write is a pane that
+    /// closes rather than a dead fd, and the child's stdout stays readable so
+    /// libtest can report - closing both fds would leave nothing to report
+    /// with and need an exit call of its own, which `clippy::exit` refuses.
+    #[test]
+    fn the_teardown_does_not_abort_when_the_pane_has_gone() {
+        let status = run_probe("child_runs_the_teardown_over_a_dead_pane", ProbeStreams::Stderr);
+        assert_eq!(status.code(), Some(0), "no panic may escape the teardown: {status:?}");
+    }
+
+    /// The same pane loss with a panic on top of it, and nothing left to
+    /// report through: forge's hook must not chain into ratatui's restore,
+    /// whose failed-restore report panics while panicking and aborts the
+    /// process. The probe panics on purpose, so the pass condition is that
+    /// the process ended some other way than on a signal.
+    #[test]
+    fn a_panic_over_a_dead_pane_does_not_abort() {
+        let status = run_probe("child_panics_over_a_dead_pane", ProbeStreams::StderrAndStdout);
+        assert!(
+            !status.success() && status.code().is_some(),
+            "the panic must unwind rather than abort: {status:?}",
+        );
+    }
+
+    /// A pane whose writes start failing once it is closed - the shape a
+    /// terminal leaves behind when it goes away mid-teardown.
+    #[derive(Clone, Debug)]
+    struct ClosingPane(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+    impl ClosingPane {
+        fn open() -> Self {
+            Self(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)))
+        }
+
+        fn close(&self) {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    impl std::io::Write for ClosingPane {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            if self.0.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(std::io::Error::other("the pane is gone"));
+            }
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// The child's half of a probe: a terminal over a pane that is about to
+    /// close, forge's panic hook wired the way `run_tui` wires it, and the
+    /// handshake with the parent. The child's stderr is closed when this
+    /// returns.
+    fn probe_setup()
+    -> (ClosingPane, TerminalRestore<ratatui::backend::CrosstermBackend<ClosingPane>>) {
+        let pane = ClosingPane::open();
+        let mut terminal = TerminalRestore::new(
+            ratatui::Terminal::with_options(
+                ratatui::backend::CrosstermBackend::new(pane.clone()),
+                ratatui::TerminalOptions {
+                    viewport: ratatui::Viewport::Fixed(ratatui::layout::Rect::new(0, 0, 80, 24)),
+                },
+            )
+            .expect("a terminal over the pane"),
+        );
+        // What arms the drop path this defect lives in.
+        terminal.hide_cursor().expect("hide the cursor");
+
+        // The process's own hook, taken before anything installs another, as
+        // `run_tui` takes it before `ratatui::init`.
+        install_panic_hook(std::panic::take_hook());
+
+        eprintln!("{TEARDOWN_PROBE_READY}");
+        let mut release = [0_u8; 1];
+        let _ = std::io::Read::read(&mut std::io::stdin(), &mut release);
+        (pane, terminal)
+    }
+
+    /// The probe body, run only in the child the test above spawns.
+    #[test]
+    fn child_runs_the_teardown_over_a_dead_pane() {
+        if std::env::var_os(TEARDOWN_PROBE_ENV).is_none() {
+            return;
+        }
+        let (pane, terminal) = probe_setup();
+
+        // The pane goes away, then the production path on the way out runs:
+        // the guard restores on drop, and none of those writes may panic
+        // over a pane that has gone.
+        pane.close();
+        drop(terminal);
+    }
+
+    /// The probe body that panics with the pane already gone.
+    #[test]
+    fn child_panics_over_a_dead_pane() {
+        if std::env::var_os(TEARDOWN_PROBE_ENV).is_none() {
+            return;
+        }
+        let (pane, _terminal) = probe_setup();
+
+        // The unwind drops the guard, whose restore is best-effort, and the
+        // panic then reaches libtest: the hook must not abort on the way.
+        pane.close();
+        panic!("the pane is gone");
     }
 
     /// Every `duration_ms` a slow frame recorded under `metric`, in
