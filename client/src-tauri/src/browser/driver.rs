@@ -33,13 +33,15 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(150);
 const START_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// The phone's bounds, its own, and they must fit the server's ask budget:
-/// `ASK_TIMEOUT` (15+15+150+20 s) is derived from the DESKTOP's launch,
-/// handshake and call bounds, and the phone's cold figures join it - 35 s to
+/// `ASK_TIMEOUT` (15+15+150+20 = 200 s) is derived from the DESKTOP's launch,
+/// handshake and call bounds, and the phone's cold figures join it - 40 s to
 /// accept a node's FIRST dial (its boot is real work: measured 8 s warm,
 /// 39 s on a loaded emulator) + 10 s to hand shake + the driver's own 150 s
-/// call = 195 s, inside the bound. A node that was ALREADY up redials every
-/// second, so a later call waits only 6 s - a dead in-app node fails in
-/// seconds with the reason instead of paying the cold window per call.
+/// call = 200 s, **exactly the bound: the phone's cold chain spends the
+/// desktop's 20 s of slack to the second**. A node that was ALREADY up
+/// redials every second, so a later call waits only 6 s - a dead in-app node
+/// fails in seconds with the reason instead of paying the cold window per
+/// call.
 #[cfg(target_os = "android")]
 const IN_APP_COLD_ACCEPT_TIMEOUT: Duration = Duration::from_secs(40);
 #[cfg(target_os = "android")]
@@ -201,18 +203,8 @@ impl Driver {
             .map_err(|why| format!("the driver did not answer its MCP handshake: {why}"))?;
         let client = service.peer().clone();
         let origin = if ui_origin.is_empty() { relay.ui_origin.clone() } else { ui_origin.to_owned() };
-        // **An empty origin fails the start - it cannot fall through.**
-        // `origin_match` refuses an empty origin by design, so an empty one
-        // INVERTS the pin (every URL fails the match, and the first tab -
-        // which is the client's own page - is picked) and disarms the guard
-        // entirely. Reachable whenever the Kotlin side answers "" (no client
-        // webview yet, or its UI-thread latch times out on a busy thread).
-        if origin.is_empty() {
-            return Err(
-                "the client UI's origin could not be read, so the browser page cannot be told \
-                 apart from it; the driver is not started"
-                    .to_owned(),
-            );
+        if let Some(refusal) = start_origin_refusal(&origin) {
+            return Err(refusal);
         }
         let driver = Self { _service: service, client, ui_origin: origin };
         driver.pin_browser_tab().await?;
@@ -460,6 +452,24 @@ pub fn origin_match(url: &str, origin: &str) -> bool {
     !origin.is_empty() && origin_of(url).eq_ignore_ascii_case(origin)
 }
 
+/// Why the phone's driver cannot start with this origin, or `None` when it
+/// can. Pure, so the host tests pin what `cfg(android)` hides - the same
+/// purpose `tab_call_refusal` serves.
+///
+/// **An empty origin fails the start - it cannot fall through to the pin.**
+/// `origin_match` refuses an empty origin by design, so an empty one INVERTS
+/// the pin (every URL fails the match, and the first tab - which is the
+/// client's own page - is picked) and disarms the guard entirely. Reachable
+/// whenever the Kotlin side answers "" (no client webview yet, or its
+/// UI-thread latch times out on a busy thread).
+pub fn start_origin_refusal(origin: &str) -> Option<String> {
+    origin.is_empty().then(|| {
+        "the client UI's origin could not be read, so the browser page cannot be told apart \
+         from it; the driver is not started"
+            .to_owned()
+    })
+}
+
 /// Why a tab-shaped call is refused on the phone, or `None` when the driver
 /// may run it. Pure, so the host tests pin what `cfg(android)` hides.
 ///
@@ -603,6 +613,19 @@ mod tests {
         );
 
         assert!(browser_tabs_of("no tabs here").is_empty());
+    }
+
+    /// The start's own empty-origin gate, pinned beside the tab refusals.
+    #[test]
+    fn a_start_with_no_origin_is_refused() {
+        assert!(
+            start_origin_refusal("").is_some(),
+            "an empty origin would invert the pin and disarm the guard - the start must fail",
+        );
+        assert!(
+            start_origin_refusal("http://tauri.localhost").is_none(),
+            "a real origin starts",
+        );
     }
 
     /// The phone's tab-shaped refusals, pinned where `cfg(android)` cannot

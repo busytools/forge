@@ -55,8 +55,10 @@ pub(super) struct DriverStart<'a> {
     pub endpoint: &'a str,
     /// The browser's own identity - the `/devtools/browser/<uuid>` its port
     /// file names on the desktop - which a relaunch changes even when it
-    /// lands on the same port. The phone's WebView never moves within a run,
-    /// so its constant is honest there.
+    /// lands on the same port. The phone's is `webview-<generation>`: the
+    /// WebView never moves within a run, but a CLAIMED RENDERER DEATH bumps
+    /// the generation, and a changed identity is what makes the next call
+    /// rebuild the driver.
     pub identity: &'a str,
     pub output: &'a Path,
     /// The unix socket the in-app driver dials (phone only).

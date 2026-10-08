@@ -82,8 +82,10 @@ class StartDriverArgs {
  * - the CDP relay: a loopback TCP listener the in-app node reaches the
  *   WebView's devtools socket through (playwright speaks HTTP, and node's
  *   own abstract-socket connect to that socket is unreliable on this fork -
- *   both measured, see the spike's report). A token gates the discovery
- *   request so another app on the device cannot drive the WebView;
+ *   both measured, see the spike's report). **Every request is token-gated**
+ *   (`relayAllows`): the pinned driver sends its header on the discovery
+ *   fetch and the WebSocket upgrade alike, so another app on the device
+ *   cannot open the socket at all;
  * - the takeover: the approved Android pair - the page full-screen with one
  *   slim bar, the bar's back and the hardware Back both the door, Done
  *   answering the hand-off;
@@ -109,6 +111,11 @@ class BrowserPlugin(private val activity: Activity) : Plugin(activity) {
 
     /** Lower the takeover from the activity's Back; true when it consumed it. */
     fun lowerTakeover(): Boolean = current?.engine?.lowerFromBar() ?: false
+
+    /** A renderer death claimed on either WebView; see `rendererGone`. */
+    fun rendererDied() {
+      current?.engine?.rendererGone()
+    }
   }
 
   private val engine = BrowserEngine(activity)
@@ -140,10 +147,15 @@ class BrowserPlugin(private val activity: Activity) : Plugin(activity) {
             .put("viewportHeight", if (viewport.size == 2) viewport[1] else 0)
             // **Whether THIS call launched node**, so the shell can size its
             // accept window honestly: a cold boot takes seconds (measured
-            // 8 s warm, 39 s loaded), while an already-running node redials
-            // every second - a later call that pays the cold window for a
-            // dead host waits 90 s for an answer that cannot come.
-            .put("nodeStarted", nodeStarted),
+            // 8 s warm, 39 s loaded - the shell's cold window is 40 s), while
+            // an already-running node redials every second and gets 6 s - a
+            // later call that paid the cold window for a dead host would
+            // wait 40 s for an answer that cannot come.
+            .put("nodeStarted", nodeStarted)
+            // The shell's engine identity: a claimed renderer death bumps
+            // this, so the next call rebuilds the driver against the fresh
+            // WebView instead of holding one that points at a dead page.
+            .put("engineGeneration", engine.generation),
         )
       } catch (err: Exception) {
         invoke.reject(err.message ?: err.toString())
@@ -205,6 +217,16 @@ internal class BrowserEngine(private val activity: Activity) {
   private var holder: FrameLayout? = null
   @Volatile private var takeover = false
   @Volatile private var nodeUp = false
+
+  /**
+   * Bumped whenever a renderer death is claimed (the engine's own handler
+   * and wry's client for the UI page both land in `rendererGone`). The
+   * shell compares it against the driver it holds: a death changes the
+   * engine's identity, so the next call rebuilds against a fresh WebView
+   * instead of driving the page the dead one left behind.
+   */
+  @Volatile var generation = 0
+    private set
 
   fun takeoverUp(): Boolean = takeover
 
@@ -394,6 +416,27 @@ internal class BrowserEngine(private val activity: Activity) {
   }
 
   /**
+   * A renderer death was claimed on either WebView (the engine's own client
+   * or wry's for the UI page). One renderer serves every WebView in the
+   * process, so either death may be THIS page's; the repair is one:
+   * bump the generation (the shell's next call rebuilds - see
+   * `generation`), lower a raised takeover, and drop the dead view.
+   */
+  fun rendererGone() {
+    generation += 1
+    if (takeover) {
+      lower()
+    }
+    if (webview != null) {
+      val page = webview
+      (page?.parent as? ViewGroup)?.removeView(page)
+      page?.destroy()
+      webview = null
+    }
+    Log.w(TAG, "renderer death handled; engine generation now $generation")
+  }
+
+  /**
    * The bar's back and the hardware Back share this door, `lower()`'s
    * `lowered` included - a lower that sent no word left the collapsed row
    * saying "hide" over a window already down (measured).
@@ -434,10 +477,8 @@ internal class BrowserEngine(private val activity: Activity) {
           view: WebView,
           detail: android.webkit.RenderProcessGoneDetail?,
         ): Boolean {
-          Log.w(TAG, "the browser page's renderer died; dropping the webview (crashed=${detail?.didCrash()})")
-          (view.parent as? ViewGroup)?.removeView(view)
-          view.destroy()
-          webview = null
+          Log.w(TAG, "the browser page's renderer died (crashed=${detail?.didCrash()})")
+          rendererGone()
           return true
         }
       }
@@ -689,7 +730,7 @@ internal class BrowserEngine(private val activity: Activity) {
     // **Whitelisted, because the argument is interpolated into a JS string**
     // - every call site is already a literal, and this keeps it that way.
     if (what != "raised" && what != "lowered" && what != "done") {
-      Log.w(TAG, "notifyJs refused an unknown word")
+      Log.w(TAG, "notifyJs refused an unknown word: " + what.take(24))
       return
     }
     val page = MainActivity.clientWebView ?: return

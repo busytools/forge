@@ -316,9 +316,14 @@ impl BrowserHost {
             self.used.store(true, std::sync::atomic::Ordering::Release);
             let socket = paths.driver_socket();
             let shared = self.shared_profile().await;
+            // **The identity carries the engine's generation**: a claimed
+            // renderer death bumps it, so the held driver reads stale and
+            // this call rebuilds against the fresh WebView - the same
+            // comparison that notices a relaunched browser on the desktop.
+            let identity = format!("webview-{}", engine.generation());
             let start = DriverStart {
                 socket: &socket,
-                identity: "webview",
+                identity: &identity,
                 ui_origin: "",
                 engine,
                 output: &paths.output,

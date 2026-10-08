@@ -32,6 +32,12 @@ pub struct Relay {
     pub viewport_width: u32,
     #[serde(rename = "viewportHeight", default)]
     pub viewport_height: u32,
+    /// Bumped by a claimed renderer death. The host's driver identity is
+    /// this generation, so a death makes the held driver stale and the next
+    /// call rebuilds against the fresh WebView (see `BrowserHost::call`'s
+    /// phone arm).
+    #[serde(rename = "engineGeneration", default)]
+    pub engine_generation: u64,
 }
 
 #[derive(Serialize)]
@@ -47,11 +53,19 @@ struct Windowed {
     windowed: bool,
 }
 
-/// The Kotlin handle. A `PluginHandle` is cheap to clone and callers reach it
-/// through the host's `Arc`, so the mutex only guards the remembered relay.
-pub struct Engine<R: Runtime = tauri::Wry>(PluginHandle<R>);
+/// The Kotlin handle, and the last engine generation it reported (a claimed
+/// renderer death bumps it; see `Relay::engine_generation`).
+pub struct Engine<R: Runtime = tauri::Wry>(
+    PluginHandle<R>,
+    std::sync::atomic::AtomicU64,
+);
 
 impl Engine {
+    /// The engine's generation, as the last start reported it.
+    pub fn generation(&self) -> u64 {
+        self.1.load(std::sync::atomic::Ordering::Acquire)
+    }
+
     /// Bring the engine up (WebView, relay, unpacked tree) and start the
     /// in-app node, which dials `socket`. Answers the relay facts.
     pub async fn start_driver(&self, socket: &Path, output: &Path) -> Result<Relay, String> {
@@ -59,7 +73,13 @@ impl Engine {
             socket_path: socket.to_string_lossy().into_owned(),
             output_dir: output.to_string_lossy().into_owned(),
         };
-        self.0.run_mobile_plugin_async("startDriver", args).await.map_err(|err| err.to_string())
+        let relay: Relay = self
+            .0
+            .run_mobile_plugin_async("startDriver", args)
+            .await
+            .map_err(|err| err.to_string())?;
+        self.1.store(relay.engine_generation, std::sync::atomic::Ordering::Release);
+        Ok(relay)
     }
 
     /// Bring the engine up without a driver: the app's own start, so the
@@ -99,7 +119,10 @@ pub fn init() -> TauriPlugin<tauri::Wry> {
     Builder::new("androidbrowser")
         .setup(|app, api| {
             let handle = api.register_android_plugin("dev.vedhavyas.forge", "BrowserPlugin")?;
-            let engine = std::sync::Arc::new(Engine(handle));
+            let engine = std::sync::Arc::new(Engine(
+                handle,
+                std::sync::atomic::AtomicU64::new(0),
+            ));
             let boot = std::sync::Arc::clone(&engine);
             let host = match super::StackPaths::android(app) {
                 Ok(paths) => {

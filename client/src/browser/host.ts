@@ -49,10 +49,12 @@ export function canHost(): boolean {
 
 /**
  * The phone's takeover bar speaks into this page: the Kotlin bar calls
- * `window.__forgeTakeover('done' | 'lowered')` on the client's own webview,
- * and the hook re-emits it as a window event - the dock answers `done` the
- * same way its own Done button does, and the strip re-reads on `lowered`.
- * The hook exists on every host; only the phone's bar ever calls it.
+ * `window.__forgeTakeover('done' | 'lowered' | 'raised')` on the client's
+ * own webview, and the hook re-emits it as a window event - the dock answers
+ * `done` the same way its own Done button does, and the strip re-reads on
+ * all three (the bar's UI body runs on the UI thread, so a caller's own read
+ * can land before it). The hook exists on every host; only the phone's bar
+ * ever calls it.
  */
 export function installTakeoverHook(): void {
   if (typeof window === 'undefined') {
