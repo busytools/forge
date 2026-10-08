@@ -340,6 +340,81 @@ struct ListArgs {
     owner: Option<String>,
     #[serde(default)]
     parent: Option<String>,
+    #[serde(default)]
+    status: Option<TaskStatus>,
+    #[serde(default)]
+    ready: Option<bool>,
+}
+
+/// A duration as the board's words: `3h`, `12m`, `45s`.
+fn fmt_secs(secs: u64) -> String {
+    if secs >= 3_600 {
+        format!("{}h", secs / 3_600)
+    } else if secs >= 60 {
+        format!("{}m", secs / 60)
+    } else {
+        format!("{secs}s")
+    }
+}
+
+fn waiting_kind_str(kind: WaitingKind) -> &'static str {
+    match kind {
+        WaitingKind::Decision => "decision",
+        WaitingKind::Dependency => "dependency",
+        WaitingKind::Resource => "resource",
+    }
+}
+
+/// One board row as the tool output reads it: the record, what the board
+/// derived, and the wait it is sitting on.
+fn board_row_to_json(row: &crate::board::BoardRow) -> serde_json::Value {
+    let mut map = match task_to_json(&row.task) {
+        serde_json::Value::Object(map) => map,
+        other => return other,
+    };
+    map.insert("worked".to_owned(), serde_json::json!(fmt_secs(row.worked_secs)));
+    map.insert("updated_ago".to_owned(), serde_json::json!(fmt_secs(row.updated_secs_ago)));
+    let mut marks: Vec<&str> = Vec::new();
+    if row.marks.ready {
+        marks.push("ready");
+    }
+    if row.marks.in_review {
+        marks.push("in_review");
+    }
+    if row.marks.overdue {
+        marks.push("overdue");
+    }
+    if row.marks.no_movement {
+        marks.push("no_movement");
+    }
+    if row.marks.waiting_too_long {
+        marks.push("waiting_too_long");
+    }
+    if row.marks.stale {
+        marks.push("stale");
+    }
+    if row.marks.to_close {
+        marks.push("to_close");
+    }
+    map.insert("marks".to_owned(), serde_json::json!(marks));
+    if let Some(wait) = &row.task.waiting_on {
+        map.insert(
+            "waiting".to_owned(),
+            serde_json::json!({
+                "kind": wait.kind.map(waiting_kind_str),
+                "detail": wait.detail,
+                "on": wait.on.as_ref().map(TaskId::as_str),
+                "verification": wait.verification,
+            }),
+        );
+    }
+    if let Some((done, total)) = row.rollup {
+        map.insert("rollup".to_owned(), serde_json::json!(format!("{done}/{total}")));
+    }
+    if let Some(parent_subject) = &row.parent_subject {
+        map.insert("parent_subject".to_owned(), serde_json::json!(parent_subject));
+    }
+    serde_json::Value::Object(map)
 }
 
 #[async_trait::async_trait]
@@ -349,13 +424,14 @@ impl Tool for List {
     }
 
     fn description(&self) -> &'static str {
-        "List the live tasks of YOUR project as whole records: id, subject and status always, \
-         then `owner`, `parent`, `active_form`, `detail`, `links` and `estimate` on the tasks \
-         that have them, plus the created and updated timestamps. Optionally narrow with `owner` \
-         (a session label) or `parent` (a task id), so one task's detail or one session's rows \
-         are a filter away. An empty array means your project has no tasks in flight, or that \
-         your project could not be resolved, or that this run could not read its stored tasks. \
-         Any session in the project may call this."
+        "List the board of YOUR project: every live row as a whole record, plus what the board \
+         derives - `worked` time against the estimate, how long since any touch, and the marks \
+         (ready, in_review, overdue, no_movement, waiting_too_long, stale, to_close) - under a \
+         dated line, so no session does date arithmetic. Narrow with `owner` (a session label), \
+         `parent` (a task id), `status`, or `ready` (true = pending with nothing waiting on it). \
+         An empty array means your project has no tasks in flight, or that your project could \
+         not be resolved, or that this run could not read its stored tasks. Any session in the \
+         project may call this."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -370,6 +446,16 @@ impl Tool for List {
                     "type": "string",
                     "description": "Only the tasks under this task id.",
                 },
+                "status": {
+                    "type": "string",
+                    "enum": ["pending", "in_progress", "waiting", "completed", "failed", "canceled"],
+                    "description": "Only tasks in this state.",
+                },
+                "ready": {
+                    "type": "boolean",
+                    "description": "True lists only rows something can start: pending with \
+                                    nothing waiting on it.",
+                },
             },
             "additionalProperties": false,
         })
@@ -381,10 +467,16 @@ impl Tool for List {
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
         let parent = args.parent.as_deref().map(TaskId::from);
-        let tasks = self.facade.list_tasks(&self.slot, args.owner.as_deref(), parent.as_ref());
-        let arr: Vec<serde_json::Value> = tasks.iter().map(task_to_json).collect();
+        let rows = self.facade.list_tasks(
+            &self.slot,
+            args.owner.as_deref(),
+            parent.as_ref(),
+            args.status,
+            args.ready,
+        );
+        let arr: Vec<serde_json::Value> = rows.iter().map(board_row_to_json).collect();
         match serde_json::to_string_pretty(&serde_json::Value::Array(arr)) {
-            Ok(json) => ToolOutput::text(json),
+            Ok(json) => ToolOutput::text(format!("now {}\n{json}", fmt_rfc3339(SystemTime::now()))),
             Err(err) => tool_error(format!("task-list serialization failed: {err}")),
         }
     }
@@ -915,6 +1007,83 @@ mod tests {
         let facade = Arc::new(MockTasksFacade::default());
         let out = List { facade, slot: lead_slot() }.call(input(serde_json::json!({}))).await;
         assert!(!out.is_error, "list succeeds: {out:?}");
+    }
+
+    fn board_row(task: Task) -> crate::board::BoardRow {
+        crate::board::BoardRow {
+            task,
+            worked_secs: 0,
+            updated_secs_ago: 0,
+            marks: crate::board::Marks {
+                ready: false,
+                in_review: false,
+                overdue: false,
+                no_movement: false,
+                waiting_too_long: false,
+                stale: false,
+                to_close: false,
+            },
+            rollup: None,
+            parent_subject: None,
+        }
+    }
+
+    /// The list opens with the date, so a session reading it never does
+    /// date arithmetic against bare timestamps.
+    #[tokio::test]
+    async fn the_list_leads_with_a_dated_line() {
+        let facade = Arc::new(MockTasksFacade::default());
+        let out = List { facade, slot: lead_slot() }.call(input(serde_json::json!({}))).await;
+        assert!(!out.is_error, "list succeeds: {out:?}");
+        let text = text_of(&out);
+        let first = text.lines().next().expect("a first line");
+        assert!(first.starts_with("now "), "the list opens with the date: {first}");
+        assert!(first.contains('T'), "in RFC3339: {first}");
+    }
+
+    #[tokio::test]
+    async fn a_listed_row_carries_worked_time_and_its_marks() {
+        let facade = Arc::new(MockTasksFacade::default());
+        let mut row = board_row(sample_task());
+        row.worked_secs = 3 * 3_600;
+        row.updated_secs_ago = 12 * 60;
+        row.marks.in_review = true;
+        row.marks.overdue = true;
+        facade.rows.lock().push(row);
+        let out = List { facade, slot: lead_slot() }.call(input(serde_json::json!({}))).await;
+        assert!(!out.is_error, "list succeeds: {out:?}");
+        let text = text_of(&out);
+        let body = text.split_once('\n').expect("a header line then the rows").1;
+        let json: serde_json::Value =
+            serde_json::from_str(body).expect("the body is the rows array");
+        assert_eq!(json[0]["worked"], "3h", "worked time in the board's words: {json}");
+        assert_eq!(json[0]["updated_ago"], "12m");
+        let marks: Vec<&str> = json[0]["marks"]
+            .as_array()
+            .expect("marks array")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect();
+        assert!(marks.contains(&"overdue"), "marks name the facts: {marks:?}");
+        assert!(marks.contains(&"in_review"), "marks name the facts: {marks:?}");
+    }
+
+    #[tokio::test]
+    async fn ready_narrows_to_rows_nothing_holds() {
+        let facade = Arc::new(MockTasksFacade::default());
+        let mut held = board_row(sample_task());
+        held.task.owner = Some(SessionSlot::lead("TestOrg", "myproj"));
+        let mut free = board_row(Task { id: TaskId::from("t-2"), ..sample_task() });
+        free.marks.ready = true;
+        facade.rows.lock().extend([held, free]);
+        let out = List { facade: facade.clone(), slot: lead_slot() }
+            .call(input(serde_json::json!({ "ready": true })))
+            .await;
+        assert!(!out.is_error, "list succeeds: {out:?}");
+        let text = text_of(&out);
+        assert!(text.contains("t-2"), "the ready row is listed: {text}");
+        assert!(!text.contains("t-1"), "the held row is not: {text}");
+        assert_eq!(facade.listed.lock()[0].3, Some(true), "and the filter was threaded");
     }
 
     #[tokio::test]
