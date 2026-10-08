@@ -25,6 +25,13 @@ use serde_json::Value;
 /// The longest one tool call is given before the driver is presumed mute.
 const CALL_TIMEOUT: Duration = Duration::from_secs(150);
 
+/// **The longest a driver start is given before it is presumed wedged.**
+/// Measured live 2026-10-07: a named profile's driver child spawned and sat
+/// idle on its stdin while the parent never wrote the handshake - and the
+/// start has no bound of its own, so the session's call parked with it, past
+/// even [`CALL_TIMEOUT`]. A start that cannot answer names it instead.
+const START_TIMEOUT: Duration = Duration::from_secs(15);
+
 /// One part of a tool's answer, on its way to the socket.
 ///
 /// An image's bytes cross here as the base64 the MCP client's own model
@@ -48,18 +55,16 @@ pub struct Driver {
 impl Driver {
     /// Start the driver against a browser's CDP endpoint.
     ///
-    /// `context` picks which context this driver drives. `Some(path)` is a
-    /// NAMED context: the driver creates one of its own, isolated from every
-    /// other driver on the browser, and reads its cookies from `path` -
-    /// created empty when it is not there, since upstream reads the file at
-    /// context creation and a missing one fails the launch. `None` attaches
-    /// to the browser's own context, the profile's, which outlives everything.
+    /// The driver always attaches to the browser's own profile - the
+    /// profile's, which outlives everything. **Isolation comes from the
+    /// BROWSER the endpoint belongs to**: one browser per profile means one
+    /// Chromium profile per name, no `--isolated` contexts and no storage
+    /// files.
     pub async fn start(
         node: &Path,
         cli: &Path,
         cdp_endpoint: &str,
         output_dir: &Path,
-        context: Option<&Path>,
     ) -> Result<Self, String> {
         if !node.is_file() || !cli.is_file() {
             return Err(format!(
@@ -70,16 +75,11 @@ impl Driver {
         }
         std::fs::create_dir_all(output_dir)
             .map_err(|why| format!("the browser output directory cannot be made: {why}"))?;
-        if let Some(storage) = context {
-            ensure_storage_state(storage)?;
-        }
 
+        tauri_plugin_log::log::info!("starting the driver against {cdp_endpoint}");
         let transport =
             TokioChildProcess::new(tokio::process::Command::new(node).configure(|cmd| {
                 cmd.arg(cli);
-                if let Some(storage) = context {
-                    cmd.arg("--isolated").arg("--storage-state").arg(storage);
-                }
                 cmd.arg("--cdp-endpoint")
                     .arg(cdp_endpoint)
                     .arg("--no-webmcp")
@@ -103,10 +103,18 @@ impl Driver {
             }))
             .map_err(|why| format!("the driver would not start: {why}"))?;
 
-        let service = ()
-            .serve(transport)
+        // **The handshake is bounded**: a child that spawns and never answers
+        // parks the session exactly as a wedge does, with nothing to read.
+        let service = tokio::time::timeout(START_TIMEOUT, ().serve(transport))
             .await
+            .map_err(|_| {
+                format!(
+                    "the driver did not answer its MCP handshake within {} s",
+                    START_TIMEOUT.as_secs()
+                )
+            })?
             .map_err(|why| format!("the driver did not answer its MCP handshake: {why}"))?;
+        tauri_plugin_log::log::info!("the driver answers on {cdp_endpoint}");
         let client = service.peer().clone();
         Ok(Self { _service: service, client })
     }
@@ -131,7 +139,7 @@ impl Driver {
     ///
     /// **A request timeout, because rmcp carries none by default.** In 3.5.0
     /// the peer's request timeout is NONE, so a driver that accepts a request
-    /// and never answers would hold the call - and, through the context's own
+    /// and never answers would hold the call - and, through the profile's own
     /// lock, every call behind it - forever. The bound sits above upstream's
     /// own (a 60 s navigation, a 30 s wait) with room: it is the wedge-breaker,
     /// not a deadline the tools keep.
@@ -174,24 +182,6 @@ impl Driver {
     }
 }
 
-/// The value a `browser_run_code_unsafe` snippet returned, read out of the
-/// driver's report.
-///
-/// Upstream reports a snippet's return value as JSON on the line after the
-/// report's `### Result` marker, so a snippet returning a string arrives
-/// quoted and escaped. Anything else - no marker, a value that is not a
-/// string, no text at all - is `None`: a save that cannot read its own report
-/// fails where it is seen rather than writing a guess.
-pub(super) fn reported_value(parts: &[ReplyPart]) -> Option<String> {
-    let text = parts.iter().find_map(|part| match part {
-        ReplyPart::Text { text } => Some(text.as_str()),
-        ReplyPart::Image { .. } => None,
-    })?;
-    let after = text.split_once("### Result")?.1;
-    let value = after.lines().find(|line| !line.trim().is_empty())?.trim();
-    serde_json::from_str::<String>(value).ok()
-}
-
 /// Map one MCP result onto the parts the socket carries.
 ///
 /// **A block this host cannot carry is an error rather than a silence.** The
@@ -217,20 +207,6 @@ fn parts_of(result: &rmcp::model::CallToolResult) -> Result<Vec<ReplyPart>, Stri
         }
     }
     Ok(parts)
-}
-
-/// Write the empty storage state a named context starts from, if it is not
-/// there.
-fn ensure_storage_state(path: &Path) -> Result<(), String> {
-    if path.exists() {
-        return Ok(());
-    }
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|why| format!("the context's storage directory cannot be made: {why}"))?;
-    }
-    std::fs::write(path, r#"{"cookies": [], "origins": []}"#)
-        .map_err(|why| format!("the context's storage state cannot be written: {why}"))
 }
 
 /// The CLI inside the vendored package, run by the vendored node.
@@ -292,65 +268,6 @@ mod tests {
         )]);
         let refused = parts_of(&result).expect_err("an audio block is not carried");
         assert!(refused.contains("cannot carry"), "{refused}");
-    }
-
-    /// A snippet's return value arrives as JSON on the line after the report's
-    /// `### Result` marker, so a returned string comes back quoted and
-    /// escaped. The report here is the live shape of one.
-    #[test]
-    fn a_snippets_value_is_read_out_of_the_drivers_report() {
-        let report = "### Result\n\"\\\"set\\\"\"\n### Ran Playwright code\n```js\n\
-                      await (async (page) => 'set')(page);\n```";
-        assert_eq!(
-            reported_value(&[ReplyPart::Text { text: report.to_owned() }]),
-            Some("\"set\"".to_owned()),
-        );
-    }
-
-    /// Anything a save cannot read is `None`: no marker, a value that is not a
-    /// string, or an answer that carries no text at all. A save that guessed
-    /// here would persist the guess over the context's real tabs.
-    #[test]
-    fn a_report_without_a_readable_value_is_none() {
-        assert_eq!(
-            reported_value(&[ReplyPart::Text { text: "just words, no marker".to_owned() }]),
-            None,
-        );
-        assert_eq!(
-            reported_value(&[ReplyPart::Text { text: "### Result\n42\n".to_owned() }]),
-            None
-        );
-        assert_eq!(
-            reported_value(&[ReplyPart::Image {
-                mime_type: "image/png".to_owned(),
-                data_base64: "AP8Q".to_owned(),
-            }]),
-            None,
-        );
-    }
-
-    /// A named context's storage file is created empty when it is missing and
-    /// left alone when it exists: upstream reads it at context creation (a
-    /// missing file fails the launch), and it is where that context's own
-    /// logins live, so an existing one is never overwritten.
-    #[test]
-    fn a_missing_storage_state_is_created_empty_and_an_existing_one_is_kept() {
-        let dir = tempfile::tempdir().expect("a temp dir");
-        let state = dir.path().join("contexts/alpha.json");
-
-        ensure_storage_state(&state).expect("the missing file is created");
-        let written = std::fs::read_to_string(&state).expect("the storage state is there");
-        let parsed: serde_json::Value =
-            serde_json::from_str(&written).expect("the written state is JSON");
-        assert_eq!(parsed["cookies"], serde_json::json!([]), "{written}");
-        assert_eq!(parsed["origins"], serde_json::json!([]), "{written}");
-
-        std::fs::write(&state, r#"{"cookies": [{"name": "who"}]}"#).expect("a state with a login");
-        ensure_storage_state(&state).expect("an existing file is not an error");
-        assert!(
-            std::fs::read_to_string(&state).expect("read back").contains("who"),
-            "the context's own logins are never overwritten",
-        );
     }
 
     /// The driver's own paths are the vendoring's layout, pinned by name.

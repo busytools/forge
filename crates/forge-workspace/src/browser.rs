@@ -2,6 +2,7 @@
 //! the asks the browser MCP family sends through it.
 
 use std::sync::{Mutex, MutexGuard};
+use std::time::Duration;
 
 use forge_primitives::SessionSlot;
 use forge_primitives::browser::{BrowserPart, HandOff, HandOffEnding};
@@ -15,6 +16,18 @@ pub const NO_BROWSER_CLIENT: &str = "no browser-capable client connected";
 
 /// The error an ask answers with when the host it was sent to went away.
 const HOST_GONE: &str = "the browser-capable client went away before answering";
+
+/// **The longest one ask may wait on a host, derived from the layers under
+/// it**: the client's own bounds are a launch (`chromium`'s `LAUNCH_TIMEOUT`,
+/// 15 s), a driver handshake (`driver`'s `START_TIMEOUT`, 15 s) and one tool
+/// call (`driver`'s `CALL_TIMEOUT`, 150 s), plus 20 s of slack for the hops
+/// between the layers. It is a wedge-breaker, not a ceiling on every call:
+/// a second ask on one profile queues behind the first call's own lock (up
+/// to the 150 s call bound), and a call waiting on a relaunch can wait
+/// longer than this entirely - so the named failure and a retry is the
+/// answer. A late answer costs nothing: the ask keeps its entry registered,
+/// and the reply's send drops it (`.ok()`) once this waiter is gone.
+const ASK_TIMEOUT: Duration = Duration::from_secs(15 + 15 + 150 + 20);
 
 /// One ask, on its way to the registered host.
 #[derive(Debug)]
@@ -121,13 +134,25 @@ impl BrowserRelay {
         // the retain drops it and the push below re-adds it, which is the
         // honest reading of "offered just now".
         role.waiting.retain(|client| client.id != id);
-        match role.host.as_ref() {
-            Some(host) if host.id != id => {
+        let held = role.host.as_ref().map(|host| host.id);
+        match held {
+            Some(host_id) if host_id != id => {
                 role.waiting.push(Client { id, to_host, notices });
+                tracing::debug!(
+                    event_name = "browser_host_waiting",
+                    client = id,
+                    host = host_id,
+                    "a capable client offered while the role was held; it waits in line",
+                );
                 false
             }
             _ => {
                 role.host = Some(Client { id, to_host, notices });
+                tracing::debug!(
+                    event_name = "browser_host_registered",
+                    client = id,
+                    "a capable client holds the browser role",
+                );
                 true
             }
         }
@@ -163,6 +188,13 @@ impl BrowserRelay {
         let mut role = self.lock();
         if role.host.as_ref().is_some_and(|host| host.id == id) {
             role.host = None;
+            // **The archaeology line**: a host that parks instead of
+            // answering names itself here, and this line says when it left.
+            tracing::debug!(
+                event_name = "browser_host_released",
+                client = id,
+                "the connection holding the browser role released it",
+            );
             promote(&mut role);
         }
         role.waiting.retain(|client| client.id != id);
@@ -182,16 +214,29 @@ impl BrowserRelay {
         tool: &str,
         args: Value,
     ) -> Result<Vec<BrowserPart>, String> {
-        let (id, to_host) = {
+        let (id, host_id, to_host) = {
             let role = self.lock();
             let Some(host) = role.host.as_ref() else {
                 return Err(NO_BROWSER_CLIENT.to_owned());
             };
-            (mint_id(), host.to_host.clone())
+            (mint_id(), host.id, host.to_host.clone())
         };
         let (reply, answer) = oneshot::channel();
         let request = BrowserRequest { id, seat: seat.clone(), tool: tool.to_owned(), args, reply };
-        if to_host.send(request).is_err() {
+        let routed = to_host.send(request);
+        // **Which connection an ask went to, and whether it went at all**:
+        // a parked ask says nothing on its own, and this pair of ids is what
+        // names the host a stall is sitting on.
+        tracing::debug!(
+            event_name = "browser_ask_routed",
+            ask = id,
+            host = host_id,
+            tool = %tool,
+            slot = %seat.display(),
+            sent = routed.is_ok(),
+            "a browser ask went to the host",
+        );
+        if routed.is_err() {
             self.forget_the_dead();
             tracing::debug!(
                 event_name = "browser_host_gone",
@@ -201,7 +246,42 @@ impl BrowserRelay {
             );
             return Err(HOST_GONE.to_owned());
         }
-        answer.await.unwrap_or_else(|_| Err(HOST_GONE.to_owned()))
+        // **A parked host is named rather than waited on for ever.** The
+        // bound sits above every layer that legitimately takes time, so
+        // reaching it is the host's own machinery wedged - measured live
+        // 2026-10-07: a call parked with the frame written and the client's
+        // Rust path never entered, and the session held the whole time.
+        // The role is NOT freed here: a slow host is not a dead one, and its
+        // late answer is dropped where it is sent once this waiter is gone.
+        match tokio::time::timeout(ASK_TIMEOUT, answer).await {
+            Ok(Ok(parts)) => parts,
+            Ok(Err(_)) => {
+                tracing::debug!(
+                    event_name = "browser_answer_dropped",
+                    ask = id,
+                    host = host_id,
+                    tool = %tool,
+                    slot = %seat.display(),
+                    "the host's answer channel dropped without an answer",
+                );
+                Err(HOST_GONE.to_owned())
+            }
+            Err(_) => {
+                tracing::warn!(
+                    event_name = "browser_ask_timeout",
+                    ask = id,
+                    host = host_id,
+                    tool = %tool,
+                    slot = %seat.display(),
+                    wait_seconds = ASK_TIMEOUT.as_secs(),
+                    "the browser host did not answer inside the ask's bound",
+                );
+                Err(format!(
+                    "the browser host (connection {host_id}) did not answer {tool} within {} s",
+                    ASK_TIMEOUT.as_secs(),
+                ))
+            }
+        }
     }
 
     /// Forget a host whose channel has no receiver left - and a waiter whose
@@ -229,6 +309,11 @@ fn promote(role: &mut Role) {
             continue;
         }
         let _ = next.notices.send(RoleNotice::Granted);
+        tracing::debug!(
+            event_name = "browser_host_promoted",
+            client = next.id,
+            "a waiting client was promoted to the browser role",
+        );
         role.host = Some(next);
         return;
     }
@@ -293,6 +378,15 @@ impl Workspace {
         }
         let Some((owner, _, sender)) = parked.remove(&id) else { return false };
         drop(parked);
+        // **The ending is what tells an answer from an abandonment**, and
+        // hand-offs were seen resolving by themselves in a live round
+        // (2026-10-07) with nothing naming the hand that sent it.
+        tracing::debug!(
+            event_name = "browser_hand_off_resolved",
+            id = %id,
+            ending = ?ending,
+            "a parked browser hand-off left the registry"
+        );
         let _ = sender.send(ending);
         let _ = self.update_sender().send(crate::protocol::SessionUpdate::BrowserHandOffResolved {
             key: owner,
@@ -445,6 +539,51 @@ mod tests {
         );
     }
 
+    /// **The bound clears every layer that legitimately takes time.** The
+    /// client's own bounds are a launch (15 s), a driver handshake (15 s) and
+    /// one tool call (150 s) - a bound under their sum would fail slow-but-fine
+    /// calls, which is the one change someone would plausibly make here.
+    #[test]
+    fn the_ask_bound_clears_the_client_layers_below_it() {
+        assert!(
+            ASK_TIMEOUT >= Duration::from_secs(15 + 15 + 150),
+            "the ask's bound must clear the client's launch, handshake and call bounds: {ASK_TIMEOUT:?}",
+        );
+    }
+
+    /// **A host that parks is named, not waited on for ever.** The bound sits
+    /// above every layer that legitimately takes time, so a call that reaches
+    /// it is the host's own machinery wedged - measured live 2026-10-07,
+    /// where the session held for minutes. The sentence carries the host
+    /// connection, the tool and the wait, and the role is NOT freed: a slow
+    /// host is not a dead one.
+    #[tokio::test(start_paused = true)]
+    async fn a_host_that_never_answers_fails_the_call_by_name() {
+        let relay = BrowserRelay::new();
+        let (to_host, mut asks) = mpsc::unbounded_channel();
+        assert!(relay.register(7, to_host, notices()));
+        // The host takes the ask and holds it: nothing answers.
+        let held = tokio::spawn(async move {
+            let _request = asks.recv().await.expect("the ask arrives");
+            std::future::pending::<()>().await;
+        });
+
+        let refused = relay.ask(&seat(), "browser_navigate", args()).await;
+        held.abort();
+
+        let Err(why) = refused else {
+            panic!("a host that never answers must not hold the call");
+        };
+        assert!(why.contains("connection 7"), "the host connection is named: {why}");
+        assert!(why.contains("browser_navigate"), "and the tool: {why}");
+        assert!(why.contains("within"), "and the wait it blew: {why}");
+        assert_eq!(
+            relay.lock().host.as_ref().map(|host| host.id),
+            Some(7),
+            "the role is NOT freed on a timeout: a slow host is not a dead one",
+        );
+    }
+
     /// A host whose connection is gone fails the call rather than hanging it,
     /// and frees the role so the next capable client can take it.
     #[tokio::test]
@@ -548,7 +687,7 @@ mod tests {
         HandOff {
             id: uuid::Uuid::new_v4(),
             reason: reason.to_owned(),
-            context: Some("hunt".to_owned()),
+            profile: Some("hunt".to_owned()),
         }
     }
 

@@ -1,17 +1,22 @@
 <script lang="ts">
   import Icon from '../components/Icon.svelte';
   import {
+    browserUsed,
     canHost,
-    closeContext,
-    listContexts,
+    closeProfile,
+    hideBrowser,
+    listProfiles,
+    profileWindowed,
     showBrowser,
     whyText,
-    type ContextRow,
+    type ProfileRow,
   } from '../browser/host';
+  import { browserInflight } from '../browser/inflight.svelte';
   import type { Connection } from '../socket';
+  import type { SessionSlot } from '../wire/types';
 
   /**
-   * The browser row in the strip above the composer: how many named contexts
+   * The browser row in the strip above the composer: how many named profiles
    * this client holds, and - opened - who owns each, which client drives
    * them, and the controls the person has.
    *
@@ -20,22 +25,40 @@
    * its list opening in place (the mockup Ved settled, 2026-10-06). When the
    * surviving strip lands, this mounts into it unchanged.
    *
-   * Three controls live here and each is the person's, never a session's:
-   * **Take over** (the force override, where a click can honestly serve it),
-   * **Show browser** (the visible toggle - a headed relaunch, whose cost the
-   * list states), and a context row's **close** (which is what makes a
-   * context whose owning session is gone recoverable).
+   * Two controls live here and each is the person's, never a session's:
+   * **Override** (the force override, where a click can honestly serve it)
+   * and a profile row's **close** (which is what makes a profile whose
+   * owning session is gone recoverable).
    *
-   * The contexts are the CLIENT's own state - it owns the drivers - so the
+   * The profiles are the CLIENT's own state - it owns the drivers - so the
    * row reads them from the host it runs in, never from the server.
    */
-  let { connection, capable = canHost() }: { connection: Connection; capable?: boolean } = $props();
+  let {
+    connection,
+    slot = null,
+    capable = canHost(),
+  }: { connection: Connection; slot?: SessionSlot | null; capable?: boolean } = $props();
 
   let open = $state(false);
   /** The strip's own snapshot: read at mount and when the list opens, not per frame. */
-  let contexts = $state<ContextRow[]>([]);
+  let profiles = $state<ProfileRow[]>([]);
   /**
-   * What the last read answered. "No contexts yet" is a claim about this
+   * This seat's own key, in the shell's own join: a profile row's `owner` IS
+   * the owning seat's `org/project/label` (the shell's `Seat` display), so the
+   * list can say what THIS slot holds rather than what the client holds.
+   */
+  const mine = $derived(slot === null ? null : `${slot.org}/${slot.project}/${slot.label}`);
+  /** The rows this slot reads: its own, or all of them where there is no slot. */
+  const shown = $derived(mine === null ? profiles : profiles.filter((row) => row.owner === mine));
+  /** Whether the SHARED browser is up as a window: its row's button says hide
+   *  where it is, and the collapsed row marks it without opening. */
+  let sharedUp = $state(false);
+  /** Whether any of the lines this slot reads is up as a window. */
+  const anyUp = $derived(sharedUp || shown.some((row) => row.windowed));
+  /** Whether the browser has been driven this session up - Ved's activity mark. */
+  let used = $state(false);
+  /**
+   * What the last read answered. "No profiles yet" is a claim about this
    * client's own state, and a read that never answered has no state to claim,
    * so the row waits - or says why - rather than asserting one.
    */
@@ -51,22 +74,46 @@
   $effect(() => connection.onBrowserRole((now) => (hosting = now)));
 
   /**
-   * The client's own contexts, read at mount and when the list opens. A
+   * What each read was issued as, so a read that lands after a newer one -
+   * or after a failed raise - cannot write over what came later.
+   */
+  let readToken = 0;
+
+  /**
+   * The client's own profiles, read at mount and when the list opens. A
    * failed read keeps whatever the last one answered and says why.
    */
-  async function readContexts(): Promise<void> {
+  async function readProfiles(): Promise<void> {
+    const token = (readToken += 1);
     try {
-      contexts = await listContexts();
+      const rows = await listProfiles();
+      if (token !== readToken) return;
+      profiles = rows;
       read = 'ready';
       why = null;
     } catch (error) {
+      if (token !== readToken) return;
       read = 'failed';
       why = whyText(error);
     }
+    // The use mark reads on the same beat, and its own failure keeps the
+    // last truth rather than claiming either state.
+    void browserUsed()
+      .then((now) => (used = now))
+      .catch(() => undefined);
+    // And the shared line's own window state, which its row's button and the
+    // collapsed mark both speak for - a read that failed says so rather than
+    // pinning the button to "show".
+    void profileWindowed()
+      .then((now) => (sharedUp = now))
+      .catch((error: unknown) => {
+        read = 'failed';
+        why = whyText(error);
+      });
   }
 
   $effect(() => {
-    void readContexts();
+    void readProfiles();
   });
 
   /**
@@ -76,12 +123,12 @@
    */
   let leaving: ReturnType<typeof setTimeout> | null = null;
 
-  /** Open, and read the contexts fresh, which is what every opening does. */
+  /** Open, and read the profiles fresh, which is what every opening does. */
   function hold(): void {
     if (leaving !== null) clearTimeout(leaving);
     leaving = null;
     open = true;
-    void readContexts();
+    void readProfiles();
   }
 
   function arm(): void {
@@ -164,7 +211,7 @@
   });
 
   /**
-   * What the collapsed row says this client holds.
+   * What the collapsed row says this slot holds.
    *
    * A count is a claim about a read, so before one has answered - or when the
    * last one failed and nothing was ever read - the row says the count is not
@@ -172,8 +219,8 @@
    * keeps the last count, which something did measure.
    */
   const count = $derived(
-    contexts.length > 0 || read === 'ready'
-      ? `${contexts.length} context${contexts.length === 1 ? '' : 's'}`
+    shown.length > 0 || read === 'ready'
+      ? `${shown.length} profile${shown.length === 1 ? '' : 's'}`
       : read === 'loading'
         ? '…'
         : 'count unknown',
@@ -215,12 +262,45 @@
     open = false;
   }
 
+  /**
+   * The person's own look: the real browser window, over the same browser
+   * the sessions drive. No session is answering a question here - it is the
+   * door Ved asked for (2026-10-07), and closing the window disturbs nothing.
+   */
+  function show(profile: string | null = null): void {
+    void showBrowser(profile).then((reason) => {
+      if (reason !== null) {
+        // A read in flight was issued before this failure and must not
+        // erase it when it lands.
+        readToken += 1;
+        read = 'failed';
+        why = reason;
+        return;
+      }
+      // The window is up now: the row's button says hide from here.
+      void readProfiles();
+    });
+  }
+
+  /** The person's own lower: the window goes, the browser keeps serving, and
+   *  the row's button says show again. A refusal is drawn, not swallowed. */
+  function lower(profile: string | null = null): void {
+    void hideBrowser(profile).then((reason) => {
+      if (reason !== null) {
+        read = 'failed';
+        why = reason;
+        return;
+      }
+      void readProfiles();
+    });
+  }
+
   /** The person's close: saves, frees the name, and the row falls away. */
-  function close(row: ContextRow): void {
-    void closeContext(row.name).then(
-      () => readContexts(),
+  function close(row: ProfileRow): void {
+    void closeProfile(row.name).then(
+      () => readProfiles(),
       (error: unknown) => {
-        // A close the shell refused leaves the context open, and the row says
+        // A close the shell refused leaves the profile open, and the row says
         // so rather than vanishing over a name that is still held.
         read = 'failed';
         why = whyText(error);
@@ -246,6 +326,20 @@
     onkeydown={esc}
   >
     <Icon name="web" />
+    {#if browserInflight.visible}
+      <!-- The work-in-flight mark, the same ring the conversation draws: a
+           call is running through this browser right now. -->
+      <span class="ring" title="the browser is working"></span>
+    {/if}
+    {#if anyUp}
+      <!-- A window is up on one of this slot's lines; the list says which,
+           and that row's own button takes it down. -->
+      <span class="dot ok" title="a browser window is open"></span>
+    {:else if used}
+      <!-- The system band's flat idle disc: the browser has been driven,
+           which is a state and not motion. -->
+      <span class="dot idle" title="the browser has been used"></span>
+    {/if}
     browser
     <span class="n">{count}</span>
   </button>
@@ -254,7 +348,7 @@
     <div
       class="bz-list"
       role="group"
-      aria-label="the browser's contexts"
+      aria-label="the browser's profiles"
       onpointerenter={(event) => {
         if (hovering(event)) hold();
       }}
@@ -265,46 +359,46 @@
     >
       <div class="bz-role">
         <span class="tx">
-          {hosting
-            ? 'this client drives the browser'
-            : capable
-              ? 'another client drives the browser'
-              : 'this client cannot drive the browser'}
+          {hosting ? 'browser connected' : 'browser not connected'}
         </span>
         {#if capable && !hosting}
           <button
             type="button"
-            class="bz-take bz-takeover"
+            class="bz-take bz-override"
+            aria-label="override the browser to this client"
             onclick={() => connection.takeBrowserRole()}
             onkeydown={esc}
           >
-            Take over
+            override
           </button>
         {/if}
       </div>
 
-      {#if capable}
-        <!-- The visible toggle: the app's own Chromium comes up as a window.
-             A window is a launch flag, so this is a relaunch, and the cost
-             rides the control where the decision is read. -->
-        <div class="bz-it bz-window">
-          <span class="nm">window</span>
+      <!-- **The shared profile is always there**, and it is the one most
+           sessions drive - listing only named ones read as "no profile"
+           while a session was plainly using the browser. -->
+      <div class="bz-it">
+        {#if capable}
+          <span class="ring"></span>
+        {:else}
+          <Icon name="x" class="bad" />
+        {/if}
+        <span class="nm">shared</span>
+        <span class="tx">every session · the browser's own profile</span>
+        {#if capable}
           <button
             type="button"
             class="bz-take bz-show"
-            onclick={() => void showBrowser()}
+            aria-label={sharedUp ? 'hide the browser window' : 'show the browser'}
+            onclick={() => (sharedUp ? lower(null) : show(null))}
             onkeydown={esc}
           >
-            Show browser
+            {sharedUp ? 'hide' : 'show'}
           </button>
-        </div>
-        <div class="bz-cost">
-          Showing the browser restarts it: named contexts reopen from their saved cookies and tabs
-          on their next call; the shared context's open tabs do not come back.
-        </div>
-      {/if}
+        {/if}
+      </div>
 
-      {#each contexts as row (row.name)}
+      {#each shown as row (row.name)}
         <div class="bz-it">
           {#if row.running}
             <span class="ring"></span>
@@ -313,10 +407,24 @@
           {/if}
           <span class="nm">{row.name}</span>
           <span class="tx">{row.owner}{row.running ? '' : ' · its driver is gone'}</span>
+          <!-- **The row's own door to its own browser**, the shared row's
+               show one level down: this profile's window over this
+               profile's browser, on this profile's page. -->
+          <button
+            type="button"
+            class="bz-take bz-show"
+            aria-label={row.windowed
+              ? `hide the ${row.name} profile's window`
+              : `show the ${row.name} profile's browser`}
+            onclick={() => (row.windowed ? lower(row.name) : show(row.name))}
+            onkeydown={esc}
+          >
+            {row.windowed ? 'hide' : 'show'}
+          </button>
           <button
             type="button"
             class="bz-take bz-close"
-            aria-label="close the {row.name} context"
+            aria-label="close the {row.name} profile"
             onclick={() => close(row)}
             onkeydown={esc}
           >
@@ -325,11 +433,15 @@
         </div>
       {/each}
       {#if read === 'loading'}
-        <div class="bz-it"><span class="tx">reading the contexts…</span></div>
+        <div class="bz-it"><span class="tx">reading the profiles…</span></div>
       {:else if read === 'failed'}
         <div class="bz-it"><span class="tx bad">{why}</span></div>
-      {:else if contexts.length === 0}
-        <div class="bz-it"><span class="tx">no contexts yet</span></div>
+      {:else if shown.length === 0}
+        <div class="bz-it">
+          <span class="tx"
+            >{mine === null ? 'no named profiles yet' : 'no profiles for this session'}</span
+          >
+        </div>
       {/if}
     </div>
   {/if}

@@ -11,6 +11,5 @@ reports/
 # The Tauri shell's crate target dir and its generated capability schemas.
 src-tauri/target/
 src-tauri/gen/
-# The vendored browser stack: nothing in it is this project's code, and there
-# are half a gigabyte of it.
+# The vendored driver stack: nothing in it is this project's code.
 src-tauri/browser-stack/

@@ -117,8 +117,8 @@ export interface BrowserHandOff {
   id: string;
   /** What the session needs done, in its own words - shown verbatim. */
   reason: string;
-  /** The named context to raise, or null for the shared one. */
-  context: string | null;
+  /** The named profile to raise, or null for the browser's own. */
+  profile: string | null;
 }
 
 /** The prompt the seat is parked on. */
@@ -297,7 +297,11 @@ function browserHandOffFrom(value: unknown): Ask {
     request: {
       id: text(held['id']) ?? '',
       reason: text(held['reason']) ?? '',
-      context: text(held['context']),
+      // **A v6 server still calls it `context`** (PROTOCOL_VERSION 7 renamed
+      // the field): the one step back is READ rather than refused, and the
+      // floor's own case proves the read, so a v1.1.0 server's hand-off keeps
+      // its profile name in the dock's title instead of losing it.
+      profile: text(held['profile']) ?? text(held['context']),
     },
   };
 }

@@ -9,13 +9,15 @@
 //! bound, and the browser target's own path, are in it.
 //!
 //! **The port is the browser's own choice, read back from that file, and
-//! this is measured rather than assumed.** Chrome for Testing 155 writes
-//! `DevToolsActivePort` when it is asked for `--remote-debugging-port=0` and
-//! NOT when it is given a port number: asked for 9333 by hand it listened on
-//! 9333 and wrote no file at all. A fixed number would therefore have been a
-//! host that could never find its browser again, and it would also collide
-//! with whichever browser-automation tooling already holds the conventional
-//! ports (the user's own Brave is on 9222).
+//! this is measured rather than assumed.** Measured on Chrome for Testing
+//! 155, and true of the Brave and Chrome builds this drives: the browser
+//! writes `DevToolsActivePort` when it is asked for
+//! `--remote-debugging-port=0` and NOT when it is given a port number -
+//! asked for 9333 by hand it listened on 9333 and wrote no file at all. A
+//! fixed number would therefore have been a host that could never find its
+//! browser again, and it would also collide with whichever
+//! browser-automation tooling already holds the conventional ports (the
+//! user's own Brave is on 9222).
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -23,19 +25,21 @@ use std::time::Duration;
 /// How long a launch is given to write its port file and answer.
 const LAUNCH_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// Where the stack's Chromium is, inside the vendored tree.
-pub fn chrome_binary(stack: &Path) -> PathBuf {
-    stack
-        .join("browser/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing")
-}
-
 /// The argument list one launch runs with.
 ///
 /// `profile` is the browser's own directory, which is what carries logins,
-/// cookies and the HTTP cache across everything. Headless unless `windowed`
-/// is asked for: a window is what a hand-off's Open needs, and it is a
-/// relaunch rather than a flag the running browser can be told.
-pub fn launch_args(profile: &Path, windowed: bool) -> Vec<String> {
+/// cookies and the HTTP cache across everything. `headed` is the hand-off's
+/// own window: the default is **headless** - the browser is seen only when
+/// the person says Open - and the headed launch is the same launch without
+/// that flag, against the person's installed browser when one is there (Ved,
+/// 2026-10-07: it must look like a real browser, not an automation tool).
+///
+/// `page` is the tab the launch opens on: **the page the sessions were
+/// driving**, carried across the relaunch Open makes, because a person who
+/// pressed Open to act on a page must not land on a blank one. `None` for a
+/// cold launch, which opens `about:blank` (a browser with no tab makes the
+/// first navigation depend on the driver inventing one).
+pub fn launch_args(profile: &Path, headed: bool, page: Option<&str>) -> Vec<String> {
     let mut args = vec![
         // Let the browser choose, and read the choice from its port file:
         // handed a number it writes no file, which is a browser nothing can
@@ -43,41 +47,148 @@ pub fn launch_args(profile: &Path, windowed: bool) -> Vec<String> {
         "--remote-debugging-port=0".to_owned(),
         format!("--user-data-dir={}", profile.display()),
     ];
-    if !windowed {
+    if !headed {
         args.push("--headless".to_owned());
+    } else {
+        // **The X closes the window, not the browser** (measured on Brave,
+        // 2026-10-07): Chrome's own automation keep-alive, so the process
+        // and the agents' CDP connection survive a person closing the
+        // window. The tab dies with its window; the next call re-navigates.
+        args.push("--keep-alive-for-test".to_owned());
     }
     args.extend([
         // **Never the OS keychain.** This profile is forge's own and holds
         // nothing worth a keychain entry, while reaching for one raises a
-        // system dialog - "Google Chrome for Testing wants to use your
-        // confidential information stored in Chromium Safe Storage", once per
-        // ask - that nobody is sitting in front of a headless browser to
-        // answer, and that spams whoever is at the machine. The mock store
-        // keeps the same shape with a key that goes nowhere.
+        // system dialog naming the browser's own Safe Storage - once per ask
+        // - that nobody is sitting in front of a headless browser to answer,
+        // and that spams whoever is at the machine. The mock store keeps the
+        // same shape with a key that goes nowhere.
         "--use-mock-keychain".to_owned(),
         "--password-store=basic".to_owned(),
         // A first-run flow is a dialog nothing can see and nothing answers.
         "--no-first-run".to_owned(),
         "--no-default-browser-check".to_owned(),
-        // A page to drive: with no tab at all, the first navigation depends
-        // on the driver inventing one.
-        "about:blank".to_owned(),
     ]);
+    args.push(page.unwrap_or("about:blank").to_owned());
     args
 }
 
-/// The marker a windowed launch leaves in the profile, and what makes "is a
-/// window already up" answerable at all: the port file says nothing about
-/// visibility, and an older launch has no marker - which is a headless one,
-/// because that was the only kind there was.
-fn windowed_marker(profile: &Path) -> PathBuf {
-    profile.join("windowed")
+/// Make the profile start fresh for the launch about to happen: the clean
+/// marker written, the last session's tab data cleared.
+///
+/// **A launch must open exactly the tabs it is given.** Chromium restores the
+/// previous session's tabs here - measured 2026-10-07: every relaunch piled
+/// the window up (Ved's four-tab window: two carried pages and two blanks),
+/// and the pile then breaks the DRIVER: the tabs it did not navigate sit
+/// behind the page it did, the browser marks a background tab hidden, rAF
+/// stops, and playwright's click waits forever on "visible, enabled and
+/// stable" until its five-second timeout. The clean marker alone was not
+/// enough (measured: Brave restores regardless of `exit_type`), so the
+/// session-restore data is removed as well - the tabs a launch wants are the
+/// ones on its command line, and a named profile's logins live in its own
+/// data directory, which this never touches.
+/// The marker is written the way a clean exit writes it, with everything else
+/// in the file preserved; a prefs file that cannot be parsed is left alone
+/// rather than clobbered.
+fn fresh_session(profile: &Path) {
+    let default = profile.join("Default");
+    for stale in ["Sessions", "Current Session", "Current Tabs", "Last Session", "Last Tabs"] {
+        let path = default.join(stale);
+        if path.is_dir() {
+            let _ = std::fs::remove_dir_all(&path);
+        } else {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+    let prefs = default.join("Preferences");
+    let Ok(text) = std::fs::read_to_string(&prefs) else { return };
+    let Ok(mut parsed) = serde_json::from_str::<serde_json::Value>(&text) else { return };
+    let Some(profile_prefs) =
+        parsed.get_mut("profile").and_then(serde_json::Value::as_object_mut)
+    else {
+        return;
+    };
+    profile_prefs.insert("exit_type".to_owned(), serde_json::Value::String("Normal".to_owned()));
+    profile_prefs.insert("exited_cleanly".to_owned(), serde_json::Value::Bool(true));
+    if let Ok(serialized) = serde_json::to_string(&parsed) {
+        let _ = std::fs::write(&prefs, serialized);
+    }
 }
 
-/// Whether the running launch has a window (or unknown, for one that left no
-/// marker, which reads the same for [`show`]'s purpose).
-pub fn launched_windowed(profile: &Path) -> bool {
-    windowed_marker(profile).is_file()
+/// **One launch per profile ACROSS PROCESSES.** The host's own mutex
+/// serializes its calls; a second host on the same directory - the app
+/// opened twice, a second client - would otherwise delete the live launch's
+/// port file (`forget_launch` does exactly that) and spawn onto a locked
+/// profile, wedging both. An flock beside the port file makes the launch
+/// critical section machine-wide, and the loser re-checks for the live
+/// launch under the guard instead of launching over it.
+///
+/// A crash releases the flock with the process, so there is no stale-lock
+/// cleanup; a holder that wedges past every bound is given up on by name
+/// rather than waited for.
+struct LaunchLock {
+    _file: std::fs::File,
+}
+
+enum Locked {
+    Held(LaunchLock),
+    Contended,
+    Unavailable(String),
+}
+
+fn try_lock(profile: &Path) -> Locked {
+    let path = profile.join("launch.lock");
+    let file = match std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&path)
+    {
+        Ok(file) => file,
+        Err(why) => {
+            return Locked::Unavailable(format!(
+                "the launch lock at {} cannot be opened: {why}",
+                path.display()
+            ));
+        }
+    };
+    match rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
+        Ok(()) => Locked::Held(LaunchLock { _file: file }),
+        Err(why)
+            if why == rustix::io::Errno::WOULDBLOCK || why == rustix::io::Errno::AGAIN =>
+        {
+            Locked::Contended
+        }
+        Err(why) => {
+            Locked::Unavailable(format!("the launch lock at {} cannot be taken: {why}", path.display()))
+        }
+    }
+}
+
+impl LaunchLock {
+    /// The lock for `profile`, waiting out whoever holds it - a launch takes
+    /// seconds and the holder releases the moment its port answers - up to
+    /// the launch deadline plus slack.
+    async fn acquire(profile: &Path) -> Result<Self, String> {
+        let deadline = tokio::time::Instant::now() + LAUNCH_TIMEOUT + Duration::from_secs(2);
+        loop {
+            match try_lock(profile) {
+                Locked::Held(lock) => return Ok(lock),
+                Locked::Unavailable(why) => return Err(why),
+                Locked::Contended => {
+                    if tokio::time::Instant::now() >= deadline {
+                        return Err(format!(
+                            "the browser on {} is being launched by another process and did not \
+                             answer in time",
+                            profile.display(),
+                        ));
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            }
+        }
+    }
 }
 
 /// One launch, as `DevToolsActivePort` records it.
@@ -117,6 +228,24 @@ pub fn read_active_port(profile: &Path) -> Option<ActivePort> {
 /// holding the port answers it with nothing that parses.
 pub async fn probe(port: u16) -> bool {
     probe_identity(port).await.is_some()
+}
+
+/// The first page target's URL on `port`, from the browser's own HTTP
+/// endpoint: the page the sessions were driving, which Open carries across
+/// its relaunch. `None` when nothing answers, or when no tab is open - a
+/// window whose last tab was closed is a browser with nothing to carry.
+pub async fn page_url(port: u16) -> Option<String> {
+    let url = format!("http://127.0.0.1:{port}/json/list");
+    let answer = tokio::task::spawn_blocking(move || http_get(&url)).await.ok().flatten()?;
+    let body = answer.split_once("\r\n\r\n")?.1;
+    let parsed: serde_json::Value = serde_json::from_str(body).ok()?;
+    parsed
+        .as_array()?
+        .iter()
+        .find(|entry| entry.get("type").and_then(serde_json::Value::as_str) == Some("page"))
+        .and_then(|entry| entry.get("url"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
 }
 
 /// The browser target path an answering port reports - `/devtools/browser/
@@ -199,34 +328,61 @@ fn whole_body_len(answer: &[u8]) -> Option<usize> {
 /// binary, bounded so a chatty failure cannot grow without end.
 const STDERR_TAIL: usize = 4096;
 
-/// Launch the vendored Chromium against `profile`, and answer once it is
-/// answering on its port.
+/// Launch the browser against `profile`, and answer once it is answering on
+/// its port.
 ///
 /// Detached on purpose: the child is left running when this drops - its
 /// stdout goes nowhere a client reads, and its lifetime is the machine's, not
-/// the client run's. **The window follows the marker the last launch left**,
-/// so a relaunch after a crash comes back the way the person was looking at
-/// it rather than silently headless.
+/// the client run's.
+///
+/// **Headless by default.** The agents drive it invisibly, and the only
+/// visible surface is the hand-off's window: `show` raises the same browser
+/// over the same profile, so the person is dropped into the very browser the
+/// sessions drive rather than a second one.
 pub async fn launch(binary: &Path, profile: &Path) -> Result<ActivePort, String> {
-    launch_with(binary, profile, launched_windowed(profile)).await
+    launch_with(binary, profile, false, None).await
 }
 
-/// The same, with the window asked for: what a hand-off's Open needs.
-async fn launch_with(binary: &Path, profile: &Path, windowed: bool) -> Result<ActivePort, String> {
+/// The same launch with `headed` asked for - and, when the relaunch is Open's,
+/// the page the sessions were driving, so the window opens on it.
+pub async fn launch_with(
+    binary: &Path,
+    profile: &Path,
+    headed: bool,
+    page: Option<&str>,
+) -> Result<ActivePort, String> {
     if !binary.is_file() {
-        return Err(format!(
-            "the vendored browser is not there at {} - run `just vendor-browser-stack`",
-            binary.display(),
-        ));
+        return Err(format!("the browser is not there at {} any more", binary.display()));
     }
     std::fs::create_dir_all(profile)
         .map_err(|why| format!("the browser profile directory cannot be made: {why}"))?;
+    // **The machine-wide guard, held until the port answers.** Another
+    // process may be mid-launch on this very directory: waiting for its lock
+    // and then re-checking means this call attaches to the browser it
+    // started, instead of deleting its port file and spawning onto a locked
+    // profile.
+    let _guard = LaunchLock::acquire(profile).await?;
+    if let Some(active) = verified(profile).await {
+        // **Only a launch that already has a window is a headed answer.** A
+        // headed relaunch that waited behind another host's headless launch
+        // would otherwise answer Ok with no window and no marker written -
+        // and Open's whole promise is the window. The live launch is closed
+        // first: it holds the profile, and a bare fall-through would spawn
+        // onto it. The adopt itself stays for the launches a headed one can
+        // honestly attach to (and for every headless ask), which is what
+        // keeps a relaunch that waited from spawning onto a locked profile.
+        if !headed || launched_windowed(profile) {
+            return Ok(active);
+        }
+        close_under_lock(profile, active.port).await;
+    }
     // A launch about to happen owns the wires: an older port file would be
     // read as this one's, and an older pid names a process this launch is not.
     forget_launch(profile);
+    fresh_session(profile);
 
     let mut command = tokio::process::Command::new(binary);
-    for arg in launch_args(profile, windowed) {
+    for arg in launch_args(profile, headed, page) {
         command.arg(arg);
     }
     command
@@ -238,7 +394,7 @@ async fn launch_with(binary: &Path, profile: &Path, windowed: bool) -> Result<Ac
         // reader can act on.
         .stderr(std::process::Stdio::piped());
     let mut child =
-        command.spawn().map_err(|why| format!("the vendored browser would not start: {why}"))?;
+        command.spawn().map_err(|why| format!("the browser would not start: {why}"))?;
     // The id before the handle goes: the browser is meant to outlive this
     // call, and this process reaps nothing it did not spawn as its own work -
     // but a caller that must reap it needs the id, and the handle is what
@@ -272,11 +428,13 @@ async fn launch_with(binary: &Path, profile: &Path, windowed: bool) -> Result<Ac
             if let Some(pid) = pid {
                 let _ = std::fs::write(pid_file(profile), pid.to_string());
             }
-            // Written only now, with the browser answering: `show` reads it
-            // as "a window is up", and a marker for a launch that failed is a
-            // claim nobody can check.
-            if windowed {
-                let _ = std::fs::write(windowed_marker(profile), b"");
+            // Written only now, with the browser answering: `show` reads it as
+            // "a window is up", and a marker for a launch that failed is a
+            // claim nobody can check. It carries the page the launch opened
+            // on, so an Open after the person closed the window reopens that
+            // page rather than a blank one.
+            if headed {
+                let _ = std::fs::write(windowed_marker(profile), page.unwrap_or(""));
             }
             return Ok(ActivePort { pid, ..active });
         }
@@ -297,7 +455,7 @@ async fn launch_with(binary: &Path, profile: &Path, windowed: bool) -> Result<Ac
             let because =
                 if said.is_empty() { String::new() } else { format!("; it said: {said}") };
             return Err(format!(
-                "the vendored browser did not answer on its port within {} s{because}",
+                "the browser did not answer on its port within {} s{because}",
                 LAUNCH_TIMEOUT.as_secs(),
             ));
         }
@@ -306,7 +464,7 @@ async fn launch_with(binary: &Path, profile: &Path, windowed: bool) -> Result<Ac
 }
 
 /// The browser to talk to: the one already running on `profile`, launched if
-/// there is none. A relaunch follows the marker, so visibility survives it.
+/// there is none.
 pub async fn ensure(binary: &Path, profile: &Path) -> Result<ActivePort, String> {
     if let Some(active) = verified(profile).await {
         return Ok(active);
@@ -317,7 +475,7 @@ pub async fn ensure(binary: &Path, profile: &Path) -> Result<ActivePort, String>
 /// The launch this profile names, when the port really answers AS that
 /// launch: the probe's own `/devtools/browser/<uuid>` compared against the
 /// port file's. A port another program took over answers without that path,
-/// which is what keeps "never his Brave" from resting on file freshness.
+/// which is what keeps a port file from being taken for a live browser.
 async fn verified(profile: &Path) -> Option<ActivePort> {
     let active = read_active_port(profile)?;
     answers_as(profile, active.port).await.then_some(active)
@@ -325,7 +483,7 @@ async fn verified(profile: &Path) -> Option<ActivePort> {
 
 /// Whether `profile`'s launch is still the browser answering on `port`: the
 /// port file names that port AND the probe's own target path matches the
-/// file's. The identity check a context runs after a failed call.
+/// file's. The identity check a profile runs after a failed call.
 pub async fn answers_as(profile: &Path, port: u16) -> bool {
     let Some(active) = read_active_port(profile) else {
         return false;
@@ -333,36 +491,147 @@ pub async fn answers_as(profile: &Path, port: u16) -> bool {
     active.port == port && probe_identity(port).await.as_deref() == Some(active.path.as_str())
 }
 
-/// Bring the browser up VISIBLY, for a hand-off's Open or the strip's own
-/// control.
-///
-/// A window is a launch flag, not something a running browser can be told, so
-/// this relaunches headed when the running one is headless (or unknown) and
-/// answers the live launch when a window is already up. **The relaunch costs
-/// what the toggle's own line says**: every open driver's transport dies with
-/// the old browser, named contexts reopen from their saved cookies and tabs
-/// on their next call (a context rebuilds its driver when the call after a
-/// browser change finds the old one stale), and the shared context's open
-/// tabs do not come back.
-///
-/// A window already up is NOT raised: nothing here can reach the OS focus,
-/// and a button that quietly did nothing would be worse than one that says
-/// the window is up.
-pub async fn show(binary: &Path, profile: &Path) -> Result<ActivePort, String> {
-    if launched_windowed(profile)
-        && let Some(active) = verified(profile).await
-    {
-        return Ok(active);
-    }
-    if let Some(port) = read_active_port(profile).map(|active| active.port) {
-        close(profile, port).await;
-    }
-    launch_with(binary, profile, true).await
-}
-
 /// The id a launch left, so a later client can close what it did not start.
 fn pid_file(profile: &Path) -> PathBuf {
     profile.join("browser.pid")
+}
+
+/// The browsers a machine can offer, in the order they are picked.
+const INSTALLED: [&str; 2] = [
+    "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+];
+
+/// The binary every launch drives: **the person's own installed browser,
+/// headless and headed alike** (Ved, 2026-10-07) - a real browser rather
+/// than an automation-branded bundle, and nothing vendored: the app ships
+/// the driver, the machine ships the browser.
+pub fn browser_binary() -> Result<PathBuf, String> {
+    browser_binary_from(&INSTALLED)
+}
+
+/// The choice itself, apart from the standard paths: the first candidate
+/// that is really there, else the refusal.
+fn browser_binary_from(candidates: &[&str]) -> Result<PathBuf, String> {
+    for candidate in candidates {
+        let path = PathBuf::from(candidate);
+        if path.is_file() {
+            return Ok(path);
+        }
+    }
+    Err("no browser to drive: this client drives the browser already on the machine - \
+         install Brave or Google Chrome"
+        .to_owned())
+}
+
+/// The marker a headed launch leaves in the profile: the port file says
+/// nothing about a window, and this is what makes "is a window up"
+/// answerable.
+fn windowed_marker(profile: &Path) -> PathBuf {
+    profile.join("windowed")
+}
+
+/// Whether the running launch is the headed one.
+pub fn launched_windowed(profile: &Path) -> bool {
+    windowed_marker(profile).is_file()
+}
+
+/// Whether a WINDOW is really up on `profile`: the headed marker AND a live
+/// launch answering as this profile's own AND a page left to carry.
+///
+/// **The marker alone lied once** (Ved, 2026-10-07, live): he closed the
+/// window with the X, the process survived with the marker still set, and
+/// the next Open concluded a window was up and raised nothing. `show` keeps
+/// this same predicate, and everything that SPEAKS for a window - the
+/// strip's window-open mark and its hide label - must keep it too.
+pub async fn windowed(profile: &Path) -> bool {
+    if !launched_windowed(profile) {
+        return false;
+    }
+    let Some(active) = verified(profile).await else {
+        return false;
+    };
+    page_url(active.port).await.is_some()
+}
+
+/// The page the last headed launch opened on, when it carried one: the
+/// fallback an Open uses once the person has closed the window (the tab goes
+/// with it, so there is no live page left to read).
+fn windowed_page(profile: &Path) -> Option<String> {
+    let carried = std::fs::read_to_string(windowed_marker(profile)).ok()?;
+    let carried = carried.trim();
+    (!carried.is_empty()).then(|| carried.to_owned())
+}
+
+/// Bring the running browser's window to the front. `open` on the app bundle
+/// activates an app that is already running; a failure here is not the
+/// raise's failure - the window is up either way.
+fn activate(binary: &Path) {
+    let Some(bundle) = app_bundle(binary) else { return };
+    let _ = std::process::Command::new("open").arg(bundle).spawn();
+}
+
+/// The `.app` bundle a browser binary lives in, from its
+/// `.../Contents/MacOS/<name>` path; `None` for a binary outside one.
+fn app_bundle(binary: &Path) -> Option<PathBuf> {
+    binary
+        .ancestors()
+        .find(|at| at.extension().is_some_and(|ext| ext == "app"))
+        .map(Path::to_path_buf)
+}
+
+/// Bring the browser up VISIBLY, for a hand-off's Open or the strip's show:
+/// the person's own installed browser, over the same profile the agents
+/// drive, **opened on the page the sessions were driving**.
+///
+/// **A window is a launch flag, not something a running browser can be
+/// told**, so the running launch is closed and the same profile is
+/// relaunched headed. The relaunch is a fresh browser, so the page is
+/// carried across explicitly - Chromium's own session restore is guesswork,
+/// and a person who pressed Open to act on the session's page (a CAPTCHA,
+/// say) must not land on a blank tab. The cost of the relaunch: open driver
+/// transports die with the old browser and rebuild on the next call, and the
+/// profile keeps logins and cookies.
+///
+/// **A window with a page in it is the only thing answered as it is.** The
+/// headed marker alone lied once (Ved, 2026-10-07, live): he closed the
+/// window with the X, the process survived on Chrome's keep-alive with the
+/// marker still set, and the next Open concluded a window was up and raised
+/// nothing. A window the person closed holds no tab - measured: the targets
+/// empty with the window - so "a window is up" means marker AND a page.
+pub async fn show(binary: &Path, profile: &Path) -> Result<ActivePort, String> {
+    if launched_windowed(profile)
+        && let Some(active) = verified(profile).await
+        && page_url(active.port).await.is_some()
+    {
+        // **A window already up is BROUGHT FORWARD, not answered as it is.**
+        // The dock's word is "raise", and the early return alone made a
+        // second Open a silent no-op - measured live, 2026-10-07.
+        activate(binary);
+        return Ok(active);
+    }
+    let page = match read_active_port(profile) {
+        Some(active) => {
+            // The live tab first; the last carried page otherwise - a window
+            // the person closed took its tab with it, and reopening on the
+            // page they were looking at is the recovery the X-close needs.
+            let page = page_url(active.port).await.or_else(|| windowed_page(profile));
+            close(profile, active.port).await;
+            page
+        }
+        None => windowed_page(profile),
+    };
+    launch_with(binary, profile, true, page.as_deref()).await
+}
+
+/// Take the window back down: the browser is closed, and the next agent call
+/// relaunches it headless over the same profile. The hand-off is NOT answered
+/// by this - Done or Not now is - so a person who closes the window and walks
+/// away leaves the session parked exactly as it was.
+pub async fn hide(profile: &Path) {
+    if let Some(active) = read_active_port(profile) {
+        close(profile, active.port).await;
+    }
 }
 
 /// Close the browser on `profile`, so a relaunch is not a second browser onto
@@ -377,20 +646,39 @@ fn pid_file(profile: &Path) -> PathBuf {
 /// browsers and one of them belongs to the person sitting at it. **And only
 /// after the port answers AS this profile's launch**: a port the launch let go
 /// and something else took over is a stranger, and the wires go without a
-/// kill. The wires go only once the port is really free, because a port file
-/// deleted under a live browser is a launch nothing can ever find again.
+/// kill.
 async fn close(profile: &Path, port: u16) {
+    // **The launch lock, so a close cannot eat a launch in flight.** An
+    // unlocked closer reads "not answering" for a browser coming up, forgets
+    // its port file, and that launch then kills the browser it just started
+    // at its own deadline. The take is bounded like every other; a lock that
+    // cannot be taken at all leaves the close running - no launch can be in
+    // flight behind a lock nobody could take.
+    let _guard = LaunchLock::acquire(profile).await;
+    close_under_lock(profile, port).await
+}
+
+/// The close body, for callers that already hold the launch lock (a launch's
+/// own headed relaunch closes the launch it found under its own guard).
+async fn close_under_lock(profile: &Path, port: u16) {
     if !answers_as(profile, port).await {
-        // Nothing on that port is this profile's launch - a browser that died
-        // and a stranger on the port, or a profile no launch touched. The
-        // wires name a launch that is gone; nothing else here is ours.
-        forget_launch(profile);
-        return;
+        // **A young port file is a launch coming up**: the file exists 14-125
+        // ms before `/json/version` answers (measured), and it gets the
+        // launch's own bound to answer before it is declared dead.
+        let deadline = tokio::time::Instant::now() + LAUNCH_TIMEOUT;
+        while tokio::time::Instant::now() < deadline
+            && launch_still_coming(profile)
+            && !answers_as(profile, port).await
+        {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        if !answers_as(profile, port).await {
+            forget_launch(profile);
+            return;
+        }
     }
     let listeners = port_pids(port).await;
     if listeners.is_empty() {
-        // Our launch answers and nothing owns the port: a moment rather than a
-        // state, and the wires stay - they still name a browser that is up.
         return;
     }
     let named = std::fs::read_to_string(pid_file(profile))
@@ -419,23 +707,6 @@ async fn close(profile: &Path, port: u16) {
     }
 }
 
-/// Drop the wires a launch leaves. Called only once nothing answers - and by
-/// a launch about to take them over.
-fn forget_launch(profile: &Path) {
-    let _ = std::fs::remove_file(profile.join("DevToolsActivePort"));
-    let _ = std::fs::remove_file(pid_file(profile));
-    let _ = std::fs::remove_file(windowed_marker(profile));
-}
-
-/// Ask one process to stop; `hard` sends SIGKILL rather than SIGTERM.
-async fn kill_pid(pid: u32, hard: bool) {
-    let mut kill = tokio::process::Command::new("kill");
-    if hard {
-        kill.arg("-9");
-    }
-    let _ = kill.arg(pid.to_string()).status().await;
-}
-
 /// Whatever holds `port`.
 async fn port_pids(port: u16) -> Vec<u32> {
     let Ok(listed) = tokio::process::Command::new("lsof")
@@ -461,6 +732,35 @@ async fn port_frees(port: u16) -> bool {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     false
+}
+
+/// Drop the wires a launch leaves. Called by a launch about to take them
+/// over.
+fn forget_launch(profile: &Path) {
+    let _ = std::fs::remove_file(profile.join("DevToolsActivePort"));
+    let _ = std::fs::remove_file(pid_file(profile));
+    let _ = std::fs::remove_file(windowed_marker(profile));
+}
+
+/// Whether the port file is young enough to belong to a launch still coming
+/// up: the file exists 14-125 ms before `/json/version` answers (measured),
+/// and the launch bound is the window that may be spent waiting for a young
+/// one.
+fn launch_still_coming(profile: &Path) -> bool {
+    std::fs::metadata(profile.join("DevToolsActivePort"))
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|written| written.elapsed().ok())
+        .is_some_and(|age| age < LAUNCH_TIMEOUT)
+}
+
+/// Ask one process to stop; `hard` sends SIGKILL rather than SIGTERM.
+async fn kill_pid(pid: u32, hard: bool) {
+    let mut kill = tokio::process::Command::new("kill");
+    if hard {
+        kill.arg("-9");
+    }
+    let _ = kill.arg(pid.to_string()).status().await;
 }
 
 #[cfg(test)]
@@ -504,15 +804,19 @@ mod tests {
     }
 
     /// The launch asks the browser to choose its own port - handed a number,
-    /// Chrome for Testing 155 writes no port file and nothing can find the
-    /// launch again - carries the profile that keeps logins, opens a page
-    /// (because a browser with no tab makes the first navigation depend on
-    /// the driver inventing one), and **never reaches for the OS keychain**:
-    /// that dialog is raised at whoever is at the machine, once per ask, and
-    /// a headless browser has nobody to answer it.
+    /// the browser writes no port file and nothing can find the launch again;
+    /// it carries the profile that keeps logins, opens a page (because a
+    /// browser with no tab makes the first navigation depend on the driver
+    /// inventing one), runs **headless** (nothing appears on the person's
+    /// screen until a hand-off's Open raises the window), and **never reaches
+    /// for the OS keychain**: that dialog is raised at whoever is at the
+    /// machine, once per ask, and a headless browser has nobody to answer it.
+    ///
+    /// **And an Open's relaunch opens on the session's page**, not a blank
+    /// tab: the page rides as the launch's own argument.
     #[test]
     fn a_launch_lets_the_browser_choose_its_port_and_carries_its_profile_and_a_page() {
-        let args = launch_args(Path::new("/tmp/forge-profile"), false);
+        let args = launch_args(Path::new("/tmp/forge-profile"), false, None);
         assert!(
             args.contains(&"--remote-debugging-port=0".to_owned()),
             "the port is the browser's choice, read back from its own file: {args:?}",
@@ -529,35 +833,385 @@ mod tests {
             args.contains(&"--password-store=basic".to_owned()),
             "and the store behind the mock is the plain one: {args:?}",
         );
-    }
 
-    /// **A windowed launch is the same launch without `--headless`** - so a
-    /// hand-off's Open shows the browser the host already drives rather than
-    /// something else - and it still never reaches for the keychain.
-    #[test]
-    fn a_windowed_launch_drops_the_headless_flag_and_nothing_else() {
-        let headless = launch_args(Path::new("/tmp/forge-profile"), false);
-        let windowed = launch_args(Path::new("/tmp/forge-profile"), true);
-
-        assert!(!windowed.contains(&"--headless".to_owned()), "{windowed:?}");
-        assert!(windowed.contains(&"--use-mock-keychain".to_owned()), "{windowed:?}");
-        assert!(windowed.contains(&"--password-store=basic".to_owned()), "{windowed:?}");
-        let without: Vec<&String> = headless.iter().filter(|arg| *arg != "--headless").collect();
+        let carried =
+            launch_args(Path::new("/tmp/forge-profile"), true, Some("https://example.com/x"));
         assert_eq!(
-            windowed.iter().collect::<Vec<&String>>(),
-            without,
-            "the window is the one flag: everything else stays identical",
+            carried.last().map(String::as_str),
+            Some("https://example.com/x"),
+            "Open's relaunch opens on the page the sessions were driving: {carried:?}",
         );
     }
 
-    /// The marker, and its absence: an older launch left none and that is a
-    /// headless one, because headless was the only kind there was.
+    /// **The headed launch survives its own window closing** (measured on
+    /// Brave): `--keep-alive-for-test` is Chrome's own automation switch for
+    /// it, and the X must not take the agents' browser down with the window.
     #[test]
-    fn the_marker_is_what_says_a_window_is_up() {
+    fn a_headed_launch_drops_headless_and_keeps_the_browser_alive() {
+        let headless = launch_args(Path::new("/tmp/forge-profile"), false, None);
+        let headed = launch_args(Path::new("/tmp/forge-profile"), true, None);
+        assert!(headless.contains(&"--headless".to_owned()), "{headless:?}");
+        assert!(!headed.contains(&"--headless".to_owned()), "{headed:?}");
+        assert!(
+            headed.contains(&"--keep-alive-for-test".to_owned()),
+            "a window close must leave the browser serving: {headed:?}",
+        );
+        assert!(
+            !headless.contains(&"--keep-alive-for-test".to_owned()),
+            "the headless launch has no window to keep it alive past: {headless:?}",
+        );
+    }
+
+    /// The page a closed window's Open reopens on: the last headed launch
+    /// carries it in the marker, and an empty or missing marker is a launch
+    /// that opened blank.
+    #[test]
+    fn the_marker_carries_the_page_a_closed_window_reopens_on() {
         let dir = tempfile::tempdir().expect("a temp dir");
-        assert!(!launched_windowed(dir.path()), "no marker is no window");
+        assert_eq!(windowed_page(dir.path()), None, "no marker, no page");
+
+        std::fs::write(windowed_marker(dir.path()), b"https://example.com/x").expect("a marker");
+        assert_eq!(
+            windowed_page(dir.path()),
+            Some("https://example.com/x".to_owned()),
+            "the page the launch carried rides the marker",
+        );
+
+        std::fs::write(windowed_marker(dir.path()), b"").expect("a blank marker");
+        assert_eq!(windowed_page(dir.path()), None, "a blank launch reopens blank");
+    }
+
+    /// A fake devtools endpoint for the windowed predicate: `/json/version`
+    /// answers with an identity, everything else with the page list given.
+    async fn fake_devtools(identity: &str, pages: &str) -> u16 {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a port");
+        let port = listener.local_addr().expect("the bound port").port();
+        let identity = identity.to_owned();
+        let pages = pages.to_owned();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else { continue };
+                let mut buffer = [0_u8; 2048];
+                let read = socket.read(&mut buffer).await.unwrap_or(0);
+                let request = String::from_utf8_lossy(&buffer[..read]);
+                let body = if request.starts_with("GET /json/version") {
+                    format!("{{\"webSocketDebuggerUrl\":\"ws://127.0.0.1:{port}{identity}\"}}")
+                } else {
+                    pages.clone()
+                };
+                let answer = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+                     Connection: close\r\n\r\n{body}",
+                    body.len(),
+                );
+                let _ = socket.write_all(answer.as_bytes()).await;
+            }
+        });
+        port
+    }
+
+    /// **A window is the marker AND a live launch AND a page** - the same
+    /// predicate `show` keeps. The marker alone lied once (a person's X left
+    /// the keep-alive process with the marker set and no page), so anything
+    /// that SPEAKS for a window - the strip's mark and its hide label - must
+    /// not trust it alone.
+    #[tokio::test]
+    async fn a_window_is_marker_and_a_live_launch_and_a_page() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        assert!(!windowed(dir.path()).await, "no marker, no window");
+
         std::fs::write(windowed_marker(dir.path()), b"").expect("the marker");
-        assert!(launched_windowed(dir.path()), "the marker is the window");
+        assert!(!windowed(dir.path()).await, "a marker with nothing answering is no window");
+
+        // The X-close state: the marker survives, the launch answers, and no
+        // page is left.
+        let port = fake_devtools("/devtools/browser/live", "[]").await;
+        std::fs::write(
+            dir.path().join("DevToolsActivePort"),
+            format!("{port}\n/devtools/browser/live\n"),
+        )
+        .expect("the port file");
+        assert!(
+            !windowed(dir.path()).await,
+            "a windowless launch leaves the marker and no page - not a window",
+        );
+
+        // Marker + a launch answering AS this profile + a page target: up.
+        let port = fake_devtools(
+            "/devtools/browser/live2",
+            "[{\"type\":\"page\",\"url\":\"about:blank\"}]",
+        )
+        .await;
+        std::fs::write(
+            dir.path().join("DevToolsActivePort"),
+            format!("{port}\n/devtools/browser/live2\n"),
+        )
+        .expect("the port file");
+        assert!(
+            windowed(dir.path()).await,
+            "the marker, a launch answering as it, and a page make a window",
+        );
+    }
+
+    /// **A launch must not resurrect the last session's tabs.** The clean
+    /// marker is normalized and the session-restore data is cleared here
+    /// before every spawn - a launch opens exactly the tabs it is given
+    /// (Ved's four-tab window, 2026-10-07).
+    #[test]
+    fn a_launch_clears_the_last_session_so_tabs_do_not_accumulate() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        // A fresh profile has no prefs at all, which is not an error: there
+        // is no marker to normalize and no session to clear.
+        fresh_session(dir.path());
+        assert!(!dir.path().join("Default/Preferences").exists());
+
+        let default = dir.path().join("Default");
+        std::fs::create_dir_all(default.join("Sessions")).expect("a Default profile");
+        // Every entry the clearing covers, or a new one added without a
+        // write here is one nothing checks.
+        for stale in ["Sessions/Session_1", "Current Session", "Current Tabs", "Last Session", "Last Tabs"] {
+            std::fs::write(default.join(stale), b"stale").unwrap_or_else(|why| panic!("{stale}: {why}"));
+        }
+        let prefs = default.join("Preferences");
+        std::fs::write(
+            &prefs,
+            br#"{"profile": {"exit_type": "Crashed", "name": "Person 1"}, "other": 7}"#,
+        )
+        .expect("prefs");
+
+        fresh_session(dir.path());
+
+        for stale in ["Sessions", "Current Session", "Current Tabs", "Last Session", "Last Tabs"] {
+            assert!(!default.join(stale).exists(), "{stale} is cleared");
+        }
+        let parsed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&prefs).expect("prefs read"))
+                .expect("prefs are JSON");
+        assert_eq!(parsed["profile"]["exit_type"], serde_json::json!("Normal"), "{parsed}");
+        assert_eq!(parsed["profile"]["exited_cleanly"], serde_json::json!(true), "{parsed}");
+        assert_eq!(parsed["profile"]["name"], serde_json::json!("Person 1"), "everything else stays");
+        assert_eq!(parsed["other"], serde_json::json!(7), "{parsed}");
+
+        // A file that is not JSON must not be clobbered by the normalizer.
+        std::fs::write(&prefs, b"not json at all").expect("prefs");
+        fresh_session(dir.path());
+        assert_eq!(
+            std::fs::read_to_string(&prefs).expect("prefs read"),
+            "not json at all",
+            "a prefs file this cannot parse is left exactly as it was",
+        );
+    }
+
+    /// **The launch lock is exclusive across open file descriptions**, which
+    /// is what makes it work across processes: a second take on the same
+    /// directory is contended while the first is held, and free once it
+    /// drops. (The wait-until-free path is pinned under a paused clock just
+    /// below, and the guard's whole span across a real launch by the
+    /// two-hosts live test in `tests/browser_live.rs`.)
+    #[tokio::test]
+    async fn the_launch_lock_is_held_until_it_drops() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let first = LaunchLock::acquire(dir.path()).await.expect("the first take");
+        assert!(
+            matches!(try_lock(dir.path()), Locked::Contended),
+            "a second take is contended while the first is held",
+        );
+        drop(first);
+        assert!(
+            matches!(try_lock(dir.path()), Locked::Held(_)),
+            "and free once the first drops",
+        );
+    }
+
+    /// **The wait path, with the clock under the test's hand**: a contended
+    /// acquire waits the holder out and takes the lock the moment it frees -
+    /// no second live process needed, the contention is the same flock
+    /// between two file descriptions - and a holder that never frees is
+    /// given up on BY NAME at the bound rather than wedged on forever.
+    #[tokio::test(start_paused = true)]
+    async fn a_contended_acquire_waits_out_the_holder_and_gives_up_by_name() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let held = LaunchLock::acquire(dir.path()).await.expect("the first take");
+
+        let waiter = tokio::spawn({
+            let path = dir.path().to_path_buf();
+            async move { LaunchLock::acquire(&path).await }
+        });
+        // Let the waiter make its first attempt and drop into its wait.
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+        assert!(
+            !waiter.is_finished(),
+            "the waiter cannot hold what the first take holds - it must be waiting",
+        );
+
+        // The holder frees: the waiter takes it, well before the deadline.
+        drop(held);
+        let taken = waiter
+            .await
+            .expect("the waiter task")
+            .expect("the waiter takes the lock the moment it frees");
+        drop(taken);
+
+        // A holder that NEVER frees is given up on by name at the bound.
+        let _wedged = LaunchLock::acquire(dir.path()).await.expect("the wedged holder");
+        let refused = LaunchLock::acquire(dir.path()).await;
+        let Err(why) = refused else {
+            panic!("an acquire behind a holder past the bound must be refused, not wedged");
+        };
+        assert!(
+            why.contains("did not answer in time"),
+            "the give-up is BY NAME, naming what did not answer: {why}",
+        );
+        assert!(
+            why.contains(dir.path().to_str().expect("a path")),
+            "and the refusal names the profile it gave up on: {why}",
+        );
+    }
+
+    /// **A young port file is a launch coming up, not a dead one**: the file
+    /// exists 14-125 ms before `/json/version` answers (measured), so a close
+    /// gives it the launch's own bound to answer before declaring it dead -
+    /// and only then forgets it. Deleting a live launch's file makes that
+    /// launch kill the browser it just started at its own deadline.
+    #[tokio::test(start_paused = true)]
+    async fn a_close_tolerates_a_young_port_file() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        std::fs::write(dir.path().join("DevToolsActivePort"), b"9544\n/devtools/browser/young\n")
+            .expect("a young port file");
+        let started = tokio::time::Instant::now();
+        close(dir.path(), 9544).await;
+        let waited = started.elapsed();
+        assert!(
+            waited >= LAUNCH_TIMEOUT,
+            "a young port file gets the launch bound to answer before it is declared dead: {waited:?}",
+        );
+        assert!(
+            !dir.path().join("DevToolsActivePort").exists(),
+            "and once the bound passes without an answer, the file is forgotten",
+        );
+    }
+
+    /// An OLD port file whose endpoint does not answer is not a launch coming
+    /// up: nothing waits on it, and it is forgotten at once.
+    #[tokio::test]
+    async fn a_close_forgets_an_old_dead_port_file_at_once() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let file = dir.path().join("DevToolsActivePort");
+        std::fs::write(&file, b"9544\n/devtools/browser/dead\n").expect("an old port file");
+        let old = std::time::SystemTime::now() - LAUNCH_TIMEOUT - Duration::from_secs(60);
+        let handle = std::fs::OpenOptions::new().write(true).open(&file).expect("the file");
+        handle
+            .set_times(std::fs::FileTimes::new().set_modified(old))
+            .expect("the file's time moves back");
+        drop(handle);
+        let started = tokio::time::Instant::now();
+        close(dir.path(), 9544).await;
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "an old dead file is not waited on: {:?}",
+            started.elapsed(),
+        );
+        assert!(!file.exists(), "an old dead port file is forgotten");
+    }
+
+    /// **Close takes the launch lock**: a close racing a launch waits it out
+    /// rather than reading "not answering" for a browser mid-launch.
+    ///
+    /// **An OLD port file, so the young-port wait cannot stand in for the
+    /// lock**: without the take the close reads "not answering", forgets the
+    /// file and finishes in one probe - which is what the timeout below
+    /// catches. (With a young file the wait alone keeps the close busy past
+    /// the window, and the assertion passes for the wrong reason.)
+    #[tokio::test(start_paused = true)]
+    async fn a_close_waits_for_a_launch_in_flight() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let file = dir.path().join("DevToolsActivePort");
+        std::fs::write(&file, b"9544\n/devtools/browser/x\n").expect("a port file");
+        let old = std::time::SystemTime::now() - LAUNCH_TIMEOUT - Duration::from_secs(60);
+        let handle = std::fs::OpenOptions::new().write(true).open(&file).expect("the file");
+        handle
+            .set_times(std::fs::FileTimes::new().set_modified(old))
+            .expect("the file's time moves back");
+        drop(handle);
+
+        let held = LaunchLock::acquire(dir.path()).await.expect("the lock a launch holds");
+        let mut closing = tokio::spawn({
+            let path = dir.path().to_path_buf();
+            async move { close(&path, 9544).await }
+        });
+        let finished_while_held =
+            tokio::time::timeout(Duration::from_secs(1), &mut closing).await.is_ok();
+        assert!(
+            !finished_while_held,
+            "the close must WAIT on the launch lock - it finished while a launch held it",
+        );
+        drop(held);
+        closing.await.expect("the close task");
+    }
+
+    /// **The close HOLDS the launch lock through its body**, not only while
+    /// acquiring: the reconcile below it is exactly the window a second
+    /// launch would slip into - and a close that acquired and let go
+    /// immediately reopens the very race the take exists for.
+    ///
+    /// The young port file is the window made observable: the body waits on
+    /// it, and the lock must stay contended for as long as that wait runs.
+    #[tokio::test(start_paused = true)]
+    async fn a_close_holds_the_launch_lock_through_its_body() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        std::fs::write(dir.path().join("DevToolsActivePort"), b"9544\n/devtools/browser/x\n")
+            .expect("a young port file");
+
+        let held = LaunchLock::acquire(dir.path()).await.expect("the lock a launch holds");
+        let closing = tokio::spawn({
+            let path = dir.path().to_path_buf();
+            async move { close(&path, 9544).await }
+        });
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+        assert!(!closing.is_finished(), "the close waits for the lock a launch holds");
+
+        drop(held);
+        let mut contended = false;
+        for _ in 0..50 {
+            if matches!(try_lock(dir.path()), Locked::Contended) {
+                contended = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            contended,
+            "the close holds the launch lock through its body - a launch cannot slip in mid-close",
+        );
+        closing.await.expect("the close task");
+    }
+
+    /// A lock file that cannot be used answers why rather than looping: a
+    /// directory where the lock file goes is the cheapest stand-in.
+    #[tokio::test]
+    async fn an_unusable_launch_lock_answers_why() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        std::fs::create_dir(dir.path().join("launch.lock")).expect("a directory in the lock's place");
+        let refused = LaunchLock::acquire(dir.path()).await;
+        assert!(
+            matches!(refused, Err(ref why) if why.contains("launch.lock")),
+            "the refusal names the file it could not take",
+        );
+    }
+
+    /// The bundle a browser binary lives in, which is what activation opens:
+    /// Brave's binary is under its `.app`, and a path outside one leaves
+    /// nothing to bring forward.
+    #[test]
+    fn a_browser_binary_resolves_to_its_app_bundle() {
+        assert_eq!(
+            app_bundle(Path::new("/Applications/Brave Browser.app/Contents/MacOS/Brave Browser")),
+            Some(PathBuf::from("/Applications/Brave Browser.app")),
+        );
+        assert_eq!(app_bundle(Path::new("/tmp/plain-binary")), None);
     }
 
     /// The answer's own `Content-Length` is what says it is complete, since
@@ -579,15 +1233,24 @@ mod tests {
         assert_eq!(whole_body_len(b"HTTP/1.1 200 OK\r\n\r\nhello"), None, "no length named");
     }
 
-    /// The stack's browser is where the vendoring puts it: a path that moved
-    /// is a host that cannot start, so it is pinned by name.
+    /// The browser choice: the first candidate that is really there, in the
+    /// order given, and a refusal that names what to install when none is.
     #[test]
-    fn the_chromium_is_the_bundle_the_vendoring_unpacks() {
-        assert_eq!(
-            chrome_binary(Path::new("/stack")),
-            Path::new(
-                "/stack/browser/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
-            ),
-        );
+    fn the_browser_is_the_first_installed_candidate_or_a_refusal() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let there = dir.path().join("there");
+        std::fs::write(&there, b"").expect("a candidate that exists");
+        let missing = dir.path().join("missing");
+
+        let found = browser_binary_from(&[
+            missing.to_str().expect("a path"),
+            there.to_str().expect("a path"),
+        ])
+        .expect("the second candidate is there");
+        assert_eq!(found, there, "the first candidate that exists wins");
+
+        let refused = browser_binary_from(&[missing.to_str().expect("a path")])
+            .expect_err("nothing there to drive");
+        assert!(refused.contains("Brave"), "the refusal names what to install: {refused}");
     }
 }

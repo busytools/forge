@@ -321,6 +321,7 @@ Server-side tool variants (ToolSearch, web_search, web_fetch, advisor, plus the 
 | Grep / Glob / LS | `⌕` |
 | Bash | `▶` |
 | WebFetch / WebSearch | `⊕` |
+| Browser | `⊕` |
 | Move / EnterWorktree | `⇄` |
 | ExitPlanMode / Config | `⊙` |
 | Task / Agent (labelled "Subagent") | `◇` |
@@ -362,7 +363,7 @@ Click a group's summary row to cycle it L2 (summary) → L1 (title rows) → L0 
 <summary>Row content and clipping</summary>
 
 - Nothing wraps: each row is a single line, and the nested target rows are the only ones that clip. Read relativizes each path against the project root and clips with a middle-ellipsis so the filename stays visible; every other kind clips end-first with `...`, keeping the head. The parent count row is never clipped and often the widest; the target budget floors at 8 cells, so below a render width of 16 a child row overflows, and the outer layout char-wraps without the tree gutter, so an overflowing row shears the tree.
-- Per-kind content: bash shows the human-readable description, web the URL (scheme stripped) or query, toolsearch the query, skill the invoked skill name (plus its args), glob and grep the pattern, Delete / Move their paths, LSP the operation and file, PushNotification the message.
+- Per-kind content: bash shows the human-readable description, web the URL (scheme stripped) or query, browser the page the call drove (scheme stripped), toolsearch the query, skill the invoked skill name (plus its args), glob and grep the pattern, Delete / Move their paths, LSP the operation and file, PushNotification the message.
 - Kinds render in first-appearance order; the spine holds `│` while a later kind follows, blank on the last.
 
 </details>
@@ -389,7 +390,7 @@ Multi-kind run:
 
 </div>
 
-MCP by server:
+MCP by server, with the browser as its own family:
 
 <div class="term">
 
@@ -401,11 +402,16 @@ MCP by server:
   <span class="dim">├─ </span><span class="bold">◈ context7</span>
   <span class="dim">│  ├─ resolve-library-id</span>
   <span class="dim">│  └─ query-docs</span>
-  <span class="dim">└─ </span><span class="bold">◈ playwright</span>
-  <span class="dim">&nbsp;&nbsp;&nbsp;├─ browser_navigate</span>
-  <span class="dim">&nbsp;&nbsp;&nbsp;└─ browser_click</span></pre>
+  <span class="dim">└─ </span><span class="bold">⊕ Browser</span>
+  <span class="dim">&nbsp;&nbsp;&nbsp;├─ browser: navigate</span>
+  <span class="dim">&nbsp;&nbsp;&nbsp;└─ browser: click</span></pre>
 
 </div>
+
+**A browser call is its own family, never the server that carried it.** The
+tools arrive under the `playwright` server name, which is plumbing: the
+browser is the client's own, so the row draws `⊕ Browser` with the page it
+drove as its target, whatever server name the call came in under.
 
 A single-kind run is a one-child tree:
 

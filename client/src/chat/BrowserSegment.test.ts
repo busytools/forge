@@ -1,10 +1,24 @@
 // @vitest-environment jsdom
 import { flushSync, mount, unmount } from 'svelte';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Connection } from '../socket';
-import { closeContext, listContexts } from '../browser/host';
+import type { SessionSlot } from '../wire/types';
+import {
+  browserUsed,
+  closeProfile,
+  hideBrowser,
+  listProfiles,
+  profileWindowed,
+  showBrowser,
+} from '../browser/host';
 import BrowserSegment from './BrowserSegment.svelte';
+
+afterEach(() => {
+  vi.mocked(showBrowser).mockClear();
+  vi.mocked(hideBrowser).mockClear();
+  vi.mocked(profileWindowed).mockClear();
+});
 
 /**
  * The client's own host, mocked so the READ has states a test can drive: the
@@ -16,8 +30,12 @@ vi.mock('../browser/host', async (importOriginal) => {
   return {
     ...actual,
     canHost: () => true,
-    listContexts: vi.fn(() => Promise.resolve([])),
-    closeContext: vi.fn(() => Promise.resolve(undefined)),
+    listProfiles: vi.fn(() => Promise.resolve([])),
+    closeProfile: vi.fn(() => Promise.resolve(undefined)),
+    browserUsed: vi.fn(() => Promise.resolve(false)),
+    showBrowser: vi.fn(() => Promise.resolve(null)),
+    hideBrowser: vi.fn(() => Promise.resolve(null)),
+    profileWindowed: vi.fn(() => Promise.resolve(false)),
   };
 });
 
@@ -49,12 +67,15 @@ function fakeConnection(hosting = false) {
   };
 }
 
-/** The segment, mounted with whatever role and capability the test names. */
-function show(hosting = false, capable = true) {
+/** The segment, mounted with whatever role, capability and slot the test names. */
+function show(hosting = false, capable = true, slot: SessionSlot | null = null) {
   const harness = fakeConnection(hosting);
   const target = document.createElement('div');
   document.body.append(target);
-  const app = mount(BrowserSegment, { target, props: { connection: harness.connection, capable } });
+  const app = mount(BrowserSegment, {
+    target,
+    props: { connection: harness.connection, capable, slot },
+  });
   flushSync();
   return { ...harness, target, stop: () => void unmount(app) };
 }
@@ -82,35 +103,39 @@ function pointer(type: string, pointerType: string): PointerEvent {
 }
 
 describe('the browser segment', () => {
-  it('rests as a count and opens onto the role and the contexts', async () => {
+  it('rests as a count and opens onto the role and the profiles', async () => {
     const shown = show();
     await vi.waitFor(() => {
       expect(
         shown.target.querySelector('.bz-tog .n')?.textContent,
         'the resting row names the count once a read has answered',
-      ).toBe('0 contexts');
+      ).toBe('0 profiles');
     });
     expect(shown.target.textContent, 'and nothing about the role until it is open').not.toContain(
-      'drives the browser',
+      'browser connected',
     );
 
     click(shown.target.querySelector('.bz-tog'));
 
     expect(shown.target.textContent, 'a capable client that is not hosting is told so').toContain(
-      'another client drives the browser',
+      'browser not connected',
     );
+    expect(
+      shown.target.textContent,
+      'the shared profile is always listed: most sessions drive it',
+    ).toContain('shared');
     await vi.waitFor(() => {
       expect(
         shown.target.textContent,
-        'with no contexts yet said plainly, once the read has answered',
-      ).toContain('no contexts yet');
+        'with no NAMED profiles said plainly, once the read has answered',
+      ).toContain('no named profiles yet');
     });
     shown.stop();
   });
 
   it('waits on the count and the list until a read has answered', () => {
     // A read that has not answered: neither surface may claim a state.
-    vi.mocked(listContexts).mockImplementation(() => new Promise<never>(() => undefined));
+    vi.mocked(listProfiles).mockImplementation(() => new Promise<never>(() => undefined));
     const shown = show(false, true);
     click(shown.target.querySelector('.bz-tog'));
 
@@ -119,46 +144,106 @@ describe('the browser segment', () => {
       'the count is not known before a read answers',
     ).toBe('…');
     expect(shown.target.textContent, 'and the list says it is reading').toContain(
-      'reading the contexts…',
+      'reading the profiles…',
     );
     expect(
       shown.target.textContent,
       'an empty row would be a claim about a read that never answered',
-    ).not.toContain('no contexts yet');
+    ).not.toContain('no named profiles yet');
     shown.stop();
-    vi.mocked(listContexts).mockImplementation(() => Promise.resolve([]));
+    vi.mocked(listProfiles).mockImplementation(() => Promise.resolve([]));
   });
 
-  it('says the read failed rather than claiming there are no contexts', async () => {
+  /** Ved, live round 2026-10-07: the row should say whether the browser has
+   *  been actively used - a flat disc beside the glyph when it has. */
+  it('marks the row once the browser has been used, and not before', async () => {
+    const resting = show(false, true);
+    await vi.waitFor(() => expect(browserUsed).toHaveBeenCalled());
+    expect(
+      resting.target.querySelector('.bz-tog .dot.idle'),
+      'a browser nobody has driven carries no mark',
+    ).toBeNull();
+    resting.stop();
+
+    vi.mocked(browserUsed).mockResolvedValueOnce(true);
+    const used = show(false, true);
+    await vi.waitFor(() => {
+      expect(
+        used.target.querySelector('.bz-tog .dot.idle'),
+        'a driven browser says so on the resting row',
+      ).not.toBeNull();
+    });
+    used.stop();
+    vi.mocked(browserUsed).mockResolvedValue(false);
+  });
+
+  /** Ved, live round 2026-10-07: hovering the row must offer the way to SEE
+   *  the browser - the real window, with no session answering anything. */
+  it('raises the browser window from the shared row', () => {
     const shown = show(false, true);
-    await vi.waitFor(() => expect(listContexts).toHaveBeenCalledTimes(1));
-    vi.mocked(listContexts).mockRejectedValueOnce('the context list would not read');
+    click(shown.target.querySelector('.bz-tog'));
+
+    const door = shown.target.querySelector('.bz-show');
+    expect(door, 'the shared row carries the way to look').not.toBeNull();
+    click(door);
+
+    expect(showBrowser, 'the raise the door asks for').toHaveBeenCalledTimes(1);
+    shown.stop();
+  });
+
+  it("keeps the panel and says the shell's own reason when the window cannot open", async () => {
+    vi.mocked(showBrowser).mockResolvedValueOnce('no browser to drive: install Brave');
+    const shown = show(false, true);
+    click(shown.target.querySelector('.bz-tog'));
+    click(shown.target.querySelector('.bz-show'));
+
+    await vi.waitFor(() => {
+      expect(shown.target.textContent).toContain('no browser to drive: install Brave');
+    });
+    expect(list(shown.target), 'the row stays for a door that failed').not.toBeNull();
+    shown.stop();
+  });
+
+  it('says the read failed rather than claiming there are no profiles', async () => {
+    const shown = show(false, true);
+    await vi.waitFor(() => expect(listProfiles).toHaveBeenCalledTimes(1));
+    vi.mocked(listProfiles).mockRejectedValueOnce('the profile list would not read');
 
     click(shown.target.querySelector('.bz-tog'));
 
     await vi.waitFor(() => {
-      expect(shown.target.textContent).toContain('the context list would not read');
+      expect(shown.target.textContent).toContain('the profile list would not read');
     });
     expect(
       shown.target.textContent,
       'an empty row would be a claim about a read that never answered',
-    ).not.toContain('no contexts yet');
+    ).not.toContain('no named profiles yet');
     shown.stop();
   });
 
   it('keeps the row and says why when the close is refused', async () => {
-    vi.mocked(listContexts).mockResolvedValue([
-      { name: 'hunt', owner: 'Busytools/forge/lead', running: true },
+    vi.mocked(listProfiles).mockResolvedValue([
+      { name: 'hunt', owner: 'Busytools/forge/lead', running: true, windowed: false },
     ]);
     const shown = show(false, true);
     click(shown.target.querySelector('.bz-tog'));
     await vi.waitFor(() => expect(shown.target.textContent).toContain('hunt'));
+    // **One is singular.** The count arm has a `=== 1 ? '' : 's'` that
+    // nothing pinned, and "1 profiles" is what a reader sees when it goes.
+    expect(
+      shown.target.querySelector('.bz-tog .n')?.textContent,
+      'one profile reads singular',
+    ).toBe('1 profile');
 
-    vi.mocked(closeContext).mockRejectedValueOnce('no browser context is open under hunt');
+    // **The close names the ROW's own profile**, not its owner's slot: the
+    // two strings sit beside each other on the row, and a swap would strand
+    // exactly the profile whose owner is gone - the one this door exists for.
+    vi.mocked(closeProfile).mockRejectedValueOnce('no browser profile is open under hunt');
     click(shown.target.querySelector('.bz-close'));
 
+    expect(closeProfile, 'the name the row carries is what is closed').toHaveBeenCalledWith('hunt');
     await vi.waitFor(() => {
-      expect(shown.target.textContent).toContain('no browser context is open under hunt');
+      expect(shown.target.textContent).toContain('no browser profile is open under hunt');
     });
     expect(shown.target.textContent, 'the row is not taken away by a close that failed').toContain(
       'hunt',
@@ -251,7 +336,7 @@ describe('the browser segment', () => {
   it('keeps the panel while focus crosses into it, and drops it when focus leaves', async () => {
     const shown = show(false, true);
     click(toggle(shown.target));
-    const control = shown.target.querySelector<HTMLButtonElement>('.bz-show');
+    const control = shown.target.querySelector<HTMLButtonElement>('.bz-override');
     if (control === null) throw new Error('no control');
 
     // Tabbing from the toggle into a control: a bubbling focusout whose
@@ -285,7 +370,7 @@ describe('the browser segment', () => {
     const shown = show(false, true);
     toggle(shown.target).dispatchEvent(pointer('pointerenter', 'mouse'));
     flushSync();
-    const control = shown.target.querySelector<HTMLButtonElement>('.bz-show');
+    const control = shown.target.querySelector<HTMLButtonElement>('.bz-override');
     if (control === null) throw new Error('no control');
     control.focus();
 
@@ -299,7 +384,7 @@ describe('the browser segment', () => {
     const shown = show(false, true);
     toggle(shown.target).dispatchEvent(pointer('pointerenter', 'mouse'));
     flushSync();
-    const control = shown.target.querySelector<HTMLButtonElement>('.bz-show');
+    const control = shown.target.querySelector<HTMLButtonElement>('.bz-override');
     if (control === null) throw new Error('no control');
     control.focus();
 
@@ -311,38 +396,130 @@ describe('the browser segment', () => {
     shown.stop();
   });
 
-  it('offers Take over only where a click can honestly serve it, and sends it', () => {
+  it('offers the override only where a click can honestly serve it, and sends it', () => {
     const shown = show(false, true);
     click(shown.target.querySelector('.bz-tog'));
 
-    const take = shown.target.querySelector('.bz-takeover');
-    expect(take, 'capable and not hosting: the take is the door').not.toBeNull();
+    const take = shown.target.querySelector('.bz-override');
+    expect(take, 'capable and not hosting: the override is the door').not.toBeNull();
     click(take);
     expect(shown.taken, 'and pressing it asks the server for the role').toHaveBeenCalledTimes(1);
     shown.stop();
   });
 
-  it('draws no take where this client cannot drive anything', () => {
+  it('draws no override where this client cannot drive anything', () => {
     const shown = show(false, false);
     click(shown.target.querySelector('.bz-tog'));
 
-    expect(shown.target.textContent).toContain('this client cannot drive the browser');
-    expect(shown.target.querySelector('.bz-takeover'), 'nothing to take with no host').toBeNull();
+    expect(shown.target.textContent).toContain('browser not connected');
+    expect(
+      shown.target.querySelector('.bz-override'),
+      'nothing to override with no host',
+    ).toBeNull();
     shown.stop();
   });
 
-  it('flips on the role frame: holding it drops the take and says so', () => {
+  it('flips on the role frame: holding it drops the override and says so', () => {
     const shown = show(false, true);
     click(shown.target.querySelector('.bz-tog'));
-    expect(shown.target.querySelector('.bz-takeover')).not.toBeNull();
+    expect(shown.target.querySelector('.bz-override')).not.toBeNull();
 
     shown.flip(true);
     flushSync();
 
     expect(shown.target.textContent, 'the role frame is what the line reads').toContain(
-      'this client drives the browser',
+      'browser connected',
     );
-    expect(shown.target.querySelector('.bz-takeover'), 'a holder offers no take').toBeNull();
+    expect(shown.target.querySelector('.bz-override'), 'a holder offers no override').toBeNull();
+    shown.stop();
+  });
+
+  /** The show/hide button on the row whose `.nm` reads `name` (shared included). */
+  function rowButton(target: HTMLElement, name: string): Element | null {
+    return (
+      [...target.querySelectorAll('.bz-it')]
+        .find((el) => el.querySelector('.nm')?.textContent === name)
+        ?.querySelector('button.bz-show') ?? null
+    );
+  }
+
+  /** **The list is this slot's own**: another slot's profile is not this
+   *  seat's business, and the count is the slot's, not the client's. */
+  it("lists only this slot's own profiles, with the slot's count", async () => {
+    vi.mocked(listProfiles).mockResolvedValue([
+      { name: 'mine', owner: 'Org/proj/me', running: true, windowed: false },
+      { name: 'theirs', owner: 'Org/proj/other', running: true, windowed: false },
+    ]);
+    const shown = show(false, true, { org: 'Org', project: 'proj', label: 'me' });
+    await vi.waitFor(() => {
+      expect(
+        shown.target.querySelector('.bz-tog .n')?.textContent,
+        "the count is this slot's own",
+      ).toBe('1 profile');
+    });
+    click(shown.target.querySelector('.bz-tog'));
+    await vi.waitFor(() => {
+      expect(shown.target.textContent, "this slot's profile is listed").toContain('mine');
+    });
+    expect(
+      shown.target.textContent,
+      "another slot's profile is not this slot's business",
+    ).not.toContain('theirs');
+    shown.stop();
+  });
+
+  /** **A window that is up reads hide, on the shared line too**: the person
+   *  lowers it from the strip rather than hunting the window's X. */
+  it("the shared line's button lowers the window it raised", async () => {
+    vi.mocked(profileWindowed).mockResolvedValue(true);
+    const shown = show();
+    click(shown.target.querySelector('.bz-tog'));
+    await vi.waitFor(() => {
+      expect(rowButton(shown.target, 'shared')?.textContent, 'a window up reads hide').toContain(
+        'hide',
+      );
+    });
+    click(rowButton(shown.target, 'shared'));
+    expect(hideBrowser, 'the shared line lowers the shared window').toHaveBeenCalledWith(null);
+    shown.stop();
+  });
+
+  /** A profile row toggles the same way, and **a refused hide is drawn** -
+   *  the button said hide, so a silence would read as done. */
+  it('a profile whose window is up says hide, and a refused hide is drawn', async () => {
+    vi.mocked(listProfiles).mockResolvedValue([
+      { name: 'hunt', owner: 'Org/proj/me', running: true, windowed: true },
+    ]);
+    vi.mocked(hideBrowser).mockResolvedValueOnce('no browser profile is open under hunt');
+    const shown = show(false, true, { org: 'Org', project: 'proj', label: 'me' });
+    click(shown.target.querySelector('.bz-tog'));
+    await vi.waitFor(() => {
+      expect(rowButton(shown.target, 'hunt')?.textContent, 'a window up reads hide').toContain(
+        'hide',
+      );
+    });
+    click(rowButton(shown.target, 'hunt'));
+    expect(hideBrowser, 'the row lowers its own window').toHaveBeenCalledWith('hunt');
+    await vi.waitFor(() => {
+      expect(shown.target.textContent, 'a refused hide is drawn, not swallowed').toContain(
+        'no browser profile is open under hunt',
+      );
+    });
+    shown.stop();
+  });
+
+  /** **A failed shared-line read is drawn**: the catch that says so was
+   *  revertible to a silence with every test green, and a button quietly
+   *  pinned to "show" reads as a window that is down. */
+  it('draws a shared-line read that failed', async () => {
+    vi.mocked(profileWindowed).mockRejectedValueOnce('the browser window state would not read');
+    const shown = show();
+    click(shown.target.querySelector('.bz-tog'));
+    await vi.waitFor(() => {
+      expect(shown.target.textContent, 'a shared-line read that failed says so').toContain(
+        'the browser window state would not read',
+      );
+    });
     shown.stop();
   });
 });

@@ -75,7 +75,7 @@ pub mod wire;
 /// answer's id - so a client with no vocabulary for any of it would read
 /// frames as nothing rather than as news. `baselines/socket/5/` is the record
 /// a v5 server emitted.
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
 
 /// What a connection answers from: the surface it reads and dispatches
 /// through, the working-tree cache behind the git read, the conversations

@@ -35,8 +35,8 @@ pub struct HandOff {
     pub id: uuid::Uuid,
     /// What the session needs done, in its own words.
     pub reason: String,
-    /// The named context to raise, when the session named one.
-    pub context: Option<String>,
+    /// The named profile to raise, when the session named one.
+    pub profile: Option<String>,
 }
 
 /// Why a hand-off left the registry.
@@ -55,15 +55,15 @@ pub enum HandOffEnding {
 mod tests {
     use super::*;
 
-    /// A hand-off crosses as its own words plus the context it named - and
-    /// one that named no context carries none, rather than an empty string a
+    /// A hand-off crosses as its own words plus the profile it named - and
+    /// one that named no profile carries none, rather than an empty string a
     /// dock would have to read as "the default".
     #[test]
     fn a_hand_off_crosses_with_what_it_asked_for() {
         let handoff = HandOff {
             id: uuid::Uuid::from_u128(7),
             reason: "the sign-in page wants a CAPTCHA".to_owned(),
-            context: Some("job-hunt".to_owned()),
+            profile: Some("job-hunt".to_owned()),
         };
         let encoded = serde_json::to_value(&handoff).expect("a hand-off encodes");
         assert_eq!(
@@ -71,7 +71,7 @@ mod tests {
             serde_json::json!({
                 "id": "00000000-0000-0000-0000-000000000007",
                 "reason": "the sign-in page wants a CAPTCHA",
-                "context": "job-hunt",
+                "profile": "job-hunt",
             }),
         );
         assert_eq!(
@@ -82,13 +82,13 @@ mod tests {
         let bare = HandOff {
             id: uuid::Uuid::from_u128(8),
             reason: "look at it".to_owned(),
-            context: None,
+            profile: None,
         };
         let encoded = serde_json::to_value(&bare).expect("a bare hand-off encodes");
         assert_eq!(
             serde_json::from_value::<HandOff>(encoded).expect("a bare hand-off decodes"),
             bare,
-            "a hand-off that named no context decodes as one that named none",
+            "a hand-off that named no profile decodes as one that named none",
         );
     }
 

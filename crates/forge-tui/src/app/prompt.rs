@@ -820,7 +820,7 @@ pub(crate) mod tests {
         let handoff = forge_primitives::browser::HandOff {
             id: uuid::Uuid::new_v4(),
             reason: "solve the CAPTCHA".to_owned(),
-            context: Some("job-hunt".to_owned()),
+            profile: Some("job-hunt".to_owned()),
         };
         let id = handoff.id;
         let prompt = PromptState::from_browser_hand_off(key.clone(), handoff);

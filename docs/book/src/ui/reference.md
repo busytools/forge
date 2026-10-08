@@ -85,7 +85,7 @@ Every character used as chrome - borders, icons, status, separators. Scope is cu
 | `⬚` `▣` | Read; Write / Edit family | open square: read-only; filled square: mutation |
 | `⌕` `▶` | Glob / Grep / LS; Bash | magnifier; execute |
 | `◇` `◆` | Task / Agent; Slack notification block; projects-pane completed-unseen | hollow diamond: delegated subagent, or an inbound Slack message; filled diamond: a completed turn on an inactive tab (green) |
-| `⊕` `⊙` `⇄` | WebFetch / WebSearch; plan-mode and Config; Move and worktree tools | fetch from outside; meta operation; directory and worktree transitions |
+| `⊕` `⊙` `⇄` | WebFetch / WebSearch and the Browser family; plan-mode and Config; Move and worktree tools | fetch from outside; meta operation; directory and worktree transitions |
 | `◉` `◍` | TaskOutput / Monitor; TaskStop | fisheye observes; the vertical-fill circle terminates |
 | `⏲` | ScheduleWakeup | timer clock |
 | `◈` | Gotify icon; MCP-server line in a group summary | the shared Gotify diamond; marks an external MCP-server call |

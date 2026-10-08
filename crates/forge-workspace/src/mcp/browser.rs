@@ -6,7 +6,7 @@
 //! `target` ref, so the tools register unprefixed, with upstream's own
 //! descriptions and argument schemas - transcribed from `@playwright/mcp`
 //! 0.0.83's `tools/list`, the capture preserved with the V1 spec. Anything
-//! this family added on top (a `context` name, a forced click) would be a
+//! this family added on top (a `profile` name, a forced click) would be a
 //! shape upstream does not have and a prompt that means something else
 //! here.
 //!
@@ -127,12 +127,12 @@ impl BrowserTool {
         let Some(reason) = args.get("reason").and_then(Value::as_str) else {
             return Err("browser_hand_off needs `reason`: what the person should do".to_owned());
         };
-        let context = match args.get("context") {
+        let profile = match args.get("profile") {
             None | Some(Value::Null) => None,
             Some(Value::String(name)) => Some(name.as_str()),
-            Some(other) => return Err(format!("`context` is the name of a context, not {other}")),
+            Some(other) => return Err(format!("`profile` is the name of a profile, not {other}")),
         };
-        match self.facade.hand_off(&self.slot, reason, context).await? {
+        match self.facade.hand_off(&self.slot, reason, profile).await? {
             HandOffEnding::Done => Ok(vec![BrowserPart::Text {
                 text: "The person is done in the browser; carry on from where you left off."
                     .to_owned(),
@@ -252,9 +252,9 @@ mod tests {
                 .expect("a schema describes an object")
                 .keys()
                 .map(String::as_str)
-                // `context` is on every tool, ours rather than the capture's,
+                // `profile` is on every tool, ours rather than the capture's,
                 // and pinned per-tool by the specs tests.
-                .filter(|name| *name != "context")
+                .filter(|name| *name != "profile")
                 .collect();
             got.sort_unstable();
             let mut want: Vec<&str> = properties.to_vec();
@@ -448,7 +448,7 @@ mod tests {
 
         let out = tool
             .call(ToolInput {
-                value: json!({ "reason": "solve the CAPTCHA", "context": "job-hunt" }),
+                value: json!({ "reason": "solve the CAPTCHA", "profile": "job-hunt" }),
             })
             .await;
 
@@ -460,7 +460,7 @@ mod tests {
         assert_eq!(
             mock.hand_offs.lock().as_slice(),
             [("solve the CAPTCHA".to_owned(), Some("job-hunt".to_owned()))],
-            "the reason and the context cross to the park verbatim",
+            "the reason and the profile cross to the park verbatim",
         );
         let text = crate::mcp::test_support::block_text(&out.blocks[0]);
         assert!(text.contains("carry on"), "Done tells the model to carry on: {text}");

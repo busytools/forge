@@ -1,7 +1,7 @@
 <script lang="ts">
   import Prose from '../chat/Prose.svelte';
   import Icon from '../components/Icon.svelte';
-  import { browserWindowUp, showBrowser } from '../browser/host';
+  import { hideBrowser, showBrowser } from '../browser/host';
   import Field from './Field.svelte';
   import TakeCard from './TakeCard.svelte';
   import type { Command } from '../protocol';
@@ -500,9 +500,6 @@
     answer({ respond_slack_post: { key: slot, id, approved } });
   }
 
-  /** Which hand-off Open has brought the browser up for, by its own id. */
-  let openedFor = $state<string | null>(null);
-
   /**
    * The hand-off's own header line, built here rather than in the markup: a
    * `{' · '}` interpolation beside an `{#if}` keeps its spacing - Svelte
@@ -510,67 +507,59 @@
    * useless; one template string says it once.
    */
   const handOffTitle = $derived(
-    ask.kind === 'browser_hand_off' && ask.request.context !== null
-      ? `browser hand-off · ${ask.request.context}`
+    ask.kind === 'browser_hand_off' && ask.request.profile !== null
+      ? `browser hand-off · ${ask.request.profile}`
       : 'browser hand-off',
   );
-  const opened = $derived(ask.kind === 'browser_hand_off' && openedFor === ask.request.id);
-  /** A window this dock did not raise: one already up when the hand-off came. */
-  let windowUpFor = $state<string | null>(null);
-  const windowIsUp = $derived(
-    ask.kind === 'browser_hand_off' && (opened || windowUpFor === ask.request.id),
-  );
-
-  /**
-   * **A window already up is read on every ask object, not once per id.**
-   * Open must not be offered over a window that is already up - the click
-   * cannot raise another app's window, it just answers Ok - and the answer
-   * must not freeze in the other direction either: the record replaces the
-   * ask on every frame, so reading per object keeps the up answer as fresh as
-   * the false one, and a window the reader closes while the dock is up stops
-   * being claimed.
-   */
-  $effect(() => {
-    const held = ask;
-    if (held === null || held.kind !== 'browser_hand_off') return;
-    const id = held.request.id;
-    void browserWindowUp().then((up) => {
-      windowUpFor = up ? id : null;
-    });
-  });
-  /** And which one a raise was asked for and did not happen, by the same id. */
+  /** Which hand-off's view Open was asked for and did not open, by its id. */
   let raiseFailedFor = $state<string | null>(null);
+  /** Why the raise failed, in the shell's own words - a machine with no
+   *  browser to drive is told which one to install. */
+  let raiseWhy = $state<string | null>(null);
   const raiseFailed = $derived(
-    ask.kind === 'browser_hand_off' && raiseFailedFor === ask.request.id,
+    ask.kind === 'browser_hand_off' && raiseFailedFor === ask.request.id
+      ? (raiseWhy ??
+          'The browser window could not be opened - act where the browser is up, then press Done.')
+      : null,
   );
 
   /**
-   * Bring the browser up visibly, which is the client's own act rather than
-   * the core's.
+   * Raise the browser window, which is the client's own act rather than the
+   * core's.
    *
-   * **The claim follows the answer.** `showBrowser` says whether a browser
-   * was really raised, and only a raise moves this dock to "the browser is
-   * up" - a line that lied would have the person press Done and tell the
-   * session they acted.
+   * **The window, not an in-app overlay** (Ved, 2026-10-07): the browser
+   * runs headless until this moment, and Open raises the person's own
+   * browser over the profile the agents drive. A raise that does not land
+   * says so rather than claiming a window is up.
    */
   function open(): void {
     if (ask.kind !== 'browser_hand_off') return;
     const id = ask.request.id;
-    void showBrowser().then((raised) => {
-      if (raised) {
-        openedFor = id;
-      } else {
+    // **The hand-off's own profile, when it named one**: the window comes up
+    // over THAT profile's browser, on THAT profile's page - the CAPTCHA
+    // lands in the session the person needs to act in.
+    void showBrowser(ask.request.profile).then((why) => {
+      if (why !== null) {
         raiseFailedFor = id;
+        raiseWhy = why;
       }
     });
   }
 
-  /** A hand-off's answer, which is the only release for its blocked handler. */
+  /** A hand-off's answer, which is the only release for its blocked handler.
+   *  **Answering also lowers the window**: Open raises it, Done or Not now
+   *  takes it down, and the browser relaunches headless on the next call
+   *  (Ved, 2026-10-07: "I said done, but the browser is still open"). */
   function handOff(done: boolean): void {
     if (answered || ask.kind !== 'browser_hand_off') return;
     const id = ask.request.id;
+    // **Read before the answer.** Answering clears the dock's own ask, so a
+    // profile read after the command crosses throws and the window never
+    // comes down.
+    const profile = ask.request.profile;
     onanswer(id);
     answer({ respond_browser_hand_off: { key: slot, id, done } });
+    void hideBrowser(profile);
   }
 
   function move(step: number): void {
@@ -833,11 +822,8 @@
          and a summary of it would be the client guessing at the act. -->
     <div class="d-q">{ask.request.reason}</div>
     <div class="desc">
-      {windowIsUp
-        ? 'The browser window is up. Do what is needed there, then press Done - closing it counts too.'
-        : raiseFailed
-          ? 'The browser could not be raised here - act in the desktop client if you have one, then press Done.'
-          : 'Open the browser to act; the session waits, with no timeout, until Done or Not now.'}
+      {raiseFailed ??
+        'Open browser raises the window over the profile the session drives; until then the browser is headless. The session waits, with no timeout, until Done or Not now.'}
     </div>
   {/if}
 
@@ -991,15 +977,11 @@
 
   {#if ask.kind === 'browser_hand_off'}
     <div class="acts">
-      <!-- Open is the client's own act, not the core's: it brings the app's
-           browser up visibly and answers nothing. **It is offered only while
-           no window is up** - nothing can raise another app's window, so a
-           second Open would answer Ok and change nothing on screen. Done is
-           the answer, and Not now declines - the session waits with no
-           timeout, so one of the two must be reachable from here. -->
-      {#if !windowIsUp}
-        <button class="btn p" onclick={open}>Open browser</button>
-      {/if}
+      <!-- Open is the client's own act, not the core's: it replaces this
+           screen with the browser the sessions drive and answers nothing.
+           Done is the answer, and Not now declines - the session waits with
+           no timeout, so one of the two must be reachable from here. -->
+      <button class="btn p" onclick={open}>Open browser</button>
       <button class="btn" onclick={() => handOff(true)}>Done</button>
       <button class="btn d" onclick={() => handOff(false)}>Not now</button>
     </div>

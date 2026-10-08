@@ -1013,6 +1013,7 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
   font: inherit; color: var(--muted); }
 .bz-seg .bz-tog:hover, .bz-seg.open .bz-tog { border-color: var(--line); color: var(--text); }
 .bz-seg .bz-tog .n { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
+.bz-seg .bz-tog .ring { width: 9px; height: 9px; flex: none; }
 .bz-list { position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 30;
   min-width: min(340px, calc(100vw - 28px)); max-height: 60vh; overflow-y: auto;
   background: var(--s2);
@@ -1028,6 +1029,9 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
   border: 1px solid var(--line); border-radius: 8px; padding: 3px 10px; font: inherit;
   font-size: var(--fs-label); color: var(--muted); }
 .bz-list .bz-take:hover { color: var(--text); background: var(--s3); }
+/* The row's second button hugs the first: two auto margins split the free
+   space between them and the pair reads as two separate islands. */
+.bz-list .bz-it .bz-take + .bz-take { margin-left: 0; }
 .bz-list .bz-cost { color: var(--dim); font-size: var(--fs-label); padding: 0 13px 8px;
   border-bottom: 1px solid var(--line); }
 .bz-list .bz-it { display: flex; align-items: center; gap: 9px; padding: 7px 13px;
@@ -1038,6 +1042,7 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
 .bz-list .bz-it .tx { color: var(--dim); font-family: var(--mono); min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @media (pointer: coarse) { .bz-seg .bz-tog, .bz-list .bz-it, .bz-list .bz-take { min-height: 44px; } }
+
 /* A narrow window compacts the panel: the same rows, tighter, and never
    taller than what the window can give it. */
 @media (max-width: 560px) {

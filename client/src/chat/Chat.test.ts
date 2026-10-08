@@ -63,7 +63,7 @@ function stub() {
     },
     onStatus: () => () => undefined,
     // The browser segment of the strip registers a role listener and reads
-    // the role as it draws, so those two answer; Take over is never pressed
+    // the role as it draws, so those two answer; override is never pressed
     // here and stays out.
     browserRole: () => false,
     onBrowserRole: () => () => undefined,

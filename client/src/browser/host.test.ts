@@ -1,13 +1,41 @@
-import { describe, expect, it, vi } from 'vitest';
+// @vitest-environment jsdom
+/**
+ * The page and the shell agree on the command NAMES.
+ *
+ * **A one-sided rename fails only as an opaque runtime "failed".** There is
+ * no compiler across the `invoke` boundary: the page calls `browser_profiles`
+ * while the shell registers something else, and every read dies with a
+ * sentence that names neither side. This file is the compiler - each call is
+ * driven against a mocked shell and the string on the wire is asserted.
+ */
 
-import type { BrowserAnswer, BrowserAsk } from '../protocol';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+
+const invoke = vi.hoisted(() => vi.fn((): Promise<unknown> => Promise.resolve(undefined)));
+
+vi.mock('@tauri-apps/api/core', () => ({ invoke }));
+
+import {
+  answerPart,
+  browserUsed,
+  bytesOf,
+  canHost,
+  closeProfile,
+  hideBrowser,
+  hostTheBrowser,
+  listProfiles,
+  showBrowser,
+  type HostReply,
+} from './host';
+import { browserInflight, callDown, callUp } from './inflight.svelte';
+import type { BrowserAsk } from '../protocol';
 import type { Connection } from '../socket';
-import { answerPart, bytesOf, hostTheBrowser, canHost, type HostReply } from './host';
 
 /**
  * The mapping from what the shell's host returns to what the socket sends,
  * on its own so it can be asserted without a Tauri process: the base64 the
- * host carries is what has to become the bytes of a binary frame.
+ * host carries is what has to become the bytes of a binary frame, and every
+ * screenshot rides it.
  */
 describe('what the host answered', () => {
   it('turns a text part into a text part and an image into its bytes', () => {
@@ -17,7 +45,10 @@ describe('what the host answered', () => {
         { type: 'image', mime_type: 'image/png', data_base64: 'AP8Q' },
       ],
     };
-    expect(reply.parts.map(answerPart)).toEqual([
+    expect(
+      reply.parts.map(answerPart),
+      'every part crosses as itself: text as text, an image as the bytes of its base64',
+    ).toEqual([
       { type: 'text', text: 'navigated' },
       { type: 'image', mime_type: 'image/png', bytes: new Uint8Array([0x00, 0xff, 0x10]) },
     ]);
@@ -25,93 +56,199 @@ describe('what the host answered', () => {
 
   /** The bytes of a base64 string, which is what a binary frame carries. */
   it('decodes the base64 the host carries', () => {
-    expect(bytesOf('')).toEqual(new Uint8Array([]));
-    expect(bytesOf('AP8Q')).toEqual(new Uint8Array([0x00, 0xff, 0x10]));
+    expect(bytesOf(''), 'an empty answer carries no bytes').toEqual(new Uint8Array([]));
+    expect(
+      bytesOf('AP8Q'),
+      'the base64 the host carries decodes to the exact bytes, not to a re-encoding',
+    ).toEqual(new Uint8Array([0x00, 0xff, 0x10]));
   });
 });
 
-/** The seat every ask in these tests is made for. */
-const SEAT = { org: 'o', project: 'p', label: 'lead' };
+// **The marker the real shell carries.** Without it `canHost()` answers
+// false and every call short-circuits before the invoke - which is the
+// module's own guard working, not the thing under test.
+beforeAll(() => {
+  (window as unknown as Record<string, unknown>)['__TAURI_INTERNALS__'] = {};
+});
 
-/** A connection that records what the host registered, and can be asked. */
-function fakeConnection() {
-  let handler: ((ask: BrowserAsk) => BrowserAnswer | Promise<BrowserAnswer>) | null = null;
-  const connection = {
-    onBrowserAsk(fn: typeof handler) {
-      handler = fn;
-      return () => {
-        handler = null;
-      };
-    },
-  } as unknown as Connection;
-  return {
-    connection,
-    /**
-     * One ask, through whatever the host registered. An arrow property rather
-     * than a method: this is handed around on its own, and a method taken off
-     * its object is the shape the lint exists to catch.
-     */
-    ask: async (tool: string, args: unknown = {}): Promise<BrowserAnswer> => {
-      if (handler === null) throw new Error('the host registered no handler');
-      return await handler({ id: 1, seat: SEAT, tool, args });
-    },
-  };
-}
+afterEach(() => {
+  invoke.mockClear();
+  browserInflight.calls = 0;
+  browserInflight.visible = false;
+});
 
-describe('the shell as the browser host', () => {
-  it('answers an ask with what the shell returned, and a failure with its reason', async () => {
-    const invoke = vi.fn();
-    const { connection, ask } = fakeConnection();
-    hostTheBrowser(connection, invoke);
+describe('the shell command names', () => {
+  it('are the ones the page invokes, one call each', async () => {
+    const core = await import('@tauri-apps/api/core');
+    expect(core.invoke, 'the module under test is the mocked shell').toBe(invoke);
+    invoke.mockResolvedValueOnce([]);
+    await listProfiles();
+    expect(invoke, 'the profiles read').toHaveBeenLastCalledWith('browser_profiles');
 
-    invoke.mockResolvedValueOnce({
-      parts: [{ type: 'image', mime_type: 'image/png', data_base64: 'AP8Q' }],
-    });
-    expect(await ask('browser_take_screenshot')).toEqual({
-      parts: [{ type: 'image', mime_type: 'image/png', bytes: new Uint8Array([0x00, 0xff, 0x10]) }],
+    await closeProfile('hunt');
+    expect(invoke, "the person's close").toHaveBeenLastCalledWith('browser_profile_close', {
+      name: 'hunt',
     });
 
-    // The shell answers a failed call by REJECTING with the reason, which is
-    // what the tool's failure arm carries: the driver's own sentence.
-    invoke.mockRejectedValueOnce('the vendored browser is not there');
-    expect(await ask('browser_navigate')).toEqual({ error: 'the vendored browser is not there' });
+    await showBrowser();
+    expect(invoke, 'the raise').toHaveBeenLastCalledWith('browser_show', { profile: null });
+
+    await showBrowser('hunt');
+    expect(invoke, 'a named raise names its profile').toHaveBeenLastCalledWith('browser_show', {
+      profile: 'hunt',
+    });
+
+    await hideBrowser();
+    expect(invoke, 'the lower').toHaveBeenLastCalledWith('browser_hide', { profile: null });
+
+    await hideBrowser('hunt');
+    expect(invoke, 'a named lower names its profile').toHaveBeenLastCalledWith('browser_hide', {
+      profile: 'hunt',
+    });
+
+    await browserUsed();
+    expect(invoke, 'the activity mark').toHaveBeenLastCalledWith('browser_used');
   });
 
-  /** The tool, its arguments and the asking seat cross to the shell verbatim:
-   * the shell is what decides a named context's owner, so it has to know who
-   * asked. */
-  it('hands the shell the tool, the arguments and the seat the ask carried', async () => {
-    const invoke = vi.fn().mockResolvedValue({ parts: [] });
-    const { connection, ask } = fakeConnection();
-    hostTheBrowser(connection, invoke);
+  it('and the phone does not claim the capability before its phase', () => {
+    const agent = Object.getOwnPropertyDescriptor(window.navigator, 'userAgent');
+    Object.defineProperty(window.navigator, 'userAgent', {
+      value: 'Mozilla/5.0 (Linux; Android 15; Pixel 9)',
+      configurable: true,
+    });
+    expect(canHost(), 'the phone is not a browser client yet').toBe(false);
+    if (agent) Object.defineProperty(window.navigator, 'userAgent', agent);
+  });
 
-    await ask('browser_navigate', { url: 'https://example.com' });
-    expect(invoke).toHaveBeenCalledWith('browser_call', {
-      seat: SEAT,
+  /** **The failure arm.** The shell rejects a failed call with the driver's
+   * own sentence, and the handler must answer that back rather than let it
+   * throw into the socket route - a thrown handler is a park, and the model
+   * is left waiting on a call that already failed. */
+  it('answers a failed call with its reason', async () => {
+    let asked: (ask: BrowserAsk) => Promise<unknown> = () => Promise.resolve(undefined);
+    const connection = {
+      onBrowserAsk: (fn: (ask: BrowserAsk) => Promise<unknown>) => {
+        asked = fn;
+        return () => undefined;
+      },
+    } as unknown as Connection;
+    invoke.mockRejectedValueOnce('no browser to drive: install Brave or Google Chrome');
+    hostTheBrowser(connection);
+
+    const ask: BrowserAsk = {
+      seat: { org: 'o', project: 'p', label: 'l' },
       tool: 'browser_navigate',
-      args: { url: 'https://example.com' },
+      args: {},
+      id: 9,
+    };
+    const answer = await asked(ask);
+
+    expect(answer, 'the reason is the answer, not a throw').toEqual({
+      error: 'no browser to drive: install Brave or Google Chrome',
     });
   });
 
   /** Registration is undoable, and unregistering twice is not a mistake. */
-  it('unregisters the handler it registered', async () => {
-    const { connection, ask } = fakeConnection();
-    const stop = hostTheBrowser(connection, vi.fn());
+  it('unregisters the handler it registered', () => {
+    let asked: ((ask: BrowserAsk) => Promise<unknown>) | null = null;
+    const connection = {
+      onBrowserAsk: (fn: (ask: BrowserAsk) => Promise<unknown>) => {
+        asked = fn;
+        return () => {
+          asked = null;
+        };
+      },
+    } as unknown as Connection;
+    const stop = hostTheBrowser(connection);
 
     stop();
-    await expect(ask('browser_close')).rejects.toThrow('no handler');
+    expect(asked, 'the handler is gone after the unsubscribe').toBeNull();
+    stop();
+    expect(asked, 'and unregistering twice is not a mistake').toBeNull();
   });
 
-  /**
-   * The capability is only declared where a host is really there: a page
-   * opened outside the shell (the dev server in a plain browser) must not
-   * claim it, because every ask it claimed would come back a failure.
-   */
-  it('declares the capability only inside the shell that has a host', () => {
-    expect(canHost()).toBe(false);
-    (globalThis as { window?: unknown }).window = { __TAURI_INTERNALS__: {} };
-    expect(canHost()).toBe(true);
-    (globalThis as { window?: unknown }).window = {};
-    expect(canHost()).toBe(false);
+  it('and the ask rides browser_call with its seat, its tool and its args', async () => {
+    let asked: (ask: BrowserAsk) => Promise<unknown> = () => Promise.resolve(undefined);
+    const connection = {
+      onBrowserAsk: (fn: (ask: BrowserAsk) => Promise<unknown>) => {
+        asked = fn;
+        return () => undefined;
+      },
+    } as unknown as Connection;
+    hostTheBrowser(connection);
+    invoke.mockResolvedValueOnce({ parts: [{ type: 'text', text: 'ok' }] });
+
+    const ask = {
+      seat: { org: 'o', project: 'p', label: 'l' },
+      tool: 'browser_navigate',
+      args: { url: 'https://example.com' },
+      id: 7,
+    } as unknown as BrowserAsk;
+    const answer = await asked(ask);
+
+    expect(invoke, 'the ask names the command and carries the call').toHaveBeenLastCalledWith(
+      'browser_call',
+      {
+        seat: { org: 'o', project: 'p', label: 'l' },
+        tool: 'browser_navigate',
+        args: { url: 'https://example.com' },
+      },
+    );
+    expect(answer, 'and the parts come back mapped').toEqual({
+      parts: [{ type: 'text', text: 'ok' }],
+    });
+  });
+
+  /** **The live mark**: up while the call runs, down the moment it answers -
+   * which is what makes the strip's ring mean "working right now" rather
+   * than "has worked at some point". */
+  it('marks the browser in flight while an ask runs', async () => {
+    let asked: (ask: BrowserAsk) => Promise<unknown> = () => Promise.resolve(undefined);
+    const connection = {
+      onBrowserAsk: (fn: (ask: BrowserAsk) => Promise<unknown>) => {
+        asked = fn;
+        return () => undefined;
+      },
+    } as unknown as Connection;
+    hostTheBrowser(connection);
+    let during = -1;
+    invoke.mockImplementationOnce(() => {
+      // Read from inside the call: exactly the moment the ring claims.
+      during = browserInflight.calls;
+      return Promise.resolve({ parts: [] });
+    });
+
+    const ask = {
+      seat: { org: 'o', project: 'p', label: 'l' },
+      tool: 'browser_navigate',
+      args: { url: 'https://example.com' },
+      id: 8,
+    } as unknown as BrowserAsk;
+    await asked(ask);
+
+    expect(during, 'the mark was up while the call ran').toBe(1);
+    expect(browserInflight.calls, 'and down the moment it answered').toBe(0);
+  });
+
+  /** **The tail re-arms from each landing**: a burst stays up as one working
+   *  stretch, and only a real pause takes the ring down. */
+  it('keeps the working mark up through a burst, measured from each landing', () => {
+    vi.useFakeTimers();
+    try {
+      callUp();
+      callDown();
+      expect(browserInflight.visible, 'up after the first landing').toBe(true);
+      vi.advanceTimersByTime(399);
+      callUp();
+      callDown();
+      vi.advanceTimersByTime(399);
+      expect(browserInflight.visible, 'a landing inside the tail re-arms it').toBe(true);
+      vi.advanceTimersByTime(2);
+      expect(browserInflight.visible, 'and the ring comes down a tail past the last landing').toBe(
+        false,
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -660,6 +660,25 @@ fn frames_record() -> Value {
     // ever.
     payload_sampled
         .insert("BrowserRole".to_owned(), shape_of(&ServerMessage::BrowserRole { hosting: true }));
+    // **The hand-off's own fields, where a rename proved invisible to the
+    // census.** `context` became `profile` in v7 - the field crosses in this
+    // update and in the snapshot's pending asks alike, and a one-sided rename
+    // would drive the SHARED profile while the model asked for a named one:
+    // nothing parses wrong and the failure is behavioural. This sample is
+    // what makes the next such rename a record change.
+    payload_sampled.insert(
+        "BrowserHandOffPending".to_owned(),
+        shape_of(&ServerMessage::Update {
+            update: Box::new(SessionUpdate::BrowserHandOffPending {
+                key: seat.clone(),
+                handoff: forge_primitives::browser::HandOff {
+                    id: uuid::Uuid::from_u128(7),
+                    reason: "solve the CAPTCHA".to_owned(),
+                    profile: Some("job-hunt".to_owned()),
+                },
+            }),
+        }),
+    );
 
     json!({
         "server_message": named(SERVER_MESSAGE_VARIANTS),

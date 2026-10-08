@@ -113,6 +113,9 @@ fn family_glyph(family: ToolFamily) -> &'static str {
         ToolFamily::Own(label) => match label {
             "Write" | "Edit" | "MultiEdit" | "NotebookEdit" | "Delete" => "\u{25a3}",
             "Subagent" => "\u{25c7}",
+            // The browser draws the web family's globe: it is one more way to
+            // the web, and a symbol of its own would say less.
+            "Browser" => "\u{2295}",
             // CLI 2.1.156 tool surface (#273).
             "ScheduleWakeup" => "\u{23f2}",
             "PushNotification" => "\u{25b2}",

@@ -18,6 +18,7 @@
   import { subagents } from './subagents.svelte';
   import { tasks } from './tasks.svelte';
   import type { Connection } from '../socket';
+  import type { SessionSlot } from '../wire/types';
   import type { TurnInfo } from './units';
 
   /**
@@ -36,7 +37,11 @@
    * it sits there because one fact has two readers: this row, and the turn's
    * own that must stand aside while the pin holds it.
    */
-  let { info, connection }: { info: TurnInfo | null; connection: Connection } = $props();
+  let {
+    info,
+    connection,
+    slot = null,
+  }: { info: TurnInfo | null; connection: Connection; slot?: SessionSlot | null } = $props();
 
   const rows = $derived(
     subagents.all().length > 0 ||
@@ -57,8 +62,9 @@
     <div class="ti">
       {#if info !== null}<Strip {info} />{/if}
       <span class="sg-fill"
-        ><BrowserSegment {connection} /><SubagentSegment /><ProcessesSegment /><ConnectorsSegment
-        /><SchedulesSegment /><McpSegment /><GitSegment /><TasksSegment /><MonitorsSegment /></span
+        ><BrowserSegment {connection} {slot} /><SubagentSegment /><ProcessesSegment
+        /><ConnectorsSegment /><SchedulesSegment /><McpSegment /><GitSegment /><TasksSegment
+        /><MonitorsSegment /></span
       >
     </div>
   </div>

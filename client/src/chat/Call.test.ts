@@ -28,6 +28,24 @@ const backgrounded = (note: ToolLeaf['note']): ToolLeaf => ({
 const boxes = (body: string): string[] =>
   [...body.matchAll(/<div class="term">([\s\S]*?)<\/div>/g)].map((box) => box[1] ?? '');
 
+/** An MCP call, as the fold hands it to the row. */
+const mcp = (name: string, text: string): ToolLeaf => ({
+  id: 'toolu_mcp',
+  row: { kind: 'browser' },
+  name,
+  title: 'browser: https://example.org',
+  command: null,
+  status: 'completed',
+  note: null,
+  body: [{ kind: 'text', text }],
+  mutation: null,
+  decision: null,
+  forge: null,
+  skill: null,
+  image: null,
+  imageNote: null,
+});
+
 describe('the row one call draws', () => {
   /**
    * **The row carries the fold's own name, not the wire id.** Two id-less
@@ -68,6 +86,75 @@ describe('the row one call draws', () => {
 
     expect(drawn, 'the skill is drawn as markdown').toContain('<h1>');
     expect(drawn, 'and the launch line draws nowhere').not.toContain('Launching skill');
+  });
+
+  /**
+   * **An MCP result is markdown, one style for every call.** Ved, live round
+   * 2026-10-07: an expanded browser call showed its words raw - headings and
+   * fences as themselves. A local command's OUTPUT is not prose and stays the
+   * terminal box; an MCP result is what a server wrote, and servers write
+   * markdown.
+   */
+  it('renders an MCP result as markdown, not as a terminal box', () => {
+    const drawn = render(Call, {
+      props: {
+        k: 'toolu_mcp',
+        open: true,
+        call: mcp('mcp__playwright__browser_navigate', '### Page\n- Page URL: https://example.org'),
+      },
+    }).body;
+
+    expect(drawn, 'the result renders as markdown, structure and all').toContain('<h3>');
+    expect(drawn, 'and no raw heading survives').not.toContain('### Page');
+  });
+
+  /**
+   * **The peer card's own voice.** Ved, same round: a browser call's body
+   * "should follow the same styles like peer messaging does" - peers flow
+   * their soft breaks, and the browser's body does too now; literal lines
+   * are a fence's business.
+   */
+  it('renders the family with no mcp prefix as markdown too', () => {
+    // **The bare name half of the body branch.** `browser_hand_off` is the
+    // family's own tool, so it arrives with no `mcp__` prefix - the branch
+    // tests the name against `isBrowserTool` as well, and dropping that half
+    // would spoon its body out as a terminal box.
+    const drawn = render(Call, {
+      props: {
+        k: 'toolu_handoff',
+        open: true,
+        call: mcp('browser_hand_off', 'The person is done in the browser.'),
+      },
+    }).body;
+
+    expect(drawn, 'a bare browser tool renders markdown, not a terminal box').toContain(
+      'The person is done in the browser.',
+    );
+    expect(drawn, 'and not the terminal box').not.toContain('class="term"');
+  });
+
+  it("flows an MCP result's soft breaks like a peer message", () => {
+    const drawn = render(Call, {
+      props: {
+        k: 'toolu_flow',
+        open: true,
+        call: mcp('mcp__playwright__browser_navigate', 'first line\nsecond line'),
+      },
+    }).body;
+
+    expect(drawn, 'both lines reach the reader').toContain('first line');
+    expect(drawn, 'and they flow rather than drawing as forced breaks').not.toContain('<br>');
+  });
+
+  it('keeps a local command output in its terminal box', () => {
+    const drawn = render(Call, {
+      props: { k: 'b1', open: true, call: backgrounded(null) },
+    }).body;
+
+    expect(drawn, 'command output stays a terminal box').toContain('class="term"');
+    expect(drawn, 'and is not reflowed as prose').toContain(
+      'Command running in background with ID',
+    );
   });
 
   it('draws the picture a call read only while the row is open', () => {

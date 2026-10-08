@@ -4280,7 +4280,7 @@ mod tests {
         forge_primitives::browser::HandOff {
             id: uuid::Uuid::new_v4(),
             reason: reason.to_owned(),
-            context: None,
+            profile: None,
         }
     }
 
