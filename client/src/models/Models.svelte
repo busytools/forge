@@ -314,9 +314,13 @@
       return;
     }
 
-    // **Only this sweep's own failure ends it.** A settled failure from
-    // before the press is not this chain's to report or to wait on: the core
-    // keeps it until the next bench, and the bench below is what clears it.
+    // **Only a failure this sweep did not cause ends it, and only while it
+    // is still the one that was standing.** The marker is the key that was
+    // already failed at the press; the dispatch below CLEARS it, because
+    // from that moment anything answering - including a byte-for-byte
+    // repeat of the old failure, which is what a missing file gives - is
+    // this sweep's own answer, and reading it as the standing one would
+    // re-bench the same run on every push, forever.
     if (wire.bench.state === 'failed' && failureKey(wire.bench) !== sweepStaleFailure) {
       sweepNotice = `${wire.bench.target.file}: ${wire.bench.reason}`;
       sweep = null;
@@ -327,6 +331,7 @@
     const next = plan.runs.find((run) => run.file !== null && !scored(run));
     if (next !== undefined && next.file !== null) {
       sweepLine = `scoring ${next.file}`;
+      sweepStaleFailure = null;
       act({
         dictate_bench: {
           target: { file: next.file, role: next.role, pinned: false },

@@ -1322,6 +1322,62 @@ describe('the models route as it draws', () => {
   });
 
   /**
+   * **A failure standing on a plan file does not feed itself.** The core
+   * keeps a failed bench until the next one, and a deterministic failure -
+   * the file's bytes are gone - fails identically when the sweep benches it
+   * again: reading that as the failure that was already standing re-dispatches
+   * on every push, forever. One dispatch, then the sweep ends by name.
+   */
+  it('benches a standing failure once, then ends', async () => {
+    const forge = fakeConnection();
+    const host = route(forge);
+    await tick();
+    const file = 'granite-speech-5.0-470m-turboctc-nc-Q4_K_M.gguf';
+    const failing = {
+      state: 'failed' as const,
+      target: { file, role: 'transcribing' as const, pinned: false },
+      reason: 'No such file or directory (os error 2)',
+    };
+    forge.arrive({
+      kind: 'snapshot',
+      subject: MODELS,
+      data: { ...modelsWire, rows: [], bench: failing },
+    });
+    await tick();
+
+    const button = [...host.querySelectorAll<HTMLButtonElement>('button')].find(
+      (c) => c.textContent === 'run the benchmark',
+    );
+    button?.click();
+    flushSync();
+    await tick();
+
+    // The sweep's own bench of that file goes out - once.
+    expect(forge.dispatched.at(-1)).toEqual({
+      dictate_bench: {
+        target: { file, role: 'transcribing', pinned: false },
+        tier: 'consensus',
+      },
+    });
+    const dispatched = forge.dispatched.length;
+
+    // It fails the same way. That is this sweep's answer, not the standing
+    // one, and the sweep ends rather than dispatching again.
+    forge.arrive({
+      kind: 'snapshot',
+      subject: MODELS,
+      data: { ...modelsWire, rows: [], bench: failing },
+    });
+    await tick();
+
+    expect(forge.dispatched.length, 'a repeated failure must not re-bench').toBe(dispatched);
+    expect(host.textContent, 'the sweep ended on the failure').toContain(
+      'No such file or directory',
+    );
+    expect(host.textContent, 'the card is back for the next press').toContain('run the benchmark');
+  });
+
+  /**
    * The same shape one arm over: a standing INSTALL failure - on a variant
    * this sweep never asked for - must not end it before it has asked for
    * anything.
