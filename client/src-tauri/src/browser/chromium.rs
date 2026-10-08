@@ -1117,15 +1117,25 @@ mod tests {
     }
 
     /// **Close takes the launch lock**: a close racing a launch waits it out
-    /// rather than reading "not answering" for a browser mid-launch. The
-    /// discriminating half is the timeout below - without the take the close
-    /// finishes its probe and forgets the file WHILE the lock is held, and
-    /// the assertion fires by name.
+    /// rather than reading "not answering" for a browser mid-launch.
+    ///
+    /// **An OLD port file, so the young-port wait cannot stand in for the
+    /// lock**: without the take the close reads "not answering", forgets the
+    /// file and finishes in one probe - which is what the timeout below
+    /// catches. (With a young file the wait alone keeps the close busy past
+    /// the window, and the assertion passes for the wrong reason.)
     #[tokio::test(start_paused = true)]
     async fn a_close_waits_for_a_launch_in_flight() {
         let dir = tempfile::tempdir().expect("a temp dir");
-        std::fs::write(dir.path().join("DevToolsActivePort"), b"9544\n/devtools/browser/x\n")
-            .expect("a port file");
+        let file = dir.path().join("DevToolsActivePort");
+        std::fs::write(&file, b"9544\n/devtools/browser/x\n").expect("a port file");
+        let old = std::time::SystemTime::now() - LAUNCH_TIMEOUT - Duration::from_secs(60);
+        let handle = std::fs::OpenOptions::new().write(true).open(&file).expect("the file");
+        handle
+            .set_times(std::fs::FileTimes::new().set_modified(old))
+            .expect("the file's time moves back");
+        drop(handle);
+
         let held = LaunchLock::acquire(dir.path()).await.expect("the lock a launch holds");
         let mut closing = tokio::spawn({
             let path = dir.path().to_path_buf();
@@ -1138,6 +1148,44 @@ mod tests {
             "the close must WAIT on the launch lock - it finished while a launch held it",
         );
         drop(held);
+        closing.await.expect("the close task");
+    }
+
+    /// **The close HOLDS the launch lock through its body**, not only while
+    /// acquiring: the reconcile below it is exactly the window a second
+    /// launch would slip into - and a close that acquired and let go
+    /// immediately reopens the very race the take exists for.
+    ///
+    /// The young port file is the window made observable: the body waits on
+    /// it, and the lock must stay contended for as long as that wait runs.
+    #[tokio::test(start_paused = true)]
+    async fn a_close_holds_the_launch_lock_through_its_body() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        std::fs::write(dir.path().join("DevToolsActivePort"), b"9544\n/devtools/browser/x\n")
+            .expect("a young port file");
+
+        let held = LaunchLock::acquire(dir.path()).await.expect("the lock a launch holds");
+        let closing = tokio::spawn({
+            let path = dir.path().to_path_buf();
+            async move { close(&path, 9544).await }
+        });
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+        assert!(!closing.is_finished(), "the close waits for the lock a launch holds");
+
+        drop(held);
+        let mut contended = false;
+        for _ in 0..50 {
+            if matches!(try_lock(dir.path()), Locked::Contended) {
+                contended = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            contended,
+            "the close holds the launch lock through its body - a launch cannot slip in mid-close",
+        );
         closing.await.expect("the close task");
     }
 
