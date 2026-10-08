@@ -63,6 +63,7 @@ fn negotiate_protocol_version(params: Option<&serde_json::Value>) -> &'static st
 pub struct McpServer {
     name: String,
     version: String,
+    instructions: Option<String>,
     tools: BTreeMap<String, Arc<dyn Tool>>,
 }
 
@@ -71,6 +72,7 @@ impl std::fmt::Debug for McpServer {
         f.debug_struct("McpServer")
             .field("name", &self.name)
             .field("version", &self.version)
+            .field("instructions", &self.instructions.is_some())
             .field("tools", &self.tools.keys().collect::<Vec<_>>())
             .finish()
     }
@@ -102,6 +104,7 @@ impl McpServer {
                 protocol_version: negotiate_protocol_version(req.params.as_ref()).into(),
                 capabilities: serde_json::json!({"tools": {"listChanged": false}}),
                 server_info: ServerInfo { name: self.name.clone(), version: self.version.clone() },
+                instructions: self.instructions.clone(),
             }),
             "ping" => Ok(JsonRpcResult::Empty {}),
             "tools/list" => {
@@ -165,6 +168,7 @@ impl McpServer {
 pub struct McpServerBuilder {
     name: String,
     version: String,
+    instructions: Option<String>,
     tools: BTreeMap<String, Arc<dyn Tool>>,
 }
 
@@ -173,6 +177,7 @@ impl std::fmt::Debug for McpServerBuilder {
         f.debug_struct("McpServerBuilder")
             .field("name", &self.name)
             .field("version", &self.version)
+            .field("instructions", &self.instructions.is_some())
             .field("tools", &self.tools.keys().collect::<Vec<_>>())
             .finish()
     }
@@ -181,7 +186,19 @@ impl std::fmt::Debug for McpServerBuilder {
 impl McpServerBuilder {
     /// Start a new builder.
     pub fn new(name: impl Into<String>, version: impl Into<String>) -> Self {
-        Self { name: name.into(), version: version.into(), tools: BTreeMap::new() }
+        Self {
+            name: name.into(),
+            version: version.into(),
+            instructions: None,
+            tools: BTreeMap::new(),
+        }
+    }
+
+    /// The text the client delivers to the model once at session start:
+    /// how to use this server, in the protocol's own `instructions` field.
+    pub fn instructions(mut self, text: &str) -> Self {
+        self.instructions = Some(text.to_owned());
+        self
     }
 
     /// Register a tool. A duplicate name replaces the earlier registration -
@@ -197,7 +214,47 @@ impl McpServerBuilder {
 
     /// Finalise into a runnable server.
     pub fn build(self) -> McpServer {
-        McpServer { name: self.name, version: self.version, tools: self.tools }
+        McpServer {
+            name: self.name,
+            version: self.version,
+            instructions: self.instructions,
+            tools: self.tools,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests_initialize {
+    use super::{JsonRpcRequest, McpServerBuilder};
+    use serde_json::json;
+
+    async fn initialize_result(server: &super::McpServer) -> serde_json::Value {
+        let request: JsonRpcRequest = serde_json::from_value(json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "protocolVersion": "2025-06-18" },
+        }))
+        .expect("an initialize request");
+        let response = server.dispatch(&request).await.expect("an id-bearing request is answered");
+        serde_json::to_value(response.result.expect("initialize succeeds")).expect("serializes")
+    }
+
+    #[tokio::test]
+    async fn an_initialize_result_carries_the_servers_instructions_when_set() {
+        let server =
+            McpServerBuilder::new("forge", "1.2.3").instructions("claim before working").build();
+        let result = initialize_result(&server).await;
+        assert_eq!(result["instructions"], "claim before working");
+    }
+
+    /// A server with none omits the field, so a client that never learned
+    /// it sees exactly the old shape.
+    #[tokio::test]
+    async fn no_instructions_leaves_the_field_out_of_the_json() {
+        let server = McpServerBuilder::new("forge", "1.2.3").build();
+        let result = initialize_result(&server).await;
+        assert!(result.get("instructions").is_none(), "absent, not null: {result}");
     }
 }
 

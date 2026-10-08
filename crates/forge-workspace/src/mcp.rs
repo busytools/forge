@@ -345,8 +345,31 @@ pub fn build_forge_server(
     if families.contains(&McpFamily::Slack) {
         builder = slack::add_tools(builder, slack, slot);
     }
-    builder.build()
+    builder.instructions(TASK_BOARD_INSTRUCTIONS).build()
 }
+
+/// What every session is told about the board at session start, through
+/// the protocol's `instructions` field - the channel that reaches the
+/// model without a tool call. Claude Code truncates it at 2048
+/// characters, so the critical half leads; the shipped-text gate (rule
+/// 17) covers the wording.
+pub(crate) const TASK_BOARD_INSTRUCTIONS: &str = "\
+forge's task board is the shared surface for work in flight. Read it with \
+tasks__list: a `ready` mark means a row can be started, `worked` and the \
+`overdue` mark say how long it has run against its estimate, and a message \
+about an over-estimate row is an answer you owe. Claim before working: \
+tasks__claim by `id`, or by `epic` to pull that epic's top ready row; one \
+row in progress per worker. Keep your row true: tasks__update on every \
+state change - the update is also your alive signal - and attach the PR \
+the moment it exists. If you cannot proceed, tasks__wait: `kind` is \
+decision (a question for the user), dependency (another task - put its id \
+in `on`) or resource (an account, a CI run, a machine); then move to your \
+next held row instead of sitting still. File what you find mid-flight at \
+once with tasks__create, under your epic, owned or unowned; nothing is \
+deferred. A row with verify=user cannot complete until the user approves \
+it; completing the ROOT row of an epic closes it and archives the tree. \
+The chase asks an over-estimate owner once and escalates to the lead once \
+- answer with an update, not silence.";
 
 #[cfg(test)]
 mod tests {
@@ -376,6 +399,40 @@ mod tests {
         systemone_facade: Option<Arc<dyn SystemOneFacade>>,
     ) -> McpServer {
         forge_server_families(kind, &McpFamily::all(), systemone_facade)
+    }
+
+    /// Claude Code truncates server instructions at 2048 characters, so
+    /// the board's contract has to fit whole - a truncated tail would drop
+    /// whatever came last, which is why the critical half leads.
+    #[test]
+    fn the_task_instructions_fit_the_client_cap() {
+        assert!(
+            TASK_BOARD_INSTRUCTIONS.len() < 2048,
+            "the instructions are {} characters; the client truncates at 2048",
+            TASK_BOARD_INSTRUCTIONS.len(),
+        );
+    }
+
+    /// The built server hands the contract to every session: the constant
+    /// reaches the real initialize result, not just the source.
+    #[tokio::test]
+    async fn the_built_server_carries_the_task_instructions() {
+        let server = forge_server(SessionKind::Lead);
+        let request: forge_sdk::mcp::protocol::JsonRpcRequest =
+            serde_json::from_value(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": { "protocolVersion": "2025-06-18" },
+            }))
+            .expect("an initialize request");
+        let response = server.dispatch(&request).await.expect("an id-bearing request is answered");
+        let result = serde_json::to_value(response.result.expect("initialize succeeds"))
+            .expect("serializes");
+        assert_eq!(
+            result["instructions"], TASK_BOARD_INSTRUCTIONS,
+            "the built server's initialize carries the board's contract",
+        );
     }
 
     fn forge_server_families(
