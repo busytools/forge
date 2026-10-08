@@ -1430,4 +1430,53 @@ describe('the read, and the answer a frame has outrun', () => {
     expect(page.read().wire?.composer.notice).toBeNull();
     page.stop();
   });
+
+  /**
+   * **A whole-record answer carries no take, and the take the fold drew must
+   * survive it.** The row is drawn off the record, so an answer that dropped
+   * the take the page's own updates had drawn emptied the screen while the
+   * recording stayed live - the vanishing recording of #1880.
+   */
+  it('keeps the take this connection started across a whole-record answer', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD, {}));
+    page.land(updateOf({ dictate_started: { key: LEAD, floor_db: -50, generation: 1 } }));
+    paint();
+    expect(page.read().wire?.composer.take, 'precondition: the fold drew the take').not.toBeNull();
+
+    // The seat is left and returned to: the return's subscribe is answered
+    // with a whole record, and a take is not on one.
+    page.land(snapshotOf(LEAD, {}));
+
+    expect(
+      page.read().wire?.composer.take,
+      'the recording vanished from the record',
+    ).not.toBeNull();
+    page.stop();
+  });
+
+  /**
+   * A socket that leaves `open` takes its take with it: the core drops a take
+   * whose reader went away, so a record that kept drawing one would be a
+   * recording whose only offer is a refusal - and one no later answer clears,
+   * because nothing about it will ever be said again.
+   */
+  it('drops the folded take when the socket leaves open', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD, {}));
+    page.land(updateOf({ dictate_started: { key: LEAD, floor_db: -50, generation: 1 } }));
+    paint();
+    expect(page.read().wire?.composer.take, 'precondition: a take is drawn').not.toBeNull();
+
+    page.wentTo('closed');
+    paint();
+
+    expect(
+      page.read().wire?.composer.take,
+      'a dropped socket left a phantom recording on the record',
+    ).toBeNull();
+    page.stop();
+  });
 });
