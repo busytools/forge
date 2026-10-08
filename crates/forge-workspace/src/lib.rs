@@ -67,6 +67,7 @@
 mod account_cache;
 mod account_loader;
 pub mod bench;
+pub mod board;
 pub mod browser;
 pub mod catalogue;
 mod config;
