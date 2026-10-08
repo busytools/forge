@@ -21,14 +21,23 @@
   let listEl: HTMLElement | null = $state(null);
   /** A beat of grace on leaving, so crossing the gap into the list lands. */
   let closing: ReturnType<typeof setTimeout> | null = null;
-  /** The panel's measured caps, remeasured on a resize while open. */
+  /** The panel's measured caps, remeasured every frame while open. */
   let limits = $state('');
 
   $effect(() => {
     if (!open) return;
-    const remeasure = () => (limits = panelStyle(segEl));
-    window.addEventListener('resize', remeasure);
-    return () => window.removeEventListener('resize', remeasure);
+    // **While the panel is open it follows the layout it hangs in.** The
+    // style is measured once at the open, and an ordinary reflow - a
+    // segment's live figures re-wrapping, the composer growing and lifting
+    // the strip, a new segment appearing beside it - would otherwise leave
+    // the panel where the old geometry put it, off the screen again. A frame
+    // loop while the panel is open (it closes on leave) re-measures; the
+    // write lands only when the string changes.
+    let raf = requestAnimationFrame(function tick() {
+      limits = panelStyle(segEl);
+      raf = requestAnimationFrame(tick);
+    });
+    return () => cancelAnimationFrame(raf);
   });
 
   const count = $derived(schedules.count());
