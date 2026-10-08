@@ -19,7 +19,7 @@
         "changed": null,
         "gate": "gone"
       },
-      "tasks": [],
+      "rows": [],
       "crons": [],
       "connectors": {
         "gotify": [],
@@ -49,6 +49,20 @@
         "changed": null,
         "gate": "gone"
       }
+    }
+  ],
+  "fleet": [
+    {
+      "project": "proj",
+      "live_workers": 1,
+      "slots": 2,
+      "queue": 0,
+      "waiting_on_user": 0,
+      "misses": [
+        {
+          "unaccounted_worker": "w1"
+        }
+      ]
     }
   ],
   "unseen": [],
