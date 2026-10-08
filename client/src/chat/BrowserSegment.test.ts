@@ -191,6 +191,44 @@ describe('the browser segment', () => {
     shown.stop();
   });
 
+  /** The measured bug: the phone's takeover bar lowers on Done as well as on
+   *  its back, and a re-read left on `lowered` alone kept the row saying
+   *  "hide" over a window already down. Every bar word re-reads. */
+  it("re-reads the shared row on the takeover bar's own words", async () => {
+    const shown = show(false, true);
+    await vi.waitFor(() => expect(profileWindowed).toHaveBeenCalledTimes(1));
+    const before = vi.mocked(profileWindowed).mock.calls.length;
+
+    window.dispatchEvent(new CustomEvent('forge-takeover', { detail: 'done' }));
+    await vi.waitFor(() => {
+      expect(
+        vi.mocked(profileWindowed).mock.calls.length,
+        'Done lowers the window too; the row must re-read on its word',
+      ).toBeGreaterThan(before);
+    });
+
+    const afterDone = vi.mocked(profileWindowed).mock.calls.length;
+    window.dispatchEvent(new CustomEvent('forge-takeover', { detail: 'raised' }));
+    await vi.waitFor(() => {
+      expect(
+        vi.mocked(profileWindowed).mock.calls.length,
+        'the raise lands on the UI thread after a caller read; its word re-reads too',
+      ).toBeGreaterThan(afterDone);
+    });
+
+    // **`lowered` is now the only word the bar's back sends** - dropping
+    // that arm left every test green before this case existed.
+    const afterRaised = vi.mocked(profileWindowed).mock.calls.length;
+    window.dispatchEvent(new CustomEvent('forge-takeover', { detail: 'lowered' }));
+    await vi.waitFor(() => {
+      expect(
+        vi.mocked(profileWindowed).mock.calls.length,
+        "the bar's back says lowered, and nothing else - the row must re-read on it",
+      ).toBeGreaterThan(afterRaised);
+    });
+    shown.stop();
+  });
+
   it("keeps the panel and says the shell's own reason when the window cannot open", async () => {
     vi.mocked(showBrowser).mockResolvedValueOnce('no browser to drive: install Brave');
     const shown = show(false, true);

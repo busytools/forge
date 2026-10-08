@@ -1,0 +1,15 @@
+# wry's generated RustWebViewClient (the client UI's own WebViewClient) gets
+# extra members injected here, and this one is load-bearing: ALL WebViews in
+# one app process share the renderer, and Android kills the whole app when a
+# renderer death goes unclaimed by ANY associated webview ("wasn't handled by
+# all associated webviews, killing application"). The engine renders
+# arbitrary agent-directed pages, so its death - an OOM on a heavy page, a
+# crash - would otherwise take the client down with it.
+[env]
+WRY_RUSTWEBVIEWCLIENT_CLASS_EXTENSION = """
+override fun onRenderProcessGone(view: android.webkit.WebView, detail: android.webkit.RenderProcessGoneDetail?): Boolean {
+    android.util.Log.w("FORGE-BROWSER", "the UI page's renderer died (crashed=${detail?.didCrash()}); claimed so the app survives")
+    dev.vedhavyas.forge.BrowserPlugin.rendererDied()
+    return true
+}
+"""

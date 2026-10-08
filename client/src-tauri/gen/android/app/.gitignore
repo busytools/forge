@@ -1,5 +1,6 @@
 /src/main/**/generated
 /src/main/jniLibs/**/*.so
+/src/main/cpp/nodejs-mobile/
 /src/main/assets/tauri.conf.json
 /src/main/assets/browser-stack/
 /tauri.build.gradle.kts

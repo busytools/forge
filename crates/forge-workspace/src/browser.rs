@@ -27,6 +27,14 @@ const HOST_GONE: &str = "the browser-capable client went away before answering";
 /// longer than this entirely - so the named failure and a retry is the
 /// answer. A late answer costs nothing: the ask keeps its entry registered,
 /// and the reply's send drops it (`.ok()`) once this waiter is gone.
+// The client's worst honest ACCEPT-ONWARD path: accept + handshake + one
+// driver call, plus slack. The desktop is 15+15+150; an Android client's
+// in-app driver boots, so its cold figures are wider - 40 s accept (a node
+// boot measured at 39 s on a loaded emulator) + 10 s handshake + 150 s call
+// = 200 s, exactly this bound. That is only the accept-onward segment: the
+// call also carries an unbounded pre-accept RPC segment (the engine
+// generation read, the ensure spin, the asset unpack, the UI-thread origin
+// latch), so the phone's whole cold chain can MEET or exceed this bound.
 const ASK_TIMEOUT: Duration = Duration::from_secs(15 + 15 + 150 + 20);
 
 /// One ask, on its way to the registered host.
@@ -539,15 +547,26 @@ mod tests {
         );
     }
 
-    /// **The bound clears every layer that legitimately takes time.** The
-    /// client's own bounds are a launch (15 s), a driver handshake (15 s) and
-    /// one tool call (150 s) - a bound under their sum would fail slow-but-fine
-    /// calls, which is the one change someone would plausibly make here.
+    /// **The bound clears the accept-onward segment of every layer below
+    /// it.** The desktop client's own bounds are a launch (15 s), a driver
+    /// handshake (15 s) and one tool call (150 s); an Android client's
+    /// in-app driver BOOTS, so its cold figures are wider - 40 s to accept
+    /// the node's first dial, 10 s to hand shake, and the same 150 s call
+    /// (200 s in all, exactly this bound). That segment carries no slack;
+    /// the call's unbounded pre-accept RPC segment (the generation read,
+    /// the ensure spin, the unpack) can push the whole chain past it. A
+    /// bound under either sum would fail slow-but-fine calls, which is the
+    /// one change someone would plausibly make here.
     #[test]
     fn the_ask_bound_clears_the_client_layers_below_it() {
         assert!(
             ASK_TIMEOUT >= Duration::from_secs(15 + 15 + 150),
-            "the ask's bound must clear the client's launch, handshake and call bounds: {ASK_TIMEOUT:?}",
+            "the ask's bound must clear the desktop client's launch, handshake and call bounds: {ASK_TIMEOUT:?}",
+        );
+        assert!(
+            ASK_TIMEOUT >= Duration::from_secs(40 + 10 + 150),
+            "and the Android client's cold figures - 40 s accept, 10 s handshake, 150 s call, \
+             both constants mirroring driver.rs - must clear too: {ASK_TIMEOUT:?}",
         );
     }
 

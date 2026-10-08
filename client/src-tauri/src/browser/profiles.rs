@@ -20,6 +20,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
+#[cfg(desktop)]
 use super::StackPaths;
 use super::custom;
 use super::driver::{Driver, ReplyPart};
@@ -38,25 +39,54 @@ impl fmt::Display for Seat {
     }
 }
 
-/// Where a profile's driver comes from whenever it has to be rebuilt: the
-/// vendored node and CLI, the browser's CURRENT endpoint, and the output
-/// directory.
+/// Where a profile's driver comes from whenever it has to be rebuilt. The
+/// desktop spawns the vendored node against the browser's CURRENT endpoint;
+/// the phone starts the app's own in-app node against the socket bound here
+/// (the Kotlin engine brings the WebView and relay with it).
 pub(super) struct DriverStart<'a> {
+    #[cfg(desktop)]
     pub node: &'a Path,
+    #[cfg(desktop)]
     pub cli: &'a Path,
-    /// The live endpoint, which a browser relaunch moves: a driver built
-    /// against the old one is stale even while its own transport stays open.
+    /// The live endpoint (desktop), which a browser relaunch moves: a driver
+    /// built against the old one is stale even while its own transport stays
+    /// open.
+    #[cfg(desktop)]
     pub endpoint: &'a str,
     /// The browser's own identity - the `/devtools/browser/<uuid>` its port
-    /// file names - which a relaunch changes even when it lands on the same
-    /// port. The endpoint string alone would compare equal there.
+    /// file names on the desktop - which a relaunch changes even when it
+    /// lands on the same port. The phone's is `webview-<generation>`: the
+    /// WebView never moves within a run, but a CLAIMED RENDERER DEATH bumps
+    /// the generation, and a changed identity is what makes the next call
+    /// rebuild the driver. On the phone that rebuild cannot reattach today
+    /// (issue #1931): the in-app node keeps its old socket link open (it only
+    /// redials a dead one), so in the steady case the fresh driver's start
+    /// gets no dial and its accept window times out - the call fails with the
+    /// reason until the app is restarted.
     pub identity: &'a str,
     pub output: &'a Path,
+    /// The unix socket the in-app driver dials (phone only).
+    #[cfg(target_os = "android")]
+    pub socket: &'a Path,
+    /// The client UI's origin (phone only): the driver's tab pin keeps off
+    /// it.
+    #[cfg(target_os = "android")]
+    pub ui_origin: &'a str,
+    /// The Kotlin engine handle (phone only).
+    #[cfg(target_os = "android")]
+    pub engine: &'a super::android::Engine,
 }
 
 impl DriverStart<'_> {
     async fn start(&self) -> Result<Driver, String> {
-        Driver::start(self.node, self.cli, self.endpoint, self.output).await
+        #[cfg(desktop)]
+        {
+            Driver::start(self.node, self.cli, self.endpoint, self.output).await
+        }
+        #[cfg(target_os = "android")]
+        {
+            Driver::start_inapp(self.engine, self.socket, self.ui_origin, self.output).await
+        }
     }
 }
 
@@ -83,6 +113,7 @@ impl Profile {
     /// separate question**, asked per call by [`live_driver`]; this is only
     /// what a caller reads to decide between reuse and rebuild. A lock that
     /// cannot be taken means a call is running, which means it is there.
+    #[cfg(desktop)]
     pub(super) fn is_alive(&self) -> bool {
         match self.held.try_lock() {
             Ok(held) => held.driver.as_ref().is_some_and(|driver| driver.is_running()),
@@ -106,7 +137,9 @@ impl Profile {
     /// Forget the driver, so the next call builds a fresh one. Called when a
     /// call failed AND the browser is no longer the one this driver was built
     /// against - a browser that died under it - while a plain tool failure
-    /// (no such element) leaves the driver in place.
+    /// (no such element) leaves the driver in place. The phone has no
+    /// browser to relaunch, so nothing there drops drivers.
+    #[cfg(desktop)]
     pub(super) async fn drop_driver(&self) {
         self.held.lock().await.driver = None;
     }
@@ -137,7 +170,9 @@ async fn live_driver(held: &mut Held, start: &DriverStart<'_>) -> Result<Arc<Dri
 }
 
 /// A named profile: it belongs to the session that opened it, and its browser
-/// lives on its own data directory.
+/// lives on its own data directory. Desktop-only: the phone runs exactly one
+/// browser and refuses a name (see `BrowserHost::call`'s phone arm).
+#[cfg(desktop)]
 pub struct Named {
     pub(super) owner: Seat,
     pub(super) profile: Profile,
@@ -155,6 +190,7 @@ async fn routed_call(driver: &Driver, tool: &str, args: &Value) -> Result<Vec<Re
     }
 }
 
+#[cfg(desktop)]
 impl Named {
     /// The owner, the data directory, and the driver a named profile is
     /// opened with. **Neither the driver nor the browser is started here**: a
@@ -166,6 +202,7 @@ impl Named {
 }
 
 /// What a session naming a profile gets.
+#[cfg(desktop)]
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum Verdict {
     /// Drive the profile already under that name, which the caller owns.
@@ -196,6 +233,7 @@ pub(super) fn name_refusal(name: &str) -> Option<String> {
 }
 
 /// What the asking session gets, given who holds the name.
+#[cfg(desktop)]
 pub(super) fn verdict(name: &str, seat: &Seat, held: Option<&Seat>) -> Verdict {
     match held {
         None => Verdict::Open,

@@ -295,6 +295,10 @@ client-test:
 # crate it never touched. A cost choice rather than an impossibility.
 client-tauri-check:
     npm --prefix client run tauri -- build --no-bundle --ci -- --locked
+    # The shell's own Rust tests: the shell crate is its own workspace root,
+    # so `just check`'s cargo steps never reach them, and without this line
+    # they run in NO gate at all.
+    cargo nextest run --manifest-path client/src-tauri/Cargo.toml
 
 # Build the shell's bundles: `forge.app` and the dmg, under
 # client/src-tauri/target/release/bundle. `client-tauri-check` covers no
@@ -337,6 +341,13 @@ client-tauri-bundle: vendor-browser-stack
 vendor-browser-stack:
     ./scripts/vendor_browser_stack.sh
 
+# The Android engine: libnode (gmaclennan/nodejs-mobile, Node 24, one ABI)
+# into the Gradle project's gitignored jniLibs and cpp headers. Idempotent at
+# its pin; the android build recipes run it themselves, so a fresh clone that
+# runs them gets the engine without a separate step.
+vendor-browser-stack-android:
+    ./scripts/vendor_browser_stack.sh --android
+
 
 # The Android half's own gate. Neither `just check` nor `client-tauri-check`
 # reaches it: the shell crate is its own workspace root, and the Kotlin lives
@@ -346,7 +357,7 @@ vendor-browser-stack:
 #
 # The target has to be installed (`rustup target add aarch64-linux-android`)
 # for the shell check.
-client-android-check:
+client-android-check: vendor-browser-stack vendor-browser-stack-android
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -373,7 +384,23 @@ client-android-check:
     # none of it and gradle alone dies at settings evaluation. The CLI's own
     # build generates it (and compiles the Kotlin and the Rust); the unit
     # tests then run alone, because a build success prints no test count.
+    # **The renderer-death claim is INJECTED, and a dropped config would
+    # regenerate the client silently WITHOUT it** - wry reads the env hook
+    # from client/.cargo/config.toml (the tauri CLI chain runs from client/),
+    # so a move of that file, or a wry bump that renames the class extension,
+    # produces an app that dies when any WebView's renderer is killed. The
+    # generated file is the proof, and it is build output: remove it FIRST, or
+    # a stale copy left by an earlier build could pass the grep on old bytes
+    # (a fresh clone fails safely, a warm one would not).
+    generated_client="client/src-tauri/gen/android/app/src/main/java/dev/vedhavyas/forge/generated/RustWebViewClient.kt"
+    rm -f "$generated_client"
     npm --prefix client run tauri -- android build --debug --apk --ci --target aarch64
+    for marker in onRenderProcessGone rendererDied; do
+        if ! grep -q "$marker" "$generated_client"; then
+            echo "[ERROR] the generated RustWebViewClient is missing '$marker' - the renderer-gone claim did not inject; check client/.cargo/config.toml (WRY_RUSTWEBVIEWCLIENT_CLASS_EXTENSION)" >&2
+            exit 1
+        fi
+    done
     # Universal is the variant `--target aarch64` builds (the release APK too).
     (cd client/src-tauri/gen/android && ./gradlew --console=plain :app:testUniversalDebugUnitTest)
     RUSTFLAGS="-D warnings" cargo check --manifest-path client/src-tauri/Cargo.toml --target aarch64-linux-android
@@ -531,7 +558,7 @@ client-release version: vendor-browser-stack
 # clean afterwards, so a Cargo.lock rewrite cannot ride out of a release.
 #
 # Build and stage the Android release APK.
-client-android-release version:
+client-android-release version: vendor-browser-stack vendor-browser-stack-android
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -637,6 +664,22 @@ client-android-release version:
     abi=$("$aapt2" dump badging "$built" | sed -n 's/^native-code: //p' | tr -d "'" || true)
     if [ "$abi" != "arm64-v8a" ]; then
         echo "[ERROR] the built APK's native code is '$abi', expected arm64-v8a" >&2
+        exit 1
+    fi
+
+    # **What the APK packs, not just that it built.** The Android bundle's
+    # assets are the driver tree alone; a stale browser/ or node/ under the
+    # generated assets once shipped a 516MB APK with every other check
+    # green (2026-10-08), so the readback asserts the shape here, every
+    # release.
+    packed=$(unzip -l "$built" | awk '{print $4}' | grep '^assets/browser-stack/' || true)
+    if echo "$packed" | grep -qE '^assets/browser-stack/(browser|node)/'; then
+        echo "[ERROR] the APK packs the desktop stack (node/browser) into Android assets:" >&2
+        echo "$packed" | grep -E '^assets/browser-stack/(browser|node)/' | head -5 >&2
+        exit 1
+    fi
+    if ! echo "$packed" | grep -q '^assets/browser-stack/playwright-mcp/'; then
+        echo "[ERROR] the APK carries no driver tree under assets/browser-stack/playwright-mcp" >&2
         exit 1
     fi
 

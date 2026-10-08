@@ -23,6 +23,7 @@ import {
   closeProfile,
   hideBrowser,
   hostTheBrowser,
+  installTakeoverHook,
   listProfiles,
   showBrowser,
   type HostReply,
@@ -110,14 +111,58 @@ describe('the shell command names', () => {
     expect(invoke, 'the activity mark').toHaveBeenLastCalledWith('browser_used');
   });
 
-  it('and the phone does not claim the capability before its phase', () => {
+  it('and the phone claims the capability like any other shell', () => {
+    // The Android phase landed: the phone's engine is its own system WebView
+    // and the driver runs in-app (issue #1839). The page is the same shell
+    // either way, so the UA decides nothing but iOS's absence - see below.
     const agent = Object.getOwnPropertyDescriptor(window.navigator, 'userAgent');
     Object.defineProperty(window.navigator, 'userAgent', {
       value: 'Mozilla/5.0 (Linux; Android 15; Pixel 9)',
       configurable: true,
     });
-    expect(canHost(), 'the phone is not a browser client yet').toBe(false);
+    expect(canHost(), 'the phone hosts the browser now').toBe(true);
     if (agent) Object.defineProperty(window.navigator, 'userAgent', agent);
+  });
+
+  it('and a page that is no shell at all never claims it', () => {
+    // **The marker is the capability's one gate.** A mutant dropping the
+    // `__TAURI_INTERNALS__` check would claim the role in a plain browser
+    // and fail every ask routed to it.
+    const internals = Object.getOwnPropertyDescriptor(window, '__TAURI_INTERNALS__');
+    delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+    expect(canHost(), 'outside the shell there is no host to declare').toBe(false);
+    if (internals) Object.defineProperty(window, '__TAURI_INTERNALS__', internals);
+  });
+
+  it('and an iOS shell does not claim what it cannot serve', () => {
+    // No iOS build exists; if one lands, it must not hold the exclusive
+    // browser role with no host behind it (this is why the capability is
+    // declared only where a host is really there).
+    const agent = Object.getOwnPropertyDescriptor(window.navigator, 'userAgent');
+    Object.defineProperty(window.navigator, 'userAgent', {
+      value: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)',
+      configurable: true,
+    });
+    expect(canHost(), 'an iOS shell has no browser host to answer with').toBe(false);
+    if (agent) Object.defineProperty(window.navigator, 'userAgent', agent);
+  });
+
+  it("and the takeover hook's literals are the ones the phone's bar sends", () => {
+    // The bar (Kotlin) and this page (TS) meet on strings no compiler
+    // checks: `window.__forgeTakeover('done' | 'lowered' | 'raised')` and
+    // the `forge-takeover` CustomEvent. A one-sided rename would make the
+    // bar silently dead.
+    const events: string[] = [];
+    const listen = (event: Event) => events.push((event as CustomEvent<string>).detail);
+    window.addEventListener('forge-takeover', listen);
+    installTakeoverHook();
+
+    (window as unknown as { __forgeTakeover: (what: string) => void }).__forgeTakeover('done');
+    (window as unknown as { __forgeTakeover: (what: string) => void }).__forgeTakeover('lowered');
+    (window as unknown as { __forgeTakeover: (what: string) => void }).__forgeTakeover('raised');
+
+    window.removeEventListener('forge-takeover', listen);
+    expect(events, 'the three literals cross as themselves').toEqual(['done', 'lowered', 'raised']);
   });
 
   /** **The failure arm.** The shell rejects a failed call with the driver's

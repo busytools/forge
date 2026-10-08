@@ -136,6 +136,23 @@
   });
 
   /**
+   * The phone's takeover bar moving - its back, its Done, the hardware Back,
+   * a raise: nothing in THIS page acted, and the bar's UI body runs on the
+   * UI thread, so a read made by a caller can land before it (measured: the
+   * row kept saying "hide" over a window already down). Every bar word
+   * re-reads - see `installTakeoverHook`.
+   */
+  $effect(() => {
+    const onTakeover = (event: Event): void => {
+      const what = (event as CustomEvent<string>).detail;
+      if (what !== 'lowered' && what !== 'done' && what !== 'raised') return;
+      void readProfiles();
+    };
+    window.addEventListener('forge-takeover', onTakeover);
+    return () => window.removeEventListener('forge-takeover', onTakeover);
+  });
+
+  /**
    * How the panel closes when the pointer leaves: with a grace period, because
    * a gap sits between the toggle and the panel and a pointer crossing it
    * would otherwise never reach the rows.
@@ -396,7 +413,9 @@
 
       <!-- **The shared profile is always there**, and it is the one most
            sessions drive - listing only named ones read as "no profile"
-           while a session was plainly using the browser. -->
+           while a session was plainly using the browser. Incapable clients
+           say that here rather than drawing a bare mark (#1839: absent is
+           visible and explained). -->
       <div class="bz-it">
         {#if capable}
           <span class="ring"></span>
@@ -404,7 +423,11 @@
           <Icon name="x" class="bad" />
         {/if}
         <span class="nm">shared</span>
-        <span class="tx">every session · the browser's own profile</span>
+        <span class="tx">
+          {capable
+            ? "every session · the browser's own profile"
+            : 'this client cannot host the browser'}
+        </span>
         {#if capable}
           <button
             type="button"
