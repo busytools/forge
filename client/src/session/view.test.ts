@@ -299,6 +299,56 @@ describe('the rail', () => {
   });
 
   /**
+   * **An ask is the seat's mark, whatever the lifecycle says.** The terminal
+   * draws its triangle from the prompt queue itself rather than from a
+   * lifecycle it has to trust, and the rail read its mark from the lifecycle
+   * alone - so a seat whose question was up while the CLI still called it idle
+   * drew no glyph, and the reader could not tell which worker was asking
+   * (#1885).
+   */
+  it('wears the ask mark on the seat that holds the question', () => {
+    const mark = (asking: AgentRow): string | null => {
+      const row = railGroups(withHome({ agents: [asking] }), LEAD, 0).flatMap(
+        (group) => group.projects,
+      )[0]?.row;
+      return row === undefined ? null : railMark(row.state);
+    };
+
+    // **Whatever else the row is doing.** The rank the rail groups by files a
+    // pending seat under needs-you from an idle, a running or a backgrounded
+    // row, and the mark has to agree with it - a mark read from the lifecycle
+    // alone drew running or idle on a seat whose ask was up (#1885). The
+    // terminal pins the same property, in `projects_pane.rs`:
+    // `needs_attention_overrides_background_work_spinner` draws its triangle
+    // over background work, and its comment says "regardless of lifecycle".
+    for (const lifecycle of ['Idle', 'Running'] as const) {
+      for (const pending of ['question', 'permission'] as const) {
+        for (const has_background_work of [false, true]) {
+          expect(
+            mark({ ...lead(), lifecycle, pending, has_background_work }),
+            `holding a ${pending} on a ${lifecycle} seat (background ${String(has_background_work)}) drew no glyph`,
+          ).toBe('needs');
+        }
+      }
+    }
+
+    // And a failure still outranks the ask, which is the terminal's own order:
+    // its cross is drawn over everything, ask included -
+    // `worker_row_with_failed_turn_renders_red_cross_over_triangle` and
+    // `attention_and_failed_turn_outrank_unseen_completion_on_the_row` pin
+    // that there.
+    expect(
+      mark({
+        ...lead(),
+        lifecycle: 'Running',
+        pending: 'question',
+        failed_turn: { secs_since_epoch: 1_800_000_000, nanos_since_epoch: 0 },
+      }),
+      'a failed turn gave way to the ask',
+    ).toBe('failed');
+  });
+
+  /**
    * A failed turn is the seat's own failure, and both surfaces say so from
    * one mapping: the row carries the line and the header takes the failure
    * mark. Each half had its own way to fall silent - the line through

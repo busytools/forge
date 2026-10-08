@@ -3,9 +3,9 @@
  * of the gather `crates/forge-web/src/home.rs` does in `view_of`.
  *
  * Pure, so a test can build a fleet by hand. Everything here comes from the
- * snapshot and nothing is recomputed: a state a view re-derived would
- * disagree with the terminal the first time a turn settled while nobody was
- * watching, and it would disagree silently.
+ * snapshot, and the only states this file makes for itself are `stateOf`'s
+ * four promotions - the cases a state read from the wire alone would disagree
+ * with the terminal about, silently, the first time one of them turned.
  *
  * Every cell the server's own home draws is drawn from the snapshot. The
  * three things it used to leave empty - the task a seat holds, whether an
@@ -157,18 +157,25 @@ export interface HomeView {
 /**
  * The state a row draws from what the snapshot carries.
  *
- * Three promotions the core does not make, all about what the mark means: a
+ * Four promotions the core does not make, all about what the mark means: a
  * backgrounded task is work even after the turn that started it settled, a
  * turn that finished while this view was not showing the seat answers "what
- * changed while I was away", and a failed turn the view has not been shown
- * since is the one state the reader has to act on. None is computed here -
- * `has_background_work`, `unseen` and `failed_turn` all cross on the
- * snapshot.
+ * changed while I was away", a failed turn the view has not been shown
+ * since is the one state the reader has to act on, and an ASK is the state's
+ * own name whether or not the CLI's lifecycle has caught up - the terminal
+ * draws its triangle from the prompt queue rather than from a lifecycle it
+ * has to trust. None is computed here - `has_background_work`, `unseen`,
+ * `failed_turn` and `pending` all cross on the snapshot.
  */
 export function stateOf(row: AgentRow, unseen: SessionSlot[]): RowState {
   // The failure outranks every other promotion, and the terminal orders it
   // over the spinner and the diamond both.
   if (row.failed_turn !== null) return { kind: 'failed-turn' };
+  // **A question outranks work.** The seat is waiting on a person, which is
+  // what needs-you means; the rank the rail groups by already reads it this
+  // way, and a mark read from the lifecycle alone drew idle on a seat whose
+  // ask was up (#1885).
+  if (row.pending !== null) return { kind: 'lifecycle', lifecycle: 'Attention' };
   if (row.lifecycle === 'Idle' && row.has_background_work) {
     return { kind: 'lifecycle', lifecycle: 'Running' };
   }

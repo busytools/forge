@@ -4,12 +4,12 @@
  *
  * **Nothing is folded here, and that is the point.** A row's state is the
  * server's, folded from the core's own `Live` alongside the roster, so it
- * arrives in the row already decided - including the unseen marks. A client
- * that recomputed any of it from what it happens to hold would disagree with
- * the terminal the first time a turn settled while nobody was watching, and
- * it would disagree silently. So an update home is sent is answered with a
- * fresh read rather than with arithmetic, and an update it is not sent is
- * never seen.
+ * arrives in the row already decided - including the unseen marks. The only
+ * states this client makes for itself are `stateOf`'s four promotions: the
+ * cases where the state read from the wire alone would disagree with the
+ * terminal, silently, the first time one of them turned. So an update the
+ * home is sent is answered with a fresh read rather than with arithmetic, and
+ * an update it is not sent is never seen.
  */
 
 import { writable, type Readable, type Writable } from 'svelte/store';
@@ -52,9 +52,30 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
   // flight queues them behind each other and the page falls further behind
   // the busier the fleet is. One at a time.
   let reading = false;
+  /**
+   * Whether an update landed while a read was in flight.
+   *
+   * **The read in hand was encoded before it**, so its answer already
+   * disagrees with the fleet: skipping the update with it leaves the page
+   * drawing the state it asked about until something else moves - an ask mark
+   * outliving the answer that resolved it, which is the wait Ved met leaving
+   * needs-you (#1885). So the update is remembered, and asked for again the
+   * moment the answer lands.
+   */
+  let stale = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let stopMessages: (() => void) | null = null;
   let stopStatus: (() => void) | null = null;
+
+  /** Ask for one read, coalescing the updates that arrive inside the beat. */
+  function schedule(): void {
+    if (timer !== null) return;
+    timer = setTimeout(() => {
+      timer = null;
+      reading = true;
+      connection.refresh('home');
+    }, COALESCE_MS);
+  }
 
   function read(): void {
     if (held === null) return;
@@ -70,34 +91,52 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
   }
 
   function watch(): void {
-    // The home's subscription is also where the connection declares whether
-    // this client can host the browser: it is the first subscribe the app
-    // makes, and the capability belongs to the CONNECTION rather than to a
-    // page - a host that only claimed it on a session page would not be the
-    // host while the reader sits on the home.
-    held = connection.subscribe('home', { browser: canHost() });
+    // The home's subscription is where the connection declares what belongs to
+    // it rather than to a page: it is usually the first subscribe the app
+    // makes (/models gets there first on a deep link; a seat page cannot, it
+    // waits on the home's own snapshot), and both capabilities below are per
+    // CONNECTION - a host or an answerer that only claimed the role on a
+    // session page would not hold it while the reader sits on the home.
+    //
+    // **`answering` is a safeguard here, not a cure.** The core cancels an ask
+    // at birth when NO subscriber can answer it anywhere, and on this machine
+    // that cannot happen: forge's own terminal is attached as an answerer for
+    // as long as it runs. A client that says nothing is still a guest beside
+    // that. What makes an unshown seat wear its glyph is the ask itself, read
+    // in the client's own `stateOf`; this declaration is for the install with
+    // no terminal at all, where nobody else could answer and an ask raised
+    // while this page is away would be cancelled unseen.
+    held = connection.subscribe('home', { answering: true, browser: canHost() });
     reading = false;
     stopMessages = connection.onMessage((message) => {
       if (message.kind === 'snapshot' || message.kind === 'error') {
         if (message.kind === 'error' || message.subject === 'home') {
           reading = false;
           read();
+          // The answer just landed was encoded before whatever arrived while
+          // it was in flight, so that update is spent here rather than lost.
+          if (stale) {
+            stale = false;
+            schedule();
+          }
         }
         return;
       }
       if (message.kind !== 'update' || !coversHome(message.update)) return;
-      if (reading || timer !== null) return;
-      timer = setTimeout(() => {
-        timer = null;
-        reading = true;
-        connection.refresh('home');
-      }, COALESCE_MS);
+      if (reading) {
+        stale = true;
+        return;
+      }
+      schedule();
     });
     // A drop takes any read in flight with it, and the reconnect answers with
     // a snapshot of its own - so the pacing must not stay stuck waiting for
-    // an answer that died.
+    // an answer that died, and the staleness dies with it.
     stopStatus = connection.onStatus((next: ConnectionStatus) => {
-      if (next !== 'open') reading = false;
+      if (next !== 'open') {
+        reading = false;
+        stale = false;
+      }
     });
   }
 

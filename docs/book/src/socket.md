@@ -99,11 +99,15 @@ the whole subject. The subscription this opens is the one updates arrive on.
 
 **`answering` declares whether this client can answer a prompt, and it is
 off unless you say otherwise.** The core parks a turn on the reply of
-whoever registered as answering, so a client that does not say so is never
-handed a prompt it would have to show - a read-only dashboard cannot hang
-a turn by ignoring one. A client with a dock to answer from sets it true
-in its first subscribe, and the connection registers with the core
-accordingly before it forwards anything.
+whoever registered as answering, so a client that says so must be able to
+show what it is handed: one counted as able to answer and unable to draw
+would leave the turn waiting on a reply that never comes. A read-only
+dashboard says nothing and still READS the prompts - every update reaches
+every subscriber whatever its role, and no turn hangs on it, because the
+core asks only the answerers whether a prompt can be answered. A client with
+a dock to answer from sets this true, usually in its first subscribe, and
+the connection registers with the core accordingly before it forwards
+anything.
 
 **The declaration sticks for the connection, and it only goes one way.**
 A later `subscribe` that leaves `answering` false does not take it back:

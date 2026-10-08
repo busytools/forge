@@ -92,10 +92,24 @@ pub enum ClientMessage {
         ///
         /// Off unless the client says otherwise, because the core parks a
         /// turn on the reply of whoever registered as answering: a client
-        /// counted as able to answer a prompt it cannot display hangs the
-        /// turn rather than failing it. A client with a dock to answer from
-        /// says so here; the connection registers with the core accordingly
-        /// before it forwards anything.
+        /// counted as able to answer a prompt it has no surface to draw hangs
+        /// the turn rather than failing it. A client with a dock to answer
+        /// from says so here; the connection registers with the core
+        /// accordingly before it forwards anything.
+        ///
+        /// **It is the CONNECTION's role, not the subject's.** The core keeps
+        /// one role per connection and it only ever rises, so a client that
+        /// can answer states it on the first subscribe it makes - usually the
+        /// home - and not only while a seat it could draw is showing.
+        ///
+        /// **What it guards is an install with no answerer anywhere.** Every
+        /// update is delivered to every subscriber regardless of role; the
+        /// role decides only what the core may PARK on. A forge running
+        /// beside its own terminal always has an answerer attached, so a
+        /// second client that says nothing is a guest beside one that can.
+        /// Where nobody can answer, an ask is cancelled at birth rather than
+        /// held for a reply that could not come. Declaring this means that
+        /// case never arises while this client is attached.
         #[serde(default)]
         answering: bool,
         /// Whether this client can host the browser.
