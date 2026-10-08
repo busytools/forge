@@ -27,14 +27,12 @@ const withCli = (installed: string | null, latest: string | null): HomeWire => (
  * the server's committed blob byte for byte, so it cannot be widened here.
  */
 const withGate = (gate: Gate): HomeWire => {
-  // The gate a row draws is the SEAT's own read, so it is set on the agent and
-  // not on the project beside it: a page reading the project's would draw the
-  // fixture's `gone` for every gate below.
+  // The fleet is one row per PROJECT, so the gate it draws is the
+  // project's own read - the same one the mockup's branch cell sits in.
   return {
     ...homeWire,
-    agents: homeWire.agents.map((row) => ({
+    projects: homeWire.projects.map((row) => ({
       ...row,
-      pending: null,
       work: { branch: null, changed: null, gate },
     })),
   };
@@ -125,14 +123,17 @@ describe('the home page as it draws', () => {
   });
 
   it('draws its shell and says so when the server holds no projects', () => {
-    const body = draw({ wire: { ...homeWire, projects: [], agents: [] } });
+    const body = draw({ wire: { ...homeWire, projects: [], agents: [], fleet: [] } });
     expect(body, 'an empty fleet drew no empty state').toContain('No projects yet');
     expect(body).toContain('forge.toml');
-    expect(body).not.toContain('class="list"');
+    expect(body).not.toContain('fleet-row');
   });
 
-  it('draws every project the snapshot holds', () => {
-    expect(draw()).toContain('class="list"');
+  it('draws every project the snapshot holds as its own fleet row', () => {
+    const body = draw();
+    expect(body).toContain('class="fleet-row"');
+    expect(body).toContain('fleet-name">proj');
+    expect(body, 'and the row is the way into the board').toContain('href="/board/TestOrg/proj"');
   });
 
   /**
@@ -159,26 +160,25 @@ describe('the home page as it draws', () => {
    * label is `lead`, so a raw template in place of the encoder passes every
    * other test. A label with a space in it is what tells them apart.
    */
-  it('encodes the seat a row links to', () => {
+  it('encodes the project its board links to', () => {
     const wire = {
       ...homeWire,
-      agents: [
-        {
-          ...homeWire.agents[0],
-          // The fixture's project, so the row is drawn at all: an agent whose
-          // slot names no project in `projects` contributes no row.
-          slot: { org: 'TestOrg', project: 'proj', label: 'two words' },
-        },
-      ],
+      projects: homeWire.projects.map((row) => ({
+        ...row,
+        project: { ...row.project, name: 'two words' },
+      })),
+      fleet: homeWire.fleet.map((row) => ({ ...row, project: 'two words' })),
     };
-    expect(draw({ wire })).toContain('href="/session/TestOrg/proj/two%20words"');
+    expect(draw({ wire })).toContain('href="/board/TestOrg/two%20words"');
   });
 
-  it('draws the mark its state names on the row', () => {
+  it('draws the fleet mark the strongest seat state names', () => {
     const body = draw();
-    expect(body, 'the row drew no lifecycle class').toContain('class="row idle"');
+    // The fixture's one seat is idle, so the fleet row's mark is the idle
+    // dot - the same shape a seat row draws, in the same vocabulary.
     expect(body).toContain('class="dot live"');
-    expect(body, 'the row drew no link to its seat').toContain('href="/session/TestOrg/proj/lead"');
+    expect(body, 'the seats ride the row').toContain('fleet-seat');
+    expect(body, 'and the unnamed miss is named').toContain('w1 holds no row');
   });
 });
 

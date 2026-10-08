@@ -45,11 +45,11 @@ const TASKS: TaskStripRow[] = [
   },
   {
     id: 't2',
-    status: 'blocked',
+    status: 'waiting',
     display: 'Port the cmdline rule',
     subject: 'Port the cmdline rule',
     owner: 'builder',
-    meta: 'blocked on a design call',
+    meta: 'waiting \u{b7} on a design call',
   },
   {
     id: 't3',
@@ -229,7 +229,7 @@ describe("the tasks row's interaction state machine", () => {
       'and takes the row, so a long subject elides instead of pushing the owner out',
     ).toBe(true);
     expect(rows()[0]?.querySelector('.n')?.textContent?.trim()).toBe('lead');
-    expect(rows()[1]?.querySelector('.ic.bad'), 'blocked wears the cross').not.toBeNull();
+    expect(rows()[1]?.querySelector('.wait'), 'waiting wears the bars').not.toBeNull();
     expect(rows()[2]?.querySelector('.ic.ok'), 'completed wears the check').not.toBeNull();
     expect(rows()[2]?.classList.contains('settled'), 'and reads as settled').toBe(true);
     expect(rows()[3]?.querySelector('.hollow'), 'pending wears the hollow dot').not.toBeNull();
