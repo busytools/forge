@@ -208,7 +208,7 @@ describe('the browser segment', () => {
 
   it('keeps the row and says why when the close is refused', async () => {
     vi.mocked(listProfiles).mockResolvedValue([
-      { name: 'hunt', owner: 'Busytools/forge/lead', running: true },
+      { name: 'hunt', owner: 'Busytools/forge/lead', running: true, windowed: false },
     ]);
     const shown = show(false, true);
     click(shown.target.querySelector('.bz-tog'));

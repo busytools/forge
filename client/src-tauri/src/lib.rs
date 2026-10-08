@@ -56,6 +56,7 @@ pub fn run() {
             browser::browser_call,
             browser::browser_profile_close,
             browser::browser_profiles,
+            browser::browser_windowed,
             browser::browser_show,
             browser::browser_hide,
             browser::browser_used,

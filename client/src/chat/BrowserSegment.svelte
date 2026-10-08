@@ -4,7 +4,9 @@
     browserUsed,
     canHost,
     closeProfile,
+    hideBrowser,
     listProfiles,
+    profileWindowed,
     showBrowser,
     whyText,
     type ProfileRow,
@@ -48,6 +50,11 @@
   const mine = $derived(slot === null ? null : `${slot.org}/${slot.project}/${slot.label}`);
   /** The rows this slot reads: its own, or all of them where there is no slot. */
   const shown = $derived(mine === null ? profiles : profiles.filter((row) => row.owner === mine));
+  /** Whether the SHARED browser is up as a window: its row's button says hide
+   *  where it is, and the collapsed row marks it without opening. */
+  let sharedUp = $state(false);
+  /** Whether any of the lines this slot reads is up as a window. */
+  const anyUp = $derived(sharedUp || shown.some((row) => row.windowed));
   /** Whether the browser has been driven this session up - Ved's activity mark. */
   let used = $state(false);
   /**
@@ -93,6 +100,11 @@
     // last truth rather than claiming either state.
     void browserUsed()
       .then((now) => (used = now))
+      .catch(() => undefined);
+    // And the shared line's own window state, which its row's button and the
+    // collapsed mark both speak for.
+    void profileWindowed()
+      .then((now) => (sharedUp = now))
       .catch(() => undefined);
   }
 
@@ -259,8 +271,22 @@
         readToken += 1;
         read = 'failed';
         why = reason;
+        return;
       }
+      // The window is up now: the row's button says hide from here.
+      void readProfiles();
     });
+  }
+
+  /** The person's own lower: the window goes, the browser keeps serving, and
+   *  the row's button says show again. */
+  function lower(profile: string | null = null): void {
+    void hideBrowser(profile)
+      .then(() => readProfiles())
+      .catch((error: unknown) => {
+        read = 'failed';
+        why = whyText(error);
+      });
   }
 
   /** The person's close: saves, frees the name, and the row falls away. */
@@ -294,10 +320,15 @@
     onkeydown={esc}
   >
     <Icon name="web" />
-    {#if browserInflight.calls > 0}
+    {#if browserInflight.visible}
       <!-- The work-in-flight mark, the same ring the conversation draws: a
            call is running through this browser right now. -->
       <span class="ring" title="the browser is working"></span>
+    {/if}
+    {#if anyUp}
+      <!-- A window is up on one of this slot's lines; the list says which,
+           and that row's own button takes it down. -->
+      <span class="dot ok" title="a browser window is open"></span>
     {:else if used}
       <!-- The system band's flat idle disc: the browser has been driven,
            which is a state and not motion. -->
@@ -352,11 +383,11 @@
           <button
             type="button"
             class="bz-take bz-show"
-            aria-label="show the browser"
-            onclick={() => show(null)}
+            aria-label={sharedUp ? 'hide the browser window' : 'show the browser'}
+            onclick={() => (sharedUp ? lower(null) : show(null))}
             onkeydown={esc}
           >
-            show
+            {sharedUp ? 'hide' : 'show'}
           </button>
         {/if}
       </div>
@@ -376,11 +407,13 @@
           <button
             type="button"
             class="bz-take bz-show"
-            aria-label="show the {row.name} profile's browser"
-            onclick={() => show(row.name)}
+            aria-label={row.windowed
+              ? `hide the ${row.name} profile's window`
+              : `show the ${row.name} profile's browser`}
+            onclick={() => (row.windowed ? lower(row.name) : show(row.name))}
             onkeydown={esc}
           >
-            show
+            {row.windowed ? 'hide' : 'show'}
           </button>
           <button
             type="button"

@@ -309,10 +309,28 @@ impl BrowserHost {
                 name: name.clone(),
                 owner: entry.owner.to_string(),
                 running: entry.profile.is_alive(),
+                windowed: chromium::launched_windowed(&entry.dir),
             })
             .collect();
         rows.sort_by(|a, b| a.name.cmp(&b.name));
         rows
+    }
+
+    /// Whether the profile's browser is up as a WINDOW right now - the shared
+    /// one for `None` - so the strip's button can say hide where the window is
+    /// up and show where it is not.
+    pub async fn windowed(&self, profile: Option<&str>) -> Result<bool, String> {
+        let paths = self.paths.clone()?;
+        let dir = match profile {
+            Some(name) => {
+                if let Some(refusal) = profiles::name_refusal(name) {
+                    return Err(refusal);
+                }
+                paths.profiles.join(name)
+            }
+            None => paths.user_data,
+        };
+        Ok(chromium::launched_windowed(&dir))
     }
 
     /// Bring the browser up VISIBLY for a hand-off's Open or the strip's
@@ -501,6 +519,9 @@ pub struct ProfileRow {
     pub owner: String,
     /// Whether its driver is still there to answer.
     pub running: bool,
+    /// Whether its browser is up as a WINDOW right now: the strip's button
+    /// says hide where it is, and show where it is not.
+    pub windowed: bool,
 }
 
 /// The named profiles this host holds, for its own browser strip.
@@ -513,6 +534,16 @@ pub async fn browser_profiles(
     host: tauri::State<'_, Arc<BrowserHost>>,
 ) -> Result<Vec<ProfileRow>, String> {
     Ok(host.profiles().await)
+}
+
+/// Whether a profile's browser is up as a window, for the strip's show/hide
+/// button: the shared profile for `None`.
+#[tauri::command]
+pub async fn browser_windowed(
+    host: tauri::State<'_, Arc<BrowserHost>>,
+    name: Option<String>,
+) -> Result<bool, String> {
+    host.windowed(name.as_deref()).await
 }
 
 /// Close a named profile from the client's own UI: the strip's row, acting

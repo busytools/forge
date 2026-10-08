@@ -19,7 +19,7 @@ import type { BrowserAnswer, BrowserAnswerPart, BrowserAsk } from '../protocol';
 import type { Connection } from '../socket';
 
 /** One part as the shell returns it: an image's bytes are base64 there. */
-import { browserInflight } from './inflight.svelte';
+import { callDown, callUp } from './inflight.svelte';
 
 export type HostPart =
   { type: 'text'; text: string } | { type: 'image'; mime_type: string; data_base64: string };
@@ -78,9 +78,9 @@ export function answerPart(part: HostPart): BrowserAnswerPart {
  */
 export function hostTheBrowser(connection: Connection, invoke: Invoke = defaultInvoke): () => void {
   return connection.onBrowserAsk(async (ask: BrowserAsk): Promise<BrowserAnswer> => {
-    // The strip's live mark: up for exactly as long as the call runs, so the
-    // row says "the browser is working" from the same fact that makes it true.
-    browserInflight.calls += 1;
+    // The strip's live mark: up while the call runs, so the row says "the
+    // browser is working" from the same fact that makes it true.
+    callUp();
     try {
       const reply = (await invoke('browser_call', {
         seat: ask.seat,
@@ -91,7 +91,7 @@ export function hostTheBrowser(connection: Connection, invoke: Invoke = defaultI
     } catch (why) {
       return { error: whyText(why) };
     } finally {
-      browserInflight.calls -= 1;
+      callDown();
     }
   });
 }
@@ -184,6 +184,16 @@ export async function closeProfile(name: string): Promise<void> {
   await invoke('browser_profile_close', { name });
 }
 
+/**
+ * Whether a profile's browser is up as a window - the shared one for `null` -
+ * which is what the strip's show/hide button toggles on.
+ */
+export async function profileWindowed(name: string | null = null): Promise<boolean> {
+  if (!canHost()) return false;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return await invoke<boolean>('browser_windowed', { name });
+}
+
 /** One named profile, as the client's own browser strip draws it. */
 export interface ProfileRow {
   name: string;
@@ -191,6 +201,9 @@ export interface ProfileRow {
   owner: string;
   /** Whether its driver is still there to answer. */
   running: boolean;
+  /** Whether its browser is up as a WINDOW right now: the row's button says
+   *  hide where it is, and show where it is not. */
+  windowed: boolean;
 }
 
 /**
