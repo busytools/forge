@@ -396,9 +396,10 @@ describe('the models page as it draws', () => {
     const host = open({ ...modelsWire, check: { state: 'unknown' } as never, updates: [] });
 
     expect(host.textContent).toContain('this client');
-    // The check line's own title, not the whole page: the roles' news below
-    // it says a role is up to date, which is a fact about the role rather
-    // than a claim about a feed this client could not read.
+    // The check line's own title: a state this client cannot read must not
+    // draw as fresh. The roles' news below is a separate line, and its own
+    // guard turns an unread feed into `the feed has not answered` rather
+    // than a fresh claim.
     const title = host.querySelector('.status .t');
     expect(title?.textContent).not.toContain('up to date');
   });
@@ -413,6 +414,12 @@ describe('the models page as it draws', () => {
 
     expect(host.textContent).toContain('the catalogue could not be reached');
     expect(host.textContent).toContain('github.com answered 502');
+    // **An empty `updates` on a feed that never answered is not "nothing to
+    // propose"**: the roles' news reads the same check state the title does.
+    expect(
+      host.textContent,
+      'a role read as up to date against a feed that never answered',
+    ).toContain('the feed has not answered');
   });
 
   /**
