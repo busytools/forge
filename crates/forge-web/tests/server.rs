@@ -3387,8 +3387,8 @@ async fn the_processes_section_states_the_age_of_the_walk() {
     );
 }
 
-/// The monitors section is where monitors live: the chat does not carry
-/// them, so a running monitor with nothing drawing it would be invisible.
+/// The monitors section is the live watcher's surface: a monitor's call
+/// row draws in the chat, and how the running ones stand is only here.
 #[tokio::test]
 async fn the_monitors_section_draws_the_live_set() {
     let dir = tempfile::tempdir().expect("tempdir");

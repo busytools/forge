@@ -13,7 +13,8 @@
 //! else: a mutation folds as an `edit` family instead of breaking the run,
 //! an envelope that is not agent traffic is a notice instead of a turn, a
 //! question the assistant asked is a card rather than a call, and a Monitor
-//! is not in the conversation at all.
+//! folds as a plain call row where the terminal carves its lifecycle block
+//! out of the run.
 
 use std::collections::HashMap;
 
@@ -31,9 +32,7 @@ use crate::family::{ToolFamily, tool_label};
 use crate::grouping::{
     CallParts, KindRow, aggregate_call_status, family_target, is_edit_tool, wire_row,
 };
-use crate::model::tool_call_info::{
-    AnsweredQuestion, is_ask_question_tool_name, is_monitor_tool_name,
-};
+use crate::model::tool_call_info::{AnsweredQuestion, is_ask_question_tool_name};
 use crate::model::{LiveTurn, LiveUsage, ToolCallStatus, TurnInfo};
 use crate::peer_outbound::{PeerOutboundKind, detect_outbound_call};
 
@@ -665,9 +664,9 @@ fn take_key(
 /// Add one call to the conversation: a peer card, a question's card, a
 /// run-breaker drawn on its own, or a member of the run being built.
 ///
-/// A Monitor is none of these: it is dropped. The inspector owns monitors
-/// and the chat draws nothing for one, so a row here would put a watcher in
-/// the conversation and name it under a family of its own.
+/// A Monitor is a member like any other call: the terminal draws its own
+/// lifecycle block for one, and a row skipped here is a call the session
+/// made that draws as nothing, which rule 25 forbids.
 fn push_call(
     id: &str,
     name: &str,
@@ -679,9 +678,6 @@ fn push_call(
     peers: &mut Vec<PeerCard>,
     units: &mut Vec<ChatUnit>,
 ) {
-    if is_monitor_tool_name(name) {
-        return;
-    }
     if let Some(card) = outbound_card(name, input) {
         flush(run, units);
         peers.push(card);
@@ -1494,16 +1490,16 @@ mod tests {
         );
     }
 
-    /// A Monitor is not in the conversation at all: the inspector owns it,
-    /// and the mockup draws nothing for it in the chat. Folded as a row, the
-    /// page shows a watcher beside the calls it is watching, under a family
-    /// that has no name of its own.
+    /// A Monitor joins the conversation as the plain call row every other
+    /// tool draws: it has no family of its own, so it folds under the
+    /// generic row, and it does not break the run it sat inside.
     ///
-    /// It is dropped without breaking the run it sat inside: the reader sees
-    /// the calls around it as the one run they are, since nothing is drawn
-    /// between them.
+    /// The terminal breaks the run at a monitor and stands its lifecycle
+    /// block alone (`grouping`'s `is_run_breaker` reads it as a lifecycle
+    /// block); the divergence is that block, not a row skipped here, which
+    /// is what rule 25 forbids.
     #[test]
-    fn a_monitor_is_not_in_the_conversation() {
+    fn a_monitor_joins_the_run_as_a_plain_call_row() {
         let monitor = assistant(vec![ContentBlock::ToolUse {
             id: "toolu_monitor".to_owned(),
             name: "Monitor".to_owned(),
@@ -1518,8 +1514,54 @@ mod tests {
         let ChatUnit::ToolGroup { families, .. } = &units[0] else {
             panic!("a tool group");
         };
-        assert_eq!(families.len(), 1, "with no row for the monitor");
+        let named: Vec<&str> = families.iter().map(|row| row.label.as_str()).collect();
+        assert_eq!(
+            named,
+            ["read", "tool"],
+            "the reads under theirs, the monitor under the generic row",
+        );
         assert_eq!(families[0].calls.len(), 2, "and both reads under their own");
+        assert_eq!(families[1].calls.len(), 1, "with the monitor drawn beside them");
+        assert_eq!(families[1].calls[0].id, "toolu_monitor", "as the call it is");
+        assert_eq!(
+            families[1].row,
+            KindRow::Family(ToolFamily::Tool),
+            "under the row a name with no family of its own resolves to",
+        );
+    }
+
+    /// A monitor's call between two peer messages splits the pair: the
+    /// terminal's rule, so the two read as plain cards rather than one
+    /// messaging group, since the monitor stands in the run between them.
+    #[test]
+    fn a_monitor_between_two_peer_messages_splits_the_pair() {
+        let monitor = assistant(vec![ContentBlock::ToolUse {
+            id: "toolu_monitor".to_owned(),
+            name: "Monitor".to_owned(),
+            input: serde_json::json!({"description": "watch the deploy", "command": "tail -f log"}),
+            extras: serde_json::Map::new(),
+        }]);
+        let messages = [
+            peer_message("t-1", "steward", "IT IMPORTED. The window is lost"),
+            monitor,
+            peer_message("t-2", "planner", "picking up the migration now"),
+        ];
+
+        let units = render_units(&messages);
+
+        assert_eq!(units.len(), 3, "the pair splits around the monitor's run");
+        assert!(
+            matches!(&units[0], ChatUnit::PeerCard(card) if card.peer == "steward"),
+            "the first message is a card of its own",
+        );
+        assert!(
+            matches!(&units[1], ChatUnit::ToolGroup { .. }),
+            "with the monitor's call drawn between them",
+        );
+        assert!(
+            matches!(&units[2], ChatUnit::PeerCard(card) if card.peer == "planner"),
+            "and the second message too",
+        );
     }
 
     /// A run of peer messages is ONE group with a count, which is how the
