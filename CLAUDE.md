@@ -959,6 +959,15 @@ inspected.
     no matching case: each of those is this rule's subject whether or
     not the code calls itself a filter.
 
+    **Rows are never skipped either.** Ved, 2026-10-08: "rows must
+    never be skipped, either on the client or on the server. Everything
+    should be shown to me, so that is how I know if a row looks off -
+    that means it is new, and I need to capture the style for it; if
+    not, the existing one, then it is already stylized." A new kind of
+    row drawing plainly is the mechanism working, not a gap: seeing it
+    is how its style gets designed, and a skipped row is a style nobody
+    knows is missing.
+
     **The read path and the live path are one obligation.** The same
     message arrives once as a frame and once replayed from the
     transcript, so a transform that rewrites content on one side and
