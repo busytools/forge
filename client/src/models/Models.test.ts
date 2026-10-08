@@ -3,8 +3,9 @@ import { readFileSync } from 'node:fs';
 
 import { JSDOM } from 'jsdom';
 import { flushSync, mount, tick, unmount } from 'svelte';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { Microphone } from '../composer/mic';
 import type {
   BenchResult,
   BenchTarget,
@@ -24,6 +25,7 @@ const drawn: ReturnType<typeof mount>[] = [];
 const hosts: HTMLElement[] = [];
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const component of drawn.splice(0)) void unmount(component);
   for (const host of hosts.splice(0)) host.remove();
 });
@@ -1014,6 +1016,12 @@ describe('the models route as it draws', () => {
     return host;
   }
 
+  /** Let the page's async seams - `Microphone.open`, a chained press - settle
+   * before what they set off is read. A timer turn drains every microtask. */
+  async function settle(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
   /**
    * **The page's live wiring, which no string-level test can see.** The route
    * subscribes the catalogue itself, hands the snapshot to the body, and its
@@ -1060,6 +1068,48 @@ describe('the models route as it draws', () => {
 
     expect(forge.unsubscribed, 'leaving the page left the catalogue subscribed').toEqual([MODELS]);
     expect(forge.listening(), 'the release left a listener on the connection').toBe(0);
+  });
+
+  /**
+   * **Leaving the page releases the microphone.** The socket survives a
+   * client-side route change, so a recording left running holds the input
+   * with no page drawing it. The teardown stops it unkept - the audio of an
+   * abandoned page is not saved as the set.
+   */
+  it('releases the microphone when the route is left mid-recording', async () => {
+    const forge = fakeConnection();
+    let micStopped = false;
+    const mic = {
+      onFrame: null as ((bytes: Uint8Array) => void) | null,
+      flush: () => null,
+      stop: () => {
+        micStopped = true;
+      },
+    };
+    vi.spyOn(Microphone, 'open').mockResolvedValue(mic as unknown as Microphone);
+    const host = route(forge);
+    await tick();
+    forge.arrive({ kind: 'snapshot', subject: MODELS, data: modelsWire });
+    await tick();
+
+    const record = [...host.querySelectorAll<HTMLButtonElement>('button')].find(
+      (c) => c.textContent === 'record the passage',
+    );
+    expect(record, 'the read-aloud card drew no way to record').not.toBeUndefined();
+    record?.click();
+    // `begin` opens the microphone and constructs the recorder across
+    // microtasks: wait for them rather than counting ticks.
+    await settle();
+
+    // The route this test just mounted is the last one drawn.
+    const component = drawn.pop();
+    if (component === undefined) throw new Error('the route was not mounted');
+    void unmount(component);
+
+    expect(forge.dispatched, 'leaving mid-recording did not stop it, unkept').toContainEqual({
+      dictate_read_aloud_stop: { keep: false },
+    });
+    expect(micStopped, 'leaving mid-recording left the microphone held').toBe(true);
   });
 
   /**
