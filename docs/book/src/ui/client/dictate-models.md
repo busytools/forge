@@ -30,8 +30,8 @@ either.
 | Header | the brand mark, `forge`, the page's name, and the way back to the home | `ClientSettings.mark` from the greeting; the route |
 | The page's state | a refused action in the core's own words, and whichever download or activation is in flight with its progress | `refusal` (an `error` frame); `install`, `activate` |
 | In use | one row per model forge runs: its role - **the selector for the updates below** - its file, the facts the spec declares (size, quant, parameters, digest, licence), the feed's own measurement when it has one, the live state as a chip, and a line saying where the model came from | `in_use` |
-| Updates | the check's own line - up to date, an update, checking, unreachable, or a state this client cannot read - one line per proposal with the control that takes it, and the comparison table under it; the cleanup role's own view instead, where no feed measures a normalizer: its candidates with each one's own runs under it | `check`, `updates`, `rows`, `installed`, `results` |
-| Find a model | a door carrying the catalogue's size, and behind it a box that filters the feed's rows as it is typed: the variant, the quant a machine would run, the measured speed and error, the licence, what it transcribes, and the row's control. Each row links to the entry's own document | `rows` |
+| Updates | the check's own line - up to date, an update, checking, unreachable, or a state this client cannot read - with both roles' news under it, then the selected role's recommendation with the one control that takes it, then the comparison table behind a door; the cleanup role's own view instead, where no feed measures a normalizer: its candidates with each one's own runs under it | `check`, `updates`, `rows`, `installed`, `results` |
+| Find a model | a box that filters the feed's rows as it is typed: the variant, the quant a machine would run, the measured speed and error, the licence, what it transcribes, and the row's control. Each row links to the entry's own document | `rows` |
 | Benchmark | the fixtures first - the read-aloud set's own state with the record control and the count line - then the one press that scores the picks on this machine and leaves a verdict, then two doors: every run scored here, and every model a bench can run | `bench`, `read_aloud`, `results` |
 
 **A model in use is drawn from its spec.** The first fact line comes off the
@@ -74,6 +74,14 @@ install or activation the rule above would draw - download when the variant
 is not here, then load it, one press, with the completion line when the role
 runs it. The bench that scores a candidate on this machine's own recordings
 is the section below, not a second control in the line.
+
+**A line that says there is an update shows the update.** The check line
+carries both roles' news, and under it the selected role's recommendation
+is its own row: the model, its numbers against the one running, its licence
+and size, and the one control that takes it - download then load, or the
+download alone where `forge.toml` pins the role. A role with nothing
+proposed says so rather than leaving a blank. The table below it is
+evidence, not the pick, so it folds.
 
 **The comparison table is the rule's own working**, one row per model and
 one column per axis. Its columns are fixed widths, so the geometry holds
@@ -147,8 +155,8 @@ first, in a count line and the set's own card - what a run scores on, which
 is the reader's to change. Then the one press. Then the verdict, and under
 it two doors: every run scored here, and every model a bench can run. Both
 lists are long and neither is what the section is for, so they fold behind
-a heading that carries their count, and the catalogue does the same in the
-section above.
+a heading that carries their count. The catalogue above does not fold: it
+is a lookup a reader opens the page for, not evidence for anything.
 
 **The sweep is one press, and it leaves a verdict.** The card prices the
 press before it spends - which runs,

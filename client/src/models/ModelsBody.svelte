@@ -507,70 +507,97 @@
       {/if}
     {:else}
       {#each shown as update (`${update.role}/${update.file}`)}
-        <div class="cmp-head">
-          <span class="t">read against the {roleWord(update.role)} model in use</span>
-          <span class="when">
-            {speedLabel(update.current.speed_x)} and {update.current.fleurs_en_wer}% word error, on
-            the feed's own FLEURS-en and m4-max rows
-          </span>
-        </div>
-        {#if update.candidates.length === 0}
+        {@const proposal = recommendation(update)}
+        <!-- The recommendation first, and actionable: a line that says there
+             is an update has to show the update. The table under it is the
+             rule's own working - evidence for the pick, not the pick - so it
+             folds, and the row that carried the control keeps only its
+             verdict. -->
+        {#if proposal !== null}
+          <div class="status">
+            <span class="dot warn"></span>
+            <span class="t">
+              recommended for {roleWord(update.role)}: {proposal.row.display_name}
+            </span>
+            <span class="when">
+              {proposal.row.speed === null ? '?' : speedLabel(proposal.row.speed.xrt_wall)} vs {speedLabel(
+                update.current.speed_x,
+              )}
+              &middot; {proposal.row.wer?.err_pct ?? '?'}% vs {update.current.fleurs_en_wer}%
+            </span>
+            <span class="spacer"></span>
+            {#if update.role === 'transcribing' && pinnedTranscribing}
+              <!-- A pinned role refuses the load by name, so the row keeps the
+                   download and drops the update control. -->
+              {@render control(proposal.row)}
+            {:else}
+              <button
+                class="chip"
+                type="button"
+                disabled={busy}
+                onclick={() => onupdate(proposal.row.variant)}
+                title="download it if needed, then load it as the {roleWord(update.role)} model"
+                >Update to this model</button
+              >
+            {/if}
+            <span class="detail">{@render facts(candidateFacts(proposal.row).spec)}</span>
+          </div>
+        {:else}
           <p class="note">
-            no other English model in the feed is measured on both axes &middot; there is nothing to
-            compare against
+            no update for {roleWord(update.role)} &middot; nothing the feed measured beats the model in
+            use on both axes
           </p>
         {/if}
-        <div class="cmp-wrap">
-          <table class="cmp">
-            <caption>{updateWhy()}</caption>
-            <thead>
-              <tr>
-                <th scope="col">model</th>
-                <th scope="col">speed</th>
-                <th scope="col">error</th>
-                <th scope="col">licence</th>
-                <th scope="col">the rule</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr class="base">
-                <th scope="row">{update.file}</th>
-                <td>{speedLabel(update.current.speed_x)}</td>
-                <td>{update.current.fleurs_en_wer}%</td>
-                <td>{inUseLicense(wire.in_use, update.role)}</td>
-                <td>this is what is running now</td>
-              </tr>
-              {#each comparison(update) as row (row.variant)}
-                <tr class:pick={row.recommended}>
-                  <th scope="row">{row.display_name}</th>
-                  <td>{row.speed ?? 'not measured'}</td>
-                  <td>{row.error ?? 'not measured'}</td>
-                  <td>{row.license ?? 'no licence on the feed'}</td>
-                  <td class="rule">
-                    {row.verdict}
-                    {#if row.recommended}
-                      {#if update.role === 'transcribing' && pinnedTranscribing}
-                        <!-- A pinned role refuses the load by name, so the row
-                         keeps the download and drops the update control. -->
-                        {@render control(row.source)}
-                      {:else}
-                        <button
-                          class="chip"
-                          type="button"
-                          disabled={busy}
-                          onclick={() => onupdate(row.variant)}
-                          title="download it if needed, then load it as the {roleWord(
-                            update.role,
-                          )} model">Update to this model</button
-                        >
-                      {/if}
-                    {/if}
-                  </td>
+
+        <GroupFold
+          heading="read against the {roleWord(update.role)} model in use"
+          count={update.candidates.length}
+        >
+          <div class="cmp-head">
+            <span class="when">
+              {speedLabel(update.current.speed_x)} and {update.current.fleurs_en_wer}% word error,
+              on the feed's own FLEURS-en and m4-max rows
+            </span>
+          </div>
+          {#if update.candidates.length === 0}
+            <p class="note">
+              no other English model in the feed is measured on both axes &middot; there is nothing
+              to compare against
+            </p>
+          {/if}
+          <div class="cmp-wrap">
+            <table class="cmp">
+              <caption>{updateWhy()}</caption>
+              <thead>
+                <tr>
+                  <th scope="col">model</th>
+                  <th scope="col">speed</th>
+                  <th scope="col">error</th>
+                  <th scope="col">licence</th>
+                  <th scope="col">the rule</th>
                 </tr>
-              {/each}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                <tr class="base">
+                  <th scope="row">{update.file}</th>
+                  <td>{speedLabel(update.current.speed_x)}</td>
+                  <td>{update.current.fleurs_en_wer}%</td>
+                  <td>{inUseLicense(wire.in_use, update.role)}</td>
+                  <td>this is what is running now</td>
+                </tr>
+                {#each comparison(update) as row (row.variant)}
+                  <tr class:pick={row.recommended}>
+                    <th scope="row">{row.display_name}</th>
+                    <td>{row.speed ?? 'not measured'}</td>
+                    <td>{row.error ?? 'not measured'}</td>
+                    <td>{row.license ?? 'no licence on the feed'}</td>
+                    <td class="rule">{row.verdict}</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+        </GroupFold>
       {/each}
       {#if shown.length === 0}
         <!-- The role has no entry at all: nothing in the feed joins the model
@@ -599,58 +626,53 @@
         forge, and the catalogue loads here
       </p>
     {:else}
-      <!-- The catalogue is a lookup, not the page's subject: it folds, with
-           the row count on the door so a shut one never reads as an empty
-           feed. -->
-      <GroupFold heading="the catalogue" count={wire.rows.length}>
-        <!-- `nowhere` is the editors table's name for a box a take's words are
-             not routed to: this one takes typing, and the reader's dictation
-             stays where it was. -->
-        <input
-          class="find"
-          type="search"
-          bind:value={query}
-          data-editor="nowhere"
-          aria-label="Search the model catalogue"
-          {placeholder}
-        />
+      <!-- `nowhere` is the editors table's name for a box a take's words are
+           not routed to: this one takes typing, and the reader's dictation
+           stays where it was. -->
+      <input
+        class="find"
+        type="search"
+        bind:value={query}
+        data-editor="nowhere"
+        aria-label="Search the model catalogue"
+        {placeholder}
+      />
 
-        <div aria-live="polite">
-          {#if query.trim() === ''}
-            <p class="note">
-              type a name &middot; the feed's whole catalogue is already here, so this reads nothing
-              off the network
-            </p>
-          {:else if results.length === 0}
-            <p class="note">no entry matches <code>{query}</code> &middot; try a family name</p>
-          {:else}
-            <p class="note">
-              {results.length} of {wire.rows.length} entries &middot; each opens its catalogue entry
-            </p>
-            <ul class="list" aria-label="Catalogue results">
-              {#each results as entry (entry.variant)}
-                {@const face = candidateFacts(entry)}
-                <li>
-                  <a
-                    class="cand"
-                    href={entryUrl(entry)}
-                    target="_blank"
-                    rel="noreferrer"
-                    title="the catalogue entry, on github"
-                  >
-                    <span class="nm">{entry.variant}</span>
-                    <span class="col">{@render facts(face.spec)}</span>
-                    <span class="col">{@render facts(face.kind)}</span>
-                    <span class="go" aria-hidden="true">&#8599;</span>
-                  </a>
-                  {@render control(entry)}
-                </li>
-              {/each}
-            </ul>
-            <p class="note">size, speed and error are the catalogue's own m4-max measurements</p>
-          {/if}
-        </div>
-      </GroupFold>
+      <div aria-live="polite">
+        {#if query.trim() === ''}
+          <p class="note">
+            type a name &middot; the feed's whole catalogue is already here, so this reads nothing
+            off the network
+          </p>
+        {:else if results.length === 0}
+          <p class="note">no entry matches <code>{query}</code> &middot; try a family name</p>
+        {:else}
+          <p class="note">
+            {results.length} of {wire.rows.length} entries &middot; each opens its catalogue entry
+          </p>
+          <ul class="list" aria-label="Catalogue results">
+            {#each results as entry (entry.variant)}
+              {@const face = candidateFacts(entry)}
+              <li>
+                <a
+                  class="cand"
+                  href={entryUrl(entry)}
+                  target="_blank"
+                  rel="noreferrer"
+                  title="the catalogue entry, on github"
+                >
+                  <span class="nm">{entry.variant}</span>
+                  <span class="col">{@render facts(face.spec)}</span>
+                  <span class="col">{@render facts(face.kind)}</span>
+                  <span class="go" aria-hidden="true">&#8599;</span>
+                </a>
+                {@render control(entry)}
+              </li>
+            {/each}
+          </ul>
+          <p class="note">size, speed and error are the catalogue's own m4-max measurements</p>
+        {/if}
+      </div>
     {/if}
   </section>
 

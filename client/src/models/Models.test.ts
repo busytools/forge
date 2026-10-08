@@ -345,6 +345,23 @@ describe('the models page as it draws', () => {
   });
 
   /**
+   * The line that says there is an update shows the update: the pick's own
+   * row carries the model, its numbers against what runs, and the one
+   * control - and the table under it keeps none, because a second control
+   * for the same press reads as a second action.
+   */
+  it('shows the recommendation with one control, and none in the table', () => {
+    const host = open(modelsWire);
+
+    expect(host.textContent).toContain('recommended for transcribing');
+    expect(host.textContent).toContain('Granite Speech 5.0 470M TurboCTC NC');
+    const controls = [...host.querySelectorAll<HTMLButtonElement>('button')].filter((c) =>
+      c.textContent?.includes('Update to this model'),
+    );
+    expect(controls.length, 'the update control is drawn more than once').toBe(1);
+  });
+
+  /**
    * The recommended candidate's own control, which is what makes the UPDATES
    * line actionable rather than a statement. The fixture's candidate is
    * already installed here, so the control is the activation and it names the
@@ -974,7 +991,7 @@ describe('the models route as it draws', () => {
     forge.arrive({ kind: 'snapshot', subject: MODELS, data: { ...modelsWire, installed: [] } });
     await tick();
 
-    const button = [...host.querySelectorAll<HTMLButtonElement>('.cmp button')].find((c) =>
+    const button = [...host.querySelectorAll<HTMLButtonElement>('button')].find((c) =>
       c.textContent?.includes('Update to this model'),
     );
     expect(button, 'the update control did not draw').not.toBeUndefined();
