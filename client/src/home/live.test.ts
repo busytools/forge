@@ -93,23 +93,73 @@ async function settle(): Promise<void> {
 
 describe('the home over a connection', () => {
   /**
-   * **The connection is answerable from its first subscribe (#1885).** The
-   * role belongs to the connection and only ever rises, and this subscribe is
-   * the first the app makes - so a client that kept quiet here registered as
-   * an observer while the reader sat on the home, and the core, with nobody
-   * to park on, cancelled every ask raised then at birth. The reader never
-   * learned which seat asked.
+   * **The connection declares itself answerable, usually on its first
+   * subscribe.** The role belongs to the connection and only ever rises, and
+   * this subscribe is usually the first the app makes (/models gets there
+   * first on a deep link; a seat page waits on the home's own snapshot), so
+   * declaring it here is what a page away from any seat has. It is a
+   * safeguard rather than the ask's own cure - a machine running forge has
+   * its terminal attached as an answerer for as long as it runs - and the
+   * case it covers is a serve with no terminal anywhere.
    */
-  it('declares the connection answerable, on the first subscribe it makes', () => {
+  it('declares the connection answerable, usually on its first subscribe', () => {
     const forge = fakeConnection();
     const stop = watchHome(forge.connection).subscribe(() => {});
 
     expect(forge.subscribed, 'the home was not subscribed').toEqual([HOME]);
-    expect(
-      forge.options[0]?.answering,
-      'the connection registers as an observer while the reader sits on the home',
-    ).toBe(true);
+    expect(forge.options[0]?.answering, 'the connection declares nothing to answer with').toBe(
+      true,
+    );
 
+    stop();
+  });
+
+  /**
+   * **An update that lands mid-read is not dropped (#1885).** The home
+   * coalesces its reads behind one flag, and the answer in flight was encoded
+   * BEFORE the update arrived - so skipping the update leaves the page drawing
+   * the state it asked about until something else moves. That is the wait Ved
+   * met: an ask answered, and the row still sitting under needs-you.
+   */
+  it('asks again for an update that lands while a read is in flight', async () => {
+    const forge = fakeConnection();
+    const stop = watchHome(forge.connection).subscribe(() => {});
+
+    forge.arrive(UPDATE);
+    await settle();
+    expect(forge.refreshed, 'the first update did not ask for a read').toEqual(['home']);
+
+    // The read is in flight: no answer for it has arrived yet.
+    forge.arrive(UPDATE);
+    await settle();
+    expect(forge.refreshed, 'a second read ran while the first was in flight').toEqual(['home']);
+
+    // Its answer lands, and the update that arrived meanwhile is asked for.
+    forge.arrive({ kind: 'snapshot', subject: HOME, data: null });
+    await settle();
+    expect(forge.refreshed, 'the update that landed mid-read was dropped').toEqual([
+      'home',
+      'home',
+    ]);
+    stop();
+  });
+
+  /**
+   * The other side of it: a frame the home does not cover is no reason to
+   * read. A chat message moves no row, so the page must not ask again for it.
+   */
+  it('does not read for a frame the home does not cover', async () => {
+    const forge = fakeConnection();
+    const stop = watchHome(forge.connection).subscribe(() => {});
+
+    // Cast: this drives the door rather than the wire's narrowing, and only
+    // the variant name is read at it.
+    forge.arrive({
+      kind: 'update',
+      update: { chat_appended: { key: LEAD, msg: { type: 'assistant' } } },
+    } as unknown as ServerMessage);
+    await settle();
+    expect(forge.refreshed, 'a chat message asked for a home read').toEqual([]);
     stop();
   });
 
