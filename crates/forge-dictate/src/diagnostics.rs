@@ -80,26 +80,52 @@ pub(crate) fn capture_take(dir: &Path, take_id: u128, take: &TakeRecord<'_>) {
     // directory that still counts for retention, but never reads as a
     // complete take.
     if let Err(error) = std::fs::create_dir_all(take_dir.join("raw")) {
-        tracing::warn!(%error, dir = %take_dir.display(), "diagnostics: store directory not writable");
+        tracing::warn!(
+            event_name = "diagnostics_store_dir_unwritable",
+            %error,
+            dir = %take_dir.display(),
+            "diagnostics: store directory not writable"
+        );
         return;
     }
 
     if let Err(error) = write_wav(&take_dir.join("output.wav"), take.audio) {
-        tracing::warn!(%error, dir = %take_dir.display(), "diagnostics: capture not written");
+        tracing::warn!(
+            event_name = "diagnostics_capture_not_written",
+            %error,
+            dir = %take_dir.display(),
+            "diagnostics: capture not written"
+        );
         return;
     }
     for (k, window) in take.windows.iter().enumerate() {
         if let Err(error) = std::fs::write(take_dir.join(format!("raw/{k}.txt")), &window.raw) {
-            tracing::warn!(%error, dir = %take_dir.display(), window = k, "diagnostics: window transcript not written");
+            tracing::warn!(
+                event_name = "diagnostics_window_transcript_not_written",
+                %error,
+                dir = %take_dir.display(),
+                window = k,
+                "diagnostics: window transcript not written"
+            );
             return;
         }
     }
     if let Err(error) = std::fs::write(take_dir.join("joined.txt"), take.joined) {
-        tracing::warn!(%error, dir = %take_dir.display(), "diagnostics: joined transcript not written");
+        tracing::warn!(
+            event_name = "diagnostics_joined_transcript_not_written",
+            %error,
+            dir = %take_dir.display(),
+            "diagnostics: joined transcript not written"
+        );
         return;
     }
     if let Err(error) = std::fs::write(take_dir.join("text.txt"), take.text) {
-        tracing::warn!(%error, dir = %take_dir.display(), "diagnostics: normalized transcript not written");
+        tracing::warn!(
+            event_name = "diagnostics_normalized_transcript_not_written",
+            %error,
+            dir = %take_dir.display(),
+            "diagnostics: normalized transcript not written"
+        );
         return;
     }
 
@@ -130,12 +156,22 @@ pub(crate) fn capture_take(dir: &Path, take_id: u128, take: &TakeRecord<'_>) {
     match serde_json::to_vec_pretty(&meta) {
         Ok(bytes) => {
             if let Err(error) = std::fs::write(take_dir.join("meta.json"), bytes) {
-                tracing::warn!(%error, dir = %take_dir.display(), "diagnostics: metadata not written");
+                tracing::warn!(
+                    event_name = "diagnostics_metadata_not_written",
+                    %error,
+                    dir = %take_dir.display(),
+                    "diagnostics: metadata not written"
+                );
                 return;
             }
         }
         Err(error) => {
-            tracing::warn!(%error, dir = %take_dir.display(), "diagnostics: metadata not serializable");
+            tracing::warn!(
+                event_name = "diagnostics_metadata_not_serializable",
+                %error,
+                dir = %take_dir.display(),
+                "diagnostics: metadata not serializable"
+            );
             return;
         }
     }
@@ -186,7 +222,12 @@ fn prune(dir: &Path) {
     takes.sort();
     for stale in takes.iter().rev().skip(RETAINED_TAKES) {
         if let Err(error) = std::fs::remove_dir_all(stale) {
-            tracing::warn!(%error, dir = %stale.display(), "diagnostics: stale take not pruned");
+            tracing::warn!(
+                event_name = "diagnostics_stale_take_not_pruned",
+                %error,
+                dir = %stale.display(),
+                "diagnostics: stale take not pruned"
+            );
         }
     }
 }

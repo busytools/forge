@@ -268,7 +268,11 @@ pub fn fetch_cleanup(source: &CleanupSource) -> Result<Vec<CatalogueEntry>, Erro
     for tag in &source.tags {
         let url = format!("{}{tag}{}", source.listing, source.listing_tail);
         let Ok(listing) = get_bounded_text(&client, &url, MAX_RESPONSE_BYTES) else {
-            tracing::debug!(url = %url, "cleanup feed: one tag's listing could not be read");
+            tracing::debug!(
+                event_name = "cleanup_feed_tag_listing_unreadable",
+                url = %url,
+                "cleanup feed: one tag's listing could not be read"
+            );
             continue;
         };
         let Ok(rows) = serde_json::from_str::<Vec<Value>>(&listing) else {
@@ -298,7 +302,11 @@ pub fn fetch_cleanup(source: &CleanupSource) -> Result<Vec<CatalogueEntry>, Erro
         }
         let url = format!("{}{}?blobs=true", source.blobs_base, repo.id);
         let Ok(blobs) = get_bounded_text(&client, &url, MAX_RESPONSE_BYTES) else {
-            tracing::debug!(url = %url, "cleanup feed: one repo's blobs could not be read");
+            tracing::debug!(
+                event_name = "cleanup_feed_repo_blobs_unreadable",
+                url = %url,
+                "cleanup feed: one repo's blobs could not be read"
+            );
             continue;
         };
         let Ok(blobs) = serde_json::from_str::<Value>(&blobs) else {
@@ -314,7 +322,11 @@ pub fn fetch_cleanup(source: &CleanupSource) -> Result<Vec<CatalogueEntry>, Erro
             continue;
         }
         if !runs_here(&blobs) {
-            tracing::debug!(repo = %repo.id, "cleanup feed: a repo the generator cannot run");
+            tracing::debug!(
+                event_name = "cleanup_feed_repo_not_runnable",
+                repo = %repo.id,
+                "cleanup feed: a repo the generator cannot run"
+            );
             continue;
         }
         let languages = declared_languages(blobs.get("cardData"), &repo.language_tags);

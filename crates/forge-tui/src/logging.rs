@@ -107,6 +107,12 @@ impl LoggingRuntime {
 /// (HTML-strip in `preprocess_prose` at the call site) lands as
 /// a separate PR; this filter bump is defence-in-depth.
 ///
+/// `forge_dictate` and `forge_workspace::dictate` are there for the
+/// same reason again: a take that reaches its capture cap, a normalizer
+/// that runs out of token budget and a take whose recognition failed are
+/// one session's own work, not forge's health. They were demoted out of
+/// `WARN` for it, so they are named here to stay readable.
+///
 /// The two `llama` targets are the dictation engine's own log bridge,
 /// which reaches tracing through the llama-cpp-2 crate under both its
 /// hyphenated target and its module path. What it reports is the model
@@ -122,6 +128,8 @@ const DEFAULT_LOG_DIRECTIVES: &str = "info,\
     forge_server=debug,\
     forge_workspace::work=debug,\
     forge_workspace::browser=debug,\
+    forge_workspace::dictate=debug,\
+    forge_dictate=debug,\
     tui_markdown=error,\
     llama_cpp_2=error,\
     llama-cpp-2=error";
@@ -439,6 +447,16 @@ mod tests {
         // the only record of a seat whose tree is silently not being read, so
         // the target needs the directive or the silence has no explanation.
         assert!(DEFAULT_LOG_DIRECTIVES.contains("forge_workspace::work=debug"));
+        // Dictation's own records were demoted out of WARN for the same
+        // reason: a take reaching its capture cap, a normalizer hitting
+        // its token budget and a take whose recognition failed are one
+        // session's work, not forge's health. Without these two the
+        // records land nowhere at all, which is the state the levels
+        // moved away from. `forge_dictate` covers the leaf crate's sites
+        // by module-path prefix; `forge_workspace::dictate` the seat
+        // that runs a take.
+        assert!(DEFAULT_LOG_DIRECTIVES.contains("forge_workspace::dictate=debug"));
+        assert!(DEFAULT_LOG_DIRECTIVES.contains("forge_dictate=debug"));
         // The `[server] enabled = false` record is a `debug` on
         // `app.lifecycle` because a config choice is not a problem, so
         // the target needs the directive or that record never lands.

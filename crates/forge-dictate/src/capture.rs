@@ -356,7 +356,11 @@ impl Resampling {
                         // Defensive: a persistent rejection must not
                         // grow staging without bound.
                         self.staging.clear();
-                        tracing::warn!(%error, "resampler rejected a block; dropping it");
+                        tracing::warn!(
+                            event_name = "resampler_block_rejected",
+                            %error,
+                            "resampler rejected a block; dropping it"
+                        );
                         return;
                     }
                 };
@@ -418,12 +422,18 @@ pub(crate) fn record(
             return;
         }
     };
-    tracing::debug!(channels, rate = SAMPLE_RATE, resample_from = ?plan.resample_from, "input open");
+    tracing::debug!(
+        event_name = "input_stream_opened",
+        channels,
+        rate = SAMPLE_RATE,
+        resample_from = ?plan.resample_from,
+        "input open"
+    );
     let sink = Arc::clone(shared);
     let stream = device.build_input_stream(
         plan.config,
         move |block: &[f32], _: &cpal::InputCallbackInfo| converter.push(block, &sink, limit),
-        |error| tracing::warn!(%error, "input stream error"),
+        |error| tracing::warn!(event_name = "input_stream_error", %error, "input stream error"),
         None,
     );
     let stream = match stream.and_then(|s| s.play().map(|()| s)) {
