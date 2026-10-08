@@ -281,9 +281,8 @@ export type ServerMessage =
       version: number;
       /**
        * The build the server is, in the greeting because that is the only
-       * channel both halves have before a client refuses anything. Absent
-       * from a server that predates the fields, which is every server a
-       * skew is against today.
+       * channel both halves have before anything else crosses. Absent from
+       * a server that predates the fields.
        */
       forge_version?: string;
       forge_version_short?: string;
