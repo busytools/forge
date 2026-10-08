@@ -6,6 +6,7 @@ import { flushSync, mount, tick, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { Microphone } from '../composer/mic';
+import { modelsFrom } from '../wire/models';
 import type {
   BenchResult,
   BenchTarget,
@@ -59,6 +60,7 @@ function open(
     onrecordstop: (keep: boolean) => void;
     onrecorddelete: (recording: ReadAloudRecording) => void;
     recorder: Pick<SetRecorder, 'wire'> | null;
+    recordStopped: boolean;
     onbenchdelete: (result: BenchResult) => void;
     onupdate: (variant: string) => void;
     updated: { file: string; role: ModelRole } | null;
@@ -87,6 +89,7 @@ function open(
       onrecordstop: handlers.onrecordstop ?? (() => {}),
       onrecorddelete: handlers.onrecorddelete ?? (() => {}),
       recorder: handlers.recorder ?? null,
+      recordStopped: handlers.recordStopped ?? false,
       onbenchdelete: handlers.onbenchdelete ?? (() => {}),
       onupdate: handlers.onupdate ?? (() => {}),
       updated: handlers.updated ?? null,
@@ -976,6 +979,52 @@ describe('the models page as it draws', () => {
     expect(host.textContent).toContain('the set directory is not writable');
   });
 
+  /**
+   * **A recording running with no recorder here has two reasons.** This
+   * side's own stop, while the read catches up, is not another client's
+   * recording - the card says which.
+   */
+  it('names who is recording when this side holds no recorder', () => {
+    const held = {
+      ...modelsWire,
+      read_aloud: { ...modelsWire.read_aloud, recording: true },
+    };
+
+    expect(open(held, { recordStopped: true }).textContent).toContain(
+      'This side stopped it, and the set is being written.',
+    );
+    expect(open(held).textContent).toContain('Another client is recording it.');
+  });
+
+  /**
+   * **A set this client cannot read is not an empty one.** A server that
+   * sent no readable set must not draw the first-recording card - the offer
+   * would make a second set on a machine that may hold many.
+   */
+  it('says when the read-aloud set is one this client cannot read', () => {
+    const older = modelsFrom({
+      ...modelsWire,
+      read_aloud: undefined,
+    } as unknown as DictateModelsWire);
+    const host = open(older);
+
+    expect(host.textContent).toContain('the read-aloud set is one this client cannot read');
+    const record = [...host.querySelectorAll<HTMLButtonElement>('button')].find(
+      (c) => c.textContent === 'record the passage',
+    );
+    expect(record, 'an unreadable set still offered a first recording').toBeUndefined();
+  });
+
+  /**
+   * **The no-comparison note is for a forge with a feed.** An off forge has
+   * no feed to have said anything either way, so the note that speaks for
+   * the feed stays off.
+   */
+  it('keeps the no-comparison note for a forge with a feed', () => {
+    expect(open({ ...modelsWire, updates: [] }).textContent).toContain('nothing to compare');
+    expect(open(offWire()).textContent).not.toContain('nothing to compare');
+  });
+
   /** A refused action is drawn in the core's own words, at the page's top. */
   it('draws a refused action in the words the core sent', () => {
     const host = open(modelsWire, {
@@ -1109,6 +1158,35 @@ describe('the models route as it draws', () => {
       dictate_read_aloud_stop: { keep: false },
     });
     expect(micStopped, 'leaving mid-recording left the microphone held').toBe(true);
+  });
+
+  /**
+   * **A second press while the microphone is opening is not a second
+   * recording.** `begin` is async, so the guard has to hold from before the
+   * first await: two presses in one tick open one microphone.
+   */
+  it('opens one microphone for two presses in one tick', async () => {
+    const forge = fakeConnection();
+    const mic = {
+      onFrame: null as ((bytes: Uint8Array) => void) | null,
+      flush: () => null,
+      stop: () => {},
+    };
+    const opened = vi.spyOn(Microphone, 'open').mockResolvedValue(mic as unknown as Microphone);
+    const host = route(forge);
+    await tick();
+    forge.arrive({ kind: 'snapshot', subject: MODELS, data: modelsWire });
+    await tick();
+
+    const record = [...host.querySelectorAll<HTMLButtonElement>('button')].find(
+      (c) => c.textContent === 'record the passage',
+    );
+    expect(record, 'the read-aloud card drew no way to record').not.toBeUndefined();
+    record?.click();
+    record?.click();
+    await settle();
+
+    expect(opened, 'two presses opened two microphones').toHaveBeenCalledTimes(1);
   });
 
   /**
