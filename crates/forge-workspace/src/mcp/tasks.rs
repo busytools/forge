@@ -346,17 +346,6 @@ struct ListArgs {
     ready: Option<bool>,
 }
 
-/// A duration as the board's words: `3h`, `12m`, `45s`.
-fn fmt_secs(secs: u64) -> String {
-    if secs >= 3_600 {
-        format!("{}h", secs / 3_600)
-    } else if secs >= 60 {
-        format!("{}m", secs / 60)
-    } else {
-        format!("{secs}s")
-    }
-}
-
 fn waiting_kind_str(kind: WaitingKind) -> &'static str {
     match kind {
         WaitingKind::Decision => "decision",
@@ -372,8 +361,11 @@ fn board_row_to_json(row: &crate::board::BoardRow) -> serde_json::Value {
         serde_json::Value::Object(map) => map,
         other => return other,
     };
-    map.insert("worked".to_owned(), serde_json::json!(fmt_secs(row.worked_secs)));
-    map.insert("updated_ago".to_owned(), serde_json::json!(fmt_secs(row.updated_secs_ago)));
+    map.insert("worked".to_owned(), serde_json::json!(crate::board::fmt_secs(row.worked_secs)));
+    map.insert(
+        "updated_ago".to_owned(),
+        serde_json::json!(crate::board::fmt_secs(row.updated_secs_ago)),
+    );
     let mut marks: Vec<&str> = Vec::new();
     if row.marks.ready {
         marks.push("ready");
