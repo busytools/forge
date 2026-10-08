@@ -999,12 +999,12 @@ impl std::fmt::Debug for Command {
     }
 }
 
-/// Read a level's peak, taking `null` as no signal rather than as a
-/// decode failure.
+/// Read a no-signal peak - a level's, or the one a `no_audio` outcome
+/// carries - taking `null` as no signal rather than as a decode failure.
 ///
 /// The counterpart of serde writing a non-finite float as `null`: a
 /// window that heard nothing peaks at exactly zero, whose dBFS is
-/// negative infinity. Without this, a Rust reader cannot decode a level
+/// negative infinity. Without this, a Rust reader cannot decode the
 /// message at all, and the failure names the type rather than the case.
 fn no_signal_reads_as_negative_infinity<'de, D>(deserializer: D) -> Result<f32, D::Error>
 where
@@ -1027,7 +1027,11 @@ pub enum DictateOutcome {
     /// Nothing rose above the silence floor. A finite `peak_db` is a
     /// quiet room and a retry is reasonable; negative infinity means
     /// every sample was exactly zero, which is structural and sticky.
-    NoAudio { peak_db: f32, seconds: u64 },
+    NoAudio {
+        #[serde(default, deserialize_with = "no_signal_reads_as_negative_infinity")]
+        peak_db: f32,
+        seconds: u64,
+    },
     /// The take never happened. Covers a busy microphone, a device that
     /// would not open, and dictation not being ready.
     Refused { message: String },
@@ -2702,6 +2706,50 @@ mod dictate_level_wire_tests {
             panic!("the level decoded into another update")
         };
         assert_eq!(peak_db, -22.5);
+    }
+
+    /// A take that heard nothing crosses the peak in its END the same way a
+    /// level's crosses, so the same tolerance has to read it: a reader that
+    /// decodes the level and then fails on the end of the same take is just
+    /// as broken, and the failure names the type rather than the case.
+    #[test]
+    fn a_no_audio_end_with_no_signal_round_trips() {
+        let key = SessionSlot::from_str_for_test("no-audio-end".to_owned());
+        let silent = SessionUpdate::DictateEnded {
+            key: key.clone(),
+            outcome: DictateOutcome::NoAudio { peak_db: f32::NEG_INFINITY, seconds: 3 },
+            generation: 1,
+            initiator: None,
+        };
+        let encoded = serde_json::to_value(&silent).expect("an end encodes");
+        assert!(
+            encoded["dictate_ended"]["outcome"]["no_audio"]["peak_db"].is_null(),
+            "a no-signal end crosses as null, got {encoded}"
+        );
+
+        let back: SessionUpdate = serde_json::from_value(encoded).expect("an end decodes");
+        let SessionUpdate::DictateEnded { outcome, .. } = back else {
+            panic!("the end decoded into another update")
+        };
+        assert_eq!(
+            outcome,
+            DictateOutcome::NoAudio { peak_db: f32::NEG_INFINITY, seconds: 3 },
+            "null must read back as no signal"
+        );
+
+        // And a reading that IS a signal is untouched by the tolerance.
+        let quiet = SessionUpdate::DictateEnded {
+            key,
+            outcome: DictateOutcome::NoAudio { peak_db: -41.5, seconds: 3 },
+            generation: 1,
+            initiator: None,
+        };
+        let encoded = serde_json::to_value(&quiet).expect("an end encodes");
+        let back: SessionUpdate = serde_json::from_value(encoded).expect("an end decodes");
+        let SessionUpdate::DictateEnded { outcome, .. } = back else {
+            panic!("the end decoded into another update")
+        };
+        assert_eq!(outcome, DictateOutcome::NoAudio { peak_db: -41.5, seconds: 3 });
     }
 }
 
