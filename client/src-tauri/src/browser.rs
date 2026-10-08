@@ -303,15 +303,17 @@ impl BrowserHost {
     /// is released, and a row that vanished would read as released.
     pub async fn profiles(&self) -> Vec<ProfileRow> {
         let named = self.named.lock().await;
-        let mut rows: Vec<ProfileRow> = named
-            .iter()
-            .map(|(name, entry)| ProfileRow {
+        let mut rows: Vec<ProfileRow> = Vec::new();
+        for (name, entry) in named.iter() {
+            rows.push(ProfileRow {
                 name: name.clone(),
                 owner: entry.owner.to_string(),
                 running: entry.profile.is_alive(),
-                windowed: chromium::launched_windowed(&entry.dir),
-            })
-            .collect();
+                // The same predicate `show` keeps: the marker alone reads a
+                // window that an X-close already took down.
+                windowed: chromium::windowed(&entry.dir).await,
+            });
+        }
         rows.sort_by(|a, b| a.name.cmp(&b.name));
         rows
     }
@@ -330,7 +332,7 @@ impl BrowserHost {
             }
             None => paths.user_data,
         };
-        Ok(chromium::launched_windowed(&dir))
+        Ok(chromium::windowed(&dir).await)
     }
 
     /// Bring the browser up VISIBLY for a hand-off's Open or the strip's

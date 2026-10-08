@@ -536,6 +536,24 @@ pub fn launched_windowed(profile: &Path) -> bool {
     windowed_marker(profile).is_file()
 }
 
+/// Whether a WINDOW is really up on `profile`: the headed marker AND a live
+/// launch answering as this profile's own AND a page left to carry.
+///
+/// **The marker alone lied once** (Ved, 2026-10-07, live): he closed the
+/// window with the X, the process survived with the marker still set, and
+/// the next Open concluded a window was up and raised nothing. `show` keeps
+/// this same predicate, and everything that SPEAKS for a window - the
+/// strip's window-open mark and its hide label - must keep it too.
+pub async fn windowed(profile: &Path) -> bool {
+    if !launched_windowed(profile) {
+        return false;
+    }
+    let Some(active) = verified(profile).await else {
+        return false;
+    };
+    page_url(active.port).await.is_some()
+}
+
 /// The page the last headed launch opened on, when it carried one: the
 /// fallback an Open uses once the person has closed the window (the tab goes
 /// with it, so there is no live page left to read).
@@ -861,6 +879,79 @@ mod tests {
 
         std::fs::write(windowed_marker(dir.path()), b"").expect("a blank marker");
         assert_eq!(windowed_page(dir.path()), None, "a blank launch reopens blank");
+    }
+
+    /// A fake devtools endpoint for the windowed predicate: `/json/version`
+    /// answers with an identity, everything else with the page list given.
+    async fn fake_devtools(identity: &str, pages: &str) -> u16 {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a port");
+        let port = listener.local_addr().expect("the bound port").port();
+        let identity = identity.to_owned();
+        let pages = pages.to_owned();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else { continue };
+                let mut buffer = [0_u8; 2048];
+                let read = socket.read(&mut buffer).await.unwrap_or(0);
+                let request = String::from_utf8_lossy(&buffer[..read]);
+                let body = if request.starts_with("GET /json/version") {
+                    format!("{{\"webSocketDebuggerUrl\":\"ws://127.0.0.1:{port}{identity}\"}}")
+                } else {
+                    pages.clone()
+                };
+                let answer = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+                     Connection: close\r\n\r\n{body}",
+                    body.len(),
+                );
+                let _ = socket.write_all(answer.as_bytes()).await;
+            }
+        });
+        port
+    }
+
+    /// **A window is the marker AND a live launch AND a page** - the same
+    /// predicate `show` keeps. The marker alone lied once (a person's X left
+    /// the keep-alive process with the marker set and no page), so anything
+    /// that SPEAKS for a window - the strip's mark and its hide label - must
+    /// not trust it alone.
+    #[tokio::test]
+    async fn a_window_is_marker_and_a_live_launch_and_a_page() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        assert!(!windowed(dir.path()).await, "no marker, no window");
+
+        std::fs::write(windowed_marker(dir.path()), b"").expect("the marker");
+        assert!(!windowed(dir.path()).await, "a marker with nothing answering is no window");
+
+        // The X-close state: the marker survives, the launch answers, and no
+        // page is left.
+        let port = fake_devtools("/devtools/browser/live", "[]").await;
+        std::fs::write(
+            dir.path().join("DevToolsActivePort"),
+            format!("{port}\n/devtools/browser/live\n"),
+        )
+        .expect("the port file");
+        assert!(
+            !windowed(dir.path()).await,
+            "a windowless launch leaves the marker and no page - not a window",
+        );
+
+        // Marker + a launch answering AS this profile + a page target: up.
+        let port = fake_devtools(
+            "/devtools/browser/live2",
+            "[{\"type\":\"page\",\"url\":\"about:blank\"}]",
+        )
+        .await;
+        std::fs::write(
+            dir.path().join("DevToolsActivePort"),
+            format!("{port}\n/devtools/browser/live2\n"),
+        )
+        .expect("the port file");
+        assert!(
+            windowed(dir.path()).await,
+            "the marker, a launch answering as it, and a page make a window",
+        );
     }
 
     /// **A launch must not resurrect the last session's tabs.** The clean
