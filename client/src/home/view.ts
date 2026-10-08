@@ -157,18 +157,25 @@ export interface HomeView {
 /**
  * The state a row draws from what the snapshot carries.
  *
- * Three promotions the core does not make, all about what the mark means: a
+ * Four promotions the core does not make, all about what the mark means: a
  * backgrounded task is work even after the turn that started it settled, a
  * turn that finished while this view was not showing the seat answers "what
- * changed while I was away", and a failed turn the view has not been shown
- * since is the one state the reader has to act on. None is computed here -
- * `has_background_work`, `unseen` and `failed_turn` all cross on the
- * snapshot.
+ * changed while I was away", a failed turn the view has not been shown
+ * since is the one state the reader has to act on, and an ASK is the state's
+ * own name whether or not the CLI's lifecycle has caught up - the terminal
+ * draws its triangle from the prompt queue rather than from a lifecycle it
+ * has to trust. None is computed here - `has_background_work`, `unseen`,
+ * `failed_turn` and `pending` all cross on the snapshot.
  */
 export function stateOf(row: AgentRow, unseen: SessionSlot[]): RowState {
   // The failure outranks every other promotion, and the terminal orders it
   // over the spinner and the diamond both.
   if (row.failed_turn !== null) return { kind: 'failed-turn' };
+  // **A question outranks work.** The seat is waiting on a person, which is
+  // what needs-you means; the rank the rail groups by already reads it this
+  // way, and a mark read from the lifecycle alone drew idle on a seat whose
+  // ask was up (#1885).
+  if (row.pending !== null) return { kind: 'lifecycle', lifecycle: 'Attention' };
   if (row.lifecycle === 'Idle' && row.has_background_work) {
     return { kind: 'lifecycle', lifecycle: 'Running' };
   }

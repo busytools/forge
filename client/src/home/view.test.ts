@@ -394,10 +394,12 @@ describe('a row over the fleet', () => {
     expect(countsOf(org)).toBe('1 live');
   });
 
-  it('reads the fixture the server pinned, without re-deriving any state', () => {
+  it('reads the fixture the server pinned, with only the ask promoted', () => {
     const view = homeView(homeWire, 'ws://127.0.0.1:8790/socket');
     const lead = view.orgs[0]?.projects[0]?.lead;
-    expect(lead?.state).toEqual({ kind: 'lifecycle', lifecycle: 'Idle' });
+    // The fixture's lead holds a permission prompt: the server still calls the
+    // lifecycle Idle beside it, and the ask is what the row reads (#1885).
+    expect(lead?.state).toEqual({ kind: 'lifecycle', lifecycle: 'Attention' });
     expect(lead?.pending).toBe('permission');
     expect(view.header).toEqual({
       liveAgents: 1,
@@ -445,9 +447,11 @@ describe('a row over the fleet', () => {
   });
 
   it('promotes a backgrounded task to running, and leaves idle alone without one', () => {
+    // The fixture's lead holds a permission prompt, which outranks this
+    // promotion: this case is about the backgrounded task alone.
     const wire = (has_background_work: boolean): HomeWire => ({
       ...homeWire,
-      agents: [{ ...AGENT, has_background_work }],
+      agents: [{ ...AGENT, pending: null, has_background_work }],
     });
     expect(homeView(wire(true), '').orgs[0]?.projects[0]?.lead.state).toEqual({
       kind: 'lifecycle',
@@ -524,7 +528,14 @@ describe('the cells the reshape made drawable', () => {
   it('draws a seat whose turn finished unwatched as unseen', () => {
     const slot = { org: 'TestOrg', project: 'proj', label: 'lead' };
     const idle = { ...PROJECT, project: { ...PROJECT.project } };
-    const marked: HomeWire = { ...homeWire, projects: [idle], agents: [AGENT], unseen: [slot] };
+    // No ask on this seat: the case is the unwatched turn alone, and a
+    // pending prompt outranks the diamond (#1885).
+    const marked: HomeWire = {
+      ...homeWire,
+      projects: [idle],
+      agents: [{ ...AGENT, pending: null }],
+      unseen: [slot],
+    };
 
     expect(leadOf(homeView(marked, '')).state).toEqual({ kind: 'unseen' });
     // The same seat with nothing unseen is idle, so the mark is the list
