@@ -32,16 +32,19 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(150);
 /// even [`CALL_TIMEOUT`]. A start that cannot answer names it instead.
 const START_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// The phone's bounds, its own, and they must fit the server's ask budget:
-/// `ASK_TIMEOUT` (15+15+150+20 = 200 s) is derived from the DESKTOP's launch,
-/// handshake and call bounds, and the phone's cold figures join it - 40 s to
-/// accept a node's FIRST dial (its boot is real work: measured 8 s warm,
-/// 39 s on a loaded emulator) + 10 s to hand shake + the driver's own 150 s
-/// call = 200 s, **exactly the bound: the phone's cold chain spends the
-/// desktop's 20 s of slack to the second**. A node that was ALREADY up
-/// redials every second, so a later call waits only 6 s - a dead in-app node
-/// fails in seconds with the reason instead of paying the cold window per
-/// call.
+/// The phone's bounds, its own, and the ACCEPT-ONWARD segment must fit the
+/// server's ask budget: `ASK_TIMEOUT` (15+15+150+20 = 200 s) is derived from
+/// the DESKTOP's launch, handshake and call bounds, and the phone's cold
+/// figures join it - 40 s to accept a node's FIRST dial (its boot is real
+/// work: measured 8 s warm, 39 s on a loaded emulator) + 10 s to hand shake
+/// + the driver's own 150 s call = 200 s, **exactly the bound**. That is
+/// only the accept-onward segment, though: the call also carries an
+/// unbounded pre-accept RPC segment (the engine generation read, the ensure
+/// spin, the asset unpack, the UI-thread origin latch), so the whole chain
+/// can MEET or exceed the 200 s ask rather than sit inside it. A node that
+/// was ALREADY up redials every second, so a later call waits only 6 s - a
+/// dead in-app node fails in seconds with the reason instead of paying the
+/// cold window per call.
 #[cfg(target_os = "android")]
 const IN_APP_COLD_ACCEPT_TIMEOUT: Duration = Duration::from_secs(40);
 #[cfg(target_os = "android")]
@@ -185,8 +188,18 @@ impl Driver {
         let accept = tokio::time::timeout(accept_bound, listener.accept())
             .await
             .map_err(|_| {
+                // An already-running node only redials a DEAD link, so a warm
+                // window timing out is the post-renderer-death shape - the
+                // session cannot tell that from a socket fault otherwise
+                // (only logcat names the death).
+                let hint = if relay.node_started {
+                    ""
+                } else {
+                    " (the in-app node was already running and only redials a dead link; if a \
+                     renderer death was reported, restarting the app is the repair - issue #1931)"
+                };
                 format!(
-                    "the on-device driver did not dial its socket within {} s",
+                    "the on-device driver did not dial its socket within {} s{hint}",
                     accept_bound.as_secs()
                 )
             })?

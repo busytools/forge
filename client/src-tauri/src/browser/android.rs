@@ -58,14 +58,28 @@ struct Generation {
     generation: u64,
 }
 
+/// How long the engine's generation read may take. Bounded because
+/// `run_mobile_plugin_async` awaits with no timeout of its own: a wedged
+/// main looper would otherwise park every phone call with nothing above it,
+/// unlike every neighbouring layer (START_TIMEOUT, the accept windows,
+/// CALL_TIMEOUT).
+const GENERATION_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
 impl Engine {
     /// The engine's generation right now, from Kotlin.
     pub async fn generation_now(&self) -> Result<u64, String> {
-        let answer: Generation = self
-            .0
-            .run_mobile_plugin_async("engineGeneration", ())
-            .await
-            .map_err(|err| err.to_string())?;
+        let answer: Generation = tokio::time::timeout(
+            GENERATION_READ_TIMEOUT,
+            self.0.run_mobile_plugin_async("engineGeneration", ()),
+        )
+        .await
+        .map_err(|_| {
+            format!(
+                "the engine did not answer within {} s",
+                GENERATION_READ_TIMEOUT.as_secs()
+            )
+        })?
+        .map_err(|err| err.to_string())?;
         Ok(answer.generation)
     }
 

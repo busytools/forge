@@ -27,12 +27,14 @@ const HOST_GONE: &str = "the browser-capable client went away before answering";
 /// longer than this entirely - so the named failure and a retry is the
 /// answer. A late answer costs nothing: the ask keeps its entry registered,
 /// and the reply's send drops it (`.ok()`) once this waiter is gone.
-// The client's worst honest path: launch + handshake + one driver call, plus
-// slack. The desktop is 15+15+150; an Android client's in-app driver boots,
-// so its cold figures are wider - 40 s accept (a node boot measured at 39 s
-// on a loaded emulator) + 10 s handshake + 150 s call = 200 s. **The phone's
-// cold chain therefore sits AT this bound, with zero slack**: the desktop's
-// 20 s of headroom is exactly what the phone's boot consumes.
+// The client's worst honest ACCEPT-ONWARD path: accept + handshake + one
+// driver call, plus slack. The desktop is 15+15+150; an Android client's
+// in-app driver boots, so its cold figures are wider - 40 s accept (a node
+// boot measured at 39 s on a loaded emulator) + 10 s handshake + 150 s call
+// = 200 s, exactly this bound. That is only the accept-onward segment: the
+// call also carries an unbounded pre-accept RPC segment (the engine
+// generation read, the ensure spin, the asset unpack, the UI-thread origin
+// latch), so the phone's whole cold chain can MEET or exceed this bound.
 const ASK_TIMEOUT: Duration = Duration::from_secs(15 + 15 + 150 + 20);
 
 /// One ask, on its way to the registered host.
@@ -545,12 +547,14 @@ mod tests {
         );
     }
 
-    /// **The bound clears every layer that legitimately takes time.** The
-    /// desktop client's own bounds are a launch (15 s), a driver handshake
-    /// (15 s) and one tool call (150 s); an Android client's in-app driver
-    /// BOOTS, so its cold figures are wider - 40 s to accept the node's
-    /// first dial, 10 s to hand shake, and the same 150 s call (200 s in
-    /// all, i.e. the bound is AT the phone's ceiling with zero slack). A
+    /// **The bound clears the accept-onward segment of every layer below
+    /// it.** The desktop client's own bounds are a launch (15 s), a driver
+    /// handshake (15 s) and one tool call (150 s); an Android client's
+    /// in-app driver BOOTS, so its cold figures are wider - 40 s to accept
+    /// the node's first dial, 10 s to hand shake, and the same 150 s call
+    /// (200 s in all, exactly this bound). That segment carries no slack;
+    /// the call's unbounded pre-accept RPC segment (the generation read,
+    /// the ensure spin, the unpack) can push the whole chain past it. A
     /// bound under either sum would fail slow-but-fine calls, which is the
     /// one change someone would plausibly make here.
     #[test]

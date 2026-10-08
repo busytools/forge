@@ -59,9 +59,10 @@ pub(super) struct DriverStart<'a> {
     /// WebView never moves within a run, but a CLAIMED RENDERER DEATH bumps
     /// the generation, and a changed identity is what makes the next call
     /// rebuild the driver. On the phone that rebuild cannot reattach today
-    /// (issue #1931): the in-app node keeps its old socket link and Kotlin
-    /// refuses a second node, so the call fails with the reason until the app
-    /// is restarted.
+    /// (issue #1931): the in-app node keeps its old socket link open (it only
+    /// redials a dead one), so in the steady case the fresh driver's start
+    /// gets no dial and its accept window times out - the call fails with the
+    /// reason until the app is restarted.
     pub identity: &'a str,
     pub output: &'a Path,
     /// The unix socket the in-app driver dials (phone only).

@@ -322,18 +322,27 @@ impl BrowserHost {
             let shared = self.shared_profile().await;
             // **The identity carries the engine's generation, read PER
             // CALL** - a claimed renderer death bumps it, so the held driver
-            // reads stale and this call attempts a rebuild. It attempts,
-            // and today the attempt fails: the in-app node keeps its old
-            // socket link (it only redials a DEAD one) and Kotlin refuses a
-            // second node, so a rebuilt driver's pin has no browser to
-            // reach. The claim is exactly that much: the app survives, the
-            // page is gone, later calls fail with the named reason, and the
-            // repair is restarting the app until the reattach is solved
-            // (issue #1931).
-            let generation = engine.generation_now().await.unwrap_or_else(|why| {
-                tauri_plugin_log::log::warn!("the engine generation could not be read: {why}");
-                u64::MAX
-            });
+            // reads stale and this call attempts a rebuild. In the steady
+            // case the attempt fails at its first step: the in-app node
+            // keeps its old socket link open (it only redials a DEAD one),
+            // so it never dials the fresh socket the rebuild bound, and the
+            // start's accept window times out - the named dial timeout,
+            // which carries the restart hint on a warm node. Only in the
+            // narrower timing - a death landing mid-start, between accept
+            // and pin - is the pin reached; Kotlin's second start resolves
+            // `nodeStarted: false` rather than refusing. The claim is
+            // exactly that much: the app survives, the page is gone, later
+            // calls fail with the named reason, and the repair is
+            // restarting the app until the reattach is solved (issue #1931).
+            //
+            // A read that fails or times out fails the CALL, named: a
+            // sentinel identity would store a value no real generation can
+            // equal and brick the run to the post-death state on one
+            // transient bridge fault.
+            let generation = engine
+                .generation_now()
+                .await
+                .map_err(|why| format!("the engine generation could not be read: {why}"))?;
             let identity = format!("webview-{generation}");
             let start = DriverStart {
                 socket: &socket,

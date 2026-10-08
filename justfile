@@ -384,14 +384,17 @@ client-android-check: vendor-browser-stack vendor-browser-stack-android
     # none of it and gradle alone dies at settings evaluation. The CLI's own
     # build generates it (and compiles the Kotlin and the Rust); the unit
     # tests then run alone, because a build success prints no test count.
-    npm --prefix client run tauri -- android build --debug --apk --ci --target aarch64
     # **The renderer-death claim is INJECTED, and a dropped config would
     # regenerate the client silently WITHOUT it** - wry reads the env hook
     # from client/.cargo/config.toml (the tauri CLI chain runs from client/),
     # so a move of that file, or a wry bump that renames the class extension,
     # produces an app that dies when any WebView's renderer is killed. The
-    # generated file is the proof: it is build output, regenerated above.
+    # generated file is the proof, and it is build output: remove it FIRST, or
+    # a stale copy left by an earlier build could pass the grep on old bytes
+    # (a fresh clone fails safely, a warm one would not).
     generated_client="client/src-tauri/gen/android/app/src/main/java/dev/vedhavyas/forge/generated/RustWebViewClient.kt"
+    rm -f "$generated_client"
+    npm --prefix client run tauri -- android build --debug --apk --ci --target aarch64
     for marker in onRenderProcessGone rendererDied; do
         if ! grep -q "$marker" "$generated_client"; then
             echo "[ERROR] the generated RustWebViewClient is missing '$marker' - the renderer-gone claim did not inject; check client/.cargo/config.toml (WRY_RUSTWEBVIEWCLIENT_CLASS_EXTENSION)" >&2

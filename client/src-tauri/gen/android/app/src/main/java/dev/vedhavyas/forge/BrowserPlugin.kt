@@ -230,9 +230,10 @@ internal class BrowserEngine(private val activity: Activity) {
    * and wry's client for the UI page both land in `rendererGone`). The
    * shell reads it PER CALL and folds it into the driver identity, so a
    * death makes the held driver read stale and the next call ATTEMPTS a
-   * rebuild. It cannot reattach today (issue #1931): the in-app node keeps
-   * its old socket link and this engine refuses a second node, so the call
-   * fails with the reason until the app restarts.
+   * rebuild. It cannot reattach today (issue #1931): in the steady case the
+   * in-app node keeps its old socket link open (it only redials a dead one),
+   * so the fresh driver's start gets no dial and its accept window times
+   * out; the call fails with the reason until the app restarts.
    */
   @Volatile var generation = 0
     private set
