@@ -186,7 +186,7 @@
     const proposed = wire.updates.some((update) => recommendation(update) !== null);
     const transcribing = proposed ? 'transcribing has an update' : 'transcribing is up to date';
     if (cleanupPick === null) {
-      return `${transcribing} \u{b7} cleanup has nothing measured yet`;
+      return `${transcribing} \u{b7} cleanup has no pick yet`;
     }
     if (cleanupPick.candidate.installed?.file === inUseCleanup?.file) {
       return `${transcribing} \u{b7} cleanup is on the model its bench picked`;

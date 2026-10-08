@@ -1281,7 +1281,7 @@ describe('the models route as it draws', () => {
     const host = open(modelsWire);
 
     expect(host.textContent).toContain('transcribing has an update');
-    expect(host.textContent).toContain('cleanup has nothing measured yet');
+    expect(host.textContent).toContain('cleanup has no pick yet');
 
     const clear = open({ ...modelsWire, updates: [] });
     expect(clear.textContent).toContain('transcribing is up to date');
