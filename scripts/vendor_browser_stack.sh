@@ -88,6 +88,25 @@ else
     need tar
 fi
 
+# **The generated copy is not pruned by anything.** Tauri's resource copy
+# into gen/android's assets never deletes files that no longer exist in the
+# source, and the Android packer ships whatever gen/ holds - so a stale
+# `browser/` tree (a vendored Chromium from before the machine's browser
+# switch) shipped a 516MB APK from a source tree that was already clean
+# (measured 2026-10-08). The Android bundle carries ONLY the driver
+# (playwright-mcp); the mac node binary and any vendored browser are dead
+# weight there. Clear the non-driver subdirs at their source, both arms.
+prune_generated_stack() {
+    local gen="$REPO/client/src-tauri/gen/android/app/src/main/assets/browser-stack"
+    [ -d "$gen" ] || return 0
+    for stale in "$gen/browser" "$gen/node"; do
+        if [ -d "$stale" ]; then
+            echo "[..] removing the stale generated copy $(basename "$stale")"
+            find "$stale" -depth -delete
+        fi
+    done
+}
+
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/forge-browser-stack.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -99,6 +118,7 @@ if [ -d "$STACK/browser" ]; then
     echo "[..] removing the stale vendored browser tree"
     find "$STACK/browser" -depth -delete
 fi
+prune_generated_stack
 
 # Fail on bytes that are not the pinned ones. A partial download and a
 # tampered one look the same here, and both must not reach the bundle.
@@ -129,6 +149,7 @@ fetch() {
 
 if [ "$ANDROID_MODE" = true ]; then
     need unzip
+    prune_generated_stack
     zip_name="nodejs-mobile-android-$LIBNODE_VERSION.zip"
     lib_out="$ANDROID_DIR/jniLibs/$LIBNODE_ABI/libnode.so"
     inc_out="$ANDROID_DIR/cpp/nodejs-mobile/include"
