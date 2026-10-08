@@ -562,6 +562,22 @@
     void hideBrowser(profile);
   }
 
+  /**
+   * The phone's takeover bar, the same answer: its Done arrives as a window
+   * event (the Kotlin bar calls into this page - see `installTakeoverHook`),
+   * and this dock's own `handOff` is what answers it, refusals and all. Its
+   * back never crosses: lowering is the host's, and an unanswered hand-off
+   * simply stays parked.
+   */
+  $effect(() => {
+    const onTakeover = (event: Event): void => {
+      if ((event as CustomEvent<string>).detail !== 'done') return;
+      handOff(true);
+    };
+    window.addEventListener('forge-takeover', onTakeover);
+    return () => window.removeEventListener('forge-takeover', onTakeover);
+  });
+
   function move(step: number): void {
     // An answered prompt is standing down: its rows are a record of what was
     // answered, not a list to move through.

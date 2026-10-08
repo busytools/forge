@@ -110,13 +110,16 @@ describe('the shell command names', () => {
     expect(invoke, 'the activity mark').toHaveBeenLastCalledWith('browser_used');
   });
 
-  it('and the phone does not claim the capability before its phase', () => {
+  it('and the phone claims the capability like any other shell', () => {
+    // The Android phase landed: the phone's engine is its own system WebView
+    // and the driver runs in-app (issue #1839). The page is the same shell
+    // either way, so the UA decides nothing.
     const agent = Object.getOwnPropertyDescriptor(window.navigator, 'userAgent');
     Object.defineProperty(window.navigator, 'userAgent', {
       value: 'Mozilla/5.0 (Linux; Android 15; Pixel 9)',
       configurable: true,
     });
-    expect(canHost(), 'the phone is not a browser client yet').toBe(false);
+    expect(canHost(), 'the phone hosts the browser now').toBe(true);
     if (agent) Object.defineProperty(window.navigator, 'userAgent', agent);
   });
 

@@ -23,11 +23,14 @@
 //! tool name and arguments, the driver runs them, and the answer is the parts
 //! it returned.
 
+#[cfg(target_os = "android")]
+pub mod android;
 pub mod chromium;
 pub mod custom;
 pub mod driver;
 pub mod profiles;
 
+#[cfg(desktop)]
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -35,7 +38,9 @@ use std::sync::Arc;
 use tauri::Manager as _;
 
 use driver::ReplyPart;
-use profiles::{DriverStart, Named, Profile, Seat};
+#[cfg(desktop)]
+use profiles::Named;
+use profiles::{DriverStart, Profile, Seat};
 use serde_json::Value;
 use tokio::sync::Mutex;
 
@@ -101,6 +106,34 @@ impl StackPaths {
             profiles: data.join("browser/profiles"),
         }
     }
+
+    /// The phone's own derivation: no vendored stack on a filesystem path
+    /// (the driver tree lives unpacked under the data dir, put there by the
+    /// Kotlin engine), and the same three state directories as the desktop's.
+    pub fn for_android(data: &Path) -> Self {
+        Self {
+            stack: data.join("browser/engine"),
+            user_data: data.join("browser/user-data"),
+            output: data.join("browser/output"),
+            profiles: data.join("browser/profiles"),
+        }
+    }
+
+    /// The unix socket the in-app driver dials, one per app run: beside the
+    /// state directories, never inside one (nothing else may manage it).
+    pub fn driver_socket(&self) -> PathBuf {
+        self.user_data.parent().unwrap_or(&self.user_data).join("driver.sock")
+    }
+
+    /// Resolve from the running app, on the phone.
+    #[cfg(target_os = "android")]
+    pub fn android<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<Self, String> {
+        let data = app
+            .path()
+            .app_data_dir()
+            .map_err(|why| format!("the app's data directory cannot be resolved: {why}"))?;
+        Ok(Self::for_android(&data))
+    }
 }
 
 /// The host: the browser's own profile, the named ones, and where everything
@@ -111,25 +144,49 @@ pub struct BrowserHost {
     /// one: a burst of first calls launches ONE browser rather than two onto
     /// one profile - and a hand-off's `show` racing a first call cannot leave
     /// two browsers on one profile either.
+    #[cfg(desktop)]
     launch: Mutex<()>,
     /// The shared profile: the browser's own profile, one driver for every
     /// session that names none.
     shared: Mutex<Option<Arc<Profile>>>,
-    /// The named profiles, by name.
+    /// The named profiles, by name. The phone holds none (its call refuses a
+    /// name), so the map exists only where profiles do.
+    #[cfg(desktop)]
     named: Mutex<HashMap<String, Arc<Named>>>,
     /// Whether any session has driven this client's browser since it came up,
     /// which the strip's row marks (Ved, 2026-10-07).
     used: std::sync::atomic::AtomicBool,
+    /// The phone's engine, the Kotlin half of the host (the WebView, the CDP
+    /// relay, the in-app node): `None` on a host that cannot act at all.
+    /// Desktop clients have no field: their engine is a launched browser and
+    /// a spawned child.
+    #[cfg(target_os = "android")]
+    engine: Option<Arc<android::Engine>>,
 }
 
 impl BrowserHost {
     pub fn new(paths: StackPaths) -> Self {
         Self {
             paths: Ok(paths),
+            #[cfg(desktop)]
             launch: Mutex::new(()),
             shared: Mutex::new(None),
+            #[cfg(desktop)]
             named: Mutex::new(HashMap::new()),
             used: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(target_os = "android")]
+            engine: None,
+        }
+    }
+
+    /// The phone's host: the same shape plus the engine handle.
+    #[cfg(target_os = "android")]
+    pub fn android(paths: StackPaths, engine: Arc<android::Engine>) -> Self {
+        Self {
+            paths: Ok(paths),
+            shared: Mutex::new(None),
+            used: std::sync::atomic::AtomicBool::new(false),
+            engine: Some(engine),
         }
     }
 
@@ -139,10 +196,14 @@ impl BrowserHost {
     pub fn unavailable(why: String) -> Self {
         Self {
             paths: Err(why),
+            #[cfg(desktop)]
             launch: Mutex::new(()),
             shared: Mutex::new(None),
+            #[cfg(desktop)]
             named: Mutex::new(HashMap::new()),
             used: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(target_os = "android")]
+            engine: None,
         }
     }
 
@@ -181,47 +242,88 @@ impl BrowserHost {
             return Err(refusal);
         }
         let paths = self.paths.clone()?;
-        let node = driver::node_path(&paths.stack);
-        let cli = driver::cli_path(&paths.stack);
-        match profile {
-            None => {
-                let active = self.browser_for(&paths.user_data).await?;
-                // **The browser has been driven**, which the strip's row
-                // draws: a session's call is the only way a browser of this
-                // client's is used. Set after the profile is resolved, so a
-                // refused call never lights the mark.
-                self.used.store(true, std::sync::atomic::Ordering::Release);
-                let endpoint = format!("http://127.0.0.1:{}", active.port);
-                let shared = self.shared_profile().await;
-                let start = DriverStart {
-                    node: &node,
-                    cli: &cli,
-                    endpoint: &endpoint,
-                    identity: &active.path,
-                    output: &paths.output,
-                };
-                let outcome = shared.call(&start, tool, args).await;
-                self.forget_a_dead_browser(&paths.user_data, &shared, active.port, outcome.is_err())
+        #[cfg(desktop)]
+        {
+            let node = driver::node_path(&paths.stack);
+            let cli = driver::cli_path(&paths.stack);
+            return match profile {
+                None => {
+                    let active = self.browser_for(&paths.user_data).await?;
+                    // **The browser has been driven**, which the strip's row
+                    // draws: a session's call is the only way a browser of this
+                    // client's is used. Set after the profile is resolved, so a
+                    // refused call never lights the mark.
+                    self.used.store(true, std::sync::atomic::Ordering::Release);
+                    let endpoint = format!("http://127.0.0.1:{}", active.port);
+                    let shared = self.shared_profile().await;
+                    let start = DriverStart {
+                        node: &node,
+                        cli: &cli,
+                        endpoint: &endpoint,
+                        identity: &active.path,
+                        output: &paths.output,
+                    };
+                    let outcome = shared.call(&start, tool, args).await;
+                    self.forget_a_dead_browser(
+                        &paths.user_data,
+                        &shared,
+                        active.port,
+                        outcome.is_err(),
+                    )
                     .await;
-                outcome
-            }
-            Some(name) => {
-                let named = self.named_profile(seat, &name).await?;
-                let active = self.browser_for(&named.dir).await?;
-                self.used.store(true, std::sync::atomic::Ordering::Release);
-                let endpoint = format!("http://127.0.0.1:{}", active.port);
-                let start = DriverStart {
-                    node: &node,
-                    cli: &cli,
-                    endpoint: &endpoint,
-                    identity: &active.path,
-                    output: &paths.output,
-                };
-                let outcome = named.profile.call(&start, tool, args).await;
-                self.forget_a_dead_browser(&named.dir, &named.profile, active.port, outcome.is_err())
+                    outcome
+                }
+                Some(name) => {
+                    let named = self.named_profile(seat, &name).await?;
+                    let active = self.browser_for(&named.dir).await?;
+                    self.used.store(true, std::sync::atomic::Ordering::Release);
+                    let endpoint = format!("http://127.0.0.1:{}", active.port);
+                    let start = DriverStart {
+                        node: &node,
+                        cli: &cli,
+                        endpoint: &endpoint,
+                        identity: &active.path,
+                        output: &paths.output,
+                    };
+                    let outcome = named.profile.call(&start, tool, args).await;
+                    self.forget_a_dead_browser(
+                        &named.dir,
+                        &named.profile,
+                        active.port,
+                        outcome.is_err(),
+                    )
                     .await;
-                outcome
+                    outcome
+                }
+            };
+        }
+        #[cfg(target_os = "android")]
+        {
+            // **The phone hosts ONE browser - the shared profile** - until
+            // WebView storage isolation is its own piece; a named profile is
+            // refused with the reason rather than quietly sharing the shared
+            // one's logins.
+            if let Some(name) = profile {
+                return Err(phone_profile_refusal(&name));
             }
+            let Some(engine) = self.engine.as_ref() else {
+                return Err("the browser engine is not there".to_owned());
+            };
+            self.used.store(true, std::sync::atomic::Ordering::Release);
+            let socket = paths.driver_socket();
+            let shared = self.shared_profile().await;
+            let start = DriverStart {
+                socket: &socket,
+                identity: "webview",
+                ui_origin: "",
+                engine,
+                output: &paths.output,
+            };
+            // No `forget_a_dead_browser` here: the phone's engine cannot
+            // relaunch within a run (its WebView is the app's own), so a
+            // dead driver has nothing to rebuild against - its next call
+            // fails with the reason, and a client restart is the repair.
+            shared.call(&start, tool, args).await
         }
     }
 
@@ -231,6 +333,7 @@ impl BrowserHost {
     /// the driver in place; only a browser that stopped answering on the port
     /// this driver was built for drops it, so the next call rebuilds against
     /// a relaunched browser. Bounded by the probe's own read timeout.
+    #[cfg(desktop)]
     async fn forget_a_dead_browser(
         &self,
         user_data: &Path,
@@ -252,6 +355,7 @@ impl BrowserHost {
     /// a profile whose owning session is GONE is exactly what this is for.
     /// The profile's BROWSER goes with its name: the next call relaunches it
     /// over the same directory, so a close ends the run and never the logins.
+    #[cfg(desktop)]
     pub async fn close(&self, name: &str) -> Result<(), String> {
         let entry = {
             let named = self.named.lock().await;
@@ -266,6 +370,14 @@ impl BrowserHost {
         Ok(())
     }
 
+    /// The phone holds no named profiles, so the row's close has nothing to
+    /// close and says exactly that.
+    #[cfg(target_os = "android")]
+    pub async fn close(&self, name: &str) -> Result<(), String> {
+        self.paths.clone()?;
+        Err(format!("no browser profile is open under '{name}'"))
+    }
+
     /// Bring the browser up, without any driver.
     ///
     /// **The app's own start, so the browser is there before anything asks
@@ -276,9 +388,21 @@ impl BrowserHost {
     /// and one with no calls to serve is a child process held for nothing.
     /// The launched browser's id comes back with its port, so a caller that
     /// must reap it (a test that launched it) can; the app ignores both.
+    #[cfg(desktop)]
     pub async fn start(&self) -> Result<chromium::ActivePort, String> {
         let paths = self.paths.clone()?;
         self.browser_for(&paths.user_data).await
+    }
+
+    /// The phone's own start: the Kotlin engine comes up (WebView, relay,
+    /// unpacked tree) with no driver behind it.
+    #[cfg(target_os = "android")]
+    pub async fn start(&self) -> Result<(), String> {
+        self.paths.clone()?;
+        let Some(engine) = self.engine.as_ref() else {
+            return Err("the browser engine is not there".to_owned());
+        };
+        engine.ensure().await
     }
 
     /// One profile's live browser, launched when nothing is up: the shared
@@ -291,6 +415,7 @@ impl BrowserHost {
     /// view (see `chromium::show` for how the person sees it). The launch
     /// lock serializes across every profile: one launch at a time, whichever
     /// directory it is for.
+    #[cfg(desktop)]
     async fn browser_for(&self, user_data: &Path) -> Result<chromium::ActivePort, String> {
         let _launching = self.launch.lock().await;
         let binary = chromium::browser_binary()?;
@@ -301,6 +426,7 @@ impl BrowserHost {
     /// profile whose driver died but whose name is still held is
     /// listed as not running rather than dropped: the name is owned until it
     /// is released, and a row that vanished would read as released.
+    #[cfg(desktop)]
     pub async fn profiles(&self) -> Vec<ProfileRow> {
         let named = self.named.lock().await;
         let mut rows: Vec<ProfileRow> = Vec::new();
@@ -318,9 +444,17 @@ impl BrowserHost {
         rows
     }
 
+    /// The phone holds no named profiles: an empty list is the honest answer,
+    /// not an error - "none" is a state.
+    #[cfg(target_os = "android")]
+    pub async fn profiles(&self) -> Vec<ProfileRow> {
+        Vec::new()
+    }
+
     /// Whether the profile's browser is up as a WINDOW right now - the shared
     /// one for `None` - so the strip's button can say hide where the window is
     /// up and show where it is not.
+    #[cfg(desktop)]
     pub async fn windowed(&self, profile: Option<&str>) -> Result<bool, String> {
         let paths = self.paths.clone()?;
         let dir = match profile {
@@ -335,6 +469,20 @@ impl BrowserHost {
         Ok(chromium::windowed(&dir).await)
     }
 
+    /// The phone's "window" is the takeover: up while the page is shown over
+    /// the client, which is exactly what the strip's button reads.
+    #[cfg(target_os = "android")]
+    pub async fn windowed(&self, profile: Option<&str>) -> Result<bool, String> {
+        self.paths.clone()?;
+        if let Some(name) = profile {
+            return Err(phone_profile_refusal(name));
+        }
+        let Some(engine) = self.engine.as_ref() else {
+            return Err("the browser engine is not there".to_owned());
+        };
+        engine.windowed().await
+    }
+
     /// Bring the browser up VISIBLY for a hand-off's Open or the strip's
     /// show: **the profile the call names, or the shared one** - a profile's
     /// window is raised over its own browser, on its own page, which is what
@@ -344,6 +492,7 @@ impl BrowserHost {
     /// cannot leave two browsers on one profile. This is the client's own
     /// act and answers the core nothing: the hand-off's answer is Done or
     /// Not now, and never the window itself.
+    #[cfg(desktop)]
     pub async fn show(&self, profile: Option<&str>) -> Result<chromium::ActivePort, String> {
         let paths = self.paths.clone()?;
         let dir = match profile {
@@ -360,9 +509,25 @@ impl BrowserHost {
         chromium::show(&binary, &dir).await
     }
 
+    /// The phone's Open: raise the takeover (the approved Android pair - the
+    /// page full-screen over the client, one slim bar, Back and hardware Back
+    /// the door).
+    #[cfg(target_os = "android")]
+    pub async fn show(&self, profile: Option<&str>) -> Result<(), String> {
+        self.paths.clone()?;
+        if let Some(name) = profile {
+            return Err(phone_profile_refusal(name));
+        }
+        let Some(engine) = self.engine.as_ref() else {
+            return Err("the browser engine is not there".to_owned());
+        };
+        engine.show().await
+    }
+
     /// Take the window back down: the browser closes, and the next agent
     /// call relaunches it headless over the same directory. **The hand-off is
     /// not answered by this** - Done or Not now is.
+    #[cfg(desktop)]
     pub async fn hide(&self, profile: Option<&str>) -> Result<(), String> {
         let paths = self.paths.clone()?;
         let dir = match profile {
@@ -386,6 +551,21 @@ impl BrowserHost {
         let _launching = self.launch.lock().await;
         chromium::hide(&dir).await;
         Ok(())
+    }
+
+    /// The phone's Done / Not now / the bar's back: lower the takeover. The
+    /// WebView stays exactly where the session left it, which is what the
+    /// next Open shows again.
+    #[cfg(target_os = "android")]
+    pub async fn hide(&self, profile: Option<&str>) -> Result<(), String> {
+        self.paths.clone()?;
+        if let Some(name) = profile {
+            return Err(phone_profile_refusal(name));
+        }
+        let Some(engine) = self.engine.as_ref() else {
+            return Err("the browser engine is not there".to_owned());
+        };
+        engine.hide().await
     }
 
     /// Whether a session has driven this client's browser since it came up.
@@ -415,6 +595,7 @@ impl BrowserHost {
     /// and owns it, and the second is refused by the same rule as any other
     /// attach. A profile whose driver died between calls needs nothing here -
     /// its next call rebuilds the driver over the saved files.
+    #[cfg(desktop)]
     async fn named_profile(&self, seat: &Seat, name: &str) -> Result<Arc<Named>, String> {
         if let Some(refusal) = profiles::name_refusal(name) {
             return Err(refusal);
@@ -440,6 +621,17 @@ impl BrowserHost {
             }
         }
     }
+}
+
+/// Why a named profile cannot be used on the phone yet. One sentence, and
+/// the way forward in it: a session that reads a refusal has to know it can
+/// simply call without the name.
+#[cfg(target_os = "android")]
+fn phone_profile_refusal(name: &str) -> String {
+    format!(
+        "'{name}' cannot be a profile on this client yet: the phone runs one browser, the \
+         shared one - a call without a profile reaches it"
+    )
 }
 
 /// Take the `profile` argument off a call.

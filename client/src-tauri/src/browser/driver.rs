@@ -50,6 +50,11 @@ pub struct Driver {
     /// leave the old one holding the browser.
     _service: RunningService<rmcp::RoleClient, ()>,
     client: rmcp::Peer<rmcp::RoleClient>,
+    /// The phone's own page, by origin: the WebView's devtools lists every
+    /// debuggable page in the app process, the client's UI among them, and
+    /// the driver must be pinned off it (see [`Driver::start_inapp`]).
+    #[cfg(target_os = "android")]
+    ui_origin: String,
 }
 
 impl Driver {
@@ -116,7 +121,131 @@ impl Driver {
             .map_err(|why| format!("the driver did not answer its MCP handshake: {why}"))?;
         tauri_plugin_log::log::info!("the driver answers on {cdp_endpoint}");
         let client = service.peer().clone();
-        Ok(Self { _service: service, client })
+        Ok(Self {
+            _service: service,
+            client,
+            #[cfg(target_os = "android")]
+            ui_origin: String::new(),
+        })
+    }
+
+    /// Start the driver on the phone: libnode runs in THIS process, so there
+    /// is no child to spawn and no stdio to borrow - the Kotlin engine starts
+    /// the in-app node, which dials the unix socket bound here and wears it
+    /// as its stdio (see the bootstrap script). Everything after the
+    /// transport is the same client as the desktop's.
+    ///
+    /// **The handshake is followed by a tab pin**, because the WebView's
+    /// devtools lists every page in the app process and the client's own UI
+    /// is one of them - measured: an unpinned driver drives the UI page
+    /// (which playwright finds first). The pin selects the page that is not
+    /// the UI's origin, and a pin that finds none fails the start rather than
+    /// letting a session's first call navigate the client away.
+    #[cfg(target_os = "android")]
+    pub async fn start_inapp(
+        engine: &super::android::Engine,
+        socket: &Path,
+        ui_origin: &str,
+        output_dir: &Path,
+    ) -> Result<Self, String> {
+        std::fs::create_dir_all(output_dir)
+            .map_err(|why| format!("the browser output directory cannot be made: {why}"))?;
+        // A socket file left by a dead run would refuse the bind.
+        let _ = std::fs::remove_file(socket);
+        let listener = tokio::net::UnixListener::bind(socket)
+            .map_err(|why| format!("the driver socket could not be bound: {why}"))?;
+        let relay = engine.start_driver(socket, output_dir).await?;
+        tauri_plugin_log::log::info!("the engine answers (relay port {})", relay.relay_port);
+        let accept = tokio::time::timeout(START_TIMEOUT, listener.accept())
+            .await
+            .map_err(|_| {
+                format!(
+                    "the on-device driver did not dial its socket within {} s",
+                    START_TIMEOUT.as_secs()
+                )
+            })?
+            .map_err(|why| format!("the driver socket did not accept: {why}"))?;
+        let (stream, _) = accept;
+        let service = tokio::time::timeout(START_TIMEOUT, ().serve(stream))
+            .await
+            .map_err(|_| {
+                format!(
+                    "the on-device driver did not answer its MCP handshake within {} s",
+                    START_TIMEOUT.as_secs()
+                )
+            })?
+            .map_err(|why| format!("the driver did not answer its MCP handshake: {why}"))?;
+        let client = service.peer().clone();
+        let origin = if ui_origin.is_empty() { relay.ui_origin.clone() } else { ui_origin.to_owned() };
+        let driver = Self { _service: service, client, ui_origin: origin };
+        driver.pin_browser_tab().await?;
+        Ok(driver)
+    }
+
+    /// Point the driver's current tab at the browser page. See
+    /// [`Driver::start_inapp`] for why this exists.
+    #[cfg(target_os = "android")]
+    async fn pin_browser_tab(&self) -> Result<(), String> {
+        let listed = self.call_raw("browser_tabs", serde_json::json!({ "action": "list" })).await?;
+        let text = listed
+            .iter()
+            .map(|part| match part {
+                ReplyPart::Text { text } => text.as_str(),
+                ReplyPart::Image { .. } => "[an image]",
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let tabs = browser_tabs_of(&text);
+        let Some((index, url)) =
+            tabs.iter().find(|(_, url)| !url.starts_with(self.ui_origin.as_str())).cloned()
+        else {
+            return Err(format!(
+                "the browser page could not be told apart from the client's own screen \
+                 (tabs: {tabs:?}, client origin: {})",
+                self.ui_origin,
+            ));
+        };
+        tauri_plugin_log::log::info!("pinning the driver to tab {index} ({url})");
+        self.call_raw("browser_tabs", serde_json::json!({ "action": "select", "index": index }))
+            .await
+            .map(|_| ())
+    }
+
+    /// The phone's page is not a tab: a select or close that resolves to the
+    /// UI's origin is refused before the driver runs it, whoever asked. The
+    /// pin keeps the driver off the UI by default; this keeps a session's own
+    /// tab call from putting it there.
+    #[cfg(target_os = "android")]
+    async fn refuse_a_client_page(&self, tool: &str, args: &Value) -> Result<(), String> {
+        if tool != "browser_tabs" {
+            return Ok(());
+        }
+        let action = args.get("action").and_then(Value::as_str).unwrap_or_default();
+        let index = args.get("index").and_then(Value::as_u64);
+        if action != "select" && !(action == "close" && index.is_some()) {
+            return Ok(());
+        }
+        let Some(index) = index else {
+            return Ok(());
+        };
+        let listed = self.call_raw("browser_tabs", serde_json::json!({ "action": "list" })).await?;
+        let text = listed
+            .iter()
+            .map(|part| match part {
+                ReplyPart::Text { text } => text.as_str(),
+                ReplyPart::Image { .. } => "[an image]",
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        for (candidate, url) in browser_tabs_of(&text) {
+            if candidate == index as usize && url.starts_with(self.ui_origin.as_str()) {
+                return Err(format!(
+                    "tab {index} is this client's own screen, not a browser page: the browser \
+                     tools drive the shared browser only"
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Whether the child is still there to answer.
@@ -144,6 +273,14 @@ impl Driver {
     /// own (a 60 s navigation, a 30 s wait) with room: it is the wedge-breaker,
     /// not a deadline the tools keep.
     pub async fn call(&self, tool: &str, args: Value) -> Result<Vec<ReplyPart>, String> {
+        #[cfg(target_os = "android")]
+        self.refuse_a_client_page(tool, &args).await?;
+        self.call_raw(tool, args).await
+    }
+
+    /// The dispatch itself, unguarded: the guard's own tab list runs through
+    /// this, or the guard would recurse into itself.
+    async fn call_raw(&self, tool: &str, args: Value) -> Result<Vec<ReplyPart>, String> {
         let arguments = match args {
             Value::Object(fields) => fields,
             Value::Null => serde_json::Map::new(),
@@ -209,6 +346,40 @@ fn parts_of(result: &rmcp::model::CallToolResult) -> Result<Vec<ReplyPart>, Stri
     Ok(parts)
 }
 
+/// The tabs a `browser_tabs` list answer names, as (index, url) pairs. The
+/// driver draws them as `- 0: (current) [title](url)` lines; the phone's pin
+/// and guard only need the index and the page it points at.
+///
+/// Kept free of cfg so it is tested on the desktop too: it parses format the
+/// phone's correctness rests on.
+pub fn browser_tabs_of(list_text: &str) -> Vec<(usize, String)> {
+    let mut tabs = Vec::new();
+    for line in list_text.lines() {
+        let Some(rest) = line.trim_start().strip_prefix("- ") else {
+            continue;
+        };
+        let Some((index_text, remainder)) = rest.split_once(':') else {
+            continue;
+        };
+        let Ok(index) = index_text.trim().parse::<usize>() else {
+            continue;
+        };
+        // The LAST parenthesized run is the URL: the line may open with
+        // `(current)`, and the title's own brackets are not parentheses.
+        let Some(open) = remainder.rfind('(') else {
+            continue;
+        };
+        let Some(close) = remainder.rfind(')') else {
+            continue;
+        };
+        if close <= open {
+            continue;
+        }
+        tabs.push((index, remainder[open + 1..close].to_owned()));
+    }
+    tabs
+}
+
 /// The CLI inside the vendored package, run by the vendored node.
 pub fn cli_path(stack: &Path) -> PathBuf {
     stack.join("playwright-mcp/node_modules/@playwright/mcp/cli.js")
@@ -268,6 +439,32 @@ mod tests {
         )]);
         let refused = parts_of(&result).expect_err("an audio block is not carried");
         assert!(refused.contains("cannot carry"), "{refused}");
+    }
+
+    /// The tab list parser, against the shapes the driver really prints -
+    /// these are copied from measured answers, parentheses inside URLs
+    /// included.
+    #[test]
+    fn a_tab_list_parses_to_index_and_url() {
+        let text = "### Result\n- 0: (current) [](https://ui.forge.local/)\n- 1: [](https://browser.forge.local/)\n";
+        assert_eq!(
+            browser_tabs_of(text),
+            vec![(0, "https://ui.forge.local/".to_owned()), (1, "https://browser.forge.local/".to_owned())],
+        );
+
+        let with_error_page = "- 0: (current) [Webpage not available](chrome-error://chromewebdata/)";
+        assert_eq!(
+            browser_tabs_of(with_error_page),
+            vec![(0, "chrome-error://chromewebdata/".to_owned())],
+        );
+
+        let data_page = "- 0: (current) [](data:text/html,<h1 id=h>Forge Probe</h1>)";
+        assert_eq!(
+            browser_tabs_of(data_page),
+            vec![(0, "data:text/html,<h1 id=h>Forge Probe</h1>".to_owned())],
+        );
+
+        assert!(browser_tabs_of("no tabs here").is_empty());
     }
 
     /// The driver's own paths are the vendoring's layout, pinned by name.

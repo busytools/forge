@@ -34,15 +34,25 @@ export type Invoke = (command: 'browser_call', request: InvokeArgs) => Promise<u
 
 /** Whether this page runs inside the shell that owns a browser host. */
 export function canHost(): boolean {
-  return (
-    typeof window !== 'undefined' &&
-    '__TAURI_INTERNALS__' in window &&
-    // **The phone is not a browser client yet.** Its engine is the system
-    // WebView, a later phase; a page that declared the capability there would
-    // hold the exclusive role and fail every ask on a command this build does
-    // not register.
-    !/Android/i.test(navigator.userAgent)
-  );
+  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+}
+
+/**
+ * The phone's takeover bar speaks into this page: the Kotlin bar calls
+ * `window.__forgeTakeover('done' | 'lowered')` on the client's own webview,
+ * and the hook re-emits it as a window event - the dock answers `done` the
+ * same way its own Done button does, and the strip re-reads on `lowered`.
+ * The hook exists on every host; only the phone's bar ever calls it.
+ */
+export function installTakeoverHook(): void {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  (window as unknown as { __forgeTakeover?: (what: string) => void }).__forgeTakeover = (
+    what: string,
+  ): void => {
+    window.dispatchEvent(new CustomEvent('forge-takeover', { detail: what }));
+  };
 }
 
 /** The bytes a base64 string carries. */
@@ -77,6 +87,7 @@ export function answerPart(part: HostPart): BrowserAnswerPart {
  * the most useful thing anyone down that path can read.
  */
 export function hostTheBrowser(connection: Connection, invoke: Invoke = defaultInvoke): () => void {
+  installTakeoverHook();
   return connection.onBrowserAsk(async (ask: BrowserAsk): Promise<BrowserAnswer> => {
     // The strip's live mark: up while the call runs, so the row says "the
     // browser is working" from the same fact that makes it true.

@@ -86,6 +86,15 @@ android {
     buildFeatures {
         buildConfig = true
     }
+    // The in-app Node host: a JNI shim over the vendored libnode.so, built
+    // from committed source against headers `just vendor-browser-stack-android`
+    // puts under cpp/nodejs-mobile/ (gitignored). AGP packages the shim and
+    // libc++_shared.so into jniLibs beside the vendored libnode.so.
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+        }
+    }
 }
 
 kotlin {

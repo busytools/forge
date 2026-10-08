@@ -73,28 +73,35 @@ pub fn run() {
     let builder = builder;
 
     // **`invoke_handler` REPLACES the handler, it does not add to it** - so
-    // the Android arm carries every command the desktop arm does, and the
-    // browser's set stays desktop-only with the host itself: the phone's
-    // engine is its system WebView, a later phase, and a page that cannot
-    // host never invokes these (its `canHost` answers false there).
+    // the Android arm carries every command the desktop arm does. The
+    // browser's host is real on the phone now (its system WebView for the
+    // engine, in-app libnode for the driver), so its command set is the
+    // desktop's, served by `browser::android`'s engine bridge.
     #[cfg(target_os = "android")]
-    let builder = builder.plugin(android::init()).invoke_handler(tauri::generate_handler![
-        check_update,
-        install_update
-    ]);
+    let builder = builder
+        .plugin(android::init())
+        .plugin(browser::android::init())
+        .invoke_handler(tauri::generate_handler![
+            browser::browser_call,
+            browser::browser_profile_close,
+            browser::browser_profiles,
+            browser::browser_windowed,
+            browser::browser_show,
+            browser::browser_hide,
+            browser::browser_used,
+            check_update,
+            install_update
+        ]);
 
     let run = builder
         .setup(|app| {
             tauri_plugin_log::log::info!("forge client started");
-            // **The browser host is desktop-only until the Android phase.**
-            // The phone's engine is its system WebView, which this build has
-            // no path to yet: a host here would answer every call with a
-            // macOS-shaped sentence (install Brave) and warn once per launch
-            // about a browser it was never going to start, while the
-            // capability the page declares would hold the role and fail every
-            // ask. With the host absent the phone simply is not a browser
-            // client, and a session reads the named "no browser-capable
-            // client connected" instead.
+            #[cfg(not(desktop))]
+            let _ = &app;
+            // **The desktop host, built and started here.** The phone's own
+            // host is `browser::android::init()`'s (its setup builds it
+            // around the Kotlin engine handle and brings the WebView up), so
+            // this block and its macOS-shaped start stay desktop-only.
             #[cfg(desktop)]
             {
                 // The host is handed to the frontend whether or not its
