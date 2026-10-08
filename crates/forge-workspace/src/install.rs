@@ -907,6 +907,7 @@ pub(crate) fn rfc3339_now() -> String {
 #[cfg(test)]
 mod tests_install {
     use super::*;
+    use crate::bench::{BenchRole, BenchTarget};
     use crate::catalogue::DictateModelsSnapshot;
     use crate::catalogue::tests_catalogue_view::{
         enabled_stub, entry_under, serve, serve_with, source,
@@ -1071,6 +1072,48 @@ mod tests_install {
             assert!(matches!(&err, DispatchError::UninstallRefused { .. }), "got: {err:?}");
         }
         assert_eq!(ws.installed_models().len(), 1, "and nothing went with the refusal");
+    }
+
+    /// **A removal is refused while the file is in flight under it.** The
+    /// engine holds the file a running bench loads, and a download in flight
+    /// is writing it: removing either under the work leaves a bench or an
+    /// install that would then load from nowhere.
+    #[tokio::test]
+    async fn a_removal_is_refused_while_the_file_is_in_flight() {
+        let Fixture { ws, .. } = fixture();
+        record_installed_model(&ws, "spare");
+        let file = "spare-Q4_K_M.gguf";
+
+        *ws.dictate_bench.lock() = BenchState::Running {
+            target: BenchTarget {
+                file: file.to_owned(),
+                role: BenchRole::Transcribing,
+                pinned: false,
+            },
+            tier: forge_dictate::bench::Tier::Consensus,
+            clip: 1,
+            clips: 12,
+            so_far: None,
+        };
+        let err = ws
+            .dispatch(Command::DictateUninstall { file: file.to_owned() })
+            .expect_err("the bench is scoring it right now");
+        assert!(
+            matches!(&err, DispatchError::UninstallRefused { reason } if reason.contains("scoring")),
+            "got: {err:?}"
+        );
+        *ws.dictate_bench.lock() = BenchState::Idle;
+
+        *ws.dictate_install.lock() =
+            InstallState::Downloading { file: file.to_owned(), got: 3, total: 6 };
+        let err = ws
+            .dispatch(Command::DictateUninstall { file: file.to_owned() })
+            .expect_err("the download is writing it");
+        assert!(
+            matches!(&err, DispatchError::UninstallRefused { reason } if reason.contains("downloaded")),
+            "got: {err:?}"
+        );
+        assert_eq!(ws.installed_models().len(), 1, "both refusals left the record alone");
     }
 
     /// The belt for a pick that is already stranded: one naming a variant no
