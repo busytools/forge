@@ -855,6 +855,114 @@ async fn a_dropped_connection_frees_the_seat_for_the_next_take() {
     .await;
 }
 
+/// A refused re-start must not orphan the take the connection already owns.
+///
+/// A refusal answers a start that never ran, so the take it names is not the
+/// one live on the seat - and the connection that drops after one must still
+/// free its seat. Read as an end and used to forget the seat, the refusal
+/// leaves the live take registered with nobody left to close it: every later
+/// client is refused until the capture cap, which is the hold Ved met after a
+/// seat switch (#1880).
+#[tokio::test]
+async fn a_refused_restart_leaves_the_live_take_to_the_disconnect() {
+    let (url, fleet) = a_server().await;
+    fleet.install_agent("TestOrg", "proj", "lead");
+    let _models = fleet.arm_dictation(&lead_seat()).expect("dictation arms without weights");
+
+    let mut first = connect(&url).await;
+    send(
+        &mut first,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            browser: false,
+        },
+    )
+    .await;
+    let _ = snapshot_answering(&mut first).await;
+    send(
+        &mut first,
+        ClientMessage::Command {
+            command: Box::new(Command::DictateStream {
+                key: lead_seat(),
+                options: forge_workspace::DictateAxes::default(),
+                initiator: None,
+            }),
+            reply_to: None,
+        },
+    )
+    .await;
+    update_until(&mut first, "the take's start", |update| {
+        matches!(update, SessionUpdate::DictateStarted { .. })
+    })
+    .await;
+
+    // The reader presses again while their take is live - the press a seat
+    // switch leaves them making - and one live take per connection refuses it.
+    send(
+        &mut first,
+        ClientMessage::Command {
+            command: Box::new(Command::DictateStream {
+                key: lead_seat(),
+                options: forge_workspace::DictateAxes::default(),
+                initiator: None,
+            }),
+            reply_to: None,
+        },
+    )
+    .await;
+    update_until(&mut first, "the refusal", |update| {
+        matches!(
+            update,
+            SessionUpdate::DictateEnded {
+                outcome: forge_workspace::DictateOutcome::Refused { .. },
+                ..
+            }
+        )
+    })
+    .await;
+
+    // The client vanishes mid-take, and the server notices by its own read
+    // failing - a scheduling hop away, which the subscribed-count falling
+    // is what waits for.
+    let attached = fleet.subscriber_count();
+    drop(first);
+    assert!(
+        wait_for_the_server_to_notice(&fleet, attached).await,
+        "the server must notice the streaming connection is gone",
+    );
+
+    // And the next start lands at once: the take went with the connection
+    // that owned it, the refusal notwithstanding.
+    let mut next = connect(&url).await;
+    send(
+        &mut next,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            browser: false,
+        },
+    )
+    .await;
+    let _ = snapshot_answering(&mut next).await;
+    send(
+        &mut next,
+        ClientMessage::Command {
+            command: Box::new(Command::DictateStream {
+                key: lead_seat(),
+                options: forge_workspace::DictateAxes::default(),
+                initiator: None,
+            }),
+            reply_to: None,
+        },
+    )
+    .await;
+    update_until(&mut next, "the next take's start", |update| {
+        matches!(update, SessionUpdate::DictateStarted { .. })
+    })
+    .await;
+}
+
 /// The axes `forge.toml` set reach a client in the greeting. They are what a
 /// capturing client starts on and resets to, so a default standing in for the
 /// config's value would be invisible everywhere else - and the fixture's

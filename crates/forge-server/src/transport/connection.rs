@@ -21,7 +21,7 @@ use super::batch::{self, Batch};
 use super::envelope::{ClientMessage, ClientSettings, ServerMessage, Subject};
 use super::wire::{conversation_for, encode_subject, page};
 use crate::live::Live;
-use crate::surface::ViewSurface;
+use crate::surface::{DictateOutcome, ViewSurface};
 use crate::{Command, DispatchError, SessionUpdate};
 
 /// The seats this connection is holding, each given back when this drops.
@@ -342,11 +342,21 @@ async fn run_connection(
                 let Some(update) = heard else { break };
                 // A take of this connection's that ends takes its seat back
                 // out: with the take gone, the seat has no stream a frame
-                // could belong to. Read before the watch gate, because the
-                // list is the connection's own bookkeeping rather than
-                // something a subscriber hears.
-                if let SessionUpdate::DictateEnded { key, initiator: Some(id), .. } = &update
+                // could belong to. A REFUSAL answers a start that never ran,
+                // so a live take already under the seat keeps its entry -
+                // dropped, the teardown at the connection's own end has no
+                // seat to close and the take outlives its reader (#1880).
+                // Read before the watch gate, because the list is the
+                // connection's own bookkeeping rather than something a
+                // subscriber hears.
+                if let SessionUpdate::DictateEnded {
+                    key,
+                    initiator: Some(id),
+                    outcome,
+                    ..
+                } = &update
                     && *id == me
+                    && !matches!(outcome, DictateOutcome::Refused { .. })
                 {
                     dictate.seats.retain(|seat| seat != key);
                 }
