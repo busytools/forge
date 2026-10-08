@@ -15,6 +15,7 @@ use crate::protocol::{
     Command, PromptSource, SessionUpdate, WorkerSpawnReply, WorkerStatusAction, WorktreeDisposition,
 };
 use crate::target::ProjectKey;
+use crate::workspace::DespawnCleanupPending;
 use crate::workspace::LiveWorkerRefusal;
 use crate::workspace::Workspace;
 use crate::{SessionSlot, SessionTarget};
@@ -1460,6 +1461,20 @@ pub(crate) fn handle_spawn_worker(
                     "a worker labeled '{label}' is already live (session {existing_session}); message it with agents__send_message or close it first (one live worker per label)"
                 )));
             }
+            LiveWorkerRefusal::CleanupPending => {
+                tracing::info!(
+                    target: "forge_workspace::spawn",
+                    project = %project_key.as_str(),
+                    label = %label,
+                    "spawn_worker: refused, the label's previous despawn is still cleaning up",
+                );
+                // No "worktree" in this sentence: the facade's failure
+                // classifier routes that word to a worktree-creation
+                // failure, which is not what happened here.
+                let _ = return_to.send(Err(format!(
+                    "the previous despawn of '{label}' is still cleaning up; retry once it finishes"
+                )));
+            }
             LiveWorkerRefusal::AtCap { live, cap } => {
                 tracing::info!(
                     target: "forge_workspace::spawn",
@@ -1953,6 +1968,15 @@ pub(crate) fn handle_despawn_worker(
         return;
     }
 
+    // The label stays reserved for the whole cleanup: marked here, before
+    // the teardown frees the entry, so no spawn can take the label in
+    // between and be handed the worktree this despawn is about to delete.
+    // The guard rides into the cleanup below and releases the label when
+    // the cleanup ends (or unwinds). Every refusal path above this point
+    // returns before the mark, so a blocked or absent despawn frees
+    // nothing it did not take.
+    let cleanup_pending = workspace.mark_despawn_cleanup_pending(project_key, label);
+
     // Teardown. A live worker goes through `teardown_worker`, which kills
     // the subprocess on drop, removes the entry, deletes the row and
     // clears the records and payloads addressed to it.
@@ -2015,6 +2039,8 @@ pub(crate) fn handle_despawn_worker(
     // socket's own work for the whole time (#1633), so it goes to the
     // blocking pool, as the subagent worktree reap does. The reply, the
     // pane's event and any warning still go out when the cleanup finishes.
+    let log_project = project_key.clone();
+    let log_label = label.to_owned();
     let cleanup = DespawnCleanup {
         workspace: Arc::clone(workspace),
         project_key: project_key.clone(),
@@ -2030,11 +2056,26 @@ pub(crate) fn handle_despawn_worker(
     };
     match tokio::runtime::Handle::try_current() {
         Ok(handle) => {
-            handle.spawn_blocking(move || cleanup.run());
+            // A wrapper task awaits the blocking handle, so a panic in the
+            // cleanup names its site in the log instead of vanishing with
+            // the JoinHandle; the caller still sees the dropped reply.
+            let task = handle.spawn_blocking(move || cleanup.run(cleanup_pending));
+            handle.spawn(async move {
+                if let Err(join_err) = task.await {
+                    tracing::warn!(
+                        target: "forge_workspace::spawn",
+                        event_name = "despawn_cleanup_panicked",
+                        project = %log_project.as_str(),
+                        label = %log_label,
+                        error = %join_err,
+                        "despawn: the worktree cleanup panicked part-way through",
+                    );
+                }
+            });
         }
-        // No runtime to hand it to - a caller outside one, or shutdown:
-        // the cleanup runs where it is, the way this path always did.
-        Err(_) => cleanup.run(),
+        // No runtime to hand it to - a caller outside one: the cleanup runs
+        // where it is, the way this path always did.
+        Err(_) => cleanup.run(cleanup_pending),
     }
 }
 
@@ -2042,7 +2083,9 @@ pub(crate) fn handle_despawn_worker(
 ///
 /// Split out of [`handle_despawn_worker`] so the fast part - the peek, the
 /// dirty verdict and the teardown - keeps its ordering on the calling task
-/// while every `git` call runs off the runtime.
+/// while the cleanup's own `git` calls, the `git worktree remove` above
+/// all, run off the runtime. The dirty verdict is the one `git` call that
+/// stays inline.
 struct DespawnCleanup {
     workspace: Arc<Workspace>,
     project_key: ProjectKey,
@@ -2058,7 +2101,11 @@ struct DespawnCleanup {
 }
 
 impl DespawnCleanup {
-    fn run(self) {
+    /// Run the cleanup, holding `pending` - the label's in-flight mark -
+    /// until the end, so the label is reserved for every step that touches
+    /// the worktree and released only once the removal is done and its
+    /// outcome has been announced.
+    fn run(self, pending: DespawnCleanupPending) {
         use crate::protocol::DespawnResult;
 
         let Self {
@@ -2207,12 +2254,23 @@ impl DespawnCleanup {
         // Only a torn-down live worker has a pane row to remove; a stranded
         // row's label reaches the launchpad by reading the store per frame, so
         // it needs no event.
+        //
+        // The event is keyed by label and lands here, after the removal, so
+        // it evicts whichever occupant holds the seat when a viewer reads it.
+        // The in-flight mark is load-bearing for that: it keeps a same-label
+        // spawn from putting a new occupant under the seat this event is
+        // about to clear, and it is held until the guard below drops.
         if let Some(entry) = live.as_ref() {
             emit_worker_removed(&workspace, &project_key, entry, worktree);
         }
 
         let _ = respond
             .send(DespawnResult::Despawned { worktree_cleanup_warning, branch_cleanup_warning });
+        // The label is free from here: the worktree this held it for is gone
+        // (or the failure to remove it was reported), and any spawn that
+        // takes it now starts from a directory the cleanup has finished
+        // with.
+        drop(pending);
     }
 }
 
@@ -5415,15 +5473,20 @@ provider = "anthropic"
     /// task, so a whole `git worktree remove` - minutes for a worker's
     /// build tree - sat on a runtime worker, and every timer in the
     /// process, the socket's frame delivery above all, stopped for the
-    /// removal's entire duration. The worktree here carries enough files
-    /// that an inline cleanup could not possibly have removed it by the
-    /// time the call returns.
+    /// removal's entire duration.
+    ///
+    /// **The assertion is an ordering, not a clock, but it is not free of
+    /// scheduling.** The gap it measures is the removal below - ~130ms for
+    /// the 3,000 files here - against the caller's return, which is
+    /// microseconds of its own work; the window it cannot close is a
+    /// machine that deschedules THIS thread for longer than the whole
+    /// removal, and the file count below is what keeps that window small.
     #[tokio::test]
     async fn a_despawn_hands_back_before_the_worktree_is_gone() {
         let (workspace, project_key, wt, _repo, _config) = git_despawn_fixture("slow");
         let target = wt.join("target").join("debug");
         std::fs::create_dir_all(&target).expect("target dir");
-        for i in 0..300 {
+        for i in 0..3_000 {
             std::fs::write(target.join(format!("obj{i}.o")), b"x").expect("filler");
         }
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -5439,6 +5502,68 @@ provider = "anthropic"
             "the cleanup still runs to completion behind the caller: {result:?}"
         );
         assert!(!wt.exists(), "and it still removes the worktree");
+    }
+
+    /// A despawn's cleanup reserves its label: a spawn offered the same
+    /// label while the worktree is mid-removal is refused by name, and the
+    /// label frees again once the cleanup finishes.
+    ///
+    /// The window this closes is minutes long for a worker's build tree.
+    /// Teardown frees the label the instant it removes the entry, while the
+    /// removal it hands off is still deleting the directory a spawn
+    /// admitted in that window would be handed (and the spawn path's own
+    /// guards treat the surviving worktree as reusable).
+    #[tokio::test]
+    async fn a_despawn_reserves_its_label_until_the_cleanup_finishes() {
+        let (workspace, project_key, wt, _repo, _config) = git_despawn_fixture("reserved");
+        let target = wt.join("target").join("debug");
+        std::fs::create_dir_all(&target).expect("target dir");
+        for i in 0..3_000 {
+            std::fs::write(target.join(format!("obj{i}.o")), b"x").expect("filler");
+        }
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_despawn_worker(&workspace, &project_key, "reserved", true, tx);
+        assert!(
+            workspace.despawn_cleanup_pending(&project_key, "reserved"),
+            "the label is reserved from the handoff, before the cleanup ends",
+        );
+
+        let (spawn_tx, spawn_rx) = tokio::sync::oneshot::channel();
+        handle_spawn_worker(
+            &workspace,
+            project_key.clone(),
+            WorkerSpawnArgs {
+                label: "reserved".to_owned(),
+                charter: "c".to_owned(),
+                kick: None,
+                resume_kick: None,
+                interactive: false,
+                mcp_families: None,
+            },
+            SessionSlot::lead("Default", "forge"),
+            None,
+            false,
+            spawn_tx,
+        );
+        let refusal = spawn_rx.await.expect("the spawn answers").expect_err("refused");
+        assert!(
+            refusal.contains("still cleaning up"),
+            "the refusal names the cleanup rather than racing it: {refusal}",
+        );
+        assert!(
+            wt.exists(),
+            "and the refusal came before anything touched the worktree being removed",
+        );
+
+        let result = rx.await.expect("the cleanup answers");
+        assert!(
+            matches!(result, crate::protocol::DespawnResult::Despawned { .. }),
+            "the cleanup still runs to completion: {result:?}",
+        );
+        assert!(
+            !workspace.despawn_cleanup_pending(&project_key, "reserved"),
+            "and the label frees when the cleanup ends",
+        );
     }
 
     /// A git worker with a clean worktree despawns AND removes the
@@ -6051,6 +6176,10 @@ provider = "anthropic"
             "worker stays live when blocked"
         );
         assert!(wt.exists(), "worktree intact when blocked");
+        assert!(
+            !workspace.despawn_cleanup_pending(&project_key, "reviewer"),
+            "a blocked despawn reserves nothing: no cleanup was handed off",
+        );
     }
 
     /// A dirty worktree WITH `force` tears down + discards the worktree.
