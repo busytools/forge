@@ -1446,9 +1446,12 @@ describe('the read, and the answer a frame has outrun', () => {
     expect(page.read().wire?.composer.take, 'precondition: the fold drew the take').not.toBeNull();
 
     // The seat is left and returned to: the return's subscribe is answered
-    // with a whole record, and a take is not on one.
-    page.land(snapshotOf(LEAD, {}));
+    // with a whole record, and a take is not on one. The answer differs from
+    // the first record in a field of its own, so "the take was carried" and
+    // "the answer was ignored" cannot read alike.
+    page.land(snapshotOf(LEAD, { work: { branch: 'returned' } }));
 
+    expect(page.read().wire?.work.branch, 'the answer itself was not taken').toBe('returned');
     expect(
       page.read().wire?.composer.take,
       'the recording vanished from the record',
@@ -1461,6 +1464,9 @@ describe('the read, and the answer a frame has outrun', () => {
    * whose reader went away, so a record that kept drawing one would be a
    * recording whose only offer is a refusal - and one no later answer clears,
    * because nothing about it will ever be said again.
+   *
+   * `connecting` is the status a real drop reports (`socket.ts`'s close
+   * handler), so it is the one this must not miss.
    */
   it('drops the folded take when the socket leaves open', () => {
     const connection = drivable();
@@ -1470,7 +1476,7 @@ describe('the read, and the answer a frame has outrun', () => {
     paint();
     expect(page.read().wire?.composer.take, 'precondition: a take is drawn').not.toBeNull();
 
-    page.wentTo('closed');
+    page.wentTo('connecting');
     paint();
 
     expect(

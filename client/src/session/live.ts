@@ -534,6 +534,11 @@ function createSeat(
  * this connection's own updates had drawn emptied the screen while the
  * recording stayed live (#1880). The take is this connection's, and the
  * socket leaving `open` is what ends that claim.
+ *
+ * The take is carried and its sibling NOTICE is not: a take is live state a
+ * replace must not touch, while a notice is a moment - and only a take is
+ * owed back to a reader who was away - so a refusal line landing just before
+ * a snapshot is the one thing this can wipe.
  */
 function withHeldTake(next: SessionRecord, previous: SessionRecord | null): SessionRecord {
   const held = previous?.composer.take ?? null;
