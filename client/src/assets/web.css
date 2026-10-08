@@ -1023,7 +1023,7 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
 .bz-seg .bz-tog .n { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
 .bz-seg .bz-tog .ring { width: 9px; height: 9px; flex: none; }
 .bz-list { position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 30;
-  min-width: min(340px, calc(100vw - 28px)); max-height: 60vh; overflow-y: auto;
+  max-width: calc(100vw - 26px); max-height: 60vh; overflow-y: auto;
   background: var(--s2);
   outline: 1px solid var(--line); outline-offset: -1px; border-radius: 11px;
   box-shadow: 0 14px 38px rgba(0,0,0,.5); }

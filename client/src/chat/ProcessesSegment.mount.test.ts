@@ -93,6 +93,30 @@ describe("the processes row's interaction state machine", () => {
     expect(list(), 'the tap opens and stays open').not.toBeNull();
   });
 
+  it('follows the layout while open: a moved segment re-measures the panel', () => {
+    // The caps are measured at the open, and a reflow that changes no size at
+    // all - a segment's live figures re-wrapping, the composer growing and
+    // lifting the strip - has to move the panel with it, or the frozen style
+    // puts it off the screen again (measured live: a frozen panel's left at
+    // -89.6 on a phone).
+    draw();
+    const seg = document.querySelector('.sg-seg');
+    if (seg === null) throw new Error('no segment drew');
+    seg.getBoundingClientRect = () => ({ right: 250, top: 300 }) as unknown as DOMRect;
+    toggle()?.dispatchEvent(pointer('pointerenter', 'mouse'));
+    flushSync();
+    vi.advanceTimersByTime(16);
+    flushSync();
+    expect(list()?.getAttribute('style') ?? '', 'the first measurement').toContain('width: 238px');
+
+    seg.getBoundingClientRect = () => ({ right: 100, top: 300 }) as unknown as DOMRect;
+    vi.advanceTimersByTime(16);
+    flushSync();
+    expect(list()?.getAttribute('style') ?? '', 'the panel follows the move').toContain(
+      'width: 88px',
+    );
+  });
+
   it('opens on hover and closes after the grace when the pointer leaves', () => {
     draw();
     toggle()?.dispatchEvent(pointer('pointerenter', 'mouse'));

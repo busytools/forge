@@ -13,6 +13,7 @@
   } from '../browser/host';
   import { browserInflight } from '../browser/inflight.svelte';
   import type { Connection } from '../socket';
+  import { panelStyle } from './strip-panel';
   import type { SessionSlot } from '../wire/types';
 
   /**
@@ -70,6 +71,24 @@
   // svelte-ignore state_referenced_locally
   let hosting = $state(connection.browserRole());
   let segEl = $state<HTMLElement | null>(null);
+  /** The panel's measured caps, remeasured every frame while open. */
+  let limits = $state('');
+
+  $effect(() => {
+    if (!open) return;
+    // **While the panel is open it follows the layout it hangs in.** The
+    // style is measured once at the open, and an ordinary reflow - the
+    // composer growing and lifting the strip, another segment's figures
+    // re-wrapping beside it - would otherwise leave the panel where the old
+    // geometry put it, off the screen again. A frame loop while the panel is
+    // open (it closes on leave) re-measures; the write lands only when the
+    // string changes.
+    let raf = requestAnimationFrame(function tick() {
+      limits = panelStyle(segEl);
+      raf = requestAnimationFrame(tick);
+    });
+    return () => cancelAnimationFrame(raf);
+  });
 
   $effect(() => connection.onBrowserRole((now) => (hosting = now)));
 
@@ -347,6 +366,7 @@
   {#if open}
     <div
       class="bz-list"
+      style={limits}
       role="group"
       aria-label="the browser's profiles"
       onpointerenter={(event) => {

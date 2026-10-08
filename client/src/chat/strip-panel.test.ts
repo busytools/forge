@@ -1,7 +1,22 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs';
+
 import { describe, expect, it } from 'vitest';
 
 import { panelStyle } from './strip-panel';
+
+// Relative to the client root, which is where vitest runs: under jsdom the
+// module's own URL is not a file one.
+const SHEET = readFileSync('src/assets/web.css', 'utf8');
+
+/** One rule's block in the sheet, from its own line to the first close. */
+const rule = (selector: string): string => {
+  // The selector at the start of a line, so a scrollbar arm's selector list
+  // carrying the same word does not answer for the rule.
+  const at = SHEET.indexOf(`\n${selector} {`);
+  if (at === -1) throw new Error(`no ${selector} rule in the sheet`);
+  return SHEET.slice(at, SHEET.indexOf('}', at));
+};
 
 /**
  * The room a strip panel may take, measured against the segment's own box.
@@ -46,5 +61,25 @@ describe('the room a strip panel may take', () => {
     const width = number(style, 'width');
     expect(400 - inset, 'the right edge stays on screen').toBeLessThanOrEqual(390);
     expect(400 - inset - width, 'and so does the left').toBeGreaterThanOrEqual(12);
+  });
+
+  it('hands a segment whose room is past its own edge a zero, not a negative', () => {
+    // A negative declaration is dropped by the parser and the sheet's own
+    // caps come back: zero is the honest floor.
+    sheet(390);
+    const corner = panelStyle(at(6, 6));
+    expect(number(corner, 'width'), 'no negative width').toBe(0);
+    expect(number(corner, 'max-height'), 'no negative height').toBe(0);
+  });
+
+  it('keeps the sheet free of floors, which no engine test can see', () => {
+    // jsdom performs no layout, so a restored `min-width` in the sheet passes
+    // every mount test and then reproduces the exact reported symptom in a
+    // real engine - the floor lives in the sheet, so it is pinned in the
+    // sheet.
+    for (const selector of ['.sg-list', '.bz-list']) {
+      expect(rule(selector), `${selector} carries no min-width floor`).not.toContain('min-width');
+      expect(rule(selector), `${selector} keeps a viewport cap`).toContain('max-width: calc(100vw');
+    }
   });
 });
