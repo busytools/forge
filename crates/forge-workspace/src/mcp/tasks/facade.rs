@@ -43,7 +43,7 @@ pub(crate) struct TaskLinkDraft {
 }
 
 impl TaskLinkDraft {
-    fn into_link(&self, at: SystemTime) -> TaskLink {
+    fn to_link(&self, at: SystemTime) -> TaskLink {
         TaskLink {
             kind: self.kind.unwrap_or_else(|| LinkKind::for_target(&self.target)),
             label: self.label.clone(),
@@ -161,7 +161,7 @@ impl TaskPatch {
         }
         for draft in &self.links_add {
             if !task.links.iter().any(|l| l.target == draft.target) {
-                task.links.push(draft.into_link(at));
+                task.links.push(draft.to_link(at));
             }
         }
         task.links.retain(|l| !self.links_remove.contains(&l.target));
@@ -171,6 +171,26 @@ impl TaskPatch {
     }
 }
 
+/// The list's narrowing, one definition for the real path and the mock:
+/// `owner` by label, `parent` by id, `status` by state, `ready` by the
+/// board's own mark.
+fn narrow_rows(
+    rows: Vec<crate::board::BoardRow>,
+    owner: Option<&str>,
+    parent: Option<&TaskId>,
+    status: Option<TaskStatus>,
+    ready: Option<bool>,
+) -> Vec<crate::board::BoardRow> {
+    rows.into_iter()
+        .filter(|row| {
+            owner.is_none_or(|label| row.task.owner.as_ref().is_some_and(|o| o.label() == label))
+        })
+        .filter(|row| parent.is_none_or(|id| row.task.parent.as_ref() == Some(id)))
+        .filter(|row| status.is_none_or(|wanted| row.task.status == wanted))
+        .filter(|row| ready.is_none_or(|wanted| row.marks.ready == wanted))
+        .collect()
+}
+
 /// The task tools' view of the workspace. Sync - task-list mutations are
 /// direct state writes with no async handler to await.
 pub(crate) trait TasksFacade: Send + Sync {
@@ -178,14 +198,16 @@ pub(crate) trait TasksFacade: Send + Sync {
     /// record, with its id and timestamps stamped.
     fn create_task(&self, caller: &SessionSlot, draft: TaskDraft) -> Result<Task, TasksError>;
 
-    /// The caller's project's tasks, narrowed by `owner` (a label) and
-    /// `parent` (a task id) when supplied.
+    /// The caller's project's board rows, narrowed by `owner` (a label),
+    /// `parent` (a task id), `status` and `ready` when supplied.
     fn list_tasks(
         &self,
         caller: &SessionSlot,
         owner: Option<&str>,
         parent: Option<&TaskId>,
-    ) -> Vec<Task>;
+        status: Option<TaskStatus>,
+        ready: Option<bool>,
+    ) -> Vec<crate::board::BoardRow>;
 
     /// Apply `patch` to the task `id` in the caller's project and return
     /// the record as the write left it. `Ok(None)` if no such task is
@@ -249,7 +271,7 @@ impl TasksFacade for ProdTasksFacade {
             ),
             None => None,
         };
-        let links = draft.links.iter().map(|draft| draft.into_link(now)).collect();
+        let links = draft.links.iter().map(|draft| draft.to_link(now)).collect();
         let task = Task {
             id: TaskId::from(uuid::Uuid::new_v4().to_string()),
             project_name: cx.project_name.clone(),
@@ -280,16 +302,14 @@ impl TasksFacade for ProdTasksFacade {
         caller: &SessionSlot,
         owner: Option<&str>,
         parent: Option<&TaskId>,
-    ) -> Vec<Task> {
+        status: Option<TaskStatus>,
+        ready: Option<bool>,
+    ) -> Vec<crate::board::BoardRow> {
         let Some(ws) = self.workspace.upgrade() else { return Vec::new() };
         let Some(cx) = caller_context(&ws, caller) else { return Vec::new() };
-        ws.tasks_for_project(&cx.project_name)
-            .into_iter()
-            .filter(|t| {
-                owner.is_none_or(|label| t.owner.as_ref().is_some_and(|o| o.label() == label))
-            })
-            .filter(|t| parent.is_none_or(|id| t.parent.as_ref() == Some(id)))
-            .collect()
+        let rows =
+            ws.board_rows(&cx.project_name, SystemTime::now(), crate::board::DEFAULT_STALE_SECS);
+        narrow_rows(rows, owner, parent, status, ready)
     }
 
     fn update_task(
@@ -391,6 +411,18 @@ fn mock_task(caller: &SessionSlot) -> Task {
     }
 }
 
+/// The filters one `tasks__list` call was made with.
+#[cfg(test)]
+type ListCall = (Option<String>, Option<String>, Option<TaskStatus>, Option<bool>);
+
+/// One `tasks__claim` call: the caller, the epic and the project it asked for.
+#[cfg(test)]
+type ClaimCall = (SessionSlot, Option<String>, Option<String>);
+
+/// One `tasks__wait` call: the caller, the row, the kind, the detail and the row waited on.
+#[cfg(test)]
+type WaitCall = (SessionSlot, TaskId, WaitingKind, Option<String>, Option<TaskId>);
+
 /// Records calls + returns preloaded results so the tool tests can assert
 /// the tool correctly parses args, resolves the caller, and surfaces
 /// facade results/errors - without a real workspace.
@@ -398,15 +430,15 @@ fn mock_task(caller: &SessionSlot) -> Task {
 #[derive(Default)]
 pub(crate) struct MockTasksFacade {
     pub created: parking_lot::Mutex<Vec<CreateCall>>,
-    pub tasks: parking_lot::Mutex<Vec<Task>>,
+    pub rows: parking_lot::Mutex<Vec<crate::board::BoardRow>>,
+    pub listed: parking_lot::Mutex<Vec<ListCall>>,
     pub updated: parking_lot::Mutex<Vec<(SessionSlot, TaskId, TaskPatch)>>,
     pub update_result: parking_lot::Mutex<Option<Task>>,
     pub deleted: parking_lot::Mutex<Vec<(SessionSlot, TaskId)>>,
     pub delete_result: parking_lot::Mutex<Option<RemovedTaskTree>>,
-    pub claimed: parking_lot::Mutex<Vec<(SessionSlot, Option<String>, Option<String>)>>,
+    pub claimed: parking_lot::Mutex<Vec<ClaimCall>>,
     pub claim_result: parking_lot::Mutex<Option<Result<Task, TasksError>>>,
-    pub waited:
-        parking_lot::Mutex<Vec<(SessionSlot, TaskId, WaitingKind, Option<String>, Option<TaskId>)>>,
+    pub waited: parking_lot::Mutex<Vec<WaitCall>>,
     pub wait_result: parking_lot::Mutex<Option<Result<Task, TasksError>>>,
 }
 
@@ -440,7 +472,7 @@ impl TasksFacade for MockTasksFacade {
             estimate: draft.estimate.as_deref().and_then(Estimate::parse),
             rank: draft.rank,
             verify: draft.verify,
-            links: draft.links.iter().map(|draft| draft.into_link(now)).collect(),
+            links: draft.links.iter().map(|draft| draft.to_link(now)).collect(),
             attempt: 0,
             archived_at: None,
             created_at: now,
@@ -475,10 +507,18 @@ impl TasksFacade for MockTasksFacade {
     fn list_tasks(
         &self,
         _caller: &SessionSlot,
-        _owner: Option<&str>,
-        _parent: Option<&TaskId>,
-    ) -> Vec<Task> {
-        self.tasks.lock().clone()
+        owner: Option<&str>,
+        parent: Option<&TaskId>,
+        status: Option<TaskStatus>,
+        ready: Option<bool>,
+    ) -> Vec<crate::board::BoardRow> {
+        self.listed.lock().push((
+            owner.map(str::to_owned),
+            parent.map(|id| id.as_str().to_owned()),
+            status,
+            ready,
+        ));
+        narrow_rows(self.rows.lock().clone(), owner, parent, status, ready)
     }
 
     fn update_task(
@@ -601,18 +641,18 @@ mod prod_facade_tests {
         facade.create_task(&lead, draft("unclaimed", None, None)).expect("sibling");
 
         assert_eq!(
-            facade.list_tasks(&lead, None, None).len(),
+            facade.list_tasks(&lead, None, None, None, None).len(),
             3,
             "unfiltered is the whole project"
         );
-        let by_owner = facade.list_tasks(&lead, Some("reviewer"), None);
+        let by_owner = facade.list_tasks(&lead, Some("reviewer"), None, None, None);
         assert_eq!(by_owner.len(), 1, "owner narrows to that label");
-        assert_eq!(by_owner[0].subject, "mine");
-        let by_parent = facade.list_tasks(&lead, None, Some(&epic.id));
+        assert_eq!(by_owner[0].task.subject, "mine");
+        let by_parent = facade.list_tasks(&lead, None, Some(&epic.id), None, None);
         assert_eq!(by_parent.len(), 1, "parent narrows to that task's children");
-        assert_eq!(by_parent[0].subject, "mine");
+        assert_eq!(by_parent[0].task.subject, "mine");
         assert_eq!(
-            facade.list_tasks(&worker, Some("reviewer"), None).len(),
+            facade.list_tasks(&worker, Some("reviewer"), None, None, None).len(),
             1,
             "a worker's list is the same project's set",
         );
@@ -634,7 +674,7 @@ mod prod_facade_tests {
              at it",
         );
         assert_eq!(
-            facade.list_tasks(&lead, None, None).len(),
+            facade.list_tasks(&lead, None, None, None, None).len(),
             1,
             "the orphan is not collected under a name nothing owns",
         );
@@ -717,7 +757,11 @@ mod prod_facade_tests {
         );
         assert_eq!(removed.task.subject, "c", "as it stood just before removal");
         assert_eq!(removed.descendants_removed, 2, "b and d went with it, and the count says so");
-        assert_eq!(facade.list_tasks(&lead, None, None).len(), 1, "only the sibling survives");
+        assert_eq!(
+            facade.list_tasks(&lead, None, None, None, None).len(),
+            1,
+            "only the sibling survives"
+        );
     }
 
     /// An estimate that is not a duration is refused with its own words,
@@ -758,6 +802,23 @@ mod prod_facade_tests {
             ),
             Err(TasksError::BadEstimate("tomorrow".to_owned())),
         );
+    }
+
+    /// `ready` narrows to rows something can start - the one filter that
+    /// leans on the board's derived mark rather than a stored field.
+    #[test]
+    fn ready_narrows_out_rows_something_holds() {
+        let (ws, facade, lead, _worker) = fixture();
+        let mut held = seeded_task("t-1", "held");
+        held.owner = Some(SessionSlot::lead("TestOrg", "myproj"));
+        held.status = TaskStatus::InProgress;
+        ws.seed_test_task(held);
+        ws.seed_test_task(seeded_task("t-2", "free"));
+
+        let ready = facade.list_tasks(&lead, None, None, None, Some(true));
+        assert_eq!(ready.len(), 1, "only the free row is ready: {ready:?}");
+        assert_eq!(ready[0].task.id, TaskId::from("t-2"));
+        assert!(ready[0].marks.ready, "and it carries the mark it was filtered by");
     }
 
     /// Every field `tasks__update` can state moves, not just the two the
@@ -812,7 +873,7 @@ mod prod_facade_tests {
         );
         assert_eq!(stored.estimate.as_ref().map(|e| e.secs), Some(172_800));
         assert_eq!(stored.rank, Some(3), "rank moves");
-        assert_eq!(stored.verify, Some(forge_primitives::tasks::Verify::User), "verify moves",);
+        assert_eq!(stored.verify, Some(forge_primitives::tasks::Verify::User), "verify moves");
 
         // The same target twice stays one link, and remove takes it off.
         facade
