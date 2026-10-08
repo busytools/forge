@@ -20,7 +20,9 @@ const FULL: TurnInfo = {
   session_cost_usd: 4.82,
 };
 
-const draw = (info: TurnInfo): string => render(Report, { props: { info } }).body;
+/** The row drawn open, which is the state its body needs. */
+const draw = (info: TurnInfo, open = true): string =>
+  render(Report, { props: { info, open } }).body;
 
 /** The body's facts as a reader sees them: `label` and figure, in order. */
 function facts(body: string): string[] {
@@ -32,6 +34,19 @@ function facts(body: string): string[] {
 }
 
 describe('a settled turn\u2019s row', () => {
+  /**
+   * A closed report carries its summary - the strip - and nothing else: the
+   * facts grid is the body's, and every turn of a giant seat carries one.
+   */
+  it('carries summary markup only while it is closed', () => {
+    const closed = draw(FULL, false);
+    const under = closed.slice(closed.indexOf('</summary>'));
+    expect(under, 'no facts under a closed report').not.toContain('tibody');
+
+    const open = draw(FULL);
+    expect(open, 'and the facts are drawn onto the open').toContain('tibody');
+  });
+
   it('draws a clock, a local span and a cache share when the record carries them', () => {
     const drawn = facts(draw(FULL));
 

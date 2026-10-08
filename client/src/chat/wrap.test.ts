@@ -53,6 +53,7 @@ const CALL = inPage(
   render(Call, {
     props: {
       k: 'toolu_01',
+      open: true,
       call: {
         id: 'toolu_01',
         row: { kind: 'family', family: 'edit' },

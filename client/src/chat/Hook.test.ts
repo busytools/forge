@@ -39,8 +39,9 @@ const run = (extra: Partial<HookRun> = {}): HookRun => ({
   ...extra,
 });
 
-const draw = (over: Partial<HookRun> = {}): string =>
-  render(Hook, { props: { run: run(over) } }).body;
+/** The row drawn open, which is the state its body needs. */
+const draw = (over: Partial<HookRun> = {}, open = true): string =>
+  render(Hook, { props: { run: run(over), open } }).body;
 
 /** The closed row itself: the markup a mark or a chevron is read off. */
 const summaryOf = (body: string): string =>
@@ -55,6 +56,20 @@ const summaryWords = (body: string): string =>
     .trim();
 
 describe('the hook run row', () => {
+  /**
+   * A closed hook row carries its summary and nothing else: the giant seat's
+   * cost is the bodies of rows nobody opened.
+   */
+  it('carries summary markup only while it is closed', () => {
+    const text = 'the hook body text';
+    const closed = draw({ body: text }, false);
+    const under = closed.slice(closed.indexOf('</summary>'));
+    expect(under, 'no body under a closed row').not.toContain(text);
+
+    const open = draw({ body: text });
+    expect(open, 'and the body is drawn onto the open').toContain(text);
+  });
+
   it('names the hook and its own words on the closed row', () => {
     const body = draw();
     const said = summaryWords(body);
@@ -679,7 +694,7 @@ function renderable(rules: readonly PlainRule[]): string {
 
 /** The row as the page wraps it, which is what a sheet's ancestors match against. */
 const ROW_MARKUP = `<div class="conv"><div class="work">${
-  render(Hook, { props: { run: run() } }).body
+  render(Hook, { props: { run: run(), open: true } }).body
 }</div></div>`;
 
 /**

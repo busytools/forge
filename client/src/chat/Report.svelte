@@ -17,7 +17,10 @@
    * the CLI attributing nothing arrives as a zero block, and a zero here reads
    * as a measurement.
    */
-  let { info }: { info: TurnInfo } = $props();
+  let { info, open = false }: { info: TurnInfo; open?: boolean } = $props();
+
+  /** Whether the row is open; a closed row carries its summary and nothing else. */
+  let opened = $state(open);
 
   /** The record with an unattributed usage block dropped, which is the rule the terminal applies. */
   const held = $derived(attributed(info));
@@ -94,20 +97,22 @@
   });
 </script>
 
-<details class="turninfo">
+<details class="turninfo" bind:open={opened}>
   <summary>
     <Strip info={held} />
     <Chevron />
   </summary>
-  <!-- Each fact is a pair of its own, placed where it is: the design kept a
-       cell in column with an empty span beside it, which is a grid auto-flowing
-       rather than a body saying what it holds. -->
-  <div class="tibody">
-    {#each facts as fact (fact.label)}
-      <span class="fact">
-        <b>{fact.label}</b>
-        <span>{fact.value}</span>
-      </span>
-    {/each}
-  </div>
+  {#if opened}
+    <!-- Each fact is a pair of its own, placed where it is: the design kept a
+         cell in column with an empty span beside it, which is a grid auto-flowing
+         rather than a body saying what it holds. -->
+    <div class="tibody">
+      {#each facts as fact (fact.label)}
+        <span class="fact">
+          <b>{fact.label}</b>
+          <span>{fact.value}</span>
+        </span>
+      {/each}
+    </div>
+  {/if}
 </details>

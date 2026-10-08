@@ -373,7 +373,7 @@
     <Chevron />
   </summary>
 
-  {#if sub !== null}
+  {#if opened && sub !== null}
     <!-- The instance's own expansion: the brief it was given, what it is
          doing now, and every call it has made with what each came back with.
          The frames carry the instance's work in full; the card's tail caps at
@@ -442,36 +442,34 @@
         </div>
       {/if}
     </div>
-  {:else if call.image !== null}
+  {:else if opened && call.image !== null}
     <!-- The picture the call read, drawn only while the row is open: decoding
          a screenshot is real work, and a column of closed rows must not pay
          it. The harness's own line about it rides under as the caption, and
          the result's text rides under that: the picture is one block of the
          result, not the whole of it. -->
     <div class="body">
-      {#if opened}
-        <div class="shot">
-          <img src={`data:${call.image.mime};base64,${call.image.data}`} alt={call.title} />
-          {#if call.imageNote !== null}
-            <div class="note">{call.imageNote}</div>
-          {/if}
-        </div>
-      {/if}
+      <div class="shot">
+        <img src={`data:${call.image.mime};base64,${call.image.data}`} alt={call.title} />
+        {#if call.imageNote !== null}
+          <div class="note">{call.imageNote}</div>
+        {/if}
+      </div>
       {@render pieces(aside)}
     </div>
-  {:else if call.skill !== null}
+  {:else if opened && call.skill !== null}
     <!-- A `Skill` call's own result is the CLI's launching line; the row opens
          onto the skill itself, which is what anyone opening it wants to read. -->
     <div class="body">
       <Prose text={call.skill} />
     </div>
-  {:else if call.decision !== null}
+  {:else if opened && call.decision !== null}
     <!-- The result's own JSON is the same facts undressed; the block is how
          they read, and an unreadable result never reaches this branch. -->
     <div class="body">
       <Decision decision={call.decision} />
     </div>
-  {:else if call.forge !== null}
+  {:else if opened && call.forge !== null}
     <!-- The result's own JSON is the same facts undressed; the card is how
          they read, and an unreadable result never reaches this branch. A
          failed forge call carries no card, so its reason draws below the way
@@ -479,7 +477,7 @@
     <div class="body">
       <Forge card={call.forge} {glyph} />
     </div>
-  {:else if call.body.length > 0}
+  {:else if opened && call.body.length > 0}
     <div class="body">
       {#if hits !== null}
         {#each hits as hit, at (at)}

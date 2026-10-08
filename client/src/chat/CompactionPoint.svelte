@@ -29,12 +29,17 @@
     preTokens,
     postTokens,
     summary,
+    open = false,
   }: {
     trigger: string | null;
     preTokens: number | null;
     postTokens: number | null;
     summary: string | null;
+    open?: boolean;
   } = $props();
+
+  /** Whether the point is open; a closed one carries its summary and nothing else. */
+  let opened = $state(open);
 
   /** Whether anything sits behind the row, which is what the handle promises. */
   const opens = $derived(
@@ -45,7 +50,7 @@
   const hasFacts = $derived(trigger !== null || preTokens !== null || postTokens !== null);
 </script>
 
-<details class="cpoint">
+<details class="cpoint" bind:open={opened}>
   <summary>
     <span class="rule"></span>
     <span class="word">compaction</span>
@@ -53,7 +58,7 @@
     {#if opens}<Chevron />{/if}
     <span class="rule"></span>
   </summary>
-  {#if opens}
+  {#if opened && opens}
     <div class="cpbody">
       {#if hasFacts}
         {#if trigger !== null}trigger <b>{trigger}</b

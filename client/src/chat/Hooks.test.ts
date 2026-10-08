@@ -8,8 +8,13 @@ import type { HookInfo } from './units';
 
 const ONE: HookInfo[] = [{ command: 'echo fixture-stop-hook-ok', durationMs: 3 }];
 
-const draw = (actions: number, infos: HookInfo[] = ONE, errors: string[] = []): string =>
-  render(Hooks, { props: { actions, infos, errors } }).body;
+/** The chip drawn open, which is the state its body needs. */
+const draw = (
+  actions: number,
+  infos: HookInfo[] = ONE,
+  errors: string[] = [],
+  open = true,
+): string => render(Hooks, { props: { actions, infos, errors, open } }).body;
 
 /**
  * The chip's own `<summary>`. The closed-chip state has to live here: a mark
@@ -59,6 +64,19 @@ const SHEETS: [string, string][] = [
 ];
 
 describe('the hook chip a turn carries', () => {
+  /**
+   * A closed chip carries its summary and nothing else: the commands are the
+   * body's, and the giant seat's cost is the bodies of rows nobody opened.
+   */
+  it('carries summary markup only while it is closed', () => {
+    const closed = draw(1, ONE, [], false);
+    const under = closed.slice(closed.indexOf('</summary>'));
+    expect(under, 'no body under a closed chip').not.toContain('echo fixture-stop-hook-ok');
+
+    const open = draw(1);
+    expect(open, 'and the commands are drawn onto the open').toContain('echo fixture-stop-hook-ok');
+  });
+
   it('counts one hook in the singular', () => {
     expect(draw(1), 'the count the captured row carries').toContain('1 action<');
     expect(draw(2)).toContain('2 actions<');

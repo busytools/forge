@@ -33,8 +33,9 @@ const row = (extra: Partial<InboundLeaf> = {}): InboundLeaf => ({
   ...extra,
 });
 
-const draw = (over: Partial<InboundLeaf> = {}): string =>
-  render(Inbound, { props: { row: row(over) } }).body;
+/** The row drawn open, which is the state its body needs. */
+const draw = (over: Partial<InboundLeaf> = {}, open = true): string =>
+  render(Inbound, { props: { row: row(over), open } }).body;
 
 /** The closed row's own words, with Svelte's block markers and the tags off. */
 const summaryWords = (body: string): string =>
@@ -46,6 +47,20 @@ const summaryWords = (body: string): string =>
     .trim();
 
 describe('the inbound delivery row', () => {
+  /**
+   * A closed delivery row carries its summary and nothing else: the giant
+   * seat's cost is the bodies of rows nobody opened.
+   */
+  it('carries summary markup only while it is closed', () => {
+    const text = 'the payload the body alone carries';
+    const closed = draw({ body: text }, false);
+    const under = closed.slice(closed.indexOf('</summary>'));
+    expect(under, 'no body under a closed row').not.toContain(text);
+
+    const open = draw({ body: text });
+    expect(open, 'and the body is drawn onto the open').toContain(text);
+  });
+
   it("renders a cron fire's own line rather than showing its marks", () => {
     // **A cron fire whose schedule was not named titles by its prompt's first
     // line** (#1708), so it carries the prompt's markdown - drawn raw it showed

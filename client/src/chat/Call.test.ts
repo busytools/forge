@@ -48,6 +48,23 @@ const mcp = (name: string, text: string): ToolLeaf => ({
 
 describe('the row one call draws', () => {
   /**
+   * A closed row carries its summary and nothing else.
+   *
+   * **The giant seat's own cost is the bodies of rows nobody opened** - a
+   * harness conversation runs hundreds of them - so the body is drawn onto
+   * the open rather than held under every closed summary. The picture branch
+   * already pays this rule; this is its other half.
+   */
+  it('carries summary markup only while it is closed', () => {
+    const closed = render(Call, { props: { k: 'f1', call: backgrounded(null) } }).body;
+    const under = closed.slice(closed.indexOf('</summary>'));
+    expect(under, 'no body under a closed row').not.toContain('bj5g0t2kq');
+
+    const open = render(Call, { props: { k: 'f1', call: backgrounded(null), open: true } }).body;
+    expect(open, 'and the body is drawn onto the open').toContain('bj5g0t2kq');
+  });
+
+  /**
    * **The row carries the fold's own name, not the wire id.** Two id-less
    * `tool_use` calls leave the wire id empty, so the leaves list hands the
    * fold's key down and the row draws that: keys stay unique, which is what
@@ -65,6 +82,7 @@ describe('the row one call draws', () => {
     const drawn = render(Call, {
       props: {
         k: 'toolu_skill',
+        open: true,
         call: {
           id: 'toolu_skill',
           row: { kind: 'family', family: 'skill' },
@@ -229,6 +247,7 @@ describe('the row one call draws', () => {
       render(Call, {
         props: {
           k: 'bg-notice',
+          open: true,
           call: backgrounded({
             text: 'Background command "Echo test string after brief sleep" completed (exit code 0)',
             tone: 'sum',
@@ -254,6 +273,7 @@ describe('the row one call draws', () => {
       render(Call, {
         props: {
           k: 'bg-two',
+          open: true,
           call: {
             ...call,
             body: [
@@ -354,7 +374,7 @@ describe('the forge card row', () => {
   });
 
   it('draws the subject as the title, the chip and figure beside it, the facts below', () => {
-    const drawn = render(Call, { props: { call: tasksUpdate(), k: 't7' } }).body;
+    const drawn = render(Call, { props: { call: tasksUpdate(), k: 't7', open: true } }).body;
 
     // The subject, never the tool's name: `tasks__update` is plumbing.
     expect(drawn, 'the row is titled by the subject').toContain(
@@ -376,6 +396,7 @@ describe('the forge card row', () => {
     const drawn = render(Call, {
       props: {
         k: 't14',
+        open: true,
         call: tasksUpdate({
           forge: {
             title: 'task sweep',
@@ -418,6 +439,7 @@ describe('the forge card row', () => {
     const empty = render(Call, {
       props: {
         k: 't15',
+        open: true,
         call: tasksUpdate({
           forge: {
             title: 'tasks',
@@ -438,6 +460,7 @@ describe('the forge card row', () => {
     const drawn = render(Call, {
       props: {
         k: 't16',
+        open: true,
         call: tasksUpdate({
           status: 'completed',
           forge: null,
@@ -459,6 +482,7 @@ describe('the forge card row', () => {
           body: [{ kind: 'error', message: 'no task with id t-91c2', detail: '' }],
         }),
         k: 't8',
+        open: true,
       },
     }).body;
 
@@ -555,6 +579,7 @@ describe('the forge card row', () => {
           body: [{ kind: 'error', message: 'exit code 1', detail: '' }],
         } as ToolLeaf,
         k: 't9',
+        open: true,
       },
     }).body;
 
@@ -773,7 +798,9 @@ describe('the dispatch row, joined to its instance', () => {
 
     expect(drawn, 'the brief it was given').toContain('do the thing');
     expect(drawn, 'every call the frames hold, not just the card tail').toContain('subagent');
-    expect(drawn, 'with what it came back with').toContain('3 matches');
+    // The nested call's own result is its own row's body, and a closed row
+    // carries none - the timeline fold's carrying of the results is
+    // `timeline.test.ts`'s (it reads the leaf's title).
     expect(drawn, 'the brief renders as markdown, structure and all').toContain('class="prose"');
     expect(drawn, 'and so does the prose the instance wrote between calls').toContain(
       '<strong>two nits</strong>',

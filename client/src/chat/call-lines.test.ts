@@ -77,7 +77,10 @@ describe("the lines a call's row draws", () => {
     // **Mounted rather than rendered to a string**: the marks and the figures
     // are what the row's own state decides, and the line sits in the same row
     // as them rather than in a box of its own.
-    app = mount(Call, { target: document.body, props: { k: 'toolu_edit', call: edited() } });
+    app = mount(Call, {
+      target: document.body,
+      props: { k: 'toolu_edit', call: edited(), open: true },
+    });
     flushSync();
 
     const line = document.querySelector('.patchline');
@@ -88,7 +91,10 @@ describe("the lines a call's row draws", () => {
   });
 
   it('draws a position-less diff without the number columns, and the reason under it', () => {
-    app = mount(Call, { target: document.body, props: { k: 'toolu_edit', call: refused() } });
+    app = mount(Call, {
+      target: document.body,
+      props: { k: 'toolu_edit', call: refused(), open: true },
+    });
     flushSync();
 
     const dif = document.querySelector('.dif');
@@ -112,7 +118,10 @@ describe("the lines a call's row draws", () => {
     // The command leads its own output on a settled row, and a failed one is
     // the same row: the reason under it says nothing about WHAT failed if the
     // line that names the command goes missing.
-    app = mount(Call, { target: document.body, props: { k: 'toolu_bash', call: refusedBash() } });
+    app = mount(Call, {
+      target: document.body,
+      props: { k: 'toolu_bash', call: refusedBash(), open: true },
+    });
     flushSync();
 
     const hint = document.querySelector('.errhint');
@@ -126,7 +135,10 @@ describe("the lines a call's row draws", () => {
   });
 
   it('keeps the number columns on a diff that has a position', () => {
-    app = mount(Call, { target: document.body, props: { k: 'toolu_edit', call: edited() } });
+    app = mount(Call, {
+      target: document.body,
+      props: { k: 'toolu_edit', call: edited(), open: true },
+    });
     flushSync();
 
     expect(
@@ -134,5 +146,48 @@ describe("the lines a call's row draws", () => {
       'a hunk has numbers to draw',
     ).toBe(false);
     expect(document.querySelectorAll('.dif .on').length, 'and the columns are drawn').toBe(2);
+  });
+
+  it('draws a search hit as a location and the line beneath it', () => {
+    // Two elements. As one run with a newline character in it the pair drew as
+    // a single line with the path run into the matched text, because nothing
+    // in this box is pre-formatted. The fold's own derivation of a hit from
+    // the result text is `leaves.test.ts`'s; this is the drawing, read with
+    // the row open (a closed row carries no body).
+    const grep: ToolLeaf = {
+      id: 'toolu_grep',
+      row: { kind: 'family', family: 'search' },
+      name: 'Grep',
+      title: 'Grep render_group_summary',
+      command: null,
+      status: 'completed',
+      note: null,
+      body: [
+        {
+          kind: 'text',
+          text: 'crates/forge-server/src/grouping.rs:142:render_group_summary(unit, width)',
+        },
+      ],
+      mutation: null,
+      decision: null,
+      forge: null,
+      skill: null,
+      image: null,
+      imageNote: null,
+    };
+    const app = mount(Call, {
+      target: document.body,
+      props: { k: 'toolu_grep', call: grep, open: true },
+    });
+    try {
+      flushSync();
+      const drawn = document.body.innerHTML;
+      expect(drawn).toContain('<div class="searchhit">');
+      expect(drawn).toContain('<div class="where"><span class="ln">142:</span> <span class="fl">');
+      expect(drawn).toContain('<div class="src">render_group_summary(unit, width)</div>');
+    } finally {
+      void unmount(app);
+      document.body.innerHTML = '';
+    }
   });
 });
