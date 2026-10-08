@@ -197,6 +197,9 @@ internal class BrowserEngine(private val activity: Activity) {
   private val token: String = randomToken()
   @Volatile private var webview: WebView? = null
   private var overlay: FrameLayout? = null
+  /** Where the offscreen webview lives while no takeover is up: an attached,
+   *  INVISIBLE frame - see `createWebView` for why a size is load-bearing. */
+  private var holder: FrameLayout? = null
   @Volatile private var takeover = false
   @Volatile private var nodeUp = false
 
@@ -311,12 +314,18 @@ internal class BrowserEngine(private val activity: Activity) {
 
   /** Raise the takeover over the client. Null on success, a reason otherwise. */
   fun raise(): String? {
-    if (webview == null) {
-      return "the browser engine is not up"
-    }
+    val page = webview ?: return "the browser engine is not up"
     activity.runOnUiThread {
       val root = activity.findViewById<ViewGroup>(android.R.id.content)
       val view = overlay ?: buildOverlay().also { overlay = it }
+      // **The page moves into the takeover** - it lives in the invisible
+      // holder otherwise, and a View cannot have two parents.
+      (page.parent as? ViewGroup)?.removeView(page)
+      val column = view.getChildAt(0) as? LinearLayout
+      if (column != null && page.parent == null) {
+        page.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+        column.addView(page)
+      }
       if (view.parent == null) {
         root.addView(view, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
       }
@@ -333,8 +342,21 @@ internal class BrowserEngine(private val activity: Activity) {
   /** Lower the takeover. Idempotent; every path says `lowered`, the bar's Done adds `done`. */
   fun lower() {
     activity.runOnUiThread {
+      val page = webview
+      // **The page moves back to the invisible holder**, or the next raise
+      // re-parents a view whose frame just died with the overlay.
+      if (page != null) {
+        (page.parent as? ViewGroup)?.removeView(page)
+      }
       overlay?.let { over ->
         (over.parent as? ViewGroup)?.removeView(over)
+      }
+      if (page != null && holder != null) {
+        holder?.addView(
+          page,
+          ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
+        )
+        holder?.visibility = android.view.View.INVISIBLE
       }
       takeover = false
       notifyJs("lowered")
@@ -397,19 +419,39 @@ internal class BrowserEngine(private val activity: Activity) {
           return true
         }
       }
-    // **A navigation, or the renderer never starts**: a WebView created and
-    // left untouched has no renderer behind its page target, so every
-    // renderer-scoped CDP command (Runtime.enable, Page.enable) hangs
-    // forever while browser-scoped ones answer - measured live: playwright's
-    // connectOverCDP timed out on the inert page. about:blank is enough; the
-    // view stays unattached until a takeover.
+    // **A navigation AND a frame, or the page is inert.** Two measured
+    // facts, both fatal alone: a WebView created and left untouched has no
+    // renderer (every renderer-scoped CDP command hangs and playwright's
+    // connectOverCDP times out), and a WebView with no layout pass has a
+    // ZERO-SIZED viewport - navigation still works (a URL needs no
+    // geometry) while click points, scrolling and screenshots all fail
+    // ("element is outside of the viewport", "Cannot take screenshot with
+    // 0 width"). So: navigate, and attach the view INVISIBLE at real size
+    // while no takeover is up; the renderer runs, the page lays out, and
+    // the person sees it only when a takeover raises it.
     view.loadUrl("about:blank")
-    Log.i(TAG, "browser webview created (offscreen, about:blank)")
+    // createWebView runs on the UI thread (see `ensure`), so the attach is
+    // direct.
+    val root = activity.findViewById<ViewGroup>(android.R.id.content)
+    if (holder == null) {
+      holder = FrameLayout(activity)
+      root.addView(
+        holder,
+        ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
+      )
+    }
+    holder?.addView(
+      view,
+      ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
+    )
+    holder?.visibility = android.view.View.INVISIBLE
+    Log.i(TAG, "browser webview created (invisible frame, about:blank)")
     return view
   }
 
+  /** The takeover frame: the slim bar and a column the page is moved into
+   *  (by `raise`, so the overlay itself holds no page). */
   private fun buildOverlay(): FrameLayout {
-    val page = webview
     val frame = FrameLayout(activity)
     val column = LinearLayout(activity)
     column.orientation = LinearLayout.VERTICAL
@@ -442,10 +484,6 @@ internal class BrowserEngine(private val activity: Activity) {
     bar.addView(spacer)
     bar.addView(done)
     column.addView(bar)
-    if (page != null) {
-      page.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
-      column.addView(page)
-    }
     frame.addView(column, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
     return frame
   }
