@@ -1583,9 +1583,9 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
 .box.done { border-color: var(--ok); }
 .box.err { border-color: var(--bad); }
 .box:focus-within:not(.rec, .tr, .done, .err) { border-color: var(--accent); }
-/* The controls take the last line, so they follow the caret down as the draft
-   grows rather than floating in the middle of a paragraph. */
-.line { display: flex; align-items: flex-end; gap: 10px; }
+/* The draft's own row, which is now the field alone: the controls that used to
+   hold a column of its width sit in the foot below. */
+.line { display: flex; }
 /* The separation the box's gap gave every row above the draft: C moved the
    field and the footer together and left only that pair tight, so this stays
    per pair rather than a gap. */
@@ -1601,18 +1601,21 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
    its own. */
 .line .txt:focus { outline: none; }
 .line .txt::placeholder { color: var(--dim); font-style: italic; }
-/* The way into a take, on the input line rather than on a strip of its own:
-   24px is the floor a pointer target takes. */
-.line .mic { flex: none; margin-left: 6px; width: 24px; height: 24px;
+/* The controls sit together at the foot's right end, the keys at its left, so
+   the draft keeps the box's whole width and the controls still land under the
+   caret's last line. 24px is the floor a pointer target takes. */
+.foot .ctls { margin-left: auto; flex: none; display: flex; align-items: center;
+  gap: 10px; }
+.foot .mic { flex: none; width: 24px; height: 24px;
   display: grid; place-items: center; color: var(--dim); background: none;
   border: 0; padding: 0; cursor: pointer; }
 /* The mic lifts to the primary on hover, matching its sibling controls (the
    send's accent), rather than the sheet's generic text lift. */
-.line .mic:hover { color: var(--accent); }
+.foot .mic:hover { color: var(--accent); }
 /* The mic is the phone's primary dictate control and carries the hold, so its
    width takes the same 44px floor as the dock's (the sheet's button rule gives
    the height; a finger drifting off 24px would cancel the hold). */
-@media (pointer: coarse) { .line .mic { min-height: 44px; min-width: 44px; } .pop .hd .x { min-width: 44px; } }
+@media (pointer: coarse) { .foot .mic { min-height: 44px; min-width: 44px; } .pop .hd .x { min-width: 44px; } }
 /* The send, at the same 24px pointer floor as the mic and centred in whatever
    box it gets, since the phone width gives every control a 44px floor and the
    icon would otherwise sit at the top of it. */
@@ -1623,10 +1626,15 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
    or not the box holds anything. Dim rather than the failed red, which the
    rest of the sheet reserves for something having gone wrong. */
 .stop { color: var(--dim); background: none; border: 0; cursor: pointer;
-  display: grid; place-items: center; width: 24px; height: 24px; margin-left: 4px; }
+  display: grid; place-items: center; width: 24px; height: 24px; }
 .stop:hover { color: var(--bad); }
 .foot { display: flex; align-items: center; gap: 10px;
   font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+/* A narrow box cannot hold the hints and the controls on one row: the keys are
+   what the phone can spare, so they go and the controls keep the row. Measured:
+   the widest set (hints + mic + stop + send) needs 365px, so the box gives them
+   up a little before that. */
+@container (max-width: 400px) { .foot .hints { display: none; } }
 
 /* The line a composer puts where the mockup puts key hints. The box's names
    the keys it honours; the list's says the one thing it cannot do, because

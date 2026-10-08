@@ -955,22 +955,46 @@ describe('the box', () => {
     expect(drawn(), 'the reader is told what they are waiting for').toContain('Running /compact');
   });
 
-  it('rests as one row, because a footer with nothing to say is a strip of its own', () => {
-    open({ dictation: true });
+  it('rests as one row when it has nothing to put in a footer', () => {
+    open();
 
     expect(
       document.querySelector('.foot'),
-      'an empty box draws a footer row whose only content is the microphone',
+      'a box with no controls and no draft drew a footer row',
     ).toBeNull();
   });
 
-  it('puts the way into a take on the input line rather than in a row of its own', () => {
-    open({ dictation: true });
+  it('puts every control in the box footer, so the draft keeps the whole width', () => {
+    open({ dictation: true, record: record({ header: { turn_in_flight: true } }) });
+    type('a draft');
 
-    expect(
-      document.querySelector('.line .mic'),
-      'the microphone sits on its own strip below the draft',
-    ).not.toBeNull();
+    for (const control of ['.line .mic', '.line .stop', '.line .send']) {
+      expect(
+        document.querySelector(control),
+        `${control} still holds a column of the draft`,
+      ).toBeNull();
+    }
+    for (const control of ['.foot .mic', '.foot .stop', '.foot .send']) {
+      expect(
+        document.querySelector(control),
+        `${control} left the box rather than moving to its footer`,
+      ).not.toBeNull();
+    }
+  });
+
+  /**
+   * The footer draws for a draft alone: an install that cannot dictate has no
+   * mic, and a gate tightened to `dictation || running` would take the send and
+   * both hints with it - the reachable case, since the router makes dictation
+   * false whenever the wire omits it.
+   */
+  it('draws the send and the keys for a draft alone, with no dictation', () => {
+    open();
+    type('a draft');
+
+    expect(document.querySelector('.foot .send'), 'a draft drew no way to send it').not.toBeNull();
+    expect(document.querySelector('.foot'), 'the keys went with the mic').not.toBeNull();
+    expect(document.querySelector('.mic'), 'an install that cannot dictate drew a mic').toBeNull();
   });
 
   it('offers the way in only when this install can dictate, and a press is the trigger', async () => {
@@ -2471,11 +2495,24 @@ describe('the frame', () => {
     ).toThrow(/cannot read/);
   });
 
-  it('puts the controls on the last line, so they follow the caret down', () => {
+  it('puts the controls in the box footer, off the draft and under the caret', () => {
     expect(
-      sheetRule('.line'),
-      'the controls sit in the middle of a grown draft rather than on the line the caret is on',
-    ).toContain('align-items: flex-end');
+      sheetRule('.foot .ctls'),
+      'the controls lost the footer row the draft no longer shares',
+    ).toContain('margin-left: auto');
+    expect(() => sheetRule('.line .mic'), 'the mic still holds a column of the draft open').toThrow(
+      /writes no rule/,
+    );
+  });
+
+  /**
+   * A narrow box cannot hold the hints and the controls on one row - measured,
+   * the widest pair needs 365px - so the keys go and the controls keep the row.
+   */
+  it('drops the key hints rather than the controls when the box is narrow', () => {
+    expect(sheet, 'the foot wraps its hints instead of giving them up').toMatch(
+      /@container \(max-width: 400px\) \{ \.foot \.hints \{ display: none; \} \}/,
+    );
   });
 
   it('keeps the separation the rows above the draft had before C moved the field and the footer', () => {
@@ -2495,8 +2532,8 @@ describe('the frame', () => {
     ).not.toContain('padding-top');
   });
 
-  it('gives both controls on the input line the same pointer floor', () => {
-    for (const control of ['.line .mic', '.send']) {
+  it("gives the footer's controls the same pointer floor", () => {
+    for (const control of ['.foot .mic', '.stop', '.send']) {
       const rule = sheetRule(control);
       expect(rule, `${control} is a bare glyph rather than a 24px target`).toContain('width: 24px');
       expect(rule, `${control} takes no height of its own`).toContain('height: 24px');

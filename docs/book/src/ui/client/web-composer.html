@@ -66,7 +66,8 @@
   .hint.sugg .tab { border: 1px solid var(--line); border-radius: 5px; padding: 0 6px;
     margin-left: 8px; }
 
-  .box { position: relative; border: 1.5px solid var(--ctl); border-radius: 16px;
+  .box { position: relative; container-type: inline-size;
+    border: 1.5px solid var(--ctl); border-radius: 16px;
     background: linear-gradient(180deg, rgba(20,25,38,.72), rgba(13,17,26,.78));
     backdrop-filter: blur(10px); box-shadow: 0 14px 38px rgba(0,0,0,.42);
     padding: 10px 13px; display: flex; flex-direction: column; gap: 0;
@@ -80,7 +81,9 @@
   .box.done { border-color: var(--ok); }
   .box.err { border-color: var(--bad); }
   .box:focus-within:not(.rec, .tr, .done, .err) { border-color: var(--accent); }
-  .line { display: flex; align-items: flex-end; gap: 10px; }
+  /* The draft's own row, which is the field alone: the controls sit in the
+     foot below, so the text keeps the box's whole width. */
+  .line { display: flex; }
   .line .txt { flex: 1; min-width: 0; font-size: var(--fs-prose); line-height: 1.5;
     white-space: pre-wrap; word-break: break-word; }
   .ph { color: var(--dim); font-style: italic; }
@@ -88,15 +91,21 @@
   .caret { display: inline-block; width: 7px; height: 1.05em; background: var(--accent);
     vertical-align: text-bottom; animation: blink 1s steps(1) infinite; }
   @keyframes blink { 50% { opacity: 0; } }
-  .line .mic { flex: none; margin-left: 6px; width: 24px; height: 24px;
+  /* The controls together at the foot's right end, the keys at its left. */
+  .foot { display: flex; align-items: center; gap: 10px;
+    font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+  .foot .ctls { margin-left: auto; flex: none; display: flex; align-items: center;
+    gap: 10px; }
+  .foot .mic { flex: none; width: 24px; height: 24px;
     display: grid; place-items: center; color: var(--dim); }
   .send { color: var(--accent); display: grid; place-items: center; width: 24px;
     height: 24px; }
   .stop { color: var(--dim); display: grid; place-items: center; width: 24px;
-    height: 24px; margin-left: 4px; }
-  .foot { display: flex; align-items: center; gap: 10px;
-    font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+    height: 24px; }
   .foot .k { border: 1px solid var(--line); border-radius: 5px; padding: 0 6px; }
+  /* A narrow box cannot hold the hints and the controls on one row: the keys
+     go, the controls keep the row. */
+  @container (max-width: 400px) { .foot .hints { display: none; } }
 
   /* the take's card: one pill inside the box, at its top left, the draft
      below it. */
@@ -336,7 +345,8 @@ character-cell row. Slash commands keep their magenta, because that is a real di
       <div class="lab">idle</div>
       <div class="comp">
         <div class="box">
-          <div class="line"><span class="txt ph">Type a message...</span><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></div>
+          <div class="line"><span class="txt ph">Type a message...</span></div>
+          <div class="foot"><span class="ctls"><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></span></div>
         </div>
       </div>
     </div>
@@ -344,23 +354,22 @@ character-cell row. Slash commands keep their magenta, because that is a real di
       <div class="lab">typing &middot; draft grows, send appears</div>
       <div class="comp">
         <div class="box">
-          <div class="line"><span class="txt">Fix the flaky retry test in <span class="slash">crates/forge-web</span> and run the gate<span class="caret"></span></span>
-            <span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span>
-            <span class="send"><svg class="ic"><use href="#i-send"/></svg></span></div>
-          <div class="foot"><span class="k">&#8593;</span> history
-            <span class="k">&#8679;&#9166;</span> newline
-            <span class="k">&#9166;</span> send</div>
+          <div class="line"><span class="txt">Fix the flaky retry test in <span class="slash">crates/forge-web</span> and run the gate<span class="caret"></span></span></div>
+          <div class="foot"><span class="hints"><span class="k">&#8679;&#9166;</span> newline</span>
+            <span class="hints"><span class="k">&#9166;</span> send</span>
+            <span class="ctls"><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span>
+            <span class="send"><svg class="ic"><use href="#i-send"/></svg></span></span></div>
         </div>
       </div>
     </div>
     <div class="col">
-      <div class="lab">running &middot; stop appears beside the send</div>
+      <div class="lab">running &middot; the stop joins the controls</div>
       <div class="comp">
         <div class="box">
-          <div class="line"><span class="txt ph">Type a message...</span>
-            <span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span>
-            <span class="stop"><svg class="ic"><use href="#i-stop"/></svg></span></div>
-          <div class="foot"><span>nothing to send, something to stop</span></div>
+          <div class="line"><span class="txt ph">Type a message...</span></div>
+          <div class="foot">
+            <span class="ctls"><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span>
+            <span class="stop"><svg class="ic"><use href="#i-stop"/></svg></span></span></div>
         </div>
       </div>
     </div>
@@ -372,7 +381,8 @@ character-cell row. Slash commands keep their magenta, because that is a real di
       <div class="comp">
         <div class="hint login">Authentication required: claude.ai &#183; Anthropic OAuth (Pro)
           <span class="sub">Run `claude auth login` in another terminal to authenticate</span></div>
-        <div class="box"><div class="line"><span class="txt ph">Type a message...</span><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></div></div>
+        <div class="box"><div class="line"><span class="txt ph">Type a message...</span></div>
+          <div class="foot"><span class="ctls"><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></span></div></div>
       </div>
     </div>
     <div class="col">
@@ -380,9 +390,11 @@ character-cell row. Slash commands keep their magenta, because that is a real di
       <div class="comp">
         <div class="hint cancel">Cancelling current turn&#8230; draft will auto-submit when ready.</div>
         <div class="hint sugg">Suggestion: <b>run the feature-config gate too</b><span class="tab">Tab</span></div>
-        <div class="box"><div class="line"><span class="txt">push it once CI is green<span class="caret"></span></span>
-          <span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span>
-          <span class="send"><svg class="ic"><use href="#i-send"/></svg></span></div></div>
+        <div class="box"><div class="line"><span class="txt">push it once CI is green<span class="caret"></span></span></div>
+          <div class="foot"><span class="hints"><span class="k">&#8679;&#9166;</span> newline</span>
+          <span class="hints"><span class="k">&#9166;</span> send</span>
+          <span class="ctls"><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span>
+          <span class="send"><svg class="ic"><use href="#i-send"/></svg></span></span></div></div>
       </div>
     </div>
   </div>
@@ -477,7 +489,8 @@ graph, ready tally, frames, bytes, pace &#8212; and the dot and the way out are 
             <span class="kb">251.5 KB</span>
             <span class="pace">32 KB/s</span>
             <span class="x">&#10005;</span></span>
-          <div class="line"><span class="txt ph">Type a message...</span><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></div>
+          <div class="line"><span class="txt ph">Type a message...</span></div>
+          <div class="foot"><span class="ctls"><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></span></div>
         </div>
       </div>
       <p class="note" style="margin:8px 0 0">The count is what the terminal says while speech
@@ -497,7 +510,8 @@ graph, ready tally, frames, bytes, pace &#8212; and the dot and the way out are 
             <span class="count">2 of 6</span>
             <span class="fr">412 fr</span>
             <span class="x">&#10005;</span></span>
-          <div class="line"><span class="txt ph">Type a message...</span><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></div>
+          <div class="line"><span class="txt ph">Type a message...</span></div>
+          <div class="foot"><span class="ctls"><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></span></div>
         </div>
       </div>
       <p class="note" style="margin:8px 0 0">The dot becomes the spinner and the graph becomes
@@ -516,7 +530,8 @@ graph, ready tally, frames, bytes, pace &#8212; and the dot and the way out are 
             <span class="count">18 of 48</span>
             <span class="fr">68k fr</span>
             <span class="x">&#10005;</span></span>
-          <div class="line"><span class="txt ph">Type a message...</span><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></div>
+          <div class="line"><span class="txt ph">Type a message...</span></div>
+          <div class="foot"><span class="ctls"><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></span></div>
         </div>
       </div>
       <p class="note" style="margin:8px 0 0">Past eight sections one tick stops meaning one
@@ -532,7 +547,8 @@ graph, ready tally, frames, bytes, pace &#8212; and the dot and the way out are 
             <span class="count">transcribing</span>
             <span class="fr">1712 fr</span>
             <span class="x">&#10005;</span></span>
-          <div class="line"><span class="txt ph">Type a message...</span><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></div>
+          <div class="line"><span class="txt ph">Type a message...</span></div>
+          <div class="foot"><span class="ctls"><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></span></div>
         </div>
       </div>
       <p class="note" style="margin:8px 0 0">Before the core has said how many sections the take
@@ -544,7 +560,10 @@ graph, ready tally, frames, bytes, pace &#8212; and the dot and the way out are 
       <div class="lab">landed &middot; one green beat, then idle</div>
       <div class="comp">
         <div class="box done">
-          <div class="line"><span class="txt">fix the flaky retry test and<span class="caret"></span></span><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></div>
+          <div class="line"><span class="txt">fix the flaky retry test and<span class="caret"></span></span></div>
+          <div class="foot"><span class="hints"><span class="k">&#8679;&#9166;</span> newline</span>
+            <span class="hints"><span class="k">&#9166;</span> send</span>
+            <span class="ctls"><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></span></div>
         </div>
       </div>
       <p class="note" style="margin:8px 0 0">The card goes with the take, the words land at the
@@ -555,11 +574,13 @@ graph, ready tally, frames, bytes, pace &#8212; and the dot and the way out are 
       <div class="comp">
         <div class="box">
           <div class="notice q">nothing above -50 dBFS in 4s &#183; loudest was -38.2 &#183; try again</div>
-          <div class="line"><span class="txt ph">Type a message...</span><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></div>
+          <div class="line"><span class="txt ph">Type a message...</span></div>
+          <div class="foot"><span class="ctls"><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></span></div>
         </div>
         <div class="box" style="margin-top:10px">
           <div class="notice bad">microphone is held by another application</div>
-          <div class="line"><span class="txt ph">Type a message...</span><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></div>
+          <div class="line"><span class="txt ph">Type a message...</span></div>
+          <div class="foot"><span class="ctls"><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></span></div>
         </div>
       </div>
     </div>
@@ -579,7 +600,8 @@ of rows.</p>
       <div class="lab">the panel, opened from the mic</div>
       <div class="comp">
         <div class="box">
-          <div class="line"><span class="txt ph">Type a message...</span><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></div>
+          <div class="line"><span class="txt ph">Type a message...</span></div>
+          <div class="foot"><span class="ctls"><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></span></div>
         </div>
         <div class="pop">
           <div class="hd"><span class="t">Dictation</span><span class="k"><b>&#8984; right</b> to talk</span><span class="x"><svg class="ic"><use href="#i-x"/></svg></span></div>

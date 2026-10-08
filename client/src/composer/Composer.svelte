@@ -1120,45 +1120,52 @@
             field = el;
           }}
         />
-        {#if dictation}
-          <button
-            class="mic"
-            type="button"
-            title="press to dictate, hold or Shift+Enter for settings"
-            aria-label={take === null && composer.take === null ? 'dictate' : 'stop dictating'}
-            aria-expanded={panel}
-            onpointerdown={micHoldStart}
-            onpointerup={micHoldEnd}
-            onpointerleave={micHoldEnd}
-            onkeydown={(event: KeyboardEvent) => {
-              // **The hold's door for a keyboard.** The press is the button's
-              // own click; the settings need one modifier shape, said in the
-              // title so it is discoverable rather than folklore.
-              if (event.key === 'Enter' && event.shiftKey) {
-                event.preventDefault();
-                panel = true;
-              }
-            }}
-            onclick={mic}
-          >
-            <Icon name="mic" />
-          </button>
-        {/if}
-        {#if running}
-          <button class="stop" type="button" title="stop" aria-label="stop" onclick={stop}>
-            <Icon name="stop" />
-          </button>
-        {/if}
-        {#if filled}
-          <button class="send" type="button" title="send" aria-label="send" onclick={send}>
-            <Icon name="send" />
-          </button>
-        {/if}
       </div>
-      {#if filled}
+      {#if filled || dictation || running}
+        <!-- The box's own foot: the keys the field honours on the left, the
+             controls on the right. The draft keeps the box's whole width, and
+             the controls follow it down to the box's bottom edge. -->
         <div class="foot">
-          <span><kbd>Shift</kbd> <kbd>Enter</kbd> newline</span>
-          <span><kbd>Enter</kbd> send</span>
+          {#if filled}
+            <span class="hints"><kbd>Shift</kbd> <kbd>Enter</kbd> newline</span>
+            <span class="hints"><kbd>Enter</kbd> send</span>
+          {/if}
+          <span class="ctls">
+            {#if dictation}
+              <button
+                class="mic"
+                type="button"
+                title="press to dictate, hold or Shift+Enter for settings"
+                aria-label={take === null && composer.take === null ? 'dictate' : 'stop dictating'}
+                aria-expanded={panel}
+                onpointerdown={micHoldStart}
+                onpointerup={micHoldEnd}
+                onpointerleave={micHoldEnd}
+                onkeydown={(event: KeyboardEvent) => {
+                  // **The hold's door for a keyboard.** The press is the button's
+                  // own click; the settings need one modifier shape, said in the
+                  // title so it is discoverable rather than folklore.
+                  if (event.key === 'Enter' && event.shiftKey) {
+                    event.preventDefault();
+                    panel = true;
+                  }
+                }}
+                onclick={mic}
+              >
+                <Icon name="mic" />
+              </button>
+            {/if}
+            {#if running}
+              <button class="stop" type="button" title="stop" aria-label="stop" onclick={stop}>
+                <Icon name="stop" />
+              </button>
+            {/if}
+            {#if filled}
+              <button class="send" type="button" title="send" aria-label="send" onclick={send}>
+                <Icon name="send" />
+              </button>
+            {/if}
+          </span>
         </div>
       {/if}
     </div>
