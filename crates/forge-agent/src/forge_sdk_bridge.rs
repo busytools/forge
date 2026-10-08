@@ -1644,14 +1644,14 @@ mod tests {
             .get_context_usage("session-1".to_owned())
             .expect("an ask while one is out is answered, not refused");
         bridge.get_context_usage("session-1".to_owned()).expect("and so is a third");
-        // The mark itself, so the coalescing is pinned without a stopwatch: the
-        // window below would read a slow mock as a dropped ask.
+        // The mark itself, so the coalescing is pinned at the ask rather than
+        // inferred from the CLI's sight of it.
         assert_eq!(
             bridge.inner.context_probes_in_flight.lock().len(),
             1,
             "the three asks left one seat marked, which is the one probe that went",
         );
-        let subtypes = drain_answers(&mut events, &echo).await;
+        let subtypes = drain_answers(&bridge, &mut events, &echo).await;
         assert_eq!(
             subtypes.iter().filter(|subtype| *subtype == "get_context_usage").count(),
             1,
@@ -1664,7 +1664,7 @@ mod tests {
 
         // And the seat is free again once its answer lands.
         bridge.get_context_usage("session-1".to_owned()).expect("a later ask goes");
-        let subtypes = drain_answers(&mut events, &echo).await;
+        let subtypes = drain_answers(&bridge, &mut events, &echo).await;
         assert_eq!(
             subtypes.iter().filter(|subtype| *subtype == "get_context_usage").count(),
             2,
@@ -1672,22 +1672,60 @@ mod tests {
         );
     }
 
-    /// Every answer that arrives inside the window, with the subtypes the mock
-    /// observed beside them.
+    /// The subtypes the mock observed, fenced past every ask this call made.
     ///
-    /// Drained rather than read once: an answer lands a scheduling hop after
-    /// its request, and a test that counted sooner would read a probe still in
-    /// flight as one that was dropped - the very verdict this test exists to
-    /// give. The window is the wait, and it bounds a probe that never answers.
+    /// The read is fenced, not settled. The mock answers strictly in order, so
+    /// the answer to a `get_mcp_snapshot` dispatched after the asks proves it
+    /// has read every request written before that one: what the count below
+    /// reads is what the test caused, at any load. The probe's own answer is
+    /// waited for first, which is what keeps the fence last - the asks are
+    /// dispatched together, so by the time the probe is back, a wrongly
+    /// dispatched ask is long since written.
+    ///
+    /// Both waits are the answers themselves, never a stopwatch: a round trip
+    /// here crosses a subprocess spawning `python3` three times per control
+    /// line, and a fixed window expires mid-flight on a loaded machine -
+    /// reading a slow mock as an ask that never went, which is the verdict
+    /// this test exists to give. The deadline bounds a probe that never
+    /// answers.
     async fn drain_answers(
+        bridge: &ForgeSdkBridge,
         events: &mut mpsc::UnboundedReceiver<AgentEvent>,
         echo: &std::path::Path,
     ) -> Vec<String> {
-        while tokio::time::timeout(std::time::Duration::from_millis(300), events.recv())
-            .await
-            .is_ok_and(|answer| answer.is_some())
-        {}
+        wait_for(events, "the probe's answer", &|event| {
+            matches!(event, AgentEvent::ContextUsage { .. })
+        })
+        .await;
+        bridge.get_mcp_snapshot("session-1".to_owned()).expect("the fence ask goes");
+        wait_for(events, "the fence's answer", &|event| {
+            matches!(event, AgentEvent::McpSnapshot { .. })
+        })
+        .await;
         observed_subtypes(echo)
+    }
+
+    /// The first event `wanted` accepts, inside the deadline.
+    async fn wait_for(
+        events: &mut mpsc::UnboundedReceiver<AgentEvent>,
+        what: &str,
+        wanted: &impl Fn(&AgentEvent) -> bool,
+    ) -> AgentEvent {
+        let deadline = std::time::Duration::from_secs(10);
+        let Ok(Some(event)) = tokio::time::timeout(deadline, async {
+            loop {
+                match events.recv().await {
+                    Some(event) if wanted(&event) => return Some(event),
+                    Some(_) => {}
+                    None => return None,
+                }
+            }
+        })
+        .await
+        else {
+            panic!("{what} arrives inside the deadline");
+        };
+        event
     }
 
     /// The identity contract at the surface the user sees: a session
