@@ -144,6 +144,11 @@
     "SpawnWorker": "spawn_worker",
     "StartDefault": "start_default",
     "SubmitReview": "submit_review",
+    "TaskAnswer": "task_answer",
+    "TaskAssign": "task_assign",
+    "TaskCreate": "task_create",
+    "TaskRank": "task_rank",
+    "TaskVerdict": "task_verdict",
     "ToggleMcpServer": "toggle_mcp_server",
     "UpsertReviewThread": "upsert_review_thread"
   },
