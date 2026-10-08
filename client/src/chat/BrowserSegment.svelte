@@ -102,10 +102,14 @@
       .then((now) => (used = now))
       .catch(() => undefined);
     // And the shared line's own window state, which its row's button and the
-    // collapsed mark both speak for.
+    // collapsed mark both speak for - a read that failed says so rather than
+    // pinning the button to "show".
     void profileWindowed()
       .then((now) => (sharedUp = now))
-      .catch(() => undefined);
+      .catch((error: unknown) => {
+        read = 'failed';
+        why = whyText(error);
+      });
   }
 
   $effect(() => {
@@ -279,14 +283,16 @@
   }
 
   /** The person's own lower: the window goes, the browser keeps serving, and
-   *  the row's button says show again. */
+   *  the row's button says show again. A refusal is drawn, not swallowed. */
   function lower(profile: string | null = null): void {
-    void hideBrowser(profile)
-      .then(() => readProfiles())
-      .catch((error: unknown) => {
+    void hideBrowser(profile).then((reason) => {
+      if (reason !== null) {
         read = 'failed';
-        why = whyText(error);
-      });
+        why = reason;
+        return;
+      }
+      void readProfiles();
+    });
   }
 
   /** The person's close: saves, frees the name, and the row falls away. */

@@ -150,15 +150,19 @@ export async function showBrowser(profile: string | null = null): Promise<string
  * agent call relaunches it headless over the same profile. **The hand-off
  * itself is answered separately** - Done or Not now - and answering it
  * lowers the window, so the cycle opens and closes as one act.
+ *
+ * **Answers why it could not come down, or `null` when it did** - the same
+ * shape a raise answers with, so a strip button that said hide and then
+ * drew nothing on a refusal cannot happen.
  */
-export async function hideBrowser(profile: string | null = null): Promise<void> {
-  if (!canHost()) return;
+export async function hideBrowser(profile: string | null = null): Promise<string | null> {
+  if (!canHost()) return 'this page is not the client';
   try {
     const { invoke } = await import('@tauri-apps/api/core');
     await invoke('browser_hide', { profile });
-  } catch {
-    // A window that will not come down is the shell's to say; nothing here
-    // can act on it.
+    return null;
+  } catch (why) {
+    return whyText(why);
   }
 }
 

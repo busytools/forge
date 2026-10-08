@@ -27,7 +27,7 @@ import {
   showBrowser,
   type HostReply,
 } from './host';
-import { browserInflight } from './inflight.svelte';
+import { browserInflight, callDown, callUp } from './inflight.svelte';
 import type { BrowserAsk } from '../protocol';
 import type { Connection } from '../socket';
 
@@ -74,6 +74,7 @@ beforeAll(() => {
 afterEach(() => {
   invoke.mockClear();
   browserInflight.calls = 0;
+  browserInflight.visible = false;
 });
 
 describe('the shell command names', () => {
@@ -227,5 +228,27 @@ describe('the shell command names', () => {
 
     expect(during, 'the mark was up while the call ran').toBe(1);
     expect(browserInflight.calls, 'and down the moment it answered').toBe(0);
+  });
+
+  /** **The tail re-arms from each landing**: a burst stays up as one working
+   *  stretch, and only a real pause takes the ring down. */
+  it('keeps the working mark up through a burst, measured from each landing', () => {
+    vi.useFakeTimers();
+    try {
+      callUp();
+      callDown();
+      expect(browserInflight.visible, 'up after the first landing').toBe(true);
+      vi.advanceTimersByTime(399);
+      callUp();
+      callDown();
+      vi.advanceTimersByTime(399);
+      expect(browserInflight.visible, 'a landing inside the tail re-arms it').toBe(true);
+      vi.advanceTimersByTime(2);
+      expect(browserInflight.visible, 'and the ring comes down a tail past the last landing').toBe(
+        false,
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -3,11 +3,21 @@ import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Connection } from '../socket';
-import { browserUsed, closeProfile, listProfiles, showBrowser } from '../browser/host';
+import type { SessionSlot } from '../wire/types';
+import {
+  browserUsed,
+  closeProfile,
+  hideBrowser,
+  listProfiles,
+  profileWindowed,
+  showBrowser,
+} from '../browser/host';
 import BrowserSegment from './BrowserSegment.svelte';
 
 afterEach(() => {
   vi.mocked(showBrowser).mockClear();
+  vi.mocked(hideBrowser).mockClear();
+  vi.mocked(profileWindowed).mockClear();
 });
 
 /**
@@ -24,6 +34,8 @@ vi.mock('../browser/host', async (importOriginal) => {
     closeProfile: vi.fn(() => Promise.resolve(undefined)),
     browserUsed: vi.fn(() => Promise.resolve(false)),
     showBrowser: vi.fn(() => Promise.resolve(null)),
+    hideBrowser: vi.fn(() => Promise.resolve(null)),
+    profileWindowed: vi.fn(() => Promise.resolve(false)),
   };
 });
 
@@ -55,12 +67,15 @@ function fakeConnection(hosting = false) {
   };
 }
 
-/** The segment, mounted with whatever role and capability the test names. */
-function show(hosting = false, capable = true) {
+/** The segment, mounted with whatever role, capability and slot the test names. */
+function show(hosting = false, capable = true, slot: SessionSlot | null = null) {
   const harness = fakeConnection(hosting);
   const target = document.createElement('div');
   document.body.append(target);
-  const app = mount(BrowserSegment, { target, props: { connection: harness.connection, capable } });
+  const app = mount(BrowserSegment, {
+    target,
+    props: { connection: harness.connection, capable, slot },
+  });
   flushSync();
   return { ...harness, target, stop: () => void unmount(app) };
 }
@@ -416,6 +431,80 @@ describe('the browser segment', () => {
       'browser connected',
     );
     expect(shown.target.querySelector('.bz-override'), 'a holder offers no override').toBeNull();
+    shown.stop();
+  });
+
+  /** The show/hide button on the row whose `.nm` reads `name` (shared included). */
+  function rowButton(target: HTMLElement, name: string): Element | null {
+    return (
+      [...target.querySelectorAll('.bz-it')]
+        .find((el) => el.querySelector('.nm')?.textContent === name)
+        ?.querySelector('button.bz-show') ?? null
+    );
+  }
+
+  /** **The list is this slot's own**: another slot's profile is not this
+   *  seat's business, and the count is the slot's, not the client's. */
+  it("lists only this slot's own profiles, with the slot's count", async () => {
+    vi.mocked(listProfiles).mockResolvedValue([
+      { name: 'mine', owner: 'Org/proj/me', running: true, windowed: false },
+      { name: 'theirs', owner: 'Org/proj/other', running: true, windowed: false },
+    ]);
+    const shown = show(false, true, { org: 'Org', project: 'proj', label: 'me' });
+    await vi.waitFor(() => {
+      expect(
+        shown.target.querySelector('.bz-tog .n')?.textContent,
+        "the count is this slot's own",
+      ).toBe('1 profile');
+    });
+    click(shown.target.querySelector('.bz-tog'));
+    await vi.waitFor(() => {
+      expect(shown.target.textContent, "this slot's profile is listed").toContain('mine');
+    });
+    expect(
+      shown.target.textContent,
+      "another slot's profile is not this slot's business",
+    ).not.toContain('theirs');
+    shown.stop();
+  });
+
+  /** **A window that is up reads hide, on the shared line too**: the person
+   *  lowers it from the strip rather than hunting the window's X. */
+  it("the shared line's button lowers the window it raised", async () => {
+    vi.mocked(profileWindowed).mockResolvedValue(true);
+    const shown = show();
+    click(shown.target.querySelector('.bz-tog'));
+    await vi.waitFor(() => {
+      expect(rowButton(shown.target, 'shared')?.textContent, 'a window up reads hide').toContain(
+        'hide',
+      );
+    });
+    click(rowButton(shown.target, 'shared'));
+    expect(hideBrowser, 'the shared line lowers the shared window').toHaveBeenCalledWith(null);
+    shown.stop();
+  });
+
+  /** A profile row toggles the same way, and **a refused hide is drawn** -
+   *  the button said hide, so a silence would read as done. */
+  it('a profile whose window is up says hide, and a refused hide is drawn', async () => {
+    vi.mocked(listProfiles).mockResolvedValue([
+      { name: 'hunt', owner: 'Org/proj/me', running: true, windowed: true },
+    ]);
+    vi.mocked(hideBrowser).mockResolvedValueOnce('no browser profile is open under hunt');
+    const shown = show(false, true, { org: 'Org', project: 'proj', label: 'me' });
+    click(shown.target.querySelector('.bz-tog'));
+    await vi.waitFor(() => {
+      expect(rowButton(shown.target, 'hunt')?.textContent, 'a window up reads hide').toContain(
+        'hide',
+      );
+    });
+    click(rowButton(shown.target, 'hunt'));
+    expect(hideBrowser, 'the row lowers its own window').toHaveBeenCalledWith('hunt');
+    await vi.waitFor(() => {
+      expect(shown.target.textContent, 'a refused hide is drawn, not swallowed').toContain(
+        'no browser profile is open under hunt',
+      );
+    });
     shown.stop();
   });
 });
