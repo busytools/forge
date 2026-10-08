@@ -380,7 +380,7 @@ impl Workspace {
 
     /// Whether a seat has something behind it right now: a registered
     /// domain or agent, or a live worker registry row.
-    fn seat_is_live(&self, slot: &SessionSlot) -> bool {
+    pub(crate) fn seat_is_live(&self, slot: &SessionSlot) -> bool {
         if self.domain_session_for(slot).is_some() || self.has_agent_for(slot) {
             return true;
         }
