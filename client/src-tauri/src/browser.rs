@@ -606,6 +606,40 @@ mod tests {
         );
     }
 
+    /// **The rows read show's predicate, not the raw marker.** A profile
+    /// directory with the headed marker and nothing answering is NOT a
+    /// window (the X-close state), and the shell's own reads must say so -
+    /// reverting either call site to `launched_windowed` passes everything
+    /// else and fails exactly here.
+    #[tokio::test]
+    async fn the_rows_keep_shows_predicate_not_the_raw_marker() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        std::fs::create_dir_all(&paths.user_data).expect("the shared dir");
+        std::fs::write(paths.user_data.join("windowed"), b"").expect("the shared marker");
+        let host = BrowserHost::new(paths.clone());
+        assert!(
+            !host.windowed(None).await.expect("the read"),
+            "a marker with nothing answering is not a window - the shared line keeps show's rule",
+        );
+
+        let named = Named::open(seat(), "hunt", &paths);
+        std::fs::create_dir_all(&named.dir).expect("the profile dir");
+        std::fs::write(named.dir.join("windowed"), b"").expect("the profile marker");
+        host.named.lock().await.insert("hunt".to_owned(), Arc::new(named));
+        let rows = host.profiles().await;
+        let row = rows.iter().find(|row| row.name == "hunt").expect("the row");
+        assert!(
+            !row.windowed,
+            "a profile's row keeps show's rule too - a marker with no launch is no window",
+        );
+    }
+
     /// **A hide waits for a launch in flight** - the same lock `show` takes,
     /// so a hide cannot race a browser that is not up yet and leave the
     /// window raised after the answer crossed. The lock is what makes it
