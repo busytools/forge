@@ -151,9 +151,9 @@ describe("the lines a call's row draws", () => {
   it('draws a search hit as a location and the line beneath it', () => {
     // Two elements. As one run with a newline character in it the pair drew as
     // a single line with the path run into the matched text, because nothing
-    // in this box is pre-formatted. The fold's own derivation of a hit from
-    // the result text is `leaves.test.ts`'s; this is the drawing, read with
-    // the row open (a closed row carries no body).
+    // in this box is pre-formatted. The hit derivation from the result text
+    // is `text.test.ts`'s; this is the drawing, read with the row open (a
+    // closed row carries no body).
     const grep: ToolLeaf = {
       id: 'toolu_grep',
       row: { kind: 'family', family: 'search' },

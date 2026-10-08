@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import Leaves from './Leaves.svelte';
 import { leafOf } from './leaves';
 import PeerRow from './PeerRow.svelte';
+import Thought from './Thought.svelte';
 import type { PeerCard, WorkRow } from './units';
 
 /** One peer card, as the row the leaf list draws. */
@@ -342,8 +343,11 @@ describe('the thinking row', () => {
 
   it('draws the opened thought as markdown, which is how the model wrote it', () => {
     // The reasoning arrives with headings, lists and code, and drawn as plain
-    // paragraphs it showed its own asterisks and hashes.
-    const drawn = draw([thought('## what I found\n\n- one\n- two\n\n`cargo check`')]);
+    // paragraphs it showed its own asterisks and hashes. The row is drawn
+    // open: a closed one carries its summary and nothing else.
+    const drawn = render(Thought, {
+      props: { text: '## what I found\n\n- one\n- two\n\n`cargo check`', open: true },
+    }).body;
 
     expect(drawn, 'a heading is a heading').toContain('<h2>');
     expect(drawn, 'a list is a list').toContain('<li>');

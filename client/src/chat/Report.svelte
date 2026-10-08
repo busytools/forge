@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
+
   import Chevron from '../components/Chevron.svelte';
   import { clock, duration, money, tokens } from './numbers';
   import { attributed, cached, elapsed } from './report';
@@ -20,7 +22,7 @@
   let { info, open = false }: { info: TurnInfo; open?: boolean } = $props();
 
   /** Whether the row is open; a closed row carries its summary and nothing else. */
-  let opened = $state(open);
+  let opened = $state(untrack(() => open));
 
   /** The record with an unattributed usage block dropped, which is the rule the terminal applies. */
   const held = $derived(attributed(info));

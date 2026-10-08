@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
+
   import Chevron from '../components/Chevron.svelte';
   import Icon from '../components/Icon.svelte';
   import Prose from './Prose.svelte';
@@ -20,7 +22,7 @@
   let { card, open = false }: { card: PeerCard; open?: boolean } = $props();
 
   /** Whether the row is open, held here rather than drawn from the prop. */
-  let opened = $state(open);
+  let opened = $state(untrack(() => open));
 
   /**
    * The mark a peer row carries.

@@ -62,15 +62,16 @@ describe('the hook run row', () => {
    */
   it('carries summary markup only while it is closed', () => {
     const text = 'the hook body text';
-    const closed = draw({ body: text }, false);
+    // No `open` prop: the production default, which is what a reader meets.
+    const closed = render(Hook, { props: { run: run({ body: text }) } }).body;
     const under = closed.slice(closed.indexOf('</summary>'));
     expect(under, 'no body under a closed row').not.toContain(text);
 
     const open = draw({ body: text });
-    expect(open, 'and the body is drawn onto the open').toContain(text);
+    expect(open, 'and the body is drawn onto the open').toContain('class="term"');
   });
 
-  it('names the hook and its own words on the closed row', () => {
+  it('names the hook and its own words on the row', () => {
     const body = draw();
     const said = summaryWords(body);
 

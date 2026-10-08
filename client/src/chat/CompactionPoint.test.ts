@@ -6,7 +6,6 @@ import { describe, expect, it } from 'vitest';
 import CompactionPoint from './CompactionPoint.svelte';
 import { tokens } from './numbers';
 
-/** The row, as a boundary's own frame fills it. */
 /** The row drawn open, which is the state its body needs. */
 const draw = (
   trigger: string | null,
@@ -49,7 +48,10 @@ describe('the compaction point a boundary leaves in the conversation', () => {
    */
   it('carries summary markup only while it is closed', () => {
     const text = 'the compacted account';
-    const closed = draw('auto', 12_000, 3_000, text, false);
+    // No `open` prop: the production default, which is what a reader meets.
+    const closed = render(CompactionPoint, {
+      props: { trigger: 'auto', preTokens: 12_000, postTokens: 3_000, summary: text },
+    }).body;
     const under = closed.slice(closed.indexOf('</summary>'));
     expect(under, 'no body under a closed point').not.toContain(text);
 
@@ -62,7 +64,7 @@ describe('the compaction point a boundary leaves in the conversation', () => {
 
     expect(body, 'the row the approved shape draws').toContain('<details class="cpoint">');
     expect(body, 'collapsed, so the boundary is a hint rather than a block').not.toContain(
-      '<details class="cpoint" open>',
+      'open=""',
     );
     // The hairline is two rules flanking the label, which is what makes the row
     // read across the column rather than as one more work row.

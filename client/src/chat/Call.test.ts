@@ -65,6 +65,25 @@ describe('the row one call draws', () => {
   });
 
   /**
+   * A call that came back with nothing says so in words, not colour alone.
+   *
+   * The line is the fold's own (`leaves.test.ts` pins the synthesis), and the
+   * row draws it onto its open like any other body: this is the drawing's pin.
+   */
+  it('says a call that came back with nothing in words', () => {
+    const nothing: ToolLeaf = {
+      ...backgrounded(null),
+      body: [{ kind: 'text', text: 'no result' }],
+    };
+    const closed = render(Call, { props: { k: 'n1', call: nothing } }).body;
+    expect(closed.slice(closed.indexOf('</summary>')), 'nothing under a closed row').not.toContain(
+      'no result',
+    );
+    const open = render(Call, { props: { k: 'n1', call: nothing, open: true } }).body;
+    expect(open, 'and the words are drawn onto the open').toContain('no result');
+  });
+
+  /**
    * **The row carries the fold's own name, not the wire id.** Two id-less
    * `tool_use` calls leave the wire id empty, so the leaves list hands the
    * fold's key down and the row draws that: keys stay unique, which is what
@@ -800,7 +819,7 @@ describe('the dispatch row, joined to its instance', () => {
     expect(drawn, 'every call the frames hold, not just the card tail').toContain('subagent');
     // The nested call's own result is its own row's body, and a closed row
     // carries none - the timeline fold's carrying of the results is
-    // `timeline.test.ts`'s (it reads the leaf's title).
+    // `timeline.test.ts`'s (it reads the result out of the leaf's body).
     expect(drawn, 'the brief renders as markdown, structure and all').toContain('class="prose"');
     expect(drawn, 'and so does the prose the instance wrote between calls').toContain(
       '<strong>two nits</strong>',

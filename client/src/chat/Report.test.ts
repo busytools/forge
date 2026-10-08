@@ -39,7 +39,8 @@ describe('a settled turn\u2019s row', () => {
    * facts grid is the body's, and every turn of a giant seat carries one.
    */
   it('carries summary markup only while it is closed', () => {
-    const closed = draw(FULL, false);
+    // No `open` prop: the production default, which is what a reader meets.
+    const closed = render(Report, { props: { info: FULL } }).body;
     const under = closed.slice(closed.indexOf('</summary>'));
     expect(under, 'no facts under a closed report').not.toContain('tibody');
 

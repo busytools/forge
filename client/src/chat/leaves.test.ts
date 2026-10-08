@@ -13,6 +13,27 @@ const NOTE =
   'File created successfully at a.rs (file state is current in your context \u{2014} no need to Read it back)';
 
 describe('what a call body draws', () => {
+  /**
+   * A call the frames never answered says so in words.
+   *
+   * #1836: a settled turn whose call got no result draws the failure mark,
+   * and the tone alone would be the state's only carrier - the body would
+   * open onto nothing. This is the synthesis's own pin; the drawing of the
+   * words onto the open is `Call.test.ts`'s.
+   */
+  it('gives a call the frames never answered the words for it', () => {
+    const leaf = leafOf(
+      't1',
+      'Bash',
+      { command: 'just check' },
+      undefined,
+      undefined,
+      undefined,
+      true,
+    );
+    expect(JSON.stringify(leaf.body), 'the row says so in words').toContain('no result');
+  });
+
   it("draws the CLI's own hunk where the result carries one, marks included", () => {
     // What the wire says about the change: the range it covers, and the lines
     // with a space for context, `-` for removed, `+` for added. Without it the

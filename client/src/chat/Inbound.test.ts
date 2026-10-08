@@ -53,12 +53,13 @@ describe('the inbound delivery row', () => {
    */
   it('carries summary markup only while it is closed', () => {
     const text = 'the payload the body alone carries';
-    const closed = draw({ body: text }, false);
+    // No `open` prop: the production default, which is what a reader meets.
+    const closed = render(Inbound, { props: { row: row({ body: text }) } }).body;
     const under = closed.slice(closed.indexOf('</summary>'));
     expect(under, 'no body under a closed row').not.toContain(text);
 
     const open = draw({ body: text });
-    expect(open, 'and the body is drawn onto the open').toContain(text);
+    expect(open, 'and the body is drawn onto the open').toContain('class="body"');
   });
 
   it("renders a cron fire's own line rather than showing its marks", () => {

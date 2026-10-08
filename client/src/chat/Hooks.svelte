@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
+
   import Chevron from '../components/Chevron.svelte';
   import Icon from '../components/Icon.svelte';
   import { duration } from './numbers';
@@ -19,7 +21,7 @@
   }: { actions: number; infos: HookInfo[]; errors: string[]; open?: boolean } = $props();
 
   /** Whether the chip is open; a closed one carries its summary and nothing else. */
-  let opened = $state(open);
+  let opened = $state(untrack(() => open));
 
   /** The summary's own words, errors counted on the closed chip too. */
   const label = $derived(

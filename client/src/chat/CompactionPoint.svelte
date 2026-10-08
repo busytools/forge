@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
+
   import Chevron from '../components/Chevron.svelte';
   import { grouped, tokens } from './numbers';
   import Prose from './Prose.svelte';
@@ -39,7 +41,7 @@
   } = $props();
 
   /** Whether the point is open; a closed one carries its summary and nothing else. */
-  let opened = $state(open);
+  let opened = $state(untrack(() => open));
 
   /** Whether anything sits behind the row, which is what the handle promises. */
   const opens = $derived(

@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
+
   import Chevron from '../components/Chevron.svelte';
   import Icon from '../components/Icon.svelte';
   import Prose from './Prose.svelte';
@@ -21,7 +23,7 @@
   let { row, open = false }: { row: InboundLeaf; open?: boolean } = $props();
 
   /** Whether the row is open; a closed row carries its summary and nothing else. */
-  let opened = $state(open);
+  let opened = $state(untrack(() => open));
 
   /**
    * The tail line, or null where it would only repeat the title.

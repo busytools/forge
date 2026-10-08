@@ -69,7 +69,8 @@ describe('the hook chip a turn carries', () => {
    * body's, and the giant seat's cost is the bodies of rows nobody opened.
    */
   it('carries summary markup only while it is closed', () => {
-    const closed = draw(1, ONE, [], false);
+    // No `open` prop: the production default, which is what a reader meets.
+    const closed = render(Hooks, { props: { actions: 1, infos: ONE, errors: [] } }).body;
     const under = closed.slice(closed.indexOf('</summary>'));
     expect(under, 'no body under a closed chip').not.toContain('echo fixture-stop-hook-ok');
 

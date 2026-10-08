@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
+
   import Chevron from '../components/Chevron.svelte';
   import Icon from '../components/Icon.svelte';
   import { renderInlineProse } from './prose';
@@ -32,7 +34,7 @@
   let { run, open = false }: { run: HookRun; open?: boolean } = $props();
 
   /** Whether the row is open; a closed row carries its summary and nothing else. */
-  let opened = $state(open);
+  let opened = $state(untrack(() => open));
 
   /** The closed row's tail: the hook's own words in one line, or null where it said nothing. */
   const tail = $derived(hookTail(run.body));

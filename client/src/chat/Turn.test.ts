@@ -519,8 +519,8 @@ describe('one turn, as the page draws it', () => {
       '<svg class="ic gl err">',
     );
     // The body's words - `no result`, the fold's own line for a call that came
-    // back with nothing (`leaves.ts`) - are drawn onto the row's open now; the
-    // synthesis is `leaves.test.ts`'s, and the drawing the open's.
+    // back with nothing - are drawn onto the row's open now: `leaves.test.ts`
+    // pins the synthesis and `Call.test.ts` the drawing.
   });
 
   it('tags the org by the seat the page is drawing, not by the row alone', () => {
