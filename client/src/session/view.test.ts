@@ -307,15 +307,41 @@ describe('the rail', () => {
    * (#1885).
    */
   it('wears the ask mark on the seat that holds the question', () => {
-    for (const pending of ['question', 'permission'] as const) {
-      const asking: AgentRow = { ...lead(), lifecycle: 'Idle', pending };
-      const home = withHome({ agents: [asking] });
-      const row = railGroups(home, LEAD, 0).flatMap((group) => group.projects)[0]?.row;
-      expect(
-        row === undefined ? null : railMark(row.state),
-        `a seat holding a ${pending} drew no glyph`,
-      ).toBe('needs');
+    const mark = (asking: AgentRow): string | null => {
+      const row = railGroups(withHome({ agents: [asking] }), LEAD, 0).flatMap(
+        (group) => group.projects,
+      )[0]?.row;
+      return row === undefined ? null : railMark(row.state);
+    };
+
+    // **Whatever else the row is doing.** The rank the rail groups by files a
+    // pending seat under needs-you from an idle, a running or a backgrounded
+    // row, and the mark has to agree with it - a mark read from the lifecycle
+    // alone drew running or idle on a seat whose ask was up (#1885). The
+    // terminal pins the same property: its triangle is drawn regardless of
+    // lifecycle.
+    for (const lifecycle of ['Idle', 'Running'] as const) {
+      for (const pending of ['question', 'permission'] as const) {
+        for (const has_background_work of [false, true]) {
+          expect(
+            mark({ ...lead(), lifecycle, pending, has_background_work }),
+            `holding a ${pending} on a ${lifecycle} seat (background ${String(has_background_work)}) drew no glyph`,
+          ).toBe('needs');
+        }
+      }
     }
+
+    // And a failure still outranks the ask, which is the terminal's own order:
+    // its cross is drawn over everything, ask included.
+    expect(
+      mark({
+        ...lead(),
+        lifecycle: 'Running',
+        pending: 'question',
+        failed_turn: { secs_since_epoch: 1_800_000_000, nanos_since_epoch: 0 },
+      }),
+      'a failed turn gave way to the ask',
+    ).toBe('failed');
   });
 
   /**
