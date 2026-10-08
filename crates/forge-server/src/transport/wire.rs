@@ -76,6 +76,10 @@ impl<T> From<std::result::Result<T, String>> for ReadWire<T> {
 pub struct HomeWire {
     pub projects: Vec<ProjectWire>,
     pub agents: Vec<AgentWire>,
+    /// One row per project for the fleet page: the counts and the named
+    /// misses (a stalled queue, a worker holding no row). A project's own
+    /// detail rides its [`ProjectWire::rows`]; this is the glance.
+    pub fleet: Vec<forge_workspace::board::FleetRow>,
     /// The seats whose last turn finished while no client was showing them.
     ///
     /// The terminal draws a mark per row from this, and it is the fact a
@@ -127,7 +131,11 @@ pub struct ProjectWire {
     /// subscribing do not multiply git invocations: the cache is what makes
     /// the per-row cost the terminal's rather than N times it.
     pub work: WorkState,
-    pub tasks: Vec<forge_primitives::tasks::Task>,
+    /// The project's live rows, with what the board derives on each:
+    /// worked time, ages, and the marks. Computed once, in the workspace's
+    /// board module, and passed through - the client never re-derives a
+    /// mark the terminal would compute differently.
+    pub rows: Vec<forge_workspace::board::BoardRow>,
     /// The schedules this project holds.
     ///
     /// The terminal draws its SCHEDULES section from these, and nothing on
@@ -1017,7 +1025,7 @@ async fn home(state: &TransportState, surface: &ViewSurface) -> HomeWire {
         let subscribed = surface.connectors(Some(&project.name));
         projects.push(ProjectWire {
             work: state.work.snapshot(&seat, &project.path).await,
-            tasks: roster.tasks_for_project(&project.name),
+            rows: surface.board_rows(&project.name),
             crons: roster.crons_for_project(&project.name),
             connectors: ProjectConnectorsWire {
                 gotify: subscribed.gotify.subscriptions,
@@ -1049,6 +1057,7 @@ async fn home(state: &TransportState, surface: &ViewSurface) -> HomeWire {
     }
 
     HomeWire {
+        fleet: surface.fleet(),
         workers: roster
             .projects
             .iter()

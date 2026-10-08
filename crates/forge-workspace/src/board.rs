@@ -28,7 +28,8 @@ pub(crate) fn fmt_secs(secs: u64) -> String {
 }
 
 /// The derived facts about one row, as the board draws them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub struct Marks {
     /// Pending with nothing waiting on it.
     pub ready: bool,
@@ -47,7 +48,8 @@ pub struct Marks {
 }
 
 /// One row as the board reads it: the record plus what is derived.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub struct BoardRow {
     pub task: Task,
     /// The sum of its in_progress intervals, from the history.
@@ -62,7 +64,8 @@ pub struct BoardRow {
 }
 
 /// One named miss on a project's fleet row.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Miss {
     /// Ready rows and a free worker slot: dispatch is the lead's job.
     StalledQueue,
@@ -71,7 +74,8 @@ pub enum Miss {
 }
 
 /// One project as the fleet page draws it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub struct FleetRow {
     pub project: String,
     pub live_workers: usize,
