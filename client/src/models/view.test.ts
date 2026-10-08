@@ -628,6 +628,15 @@ describe('the operation lines', () => {
     expect(line?.mark).toBe('failed');
     expect(line?.detail).toContain('is 5 bytes, expected 6');
     expect(line?.percent).toBeNull();
+
+    // A failure before the file is named leads with its reason rather than
+    // with the separator.
+    const unnamed = installLine({
+      state: 'failed',
+      file: '',
+      reason: 'the catalogue did not answer',
+    });
+    expect(unnamed?.detail).toBe('the catalogue did not answer');
   });
 
   it("draws nothing while idle, and an unreadable state as this client's own", () => {

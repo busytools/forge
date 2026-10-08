@@ -478,7 +478,9 @@ export function installLine(install: InstallState): OpLine | null {
       return {
         mark: 'failed',
         title: 'the download did not finish',
-        detail: `${install.file} \u{b7} ${install.reason}`,
+        // A failure before the file is named has no file to lead with, and a
+        // line that began with the separator would read as a named one.
+        detail: install.file === '' ? install.reason : `${install.file} \u{b7} ${install.reason}`,
         percent: null,
       };
     case 'unknown':

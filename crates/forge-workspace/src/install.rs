@@ -3,10 +3,12 @@
 //! directory, the record of what arrived, and the config-key / runtime-pick
 //! / compiled-pin order an active model comes from.
 //!
-//! **A download is checked by the entry's own byte length, and by whether
-//! the engine can load it - never by a digest, because upstream publishes
-//! none for these weights.** Nothing here, in its copy or in its errors,
-//! may call a downloaded file verified.
+//! **A download is checked against whatever the entry declares: its byte
+//! length always, and its digest when it carries one.** The speech feed's
+//! docs publish no digest, so those files are checked by length and by
+//! whether the engine can load them; the Hub's blobs publish a sha256, and
+//! the fetch verifies it once, at install - the record does not keep it,
+//! and nothing here may call a file verified.
 
 use std::cell::Cell;
 use std::sync::Arc;
@@ -15,6 +17,7 @@ use forge_dictate::catalogue::{CatalogueEntry, CatalogueSource, Download, EntryK
 use forge_dictate::{ModelFacts, ModelSpec, Progress};
 use serde::{Deserialize, Serialize};
 
+use crate::bench::BenchState;
 use crate::catalogue::PREFERRED_DOWNLOADS;
 use crate::dictate::{DictateRole, DictateSettings};
 use crate::{DispatchError, SessionUpdate, Workspace};
@@ -127,14 +130,44 @@ impl Workspace {
 
     /// Remove one model this machine downloaded: the file and the record.
     ///
+    /// **The file name has to be one this machine recorded**, because it
+    /// crosses from a page and joins onto the models directory: a name no
+    /// record carries is refused rather than removed, so `../../` and
+    /// anything else a caller invents names nothing.
+    ///
     /// Refused while a role RUNS the file - the engine holds it loaded - and
     /// named by that role, because the swap that frees it is the caller's
-    /// next step rather than this one's.
+    /// next step rather than this one's. **The record's own runtime pick goes
+    /// with it**: a pick left naming a file that is gone refuses the next
+    /// boot, and the page that removed the file is the one that can clear it.
     pub(crate) fn uninstall_model(&self, file: &str) -> Result<(), DispatchError> {
+        let Some(record) = self.installed_models().into_iter().find(|model| model.file == file)
+        else {
+            return Err(DispatchError::UninstallRefused {
+                reason: "no model this machine downloaded carries that file".to_owned(),
+            });
+        };
         if let Some((role, _)) =
             self.active_models().iter().find(|(_, model)| model.spec.file == file)
         {
             return Err(DispatchError::ModelInUse { role: *role });
+        }
+        // The engine holds the file for a RUNNING bench too, and a download
+        // in flight is writing it: removing either under the work is a file
+        // the bench or the install would then load from nowhere.
+        if self.bench_running()
+            && matches!(self.dictate_bench(), BenchState::Running { target, .. } if target.file == file)
+        {
+            return Err(DispatchError::UninstallRefused {
+                reason: "the bench is scoring it right now".to_owned(),
+            });
+        }
+        if let InstallState::Downloading { file: writing, .. } = self.dictate_install.lock().clone()
+            && writing == file
+        {
+            return Err(DispatchError::UninstallRefused {
+                reason: "the file is being downloaded right now".to_owned(),
+            });
         }
         if let Some(dir) = self.config.dictate.models_dir() {
             let path = dir.join(file);
@@ -146,15 +179,31 @@ impl Workspace {
             }
         }
         let db = self.db.lock();
-        if let Some(db) = db.as_ref()
-            && let Err(error) = crate::store::dictate_models::remove_installed(db, file)
-        {
-            tracing::warn!(
-                event_name = "dictate_uninstall_record_failed",
-                %error,
-                file,
-                "the model was removed from disk but its record was not; the page still lists it"
-            );
+        if let Some(db) = db.as_ref() {
+            if let Err(error) = crate::store::dictate_models::remove_installed(db, file) {
+                tracing::warn!(
+                    event_name = "dictate_uninstall_record_failed",
+                    %error,
+                    file,
+                    "the model was removed from disk but its record was not; the page still lists it"
+                );
+            }
+            for role in [DictateRole::Transcribing, DictateRole::Normalization] {
+                let picked = crate::store::dictate_models::active(db, role)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|choice| choice.variant == record.variant);
+                if picked
+                    && let Err(error) = crate::store::dictate_models::clear_active(db, role)
+                {
+                    tracing::warn!(
+                        event_name = "dictate_uninstall_pick_clear_failed",
+                        %error,
+                        role = crate::store::dictate_models::role_key(role),
+                        "the removal left a runtime pick naming the model that is gone"
+                    );
+                }
+            }
         }
         Ok(())
     }
@@ -203,17 +252,33 @@ impl Workspace {
         self.note_download(file, 0, total);
     }
 
-    fn record_installed(&self, model: &InstalledModel) {
+    /// Record a downloaded model, answering whether the store took it.
+    ///
+    /// `false` is a store that could not write, which is the caller's to act
+    /// on: a file nothing recorded is a file the page can neither show nor
+    /// remove, so the install path takes the bytes back rather than leaving
+    /// one behind.
+    fn record_installed(&self, model: &InstalledModel) -> bool {
         let db = self.db.lock();
-        if let Some(db) = db.as_ref()
-            && let Err(error) = crate::store::dictate_models::record_installed(db, model)
-        {
+        let Some(db) = db.as_ref() else {
             tracing::warn!(
                 event_name = "dictate_install_record_failed",
-                %error,
                 file = %model.file,
-                "the downloaded model was not recorded; the next boot fetches it again"
+                "no store is open; the download was not recorded"
             );
+            return false;
+        };
+        match crate::store::dictate_models::record_installed(db, model) {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::warn!(
+                    event_name = "dictate_install_record_failed",
+                    %error,
+                    file = %model.file,
+                    "the download was not recorded; the page cannot list or remove it"
+                );
+                false
+            }
         }
     }
 
@@ -297,14 +362,25 @@ impl Workspace {
 
         match prepared {
             Ok(Ok(())) => {
-                self.record_installed(&InstalledModel {
+                let recorded = self.record_installed(&InstalledModel {
                     variant,
-                    file: spec.file,
+                    file: spec.file.clone(),
                     url: spec.url,
                     size: spec.size,
                     facts: spec.facts,
                     at: rfc3339_now(),
                 });
+                // **A file nothing recorded goes back.** The page lists and
+                // removes by record, so an unrecorded file is one no control
+                // can reach - the install takes its bytes back rather than
+                // leaving litter behind it.
+                if !recorded {
+                    if let Some(dir) = self.config.dictate.models_dir() {
+                        let _ = std::fs::remove_file(dir.join(&spec.file));
+                    }
+                    self.fail_install(spec.file, "the download could not be recorded".to_owned());
+                    return;
+                }
                 *self.dictate_install.lock() = InstallState::Idle;
             }
             Ok(Err(error)) => self.fail_install(download.filename, error.to_string()),
@@ -441,12 +517,22 @@ impl Workspace {
                     .installed_models()
                     .into_iter()
                     .find(|model| model.variant == choice.variant);
+                // A pick whose record is gone falls to the pin rather than
+                // refusing the boot: the pick is forge's own bookkeeping, so
+                // a removal that stranded one must not take the launchpad
+                // with it. The removal clears the pick it strands.
                 let Some(installed) = installed else {
-                    return Err(format!(
-                        "the runtime pick for {} names {}, which no installed model carries",
-                        crate::store::dictate_models::role_key(role),
-                        choice.variant
+                    tracing::warn!(
+                        event_name = "dictate_pick_without_a_record",
+                        role = crate::store::dictate_models::role_key(role),
+                        variant = %choice.variant,
+                        "the runtime pick names a model no record carries; the compiled pin runs this role"
+                    );
+                    resolved.push((
+                        role,
+                        ActiveModel { role, spec: pin, from: ActiveFrom::Pin, at: None },
                     ));
+                    continue;
                 };
                 resolved.push((
                     role,
@@ -942,6 +1028,71 @@ mod tests_install {
             Some(1),
             "and the push carries the read without it"
         );
+    }
+
+    /// **A file name no record carries is refused, not joined.** The name
+    /// crosses from a page, so `../..` and anything else a caller invents
+    /// must name nothing rather than remove something outside the models
+    /// directory - the same rule `delete_read_aloud` keeps for a take.
+    #[tokio::test]
+    async fn a_removal_names_a_recorded_file_or_is_refused() {
+        let Fixture { ws, .. } = fixture();
+        record_installed_model(&ws, "spare");
+
+        for invented in ["../../Documents/notes.md", "ruling-Q4_K_M.gguf"] {
+            let err = ws
+                .dispatch(Command::DictateUninstall { file: invented.to_owned() })
+                .expect_err("nothing recorded carries these bytes");
+            assert!(
+                matches!(&err, DispatchError::UninstallRefused { .. }),
+                "got: {err:?}"
+            );
+        }
+        assert_eq!(ws.installed_models().len(), 1, "and nothing went with the refusal");
+    }
+
+    /// The belt for a pick that is already stranded: one naming a variant no
+    /// record carries resolves to the pin with a warning rather than refusing
+    /// the boot whole.
+    #[tokio::test]
+    async fn a_pick_without_a_record_resolves_to_the_pin() {
+        let Fixture { ws, .. } = fixture();
+        record_active(&ws, DictateRole::Transcribing, "gone");
+
+        let settings = settings_of(&ws);
+        let resolved = ws.resolve_active(&settings).await.expect("a stranded pick still boots");
+        let (role, model) =
+            resolved.iter().find(|(role, _)| *role == DictateRole::Transcribing).expect("resolved");
+        assert_eq!(*role, DictateRole::Transcribing);
+        assert!(
+            matches!(model.from, crate::install::ActiveFrom::Pin),
+            "got: {:?}",
+            model.from
+        );
+    }
+
+    /// **A removal clears the runtime pick it strands.** A pick left naming a
+    /// file that is gone refused the next boot - forge never left the
+    /// launchpad and nothing on the page could fix it - so the removal is
+    /// where the invariant is kept.
+    #[tokio::test]
+    async fn a_removal_clears_the_pick_that_named_it() {
+        let Fixture { ws, .. } = fixture();
+        record_installed_model(&ws, "spare");
+        record_active(&ws, DictateRole::Normalization, "spare");
+
+        ws.dispatch(Command::DictateUninstall { file: "spare-Q4_K_M.gguf".to_owned() })
+            .expect("nothing runs it");
+
+        let active = {
+            let db = ws.db.lock();
+            crate::store::dictate_models::active(
+                db.as_ref().expect("the fixture installs a store"),
+                DictateRole::Normalization,
+            )
+            .expect("the store answers")
+        };
+        assert!(active.is_none(), "the pick went with the record it named");
     }
 
     /// Record one role's runtime pick, as an activation of it would.
