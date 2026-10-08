@@ -100,10 +100,16 @@ pub enum ClientMessage {
         /// **It is the CONNECTION's role, not the subject's.** The core keeps
         /// one role per connection and it only ever rises, so a client that
         /// can answer states it on the first subscribe it makes - usually the
-        /// home - and not only while a seat it could draw is showing. A
-        /// client that waits registers as an observer everywhere else, and an
-        /// ask raised then has nobody to park on: the core cancels it at
-        /// birth rather than holding it for an answer.
+        /// home - and not only while a seat it could draw is showing.
+        ///
+        /// **What it guards is an install with no answerer anywhere.** Every
+        /// update is delivered to every subscriber regardless of role; the
+        /// role decides only what the core may PARK on. A forge running
+        /// beside its own terminal always has an answerer attached, so a
+        /// second client that says nothing is a guest beside one that can.
+        /// Where nobody can answer, an ask is cancelled at birth rather than
+        /// held for a reply that could not come. Declaring this means that
+        /// case never arises while this client is attached.
         #[serde(default)]
         answering: bool,
         /// Whether this client can host the browser.

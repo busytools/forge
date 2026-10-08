@@ -165,17 +165,23 @@ export function watchSession(
    * **It is not a client's preference, and getting it wrong loses a turn
    * either way.** A client counted as answering with no surface to draw a
    * prompt on hangs the turn, because the core parks it on a reply that never
-   * comes; a client that HAS the surface while subscribed as an observer has
-   * every prompt it would show cancelled. So the caller states what it has:
-   * the page says yes exactly when its composer - the thing with the dock in
-   * it - is wired in.
+   * comes; a client that HAS the surface while subscribing as an observer
+   * leans on whoever else can answer - which on a machine running forge is the
+   * terminal beside it. So the caller states what it has: the page says yes
+   * exactly when its composer - the thing with the dock in it - is wired in.
    *
    * **The role belongs to the connection rather than to this seat**, so this
-   * is the second statement of it rather than the first: the home's own
-   * subscribe declares the same yes once for the whole client, since every
-   * seat page carries a composer (#1885). This one matters on its own because
-   * the role only ever rises - a client that reached a seat page without the
-   * home's subscribe still registers as an answerer here.
+   * is a second statement of it rather than the first: the home's own
+   * subscribe declares the same yes once for the whole client, and this one
+   * covers a page that reaches a seat before that subscribe lands. Either
+   * statement is enough, because the role only ever rises.
+   *
+   * **It is a safeguard rather than what keeps an ask alive.** Every update
+   * reaches every subscriber whatever its role, and the role decides only
+   * what the core may park on: with the terminal attached as an answerer for
+   * as long as forge runs, an ask is never cancelled for want of one. What
+   * this covers is a serve with no terminal anywhere, where an ask raised
+   * while no page could draw it would be cancelled at birth.
    */
   answering: boolean,
 ): Readable<SessionRead> {

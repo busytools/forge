@@ -176,8 +176,9 @@ describe('the home page as it draws', () => {
 
   it('draws the mark its state names on the row', () => {
     const body = draw();
-    // The fixture's lead holds a permission prompt, so its state is needs-you
-    // rather than the Idle lifecycle the CLI reports beside it (#1885).
+    // The fixture's lead holds a permission prompt beside an Idle lifecycle -
+    // a pairing this fixture was hand-made with, since the production shape of
+    // an ask is a running seat - and the ask is what its state reads (#1885).
     expect(body, 'the row drew no lifecycle class').toContain('class="row needs"');
     expect(body, 'the row drew no ask mark').toContain('class="dot warn"');
     expect(body, 'the row drew no link to its seat').toContain('href="/session/TestOrg/proj/lead"');

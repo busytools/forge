@@ -318,8 +318,9 @@ describe('the rail', () => {
     // pending seat under needs-you from an idle, a running or a backgrounded
     // row, and the mark has to agree with it - a mark read from the lifecycle
     // alone drew running or idle on a seat whose ask was up (#1885). The
-    // terminal pins the same property: its triangle is drawn regardless of
-    // lifecycle.
+    // terminal pins the same property, in `projects_pane.rs`:
+    // `needs_attention_overrides_background_work_spinner` draws its triangle
+    // over background work, and its comment says "regardless of lifecycle".
     for (const lifecycle of ['Idle', 'Running'] as const) {
       for (const pending of ['question', 'permission'] as const) {
         for (const has_background_work of [false, true]) {
@@ -332,7 +333,10 @@ describe('the rail', () => {
     }
 
     // And a failure still outranks the ask, which is the terminal's own order:
-    // its cross is drawn over everything, ask included.
+    // its cross is drawn over everything, ask included -
+    // `worker_row_with_failed_turn_renders_red_cross_over_triangle` and
+    // `attention_and_failed_turn_outrank_unseen_completion_on_the_row` pin
+    // that there.
     expect(
       mark({
         ...lead(),

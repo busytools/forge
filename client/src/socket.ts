@@ -42,13 +42,17 @@ export interface Connection {
    * and it is off unless said otherwise: the core parks a turn on the reply of
    * whoever registered as answering, so a client counted as able to answer a
    * prompt it has no surface for hangs the turn rather than failing it. **The
-   * role belongs to the CONNECTION, not to the subject**, so a client that can
-   * answer says so once, usually on the first subscribe it makes - a client
-   * that waits for a seat page to say it registers as an observer while the
-   * reader is anywhere else, and every ask raised then is cancelled at birth
-   * instead of waiting for an answer (#1885). A page that cannot prompt - a
-   * probe, a headless observer - must not declare the role: the core parks on
-   * whoever did, and nothing there would ever answer.
+   * role belongs to the CONNECTION, not to the subject**, and a client that
+   * can answer states it once, usually on the first subscribe it makes.
+   *
+   * **It is a safeguard rather than the thing that keeps an ask alive.** The
+   * core cancels an ask at birth only when no subscriber anywhere can answer
+   * it - and a machine running forge has its own terminal attached as an
+   * answerer for as long as it runs, so a client that says nothing is a guest
+   * beside something that can. The one install this covers is a serve with no
+   * terminal at all. A page that cannot prompt - a probe, a headless observer
+   * - must not declare the role: the core parks on whoever did, and nothing
+   * there would ever answer.
    *
    * Counted rather than idempotent, because the server counts it too: two
    * subscribes to one subject are two subscriptions, and one unsubscribe must

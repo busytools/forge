@@ -3,9 +3,9 @@
  * of the gather `crates/forge-web/src/home.rs` does in `view_of`.
  *
  * Pure, so a test can build a fleet by hand. Everything here comes from the
- * snapshot and nothing is recomputed: a state a view re-derived would
- * disagree with the terminal the first time a turn settled while nobody was
- * watching, and it would disagree silently.
+ * snapshot, and the only states this file makes for itself are `stateOf`'s
+ * four promotions - the cases a state read from the wire alone would disagree
+ * with the terminal about, silently, the first time one of them turned.
  *
  * Every cell the server's own home draws is drawn from the snapshot. The
  * three things it used to leave empty - the task a seat holds, whether an

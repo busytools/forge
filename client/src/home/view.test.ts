@@ -397,8 +397,9 @@ describe('a row over the fleet', () => {
   it('reads the fixture the server pinned, with only the ask promoted', () => {
     const view = homeView(homeWire, 'ws://127.0.0.1:8790/socket');
     const lead = view.orgs[0]?.projects[0]?.lead;
-    // The fixture's lead holds a permission prompt: the server still calls the
-    // lifecycle Idle beside it, and the ask is what the row reads (#1885).
+    // The fixture's lead holds a permission prompt beside an Idle lifecycle -
+    // a pairing this fixture was hand-made with - and the ask is what the row
+    // reads (#1885).
     expect(lead?.state).toEqual({ kind: 'lifecycle', lifecycle: 'Attention' });
     expect(lead?.pending).toBe('permission');
     expect(view.header).toEqual({
