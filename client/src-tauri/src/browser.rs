@@ -103,16 +103,16 @@ impl StackPaths {
     }
 }
 
-/// The host: the browser's own context, the named ones, and where everything
+/// The host: the browser's own profile, the named ones, and where everything
 /// lives.
 pub struct BrowserHost {
     paths: Result<StackPaths, String>,
-    /// Every `chromium::ensure` runs under this, whichever context asks for
+    /// Every `chromium::ensure` runs under this, whichever profile asks for
     /// one: a burst of first calls launches ONE browser rather than two onto
     /// one profile - and a hand-off's `show` racing a first call cannot leave
     /// two browsers on one profile either.
     launch: Mutex<()>,
-    /// The shared profile: the browser's own context, one driver for every
+    /// The shared profile: the browser's own profile, one driver for every
     /// session that names none.
     shared: Mutex<Option<Arc<Profile>>>,
     /// The named profiles, by name.
@@ -148,13 +148,13 @@ impl BrowserHost {
 
     /// Run one browser tool for a session.
     ///
-    /// No `profile` argument drives the browser's own context. A name drives
+    /// No `profile` argument drives the browser's own profile. A name drives
     /// the named profile under it, opened on first use by the asking session;
     /// a name another session already holds is refused with the owner's name.
     ///
     /// **Every call resolves the browser first**, so the endpoint it hands the
-    /// context is the one the browser answers on NOW: a browser that died (or
-    /// was relaunched for a window) moves that endpoint, and the context
+    /// profile is the one the browser answers on NOW: a browser that died (or
+    /// was relaunched for a window) moves that endpoint, and the profile
     /// rebuilds its driver rather than talking to a port nobody listens on.
     pub async fn call(
         &self,
@@ -358,8 +358,9 @@ impl BrowserHost {
             }
             None => paths.user_data,
         };
-        // **The same launch lock show takes.** A relaunch keeps the port file
-        // absent for up to the launch bound, and a hide racing it would
+        // **The same launch lock show takes.** A relaunch holds the lock for
+        // its whole span and its port file is absent - then present but
+        // unanswered - until the browser comes up; a hide racing it would
         // no-op against a browser not yet up - Open then Done would leave the
         // window raised after the answer crossed.
         let _launching = self.launch.lock().await;
@@ -565,6 +566,47 @@ mod tests {
             panic!("a name with a space is refused");
         };
         assert!(why.contains("1 to 64"), "{why}");
+        assert!(
+            !host.used().await.expect("the mark reads"),
+            "a refused call never lights the used mark - the refusal is decided before anything \
+             is started",
+        );
+    }
+
+    /// **A hide waits for a launch in flight** - the same lock `show` takes,
+    /// so a hide cannot race a browser that is not up yet and leave the
+    /// window raised after the answer crossed. The lock is what makes it
+    /// wait: removing it lets the hide run while a launch holds the lock,
+    /// and the assertion below is what catches that.
+    #[tokio::test]
+    async fn a_hide_waits_for_a_launch_in_flight() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let host = Arc::new(BrowserHost::new(paths));
+
+        // The lock a launch holds for its whole span, held here by the test.
+        let launching = host.launch.lock().await;
+        let hiding = tokio::spawn({
+            let host = Arc::clone(&host);
+            async move { host.hide(None).await }
+        });
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+        assert!(
+            !hiding.is_finished(),
+            "the hide must WAIT on the launch lock, not run against a browser mid-launch",
+        );
+
+        drop(launching);
+        hiding
+            .await
+            .expect("the hide task")
+            .expect("a hide with no launch up is a no-op, not an error");
     }
 
     /// Bringing the browser up answers the same reason a call would, and
@@ -650,7 +692,7 @@ mod tests {
     }
 
     /// `profile` chooses the profile and never reaches a tool; a call without
-    /// one is a call for the browser's own context; and a `profile` that is
+    /// one is a call for the browser's own profile; and a `profile` that is
     /// not a name is the call's mistake, answered.
     #[test]
     fn a_profile_argument_is_taken_off_and_must_be_a_name() {

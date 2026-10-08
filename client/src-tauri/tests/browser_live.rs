@@ -1,8 +1,9 @@
 //! The browser host against the vendored stack: launch, drive, answer.
 //!
 //! **Deliberately ignored.** It needs `just vendor-browser-stack` to have
-//! run - half a gigabyte of browser, node and driver - so it cannot be part
-//! of a gate every checkout runs. Run it where the stack is:
+//! run - node and the driver the stack carries, the browser itself always the
+//! machine's own - so it cannot be part of a gate every checkout runs. Run it
+//! where the stack is:
 //!
 //! ```text
 //! cargo nextest run --manifest-path client/src-tauri/Cargo.toml \
@@ -14,6 +15,16 @@
 //! the vendored driver attaches to it over CDP, and upstream's own
 //! `browser_navigate` and `browser_snapshot` answer through the host - which
 //! is exactly what an ask from a session rides.
+//!
+//! **A test whose name ends `_raises_a_window` puts a REAL window on the
+//! machine**, because the windowed path is exactly what it proves - so a
+//! routine live run excludes them, and they are run deliberately (Ved,
+//! 2026-10-08: no test run may pop windows at whoever is at the machine):
+//!
+//! ```text
+//! cargo nextest run --manifest-path client/src-tauri/Cargo.toml \
+//!     --run-ignored ignored-only -E 'not test(/_raises_a_window$/)'
+//! ```
 
 mod support;
 
@@ -368,5 +379,92 @@ async fn a_killed_browser_does_not_wedge_its_profile() {
         .unwrap_or_else(|why| panic!("a call after the browser was killed must recover: {why}"));
     browser.reap();
     assert!(!parts.is_empty(), "the recovery navigate answers with something");
+}
+
+/// **A headed relaunch never adopts a headless launch** (round-3 A1). The
+/// adopt re-check under the flock answers Ok for any live launch, so a headed
+/// relaunch that waited behind another host's headless launch used to answer
+/// Ok with NO window and no marker written. A live launch that is not
+/// windowed must take the close-first path instead: the port it answered on
+/// goes, and the relaunch leaves a real window behind.
+#[tokio::test]
+#[ignore = "raises a REAL window; run it deliberately - see the module doc"]
+async fn a_headed_relaunch_does_not_adopt_a_headless_launch_raises_a_window() {
+    let binary = forge_client::browser::chromium::browser_binary()
+        .unwrap_or_else(|why| panic!("no browser on this machine: {why}"));
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let profile = dir.path().join("user-data");
+    std::fs::create_dir_all(&profile).expect("the profile");
+
+    // A live HEADLESS launch, as `start()` leaves it.
+    let headless = forge_client::browser::chromium::launch(&binary, &profile)
+        .await
+        .unwrap_or_else(|why| panic!("the headless launch would not come up: {why}"));
+    let guard = Launched::new(headless.pid, headless.port, profile.clone());
+    assert!(
+        !forge_client::browser::chromium::launched_windowed(&profile),
+        "a headless launch leaves no windowed marker",
+    );
+
+    // A headed relaunch asked for while it runs: it must NOT be adopted - the
+    // headless launch is closed first, and a real window comes up on a new
+    // port with the marker written.
+    let headed = forge_client::browser::chromium::launch_with(&binary, &profile, true, None)
+        .await
+        .unwrap_or_else(|why| panic!("the headed relaunch would not come up: {why}"));
+    assert!(
+        forge_client::browser::chromium::launched_windowed(&profile),
+        "the headed relaunch writes the windowed marker - an adopted headless launch does not",
+    );
+    assert_ne!(
+        headed.port, headless.port,
+        "the headed relaunch is its own launch, not the adopted headless one",
+    );
+    guard.reap();
+}
+
+/// **One browser per profile across hosts, under the guard.** Two clients
+/// launching at the same moment produce ONE browser: the first to take the
+/// launch lock brings it up, the second waits the lock out and attaches. This
+/// is what pins the adopt re-check AND the guard's whole span - without the
+/// re-check the second start deletes the live launch's port file and spawns
+/// its own; with the guard released early the second start can do the same
+/// mid-launch - and the one-port assertion below is what catches both.
+#[tokio::test]
+#[ignore = "drives the real browser; run with --run-ignored ignored-only"]
+async fn two_hosts_launching_at_once_produce_one_browser() {
+    let stack = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("browser-stack");
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let paths = StackPaths {
+        stack,
+        user_data: dir.path().join("user-data"),
+        output: dir.path().join("output"),
+        profiles: dir.path().join("profiles"),
+    };
+    let a = BrowserHost::new(paths.clone());
+    let b = BrowserHost::new(paths.clone());
+
+    let (first, second) = tokio::join!(a.start(), b.start());
+    let first = first.unwrap_or_else(|why| panic!("the first start must come up: {why}"));
+    let second =
+        second.unwrap_or_else(|why| panic!("the second start must attach, not fail: {why}"));
+    let guard = Launched::new(first.pid.or(second.pid), first.port, paths.user_data.clone());
+
+    assert_eq!(
+        first.port, second.port,
+        "both starts answer on the one browser the guard made: {first:?} vs {second:?}",
+    );
+    let pids = [first.pid, second.pid];
+    assert_eq!(
+        pids.iter().filter(|pid| pid.is_some()).count(),
+        1,
+        "exactly one start launched the browser: {pids:?}",
+    );
+    assert_eq!(
+        pids.iter().filter(|pid| pid.is_none()).count(),
+        1,
+        "and the other attached to the launch that was already there: {pids:?}",
+    );
+    guard.reap();
 }
 

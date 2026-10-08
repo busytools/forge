@@ -345,7 +345,7 @@ pub async fn launch(binary: &Path, profile: &Path) -> Result<ActivePort, String>
 
 /// The same launch with `headed` asked for - and, when the relaunch is Open's,
 /// the page the sessions were driving, so the window opens on it.
-async fn launch_with(
+pub async fn launch_with(
     binary: &Path,
     profile: &Path,
     headed: bool,
@@ -363,7 +363,18 @@ async fn launch_with(
     // profile.
     let _guard = LaunchLock::acquire(profile).await?;
     if let Some(active) = verified(profile).await {
-        return Ok(active);
+        // **Only a launch that already has a window is a headed answer.** A
+        // headed relaunch that waited behind another host's headless launch
+        // would otherwise answer Ok with no window and no marker written -
+        // and Open's whole promise is the window. The live launch is closed
+        // first: it holds the profile, and a bare fall-through would spawn
+        // onto it. The adopt itself stays for the launches a headed one can
+        // honestly attach to (and for every headless ask), which is what
+        // keeps a relaunch that waited from spawning onto a locked profile.
+        if !headed || launched_windowed(profile) {
+            return Ok(active);
+        }
+        close_under_lock(profile, active.port).await;
     }
     // A launch about to happen owns the wires: an older port file would be
     // read as this one's, and an older pid names a process this launch is not.
@@ -472,7 +483,7 @@ async fn verified(profile: &Path) -> Option<ActivePort> {
 
 /// Whether `profile`'s launch is still the browser answering on `port`: the
 /// port file names that port AND the probe's own target path matches the
-/// file's. The identity check a context runs after a failed call.
+/// file's. The identity check a profile runs after a failed call.
 pub async fn answers_as(profile: &Path, port: u16) -> bool {
     let Some(active) = read_active_port(profile) else {
         return false;
@@ -619,9 +630,34 @@ pub async fn hide(profile: &Path) {
 /// and something else took over is a stranger, and the wires go without a
 /// kill.
 async fn close(profile: &Path, port: u16) {
+    // **The launch lock, so a close cannot eat a launch in flight.** An
+    // unlocked closer reads "not answering" for a browser coming up, forgets
+    // its port file, and that launch then kills the browser it just started
+    // at its own deadline. The take is bounded like every other; a lock that
+    // cannot be taken at all leaves the close running - no launch can be in
+    // flight behind a lock nobody could take.
+    let _guard = LaunchLock::acquire(profile).await;
+    close_under_lock(profile, port).await
+}
+
+/// The close body, for callers that already hold the launch lock (a launch's
+/// own headed relaunch closes the launch it found under its own guard).
+async fn close_under_lock(profile: &Path, port: u16) {
     if !answers_as(profile, port).await {
-        forget_launch(profile);
-        return;
+        // **A young port file is a launch coming up**: the file exists 14-125
+        // ms before `/json/version` answers (measured), and it gets the
+        // launch's own bound to answer before it is declared dead.
+        let deadline = tokio::time::Instant::now() + LAUNCH_TIMEOUT;
+        while tokio::time::Instant::now() < deadline
+            && launch_still_coming(profile)
+            && !answers_as(profile, port).await
+        {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        if !answers_as(profile, port).await {
+            forget_launch(profile);
+            return;
+        }
     }
     let listeners = port_pids(port).await;
     if listeners.is_empty() {
@@ -686,6 +722,18 @@ fn forget_launch(profile: &Path) {
     let _ = std::fs::remove_file(profile.join("DevToolsActivePort"));
     let _ = std::fs::remove_file(pid_file(profile));
     let _ = std::fs::remove_file(windowed_marker(profile));
+}
+
+/// Whether the port file is young enough to belong to a launch still coming
+/// up: the file exists 14-125 ms before `/json/version` answers (measured),
+/// and the launch bound is the window that may be spent waiting for a young
+/// one.
+fn launch_still_coming(profile: &Path) -> bool {
+    std::fs::metadata(profile.join("DevToolsActivePort"))
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|written| written.elapsed().ok())
+        .is_some_and(|age| age < LAUNCH_TIMEOUT)
 }
 
 /// Ask one process to stop; `hard` sends SIGKILL rather than SIGTERM.
@@ -867,8 +915,9 @@ mod tests {
     /// **The launch lock is exclusive across open file descriptions**, which
     /// is what makes it work across processes: a second take on the same
     /// directory is contended while the first is held, and free once it
-    /// drops. (The wait-until-free path needs a second live process to hold
-    /// it, and is covered by the live battery instead.)
+    /// drops. (The wait-until-free path is pinned under a paused clock just
+    /// below, and the guard's whole span across a real launch by the
+    /// two-hosts live test in `tests/browser_live.rs`.)
     #[tokio::test]
     async fn the_launch_lock_is_held_until_it_drops() {
         let dir = tempfile::tempdir().expect("a temp dir");
@@ -882,6 +931,123 @@ mod tests {
             matches!(try_lock(dir.path()), Locked::Held(_)),
             "and free once the first drops",
         );
+    }
+
+    /// **The wait path, with the clock under the test's hand**: a contended
+    /// acquire waits the holder out and takes the lock the moment it frees -
+    /// no second live process needed, the contention is the same flock
+    /// between two file descriptions - and a holder that never frees is
+    /// given up on BY NAME at the bound rather than wedged on forever.
+    #[tokio::test(start_paused = true)]
+    async fn a_contended_acquire_waits_out_the_holder_and_gives_up_by_name() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let held = LaunchLock::acquire(dir.path()).await.expect("the first take");
+
+        let waiter = tokio::spawn({
+            let path = dir.path().to_path_buf();
+            async move { LaunchLock::acquire(&path).await }
+        });
+        // Let the waiter make its first attempt and drop into its wait.
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+        assert!(
+            !waiter.is_finished(),
+            "the waiter cannot hold what the first take holds - it must be waiting",
+        );
+
+        // The holder frees: the waiter takes it, well before the deadline.
+        drop(held);
+        let taken = waiter
+            .await
+            .expect("the waiter task")
+            .expect("the waiter takes the lock the moment it frees");
+        drop(taken);
+
+        // A holder that NEVER frees is given up on by name at the bound.
+        let _wedged = LaunchLock::acquire(dir.path()).await.expect("the wedged holder");
+        let refused = LaunchLock::acquire(dir.path()).await;
+        let Err(why) = refused else {
+            panic!("an acquire behind a holder past the bound must be refused, not wedged");
+        };
+        assert!(
+            why.contains("did not answer in time"),
+            "the give-up is BY NAME, naming what did not answer: {why}",
+        );
+        assert!(
+            why.contains(dir.path().to_str().expect("a path")),
+            "and the refusal names the profile it gave up on: {why}",
+        );
+    }
+
+    /// **A young port file is a launch coming up, not a dead one**: the file
+    /// exists 14-125 ms before `/json/version` answers (measured), so a close
+    /// gives it the launch's own bound to answer before declaring it dead -
+    /// and only then forgets it. Deleting a live launch's file makes that
+    /// launch kill the browser it just started at its own deadline.
+    #[tokio::test(start_paused = true)]
+    async fn a_close_tolerates_a_young_port_file() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        std::fs::write(dir.path().join("DevToolsActivePort"), b"9544\n/devtools/browser/young\n")
+            .expect("a young port file");
+        let started = tokio::time::Instant::now();
+        close(dir.path(), 9544).await;
+        let waited = started.elapsed();
+        assert!(
+            waited >= LAUNCH_TIMEOUT,
+            "a young port file gets the launch bound to answer before it is declared dead: {waited:?}",
+        );
+        assert!(
+            !dir.path().join("DevToolsActivePort").exists(),
+            "and once the bound passes without an answer, the file is forgotten",
+        );
+    }
+
+    /// An OLD port file whose endpoint does not answer is not a launch coming
+    /// up: nothing waits on it, and it is forgotten at once.
+    #[tokio::test]
+    async fn a_close_forgets_an_old_dead_port_file_at_once() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let file = dir.path().join("DevToolsActivePort");
+        std::fs::write(&file, b"9544\n/devtools/browser/dead\n").expect("an old port file");
+        let old = std::time::SystemTime::now() - LAUNCH_TIMEOUT - Duration::from_secs(60);
+        let handle = std::fs::OpenOptions::new().write(true).open(&file).expect("the file");
+        handle
+            .set_times(std::fs::FileTimes::new().set_modified(old))
+            .expect("the file's time moves back");
+        drop(handle);
+        let started = tokio::time::Instant::now();
+        close(dir.path(), 9544).await;
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "an old dead file is not waited on: {:?}",
+            started.elapsed(),
+        );
+        assert!(!file.exists(), "an old dead port file is forgotten");
+    }
+
+    /// **Close takes the launch lock**: a close racing a launch waits it out
+    /// rather than reading "not answering" for a browser mid-launch. The
+    /// discriminating half is the timeout below - without the take the close
+    /// finishes its probe and forgets the file WHILE the lock is held, and
+    /// the assertion fires by name.
+    #[tokio::test(start_paused = true)]
+    async fn a_close_waits_for_a_launch_in_flight() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        std::fs::write(dir.path().join("DevToolsActivePort"), b"9544\n/devtools/browser/x\n")
+            .expect("a port file");
+        let held = LaunchLock::acquire(dir.path()).await.expect("the lock a launch holds");
+        let mut closing = tokio::spawn({
+            let path = dir.path().to_path_buf();
+            async move { close(&path, 9544).await }
+        });
+        let finished_while_held =
+            tokio::time::timeout(Duration::from_secs(1), &mut closing).await.is_ok();
+        assert!(
+            !finished_while_held,
+            "the close must WAIT on the launch lock - it finished while a launch held it",
+        );
+        drop(held);
+        closing.await.expect("the close task");
     }
 
     /// A lock file that cannot be used answers why rather than looping: a

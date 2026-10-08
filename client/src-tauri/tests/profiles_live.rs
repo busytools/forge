@@ -17,6 +17,16 @@
 //! name, and a browser killed under a profile comes back on the same
 //! directory with its logins intact - Chromium persists a real profile, so
 //! nothing here saves or restores storage.
+//!
+//! **A test whose name ends `_raises_a_window` puts a REAL window on the
+//! machine**, because the windowed path is exactly what it proves - so a
+//! routine live run excludes them, and they are run deliberately (Ved,
+//! 2026-10-08: no test run may pop windows at whoever is at the machine):
+//!
+//! ```text
+//! cargo nextest run --manifest-path client/src-tauri/Cargo.toml \
+//!     --run-ignored ignored-only -E 'not test(/_raises_a_window$/)'
+//! ```
 
 mod support;
 
@@ -157,8 +167,8 @@ async fn two_named_profiles_are_two_browsers_and_see_different_cookies() {
 /// the piece a CAPTCHA hand-off on a profile stands on. The shared browser
 /// stays headless throughout.
 #[tokio::test]
-#[ignore = "drives the vendored driver against a browser on this machine"]
-async fn show_raises_the_named_profiles_own_browser_on_its_own_page() {
+#[ignore = "raises a REAL window; run it deliberately - see the module doc"]
+async fn show_raises_the_named_profiles_own_browser_on_its_own_page_raises_a_window() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let paths = stack_paths(dir.path());
     require_stack(&paths.stack);

@@ -18,12 +18,15 @@ pub const NO_BROWSER_CLIENT: &str = "no browser-capable client connected";
 const HOST_GONE: &str = "the browser-capable client went away before answering";
 
 /// **The longest one ask may wait on a host, derived from the layers under
-/// it**: the client's own bounds are a launch (15 s), a driver handshake
-/// (15 s, `chromium`/`driver`'s START_TIMEOUT values in `client/`), and one
-/// tool call (150 s) - a host slower than their sum is the host's own defect,
-/// and the call fails naming it rather than holding the session for ever.
-/// A late answer is already handled (`browser_answer_unmatched`), so a
-/// timeout here never steals a reply.
+/// it**: the client's own bounds are a launch (`chromium`'s `LAUNCH_TIMEOUT`,
+/// 15 s), a driver handshake (`driver`'s `START_TIMEOUT`, 15 s) and one tool
+/// call (`driver`'s `CALL_TIMEOUT`, 150 s), plus 20 s of slack for the hops
+/// between the layers. It is a wedge-breaker, not a ceiling on every call:
+/// a second ask on one profile queues behind the first call's own lock (up
+/// to the 150 s call bound), and a call waiting on a relaunch can wait
+/// longer than this entirely - so the named failure and a retry is the
+/// answer. A late answer costs nothing: the ask keeps its entry registered,
+/// and the reply's send drops it (`.ok()`) once this waiter is gone.
 const ASK_TIMEOUT: Duration = Duration::from_secs(15 + 15 + 150 + 20);
 
 /// One ask, on its way to the registered host.
@@ -249,7 +252,7 @@ impl BrowserRelay {
         // 2026-10-07: a call parked with the frame written and the client's
         // Rust path never entered, and the session held the whole time.
         // The role is NOT freed here: a slow host is not a dead one, and its
-        // late answer is already handled by name.
+        // late answer is dropped where it is sent once this waiter is gone.
         match tokio::time::timeout(ASK_TIMEOUT, answer).await {
             Ok(Ok(parts)) => parts,
             Ok(Err(_)) => {
@@ -574,6 +577,11 @@ mod tests {
         assert!(why.contains("connection 7"), "the host connection is named: {why}");
         assert!(why.contains("browser_navigate"), "and the tool: {why}");
         assert!(why.contains("within"), "and the wait it blew: {why}");
+        assert_eq!(
+            relay.lock().host.as_ref().map(|host| host.id),
+            Some(7),
+            "the role is NOT freed on a timeout: a slow host is not a dead one",
+        );
     }
 
     /// A host whose connection is gone fails the call rather than hanging it,

@@ -44,7 +44,10 @@ describe('what the host answered', () => {
         { type: 'image', mime_type: 'image/png', data_base64: 'AP8Q' },
       ],
     };
-    expect(reply.parts.map(answerPart)).toEqual([
+    expect(
+      reply.parts.map(answerPart),
+      'every part crosses as itself: text as text, an image as the bytes of its base64',
+    ).toEqual([
       { type: 'text', text: 'navigated' },
       { type: 'image', mime_type: 'image/png', bytes: new Uint8Array([0x00, 0xff, 0x10]) },
     ]);
@@ -52,8 +55,11 @@ describe('what the host answered', () => {
 
   /** The bytes of a base64 string, which is what a binary frame carries. */
   it('decodes the base64 the host carries', () => {
-    expect(bytesOf('')).toEqual(new Uint8Array([]));
-    expect(bytesOf('AP8Q')).toEqual(new Uint8Array([0x00, 0xff, 0x10]));
+    expect(bytesOf(''), 'an empty answer carries no bytes').toEqual(new Uint8Array([]));
+    expect(
+      bytesOf('AP8Q'),
+      'the base64 the host carries decodes to the exact bytes, not to a re-encoding',
+    ).toEqual(new Uint8Array([0x00, 0xff, 0x10]));
   });
 });
 

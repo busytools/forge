@@ -45,3 +45,5 @@ serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 tempfile = "3"
+# `start_paused`, for the launch lock's wait path under a clock the test drives.
+tokio = { version = "1", features = ["test-util"] }

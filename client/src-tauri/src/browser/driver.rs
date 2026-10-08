@@ -55,7 +55,7 @@ pub struct Driver {
 impl Driver {
     /// Start the driver against a browser's CDP endpoint.
     ///
-    /// The driver always attaches to the browser's own context - the
+    /// The driver always attaches to the browser's own profile - the
     /// profile's, which outlives everything. **Isolation comes from the
     /// BROWSER the endpoint belongs to**: one browser per profile means one
     /// Chromium profile per name, no `--isolated` contexts and no storage
@@ -139,7 +139,7 @@ impl Driver {
     ///
     /// **A request timeout, because rmcp carries none by default.** In 3.5.0
     /// the peer's request timeout is NONE, so a driver that accepts a request
-    /// and never answers would hold the call - and, through the context's own
+    /// and never answers would hold the call - and, through the profile's own
     /// lock, every call behind it - forever. The bound sits above upstream's
     /// own (a 60 s navigation, a 30 s wait) with room: it is the wedge-breaker,
     /// not a deadline the tools keep.
