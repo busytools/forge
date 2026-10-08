@@ -355,8 +355,8 @@ impl Workspace {
     /// Refused while a take is live (the microphone is the machine's, and a
     /// bench would hold a second engine through it) and while another bench
     /// runs - one at a time, like a download. The outcome rides
-    /// [`SessionUpdate::DictateModelsChanged`], the way every other dictate
-    /// action's does.
+    /// [`SessionUpdate::DictateModelsChanged`](crate::SessionUpdate::DictateModelsChanged),
+    /// the way every other dictate action's does.
     pub(crate) fn start_bench(
         self: &Arc<Self>,
         target: BenchTarget,
