@@ -216,7 +216,9 @@ export interface CatalogueRow {
   variant: string;
   display_name: string;
   family: string;
-  params: number;
+  /** The parameter count the source published, or `null` when it published
+   * none - a row drawing `0M params` would claim a measurement. */
+  params: number | null;
   license: string | null;
   languages: string[];
   streaming: boolean;
@@ -367,6 +369,7 @@ function rowFrom(row: CatalogueRow): CatalogueRow {
     kind: narrow(row.kind, KINDS, 'other'),
     url: typeof row.url === 'string' ? row.url : null,
     download_count: typeof row.download_count === 'number' ? row.download_count : null,
+    params: typeof row.params === 'number' ? row.params : null,
   };
 }
 

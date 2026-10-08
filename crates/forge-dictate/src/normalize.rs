@@ -471,6 +471,28 @@ mod tests_architecture {
         std::fs::write(&unrelated, header("general.name", GGUF_STRING, &string("x"))).unwrap();
         assert_eq!(architecture(&unrelated), None);
     }
+
+    /// **The load refuses a non-causal architecture by name, and it is the
+    /// load's own refusal that keeps the process alive.** A t5 file loads
+    /// happily and aborts inside ggml's cross-attention - an abort nothing
+    /// can catch - so the guard is the header read in front of the loader,
+    /// and deleting it would leave this the only test that notices.
+    #[test]
+    fn the_load_refuses_a_non_causal_architecture_by_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let t5 = dir.path().join("grammar-t5.gguf");
+        std::fs::write(&t5, header("general.architecture", GGUF_STRING, &string("t5"))).unwrap();
+
+        let refusal = Normalizer::load(&t5).expect_err("t5 is not a generator llama.cpp runs");
+        assert!(
+            matches!(refusal, NormalizeError::NotCausal { .. }),
+            "got: {refusal:?}"
+        );
+        assert!(
+            refusal.to_string().contains("t5"),
+            "the refusal names the architecture it read, got: {refusal}"
+        );
+    }
 }
 
 #[cfg(test)]

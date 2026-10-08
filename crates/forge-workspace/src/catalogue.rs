@@ -22,7 +22,7 @@ pub(crate) const REFRESH_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
 /// The quants a row's download size prefers, most preferred first: the Q4
 /// build is what a dictation machine runs, and the chain after it keeps a
 /// row that ships no Q4 sized rather than sizeless.
-pub(crate) const PREFERRED_DOWNLOADS: [&str; 4] = ["Q4_K_M", "Q8_0", "F16", "BF16"];
+pub(crate) use forge_dictate::catalogue::PREFERRED_DOWNLOADS;
 
 /// Everything the models page draws, in one read.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -128,7 +128,9 @@ pub struct CatalogueRow {
     pub variant: String,
     pub display_name: String,
     pub family: String,
-    pub params: u64,
+    /// The parameter count the source published, or `None` when it published
+    /// none - a row drawing `0M params` would claim a measurement.
+    pub params: Option<u64>,
     pub license: Option<String>,
     pub languages: Vec<String>,
     pub streaming: bool,
@@ -805,7 +807,7 @@ pub(crate) mod tests_catalogue_view {
         let row = row_for(&entry("candidate", r#"["en", "fr"]"#, 388.8, 4.61));
 
         assert_eq!(row.variant, "candidate");
-        assert_eq!(row.params, 1_000_000);
+        assert_eq!(row.params, Some(1_000_000));
         assert_eq!(row.license.as_deref(), Some("MIT"));
         assert_eq!(row.languages, ["en", "fr"]);
         assert_eq!(
@@ -1379,6 +1381,59 @@ pub(crate) mod tests_catalogue_view {
         assert!(
             matches!(&view.check, CatalogueCheck::Fresh { .. }),
             "the state a later reader gets agrees with the pushed one"
+        );
+    }
+
+    /// **The cleanup feed's own path runs in CI.** Its listing is fetched per
+    /// tag and merged, its blobs answer each file's size and digest, and the
+    /// rows carry both - a path until now only the ignored live reporter
+    /// exercised, so a broken merge or a dropped digest was invisible here.
+    #[tokio::test]
+    async fn a_check_lands_the_cleanup_feed_too() {
+        let (ws, _updates, _models) = enabled_stub();
+        let cleanup = br#"[{"id": "owner/norm-a", "downloads": 5000,
+            "pipeline_tag": "text-generation", "library_name": "gguf",
+            "tags": ["gguf", "text-generation", "text-normalization", "en",
+                     "base_model:owner/norm-base"]}]"#;
+        let blobs = br#"{"siblings": [{"rfilename": "norm-a-Q4_K_M.gguf", "size": 300000000,
+            "lfs": {"sha256": "abababab"}}],
+            "gguf": {"architecture": "qwen2"}}"#;
+        let base = serve(vec![
+            ("/catalog", 200, listing()),
+            ("/catalog/one.json", 200, feed_entry()),
+            ("/release", 200, br#"{"tag_name": "v0.3.1"}"#.to_vec()),
+            (
+                "/catalog/cleanup?filter=text-normalization&filter=gguf",
+                200,
+                cleanup.to_vec(),
+            ),
+            ("/catalog/blobs/owner/norm-a?blobs=true", 200, blobs.to_vec()),
+        ]);
+        *ws.test_catalogue_source.lock() = Some(source(&base));
+
+        let landed = ws.fetch_catalogue_once().await.expect("both feeds land");
+        let cleanup_rows: Vec<_> = landed
+            .entries
+            .iter()
+            .filter(|entry| entry.kind == forge_dictate::catalogue::EntryKind::Normalizer)
+            .collect();
+        assert_eq!(cleanup_rows.len(), 1, "the cleanup listing lands its row");
+        let row = cleanup_rows[0];
+        assert_eq!(row.variant, "owner/norm-a");
+        assert_eq!(row.downloads.len(), 1, "the blobs answer the file");
+        assert_eq!(row.downloads[0].quant, "Q4_K_M");
+        assert_eq!(row.downloads[0].size_bytes, 300_000_000);
+        assert_eq!(
+            row.downloads[0].sha256.as_deref(),
+            Some("abababab"),
+            "the blobs' digest rides the download, which is what an install verifies"
+        );
+
+        // And the speech feed's own row stands beside it: one catalogue, two
+        // kinds, one read.
+        assert!(
+            landed.entries.iter().any(|entry| entry.kind == forge_dictate::catalogue::EntryKind::Asr),
+            "the speech feed's rows land in the same read"
         );
     }
 

@@ -24,6 +24,12 @@ pub const SCHEMA: &str = "transcribe-catalog-v1";
 /// at, so a comparison across variants reads the same axis.
 const REFERENCE_QUANTS: [&str; 3] = ["Q8_0", "F16", "BF16"];
 
+/// The quantisations this runtime runs, best first: the order a download is
+/// picked in when a source offers several, and the set a cleanup candidate
+/// must offer at least one of. One ladder, so a row the feed admits and the
+/// download that row resolves to can never disagree.
+pub const PREFERRED_DOWNLOADS: [&str; 4] = ["Q4_K_M", "Q8_0", "F16", "BF16"];
+
 /// One variant's catalogue entry.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CatalogueEntry {
@@ -33,9 +39,11 @@ pub struct CatalogueEntry {
     pub display_name: String,
     #[serde(default)]
     pub family: String,
-    /// Parameter count of the upstream checkpoint.
+    /// Parameter count of the upstream checkpoint, absent when the source
+    /// publishes none - the Hub's listing does not carry one. A count of
+    /// zero is not a fact, and a row printing `0M params` claims one.
     #[serde(default)]
-    pub params: u64,
+    pub params: Option<u64>,
     #[serde(default)]
     pub license: Option<License>,
     #[serde(default)]
@@ -695,7 +703,11 @@ mod tests_catalogue {
             .expect("the published entry must parse");
 
         assert_eq!(entry.variant, "cohere-transcribe-03-2026");
-        assert_eq!(entry.params, 2_049_026_832, "the parameter count is the feed's own");
+        assert_eq!(
+            entry.params,
+            Some(2_049_026_832),
+            "the parameter count is the feed's own"
+        );
         assert_eq!(
             entry.license.as_ref().map(|l| l.display.as_str()),
             Some("Apache-2.0"),

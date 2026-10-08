@@ -123,9 +123,20 @@ impl Workspace {
     /// Every model downloaded from the feed on this machine, oldest first.
     pub fn installed_models(&self) -> Vec<InstalledModel> {
         let db = self.db.lock();
-        db.as_ref()
-            .map(|db| crate::store::dictate_models::installed(db).unwrap_or_default())
-            .unwrap_or_default()
+        let Some(db) = db.as_ref() else { return Vec::new() };
+        match crate::store::dictate_models::installed(db) {
+            Ok(rows) => rows,
+            // A store that cannot be read is a list that would silently read
+            // as empty, which looks the same as a machine with nothing on it.
+            Err(error) => {
+                tracing::warn!(
+                    event_name = "dictate_installed_read_failed",
+                    %error,
+                    "the installed models could not be read; the page shows none"
+                );
+                Vec::new()
+            }
+        }
     }
 
     /// Remove one model this machine downloaded: the file and the record.
@@ -446,7 +457,7 @@ async fn spec_for_entry(
         download.sha256.clone(),
         ModelFacts {
             quant: Some(download.quant.clone()),
-            params: Some(entry.params),
+            params: entry.params,
             license: entry.license.as_ref().map(|license| license.display.clone()),
             // What loads the file: the speech models run on transcribe.cpp
             // and a normalizer is llama.cpp's, which is the entry's own kind
@@ -557,9 +568,25 @@ impl Workspace {
     }
 
     /// The runtime pick recorded for one role, when the store answers one.
+    ///
+    /// A failed read reads as no pick - the role falls to the pin - and it
+    /// says so, because a corrupt row silently reverting the pick would look
+    /// like a pick that never happened.
     fn active_choice(&self, role: DictateRole) -> Option<ActiveChoice> {
         let db = self.db.lock();
-        db.as_ref().and_then(|db| crate::store::dictate_models::active(db, role).ok().flatten())
+        let db = db.as_ref()?;
+        match crate::store::dictate_models::active(db, role) {
+            Ok(choice) => choice,
+            Err(error) => {
+                tracing::warn!(
+                    event_name = "dictate_active_read_failed",
+                    %error,
+                    role = crate::store::dictate_models::role_key(role),
+                    "the runtime pick could not be read; the role falls to the compiled pin"
+                );
+                None
+            }
+        }
     }
 
     /// The model a config key names: the installed record, else the feed's
@@ -1459,6 +1486,61 @@ mod tests_install {
         assert_eq!(landed.installed[0].file, file);
         assert_eq!(landed.installed[0].url, format!("{base}/weights/{file}"));
     }
+    /// **A Hub entry installs by its own url and verifies its own digest.**
+    /// The speech feed's docs publish neither, so every other test here
+    /// exercises the README-derived path; this one is the Hub's - the url
+    /// the entry carries is what is fetched, and a digest that disagrees
+    /// with the bytes fails the install by name rather than landing a file.
+    #[tokio::test]
+    async fn a_hub_entry_installs_by_its_url_and_verifies_its_digest() {
+        let body = b"hubbytes".to_vec();
+        let good = "0c6bee82a304781cb9fefa1dda4bfa5f5b8be07d9f6f77918f2d96854ce5165e";
+        let base = serve(vec![("/weights/norm-a-Q4_K_M.gguf", 200, body)]);
+        let entry = |digest: &str| {
+            forge_dictate::catalogue::parse_entry(&format!(
+                r#"{{"schema":"transcribe-catalog-v1","variant":"owner/norm-a",
+                    "kind":"normalizer",
+                    "downloads":[{{"quant":"Q4_K_M","filename":"norm-a-Q4_K_M.gguf",
+                        "size_bytes":8,"sha256":"{digest}",
+                        "url":"{base}/weights/norm-a-Q4_K_M.gguf"}}]}}"#
+            ))
+            .expect("the synthetic entry parses")
+        };
+
+        // The url the entry carries is the one the download resolves to.
+        let held = entry(good);
+        assert_eq!(
+            held.downloads[0].url.as_deref(),
+            Some(format!("{base}/weights/norm-a-Q4_K_M.gguf").as_str()),
+            "the entry's own url rides its download"
+        );
+
+        // The digest the bytes carry: the install lands.
+        let Fixture { ws, mut updates, .. } = fixture();
+        ws.dictate_catalogue.lock().catalogue = Some(catalogue_of(vec![held]));
+        ws.dispatch(Command::DictateInstall { variant: "owner/norm-a".to_owned() })
+            .expect("the install dispatches");
+        let landed = await_models(&mut updates).await;
+        assert!(matches!(landed.install, InstallState::Idle), "got {:?}", landed.install);
+        assert_eq!(landed.installed.len(), 1, "a matching digest lands the file");
+
+        // A digest the bytes do not match: the install fails by name.
+        let Fixture { ws, mut updates, .. } = fixture();
+        ws.dictate_catalogue.lock().catalogue = Some(catalogue_of(vec![entry(
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        )]));
+        ws.dispatch(Command::DictateInstall { variant: "owner/norm-a".to_owned() })
+            .expect("the install dispatches");
+        let landed = await_models(&mut updates).await;
+        let InstallState::Failed { reason, .. } = &landed.install else {
+            panic!("a wrong digest must fail the install, got {:?}", landed.install)
+        };
+        assert!(
+            reason.contains("hashes to") && reason.contains("expected"),
+            "the refusal names what disagreed, got: {reason}"
+        );
+        assert!(landed.installed.is_empty(), "and nothing was recorded");
+    }
 
     /// Review Focus 5: with `[dictate]` off there is no models directory to
     /// install into and no engine to run one, so the command refuses by name.
@@ -1559,13 +1641,21 @@ mod tests_install {
 
         let mut downloading = false;
         let mut named = 0;
+        let mut moved = false;
         let mut finished = false;
         tokio::time::timeout(std::time::Duration::from_secs(15), async {
             while let Some(update) = fixture.updates.recv().await {
                 let SessionUpdate::DictateModelsChanged { models } = update else { continue };
                 match &models.install {
-                    InstallState::Downloading { file: seen, .. } => {
+                    InstallState::Downloading { file: seen, got, .. } => {
                         downloading = true;
+                        // **Bytes on the transfer, not just the state.** The
+                        // pre-spawn frame already says `downloading` with the
+                        // file named, so a test that stopped there would pass
+                        // with the progress frames never sent at all.
+                        if *got > 0 {
+                            moved = true;
+                        }
                         if seen == file {
                             named += 1;
                         }
@@ -1583,6 +1673,7 @@ mod tests_install {
 
         assert!(downloading, "no frame carried the download while it ran");
         assert!(named > 0, "the frames must name the file they are about");
+        assert!(moved, "no frame carried bytes moving");
         assert!(finished, "the install must end in a frame");
     }
 

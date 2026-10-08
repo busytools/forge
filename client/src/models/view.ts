@@ -234,7 +234,7 @@ export function candidateFacts(row: CatalogueRow): CandidateFacts {
  * part at all.
  */
 export function updateFacts(update: ModelUpdate, row: CatalogueRow): FactPart[] {
-  const parts: FactPart[] = [{ text: paramsLabel(row.params) }];
+  const parts: FactPart[] = row.params === null ? [] : [{ text: paramsLabel(row.params) }];
 
   if (row.download !== null) {
     parts.push({ text: `${row.download.quant} ${sizeLabel(row.download.size_bytes)}` });

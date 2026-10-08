@@ -18,7 +18,8 @@ use serde_json::Value;
 
 use crate::Error;
 use crate::catalogue::{
-    CatalogueEntry, Download, EntryKind, License, MAX_RESPONSE_BYTES, feed_client, get_bounded_text,
+    CatalogueEntry, Download, EntryKind, License, MAX_RESPONSE_BYTES, PREFERRED_DOWNLOADS,
+    feed_client, get_bounded_text,
 };
 
 /// Where the cleanup feed is enumerated: the Hub's models listing, with the
@@ -65,9 +66,6 @@ impl Default for CleanupSource {
     }
 }
 
-/// The quants a candidate must offer at least one of, as file names spell
-/// them - the same ladder the speech feed's rows are read at.
-const QUANTS: [&str; 6] = ["F16", "Q8_0", "Q6_K", "Q5_K_M", "Q4_K_M", "Q4_K_S"];
 
 /// The downloads floor: a repo nobody has fetched says nothing about whether
 /// it works, and the listing's tail is full of them.
@@ -234,9 +232,24 @@ fn downloads_from(files: &[Value], repo: &str, files_base: &str) -> Vec<Download
 }
 
 /// The quant a file name spells, when it spells one this runtime loads.
+///
+/// **Matched on a token boundary, longest first**, because `BF16` contains
+/// `F16`: a substring search labels a BF16 file `F16`, and the download
+/// behind it would then be asked for a quantisation the repo does not carry.
 fn quant_of(name: &str) -> Option<String> {
     let upper = name.to_uppercase();
-    QUANTS.iter().find(|quant| upper.contains(*quant)).map(|quant| (*quant).to_owned())
+    PREFERRED_DOWNLOADS
+        .iter()
+        .filter(|quant| {
+            upper.match_indices(**quant).any(|(at, _)| {
+                let before = upper[..at].chars().next_back();
+                let after = upper[at + quant.len()..].chars().next();
+                before.is_none_or(|c| !c.is_alphanumeric())
+                    && after.is_none_or(|c| !c.is_alphanumeric())
+            })
+        })
+        .max_by_key(|quant| quant.len())
+        .map(|quant| (*quant).to_owned())
 }
 
 /// Fetch the cleanup feed. Blocking, like everything else here.
@@ -333,7 +346,7 @@ fn entry_for(repo: &Repo, downloads: Vec<Download>, languages: Vec<String>) -> C
         variant: repo.id.clone(),
         display_name: repo.id.clone(),
         family: repo.id.split_once('/').map(|(owner, _)| owner.to_owned()).unwrap_or_default(),
-        params: 0,
+        params: None,
         license: repo.license.clone().map(|spdx| License { display: spdx.clone(), spdx }),
         languages,
         capabilities: crate::catalogue::Capabilities::default(),
@@ -350,6 +363,22 @@ fn entry_for(repo: &Repo, downloads: Vec<Download>, languages: Vec<String>) -> C
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A quant is matched on its own token, longest first, and the ladder
+    /// is the runtime's.** `BF16` contains `F16`: a substring search labels a
+    /// BF16 file F16, and the download behind it would ask the repo for a
+    /// quantisation it does not carry. And a quant the runtime cannot run is
+    /// no download at all, so a repo offering only those is not a candidate.
+    #[test]
+    fn a_quant_is_matched_on_its_own_token() {
+        assert_eq!(quant_of("model-BF16.gguf").as_deref(), Some("BF16"));
+        assert_eq!(quant_of("model.F16.gguf").as_deref(), Some("F16"));
+        assert_eq!(quant_of("model-Q4_K_M.gguf").as_deref(), Some("Q4_K_M"));
+        assert_eq!(quant_of("model-Q8_0.gguf").as_deref(), Some("Q8_0"));
+        assert_eq!(quant_of("model-Q6_K.gguf"), None);
+        assert_eq!(quant_of("model-Q5_K_M.gguf"), None);
+        assert_eq!(quant_of("model-Q4_K_S.gguf"), None);
+    }
 
     /// A live capture of the listing - the Hub's own answer to the default
     /// query, trimmed to the rows these rules are about.
