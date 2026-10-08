@@ -7,11 +7,11 @@
 //! survive a session, so forge does not use them.
 //!
 //! The tools (`tasks__create` / `tasks__update` / `tasks__list` /
-//! `tasks__delete`) are ANY-CALLER, scoped to the caller's own project -
-//! a worker creating its own subtasks is the normal case, and any
-//! session may move any task in its project. Task-list mutations are
-//! direct `Workspace` methods (state writes), not Command-bus
-//! dispatches.
+//! `tasks__delete` / `tasks__claim` / `tasks__wait`) are ANY-CALLER,
+//! scoped to the caller's own project - a worker creating its own
+//! subtasks is the normal case, and any session may move any task in its
+//! project. Task-list mutations are direct `Workspace` methods (state
+//! writes), not Command-bus dispatches.
 //!
 //! - [`facade`] - the `TasksFacade` seam (prod over `Weak<Workspace>` +
 //!   a mock for tool tests).
@@ -22,15 +22,15 @@ use std::time::SystemTime;
 use forge_sdk::mcp::server::McpServerBuilder;
 use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput};
 
-use forge_primitives::tasks::{LinkKind, Task, TaskId, TaskStatus};
+use forge_primitives::tasks::{LinkKind, Task, TaskId, TaskStatus, WaitingKind};
 
 use crate::SessionSlot;
 use crate::mcp::tasks::facade::{TaskDraft, TaskPatch, TasksError, TasksFacade};
 
 pub(crate) mod facade;
 
-/// Attach the four task-list tools to an existing [`McpServerBuilder`].
-/// Called for BOTH lead and worker sessions (tasks are any-caller), so
+/// Attach the task tools to an existing [`McpServerBuilder`]. Called for
+/// BOTH lead and worker sessions (tasks are any-caller), so
 /// `build_forge_server` invokes this unconditionally.
 pub(crate) fn add_tools(
     builder: McpServerBuilder,
@@ -40,8 +40,10 @@ pub(crate) fn add_tools(
     let create = Create { facade: facade.clone(), slot: slot.clone() };
     let update = Update { facade: facade.clone(), slot: slot.clone() };
     let list = List { facade: facade.clone(), slot: slot.clone() };
-    let delete = Delete { facade, slot };
-    builder.tool(create).tool(update).tool(list).tool(delete)
+    let delete = Delete { facade: facade.clone(), slot: slot.clone() };
+    let claim = Claim { facade: facade.clone(), slot: slot.clone() };
+    let wait = Wait { facade, slot };
+    builder.tool(create).tool(update).tool(list).tool(delete).tool(claim).tool(wait)
 }
 
 fn tool_error(text: String) -> ToolOutput {
@@ -112,6 +114,9 @@ fn format_tasks_error(err: &TasksError) -> String {
         }
         TasksError::BadEstimate(words) => {
             format!("\"{words}\" is not a duration; use 30m, 2h, 1d or 1w")
+        }
+        TasksError::Refused(why) => {
+            format!("the move was refused: {why}")
         }
     }
 }
@@ -385,6 +390,144 @@ impl Tool for Delete {
                 }
             }
             Ok(None) => tool_error(format!("no task with id {} in your project", args.id)),
+            Err(err) => tool_error(format_tasks_error(&err)),
+        }
+    }
+}
+
+struct Claim {
+    facade: Arc<dyn TasksFacade>,
+    slot: SessionSlot,
+}
+
+#[derive(serde::Deserialize)]
+struct ClaimArgs {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    epic: Option<String>,
+}
+
+#[async_trait::async_trait]
+impl Tool for Claim {
+    fn name(&self) -> &'static str {
+        "tasks__claim"
+    }
+
+    fn description(&self) -> &'static str {
+        "Claim a task in YOUR project: one atomic write that makes you its owner and marks it \
+         in progress, ticking the attempt. Pass `id` for a named row, or `epic` to pull the top \
+         ready row of that epic by rank - exactly one of the two. Refused when a live seat \
+         holds the row (named), when it is not pending, or when you already have a row in \
+         progress: one in progress per worker. Returns the claimed record."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "id": { "type": "string", "description": "The task id to claim." },
+                "epic": {
+                    "type": "string",
+                    "description": "The epic whose top ready row to pull, by rank.",
+                },
+            },
+            "additionalProperties": false,
+        })
+    }
+
+    async fn call(&self, input: ToolInput) -> ToolOutput {
+        let args: ClaimArgs = match serde_json::from_value(input.value) {
+            Ok(args) => args,
+            Err(err) => return tool_error(format!("invalid arguments: {err}")),
+        };
+        match (&args.id, &args.epic) {
+            (Some(_), None) | (None, Some(_)) => {}
+            _ => return tool_error("state exactly one of id or epic".to_owned()),
+        }
+        match self.facade.claim_task(&self.slot, args.id.as_deref(), args.epic.as_deref()) {
+            Ok(task) => match serde_json::to_string_pretty(&task_to_json(&task)) {
+                Ok(json) => ToolOutput::text(json),
+                Err(err) => tool_error(format!("response serialization failed: {err}")),
+            },
+            Err(err) => tool_error(format_tasks_error(&err)),
+        }
+    }
+}
+
+struct Wait {
+    facade: Arc<dyn TasksFacade>,
+    slot: SessionSlot,
+}
+
+#[derive(serde::Deserialize)]
+struct WaitArgs {
+    id: String,
+    kind: WaitingKind,
+    #[serde(default)]
+    detail: Option<String>,
+    #[serde(default)]
+    on: Option<String>,
+}
+
+#[async_trait::async_trait]
+impl Tool for Wait {
+    fn name(&self) -> &'static str {
+        "tasks__wait"
+    }
+
+    fn description(&self) -> &'static str {
+        "Put one of YOUR rows into waiting and state what it waits on. `kind` is decision \
+         (which routes to the user), dependency (another task: put its id in `on`), or resource \
+         (an account, a CI run, a machine). `detail` is the words. The row must be yours. \
+         Refused for a row you do not hold, or one that is not there. Returns the record in \
+         waiting."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "id": { "type": "string", "description": "The task id to put into waiting." },
+                "kind": {
+                    "type": "string",
+                    "enum": ["decision", "dependency", "resource"],
+                    "description": "What it waits on; the kind decides where the unblock lands.",
+                },
+                "detail": {
+                    "type": "string",
+                    "description": "The words: what exactly is being waited for.",
+                },
+                "on": {
+                    "type": "string",
+                    "description": "For a dependency: the task id it waits on.",
+                },
+            },
+            "required": ["id", "kind"],
+            "additionalProperties": false,
+        })
+    }
+
+    async fn call(&self, input: ToolInput) -> ToolOutput {
+        let args: WaitArgs = match serde_json::from_value(input.value) {
+            Ok(args) => args,
+            Err(err) => return tool_error(format!("invalid arguments: {err}")),
+        };
+        if args.kind == WaitingKind::Dependency && args.on.is_none() {
+            return tool_error("a dependency wait needs `on`, the task it waits on".to_owned());
+        }
+        let on = args.on.as_deref().map(TaskId::from);
+        match self.facade.wait_task(
+            &self.slot,
+            &TaskId::from(args.id.as_str()),
+            args.kind,
+            args.detail,
+            on.as_ref(),
+        ) {
+            Ok(task) => match serde_json::to_string_pretty(&task_to_json(&task)) {
+                Ok(json) => ToolOutput::text(json),
+                Err(err) => tool_error(format!("response serialization failed: {err}")),
+            },
             Err(err) => tool_error(format_tasks_error(&err)),
         }
     }
@@ -727,10 +870,97 @@ mod tests {
         let create = Create { facade: facade.clone(), slot: slot.clone() };
         let update = Update { facade: facade.clone(), slot: slot.clone() };
         let list = List { facade: facade.clone(), slot: slot.clone() };
-        let delete = Delete { facade, slot };
+        let delete = Delete { facade: facade.clone(), slot: slot.clone() };
+        let claim = Claim { facade: facade.clone(), slot: slot.clone() };
+        let wait = Wait { facade, slot };
         assert_eq!(create.name(), "tasks__create");
         assert_eq!(update.name(), "tasks__update");
         assert_eq!(list.name(), "tasks__list");
         assert_eq!(delete.name(), "tasks__delete");
+        assert_eq!(claim.name(), "tasks__claim");
+        assert_eq!(wait.name(), "tasks__wait");
+    }
+
+    #[tokio::test]
+    async fn claim_by_epic_threads_the_epic_and_echoes_the_row() {
+        let facade = Arc::new(MockTasksFacade::default());
+        let mut task = sample_task();
+        task.status = TaskStatus::InProgress;
+        task.owner = Some(SessionSlot::worker("TestOrg", "myproj", "w-1"));
+        *facade.claim_result.lock() = Some(Ok(task));
+        let slot = SessionSlot::worker("TestOrg", "myproj", "w-1");
+        let out = Claim { facade: facade.clone(), slot }
+            .call(input(serde_json::json!({
+                "epic": "epic-1"
+            })))
+            .await;
+        assert!(!out.is_error, "claim succeeds: {out:?}");
+        let calls = facade.claimed.lock();
+        assert_eq!(calls[0].1, None, "no id carried");
+        assert_eq!(calls[0].2.as_deref(), Some("epic-1"));
+        let json: serde_json::Value =
+            serde_json::from_str(text_of(&out)).expect("the result is the claimed record");
+        assert_eq!(json["status"], "in_progress");
+        assert_eq!(json["owner"], "w-1");
+    }
+
+    #[tokio::test]
+    async fn claim_with_both_id_and_epic_is_refused_without_touching_the_facade() {
+        let facade = Arc::new(MockTasksFacade::default());
+        let out = Claim { facade: facade.clone(), slot: lead_slot() }
+            .call(input(serde_json::json!({ "id": "t-1", "epic": "epic-1" })))
+            .await;
+        assert!(out.is_error, "exactly one of id or epic");
+        let out = Claim { facade: facade.clone(), slot: lead_slot() }
+            .call(input(serde_json::json!({})))
+            .await;
+        assert!(out.is_error, "neither is not one either");
+        assert!(facade.claimed.lock().is_empty(), "invalid input never reaches the facade");
+    }
+
+    /// The core's refusal is read by the caller: the seat that holds the
+    /// row is named, not hidden behind a generic failure.
+    #[tokio::test]
+    async fn a_refused_claim_surfaces_the_cores_words() {
+        let facade = Arc::new(MockTasksFacade::default());
+        *facade.claim_result.lock() =
+            Some(Err(TasksError::Refused("w-1 holds this row".to_owned())));
+        let out = Claim { facade, slot: lead_slot() }
+            .call(input(serde_json::json!({ "id": "t-1" })))
+            .await;
+        assert!(out.is_error, "the claim is refused");
+        assert!(
+            text_of(&out).contains("w-1 holds this row"),
+            "and the refusal names the holder: {:?}",
+            text_of(&out),
+        );
+    }
+
+    #[tokio::test]
+    async fn wait_threads_kind_detail_and_blocker() {
+        let facade = Arc::new(MockTasksFacade::default());
+        let out = Wait { facade: facade.clone(), slot: lead_slot() }
+            .call(input(serde_json::json!({
+                "id": "t-1",
+                "kind": "dependency",
+                "detail": "the board read has to land first",
+                "on": "t-9",
+            })))
+            .await;
+        assert!(!out.is_error, "wait succeeds: {out:?}");
+        let calls = facade.waited.lock();
+        assert_eq!(calls[0].2, WaitingKind::Dependency);
+        assert_eq!(calls[0].3.as_deref(), Some("the board read has to land first"));
+        assert_eq!(calls[0].4, Some(TaskId::from("t-9")));
+    }
+
+    #[tokio::test]
+    async fn a_dependency_wait_without_on_is_refused() {
+        let facade = Arc::new(MockTasksFacade::default());
+        let out = Wait { facade: facade.clone(), slot: lead_slot() }
+            .call(input(serde_json::json!({ "id": "t-1", "kind": "dependency" })))
+            .await;
+        assert!(out.is_error, "a dependency wait names its blocker");
+        assert!(facade.waited.lock().is_empty(), "invalid input never reaches the facade");
     }
 }
