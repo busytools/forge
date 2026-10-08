@@ -241,7 +241,17 @@ export function fleetRows(wire: HomeWire): FleetViewRow[] {
       slots: row.slots,
       queue: row.queue,
       onYou: row.waiting_on_user,
-      misses: row.misses,
+      // A project that cannot start says so on its own row: the refusal
+      // the row drew before the fleet, kept as a miss rather than dropped.
+      misses: [
+        ...row.misses,
+        ...(project === undefined
+          ? []
+          : (() => {
+              const why = refusal(project.project.has_model, project.would_bind);
+              return why === null ? [] : [{ kind: 'unknown' as const, label: why }];
+            })()),
+      ],
     };
   });
 }

@@ -351,7 +351,16 @@ describe('the fleet the snapshot describes', () => {
     };
     const rows = fleetRows(wire);
     expect(rows).toHaveLength(1);
-    expect(rows[0]?.misses.map((miss) => miss.kind)).toEqual(['stalled', 'no-row', 'unknown']);
+    // The named spots come first, then the project's own refusal - the
+    // fixture declares no model, so the row says a spawn here would be
+    // refused rather than dropping what the row drew before the fleet.
+    expect(rows[0]?.misses.map((miss) => miss.kind)).toEqual([
+      'stalled',
+      'no-row',
+      'unknown',
+      'unknown',
+    ]);
+    expect(rows[0]?.misses[3]?.label).toContain('no model declared');
     expect(rows[0]?.onYou).toBe(1);
     // And the raw wire's own shapes narrow to those names.
     expect(missFrom('stalled_queue')).toEqual({ kind: 'stalled', label: 'queue is stalling' });
