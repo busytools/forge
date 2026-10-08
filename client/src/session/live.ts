@@ -129,11 +129,11 @@ const SEATS = new WeakMap<Connection, Map<string, Seat>>();
 /**
  * How long a publish waits for a paint before it goes out anyway.
  *
- * `requestAnimationFrame` is the coalescer, not the guarantee: a page the
- * browser suspends (a locked screen, a backgrounded window) can lose a
- * scheduled callback outright, and a publish whose flag only ever clears
- * inside that callback would leave the record dead until a read landed. No
- * paint of a live page is this slow.
+ * `requestAnimationFrame` is the coalescer, not the guarantee: a scheduled
+ * callback that never fires - whatever lost it, which is nothing this code
+ * can know - would leave the record dead until a read landed, because the
+ * flag clears only inside that callback. No paint of a live page is this
+ * slow.
  */
 const PAINT_WATCHDOG_MS = 250;
 
