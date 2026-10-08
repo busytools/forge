@@ -137,10 +137,11 @@ impl Tool for Create {
          and the only required field; `active_form` is the in-progress wording (\"Adding tests\" \
          for \"Add tests\"), shown while the task is running. `owner` is the label of the session \
          holding it - a worker's label, or \"lead\" - and omitting it leaves the task unclaimed. \
-         `parent` names another task in the same project this one belongs under, `artifact` a PR \
-         or path, `estimate` a duration, `detail` free prose. `status` defaults to pending. \
-         Returns the stored task with its id (use it with tasks__update / tasks__delete). Any \
-         session in the project may call this."
+         `parent` names another task in the same project this one belongs under, `estimate` a \
+         duration, `rank` the queue order, `verify` whether completion waits on the user, \
+         `links` the references it carries (issues, PRs, specs, paths), `detail` free prose. \
+         `status` defaults to pending. Returns the stored task with its id (use it with \
+         tasks__update / tasks__delete). Any session in the project may call this."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -174,13 +175,37 @@ impl Tool for Create {
                     "description": "The id of the task this one belongs under, in the same \
                                     project.",
                 },
-                "artifact": {
-                    "type": "string",
-                    "description": "The PR or path this work produced.",
-                },
                 "estimate": {
                     "type": "string",
                     "description": "A duration estimate (e.g. \"1d\").",
+                },
+                "rank": {
+                    "type": "integer",
+                    "description": "Queue order; lower reads first.",
+                },
+                "verify": {
+                    "type": "string",
+                    "enum": ["user", "none"],
+                    "description": "Whether completion waits on the user's look. The epic's \
+                                    default applies when unset.",
+                },
+                "links": {
+                    "type": "array",
+                    "description": "References this row carries: a spec, a plan, an issue, a PR, \
+                                    a branch, a path. The kind is derived from the target when \
+                                    omitted.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "kind": {
+                                "type": "string",
+                                "enum": ["spec", "plan", "issue", "pr", "branch", "path", "other"],
+                            },
+                            "label": { "type": "string" },
+                            "target": { "type": "string" },
+                        },
+                        "required": ["target"],
+                    },
                 },
             },
             "required": ["subject"],
@@ -254,7 +279,33 @@ impl Tool for Update {
                     "type": "string",
                     "description": "The id of the task this one now belongs under.",
                 },
-                "artifact": { "type": "string", "description": "The PR or path produced." },
+                "rank": { "type": "integer", "description": "New queue order; lower reads first." },
+                "verify": {
+                    "type": "string",
+                    "enum": ["user", "none"],
+                    "description": "Whether completion waits on the user's look.",
+                },
+                "links_add": {
+                    "type": "array",
+                    "description": "Links to attach; a target already on the row is left alone.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "kind": {
+                                "type": "string",
+                                "enum": ["spec", "plan", "issue", "pr", "branch", "path", "other"],
+                            },
+                            "label": { "type": "string" },
+                            "target": { "type": "string" },
+                        },
+                        "required": ["target"],
+                    },
+                },
+                "links_remove": {
+                    "type": "array",
+                    "description": "Links to take off, by exact target.",
+                    "items": { "type": "string" },
+                },
                 "estimate": { "type": "string", "description": "A duration estimate." },
             },
             "required": ["id"],
@@ -299,7 +350,7 @@ impl Tool for List {
 
     fn description(&self) -> &'static str {
         "List the live tasks of YOUR project as whole records: id, subject and status always, \
-         then `owner`, `parent`, `active_form`, `detail`, `artifact` and `estimate` on the tasks \
+         then `owner`, `parent`, `active_form`, `detail`, `links` and `estimate` on the tasks \
          that have them, plus the created and updated timestamps. Optionally narrow with `owner` \
          (a session label) or `parent` (a task id), so one task's detail or one session's rows \
          are a filter away. An empty array means your project has no tasks in flight, or that \
@@ -572,7 +623,12 @@ mod tests {
                 "status": "in_progress",
                 "owner": "agents-merge",
                 "parent": "epic",
-                "artifact": "PR #1173",
+                "rank": 10,
+                "verify": "user",
+                "links": [
+                    { "kind": "issue", "label": "PR #1173", "target": "https://example.invalid/pull/1173" },
+                    { "target": "docs/plan.md" }
+                ],
                 "estimate": "1d",
             })))
             .await;
@@ -584,7 +640,15 @@ mod tests {
         assert_eq!(draft.status, Some(TaskStatus::InProgress));
         assert_eq!(draft.owner.as_deref(), Some("agents-merge"));
         assert_eq!(draft.parent.as_deref(), Some("epic"));
-        assert_eq!(draft.artifact.as_deref(), Some("PR #1173"));
+        assert_eq!(draft.rank, Some(10));
+        assert_eq!(draft.verify, Some(forge_primitives::tasks::Verify::User));
+        assert_eq!(draft.links.len(), 2);
+        assert_eq!(draft.links[0].kind, Some(LinkKind::Issue));
+        assert_eq!(
+            draft.links[1].kind, None,
+            "an omitted kind is derived at the facade, not guessed here",
+        );
+        assert_eq!(draft.links[1].target, "docs/plan.md");
         assert_eq!(draft.estimate.as_deref(), Some("1d"));
     }
 
@@ -677,12 +741,17 @@ mod tests {
         let facade = Arc::new(MockTasksFacade::default());
         *facade.update_result.lock() = Some(sample_task());
         let out = Update { facade: facade.clone(), slot: lead_slot() }
-            .call(input(serde_json::json!({ "id": "t-1", "status": "waiting", "artifact": "x" })))
+            .call(input(serde_json::json!({
+                "id": "t-1",
+                "status": "waiting",
+                "links_add": [{ "target": "x" }]
+            })))
             .await;
         assert!(!out.is_error, "update succeeds: {out:?}");
         let patch = &facade.updated.lock()[0].2;
         assert_eq!(patch.status, Some(TaskStatus::Waiting));
-        assert_eq!(patch.artifact.as_deref(), Some("x"));
+        assert_eq!(patch.links_add.len(), 1, "the stated link reaches the facade");
+        assert_eq!(patch.links_add[0].target, "x");
         assert_eq!(patch.subject, None, "an unstated field is left alone");
         assert_eq!(patch.owner, None, "an unstated field is left alone");
     }

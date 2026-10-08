@@ -31,14 +31,26 @@ pub(crate) enum TasksError {
     Refused(String),
 }
 
-/// A bare artifact string becomes a link; the kind is the target's shape.
-fn artifact_link(target: &str, at: SystemTime) -> TaskLink {
-    TaskLink {
-        kind: LinkKind::for_target(target),
-        label: None,
-        target: target.to_owned(),
-        state: None,
-        added_at: at,
+/// One link as a caller states it: the kind is derived from the target's
+/// shape when it is not given.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub(crate) struct TaskLinkDraft {
+    #[serde(default)]
+    pub kind: Option<LinkKind>,
+    #[serde(default)]
+    pub label: Option<String>,
+    pub target: String,
+}
+
+impl TaskLinkDraft {
+    fn into_link(&self, at: SystemTime) -> TaskLink {
+        TaskLink {
+            kind: self.kind.unwrap_or_else(|| LinkKind::for_target(&self.target)),
+            label: self.label.clone(),
+            target: self.target.clone(),
+            state: None,
+            added_at: at,
+        }
     }
 }
 
@@ -60,9 +72,16 @@ pub(crate) struct TaskDraft {
     #[serde(default)]
     pub parent: Option<String>,
     #[serde(default)]
-    pub artifact: Option<String>,
-    #[serde(default)]
     pub estimate: Option<String>,
+    /// Queue order; lower reads first.
+    #[serde(default)]
+    pub rank: Option<i64>,
+    /// Whether completion waits on the user; the epic's default applies
+    /// when unset.
+    #[serde(default)]
+    pub verify: Option<forge_primitives::tasks::Verify>,
+    #[serde(default)]
+    pub links: Vec<TaskLinkDraft>,
 }
 
 /// The tree a `tasks__delete` removed: the named task as it stood, and how
@@ -89,9 +108,18 @@ pub(crate) struct TaskPatch {
     #[serde(default)]
     pub parent: Option<String>,
     #[serde(default)]
-    pub artifact: Option<String>,
-    #[serde(default)]
     pub estimate: Option<String>,
+    #[serde(default)]
+    pub rank: Option<i64>,
+    #[serde(default)]
+    pub verify: Option<forge_primitives::tasks::Verify>,
+    /// Links to attach; a target already present on the row is left as it
+    /// is, so the same PR linked twice stays one link.
+    #[serde(default)]
+    pub links_add: Vec<TaskLinkDraft>,
+    /// Links to take off, by exact target.
+    #[serde(default)]
+    pub links_remove: Vec<String>,
 }
 
 impl TaskPatch {
@@ -125,9 +153,18 @@ impl TaskPatch {
         if let Some(parent) = &self.parent {
             task.parent = Some(TaskId::from(parent.as_str()));
         }
-        if let Some(artifact) = &self.artifact {
-            task.links.push(artifact_link(artifact, at));
+        if let Some(rank) = self.rank {
+            task.rank = Some(rank);
         }
+        if let Some(verify) = self.verify {
+            task.verify = Some(verify);
+        }
+        for draft in &self.links_add {
+            if !task.links.iter().any(|l| l.target == draft.target) {
+                task.links.push(draft.into_link(at));
+            }
+        }
+        task.links.retain(|l| !self.links_remove.contains(&l.target));
         if let Some(estimate) = estimate {
             task.estimate = Some(estimate);
         }
@@ -212,7 +249,7 @@ impl TasksFacade for ProdTasksFacade {
             ),
             None => None,
         };
-        let links = draft.artifact.as_deref().map(|t| artifact_link(t, now)).into_iter().collect();
+        let links = draft.links.iter().map(|draft| draft.into_link(now)).collect();
         let task = Task {
             id: TaskId::from(uuid::Uuid::new_v4().to_string()),
             project_name: cx.project_name.clone(),
@@ -226,8 +263,8 @@ impl TasksFacade for ProdTasksFacade {
             parent: draft.parent.as_deref().map(TaskId::from),
             waiting_on: None,
             estimate,
-            rank: None,
-            verify: None,
+            rank: draft.rank,
+            verify: draft.verify,
             links,
             attempt: 0,
             archived_at: None,
@@ -401,9 +438,9 @@ impl TasksFacade for MockTasksFacade {
             parent: draft.parent.as_deref().map(TaskId::from),
             waiting_on: None,
             estimate: draft.estimate.as_deref().and_then(Estimate::parse),
-            rank: None,
-            verify: None,
-            links: draft.artifact.as_deref().map(|t| artifact_link(t, now)).into_iter().collect(),
+            rank: draft.rank,
+            verify: draft.verify,
+            links: draft.links.iter().map(|draft| draft.into_link(now)).collect(),
             attempt: 0,
             archived_at: None,
             created_at: now,
@@ -518,8 +555,10 @@ mod prod_facade_tests {
             status: None,
             owner: owner.map(str::to_owned),
             parent: parent.map(str::to_owned),
-            artifact: None,
             estimate: None,
+            rank: None,
+            verify: None,
+            links: Vec::new(),
         }
     }
 
@@ -739,8 +778,15 @@ mod prod_facade_tests {
                         status: Some(TaskStatus::Waiting),
                         owner: Some("lead".to_owned()),
                         parent: Some("epic".to_owned()),
-                        artifact: Some("PR #9".to_owned()),
+                        links_add: vec![TaskLinkDraft {
+                            kind: None,
+                            label: None,
+                            target: "PR #9".to_owned(),
+                        }],
                         estimate: Some("2d".to_owned()),
+                        rank: Some(3),
+                        verify: Some(forge_primitives::tasks::Verify::User),
+                        ..TaskPatch::default()
                     },
                 )
                 .expect("update")
@@ -765,6 +811,42 @@ mod prod_facade_tests {
             "and the estimate keeps its words with its seconds parsed",
         );
         assert_eq!(stored.estimate.as_ref().map(|e| e.secs), Some(172_800));
+        assert_eq!(stored.rank, Some(3), "rank moves");
+        assert_eq!(stored.verify, Some(forge_primitives::tasks::Verify::User), "verify moves",);
+
+        // The same target twice stays one link, and remove takes it off.
+        facade
+            .update_task(
+                &lead,
+                &task.id,
+                TaskPatch {
+                    links_add: vec![TaskLinkDraft {
+                        kind: None,
+                        label: None,
+                        target: "PR #9".to_owned(),
+                    }],
+                    ..TaskPatch::default()
+                },
+            )
+            .expect("update")
+            .expect("the task is there");
+        assert_eq!(
+            ws.tasks_for_project("myproj")[0].links.len(),
+            1,
+            "a re-added target stays one link",
+        );
+        facade
+            .update_task(
+                &lead,
+                &task.id,
+                TaskPatch { links_remove: vec!["PR #9".to_owned()], ..TaskPatch::default() },
+            )
+            .expect("update")
+            .expect("the task is there");
+        assert!(
+            ws.tasks_for_project("myproj")[0].links.is_empty(),
+            "remove takes it off by exact target",
+        );
     }
 
     #[test]
