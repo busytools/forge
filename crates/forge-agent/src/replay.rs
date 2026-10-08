@@ -13,10 +13,14 @@ use forge_primitives::{AssistantEnvelope, ContentBlock, Message, UserEnvelope};
 /// unifying replay + live code paths.
 ///
 /// Replay-specific transforms applied here:
-/// - Thinking blocks are filtered out - ephemeral mid-stream signals,
-///   never re-rendered on resume.
 /// - Image content blocks are replaced with a `[image]` text placeholder
 ///   - the binary payload isn't preserved on disk.
+///
+/// **Thinking blocks are kept.** A thinking block is the row the chat draws
+/// for a thought, and the live path draws it (a `thinking` block in an
+/// `assistant` frame), so a read that dropped the block drew a different
+/// conversation from the same turn - the read and live paths have to fold
+/// the same frames (rule 25).
 ///
 /// The `session_id` field on each Message is left empty; the caller
 /// (`forge_sdk_worker::spawn_session`) is responsible for stamping the
@@ -131,19 +135,17 @@ pub fn synthesize_replay_messages(messages: &[Value]) -> Vec<Message> {
     out
 }
 
-/// Apply the two replay-specific content-block transforms:
-/// drop `Thinking` blocks; replace `Image` blocks with a text `[image]`
-/// placeholder. Other variants pass through unchanged.
+/// Apply the replay-specific content-block transform: replace `Image` blocks
+/// with a text `[image]` placeholder. Other variants pass through unchanged.
 fn transform_replay_content(content: Vec<ContentBlock>) -> Vec<ContentBlock> {
     content
         .into_iter()
-        .filter_map(|block| match block {
-            ContentBlock::Thinking { .. } => None,
-            ContentBlock::Image { .. } => Some(ContentBlock::Text {
+        .map(|block| match block {
+            ContentBlock::Image { .. } => ContentBlock::Text {
                 text: "[image]".to_owned(),
                 extras: forge_primitives::messages::Extras::new(),
-            }),
-            other => Some(other),
+            },
+            other => other,
         })
         .collect()
 }
@@ -192,7 +194,7 @@ mod tests {
     }
 
     #[test]
-    fn synthesize_thinking_blocks_are_skipped() {
+    fn synthesize_thinking_blocks_survive_the_read() {
         let messages = vec![json!({
             "type": "assistant",
             "message": {
@@ -210,10 +212,19 @@ mod tests {
         let Message::Assistant { message, .. } = &synthesized[0] else {
             panic!("expected Message::Assistant");
         };
-        assert_eq!(message.content.len(), 1, "thinking block must be filtered out");
+        assert_eq!(
+            message.content.len(),
+            2,
+            "the thinking block rides the read: the live path draws a row for it, so dropping \
+             it here draws the same turn two ways",
+        );
         assert!(
-            matches!(&message.content[0], ContentBlock::Text { text, .. } if text == "after thought"),
-            "only the text block should survive",
+            matches!(&message.content[0], ContentBlock::Thinking { .. }),
+            "the thought stays where the assistant frame carried it",
+        );
+        assert!(
+            matches!(&message.content[1], ContentBlock::Text { text, .. } if text == "after thought"),
+            "and the text after it is untouched",
         );
     }
 
