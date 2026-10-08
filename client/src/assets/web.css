@@ -1054,7 +1054,7 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
 /* A narrow window compacts the panel: the same rows, tighter, and never
    taller than what the window can give it. */
 @media (max-width: 560px) {
-  .bz-list { min-width: min(296px, calc(100vw - 26px)); max-height: 46vh; }
+  .bz-list { max-height: 46vh; }
   .bz-list .bz-role { gap: 7px; padding: 6px 10px; }
   .bz-list .bz-cost { padding: 0 10px 6px; }
   .bz-list .bz-it { gap: 7px; padding: 5px 10px; }

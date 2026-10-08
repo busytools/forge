@@ -9,13 +9,21 @@ import { panelStyle } from './strip-panel';
 // module's own URL is not a file one.
 const SHEET = readFileSync('src/assets/web.css', 'utf8');
 
-/** One rule's block in the sheet, from its own line to the first close. */
-const rule = (selector: string): string => {
-  // The selector at the start of a line, so a scrollbar arm's selector list
-  // carrying the same word does not answer for the rule.
-  const at = SHEET.indexOf(`\n${selector} {`);
-  if (at === -1) throw new Error(`no ${selector} rule in the sheet`);
-  return SHEET.slice(at, SHEET.indexOf('}', at));
+/**
+ * Every rule block for one selector, from any depth.
+ *
+ * **All of them, media arms included**: the compact arm's floor was invisible
+ * to a matcher that read one top-level block, and it beat the measured width
+ * on every viewport under 560px. The selector has to be the whole line's
+ * selector (indent allowed), so a scrollbar arm carrying the same word does
+ * not answer for the rule.
+ */
+const rules = (selector: string): string[] => {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp(`(?:^|\\n)[\\t ]*${escaped} \\{([^}]*)\\}`, 'g');
+  const found = [...SHEET.matchAll(pattern)].map((match) => match[1] ?? '');
+  if (found.length === 0) throw new Error(`no ${selector} rule in the sheet`);
+  return found;
 };
 
 /**
@@ -76,10 +84,17 @@ describe('the room a strip panel may take', () => {
     // jsdom performs no layout, so a restored `min-width` in the sheet passes
     // every mount test and then reproduces the exact reported symptom in a
     // real engine - the floor lives in the sheet, so it is pinned in the
-    // sheet.
+    // sheet, EVERY arm of it: the compact one under 560px beat the measured
+    // width where a single top-level match could not see it.
     for (const selector of ['.sg-list', '.bz-list']) {
-      expect(rule(selector), `${selector} carries no min-width floor`).not.toContain('min-width');
-      expect(rule(selector), `${selector} keeps a viewport cap`).toContain('max-width: calc(100vw');
+      const blocks = rules(selector);
+      expect(blocks.length, `${selector} rules found`).toBeGreaterThan(0);
+      for (const block of blocks) {
+        expect(block, `${selector} carries no min-width floor`).not.toContain('min-width');
+      }
+      expect(blocks.join('\n'), `${selector} keeps a viewport cap somewhere`).toContain(
+        'max-width: calc(100vw',
+      );
     }
   });
 });
