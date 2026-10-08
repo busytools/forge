@@ -1592,6 +1592,8 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
 .line .mic { flex: none; margin-left: 6px; width: 24px; height: 24px;
   display: grid; place-items: center; color: var(--dim); background: none;
   border: 0; padding: 0; cursor: pointer; }
+/* The mic lifts like the sheet's other dim controls when pointed at. */
+.line .mic:hover { color: var(--text); }
 /* The send, at the same 24px pointer floor as the mic and centred in whatever
    box it gets, since the phone width gives every control a 44px floor and the
    icon would otherwise sit at the top of it. */
