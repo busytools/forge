@@ -233,6 +233,19 @@ pub fn fleet_news(update: &SessionUpdate) -> FleetNews<'_> {
         | SessionUpdate::AuthRequired { .. }
         | SessionUpdate::TurnError { .. }
         | SessionUpdate::TurnCancelled { .. }
+        // The turn's start, and the earliest frame that says a turn was
+        // accepted: `turn_pending` is stamped when the prompt is routed and
+        // cleared only on the turn's result, so the read this asks for is
+        // answered with the row already running. Every state is taken,
+        // `state` being free-form by design - a state this build has not
+        // seen has to move a row rather than be dropped. `queued` and
+        // `started` are the start; `completed` sits at the boundary the
+        // result frame also announces; `cancelled`, `discarded` and
+        // `refused` are a prompt that will not run, where a row read at the
+        // start has no other frame guaranteed to say so. Without this a row
+        // kept the idle it last read until an unrelated frame happened to be
+        // news (#1887, measured at ~40s while an agent ran underneath).
+        | SessionUpdate::PromptLifecycle { .. }
         | SessionUpdate::PermissionRequest { .. }
         | SessionUpdate::QuestionRequest { .. }
         // Answering moves the seat out of the rail's needs-you group and
@@ -553,6 +566,69 @@ mod tests {
             live.attached.is_empty(),
             "the last page closing takes the seat out of the map: {:?}",
             live.attached,
+        );
+    }
+
+    /// **A turn's start redraws, and without the arm the row kept the idle
+    /// it last read** (#1887, measured at ~40s while an agent ran underneath).
+    /// The read is what turns the row running: the roster folds
+    /// `turn_pending`, which is stamped when the prompt is routed rather than
+    /// when a frame lands, so the state is already there for the asking.
+    #[test]
+    fn a_prompts_lifecycle_redraws_the_page() {
+        let slot = SessionSlot::lead("Org", "forge");
+        let mut live = Live::new();
+
+        for state in ["queued", "started", "completed", "cancelled", "discarded", "refused"] {
+            assert!(
+                live.apply(&SessionUpdate::PromptLifecycle {
+                    key: slot.clone(),
+                    uuid: "p1".to_owned(),
+                    state: state.to_owned(),
+                })
+                .fleet,
+                "a prompt's {state} is what a row is re-read for",
+            );
+        }
+
+        // The free-form state the protocol promises to carry rather than
+        // drop: a build that has not seen it still moves the row.
+        assert!(
+            live.apply(&SessionUpdate::PromptLifecycle {
+                key: slot,
+                uuid: "p1".to_owned(),
+                state: "a-state-from-a-newer-cli".to_owned(),
+            })
+            .fleet,
+            "an unseen state is news too",
+        );
+    }
+
+    /// The registry that moves `has_background_work`, which is the promotion
+    /// that draws an idle-but-busy seat as running. The CLI announces it as a
+    /// conversation frame, and that frame is what this page re-reads for; the
+    /// `BackgroundTasksChanged` mirror of the same instant carries the
+    /// inspector's set and is not the fleet's.
+    #[test]
+    fn the_clis_background_announcement_redraws_the_page() {
+        let slot = SessionSlot::lead("Org", "forge");
+        let mut live = Live::new();
+
+        // The wire's own shape: the typed decode needs the frame's `uuid`,
+        // and a fixture without one falls back to the generic system variant,
+        // which no arm here answers.
+        let announced = serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "subtype": "background_tasks_changed",
+            "tasks": [{ "task_id": "t1", "task_type": "local_bash", "description": "a wait" }],
+            "uuid": "u1",
+            "session_id": "s",
+        }))
+        .expect("parse a background announcement");
+
+        assert!(
+            live.apply(&appended(&slot, announced)).fleet,
+            "the registry moving is a row's re-read",
         );
     }
 
