@@ -151,11 +151,7 @@ class BrowserPlugin(private val activity: Activity) : Plugin(activity) {
             // an already-running node redials every second and gets 6 s - a
             // later call that paid the cold window for a dead host would
             // wait 40 s for an answer that cannot come.
-            .put("nodeStarted", nodeStarted)
-            // The shell's engine identity: a claimed renderer death bumps
-            // this, so the next call rebuilds the driver against the fresh
-            // WebView instead of holding one that points at a dead page.
-            .put("engineGeneration", engine.generation),
+            .put("nodeStarted", nodeStarted),
         )
       } catch (err: Exception) {
         invoke.reject(err.message ?: err.toString())
@@ -199,6 +195,17 @@ class BrowserPlugin(private val activity: Activity) : Plugin(activity) {
   fun windowed(invoke: Invoke) {
     invoke.resolve(JSObject().put("windowed", engine.takeoverUp()))
   }
+
+  /**
+   * The engine's generation, read PER CALL by the shell: a claimed renderer
+   * death bumps it, and the shell's driver identity follows it - a mirror
+   * written only inside a rebuild could never notice the death (the
+   * rebuild is a response to the identity, so it can never be its source).
+   */
+  @Command
+  fun engineGeneration(invoke: Invoke) {
+    invoke.resolve(JSObject().put("generation", engine.generation))
+  }
 }
 
 /**
@@ -221,9 +228,11 @@ internal class BrowserEngine(private val activity: Activity) {
   /**
    * Bumped whenever a renderer death is claimed (the engine's own handler
    * and wry's client for the UI page both land in `rendererGone`). The
-   * shell compares it against the driver it holds: a death changes the
-   * engine's identity, so the next call rebuilds against a fresh WebView
-   * instead of driving the page the dead one left behind.
+   * shell reads it PER CALL and folds it into the driver identity, so a
+   * death makes the held driver read stale and the next call ATTEMPTS a
+   * rebuild. It cannot reattach today (issue #1931): the in-app node keeps
+   * its old socket link and this engine refuses a second node, so the call
+   * fails with the reason until the app restarts.
    */
   @Volatile var generation = 0
     private set
@@ -419,10 +428,14 @@ internal class BrowserEngine(private val activity: Activity) {
    * A renderer death was claimed on either WebView (the engine's own client
    * or wry's for the UI page). One renderer serves every WebView in the
    * process, so either death may be THIS page's; the repair is one:
-   * bump the generation (the shell's next call rebuilds - see
-   * `generation`), lower a raised takeover, and drop the dead view.
+   * bump the generation so the shell's next call sees a stale driver (see
+   * `generation` for what that rebuild can and cannot reach), lower a
+   * raised takeover, and drop the dead view.
    */
   fun rendererGone() {
+    // Non-atomic on a @Volatile, safe because both claimers run on the UI
+    // thread; a shared-renderer death lands here twice, so the value may
+    // jump by 2. Nothing rides on the exact value, only on its changing.
     generation += 1
     if (takeover) {
       lower()

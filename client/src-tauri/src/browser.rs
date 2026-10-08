@@ -218,9 +218,13 @@ impl BrowserHost {
     /// a name another session already holds is refused with the owner's name.
     ///
     /// **Every call resolves the browser first**, so the endpoint it hands the
-    /// profile is the one the browser answers on NOW: a browser that died (or
-    /// was relaunched for a window) moves that endpoint, and the profile
-    /// rebuilds its driver rather than talking to a port nobody listens on.
+    /// profile is the one the browser answers on NOW. On the desktop a browser
+    /// that died (or was relaunched for a window) moves that endpoint, and the
+    /// profile rebuilds its driver rather than talking to a port nobody
+    /// listens on. The phone's browser cannot move: its WebView is the app's
+    /// own, so a claimed renderer death keeps the app alive but leaves later
+    /// calls failing with the reason until the app is restarted (see the
+    /// phone arm below).
     pub async fn call(
         &self,
         seat: &Seat,
@@ -316,11 +320,21 @@ impl BrowserHost {
             self.used.store(true, std::sync::atomic::Ordering::Release);
             let socket = paths.driver_socket();
             let shared = self.shared_profile().await;
-            // **The identity carries the engine's generation**: a claimed
-            // renderer death bumps it, so the held driver reads stale and
-            // this call rebuilds against the fresh WebView - the same
-            // comparison that notices a relaunched browser on the desktop.
-            let identity = format!("webview-{}", engine.generation());
+            // **The identity carries the engine's generation, read PER
+            // CALL** - a claimed renderer death bumps it, so the held driver
+            // reads stale and this call attempts a rebuild. It attempts,
+            // and today the attempt fails: the in-app node keeps its old
+            // socket link (it only redials a DEAD one) and Kotlin refuses a
+            // second node, so a rebuilt driver's pin has no browser to
+            // reach. The claim is exactly that much: the app survives, the
+            // page is gone, later calls fail with the named reason, and the
+            // repair is restarting the app until the reattach is solved
+            // (issue #1931).
+            let generation = engine.generation_now().await.unwrap_or_else(|why| {
+                tauri_plugin_log::log::warn!("the engine generation could not be read: {why}");
+                u64::MAX
+            });
+            let identity = format!("webview-{generation}");
             let start = DriverStart {
                 socket: &socket,
                 identity: &identity,

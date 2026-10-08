@@ -385,6 +385,19 @@ client-android-check: vendor-browser-stack vendor-browser-stack-android
     # build generates it (and compiles the Kotlin and the Rust); the unit
     # tests then run alone, because a build success prints no test count.
     npm --prefix client run tauri -- android build --debug --apk --ci --target aarch64
+    # **The renderer-death claim is INJECTED, and a dropped config would
+    # regenerate the client silently WITHOUT it** - wry reads the env hook
+    # from client/.cargo/config.toml (the tauri CLI chain runs from client/),
+    # so a move of that file, or a wry bump that renames the class extension,
+    # produces an app that dies when any WebView's renderer is killed. The
+    # generated file is the proof: it is build output, regenerated above.
+    generated_client="client/src-tauri/gen/android/app/src/main/java/dev/vedhavyas/forge/generated/RustWebViewClient.kt"
+    for marker in onRenderProcessGone rendererDied; do
+        if ! grep -q "$marker" "$generated_client"; then
+            echo "[ERROR] the generated RustWebViewClient is missing '$marker' - the renderer-gone claim did not inject; check client/.cargo/config.toml (WRY_RUSTWEBVIEWCLIENT_CLASS_EXTENSION)" >&2
+            exit 1
+        fi
+    done
     # Universal is the variant `--target aarch64` builds (the release APK too).
     (cd client/src-tauri/gen/android && ./gradlew --console=plain :app:testUniversalDebugUnitTest)
     RUSTFLAGS="-D warnings" cargo check --manifest-path client/src-tauri/Cargo.toml --target aarch64-linux-android
