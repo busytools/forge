@@ -973,7 +973,7 @@ describe('the box', () => {
     ).not.toBeNull();
   });
 
-  it('offers the way in only when this install can dictate, and the way in is the door', () => {
+  it('offers the way in only when this install can dictate, and a press is the trigger', async () => {
     open();
     expect(
       document.querySelector('.mic'),
@@ -988,10 +988,37 @@ describe('the box', () => {
     if (!(mic instanceof HTMLElement))
       throw new Error('an install that can dictate draws no way in');
     mic.click();
+    for (let turn = 0; turn < 4; turn += 1) await Promise.resolve();
     flushSync();
 
-    expect(document.querySelector('.pop'), 'the mic is the door, not the trigger').not.toBeNull();
-    expect(harness.sent, 'and nothing on the page starts a take').toEqual([]);
+    expect(harness.sent.at(-1)?.command['dictate_stream'], 'a press is the trigger').toBeDefined();
+    expect(harness.sent, 'and only the one take began').toHaveLength(1);
+    expect(document.querySelector('.pop'), 'the settings stay closed on a press').toBeNull();
+  });
+
+  it('opens the settings on a hold, and the release starts nothing', () => {
+    vi.useFakeTimers();
+    try {
+      const harness = open({ dictation: true });
+      const mic = document.querySelector('.mic');
+      if (!(mic instanceof HTMLElement))
+        throw new Error('an install that can dictate draws no way in');
+
+      mic.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+      vi.advanceTimersByTime(450);
+      flushSync();
+
+      expect(document.querySelector('.pop'), 'the hold is the door').not.toBeNull();
+      expect(harness.sent, 'and the hold starts no take').toEqual([]);
+
+      mic.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }));
+      mic.click();
+      flushSync();
+      expect(harness.sent, 'the release does not read as a press').toEqual([]);
+      expect(document.querySelector('.pop'), 'and the settings stay open').not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -5065,12 +5092,16 @@ describe('the dictation panel', () => {
     flushSync();
   }
 
-  /** The panel, opened by the mic, which is the only way in. */
+  /** The panel, opened by holding the mic - a press is the trigger now. */
   function opened(over: Partial<ComposerProps> = {}, on?: Wire) {
     const harness = open({ dictation: true, ...over }, on);
     const mic = document.querySelector('.mic');
     if (!(mic instanceof HTMLElement)) throw new Error('the box drew no mic to open with');
-    mic.click();
+    vi.useFakeTimers();
+    mic.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+    vi.advanceTimersByTime(450);
+    mic.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }));
+    vi.useRealTimers();
     flushSync();
     return harness;
   }

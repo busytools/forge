@@ -900,14 +900,40 @@
     };
   });
 
+  /** A hold on the mic that opens the settings instead of firing a take. */
+  const MIC_HOLD_MS = 450;
+  let holdTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Set when the hold fired, so its release does not also read as a press. */
+  let heldInstead = false;
+
   /**
-   * The mic is the door, not the trigger: pressing it shows what dictation is
-   * set to, and nothing on the page starts a take. The push-to-talk key is the
-   * trigger, which is the terminal's own shape - it has no record button
-   * either.
+   * The mic is the trigger and the door both: a press starts or ends a take -
+   * a phone has no push-to-talk key, so a mic that only SHOWED the settings
+   * would leave a finger no way to dictate - and a hold opens what dictation
+   * is set to (Ved, 2026-10-08: press once to dictate, hold for settings).
    */
   function mic(): void {
-    panel = !panel;
+    if (heldInstead) {
+      heldInstead = false;
+      return;
+    }
+    micTake();
+  }
+
+  function micHoldStart(): void {
+    heldInstead = false;
+    holdTimer = setTimeout(() => {
+      holdTimer = null;
+      heldInstead = true;
+      panel = true;
+    }, MIC_HOLD_MS);
+  }
+
+  function micHoldEnd(): void {
+    if (holdTimer !== null) {
+      clearTimeout(holdTimer);
+      holdTimer = null;
+    }
   }
 
   /** Abandon a take without submitting it, which the dock's Escape does. */
@@ -1087,8 +1113,21 @@
           <button
             class="mic"
             type="button"
-            aria-label="dictation settings"
+            title="press to dictate, hold for settings"
+            aria-label={take === null ? 'dictate' : 'stop dictating'}
             aria-expanded={panel}
+            onpointerdown={micHoldStart}
+            onpointerup={micHoldEnd}
+            onpointerleave={micHoldEnd}
+            onkeydown={(event: KeyboardEvent) => {
+              // **The hold's door for a keyboard.** The press is the button's
+              // own click; the settings need one modifier shape, said in the
+              // title so it is discoverable rather than folklore.
+              if (event.key === 'Enter' && event.shiftKey) {
+                event.preventDefault();
+                panel = true;
+              }
+            }}
             onclick={mic}
           >
             <Icon name="mic" />
