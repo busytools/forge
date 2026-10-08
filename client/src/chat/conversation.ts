@@ -580,6 +580,18 @@ export class Chat {
    * `session_id` on the page is the real fix and is a wire change.
    */
   private abandoned = 0;
+  /**
+   * Frames that arrived with no turn to join and no row of their own.
+   *
+   * **Nothing the seat sent is dropped for want of a turn** (rule 25): the
+   * turn a counter or a task frame belongs to may simply not have opened yet,
+   * so they wait here and ride the next turn that opens - or join the newest
+   * row a landing page brings, where the page was cut before they arrived.
+   * A page that already carries one takes its place and the copy here is let
+   * go, which is the frame's own copy arriving a second time rather than a
+   * second frame.
+   */
+  private unturned: unknown[] = [];
   /** Record that an ask which was in flight is now answered by nothing. */
   private forgot(): void {
     this.fold((held) => ({ ...held, dropped: held.dropped + 1 }));
@@ -993,7 +1005,8 @@ export class Chat {
        * the words.
        */
       const answered = new Set<unknown>();
-      for (const row of pageTurns(rows)) {
+      const pageRows = pageTurns(rows);
+      for (const row of pageRows) {
         // What the turn is held under: the fold's own name where it gave one,
         // and the name this conversation gave it where it did not. Reading
         // only the fold's name makes every unnamed turn a stranger on the way
@@ -1152,6 +1165,25 @@ export class Chat {
         const grown = live.messages.filter((message) => !carries(copy, message));
         return { key: name, messages: [...copy, ...grown], live: true, also };
       });
+      // Frames that waited for a turn, against this page: one the page already
+      // carries is the SAME frame read back, so its copy here is let go; the
+      // rest are newer than the page's cut, and they ride its newest row -
+      // which is the exchange that was being written when they arrived. An
+      // older page takes none of them: they are newer than everything in it.
+      if (direction === 'newest' && this.unturned.length > 0) {
+        const fromPage = pageRows.flatMap((row) => messagesOf(row));
+        const riding = this.unturned.filter((message) => !carries(fromPage, message));
+        const newest = drawn[drawn.length - 1];
+        if (newest === undefined) {
+          // Nothing on this page to ride; the next turn that opens takes them.
+          this.unturned = riding;
+        } else {
+          if (riding.length > 0) {
+            drawn[drawn.length - 1] = { ...newest, messages: [...newest.messages, ...riding] };
+          }
+          this.unturned = [];
+        }
+      }
       // The page's own names count as being on the page: a turn it settled is
       // held under the name its row already had, and the copy the page carried
       // is the same turn rather than another row to keep beside it.
@@ -1212,6 +1244,9 @@ export class Chat {
     this.waiting.clear();
     this.drained.clear();
     this.turnRunning = false;
+    // Frames the last occupant's run left waiting for a turn go with it: they
+    // are its conversation, and the new one's rows are not where they belong.
+    this.unturned = [];
     // A swap is not a frame's draw: the reset lands now, whatever any paint
     // was waiting for.
     this.held = NOTHING;
@@ -1718,7 +1753,13 @@ export class Chat {
       // one, holding it back drops it rather than placing it, and the reader's
       // own words draw with no answer under them.
       if (!opens && !(last === undefined && draws && isForgeNotice(message))) {
-        if (last === undefined) return held;
+        if (last === undefined) {
+          // No turn to join yet - and no row of its own to open. Held rather
+          // than dropped (rule 25): the turn that will carry it is the one
+          // still coming.
+          this.unturned.push(message);
+          return held;
+        }
         const grown: Turn = { ...last, messages: [...last.messages, message] };
         return this.answered({
           ...held,
@@ -1727,6 +1768,11 @@ export class Chat {
         });
       }
       const taken = new Set(held.turns.map((turn) => turn.key));
+      // The frames that waited for a turn ride ahead of the one that opened:
+      // they arrived first, and a counter or a task fact reads in the turn it
+      // was reported for.
+      const riding = this.unturned;
+      this.unturned = [];
       const key = nameIn({ key: liveName(message, held.turns.length), messages: [message] }, taken);
       // **A row opened for the core's own line is not a turn being written.**
       // The line is a command's answer, so there is no turn in flight and the
@@ -1741,7 +1787,7 @@ export class Chat {
       return this.answered({
         ...held,
         following: follow,
-        turns: [...held.turns, { key, messages: [message], live }],
+        turns: [...held.turns, { key, messages: [...riding, message], live }],
       });
     });
   }

@@ -838,9 +838,10 @@ describe('the conversation the chat draws', () => {
     chat.start();
 
     // Before any page has landed there is no turn for it to join, and it
-    // still opens none: a row it opened would draw nothing.
+    // still opens none: a row it opened would draw nothing. It is HELD for
+    // the turn that comes rather than dropped (rule 25).
     server.update({ chat_appended: { key: LEAD, msg: counted(1) } });
-    expect(get(chat.value).turns, 'a frame with no turn to join is held nowhere').toEqual([]);
+    expect(get(chat.value).turns, 'a frame with no turn to join opens no row').toEqual([]);
 
     server.send(page([turn('t1', 'first'), turn('t2', 'second')], null));
 
@@ -862,9 +863,62 @@ describe('the conversation the chat draws', () => {
     expect(after.length, 'the frames opened no row of their own').toBe(2);
     expect(after[after.length - 1]?.messages, 'and are held in the turn they arrived in').toEqual([
       ...turn('t2', 'second').messages,
+      // The counter that waited for a turn: the page was cut before it
+      // arrived, so it rides the newest row the page brought.
+      counted(1),
       counted(50),
       progressed(),
       counted(100),
+    ]);
+  });
+
+  /**
+   * A frame that waited for a turn rides the one a later frame opens.
+   *
+   * The counterpart of the page's newest row above, for a seat no page
+   * answers: the counter of a turn whose opening frame is still coming
+   * arrives first, so it waits and then leads the turn it was reported for
+   * (rule 25 - nothing the seat sent is dropped for want of a turn).
+   */
+  it('a frame with no turn yet rides the turn the next frame opens', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+
+    server.update({ chat_appended: { key: LEAD, msg: counted(7) } });
+    expect(get(chat.value).turns, 'no row of its own while it waits').toEqual([]);
+
+    server.update({ chat_appended: { key: LEAD, msg: said('the turn it belongs to') } });
+
+    const turns = get(chat.value).turns;
+    expect(turns, 'the opening frame made one turn').toHaveLength(1);
+    expect(turns[0]?.messages, 'and the counter rode ahead of it').toEqual([
+      counted(7),
+      said('the turn it belongs to'),
+    ]);
+  });
+
+  /**
+   * A page that already carries a waiting frame takes its place, once.
+   *
+   * The frame arrived while the page was in flight and the page's own copy
+   * of it landed too: the two are one frame seen twice, so the page's copy
+   * stands and the wait ends - drawing both is the doubled counter the
+   * reconciliation exists to prevent.
+   */
+  it('a page that carries a waiting frame takes its place, drawn once', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+
+    server.update({ chat_appended: { key: LEAD, msg: counted(3) } });
+    server.send(page([{ key: 'p1', messages: [counted(3), said('the page had it')] }], null));
+
+    const turns = get(chat.value).turns;
+    expect(turns, 'the page landed as its own row').toHaveLength(1);
+    expect(turns[0]?.messages, 'the frame is carried once, by the page').toEqual([
+      counted(3),
+      said('the page had it'),
     ]);
   });
 
