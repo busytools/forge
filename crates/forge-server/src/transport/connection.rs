@@ -1793,7 +1793,11 @@ mod tests {
     fn a_frame_lands_in_the_read_aloud_recording_with_no_seat() {
         let recording = Streaming { seats: Vec::new(), read_aloud: true };
 
-        assert_eq!(frame_route(&payload(&[16384]), &recording), FrameRoute::Audio(vec![0.5]));
+        assert_eq!(
+            frame_route(&payload(&[16384]), &recording),
+            FrameRoute::Audio(vec![0.5]),
+            "a recording is a destination for a frame with no seat behind it"
+        );
         assert_eq!(
             frame_route(&payload(&[16384]), &Streaming::default()),
             FrameRoute::NoTake,

@@ -426,6 +426,8 @@ fn discard_unusable_partial(partial: &Path, failure: Error) -> Error {
     }
 }
 
+/// Check `path` against the spec, hashing only what there is a digest for.
+///
 /// Size first, then digest: a truncated file is the common case and
 /// costs one `stat` to reject.
 ///
@@ -433,10 +435,6 @@ fn discard_unusable_partial(partial: &Path, failure: Error) -> Error {
 /// `ETag`: HuggingFace answers with a chunked xet etag that is a
 /// different value from the file's SHA-256, so trusting it would reject
 /// a perfectly good file forever.
-///
-/// Returns the digest it computed, for a caller recording it against the
-/// state the file is in.
-/// Check `path` against the spec, hashing only what there is a digest for.
 ///
 /// Returns the digest when one was computed. A spec with no digest - a
 /// model whose upstream publishes none - gets its size checked and nothing
