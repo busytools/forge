@@ -88,6 +88,12 @@
     act({ dictate_deactivate: { role } });
   }
 
+  /** Remove one downloaded model - the file and its record. The core refuses
+   * it while a role runs the file, in its own words. */
+  function uninstall(file: string): void {
+    act({ dictate_uninstall: { file } });
+  }
+
   /**
    * The update flow, as the page knows it: the variant being updated to, and
    * the file once the download has landed.
@@ -384,5 +390,6 @@
     onsweep={sweepRun}
     onsweepcancel={sweepCancel}
     onadopt={adoptTo}
+    onuninstall={uninstall}
   />
 {/if}

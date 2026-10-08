@@ -859,7 +859,7 @@ export function sweepHeadline(verdict: SweepVerdict): string {
 export function sweepScope(verdict: SweepVerdict): string {
   const clips = verdict.best.result.corpus.clips;
   const corpus = verdict.tier === 'read_aloud' ? 'your read-aloud set' : 'your takes';
-  const where = `${corpus}, ${clips} clips`;
+  const where = `${corpus}, ${clips} ${clips === 1 ? 'clip' : 'clips'}`;
   if (verdict.role !== 'cleanup') {
     return verdict.pick
       ? `the feed's own pick, scored on ${where}`
@@ -1067,7 +1067,7 @@ export function resultFacts(result: BenchResult): FactPart[] {
     parts.push({ text: `${agreed} of ${of} matched a baseline` });
   }
   parts.push({
-    text: `${metrics.clips} clips \u{b7} ${Math.round(metrics.audio_seconds)}s of audio`,
+    text: `${metrics.clips} ${metrics.clips === 1 ? 'clip' : 'clips'} \u{b7} ${Math.round(metrics.audio_seconds)}s of audio`,
   });
   // Where the wall time went, so two runs can be compared past the totals.
   parts.push({
@@ -1181,7 +1181,7 @@ function verdictAgainst(candidate: BenchMetrics, current: BenchMetrics): string 
   if (candidate.matched !== null && current.matched !== null) {
     const [agreed, of] = candidate.matched;
     const [agreedNow, ofNow] = current.matched;
-    const theirs = `${agreedNow} of ${ofNow} matched a baseline at ${speed}`;
+    const theirs = `${agreedNow} of ${ofNow} baselines at ${speed}`;
     if (agreed * ofNow > agreedNow * of) {
       return `agrees with the baselines more often than the model in use, which matched ${theirs}`;
     }

@@ -89,6 +89,7 @@
     onsweep,
     onsweepcancel,
     onadopt,
+    onuninstall,
   }: {
     wire: DictateModelsWire;
     oncheck: () => void;
@@ -127,6 +128,9 @@
     onsweepcancel: () => void;
     /** Take a verdict's winner into the role it read best in. */
     onadopt: (variant: string, role: ModelRole) => void;
+    /** Remove one downloaded model - the file and its record. Refused by the
+     * core while a role runs it, in the core's own words. */
+    onuninstall: (file: string) => void;
   } = $props();
 
   let query = $state('');
@@ -284,6 +288,18 @@
   // families, and its fastest entries.
   const familyList = $derived(families(wire.rows));
   const fastestRows = $derived(fastest(wire.rows, 3));
+
+  /**
+   * The failure a reader has closed. Keyed by what failed, so a new failure
+   * - another model, another reason - draws rather than staying hidden
+   * behind a dismissal that was about something else. The bench state itself
+   * lives in the core and is not this side's to clear.
+   */
+  let dismissedFailure = $state<string | null>(null);
+  const failureKey = $derived(
+    wire.bench.state === 'failed' ? `${wire.bench.target.file}|${wire.bench.reason}` : null,
+  );
+  const failureShown = $derived(failureKey !== null && dismissedFailure !== failureKey);
 </script>
 
 {#snippet facts(list: FactPart[])}
@@ -292,12 +308,15 @@
       >{:else}{part.text}{/if}{/each}
 {/snippet}
 
-{#snippet op(opline: {
-  mark: string;
-  title: string;
-  detail: string | null;
-  percent: number | null;
-})}
+{#snippet op(
+  opline: {
+    mark: string;
+    title: string;
+    detail: string | null;
+    percent: number | null;
+  },
+  ondismiss: (() => void) | null = null,
+)}
   <div class="status {opline.mark === 'live' ? '' : opline.mark}" role="status">
     <span class="dot {opline.mark}"></span>
     <span class="t">{opline.title}</span>
@@ -306,6 +325,9 @@
       ></progress>
     {/if}
     <span class="spacer"></span>
+    {#if ondismiss !== null}
+      <button class="chip" type="button" aria-label="close this" onclick={ondismiss}>close</button>
+    {/if}
     {#if opline.detail !== null}<span class="when">{opline.detail}</span>{/if}
   </div>
 {/snippet}
@@ -903,7 +925,12 @@
         </div>
       {/if}
 
-      {#if bench !== null}{@render op(bench)}{/if}
+      {#if bench !== null && (wire.bench.state !== 'failed' || failureShown)}
+        {@render op(
+          bench,
+          wire.bench.state === 'failed' ? () => (dismissedFailure = failureKey) : null,
+        )}
+      {/if}
 
       <!-- The doors: what a run measured, and what can be run by hand. Both
            lists are long, and neither is what the section is for, so they
@@ -963,6 +990,15 @@
                       type="button"
                       disabled={busy}
                       onclick={() => onbench(row.target, 'read_aloud')}>score the read-aloud</button
+                    >
+                  {/if}
+                  {#if !row.current && wire.installed.some((model) => model.file === row.target.file)}
+                    <button
+                      class="chip"
+                      type="button"
+                      disabled={busy}
+                      title="remove the file and its record from this machine"
+                      onclick={() => onuninstall(row.target.file)}>remove</button
                     >
                   {/if}
                 {/if}

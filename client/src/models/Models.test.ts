@@ -64,6 +64,7 @@ function open(
     onsweep: () => void;
     onsweepcancel: () => void;
     onadopt: (variant: string, role: ModelRole) => void;
+    onuninstall: (file: string) => void;
     verdicts: SweepVerdict[];
   }> = {},
 ) {
@@ -91,6 +92,7 @@ function open(
       onsweep: handlers.onsweep ?? (() => {}),
       onsweepcancel: handlers.onsweepcancel ?? (() => {}),
       onadopt: handlers.onadopt ?? (() => {}),
+      onuninstall: handlers.onuninstall ?? (() => {}),
       verdicts: handlers.verdicts ?? [],
     },
   });
@@ -411,6 +413,56 @@ describe('the models page as it draws', () => {
 
     expect(host.textContent).toContain('the catalogue could not be reached');
     expect(host.textContent).toContain('github.com answered 502');
+  });
+
+  /**
+   * A failure a reader has closed stays closed - and a NEW failure draws
+   * rather than hiding behind a dismissal that was about something else.
+   */
+  it('lets a failed bench line be closed, and draws the next one', () => {
+    const failed = (file: string, reason: string): DictateModelsWire => ({
+      ...modelsWire,
+      bench: { state: 'failed', target: { file, role: 'transcribing', pinned: false }, reason },
+    });
+
+    const host = open(failed('a-norm-a.gguf', 'No such file or directory (os error 2)'));
+    expect(host.textContent).toContain('the bench did not finish');
+
+    const close = [...host.querySelectorAll<HTMLButtonElement>('button')].find(
+      (c) => c.textContent === 'close',
+    );
+    expect(close, 'the failed line drew no way to close it').not.toBeUndefined();
+    close?.click();
+    flushSync();
+
+    expect(host.textContent, 'the closed line kept drawing').not.toContain(
+      'the bench did not finish',
+    );
+
+    // Another model failing is its own line, not the closed one.
+    const again = open(failed('b-norm-b.gguf', 'the file is not a model'));
+    expect(again.textContent).toContain('the bench did not finish');
+  });
+
+  /**
+   * A model this machine downloaded and nothing runs carries the control
+   * that removes it - what a sweep left behind, or a download the runtime no
+   * longer needs. One in use does not: the core refuses it by name.
+   */
+  it('offers remove on an installed model that nothing runs', () => {
+    const removed: string[] = [];
+    const host = open(modelsWire, { onuninstall: (file) => removed.push(file) });
+
+    const remove = [...host.querySelectorAll<HTMLButtonElement>('button')].filter(
+      (c) => c.textContent === 'remove',
+    );
+    // Exactly the two downloaded models nothing runs: the two in use are not
+    // offered, because the core refuses to remove what runs.
+    expect(remove.length, 'the removable rows are the installed ones').toBe(2);
+    remove[0]?.click();
+    flushSync();
+
+    expect(removed).toEqual(['granite-speech-5.0-470m-turboctc-nc-Q4_K_M.gguf']);
   });
 
   /**

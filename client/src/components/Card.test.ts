@@ -107,6 +107,7 @@ describe('the band card', () => {
           onsweep: () => {},
           onsweepcancel: () => {},
           onadopt: () => {},
+          onuninstall: () => {},
         },
       }),
     );

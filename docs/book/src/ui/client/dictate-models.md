@@ -32,7 +32,7 @@ either.
 | In use | one row per model forge runs: its role - **the selector for the updates below** - its file, the facts the spec declares (size, quant, parameters, digest, licence), the feed's own measurement when it has one, the live state as a chip, and a line saying where the model came from | `in_use` |
 | Updates | what a check reads, the check's own line - up to date, an update, checking, unreachable, or a state this client cannot read - with both roles' news under it, then the selected role's recommendation with the one control that takes it, then the comparison table behind a door; the cleanup role's own view instead, where no feed measures a normalizer: its candidates with each one's own runs under it | `check`, `updates`, `rows`, `installed`, `results` |
 | Find a model | a box that filters the feed's rows as it is typed, with the feed's families and its fastest rows offered before a name is known: the variant, the quant a machine would run, the measured speed and error, the licence, what it transcribes, and the row's control. Each row links to the entry's own document | `rows` |
-| Benchmark | the fixtures first - the read-aloud set's own state with the record control and the count line - then the one press that scores the picks on this machine and leaves a verdict, then two doors: every run scored here, and every model a bench can run | `bench`, `read_aloud`, `results` |
+| Benchmark | the fixtures first - the read-aloud set's own state with the record control and the count line - then the one press that scores the picks on this machine and leaves a verdict, then two doors: every run scored here, and every model a bench can run, with the control that removes a downloaded model nothing runs | `bench`, `read_aloud`, `results` |
 
 **A model in use is drawn from its spec.** The first fact line comes off the
 `ModelSpec` - the size, quant, parameters, digest and licence the loader
@@ -285,6 +285,14 @@ entry matches" and chips pointing at nothing.
 - **A verdict**: whether the model in use read best, or which run read
   better and by what, with the scope in the same words and the switch - and
   its download cost - where one is offered. It stands until the next sweep.
+- **A bench that did not finish**: the core's own reason under the section,
+  with a close on the line. Closing hides that failure - keyed by what
+  failed, so the next one draws - because the state itself is the core's and
+  the page does not clear what it did not set.
+- **A model this machine downloaded and nothing runs**: the row carries the
+  control that removes the file and its record, refused by the core while a
+  role runs it. This is what clears a broken download, and what a sweep
+  leaves behind when its candidate lost.
 - **A refused action**: the core's own words under the header, on an
   `error` frame the connection answered the dispatch with - a second
   download while one runs, an activation on a role `forge.toml` pins, or an
