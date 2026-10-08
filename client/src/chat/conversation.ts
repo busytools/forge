@@ -521,7 +521,8 @@ const RETRY_MS = 2_000;
  * callback that never fires - whatever lost it, which is nothing this code
  * can know - would leave the column dead, new rows folded and never drawn,
  * until a read landed, because the flag clears only inside that callback.
- * No paint of a live page is this slow.
+ * A painting page clears the deadline long before it: a frame is 16ms at
+ * 60Hz and this is a quarter second.
  */
 const PAINT_WATCHDOG_MS = 250;
 
