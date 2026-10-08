@@ -507,4 +507,19 @@ describe('the browser segment', () => {
     });
     shown.stop();
   });
+
+  /** **A failed shared-line read is drawn**: the catch that says so was
+   *  revertible to a silence with every test green, and a button quietly
+   *  pinned to "show" reads as a window that is down. */
+  it('draws a shared-line read that failed', async () => {
+    vi.mocked(profileWindowed).mockRejectedValueOnce('the browser window state would not read');
+    const shown = show();
+    click(shown.target.querySelector('.bz-tog'));
+    await vi.waitFor(() => {
+      expect(shown.target.textContent, 'a shared-line read that failed says so').toContain(
+        'the browser window state would not read',
+      );
+    });
+    shown.stop();
+  });
 });
