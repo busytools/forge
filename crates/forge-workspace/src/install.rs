@@ -1533,6 +1533,42 @@ mod tests_install {
         assert!(landed.installed.is_empty(), "and nothing was recorded");
     }
 
+    /// **A file nothing recorded goes back.** The page lists and removes a
+    /// model by its record, so a store that could not write one leaves a file
+    /// no control can reach: the install takes the bytes back and fails by
+    /// name rather than landing litter behind it.
+    #[tokio::test]
+    async fn a_store_that_cannot_record_takes_the_downloaded_bytes_back() {
+        // `enabled_stub` keeps `db` at `None`, so recording answers false.
+        let (ws, mut updates, models) = enabled_stub();
+        let body = b"hubbytes".to_vec();
+        let base = serve(vec![("/weights/norm-a-Q4_K_M.gguf", 200, body)]);
+        let entry = forge_dictate::catalogue::parse_entry(&format!(
+            r#"{{"schema":"transcribe-catalog-v1","variant":"owner/norm-a",
+                "kind":"normalizer",
+                "downloads":[{{"quant":"Q4_K_M","filename":"norm-a-Q4_K_M.gguf",
+                    "size_bytes":8,
+                    "sha256":"0c6bee82a304781cb9fefa1dda4bfa5f5b8be07d9f6f77918f2d96854ce5165e",
+                    "url":"{base}/weights/norm-a-Q4_K_M.gguf"}}]}}"#
+        ))
+        .expect("the synthetic entry parses");
+        ws.dictate_catalogue.lock().catalogue = Some(catalogue_of(vec![entry]));
+        ws.dispatch(Command::DictateInstall { variant: "owner/norm-a".to_owned() })
+            .expect("the install dispatches");
+
+        let landed = await_models(&mut updates).await;
+        let InstallState::Failed { file, reason } = &landed.install else {
+            panic!("an unrecordable download must fail the install, got {:?}", landed.install)
+        };
+        assert_eq!(file, "norm-a-Q4_K_M.gguf", "the failure names the file");
+        assert!(reason.contains("could not be recorded"), "got: {reason}");
+        assert!(landed.installed.is_empty(), "nothing was recorded");
+        assert!(
+            !models.path().join("norm-a-Q4_K_M.gguf").exists(),
+            "the unrecordable download left its bytes behind"
+        );
+    }
+
     /// Review Focus 5: with `[dictate]` off there is no models directory to
     /// install into and no engine to run one, so the command refuses by name.
     #[test]
