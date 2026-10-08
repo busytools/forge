@@ -194,7 +194,15 @@ if [ "$ANDROID_MODE" = true ]; then
         echo "[ERROR] no Android NDK found to take libc++_shared.so from - set ANDROID_HOME" >&2
         exit 1
     fi
-    stl_src="$ndk/toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so"
+    # The NDK's prebuilt dir is host-tagged: darwin-x86_64 on macOS (also on
+    # Apple Silicon, the toolchains are fat binaries), linux-x86_64 elsewhere
+    # - the README's non-macOS advice depends on this resolving.
+    case "$(uname -s)" in
+        Darwin) ndk_host="darwin-x86_64" ;;
+        Linux) ndk_host="linux-x86_64" ;;
+        *) ndk_host="" ;;
+    esac
+    stl_src="$ndk/toolchains/llvm/prebuilt/$ndk_host/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so"
     if [ ! -f "$stl_src" ]; then
         echo "[ERROR] libc++_shared.so not found under $ndk" >&2
         exit 1

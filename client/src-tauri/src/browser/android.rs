@@ -26,6 +26,12 @@ pub struct Relay {
     pub ui_origin: String,
     #[serde(rename = "nodeStarted")]
     pub node_started: bool,
+    /// The engine's real viewport, which the driver's context is seeded with
+    /// right after the pin (see `Driver::start_inapp`).
+    #[serde(rename = "viewportWidth", default)]
+    pub viewport_width: u32,
+    #[serde(rename = "viewportHeight", default)]
+    pub viewport_height: u32,
 }
 
 #[derive(Serialize)]

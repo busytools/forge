@@ -42,7 +42,12 @@ function parseArgs(argv) {
 const opts = parseArgs(process.argv);
 console.error('[bootstrap] payload up ' + process.version + ' at ' + Date.now());
 if (!opts.mcp || !opts.mcpSocket || !opts.cdp || !opts.cdpToken || !opts.output) {
-  console.error('[bootstrap] missing an argument: ' + JSON.stringify(opts));
+  // **Names the missing field, never the object**: stringifying `opts` would
+  // put the relay token in logcat on a lost field.
+  const missing = ['mcp', 'mcpSocket', 'cdp', 'cdpToken', 'output'].filter(function (key) {
+    return !opts[key];
+  });
+  console.error('[bootstrap] missing an argument: ' + missing.join(', '));
   throw new Error('the bootstrap was not given its full argv');
 }
 

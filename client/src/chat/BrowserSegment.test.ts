@@ -215,6 +215,17 @@ describe('the browser segment', () => {
         'the raise lands on the UI thread after a caller read; its word re-reads too',
       ).toBeGreaterThan(afterDone);
     });
+
+    // **`lowered` is now the only word the bar's back sends** - dropping
+    // that arm left every test green before this case existed.
+    const afterRaised = vi.mocked(profileWindowed).mock.calls.length;
+    window.dispatchEvent(new CustomEvent('forge-takeover', { detail: 'lowered' }));
+    await vi.waitFor(() => {
+      expect(
+        vi.mocked(profileWindowed).mock.calls.length,
+        "the bar's back says lowered, and nothing else - the row must re-read on it",
+      ).toBeGreaterThan(afterRaised);
+    });
     shown.stop();
   });
 

@@ -41,7 +41,7 @@ const START_TIMEOUT: Duration = Duration::from_secs(15);
 /// second, so a later call waits only 6 s - a dead in-app node fails in
 /// seconds with the reason instead of paying the cold window per call.
 #[cfg(target_os = "android")]
-const IN_APP_COLD_ACCEPT_TIMEOUT: Duration = Duration::from_secs(35);
+const IN_APP_COLD_ACCEPT_TIMEOUT: Duration = Duration::from_secs(40);
 #[cfg(target_os = "android")]
 const IN_APP_WARM_ACCEPT_TIMEOUT: Duration = Duration::from_secs(6);
 #[cfg(target_os = "android")]
@@ -201,9 +201,49 @@ impl Driver {
             .map_err(|why| format!("the driver did not answer its MCP handshake: {why}"))?;
         let client = service.peer().clone();
         let origin = if ui_origin.is_empty() { relay.ui_origin.clone() } else { ui_origin.to_owned() };
+        // **An empty origin fails the start - it cannot fall through.**
+        // `origin_match` refuses an empty origin by design, so an empty one
+        // INVERTS the pin (every URL fails the match, and the first tab -
+        // which is the client's own page - is picked) and disarms the guard
+        // entirely. Reachable whenever the Kotlin side answers "" (no client
+        // webview yet, or its UI-thread latch times out on a busy thread).
+        if origin.is_empty() {
+            return Err(
+                "the client UI's origin could not be read, so the browser page cannot be told \
+                 apart from it; the driver is not started"
+                    .to_owned(),
+            );
+        }
         let driver = Self { _service: service, client, ui_origin: origin };
         driver.pin_browser_tab().await?;
+        driver.seed_viewport(&relay).await;
         Ok(driver)
+    }
+
+    /// Seed the driver's context with the engine's real viewport.
+    ///
+    /// **Playwright's geometry checks run against ITS context viewport, and
+    /// that starts at nothing over CDP**: an invisible WebView lays its page
+    /// out (the page's own innerWidth reads 980), yet `browser_click`
+    /// refuses with "element is outside of the viewport" and
+    /// `browser_take_screenshot` with "Cannot take screenshot with 0 width"
+    /// until an emulation override is set - which `browser_resize` is. A
+    /// failure here is logged, not fatal: navigate/type/evaluate carry
+    /// without it.
+    #[cfg(target_os = "android")]
+    async fn seed_viewport(&self, relay: &super::android::Relay) {
+        if relay.viewport_width == 0 || relay.viewport_height == 0 {
+            return;
+        }
+        let args = serde_json::json!({ "width": relay.viewport_width, "height": relay.viewport_height });
+        match self.call_raw("browser_resize", args).await {
+            Ok(_) => tauri_plugin_log::log::info!(
+                "the driver's context seeded with the engine's viewport ({}x{})",
+                relay.viewport_width,
+                relay.viewport_height
+            ),
+            Err(why) => tauri_plugin_log::log::warn!("the viewport seed did not take: {why}"),
+        }
     }
 
     /// Point the driver's current tab at the browser page. See
@@ -242,56 +282,32 @@ impl Driver {
     /// on the client's screen or take the engine's only page away. The pin
     /// keeps the driver off the UI by default; this keeps a session from
     /// putting it there with `browser_tabs select`, and refuses `close`
-    /// outright - `close` with no index closes the CURRENT tab (which after
-    /// the pin IS the browser page), the pinned driver re-points its current
-    /// tab at whatever remains (the client's UI page), and every later call
-    /// would drive forge's own screen. `browser_close` is the same harm
-    /// behind the MCP's own close-page tool, and no relaunch exists here to
-    /// reopen what it closed.
+    /// outright. **The decision itself is `tab_call_refusal`** - pure, so
+    /// the host tests can pin it; this method only fetches the tab list the
+    /// select case needs.
     #[cfg(target_os = "android")]
     async fn refuse_a_client_page(&self, tool: &str, args: &Value) -> Result<(), String> {
-        if tool == "browser_close" {
-            return Err(
-                "the phone's browser page is the app's own screen and is never closed: \
-                 navigate it away instead (browser_navigate), or leave it where it is"
-                    .to_owned(),
-            );
-        }
-        if tool != "browser_tabs" {
-            return Ok(());
-        }
-        let action = args.get("action").and_then(Value::as_str).unwrap_or_default();
-        if action == "close" {
-            return Err(
-                "the phone hosts one browser page and closing it takes the engine's only \
-                 page: navigate it away instead (browser_navigate)"
-                    .to_owned(),
-            );
-        }
-        if action != "select" {
-            return Ok(());
-        }
-        let Some(index) = args.get("index").and_then(Value::as_u64) else {
-            return Ok(());
+        let needs_tabs = tool == "browser_tabs"
+            && args.get("action").and_then(Value::as_str) == Some("select")
+            && args.get("index").and_then(Value::as_u64).is_some();
+        let listed = if needs_tabs {
+            let parts =
+                self.call_raw("browser_tabs", serde_json::json!({ "action": "list" })).await?;
+            parts
+                .iter()
+                .map(|part| match part {
+                    ReplyPart::Text { text } => text.as_str(),
+                    ReplyPart::Image { .. } => "[an image]",
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else {
+            String::new()
         };
-        let listed = self.call_raw("browser_tabs", serde_json::json!({ "action": "list" })).await?;
-        let text = listed
-            .iter()
-            .map(|part| match part {
-                ReplyPart::Text { text } => text.as_str(),
-                ReplyPart::Image { .. } => "[an image]",
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        for (candidate, url) in browser_tabs_of(&text) {
-            if candidate == index as usize && origin_match(&url, self.ui_origin.as_str()) {
-                return Err(format!(
-                    "tab {index} is this client's own screen, not a browser page: the browser \
-                     tools drive the shared browser only"
-                ));
-            }
+        match tab_call_refusal(tool, args, &listed, self.ui_origin.as_str()) {
+            Some(refusal) => Err(refusal),
+            None => Ok(()),
         }
-        Ok(())
     }
 
     /// Whether the child is still there to answer.
@@ -444,6 +460,63 @@ pub fn origin_match(url: &str, origin: &str) -> bool {
     !origin.is_empty() && origin_of(url).eq_ignore_ascii_case(origin)
 }
 
+/// Why a tab-shaped call is refused on the phone, or `None` when the driver
+/// may run it. Pure, so the host tests pin what `cfg(android)` hides.
+///
+/// The harms: `browser_close` and `browser_tabs close` take the engine's
+/// only page away (`Target.closeTarget` reports success while the target
+/// STAYS LISTED on the WebView, so the driver's own bookkeeping drifts and
+/// its current tab can re-point at the client's UI page), and `browser_tabs
+/// select` can put the driver there directly. **An empty `ui_origin` cannot
+/// tell any page apart from the client's own**, so a select under one is
+/// refused rather than run blind (`start_inapp` refuses the whole start on
+/// an empty origin too - this is the second line).
+pub fn tab_call_refusal(
+    tool: &str,
+    args: &Value,
+    listed: &str,
+    ui_origin: &str,
+) -> Option<String> {
+    if tool == "browser_close" {
+        return Some(
+            "the phone's browser page is the app's own screen and is never closed: navigate \
+             it away instead (browser_navigate), or leave it where it is"
+                .to_owned(),
+        );
+    }
+    if tool != "browser_tabs" {
+        return None;
+    }
+    let action = args.get("action").and_then(Value::as_str).unwrap_or_default();
+    if action == "close" {
+        return Some(
+            "the phone hosts one browser page and closing it takes the engine's only page: \
+             navigate it away instead (browser_navigate)"
+                .to_owned(),
+        );
+    }
+    if action != "select" {
+        return None;
+    }
+    let Some(index) = args.get("index").and_then(Value::as_u64) else {
+        return None;
+    };
+    if ui_origin.is_empty() {
+        return Some(format!(
+            "the client UI's origin is not known, so tab {index} cannot be checked against it"
+        ));
+    }
+    for (candidate, url) in browser_tabs_of(listed) {
+        if candidate == index as usize && origin_match(&url, ui_origin) {
+            return Some(format!(
+                "tab {index} is this client's own screen, not a browser page: the browser \
+                 tools drive the shared browser only"
+            ));
+        }
+    }
+    None
+}
+
 /// The CLI inside the vendored package, run by the vendored node.
 pub fn cli_path(stack: &Path) -> PathBuf {
     stack.join("playwright-mcp/node_modules/@playwright/mcp/cli.js")
@@ -458,6 +531,7 @@ pub fn node_path(stack: &Path) -> PathBuf {
 mod tests {
     use super::*;
     use rmcp::model::CallToolResult;
+    use serde_json::json;
 
     /// A text answer is its text, and a result flagged as an error is not a
     /// result at all: it is the call's reason, which the tool returns as a
@@ -529,6 +603,52 @@ mod tests {
         );
 
         assert!(browser_tabs_of("no tabs here").is_empty());
+    }
+
+    /// The phone's tab-shaped refusals, pinned where `cfg(android)` cannot
+    /// hide them: the close door (both spellings), the select door, and the
+    /// empty-origin contract - an empty origin must never fall through to
+    /// "pick the first tab", which is the client's own page.
+    #[test]
+    fn a_tab_call_is_refused_where_the_phone_has_no_answer_for_it() {
+        let ui = "http://tauri.localhost";
+        let list = "- 0: (current) [](http://tauri.localhost/session/x)\n- 1: [](https://example.com/)";
+
+        let closed = tab_call_refusal("browser_close", &json!({}), "", ui);
+        assert!(closed.is_some(), "the MCP's close-page tool takes the engine's only page");
+
+        let close_no_index = tab_call_refusal("browser_tabs", &json!({ "action": "close" }), "", ui);
+        assert!(
+            close_no_index.is_some(),
+            "close with no index targets the CURRENT tab - the pinned browser page",
+        );
+        let close_index = tab_call_refusal("browser_tabs", &json!({ "action": "close", "index": 1 }), "", ui);
+        assert!(close_index.is_some(), "and a close with an index is the same door");
+
+        let onto_ui = tab_call_refusal("browser_tabs", &json!({ "action": "select", "index": 0 }), list, ui);
+        assert!(
+            onto_ui.as_deref().unwrap_or_default().contains("tab 0"),
+            "selecting the client's own page is refused by name: {onto_ui:?}",
+        );
+        assert!(
+            tab_call_refusal("browser_tabs", &json!({ "action": "select", "index": 1 }), list, ui)
+                .is_none(),
+            "a real browser page is selectable",
+        );
+        assert!(
+            tab_call_refusal("browser_tabs", &json!({ "action": "select", "index": 1 }), list, "")
+                .is_some(),
+            "**an empty origin cannot tell any page apart - it must refuse, never fall through**",
+        );
+        assert!(
+            tab_call_refusal("browser_tabs", &json!({ "action": "list" }), list, ui).is_none(),
+            "listing is not a door",
+        );
+        assert!(
+            tab_call_refusal("browser_navigate", &json!({ "url": "https://example.com/" }), "", ui)
+                .is_none(),
+            "and nothing else on the phone is gated here",
+        );
     }
 
     /// Origin extraction and the classifier built on it: equality, not a

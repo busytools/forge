@@ -131,10 +131,13 @@ class BrowserPlugin(private val activity: Activity) : Plugin(activity) {
         engine.ensure()
         engine.unpackAssets()
         val nodeStarted = engine.startDriver(args.socketPath, args.outputDir)
+        val viewport = engine.viewport()
         invoke.resolve(
           JSObject()
             .put("relayPort", engine.relayPort)
             .put("uiOrigin", engine.uiOrigin())
+            .put("viewportWidth", if (viewport.size == 2) viewport[0] else 0)
+            .put("viewportHeight", if (viewport.size == 2) viewport[1] else 0)
             // **Whether THIS call launched node**, so the shell can size its
             // accept window honestly: a cold boot takes seconds (measured
             // 8 s warm, 39 s loaded), while an already-running node redials
@@ -287,6 +290,32 @@ internal class BrowserEngine(private val activity: Activity) {
   }
 
   /**
+   * The engine's real viewport, read on the UI thread (the same rule as
+   * `uiOrigin`). The shell seeds the driver's context with it: an invisible
+   * WebView lays its page out, but playwright's own geometry bookkeeping
+   * starts at nothing, and click/screenshot checks run against IT (measured:
+   * "element is outside of the viewport" while the page's own innerWidth
+   * read 980).
+   */
+  fun viewport(): IntArray {
+    val page = webview ?: return IntArray(0)
+    var width = 0
+    var height = 0
+    val latch = java.util.concurrent.CountDownLatch(1)
+    activity.runOnUiThread {
+      width = page.width
+      height = page.height
+      latch.countDown()
+    }
+    try {
+      latch.await(2, java.util.concurrent.TimeUnit.SECONDS)
+    } catch (ignored: InterruptedException) {
+      // an empty pair answers below
+    }
+    return intArrayOf(width, height)
+  }
+
+  /**
    * The client UI's origin, which the shell's tab pin and guard compare
    * against. **Read on the UI thread**: every WebView method asserts its
    * thread, and this runs on the driver-start thread - reading `url` here
@@ -393,6 +422,25 @@ internal class BrowserEngine(private val activity: Activity) {
       useWideViewPort = true
       cacheMode = WebSettings.LOAD_DEFAULT
     }
+    // **A dead renderer must be a dead PAGE, not a dead app.** The engine
+    // renders arbitrary agent-directed pages (a heavy page's OOM, a
+    // chrome://crash), all WebViews share the renderer, and Android's
+    // default on an unhandled render-process-gone is to kill the app
+    // process. Claiming the callback, dropping the view and letting the
+    // next `ensure` build a fresh one turns it into a failed tool call.
+    view.webViewClient =
+      object : android.webkit.WebViewClient() {
+        override fun onRenderProcessGone(
+          view: WebView,
+          detail: android.webkit.RenderProcessGoneDetail?,
+        ): Boolean {
+          Log.w(TAG, "the browser page's renderer died; dropping the webview (crashed=${detail?.didCrash()})")
+          (view.parent as? ViewGroup)?.removeView(view)
+          view.destroy()
+          webview = null
+          return true
+        }
+      }
     // Hold JS dialogs open: the default WebView cancels an alert the same
     // millisecond CDP announces it, so a CDP client could never accept one
     // (measured). Resolving happens through the devtools session.
@@ -494,10 +542,11 @@ internal class BrowserEngine(private val activity: Activity) {
 
   /**
    * Loopback TCP, ephemeral port: playwright speaks HTTP and websockets only,
-   * so this is the one hop that must be TCP. The token gates the discovery
-   * request (the WebSocket path it reveals is the uuid nobody can guess);
-   * loopback alone would leave any other app on the device able to drive the
-   * WebView.
+   * so this is the one hop that must be TCP. **Every request is gated**
+   * (`relayAllows`): the pinned driver sends its `--cdp-header` token on the
+   * discovery fetch and the WebSocket upgrade alike, so another app on the
+   * device cannot even open the socket. Loopback alone would leave any of
+   * them able to drive the WebView.
    */
   private fun startRelay() {
     val server = ServerSocket(0, 8, InetAddress.getByName("127.0.0.1"))
@@ -524,7 +573,7 @@ internal class BrowserEngine(private val activity: Activity) {
       val headText = String(head, Charsets.ISO_8859_1)
       Log.i(TAG, "relay request: " + headText.lineSequence().firstOrNull()?.take(90) + " hdr=" + (headText.contains("X-Forge-Token: ", ignoreCase = true)))
       if (!relayAllows(headText, token)) {
-        Log.w(TAG, "relay refused an ungated discovery request")
+        Log.w(TAG, "relay refused an ungated request")
         val out = client.getOutputStream()
         out.write("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n".toByteArray())
         out.flush()
@@ -588,8 +637,6 @@ internal class BrowserEngine(private val activity: Activity) {
     return buffer.toByteArray()
   }
 
-  private fun authorized(head: String): Boolean = tokenHeaderMatches(head, token)
-
   private fun pump(from: InputStream, to: OutputStream) {
     val buffer = ByteArray(1 shl 16)
     try {
@@ -639,6 +686,12 @@ internal class BrowserEngine(private val activity: Activity) {
   }
 
   private fun notifyJs(what: String) {
+    // **Whitelisted, because the argument is interpolated into a JS string**
+    // - every call site is already a literal, and this keeps it that way.
+    if (what != "raised" && what != "lowered" && what != "done") {
+      Log.w(TAG, "notifyJs refused an unknown word")
+      return
+    }
     val page = MainActivity.clientWebView ?: return
     activity.runOnUiThread {
       page.evaluateJavascript("window.__forgeTakeover && window.__forgeTakeover('$what')", null)

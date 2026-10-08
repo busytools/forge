@@ -159,9 +159,10 @@ describe('the shell command names', () => {
 
     (window as unknown as { __forgeTakeover: (what: string) => void }).__forgeTakeover('done');
     (window as unknown as { __forgeTakeover: (what: string) => void }).__forgeTakeover('lowered');
+    (window as unknown as { __forgeTakeover: (what: string) => void }).__forgeTakeover('raised');
 
     window.removeEventListener('forge-takeover', listen);
-    expect(events, 'the three literals cross as themselves').toEqual(['done', 'lowered']);
+    expect(events, 'the three literals cross as themselves').toEqual(['done', 'lowered', 'raised']);
   });
 
   /** **The failure arm.** The shell rejects a failed call with the driver's
