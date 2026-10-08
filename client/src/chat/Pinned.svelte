@@ -17,6 +17,7 @@
   import { schedules } from './schedules.svelte';
   import { subagents } from './subagents.svelte';
   import { tasks } from './tasks.svelte';
+  import { hrefFor } from '../routes';
   import type { Connection } from '../socket';
   import type { SessionSlot } from '../wire/types';
   import type { TurnInfo } from './units';
@@ -64,6 +65,9 @@
       <span class="sg-fill"
         ><BrowserSegment {connection} {slot} /><SubagentSegment /><ProcessesSegment
         /><ConnectorsSegment /><SchedulesSegment /><McpSegment /><GitSegment /><TasksSegment
+          href={slot === null
+            ? null
+            : hrefFor({ name: 'board', org: slot.org, project: slot.project })}
         /><MonitorsSegment /></span
       >
     </div>

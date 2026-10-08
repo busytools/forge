@@ -3,6 +3,7 @@ import { JSDOM } from 'jsdom';
 import { render } from 'svelte/server';
 import { describe, expect, it } from 'vitest';
 
+import Board from './board/Board.svelte';
 import Pinned from './chat/Pinned.svelte';
 import { connectors } from './chat/connectors.svelte';
 import { git } from './chat/git.svelte';
@@ -136,6 +137,66 @@ describe('axe over the rendered pages', () => {
 
   it('draws the home with no violations', async () => {
     const html = render(Home, { props: { wire: homeWire, address: '127.0.0.1:8790' } }).body;
+    expect(await idsOf(html)).toEqual([]);
+  });
+
+  it('draws a project board with no violations', async () => {
+    // The fixture's board is empty, which is one of its states; a row that
+    // waits on the reader is the other state the page draws controls in.
+    const first = homeWire.projects[0];
+    if (first === undefined) throw new Error('the fixture holds no project');
+    const withWaiting: typeof homeWire = {
+      ...homeWire,
+      projects: [
+        {
+          ...first,
+          rows: [
+            {
+              task: {
+                id: 't1',
+                project_name: 'proj',
+                subject: 'a row waiting on the reader',
+                active_form: null,
+                detail: null,
+                status: 'waiting' as const,
+                owner: null,
+                parent: null,
+                waiting_on: {
+                  kind: 'decision' as const,
+                  detail: 'the mockup',
+                  on: null,
+                  verification: true,
+                },
+                estimate: null,
+                rank: null,
+                verify: 'user' as const,
+                links: [],
+                attempt: 1,
+                archived_at: null,
+                created_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+                updated_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+              },
+              worked_secs: 300,
+              updated_secs_ago: 60,
+              marks: {
+                ready: false,
+                in_review: false,
+                overdue: false,
+                no_movement: false,
+                waiting_too_long: false,
+                stale: false,
+                to_close: false,
+              },
+              rollup: null,
+              parent_subject: null,
+            },
+          ],
+        },
+      ],
+    };
+    const html = render(Board, {
+      props: { wire: withWaiting, org: 'TestOrg', project: 'proj' },
+    }).body;
     expect(await idsOf(html)).toEqual([]);
   });
 
