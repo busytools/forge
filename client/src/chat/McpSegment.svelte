@@ -130,7 +130,7 @@
       }}
     >
       <Icon name="mcp" />
-      {count === 0 ? 'servers failed' : `${count} server${count === 1 ? '' : 's'}`}
+      {count === 0 ? 'MCP failed' : `${count} MCP${count === 1 ? '' : 's'}`}
     </button>
 
     {#if open}
