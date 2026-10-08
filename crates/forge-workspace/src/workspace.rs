@@ -4959,19 +4959,28 @@ impl Workspace {
                                 );
                             }
                         }
-                        Ok(None) => tracing::debug!(
-                            target: "forge_workspace",
-                            project = %project,
-                            id = %id.as_str(),
-                            "a user verdict named a row that is not there",
-                        ),
-                        Err(refused) => tracing::debug!(
-                            target: "forge_workspace",
-                            project = %project,
-                            id = %id.as_str(),
-                            refusal = %refused,
-                            "a user verdict was refused",
-                        ),
+                        Ok(None) => {
+                            tracing::debug!(
+                                target: "forge_workspace",
+                                project = %project,
+                                id = %id.as_str(),
+                                "a user verdict named a row that is not there",
+                            );
+                            self.board_edit_refused(
+                                "a verdict",
+                                "the row it named is no longer there",
+                            );
+                        }
+                        Err(refused) => {
+                            tracing::debug!(
+                                target: "forge_workspace",
+                                project = %project,
+                                id = %id.as_str(),
+                                refusal = %refused,
+                                "a user verdict was refused",
+                            );
+                            self.board_edit_refused("a verdict", &refused.to_string());
+                        }
                     }
                 }
                 Command::TaskAnswer { project, id, words } => {
@@ -4993,19 +5002,28 @@ impl Workspace {
                                 );
                             }
                         }
-                        Ok(None) => tracing::debug!(
-                            target: "forge_workspace",
-                            project = %project,
-                            id = %id.as_str(),
-                            "a user answer named a row that is not there",
-                        ),
-                        Err(refused) => tracing::debug!(
-                            target: "forge_workspace",
-                            project = %project,
-                            id = %id.as_str(),
-                            refusal = %refused,
-                            "a user answer was refused",
-                        ),
+                        Ok(None) => {
+                            tracing::debug!(
+                                target: "forge_workspace",
+                                project = %project,
+                                id = %id.as_str(),
+                                "a user answer named a row that is not there",
+                            );
+                            self.board_edit_refused(
+                                "an answer",
+                                "the row it named is no longer there",
+                            );
+                        }
+                        Err(refused) => {
+                            tracing::debug!(
+                                target: "forge_workspace",
+                                project = %project,
+                                id = %id.as_str(),
+                                refusal = %refused,
+                                "a user answer was refused",
+                            );
+                            self.board_edit_refused("an answer", &refused.to_string());
+                        }
                     }
                 }
                 Command::TaskRank { project, id, to } => {
@@ -5053,6 +5071,16 @@ impl Workspace {
             }
             Ok(())
         }
+    }
+
+    /// Say on the service line why a board edit did not land: a refusal a
+    /// reader cannot see is indistinguishable from a press that did
+    /// nothing.
+    fn board_edit_refused(&self, what: &str, why: &str) {
+        let _ = self.update_tx.send(SessionUpdate::ServiceStatus {
+            severity: forge_primitives::cloud::service_status::ServiceSeverity::Warning,
+            message: format!("The board refused {what}: {why}"),
+        });
     }
 
     /// Re-spawn this project's persisted workers on lead reconnect,
@@ -8464,6 +8492,76 @@ mod tests {
         let (to_host, _asks) = tokio::sync::mpsc::unbounded_channel();
         let (notices, _notice_rx) = tokio::sync::mpsc::unbounded_channel();
         assert!(first.register(1, to_host, notices), "no connection has taken the role at boot");
+    }
+
+    /// The board's edits reach the store through the command bus, and a
+    /// refusal says so on the service line - a press that did nothing and
+    /// a press the core refused must not read the same.
+    #[tokio::test]
+    async fn a_board_verdict_dispatches_and_a_refusal_says_so() {
+        use forge_primitives::tasks::{By, Task, TaskId, TaskStatus};
+        let dir = tempdir().expect("tempdir");
+        let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-board-dispatch");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let sample = |id: &str| Task {
+            id: TaskId::from(id),
+            project_name: "proj".to_owned(),
+            subject: format!("subject {id}"),
+            active_form: None,
+            detail: None,
+            status: TaskStatus::Pending,
+            owner: None,
+            // A child, so the approval completes it on the live board -
+            // a root would close and archive, which is a different test.
+            parent: Some(TaskId::from("epic")),
+            waiting_on: None,
+            estimate: None,
+            rank: None,
+            verify: Some(forge_primitives::tasks::Verify::User),
+            links: Vec::new(),
+            attempt: 0,
+            archived_at: None,
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+            updated_at: std::time::SystemTime::UNIX_EPOCH,
+        };
+        ws.push_task(sample("t-1"));
+        ws.update_task("proj", &TaskId::from("t-1"), By::System, |task| {
+            task.status = TaskStatus::Completed;
+        })
+        .expect("no refusal")
+        .expect("the row is there");
+
+        ws.dispatch(Command::TaskVerdict {
+            project: "proj".to_owned(),
+            id: "t-1".to_owned(),
+            approve: true,
+            words: None,
+        })
+        .expect("app-level commands are accepted");
+        let stored = ws.tasks_for_project("proj");
+        assert_eq!(stored[0].status, TaskStatus::Completed, "the verdict landed");
+
+        // The same verdict again names a row no longer waiting: the refusal
+        // reaches the service line rather than only the log.
+        ws.dispatch(Command::TaskVerdict {
+            project: "proj".to_owned(),
+            id: "t-1".to_owned(),
+            approve: true,
+            words: None,
+        })
+        .expect("accepted");
+        let mut refused = false;
+        while let Ok(update) = rx.try_recv() {
+            if let crate::protocol::SessionUpdate::ServiceStatus { message, .. } = update
+                && message.contains("refused a verdict")
+            {
+                refused = true;
+            }
+        }
+        assert!(refused, "a refused edit is said on the service line");
     }
 
     fn usage_workspace() -> (tempfile::TempDir, Arc<Workspace>) {
