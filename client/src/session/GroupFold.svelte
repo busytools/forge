@@ -19,9 +19,16 @@
   let {
     heading,
     count,
+    mark = null,
     holds = false,
     children,
-  }: { heading: string; count: number; holds?: boolean; children: Snippet } = $props();
+  }: {
+    heading: string;
+    count: number;
+    mark?: string | null;
+    holds?: boolean;
+    children: Snippet;
+  } = $props();
 
   // Read once, through a call, as the inspector's own sections take theirs:
   // this is what the fold opens on first render, and the effect below is what
@@ -37,6 +44,9 @@
   <summary>
     <span class="gh">{heading}</span>
     <span class="cn">{count}</span>
+    <!-- The signal the rows inside carry, where the ages and close chips
+         stand: a fold is display, so a mark inside it survives the fold. -->
+    {#if mark !== null}<span class="dot {mark}"></span>{/if}
     <Chevron />
   </summary>
   {@render children()}

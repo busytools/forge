@@ -273,6 +273,32 @@ describe('the rail', () => {
   });
 
   /**
+   * **A fold keeps the signal it hides** (#1868): the reader collapses a
+   * sleeping section, and the one sign of what is inside it - a seat this
+   * client has just closed, still settling - went with the rows. The heading
+   * carries the strongest signal among them, and draws nothing while they are
+   * only quietly asleep, since the quiet ring says nothing the heading has not
+   * already said.
+   */
+  it('carries the signal a folded heading hides, and nothing when it is quiet', () => {
+    const sleeping: AgentRow = {
+      ...lead(),
+      lifecycle: 'Sleeping',
+      pending: null,
+      reason: null,
+    };
+    const home = withHome({ agents: [sleeping] });
+
+    const quiet = railGroups(home, LEAD, 0).find((group) => group.heading === 'asleep');
+    expect(quiet?.mark, 'a quietly asleep fold drew a mark').toBeNull();
+
+    const settling = railGroups(home, LEAD, 0, () => true).find(
+      (group) => group.heading === 'asleep',
+    );
+    expect(settling?.mark, 'a settling seat inside the fold drew no mark').toBe('off settling');
+  });
+
+  /**
    * A failed turn is the seat's own failure, and both surfaces say so from
    * one mapping: the row carries the line and the header takes the failure
    * mark. Each half had its own way to fall silent - the line through

@@ -380,6 +380,61 @@ describe('the rail folds', () => {
   });
 });
 
+describe('the rail row as the sheet lays it out', () => {
+  /**
+   * A long project name gives way rather than the row: the name elides and the
+   * age keeps the row's own right edge. `flex: none` here is the defect #1866
+   * filed - a name like `pure-black-github-intellij` then pushes the age off
+   * the panel - and dropping `min-width: 0` restores the same floor, because a
+   * flex item's min-content width is what refuses to shrink.
+   */
+  it('makes the name the thing that gives way, keeping the age its edge', () => {
+    const rule = body('.pr .nm');
+    expect(rule, 'the name takes its whole width and pushes the rest out').toContain(
+      'flex: 0 1 auto',
+    );
+    expect(rule, 'the name cannot shrink below its own text').toContain('min-width: 0');
+    expect(rule, 'the name clips rather than showing it was cut').toContain(
+      'text-overflow: ellipsis',
+    );
+  });
+
+  /**
+   * The rail's other overflow risk: a spawn failure names a path with no break
+   * in it, and the line keeps to the rail's width instead of laying a second
+   * scrollbar across it. The terminal truncates this sub-row the same way.
+   */
+  it('truncates a reason line rather than letting it run', () => {
+    const rule = body('.pj .why');
+    expect(rule, 'a long reason lays a scrollbar across the rail').toContain(
+      'text-overflow: ellipsis',
+    );
+    expect(rule, 'the line can still overrun the panel while clipped').toContain(
+      'overflow: hidden',
+    );
+  });
+
+  /**
+   * **The finger's target is the one place the ellipsis is easy to lose.** The
+   * coarse block gives a row's link its 44px box, and an `inline-flex` anchor
+   * is an atomic inline: `text-overflow` does not paint across one, so the
+   * phone clipped a long name with no ellipsis at all. The height rides the
+   * line instead, which is what the sheet already does for an artifact link.
+   */
+  it('keeps the ellipsis on a finger-driven screen, where the target is a box', () => {
+    const rule = body('.pr .nm a, .wk .nm a, .row .name a');
+    expect(rule, 'the coarse rule draws a name it cannot ellipsise').toContain('text-overflow');
+    // Block and not an atomic inline: measured in WebKit on a shrunk row, an
+    // inline-block anchor sized to its text and ran past the panel with no
+    // ellipsis, where a block one took the parent's width and painted it.
+    expect(rule, 'the anchor is atomic again, and the ellipsis goes with it').toContain(
+      'display: block',
+    );
+    expect(rule, 'an atomic inline would ellipsise nothing').not.toContain('inline-flex');
+    expect(rule, 'the finger lost the 44px target').toContain('min-height: 44px');
+  });
+});
+
 describe('the active row', () => {
   it('marks the seat the page is showing, on that row', () => {
     expect(draw(), 'the seat the page is showing is not marked').toContain('class="pr on"');
@@ -413,6 +468,39 @@ describe("a project's sleeping seats", () => {
       '<details class="sfold" open',
     );
     expect(fold('lead')).not.toContain('<details class="sfold" open');
+  });
+
+  /**
+   * The summary wears what the rows behind it wear, settling included: the
+   * fold is display, so the one sign that a seat inside is still shutting down
+   * cannot be put away with the rows.
+   */
+  it('wears the pulse the rows behind it wear, and rests when they do', () => {
+    const home: HomeWire = {
+      ...homeWire,
+      agents: [row('lead', 'Running'), row('slept-1', 'Sleeping')],
+    };
+    const project = railGroups(home, LEAD, 0).flatMap((group) => group.projects)[0];
+    const sleeping = project?.sleeping ?? [];
+    expect(sleeping.length, 'the fixture drew no sleeping seat to fold').toBeGreaterThan(0);
+
+    const summary = (closing: () => boolean): string => {
+      const body = render(SleeperFold, { props: { sleeping, shown: null, closing } }).body;
+      return body.slice(body.indexOf('<summary'), body.indexOf('</summary>'));
+    };
+
+    expect(
+      summary(() => false),
+      'a fold with nothing settling wore the pulse',
+    ).toContain('<span class="dot off"></span>');
+    expect(
+      summary(() => false),
+      'a fold with nothing settling wore the pulse',
+    ).not.toContain('settling');
+    expect(
+      summary(() => true),
+      'the fold put the pulse away with its rows',
+    ).toContain('<span class="dot off settling"></span>');
   });
 });
 
@@ -541,6 +629,19 @@ describe('the rail footer as the sheet lays it out', () => {
     );
     expect(body('.rfoot'), 'the footer scrolls with the list').not.toContain('overflow-y');
     expect(body('.rfoot'), 'a long list can squash the footer').toContain('flex: none');
+  });
+
+  /**
+   * **The rail's x axis is pinned shut**, so no row can lay a second scrollbar
+   * across the foot of the list: the corner that one makes with the vertical
+   * bar is the white block #1866 saw. The rows elide and the reason lines
+   * truncate, so this is the belt rather than the fix.
+   */
+  it('refuses a horizontal scrollbar, whatever a row does', () => {
+    expect(
+      body('.rail .scroll'),
+      'a row that outgrows the panel scrolls the rail sideways',
+    ).toContain('overflow-x: hidden');
   });
 });
 

@@ -111,8 +111,12 @@ describe('which editor holds the keyboard', () => {
  */
 describe('the census of boxes that can take text', () => {
   it('every element that can take text names an editor from the closed set', () => {
-    // The dev harness drives a box rather than owning one.
-    const files = svelteUnder(SRC).filter((file) => !file.includes(`${path.sep}dev${path.sep}`));
+    // The dev harness drives a box rather than owning one. Read against the
+    // source root and not the whole path: a checkout whose own directory is
+    // called `dev` - this repo's worktrees are - matched every file.
+    const files = svelteUnder(SRC).filter(
+      (file) => !path.relative(SRC, file).startsWith(`dev${path.sep}`),
+    );
     // A sweep that read nothing passes everything below it, which is the one
     // answer this test must never give by accident.
     expect(files.length, 'the sweep read the tree').toBeGreaterThan(40);
