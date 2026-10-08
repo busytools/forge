@@ -11,7 +11,14 @@
   } from '../wire/models';
   import { watchModels, type ModelsRead } from './live';
   import ModelsBody from './ModelsBody.svelte';
-  import { sweepPlan, sweepVerdicts, type SweepPlan, type SweepRun } from './view';
+  import {
+    failureKey,
+    sweepPlan,
+    sweepVerdicts,
+    type SweepPlan,
+    type SweepRun,
+    type SweepVerdict,
+  } from './view';
   import { SetRecorder } from './recorder.svelte';
 
   /**
@@ -182,18 +189,21 @@
    * own two, and the core stays the thing that serializes.
    */
   let sweep = $state<SweepPlan | null>(null);
-  /** The plan of the last sweep that ran to the end: the verdict stands on
-   * the page after the chain clears, and keeps standing until the next one. */
-  let lastPlan = $state<SweepPlan | null>(null);
+  /** The last sweep's verdicts, computed ONCE from the read that closed it.
+   * A standing verdict is a record of that sweep: re-deriving it from a
+   * later read would let its scope name runs it never saw. */
+  let verdicts = $state<SweepVerdict[]>([]);
   let sweepLine = $state<string | null>(null);
-  /** The newest result stamp this read carried at the press, and the corpus
-   * the sweep's own first run lands on - see the chain below for why the
-   * second is not read off the results that were already here. */
+  /** Where a sweep ended WITHOUT a verdict - stopped, a failure, or a take
+   * landing under it - so the card says why instead of just clearing. */
+  let sweepNotice = $state<string | null>(null);
+  /** The newest result stamp this read carried at the press, the corpus the
+   * sweep's own first run lands on - see the chain below for why the second
+   * is not read off the results that were already here - and the failure, if
+   * any, that was already standing when the press happened. */
   let sweepStamp = $state<string | null>(null);
   let sweepCorpus = $state<string | null>(null);
-  const verdicts = $derived(
-    lastPlan === null || read.wire === null ? [] : sweepVerdicts(read.wire, lastPlan),
-  );
+  let sweepStaleFailure = $state<string | null>(null);
   /** The installs this sweep has already asked for, so a push that lands
    * mid-flight cannot ask twice. Nothing draws from it; the reactive set is
    * what the sheet's lint takes for a mutable one, and it costs nothing. */
@@ -205,9 +215,11 @@
     const plan = sweepPlan(wire);
     if (plan.runs.length === 0) return;
     sweepLine = null;
+    sweepNotice = null;
     sweepAsked.clear();
     sweepStamp = wire.results[0]?.at ?? null;
     sweepCorpus = null;
+    sweepStaleFailure = failureKey(wire.bench);
     sweep = plan;
     // The feeds are read fresh at the press: the sweep installs what the
     // newest read named, not what a cache held.
@@ -220,7 +232,7 @@
     // loading and scoring for a press nobody is waiting on any more.
     if (read.wire?.bench.state === 'running') act('dictate_bench_stop');
     sweep = null;
-    sweepLine = 'the sweep was stopped; what it measured is on the rows below';
+    sweepNotice = 'the sweep was stopped; what it measured is on the rows below';
   }
 
   // One chain over the read's own pushes: install each run that is not here,
@@ -243,19 +255,35 @@
     // sweep would bench every run, score none, and bench them again. A
     // result from BEFORE the press on the corpus that run confirms counts,
     // because it is then the same comparison.
+    const stamp = sweepStamp === null ? 0 : Date.parse(sweepStamp);
+    const fresh = (result: BenchResult) => Date.parse(result.at) > stamp;
     if (sweepCorpus === null) {
-      const stamp = sweepStamp === null ? 0 : Date.parse(sweepStamp);
-      const fresh = plan.runs.flatMap(results).find((result) => Date.parse(result.at) > stamp);
-      if (fresh !== undefined) sweepCorpus = fresh.corpus.sha256;
+      const first = plan.runs.flatMap(results).find(fresh);
+      if (first !== undefined) sweepCorpus = first.corpus.sha256;
     }
     const corpus = sweepCorpus;
     const scored = (run: SweepRun) =>
       corpus !== null && results(run).some((result) => result.corpus.sha256 === corpus);
 
+    // **A take landing mid-sweep moves the corpus under the runs, and the
+    // core recomputes it per run.** The latched corpus would then match
+    // nothing a later run produces, and the chain would bench every run
+    // again on every push, forever. A fresh result on another corpus is that
+    // move, and it ends the sweep by name.
+    if (
+      corpus !== null &&
+      plan.runs.flatMap(results).some((result) => fresh(result) && result.corpus.sha256 !== corpus)
+    ) {
+      sweepNotice =
+        'a take landed while the sweep ran, so its runs no longer share one corpus - press again to score on what is here now';
+      sweep = null;
+      return;
+    }
+
     const missing = plan.runs.find((run) => run.file === null);
     if (missing !== undefined) {
       if (wire.install.state === 'failed') {
-        sweepLine = `${wire.install.file}: ${wire.install.reason}`;
+        sweepNotice = `${wire.install.file}: ${wire.install.reason}`;
         sweep = null;
         return;
       }
@@ -273,12 +301,15 @@
       return;
     }
 
-    if (wire.bench.state === 'failed') {
-      sweepLine = `${wire.bench.target.file}: ${wire.bench.reason}`;
+    // **Only this sweep's own failure ends it.** A settled failure from
+    // before the press is not this chain's to report or to wait on: the core
+    // keeps it until the next bench, and the bench below is what clears it.
+    if (wire.bench.state === 'failed' && failureKey(wire.bench) !== sweepStaleFailure) {
+      sweepNotice = `${wire.bench.target.file}: ${wire.bench.reason}`;
       sweep = null;
       return;
     }
-    if (wire.bench.state !== 'idle') return;
+    if (wire.bench.state !== 'idle' && wire.bench.state !== 'failed') return;
 
     const next = plan.runs.find((run) => run.file !== null && !scored(run));
     if (next !== undefined && next.file !== null) {
@@ -295,7 +326,7 @@
     // Every run scored: the verdict stands on the page, and the files the
     // sweep fetched for candidates it did not adopt go back where they came
     // from. An adopted one stays because it is what a role runs.
-    lastPlan = plan;
+    verdicts = sweepVerdicts(wire, plan);
     for (const run of plan.runs) {
       if (run.installed || run.file === null) continue;
       if (wire.in_use.some((model) => model.file === run.file)) continue;
@@ -386,6 +417,7 @@
     {mark}
     {sweep}
     {sweepLine}
+    {sweepNotice}
     {verdicts}
     onsweep={sweepRun}
     onsweepcancel={sweepCancel}

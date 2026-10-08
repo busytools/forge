@@ -1273,6 +1273,121 @@ describe('the models route as it draws', () => {
   });
 
   /**
+   * A failure that was already standing does not stop a sweep. The core keeps
+   * a failed bench until the next one, and the next one is this sweep's: a
+   * chain that treated the settled failure as its own would download
+   * candidate bytes and then die on a bench that finished yesterday.
+   */
+  it('sweeps over a failure that was already standing', async () => {
+    const forge = fakeConnection();
+    const host = route(forge);
+    await tick();
+    forge.arrive({
+      kind: 'snapshot',
+      subject: MODELS,
+      data: {
+        ...modelsWire,
+        rows: [],
+        bench: {
+          state: 'failed',
+          target: { file: 'a/norm-old.gguf', role: 'cleanup', pinned: false },
+          reason: 'No such file or directory (os error 2)',
+        },
+      },
+    });
+    await tick();
+
+    const button = [...host.querySelectorAll<HTMLButtonElement>('button')].find(
+      (c) => c.textContent === 'run the benchmark',
+    );
+    button?.click();
+    flushSync();
+    await tick();
+
+    // The plan's first run is benched: the stale failure is not the sweep's.
+    expect(forge.dispatched.at(-1)).toEqual({
+      dictate_bench: {
+        target: {
+          file: 'granite-speech-5.0-470m-turboctc-nc-Q4_K_M.gguf',
+          role: 'transcribing',
+          pinned: false,
+        },
+        tier: 'consensus',
+      },
+    });
+  });
+
+  /**
+   * **A take landing mid-sweep moves the corpus under the runs**, and the
+   * core recomputes it per run: the chain would bench every run again on
+   * every push, forever. The move ends the sweep by name instead.
+   */
+  it('ends the sweep by name when a take moves the corpus under it', async () => {
+    const forge = fakeConnection();
+    const host = route(forge);
+    await tick();
+    forge.arrive({ kind: 'snapshot', subject: MODELS, data: { ...modelsWire, rows: [] } });
+    await tick();
+
+    const button = [...host.querySelectorAll<HTMLButtonElement>('button')].find(
+      (c) => c.textContent === 'run the benchmark',
+    );
+    button?.click();
+    flushSync();
+    await tick();
+
+    // The first run lands on one corpus, and the next is benched.
+    forge.arrive({
+      kind: 'snapshot',
+      subject: MODELS,
+      data: {
+        ...modelsWire,
+        rows: [],
+        results: [
+          benchResult(
+            'granite-speech-5.0-470m-turboctc-nc-Q4_K_M.gguf',
+            'transcribing',
+            0.1,
+            'first',
+          ),
+        ],
+      },
+    });
+    await tick();
+    expect(forge.dispatched.at(-1)).toMatchObject({
+      dictate_bench: {
+        target: { file: 'cohere-transcribe-03-2026-Q4_K_M.gguf', role: 'transcribing' },
+      },
+    });
+
+    // A take lands: the next run's result is on another corpus.
+    const before = forge.dispatched.length;
+    forge.arrive({
+      kind: 'snapshot',
+      subject: MODELS,
+      data: {
+        ...modelsWire,
+        rows: [],
+        results: [
+          benchResult('cohere-transcribe-03-2026-Q4_K_M.gguf', 'transcribing', 0.1, 'second'),
+          benchResult(
+            'granite-speech-5.0-470m-turboctc-nc-Q4_K_M.gguf',
+            'transcribing',
+            0.1,
+            'first',
+          ),
+        ],
+      },
+    });
+    await tick();
+
+    expect(host.textContent).toContain('a take landed while the sweep ran');
+    expect(forge.dispatched.length, 'a sweep that cannot score must not keep benching').toBe(
+      before,
+    );
+  });
+
+  /**
    * The check line names both roles, and names them without a press: the
    * feed proposes for the transcribing role and the bench decides the
    * cleanup one, so a reader hears there is news before pressing anything.
@@ -1433,11 +1548,16 @@ describe('the models route as it draws', () => {
     });
   });
 
-  /** One finished run, for the verdict fixtures. */
+  /**
+   * One finished run, in the shape its tier actually produces: a take-scored
+   * run carries agreement and no error figure, a read-aloud run the other way
+   * round. Fixtures that set an error figure on a take-scored run pin a shape
+   * production cannot make.
+   */
   function benchResult(
     file: string,
     role: 'transcribing' | 'cleanup',
-    wer: number,
+    figure: number,
     corpus = 'new',
     tier: BenchTier = 'consensus',
   ): BenchResult {
@@ -1450,8 +1570,8 @@ describe('the models route as it draws', () => {
         wall_seconds: 210,
         xrt_wall: 30,
         term_accuracy: null,
-        wer,
-        matched: null,
+        wer: tier === 'read_aloud' ? figure : null,
+        matched: tier === 'consensus' ? [Math.round((1 - figure) * 12), 12] : null,
         stages_ms: {
           model_load_ms: 1200,
           resample_ms: 10,
@@ -1527,7 +1647,9 @@ describe('the models route as it draws', () => {
       ],
     });
 
-    expect(host.textContent).toContain('a-norm-a-Q4_K_M.gguf read better than the cleanup model');
+    expect(host.textContent).toContain(
+      'a-norm-a-Q4_K_M.gguf agreed with the baselines more often than the cleanup model',
+    );
     expect(host.textContent).toContain(
       'best of the 3 most-downloaded cleanup candidates, scored on your takes, 12 clips',
     );
@@ -1632,7 +1754,33 @@ describe('the models route as it draws', () => {
     expect(forge.dispatched.at(-1)).toEqual({
       dictate_uninstall: { file: 'a-norm-a-Q4_K_M.gguf' },
     });
-    expect(host.textContent).toContain('read best of the');
+    expect(host.textContent).toContain('agreed most of the');
     expect(host.textContent).toContain('most-downloaded cleanup candidate');
+
+    // **The verdict is a record of that sweep.** A later read - another run
+    // on another corpus - does not rewrite what it says it saw: the scope it
+    // carries is the sweep's own set, not whatever the page holds now.
+    const recorded = 'agreed most of the 2 scored';
+    expect(host.textContent).toContain(recorded);
+
+    forge.arrive({
+      kind: 'snapshot',
+      subject: MODELS,
+      data: {
+        ...withRow,
+        installed: [...modelsWire.installed, record],
+        results: [
+          benchResult(
+            'granite-speech-5.0-470m-turboctc-nc-Q4_K_M.gguf',
+            'transcribing',
+            0.02,
+            'later',
+          ),
+        ],
+      },
+    });
+    await tick();
+
+    expect(host.textContent).toContain(recorded);
   });
 });

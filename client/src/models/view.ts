@@ -847,12 +847,24 @@ export function sweepVerdicts(wire: DictateModelsWire, plan: SweepPlan): SweepVe
 }
 
 /** One verdict's headline: what read best, against what. */
+/**
+ * The verdict's headline, in the words the tier can stand on.
+ *
+ * **A take-scored run reads agreement, not quality**: its corpus has no
+ * known words, so "read better" would claim a reading nobody measured - the
+ * same rule that keeps a faster normalizer from being the cleanup pick.
+ */
 export function sweepHeadline(verdict: SweepVerdict): string {
   const role = verdict.role === 'cleanup' ? 'cleanup model' : 'transcribing model';
   const file = verdict.best.result.target.file;
-  if (verdict.baseline === null) return `${file} read best of the ${verdict.scored} scored`;
-  if (verdict.onBest) return `the ${role} you run read best of the ${verdict.scored} scored`;
-  return `${file} read better than the ${role} you run`;
+  const best = verdict.tier === 'read_aloud' ? 'read best' : 'agreed most';
+  const better =
+    verdict.tier === 'read_aloud'
+      ? `read better than the ${role} you run`
+      : `agreed with the baselines more often than the ${role} you run`;
+  if (verdict.baseline === null) return `${file} ${best} of the ${verdict.scored} scored`;
+  if (verdict.onBest) return `the ${role} you run ${best} of the ${verdict.scored} scored`;
+  return `${file} ${better}`;
 }
 
 /** The verdict's own scope, so a "best" always names what it saw. */
@@ -865,6 +877,9 @@ export function sweepScope(verdict: SweepVerdict): string {
       ? `the feed's own pick, scored on ${where}`
       : `only the model you run, scored on ${where} - nothing else was proposed`;
   }
+  if (verdict.tried === 0) {
+    return `only the model you run, scored on ${where} - no cleanup candidate was in the plan`;
+  }
   const tried =
     verdict.tried === 1
       ? 'the most-downloaded cleanup candidate'
@@ -876,10 +891,10 @@ export function sweepScope(verdict: SweepVerdict): string {
 
 /** What switching a role to a variant would cost now: the bytes the sweep
  * took back on its way out, when they must come down again. */
-export function sweepCost(wire: DictateModelsWire, variant: string): number {
+export function sweepCost(wire: DictateModelsWire, variant: string): number | null {
   if (wire.installed.some((model) => model.variant === variant)) return 0;
   const row = wire.rows.find((entry) => entry.variant === variant);
-  return row?.download?.size_bytes ?? 0;
+  return row?.download?.size_bytes ?? null;
 }
 
 /** One role's models, as the dictation panel offers them. */
@@ -1005,7 +1020,24 @@ function readsBetter(a: BenchResult, b: BenchResult): boolean {
   ) {
     return a.metrics.term_accuracy > b.metrics.term_accuracy;
   }
+  // The takes tier's own signal: a run that agrees with the baselines more
+  // often read closer to what was said, where speed alone is not a reading
+  // at all - the same rule the cleanup pick refuses to make without it.
+  if (a.metrics.matched !== null && b.metrics.matched !== null) {
+    const [agreedA, ofA] = a.metrics.matched;
+    const [agreedB, ofB] = b.metrics.matched;
+    if (agreedA * ofB !== agreedB * ofA) return agreedA * ofB > agreedB * ofA;
+  }
   return a.metrics.xrt_wall > b.metrics.xrt_wall;
+}
+
+/**
+ * What a failed bench is failing AT: its target and its reason, so a
+ * dismissal, or a sweep deciding whether a failure is one of its own, is
+ * keyed by the failure rather than by failure having happened.
+ */
+export function failureKey(bench: BenchState): string | null {
+  return bench.state === 'failed' ? `${bench.target.file}|${bench.reason}` : null;
 }
 
 /** The bench's line: what is running, or what stopped it. */

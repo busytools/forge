@@ -36,6 +36,7 @@ import {
   sizeLabel,
   speedLabel,
   comparison,
+  sweepCost,
   sweepHeadline,
   sweepPlan,
   sweepScope,
@@ -867,7 +868,9 @@ describe('the sweep', () => {
     // The verdict may never say a bare best: the scope carries what it saw.
     expect(sweepScope(cleanup)).toContain('the most-downloaded cleanup candidate');
     expect(sweepScope(cleanup)).toContain('your takes, 12 clips');
-    expect(sweepHeadline(cleanup)).toContain('a-norm-a-Q4_K_M.gguf read better than');
+    expect(sweepHeadline(cleanup)).toContain(
+      'a-norm-a-Q4_K_M.gguf agreed with the baselines more often than',
+    );
   });
 
   /**
@@ -891,7 +894,7 @@ describe('the sweep', () => {
     expect(sweepScope(transcribing)).toContain('only the model you run');
     expect(sweepScope(transcribing)).toContain('nothing else was proposed');
     expect(sweepHeadline(transcribing)).toBe(
-      'the transcribing model you run read best of the 1 scored',
+      'the transcribing model you run agreed most of the 1 scored',
     );
   });
 
@@ -941,6 +944,76 @@ describe('the sweep', () => {
     if (cleanup === undefined) throw new Error('the cleanup verdict did not form');
 
     expect(cleanup.onBest).toBe(true);
-    expect(sweepHeadline(cleanup)).toBe('the cleanup model you run read best of the 2 scored');
+    expect(sweepHeadline(cleanup)).toBe('the cleanup model you run agreed most of the 2 scored');
+  });
+
+  /**
+   * **The takes tier ranks on agreement, never on speed.** A run that agrees
+   * with the baselines more often read closer to what was said; a faster one
+   * that agrees less is not better, and a ranking that fell through to the
+   * clock would call it so - the same rule the cleanup pick refuses to make
+   * without an accuracy figure.
+   */
+  it('ranks a take-scored pair on agreement, not on the clock', () => {
+    const wire: DictateModelsWire = {
+      ...modelsWire,
+      rows: [normalizer('a/norm-a', 900), normalizer('a/norm-b', 500)],
+      installed: [
+        ...modelsWire.installed,
+        {
+          variant: 'a/norm-a',
+          file: 'a-norm-a-Q4_K_M.gguf',
+          url: 'https://huggingface.co/a/norm-a',
+          size: 300_000_000,
+          facts: { quant: 'Q4_K_M', params: 600_000_000, license: null, runtime: 'llama.cpp' },
+          at: '2026-10-07T09:00:00Z',
+        },
+        {
+          variant: 'a/norm-b',
+          file: 'a-norm-b-Q4_K_M.gguf',
+          url: 'https://huggingface.co/a/norm-b',
+          size: 300_000_000,
+          facts: { quant: 'Q4_K_M', params: 600_000_000, license: null, runtime: 'llama.cpp' },
+          at: '2026-10-07T09:00:00Z',
+        },
+      ],
+    };
+    const plan = sweepPlan(wire);
+    const slower = benchResult('a-norm-b-Q4_K_M.gguf', 'cleanup', 'now', {
+      matched: [11, 12],
+      xrt_wall: 5,
+    });
+    const faster = benchResult('a-norm-a-Q4_K_M.gguf', 'cleanup', 'now', {
+      matched: [3, 12],
+      xrt_wall: 500,
+    });
+    wire.results = [faster, slower];
+
+    const cleanup = sweepVerdicts(wire, plan).find((verdict) => verdict.role === 'cleanup');
+    if (cleanup === undefined) throw new Error('the cleanup verdict did not form');
+
+    expect(cleanup.best.result.target.file).toBe('a-norm-b-Q4_K_M.gguf');
+  });
+
+  /** A cleanup verdict with no candidate in the plan says so, rather than
+   * claiming a best among none. */
+  it('names no candidates when the plan carried none', () => {
+    const wire: DictateModelsWire = { ...modelsWire, rows: [] };
+    const plan = sweepPlan(wire);
+    wire.results = [benchResult('s1-mini-f16.gguf', 'cleanup', 'now', { matched: [4, 12] })];
+
+    const cleanup = sweepVerdicts(wire, plan).find((verdict) => verdict.role === 'cleanup');
+    if (cleanup === undefined) throw new Error('the cleanup verdict did not form');
+
+    expect(cleanup.tried).toBe(0);
+    expect(sweepScope(cleanup)).toContain('no cleanup candidate was in the plan');
+  });
+
+  /** What a switch would cost is a fact or nothing: a variant neither
+   * downloaded nor on the feed is not a free one. */
+  it('says when a switch cost is not known, rather than free', () => {
+    expect(sweepCost(modelsWire, 'a/variant-nobody-has')).toBeNull();
+    expect(sweepCost(modelsWire, 'granite-speech-5.0-470m-turboctc-nc')).toBe(0);
+    expect(sweepCost(modelsWire, 'parakeet-unified-en-0.6b')).toBe(477_000_000);
   });
 });

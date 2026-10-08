@@ -24,6 +24,7 @@
     cleanupPick as cleanupPickOf,
     comparison,
     entryUrl,
+    failureKey,
     families,
     fastest,
     inUseLicense,
@@ -85,6 +86,7 @@
     mark = null,
     sweep = null,
     sweepLine = null,
+    sweepNotice = null,
     verdicts = [],
     onsweep,
     onsweepcancel,
@@ -120,6 +122,8 @@
     sweep?: SweepPlan | null;
     /** Where the sweep is, in its own words. */
     sweepLine?: string | null;
+    /** Where a sweep ended without a verdict. */
+    sweepNotice?: string | null;
     /** The last sweep's verdicts, kept after the chain clears. */
     verdicts?: SweepVerdict[];
     /** Press the one button: score the picks on this machine. */
@@ -255,8 +259,9 @@
     return minutes > 0 ? `${minutes}m ${whole % 60}s` : `${whole}s`;
   }
 
-  /** What switching to a verdict's winner would cost now. */
-  function adoptCost(verdict: SweepVerdict): number {
+  /** What switching to a verdict's winner would cost now, or `null` when
+   * neither the store nor the feed says - which is not the same as free. */
+  function adoptCost(verdict: SweepVerdict): number | null {
     return sweepCost(wire, verdict.best.run.variant);
   }
 
@@ -296,10 +301,8 @@
    * lives in the core and is not this side's to clear.
    */
   let dismissedFailure = $state<string | null>(null);
-  const failureKey = $derived(
-    wire.bench.state === 'failed' ? `${wire.bench.target.file}|${wire.bench.reason}` : null,
-  );
-  const failureShown = $derived(failureKey !== null && dismissedFailure !== failureKey);
+  const benchFailure = $derived(failureKey(wire.bench));
+  const failureShown = $derived(benchFailure !== null && dismissedFailure !== benchFailure);
 </script>
 
 {#snippet facts(list: FactPart[])}
@@ -850,6 +853,9 @@
            spends, says where the sweep is while it runs, and stands the
            verdict afterwards: whether what this machine runs is the best of
            what was scored, and what to switch to when it is not. -->
+      {#if sweepNotice !== null}
+        <p class="note bad">{sweepNotice}</p>
+      {/if}
       {#if sweep !== null}
         <div class="status" role="status">
           <span class="dot live"></span>
@@ -891,10 +897,13 @@
               </span>
             {/if}
             {#if !verdict.onBest}
+              {@const cost = adoptCost(verdict)}
               <span class="detail">
-                {adoptCost(verdict) === 0
+                {cost === 0
                   ? 'already on this machine'
-                  : `switching downloads ${sizeLabel(adoptCost(verdict))} again - the sweep took the file back when the verdict came in`}
+                  : cost === null
+                    ? 'what switching costs is not known here'
+                    : `switching downloads ${sizeLabel(cost)} again - the sweep took the file back when the verdict came in`}
               </span>
             {/if}
           </div>
@@ -928,7 +937,7 @@
       {#if bench !== null && (wire.bench.state !== 'failed' || failureShown)}
         {@render op(
           bench,
-          wire.bench.state === 'failed' ? () => (dismissedFailure = failureKey) : null,
+          wire.bench.state === 'failed' ? () => (dismissedFailure = benchFailure) : null,
         )}
       {/if}
 
