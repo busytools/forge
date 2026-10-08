@@ -431,6 +431,7 @@ impl Workspace {
                     tokio::time::interval_at(tokio::time::Instant::now() + period, period);
                 interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 let mut memory = ChaseMemory::default();
+                let mut ticks: u64 = 0;
                 loop {
                     interval.tick().await;
                     let Some(workspace) = weak.upgrade() else {
@@ -449,6 +450,12 @@ impl Workspace {
                         );
                     }
                     workspace.announce_board_refresh();
+                    // The issue mirror rides the same loop on a slower
+                    // lane: one pass every ten ticks, about five minutes.
+                    ticks += 1;
+                    if ticks.is_multiple_of(10) {
+                        workspace.issue_pass(&crate::issues::GhBackend, SystemTime::now()).await;
+                    }
                 }
             }
             .instrument(span),

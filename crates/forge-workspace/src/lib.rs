@@ -81,6 +81,7 @@ mod error;
 pub mod file_index;
 mod gotify;
 pub mod install;
+pub mod issues;
 pub mod launch_settings;
 pub(crate) mod mcp;
 pub mod output_tail;
