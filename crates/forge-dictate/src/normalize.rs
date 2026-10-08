@@ -484,10 +484,7 @@ mod tests_architecture {
         std::fs::write(&t5, header("general.architecture", GGUF_STRING, &string("t5"))).unwrap();
 
         let refusal = Normalizer::load(&t5).expect_err("t5 is not a generator llama.cpp runs");
-        assert!(
-            matches!(refusal, NormalizeError::NotCausal { .. }),
-            "got: {refusal:?}"
-        );
+        assert!(matches!(refusal, NormalizeError::NotCausal { .. }), "got: {refusal:?}");
         assert!(
             refusal.to_string().contains("t5"),
             "the refusal names the architecture it read, got: {refusal}"

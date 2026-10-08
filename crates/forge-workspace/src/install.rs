@@ -204,9 +204,7 @@ impl Workspace {
                     .ok()
                     .flatten()
                     .is_some_and(|choice| choice.variant == record.variant);
-                if picked
-                    && let Err(error) = crate::store::dictate_models::clear_active(db, role)
-                {
+                if picked && let Err(error) = crate::store::dictate_models::clear_active(db, role) {
                     tracing::warn!(
                         event_name = "dictate_uninstall_pick_clear_failed",
                         %error,
@@ -1070,10 +1068,7 @@ mod tests_install {
             let err = ws
                 .dispatch(Command::DictateUninstall { file: invented.to_owned() })
                 .expect_err("nothing recorded carries these bytes");
-            assert!(
-                matches!(&err, DispatchError::UninstallRefused { .. }),
-                "got: {err:?}"
-            );
+            assert!(matches!(&err, DispatchError::UninstallRefused { .. }), "got: {err:?}");
         }
         assert_eq!(ws.installed_models().len(), 1, "and nothing went with the refusal");
     }
@@ -1091,11 +1086,7 @@ mod tests_install {
         let (role, model) =
             resolved.iter().find(|(role, _)| *role == DictateRole::Transcribing).expect("resolved");
         assert_eq!(*role, DictateRole::Transcribing);
-        assert!(
-            matches!(model.from, crate::install::ActiveFrom::Pin),
-            "got: {:?}",
-            model.from
-        );
+        assert!(matches!(model.from, crate::install::ActiveFrom::Pin), "got: {:?}", model.from);
     }
 
     /// **A removal clears the runtime pick it strands.** A pick left naming a

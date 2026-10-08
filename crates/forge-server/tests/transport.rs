@@ -726,11 +726,7 @@ async fn a_frame_lands_in_the_read_aloud_recording() {
     let _models = fleet.arm_dictation(&lead_seat()).expect("dictation arms without weights");
     let mut socket = connect(&url).await;
     for what in [Subject::Session(lead_seat()), Subject::DictateModels] {
-        send(
-            &mut socket,
-            ClientMessage::Subscribe { what, answering: true, browser: false },
-        )
-        .await;
+        send(&mut socket, ClientMessage::Subscribe { what, answering: true, browser: false }).await;
         let _ = snapshot_answering(&mut socket).await;
     }
 

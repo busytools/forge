@@ -1402,11 +1402,7 @@ pub(crate) mod tests_catalogue_view {
             ("/catalog", 200, listing()),
             ("/catalog/one.json", 200, feed_entry()),
             ("/release", 200, br#"{"tag_name": "v0.3.1"}"#.to_vec()),
-            (
-                "/catalog/cleanup?filter=text-normalization&filter=gguf",
-                200,
-                cleanup.to_vec(),
-            ),
+            ("/catalog/cleanup?filter=text-normalization&filter=gguf", 200, cleanup.to_vec()),
             ("/catalog/blobs/owner/norm-a?blobs=true", 200, blobs.to_vec()),
         ]);
         *ws.test_catalogue_source.lock() = Some(source(&base));
@@ -1432,7 +1428,10 @@ pub(crate) mod tests_catalogue_view {
         // And the speech feed's own row stands beside it: one catalogue, two
         // kinds, one read.
         assert!(
-            landed.entries.iter().any(|entry| entry.kind == forge_dictate::catalogue::EntryKind::Asr),
+            landed
+                .entries
+                .iter()
+                .any(|entry| entry.kind == forge_dictate::catalogue::EntryKind::Asr),
             "the speech feed's rows land in the same read"
         );
     }

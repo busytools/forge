@@ -703,11 +703,7 @@ mod tests_catalogue {
             .expect("the published entry must parse");
 
         assert_eq!(entry.variant, "cohere-transcribe-03-2026");
-        assert_eq!(
-            entry.params,
-            Some(2_049_026_832),
-            "the parameter count is the feed's own"
-        );
+        assert_eq!(entry.params, Some(2_049_026_832), "the parameter count is the feed's own");
         assert_eq!(
             entry.license.as_ref().map(|l| l.display.as_str()),
             Some("Apache-2.0"),

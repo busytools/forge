@@ -66,7 +66,6 @@ impl Default for CleanupSource {
     }
 }
 
-
 /// The downloads floor: a repo nobody has fetched says nothing about whether
 /// it works, and the listing's tail is full of them.
 const DOWNLOADS_FLOOR: u64 = 100;
