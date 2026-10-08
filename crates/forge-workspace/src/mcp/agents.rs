@@ -341,12 +341,12 @@ impl Tool for SendMessage {
          done, reviewed, or verified, or hands over a pick where two or \
          more options you have enumerated survive your own reasoning and \
          nothing outside you decides between them (a routing call with \
-         several plausible owners is exactly that case), and the \
-         `systemone__*` tools are in your list, make one call on the \
-         claim or the pick first: put the claim and its evidence in \
-         `state` for a claim check, or the options you have already \
-         enumerated in `criteria` for a choice. A decisive answer is \
-         permission to send it plainly."
+         several plausible owners and no evidence separating them is \
+         exactly that case), and the `systemone__*` tools are in your \
+         list, make one call on the claim or the pick first: put the \
+         claim and its evidence in `state` for a claim check, or the \
+         options you have already enumerated in `criteria` for a choice. \
+         A decisive answer is permission to send it plainly."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -1219,7 +1219,7 @@ mod tests {
             tool.description().contains(
                 "two or more options you have enumerated survive your own reasoning and nothing \
                  outside you decides between them (a routing call with several plausible owners \
-                 is exactly that case)"
+                 and no evidence separating them is exactly that case)"
             ),
             "the pick cue carries the widened fork and its routing case: {}",
             tool.description()

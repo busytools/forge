@@ -3139,9 +3139,11 @@ mod tests {
             "the claim cue's guard and wording are pinned",
         );
         assert!(
-            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
-                .contains("make one `ask_noul` on a yes/no state you are about to act on"),
-            "the yes/no act moment is pinned",
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "make one `ask_noul` on a yes/no state you are about to act on where the \
+                 evidence exists and a second opinion is cheap"
+            ),
+            "the yes/no act moment and its qualifier are pinned",
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
