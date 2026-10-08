@@ -5,7 +5,7 @@
 import { type AddressInfo, type RawData, WebSocketServer } from 'ws';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { connect, type Connection } from './socket';
+import { connect, type Connection, type ConnectionStatus } from './socket';
 import { onRefusal, type Refusal } from './refusals';
 import {
   PROTOCOL_VERSION,
@@ -95,13 +95,66 @@ function commands(received: ClientMessage[]) {
   );
 }
 
+/**
+ * How long a wait here is given: the socket, the handshake and the round trips
+ * behind a condition all run for real, and a loaded machine stretches one well
+ * past the quiet-machine figure this used to be.
+ */
+const WAIT_MS = 3_000;
+
+// A test here can carry several waits in sequence, so the file's own deadline
+// is a sum rather than one wait: vitest's five-second default leaves nothing
+// for the test's own work once two of them run long, and it sits under the
+// status-bound wait's own generous deadline.
+vi.setConfig({ testTimeout: 20_000 });
+
 /** Wait until `check` holds, or fail rather than hang. */
 async function until(check: () => boolean, what: string) {
-  for (let i = 0; i < 100; i += 1) {
+  const deadline = Date.now() + WAIT_MS;
+  while (Date.now() < deadline) {
     if (check()) return;
-    await new Promise((resolve) => setTimeout(resolve, 5));
+    await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error(`timed out waiting for ${what}`);
+}
+
+/**
+ * Wait for the connection to report `wanted`, from the connection's own status
+ * stream rather than from polls.
+ *
+ * A wait on an open can ride a drop: the socket reconnects on a backoff
+ * (`RETRY_MS` doubling to `MAX_RETRY_MS`), which outlasts any budget a
+ * saturated machine is read with - and then a healthy reconnect is reported as
+ * a timeout. The status is the connection's own answer, and `closed` is the one
+ * it will not come back from, so that fails by name. The deadline is the belt
+ * for a connection that goes quiet without reporting a status at all.
+ */
+function untilStatus(conn: Connection, wanted: ConnectionStatus, what: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let off = (): void => {};
+    const settle = (why?: string): void => {
+      if (settled) return;
+      settled = true;
+      off();
+      if (why === undefined) resolve();
+      else reject(new Error(why));
+    };
+    off = conn.onStatus((status) => {
+      if (status !== wanted && status !== 'closed') return;
+      settle(status === wanted ? undefined : `${what}: the connection reported ${status}`);
+    });
+    // Read AFTER the subscribe: a status that landed between the two would
+    // otherwise be waited for forever.
+    const now = conn.status();
+    if (now === wanted) settle();
+    else if (now === 'closed') settle(`${what}: the connection reported closed`);
+    // The belt for a connection that goes quiet without reporting a status -
+    // generous on purpose: a reconnect on a saturated machine has been
+    // measured past nine seconds and is still healthy, so a tighter one would
+    // report a live connection as a timeout, which is the whole shape here.
+    setTimeout(() => settle(`timed out waiting for ${what}`), WAIT_MS * 5);
+  });
 }
 
 /** Give anything already in flight a chance to arrive, for an absence to assert. */
@@ -126,7 +179,7 @@ async function connected() {
   servers.push(server);
   const conn = connect(server.url);
   opened.push(conn);
-  await until(() => conn.status() === 'open', 'the socket to open');
+  await untilStatus(conn, 'open', 'the socket to open');
   return { server, conn };
 }
 
@@ -790,6 +843,66 @@ describe('the connection', () => {
   });
 
   /**
+   * The status-bound wait fails a connection that will not come back by name,
+   * not by clock: the words are what a red run has to be triaged by.
+   */
+  it('names a closed connection rather than running the wait out', async () => {
+    const { conn } = await connected();
+    conn.close();
+
+    await expect(untilStatus(conn, 'open', 'the socket to open')).rejects.toThrow(
+      'the socket to open: the connection reported closed',
+    );
+  });
+
+  /**
+   * The listener side of the same: a connection that closes WHILE the wait is
+   * out fails it by name too, rather than the wait running its deadline out.
+   */
+  it('names a connection closed under a wait already in flight', async () => {
+    const server = await stubServer();
+    servers.push(server);
+    const conn = connect(server.url);
+    opened.push(conn);
+
+    const waited = untilStatus(conn, 'open', 'the socket to open');
+    conn.close();
+
+    await expect(waited).rejects.toThrow('the socket to open: the connection reported closed');
+  });
+
+  /**
+   * The wait rides the connection's own transitions, not a poll budget: a
+   * reconnect that outlasts the budget still lands. That is the class a
+   * saturated machine was reported as a false failure through.
+   */
+  it('rides a reconnect that outlasts the poll budget', async () => {
+    // The holder is an object because a bare `let` reads as still-null to the
+    // compiler here: the assignment happens inside the listener it never sees.
+    const listener: { report?: ((status: ConnectionStatus) => void) | undefined } = {};
+    let status: ConnectionStatus = 'connecting';
+    // Two verbs of a connection, so the test drives the transition itself
+    // rather than waiting on a real socket's timing - the cast is what lets a
+    // partial stand in for the whole here.
+    const conn = {
+      status: () => status,
+      onStatus: (fn: (next: ConnectionStatus) => void) => {
+        listener.report = fn;
+        return () => {
+          listener.report = undefined;
+        };
+      },
+    } as unknown as Connection;
+
+    const waited = untilStatus(conn, 'open', 'the socket to open');
+    await new Promise((resolve) => setTimeout(resolve, WAIT_MS + 100));
+    status = 'open';
+    listener.report?.('open');
+
+    await expect(waited).resolves.toBeUndefined();
+  });
+
+  /**
    * The core's own `slot()`, read off the wire: the 41 variants carrying a
    * `key: SessionSlot` have a seat, and the rest have none at all.
    */
@@ -1009,8 +1122,9 @@ describe('the browser role', () => {
       tool: 'browser_take_screenshot',
       args: {},
     });
-    await until(
-      () => conn.status() !== 'open',
+    await untilStatus(
+      conn,
+      'connecting',
       'the connection to drop rather than leave the answer half-sent',
     );
     send.mockRestore();
