@@ -1634,10 +1634,13 @@ fn append_tasks_section(
         let (glyph, glyph_color) = match row.status {
             TaskStatus::Completed => ("\u{2713}".to_owned(), Color::Green),
             TaskStatus::InProgress => (active_glyph.to_string(), theme::RUST_ORANGE),
-            TaskStatus::Waiting
-            | TaskStatus::Pending
-            | TaskStatus::Failed
-            | TaskStatus::Canceled => ("\u{25cb}".to_owned(), theme::DIM),
+            // Waiting wears pause bars, failed a cross, canceled a dotted
+            // circle - shapes, not colour alone, and never the same as a
+            // row that is simply not started.
+            TaskStatus::Waiting => ("\u{2016}".to_owned(), Color::Yellow),
+            TaskStatus::Failed => ("\u{2717}".to_owned(), Color::Red),
+            TaskStatus::Canceled => ("\u{25cc}".to_owned(), theme::DIM),
+            TaskStatus::Pending => ("\u{25cb}".to_owned(), theme::DIM),
         };
         let text_style = match row.status {
             TaskStatus::Completed => {
@@ -1646,10 +1649,10 @@ fn append_tasks_section(
             TaskStatus::InProgress => {
                 Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
             }
-            TaskStatus::Waiting
-            | TaskStatus::Pending
-            | TaskStatus::Failed
-            | TaskStatus::Canceled => Style::default().fg(Color::Gray),
+            TaskStatus::Waiting => Style::default().fg(Color::Yellow),
+            TaskStatus::Failed => Style::default().fg(Color::Red),
+            TaskStatus::Canceled => Style::default().fg(theme::DIM),
+            TaskStatus::Pending => Style::default().fg(Color::Gray),
         };
 
         if row.status == TaskStatus::InProgress {

@@ -156,9 +156,12 @@ fn glyph(status: TaskStatus, running_glyph: char) -> String {
     match status {
         TaskStatus::Completed => "\u{2713}".to_owned(),
         TaskStatus::InProgress => running_glyph.to_string(),
-        TaskStatus::Waiting | TaskStatus::Pending | TaskStatus::Failed | TaskStatus::Canceled => {
-            "\u{25cb}".to_owned()
-        }
+        // Shapes, not colour alone: pause bars for waiting, a cross for
+        // failed, a dotted circle for canceled.
+        TaskStatus::Waiting => "\u{2016}".to_owned(),
+        TaskStatus::Failed => "\u{2717}".to_owned(),
+        TaskStatus::Canceled => "\u{25cc}".to_owned(),
+        TaskStatus::Pending => "\u{25cb}".to_owned(),
     }
 }
 
@@ -166,9 +169,9 @@ fn color(status: TaskStatus) -> Color {
     match status {
         TaskStatus::Completed => Color::Green,
         TaskStatus::InProgress => theme::RUST_ORANGE,
-        TaskStatus::Waiting | TaskStatus::Pending | TaskStatus::Failed | TaskStatus::Canceled => {
-            theme::DIM
-        }
+        TaskStatus::Waiting => Color::Yellow,
+        TaskStatus::Failed => Color::Red,
+        TaskStatus::Canceled | TaskStatus::Pending => theme::DIM,
     }
 }
 
