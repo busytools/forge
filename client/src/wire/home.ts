@@ -78,6 +78,13 @@ export interface CronEntry {
   kind: unknown;
   prompt: string;
   description?: string;
+  /**
+   * The worker label the cron was created by, which is what decides the seat
+   * that reads it: `None` targets the project lead, so a row keeps the lead's
+   * set or its own label's - never the other's. The same ownership rule the
+   * connector subscriptions carry.
+   */
+  team_role?: string | null;
   created_at: WireTime;
   /** When it is next due, which is the fact the session's schedules section states. */
   next_fire: WireTime;
@@ -93,6 +100,13 @@ export interface AgentRow {
   pending_depth: number;
   last_activity: WireTime | null;
   reason: string | null;
+  /**
+   * When the seat's newest turn ended in failure, filtered per view: `null`
+   * once this view has shown the seat since the failure, or while it is
+   * showing it now. A row that carries it is drawing a failure the reader
+   * has not been shown.
+   */
+  failed_turn: WireTime | null;
   /**
    * The seat's OWN working tree, which is not the project's.
    *
@@ -201,7 +215,8 @@ export interface HomeWire {
   forge_version: string;
   forge_version_short: string;
   service_status: unknown;
-  fatal_error: unknown;
+  /** The words of the core's last fatal, which the terminal prints on exit. */
+  fatal_error: string | null;
 }
 
 /** The lifecycles the core names. A value outside these is one this client is older than. */
@@ -239,10 +254,18 @@ const TASK_STATUSES: TaskStatus[] = ['pending', 'in_progress', 'blocked', 'compl
 export function homeFrom(data: HomeWire): HomeWire {
   return {
     ...data,
+    // Absent, or carrying nothing wordable, reads as no fatal: a page must not
+    // draw a stopped line it cannot word.
+    fatal_error:
+      typeof data.fatal_error === 'string' && data.fatal_error !== '' ? data.fatal_error : null,
     agents: data.agents.map((agent) => ({
       ...agent,
       lifecycle: narrow(agent.lifecycle, LIFECYCLES, 'Idle'),
       pending: agent.pending === null ? null : narrow(agent.pending, PENDING, 'permission'),
+      // A server old enough not to state the failure - the floor included -
+      // leaves the field out, and it must read as `null` rather than as a
+      // failure.
+      failed_turn: agent.failed_turn ?? null,
       // The gate inside the seat's tree, which is the one member of it that is
       // a union of literals: `WorkState` is a struct, so there is nothing else
       // in it to narrow and a shape test over the object would discriminate

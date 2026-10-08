@@ -130,15 +130,15 @@
     // Fire-and-forget like the composer's send: the answer rides the stream,
     // and the row leaves when the core says it left - `cancelled: false` means
     // the CLI had already taken it, and its own `started` frame settles it.
-    void connection.dispatch({ cancel_queued_prompt: { key: slot, uuid } });
+    void connection.dispatch({ cancel_queued_prompt: { key: slot, uuid } }, slot);
   }
 
-  /** The box this pile shares its composer container with. */
+  /** The box this pile hands the keyboard back to, on the page both live under. */
   function draft(): HTMLTextAreaElement | null {
     return holder?.querySelector<HTMLTextAreaElement>('textarea') ?? null;
   }
 
-  /** The composer container, kept so the box is still reachable after the pile itself unmounts. */
+  /** The composer bar, kept so the box is still reachable after the pile itself unmounts. */
   let holder: HTMLElement | null = null;
   let focused = $state(false);
 
@@ -147,7 +147,7 @@
    * which is where the walk's next up goes older from.
    */
   function onfocus(): void {
-    holder = pile?.closest('.composer') ?? null;
+    holder = pile?.closest('.app')?.querySelector<HTMLElement>('.composer') ?? null;
     focused = true;
     if (active === null && rows.length > 0) {
       cursor = rows[rows.length - 1]?.uuid ?? null;

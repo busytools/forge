@@ -20,6 +20,7 @@ import type { SessionUpdate } from '../protocol';
 import { METER_CELLS } from '../wire/limits';
 import {
   backgroundTaskFrom,
+  gitFrom,
   issuesFrom,
   monitorFrom,
   prFrom,
@@ -142,6 +143,7 @@ export const HANDLERS: Record<string, Apply> = {
   work_changed: (held, payload) => ({
     ...held,
     work: workFrom(payload['work']),
+    git: gitFrom(payload['git']),
     pr: prFrom(payload['pr']),
     closes: issuesFrom(payload['closes']),
   }),
@@ -291,6 +293,20 @@ export const HANDLERS: Record<string, Apply> = {
     const id = text(payload['id']);
     if (id === null) return held;
     const pending_asks = held.pending_asks.filter((ask) => askKey(ask) !== `slack:${id}`);
+    if (pending_asks.length === held.pending_asks.length) return held;
+    return { ...held, pending_asks };
+  },
+
+  browser_hand_off_pending: (held, payload) => parked(held, 'browser_hand_off', payload['handoff']),
+
+  browser_hand_off_resolved: (held, payload) => {
+    // Same shape as the draft's: the hand-off left the core's registry -
+    // answered in whichever view, or its asking session gone - and its own id
+    // is the only thing on the stream that clears a parked one this view
+    // never answered.
+    const id = text(payload['id']);
+    if (id === null) return held;
+    const pending_asks = held.pending_asks.filter((ask) => askKey(ask) !== `handoff:${id}`);
     if (pending_asks.length === held.pending_asks.length) return held;
     return { ...held, pending_asks };
   },
@@ -536,13 +552,14 @@ function parked(held: SessionRecord, kind: string, request: unknown): SessionRec
   const ask = { kind, request };
   const key = askKey(ask);
   if (key !== null && held.pending_asks.some((waiting) => askKey(waiting) === key)) return held;
-  if (kind !== 'slack_draft') {
+  // The kinds held in the core's own registries rather than in the session's
+  // pending set lead, the way the core's read orders them.
+  const leads = (name: unknown): boolean => name === 'slack_draft' || name === 'browser_hand_off';
+  if (!leads(kind)) {
     return { ...held, pending_asks: [...held.pending_asks, ask] };
   }
-  // Behind the drafts already there, ahead of everything else.
-  const firstOther = held.pending_asks.findIndex(
-    (waiting) => record(waiting)['kind'] !== 'slack_draft',
-  );
+  // Behind the leaders already there, ahead of everything else.
+  const firstOther = held.pending_asks.findIndex((waiting) => !leads(record(waiting)['kind']));
   const at = firstOther === -1 ? held.pending_asks.length : firstOther;
   return {
     ...held,
@@ -553,8 +570,9 @@ function parked(held: SessionRecord, kind: string, request: unknown): SessionRec
 /**
  * The key an ask is held under: the call, and the round for a question - one
  * tool call carries a whole batch and advances the index, so the id alone
- * would fold two rounds of it into one. A draft is answered by its own id and
- * names no call. `null` for an ask with nothing either could be read from.
+ * would fold two rounds of it into one. A draft and a browser hand-off are
+ * each answered by their own id and name no call. `null` for an ask with
+ * nothing either could be read from.
  */
 function askKey(ask: unknown): string | null {
   const kind = record(ask)['kind'];
@@ -562,6 +580,10 @@ function askKey(ask: unknown): string | null {
   if (kind === 'slack_draft') {
     const id = text(request['id']);
     return id === null ? null : `slack:${id}`;
+  }
+  if (kind === 'browser_hand_off') {
+    const id = text(request['id']);
+    return id === null ? null : `handoff:${id}`;
   }
   const id = text(record(request['tool_call'])['tool_call_id']);
   if (id === null) return null;
@@ -612,7 +634,7 @@ function settled(held: SessionRecord): SessionRecord {
  *   which opens a turn on a queued prompt; the chat refuses that cut and joins
  *   the row to the turn above it.
  *
- * Nothing draws these turns whole: the inspector reads them flattened, so a
+ * Nothing draws these turns whole: a view reads them flattened, so a
  * difference here is a row count rather than a picture.
  */
 function appendFrame(conversation: Conversation, message: unknown): Conversation {

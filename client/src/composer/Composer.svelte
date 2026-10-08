@@ -38,6 +38,7 @@
     blocked,
     composerState,
     draftEndingLine,
+    handOffEndingLine,
     joined,
     noticeLine,
     pendingAsk,
@@ -220,16 +221,22 @@
 
   /**
    * The prompt the dock draws, which is the one the seat is parked on - unless
-   * this composer has answered a held draft.
+   * this composer has answered a held draft or hand-off.
    *
-   * A question's answer clears the ask with an update of its own. A draft's
-   * leaves the core's registry, and the stand-down that says so is a round trip
-   * away - so the mark stands the dock down from the click until the update
-   * lands, and a refusal brings it back with the reason.
+   * A question's answer clears the ask with an update of its own. A draft's or
+   * a hand-off's leaves the core's registry, and the stand-down that says so is
+   * a round trip away - so the mark stands the dock down from the click until
+   * the update lands, and a refusal brings it back with the reason. That last
+   * clause is the draft's own path: a hand-off's refusal is drawn as the ended
+   * line where its dock stood, so it never raises the dock back.
    */
   const dockAsk = $derived(
     ask !== null &&
-      !(ask.kind === 'slack_draft' && box.answered === ask.request.id && box.refusal === null)
+      !(
+        (ask.kind === 'slack_draft' || ask.kind === 'browser_hand_off') &&
+        box.answered === ask.request.id &&
+        box.refusal === null
+      )
       ? ask
       : null,
   );
@@ -282,6 +289,19 @@
   });
 
   /**
+   * The hand-off this box is drawing, remembered on the draft's own terms:
+   * the record has already dropped it from `pending_asks` by the time the
+   * resolved update is read.
+   */
+  $effect(() => {
+    const held = ask;
+    if (held !== null && held.kind === 'browser_hand_off') {
+      box.shownHandOff = held.request.id;
+      box.ended = null;
+    }
+  });
+
+  /**
    * A held draft leaving the core, which no record field carries.
    *
    * Applying the update drops the draft from `pending_asks`; the ENDING rides
@@ -308,6 +328,28 @@
       // so when it is not, and the ending would only repeat the click.
       if (held.answered === id) return;
       held.ended = draftEndingLine(payload['ending']);
+    });
+  });
+
+  /**
+   * A held hand-off leaving the core, the draft's own twin: the dock vanishes
+   * with the update that drops it, and the ENDING is what tells this reader
+   * what became of a hand-off they did not answer.
+   */
+  $effect(() => {
+    return connection.onMessage((message) => {
+      if (message.kind !== 'update') return;
+      const [name, payload] = variantOf(message.update);
+      if (name !== 'browser_hand_off_resolved') return;
+      const at = slotOf(message.update);
+      if (at === null) return;
+      const held = boxes.held(boxKey(at));
+      if (held === undefined) return;
+      const id = typeof payload['id'] === 'string' ? payload['id'] : null;
+      if (id === null || id !== held.shownHandOff) return;
+      // The reader's own answer: the ending would only repeat the click.
+      if (held.answered === id) return;
+      held.ended = handOffEndingLine(payload['ending']);
     });
   });
 
@@ -531,6 +573,13 @@
         box.ended = { tone: 'warn', text: message.why };
         return;
       }
+      // The hand-off's own answer, refused by its own operation's name on the
+      // same terms: the dock is gone by then, and the reason belongs where it
+      // stood.
+      if (message.what === 'respond_browser_hand_off') {
+        box.ended = { tone: 'warn', text: message.why };
+        return;
+      }
       if (message.what !== 'dispatch') return;
       // **A take's own refusal is not an answer's.** This composer knows it
       // dispatched one, and the wire's `what` cannot say which command a
@@ -562,7 +611,7 @@
    */
   function stop(): void {
     try {
-      void connection.dispatch({ cancel: { key: slot } });
+      void connection.dispatch({ cancel: { key: slot } }, slot);
     } catch (error) {
       // A closed socket has nothing to stop, and the control goes with the
       // turn that would have drawn it - but the click did nothing and that is
@@ -586,9 +635,12 @@
     try {
       // A prompt is fire-and-forget: its outcome rides the subscription rather
       // than a reply, so there is nothing here to await.
-      void connection.dispatch({
-        prompt_under: { key: slot, text, attachments: [], uuid, source: 'you' },
-      });
+      void connection.dispatch(
+        {
+          prompt_under: { key: slot, text, attachments: [], uuid, source: 'you' },
+        },
+        slot,
+      );
     } catch {
       // A closed socket throws rather than answering, and it is the one
       // channel left: the words stay in the box rather than going with a
@@ -641,9 +693,7 @@
       // An empty box hands up to the queue: the pile takes the keyboard, and
       // its own down comes back here. Only when the box is empty - a draft
       // uses up and down for its own lines.
-      const queue = field
-        ?.closest('.composer')
-        ?.querySelector<HTMLElement>('.pile [role="listbox"]');
+      const queue = field?.closest('.app')?.querySelector<HTMLElement>('.pile [role="listbox"]');
       if (queue !== null && queue !== undefined) {
         event.preventDefault();
         queue.focus();
@@ -916,6 +966,7 @@
     if (current.kind === 'question') {
       return `question:${current.request.toolId}:${String(current.request.index)}`;
     }
+    if (current.kind === 'browser_hand_off') return `handoff:${current.request.id}`;
     return `slack:${current.request.id}`;
   }
 
@@ -929,7 +980,9 @@
    */
   function askToolId(current: ReturnType<typeof pendingAsk>): string | null {
     if (current === null) return null;
-    if (current.kind === 'slack_draft') return current.request.id;
+    if (current.kind === 'slack_draft' || current.kind === 'browser_hand_off') {
+      return current.request.id;
+    }
     return current.request.toolId;
   }
 </script>

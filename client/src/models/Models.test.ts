@@ -128,12 +128,20 @@ describe('the models page as it draws', () => {
     const html = open().innerHTML;
 
     expect(html).toContain('update available');
+    // The card that says there is an update shows the update: the pick, its
+    // facts against the model in use, and why it is the pick.
+    expect(html).toContain('Granite Speech 5.0 470M TurboCTC NC');
+    expect(html).toContain('401.6\u{d7} vs 72.9\u{d7}');
+    expect(html).toContain('FLEURS-en 4.3 vs 5.08');
+    expect(html).toContain('Update to this model');
+    // Normalised: the template wraps the sentence, and a line break inside
+    // the phrase is not what this test is about.
+    expect(html.replace(/\s+/g, ' ')).toContain(
+      "beats the model in use on both of the feed's own measurements",
+    );
     // The table says what it is read against, and carries every candidate
     // with the numbers the rule compared.
     expect(html).toContain('read against the transcribing model in use');
-    expect(html).toContain('Granite Speech 5.0 470M TurboCTC NC');
-    expect(html).toContain('401.6\u{d7} vs 72.9\u{d7}');
-    expect(html).toContain('4.3% vs 5.08%');
     // **The licence is a column, not a filter**: the non-commercial pick is
     // recommended and the row states what it would run under.
     expect(html).toContain('CC-BY-NC-SA-4.0');
@@ -141,7 +149,6 @@ describe('the models page as it draws', () => {
     // And the rows under it say why they lost.
     expect(html).toContain('also beats both, but slower');
     expect(html).toContain('slower than this');
-    expect(html).toContain('Update to this model');
   });
 
   /**
@@ -179,6 +186,51 @@ describe('the models page as it draws', () => {
     flushSync();
 
     expect(checks).toBe(1);
+  });
+
+  /**
+   * **The box is blind on its own, so the page offers what can be searched
+   * before a name is known**: the feed's families as chips and its fastest
+   * rows as links, and both SET THE QUERY - a pick is the same mechanism as
+   * typing, which is what makes a chip a way in rather than a label.
+   */
+  it('offers the families and the fastest rows, and a pick filters the list', () => {
+    const host = open();
+    const names = (): string[] =>
+      [...host.querySelectorAll('.models .cand .nm')].map((el) => el.textContent ?? '');
+
+    const link = host.querySelector<HTMLButtonElement>('.models .link');
+    expect(link, 'no fastest row was offered').not.toBeNull();
+    // The control carries its own number too: `name 401.6x`.
+    const pick = (link?.textContent ?? '').trim().split(' ')[0] ?? '';
+    expect(pick, 'the fastest link names nothing').not.toBe('');
+
+    link?.click();
+    flushSync();
+    expect(names().length, 'a fastest link selected nothing').toBeGreaterThan(0);
+    // Every row shown is a match for the picked name - the pick sets the
+    // query, it is not a second filtering mechanism.
+    for (const name of names()) {
+      expect(name.toLowerCase()).toContain(pick.toLowerCase());
+    }
+
+    // And a family chip does the same for its class.
+    const input = host.querySelector('input');
+    if (input !== null) {
+      input.value = '';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      flushSync();
+    }
+    const chip = host.querySelector<HTMLButtonElement>('.models .chips .chip');
+    expect(chip, 'the page offered nothing to browse').not.toBeNull();
+    expect(chip?.textContent, 'the biggest family is not first').toContain('granite');
+    chip?.click();
+    flushSync();
+
+    expect(names().length, 'a family chip selected nothing').toBeGreaterThan(0);
+    for (const name of names()) {
+      expect(name.toLowerCase()).toContain('granite');
+    }
   });
 
   /**
@@ -281,6 +333,23 @@ describe('the models page as it draws', () => {
     );
   });
 
+  /**
+   * **A catalogue that never landed is its own state.** With dictation on and
+   * no rows - a first enable offline, or the boot fetch still out - the
+   * discovery area drew "pick a family below" over ZERO chips, a pointer at
+   * nothing beside an Updates line already saying the feed could not be
+   * reached. The box and its helpers are for a feed that is here.
+   */
+  it('names an unread catalogue rather than offering nothing to browse', () => {
+    const host = open({ ...modelsWire, rows: [] });
+
+    expect(host.textContent).toContain('the catalogue has not been read yet');
+    expect(host.querySelector('.models .chips'), 'chips drew with no rows behind them').toBeNull();
+    expect(host.textContent, 'the page pointed at families that are not there').not.toContain(
+      'pick a family below',
+    );
+  });
+
   it('says so when nothing matches', () => {
     const host = open();
     const input = host.querySelector('input');
@@ -353,8 +422,8 @@ describe('the models page as it draws', () => {
   it('shows the recommendation with one control, and none in the table', () => {
     const host = open(modelsWire);
 
-    expect(host.textContent).toContain('recommended for transcribing');
     expect(host.textContent).toContain('Granite Speech 5.0 470M TurboCTC NC');
+    expect(host.textContent).toContain('replaces the transcribing model');
     const controls = [...host.querySelectorAll<HTMLButtonElement>('button')].filter((c) =>
       c.textContent?.includes('Update to this model'),
     );

@@ -12,7 +12,8 @@
  *
  * The width also stops at a readable measure, so a long command ellipsizes
  * in its row instead of growing the panel: the detail stays a panel, not a
- * page.
+ * page. It is emitted as the panel's WIDTH rather than a ceiling, so the
+ * panel keeps one size while a reveal under a row comes and goes.
  */
 export function panelStyle(el: HTMLElement | null): string {
   if (el === null) return '';
@@ -22,6 +23,6 @@ export function panelStyle(el: HTMLElement | null): string {
   // -18, not -12: the panel's bottom sits 6px above the segment, so this
   // lands its top 12px under the viewport's.
   const height = Math.round(Math.max(180, Math.min(window.innerHeight * 0.6, box.top - 18)));
-  const width = Math.round(Math.max(330, Math.min(680, box.right - 12)));
-  return `max-height:${height}px;max-width:${width}px`;
+  const width = Math.round(Math.max(330, Math.min(780, box.right - 12)));
+  return `width:${width}px;max-height:${height}px`;
 }

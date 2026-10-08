@@ -306,7 +306,7 @@ client-tauri-check:
 # out, so it opens a Finder window and takes focus for a few seconds.
 #
 # **A window on every run is why this is not the routine gate.**
-client-tauri-bundle:
+client-tauri-bundle: vendor-browser-stack
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -324,6 +324,18 @@ client-tauri-bundle:
     fi
 
     npm --prefix client run tauri -- build --ci -- --locked
+
+# Fetch, verify and unpack the browser stack the client bundles: node,
+# @playwright/mcp and Chrome for Testing, half a gigabyte into the client's
+# gitignored `browser-stack/` directory. Idempotent at its pins, and it
+# prints the three pins so a release log names the stack it shipped.
+#
+# The bundling recipes run it themselves - a release must not ship without
+# it - and `client-tauri-check` does not, because it passes `--no-bundle`
+# and copies no resources.
+vendor-browser-stack:
+    ./scripts/vendor_browser_stack.sh
+
 
 # The Android half's own gate. Neither `just check` nor `client-tauri-check`
 # reaches it: the shell crate is its own workspace root, and the Kotlin lives
@@ -383,7 +395,11 @@ client-android-check:
 # stale bundle from an earlier build installs exactly as quietly as a fresh one.
 #
 # Install the client: app-only bundle, refused while in use, swapped in.
-client-release version:
+#
+# The browser stack is vendored first (a dependency, so it happens before
+# the bundle is built): a release without it is an app whose browser host
+# cannot start.
+client-release version: vendor-browser-stack
     #!/usr/bin/env bash
     set -euo pipefail
 

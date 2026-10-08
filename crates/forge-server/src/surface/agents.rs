@@ -28,6 +28,11 @@ pub struct AgentRow {
     /// spawn diagnostic, or the failure the slot's last connection left
     /// behind. `None` for a session that has not failed.
     pub reason: Option<String>,
+    /// When this session's newest turn ended in failure, which the rail
+    /// marks until the reader opens the seat. `None` when nothing failed,
+    /// when the reader cancelled that turn, or when a newer turn has since
+    /// been committed.
+    pub failed_turn: Option<SystemTime>,
 }
 
 /// What a session is waiting on a person for. The core's own kind rather
@@ -110,6 +115,7 @@ fn row_for(
     AgentRow {
         has_background_work: workspace.has_background_work(&slot),
         last_activity: workspace.session_last_activity(&slot),
+        failed_turn: workspace.session_failed_turn(&slot),
         pending: workspace.pending_interaction(&slot),
         pending_depth: workspace.pending_interaction_depth(&slot),
         // A worker's own spawn diagnostic is the more specific record, so
@@ -326,6 +332,35 @@ mod tests {
             None,
             "a lead that has not failed carries none, the same as a live worker",
         );
+    }
+
+    /// The failed-turn fact reaches the row, which is what the rail's
+    /// failure mark draws from. Catches a row that drops it, and one that
+    /// stamps a seat whose newest turn never failed.
+    #[test]
+    fn a_row_carries_the_failed_turn_the_core_recorded() {
+        let (workspace, _dir) = crate::surface::testing::workspace();
+        let surface = ViewSurface::new(Arc::clone(&workspace));
+        let project =
+            surface.roster().project_named("forge").expect("configured project").key.clone();
+        workspace.register_domain_session(SessionSlot::lead("TestOrg", "forge"), None);
+
+        let failed = SessionSlot::worker("TestOrg", "forge", "probe-failed-turn");
+        let quiet = SessionSlot::worker("TestOrg", "forge", "probe-quiet-turn");
+        workspace.seed_test_worker_row(&project, "probe-failed-turn");
+        workspace.seed_test_worker_row(&project, "probe-quiet-turn");
+        workspace.register_domain_session(failed.clone(), None);
+        let at = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_800_000_000);
+        workspace.record_failed_turn_for_test(&failed, at);
+
+        let agents = surface.agents();
+        let rows = agents.for_project(&project);
+        let failed_of = |slot: &SessionSlot| {
+            rows.iter().find(|row| &row.slot == slot).expect("the row exists").failed_turn
+        };
+
+        assert_eq!(failed_of(&failed), Some(at), "the row carries the failed turn's instant");
+        assert_eq!(failed_of(&quiet), None, "a seat that never failed carries none");
     }
 
     /// A lead's failed spawn reaches its row, which is what the slot's own

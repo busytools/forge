@@ -123,7 +123,11 @@ pub(crate) fn target_snapshot(
         LayerState::Clean
     };
     let branch_ahead = if branch_ahead_populated {
-        LayerState::Populated(GitBranchAhead { commit_count: 1, stats: GitDiffStats::default() })
+        LayerState::Populated(GitBranchAhead {
+            commit_count: 1,
+            stats: GitDiffStats::default(),
+            commits: Vec::new(),
+        })
     } else {
         LayerState::Clean
     };

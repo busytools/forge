@@ -1,29 +1,39 @@
+import { readFileSync } from 'node:fs';
+
 import { describe, expect, it } from 'vitest';
 
+import { FORGE_COMMANDS } from '../composer/forge-commands';
 import { homeWire } from '../dev/fixture.data';
 import session from '../dev/fixtures/session.json';
 import { PROTOCOL_VERSION } from '../protocol';
-import type { AgentRow, HomeWire, ProjectWire } from '../wire/home';
+import type { AgentRow, CronEntry, HomeWire, ProjectWire, Task } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
 import {
   accountChip,
+  chipState,
   compactionFigure,
+  paletteRows,
   copyReason,
   fleetCount,
-  gitSection,
+  gitStrip,
+  markOf,
   headerFacts,
+  failedLine,
+  mcpRows,
   mcpState,
   memoryLabel,
   monitorLabel,
+  monitorRows,
   railFooter,
   railGroups,
   railMark,
+  rankOf,
   type RailGroup,
   type RailProject,
-  schedulesSection,
   seatConnectorRows,
+  seatScheduleRows,
   seatState,
-  tasksSection,
+  taskRows,
   untilOf,
 } from './view';
 import { sessionFrom, type SessionRecord } from './wire';
@@ -81,6 +91,36 @@ describe('the boundary', () => {
     );
     expect(ahead.header.effort).toBe('medium');
     expect(ahead.header.permission_mode).toBe('default');
+  });
+
+  /**
+   * **The tree degrades where it enters too.** The fixture only ever holds
+   * a complete tree, so nothing else exercises the arms a thinner or newer
+   * server lands on: an unknown status wears the least-alarming class, a
+   * commit list without a count states its own length, and a file the wire
+   * does not name is dropped rather than drawn blank.
+   */
+  it('narrows an unknown status and fills what the tree does not state', () => {
+    const tree = sessionFrom({
+      ...(session as unknown as Record<string, unknown>),
+      git: {
+        default_branch: 'main',
+        worktree: {
+          files: [
+            { path: 'a.rs', added: 1, removed: 0, status: 'quantum' },
+            { added: 2, removed: 0, status: 'added' },
+          ],
+          total_files: 2,
+          total_added: 3,
+          total_removed: 0,
+        },
+        ahead: { commits: [{ sha: 'a1b2c3d', subject: 'one' }] },
+      },
+    });
+    const files = tree.git.worktree?.files ?? [];
+    expect(files[0]?.status, 'a status from the future did not narrow').toBe('modified');
+    expect(files, 'a file the wire did not name was not dropped').toHaveLength(1);
+    expect(tree.git.ahead?.count, 'a commit list without a count did not state its length').toBe(1);
   });
 });
 
@@ -230,6 +270,27 @@ describe('the rail', () => {
       railGroups(withHome({ agents: [leadRow, held] }), LEAD, 0, (slot) => slot.label === 'w1'),
     );
     expect(closed?.why, 'a closed seat still wrote on the project line').toBeNull();
+  });
+
+  /**
+   * A failed turn is the seat's own failure, and both surfaces say so from
+   * one mapping: the row carries the line and the header takes the failure
+   * mark. Each half had its own way to fall silent - the line through
+   * `failedLine`, the mark through the promotion - so both are pinned.
+   */
+  it('names a failed turn on the row and marks it for the header', () => {
+    const at = { secs_since_epoch: 1_800_000_000, nanos_since_epoch: 0 };
+    const failed: AgentRow = { ...lead(), pending: null, failed_turn: at };
+    const home = withHome({ agents: [failed] });
+
+    const block = railGroups(home, LEAD, 0)[0]?.projects[0];
+    if (block === undefined) throw new Error('the rail drew no block for the failed seat');
+    expect(failedLine(block.row), 'the row names the failure').toBe('a turn failed');
+    expect(block.why, 'and the line draws under the row').toEqual({
+      line: 'a turn failed',
+      bad: true,
+    });
+    expect(seatState(home, LEAD).mark, 'the header draws the failure mark').toBe('failed');
   });
 
   /**
@@ -395,6 +456,11 @@ describe('the rail', () => {
     expect(railMark({ kind: 'lifecycle', lifecycle: 'Sleeping' })).toBe('off');
     expect(railMark({ kind: 'never-started' })).toBe('off');
     expect(railMark({ kind: 'unseen' })).toBe('unseen');
+    // A failed turn is the same failure shape, and it ranks with the
+    // states that need the reader rather than with the completions.
+    expect(railMark({ kind: 'failed-turn' })).toBe('failed');
+    expect(rankOf({ kind: 'failed-turn' }, null)).toBe(0);
+    expect(rankOf({ kind: 'failed-turn' }, 'question')).toBe(0);
   });
 
   it('counts the fleet by its seats, not by the rows a group drew', () => {
@@ -417,150 +483,479 @@ describe('the seat', () => {
   });
 });
 
-describe('the git section', () => {
-  it('leads with the branch and the count the record carries', () => {
-    const git = gitSection({
-      ...record,
-      work: { branch: 'web-home-layout', changed: 8, gate: 'in_repo' },
-      pr: { number: 1203, url: 'https://example.test/pull/1203' },
-      closes: [{ number: 1200, url: 'https://example.test/issues/1200' }],
+describe('the tree the strip draws', () => {
+  /** The fixture's record with the scan's own view laid over it. */
+  const withGit = (
+    git: Partial<SessionRecord['git']>,
+    over: Partial<SessionRecord> = {},
+  ): SessionRecord => ({
+    ...record,
+    git: { defaultBranch: 'main', worktree: null, ahead: null, ...git },
+    ...over,
+  });
+
+  it('leads with the branch, and carries the tree whole: chains, files, marks', () => {
+    const stats = {
+      files: [
+        { path: 'client/src/lib.rs', added: 12, removed: 4, status: 'modified' as const },
+        { path: 'docs/new.md', added: 3, removed: 0, status: 'added' as const },
+      ],
+      totalFiles: 2,
+      totalAdded: 15,
+      totalRemoved: 4,
+    };
+    const strip = gitStrip(
+      withGit(
+        {
+          worktree: stats,
+          ahead: {
+            count: 2,
+            commits: [
+              { sha: 'a1b2c3d', subject: 'the first commit', stats: null, time: 1_766_000_000 },
+              { sha: 'd4e5f6a', subject: 'the second commit', stats: null, time: 1_766_000_100 },
+            ],
+            stats,
+          },
+        },
+        {
+          work: { branch: 'web-home-layout', changed: 2, gate: 'in_repo' },
+        },
+      ),
+      LEAD,
+    );
+
+    expect(strip?.label, 'where the branch runs, how far, on which PR, and that it is dirty').toBe(
+      'web-home-layout \u{b7} 2 commits \u{b7} PR #1249 \u{b7} dirty',
+    );
+    expect(strip?.head, 'what the tree IS leads the hover').toBe("the project's tree");
+    expect(strip?.ahead, 'the chain, its count, its range and the branch it is ahead of').toEqual({
+      count: 2,
+      base: 'main',
+      commits: [
+        { sha: 'a1b2c3d', subject: 'the first commit', stats: null, time: 1_766_000_000 },
+        { sha: 'd4e5f6a', subject: 'the second commit', stats: null, time: 1_766_000_100 },
+      ],
+      stats,
     });
-    expect(git?.summary).toBe('web-home-layout \u{b7} 8 files');
-    expect(git?.pr).toBe(1203);
-    expect(git?.closes).toBe('#1200');
+    expect(strip?.uncommitted, 'the uncommitted files with their marks and totals').toEqual(stats);
+  });
+
+  it('states the pull request with its state and what it closes', () => {
+    const strip = gitStrip(
+      withGit(
+        {},
+        {
+          work: { branch: 'web-home-layout', changed: 0, gate: 'in_repo' },
+          pr: { number: 1203, url: 'https://example.test/pull/1203', draft: true },
+          closes: [{ number: 1200, url: 'https://example.test/issues/1200' }],
+        },
+      ),
+      LEAD,
+    );
+
+    expect(strip?.pr).toEqual({
+      number: 1203,
+      url: 'https://example.test/pull/1203',
+      draft: true,
+      closes: '#1200',
+    });
+    expect(strip?.label, 'the toggle names the PR it is on').toContain('PR #1203');
   });
 
   /**
    * A seat outside a repository has no branch and no count, and the gate line
-   * is then the whole of what the section says. Drawing nothing would read as
-   * a seat with nothing to report rather than as a tree that could not be
-   * read.
+   * is then the whole of what the row says under its toggle. Drawing nothing
+   * would read as a seat with nothing to report rather than as a tree that
+   * could not be read.
    */
   it('draws the reason a tree could not be read', () => {
-    const git = gitSection({
-      ...record,
-      work: { branch: null, changed: null, gate: 'gone' },
-      pr: null,
-      closes: [],
-    });
-    expect(git?.gate).toBe('its working directory is not there');
-    expect(git?.summary).toBe('');
+    const strip = gitStrip(
+      withGit({}, { work: { branch: null, changed: null, gate: 'gone' }, pr: null, closes: [] }),
+      LEAD,
+    );
+    expect(strip?.label, 'the toggle says there is no branch, not why').toBe('no branch');
+    expect(strip?.gate).toBe('its working directory is not there');
   });
 
   /**
-   * The section is drawn for every seat with a tree, and OPENS only when there
-   * is something under it: a clean tree on no pull request would otherwise
-   * lead the inspector with an open section and nothing in it.
+   * **On the default branch with nothing on it there is no row at all.**
+   * The branch everything lands on with a clean tree is where work goes, not
+   * work: a row there would state that nothing is happening, on every seat,
+   * forever. A dirty default branch still draws - there is something to see.
    */
-  it('opens the section only when there is a body to open on', () => {
-    expect(
-      gitSection({
-        ...record,
-        work: { branch: 'main', changed: 0, gate: 'in_repo' },
+  it('hides itself on the default branch, and draws once the tree is dirty', () => {
+    const clean = gitStrip(
+      withGit({}, { work: { branch: 'main', changed: 0, gate: 'in_repo' }, pr: null, closes: [] }),
+      LEAD,
+    );
+    expect(clean, 'a clean default branch drew a row').toBeNull();
+
+    // In a clone the default arrives as `origin/main` while the checked-out
+    // branch is plain `main`: the same row must stay hidden.
+    const clone = gitStrip(
+      withGit(
+        { defaultBranch: 'origin/main' },
+        { work: { branch: 'main', changed: 0, gate: 'in_repo' }, pr: null, closes: [] },
+      ),
+      LEAD,
+    );
+    expect(clone, 'a clone on main with a clean tree drew a row').toBeNull();
+
+    // A clean default branch holding an open pull request still draws: the
+    // PR is state the row exists for.
+    const withPr = gitStrip(
+      withGit(
+        {},
+        {
+          work: { branch: 'main', changed: 0, gate: 'in_repo' },
+          pr: { number: 1203, url: 'https://example.test/pull/1203', draft: false },
+          closes: [],
+        },
+      ),
+      LEAD,
+    );
+    expect(withPr, 'a default branch holding a PR drew no row').not.toBeNull();
+
+    const dirty = gitStrip(
+      withGit(
+        {
+          worktree: {
+            files: [{ path: 'a.rs', added: 1, removed: 0, status: 'modified' }],
+            totalFiles: 1,
+            totalAdded: 1,
+            totalRemoved: 0,
+          },
+        },
+        { work: { branch: 'main', changed: 1, gate: 'in_repo' }, pr: null, closes: [] },
+      ),
+      LEAD,
+    );
+    expect(dirty, 'a dirty default branch went unstated').not.toBeNull();
+    expect(dirty?.uncommitted?.files).toHaveLength(1);
+  });
+
+  it('names the worktree a seat is on, and whose tree it is when it is not one', () => {
+    const worktree = gitStrip(
+      {
+        ...withGit({}, { work: { branch: 'work/schedule-row', changed: 0, gate: 'in_repo' } }),
+        state: { scan_cwd: '/w/forge/.claude/worktrees/session-design' },
         pr: null,
         closes: [],
-      }).open,
-      'a clean tree with nothing to show opened its section',
-    ).toBe(false);
-  });
-
-  it('draws the section closed, with its branch, for a tree nothing moved in', () => {
-    const git = gitSection({
-      ...record,
-      work: { branch: 'main', changed: 0, gate: 'in_repo' },
-      pr: null,
-      closes: [],
-    });
-    expect(git.summary).toBe('main');
-    expect(git.pr).toBeNull();
-  });
-});
-
-describe('the inbox sections', () => {
-  it('says which of the two an empty MCP read is', () => {
-    expect(mcpState({ name: 'forge', status: 'failed', error: '  ' })).toBe('failed');
-    expect(mcpState({ name: 'forge', status: 'failed', error: ' the CLI refused ' })).toBe(
-      'the CLI refused',
+      },
+      { ...LEAD, label: 'session-design' },
     );
-    expect(mcpState({ name: 'forge', status: 'connected', tools: [] })).toBe('no tools');
-    expect(mcpState({ name: 'forge', status: 'connected', tools: [{}, {}] })).toBe('2 tools');
+    expect(worktree?.head).toBe('worktree \u{b7} session-design');
+
+    const worker = gitStrip(
+      withGit(
+        {},
+        { work: { branch: 'feat/x', changed: 0, gate: 'in_repo' }, pr: null, closes: [] },
+      ),
+      { ...LEAD, label: 'builder' },
+    );
+    expect(worker?.head, "a worker's own path is still the worker's").toBe("a worker's tree");
+  });
+
+  it('reads a commit count of one in the singular', () => {
+    const strip = gitStrip(
+      withGit(
+        { ahead: { count: 1, commits: [], stats: null } },
+        { work: { branch: 'feat/x', changed: 1, gate: 'in_repo' }, pr: null, closes: [] },
+      ),
+      LEAD,
+    );
+    expect(strip?.label, 'one commit reads as one').toBe('feat/x \u{b7} 1 commit \u{b7} dirty');
+  });
+
+  it('maps every status to the mark the terminal draws for it', () => {
+    expect(markOf('modified')).toEqual({ letter: 'M', klass: 'mark' });
+    expect(markOf('added')).toEqual({ letter: 'A', klass: 'ok' });
+    expect(markOf('deleted')).toEqual({ letter: 'D', klass: 'bad' });
+    expect(markOf('renamed')).toEqual({ letter: 'R', klass: 'mark' });
+    expect(markOf('copied')).toEqual({ letter: 'C', klass: 'mark' });
+    expect(markOf('typechange')).toEqual({ letter: 'T', klass: 'mark' });
+    expect(markOf('unmerged')).toEqual({ letter: '!', klass: 'bad' });
+    expect(markOf('untracked')).toEqual({ letter: 'U', klass: 'warn' });
   });
 });
 
-describe('the schedules section', () => {
+describe('the schedule countdown', () => {
   it('reads a time already past as due rather than counting into the past', () => {
-    expect(untilOf({ secs_since_epoch: 0 }, 1_700_000_000_000)).toBe('in a minute');
+    expect(
+      untilOf({ secs_since_epoch: 0 }, 1_700_000_000_000),
+      'a passed fire read as future',
+    ).toBe('due now');
     expect(untilOf({ secs_since_epoch: 1_700_003_600 }, 1_700_000_000_000)).toBe('in 1h');
     expect(untilOf(null, 0)).toBe('due now');
   });
+});
 
-  it('names a schedule by its description, else its prompt', () => {
-    const now = 1_700_000_000_000;
-    const view = schedulesSection(
+describe('the tasks the strip draws', () => {
+  it("scopes the rows to the seat, the way the terminal's own section does", () => {
+    const base = {
+      project_name: 'proj',
+      active_form: null,
+      detail: null,
+      parent: null,
+      artifact: null,
+      estimate: null,
+      created_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+      updated_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+    };
+    const tasks: Task[] = [
+      { ...base, id: 'top', subject: 'the campaign', status: 'in_progress', owner: null },
+      {
+        ...base,
+        id: 'mine',
+        subject: 'my row',
+        status: 'in_progress',
+        owner: { org: 'TestOrg', project: 'proj', label: 'builder' },
+        parent: 'top',
+      },
+      {
+        ...base,
+        id: 'child',
+        subject: 'a child row',
+        status: 'pending',
+        owner: null,
+        parent: 'top',
+      },
+    ];
+
+    // A lead draws its campaign board: top-level rows only, so the child of
+    // one is not among them.
+    const board = taskRows(tasks, LEAD);
+    expect(
+      board.map((row) => row.id),
+      'the lead drew a row that is not top-level',
+    ).toEqual(['top']);
+    // A worker draws only what it owns.
+    const own = taskRows(tasks, { org: 'TestOrg', project: 'proj', label: 'builder' });
+    expect(
+      own.map((row) => row.id),
+      'a worker drew a row that is not its own',
+    ).toEqual(['mine']);
+  });
+
+  it('reads in-progress first, and keys each row by its own id', () => {
+    const rows = taskRows(
       [
         {
-          id: 'c1',
+          id: 't1',
           project_name: 'proj',
-          kind: { Recurring: '0 9 * * *' },
-          prompt: 'sweep the deps\nand more',
-          description: 'deps sweep',
+          subject: 'done already',
+          active_form: null,
+          detail: null,
+          status: 'completed',
+          owner: null,
+          parent: null,
+          artifact: null,
+          estimate: null,
           created_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
-          next_fire: { secs_since_epoch: 1_700_003_600, nanos_since_epoch: 0 },
+          updated_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
         },
         {
-          id: 'c2',
+          id: 't2',
           project_name: 'proj',
-          kind: { Once: { secs_since_epoch: 0, nanos_since_epoch: 0 } },
-          prompt: 'plugin audit\nand more',
+          subject: 'still going',
+          active_form: 'Going still',
+          detail: null,
+          status: 'in_progress',
+          owner: LEAD,
+          parent: null,
+          artifact: 'https://example.test/pull/1204',
+          estimate: '2h',
           created_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
-          next_fire: { secs_since_epoch: 1_700_003_600, nanos_since_epoch: 0 },
+          updated_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
         },
       ],
-      now,
+      LEAD,
     );
-    expect(view.rows.map((row) => row.k)).toEqual(['deps sweep', 'plugin audit']);
-    expect(view.rows[1]?.v).toBe('in 1h \u{b7} one-shot');
-    expect(view.summary).toBe('2');
+    expect(rows[0]?.subject).toBe('still going');
+    expect(rows[0]?.display, 'a running row leads with its active form').toBe('Going still');
+    expect(rows[1]?.display, 'and a settled one keeps its subject').toBe('done already');
+    expect(rows[0]?.status, 'in progress leads, and the row draws its own mark').toBe(
+      'in_progress',
+    );
+    expect(rows[0]?.id, 'the row is keyed by the task its own id').toBe('t2');
+    expect(rows[0]?.owner, 'the owner rides its own cell').toBe('lead');
+    expect(rows[0]?.meta).toBe('in progress \u{b7} PR 1204 \u{b7} 2h');
+    expect(rows[1]?.status).toBe('completed');
   });
 });
 
-describe('the tasks section', () => {
-  it('reads in-progress first and counts what is done', () => {
-    const view = tasksSection([
-      {
-        id: 't1',
-        project_name: 'proj',
-        subject: 'done already',
-        active_form: null,
-        detail: null,
-        status: 'completed',
-        owner: null,
-        parent: null,
-        artifact: null,
-        estimate: null,
-        created_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
-        updated_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
-      },
-      {
-        id: 't2',
-        project_name: 'proj',
-        subject: 'still going',
-        active_form: null,
-        detail: null,
-        status: 'in_progress',
-        owner: LEAD,
-        parent: null,
-        artifact: 'https://example.test/pull/1204',
-        estimate: '2h',
-        created_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
-        updated_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
-      },
+describe('the projects chip', () => {
+  const agent = (label: string, over: Partial<AgentRow> = {}): AgentRow => ({
+    slot: { org: 'TestOrg', project: 'proj', label },
+    label,
+    lifecycle: 'Idle',
+    has_background_work: false,
+    pending: null,
+    pending_depth: 0,
+    last_activity: null,
+    reason: null,
+    failed_turn: null,
+    work: null,
+    ...over,
+  });
+
+  /**
+   * **Never a mere change.** A busy or idle seat counts for nothing; the
+   * chip is only the seats that want a PERSON, and one such seat - with no
+   * failure among them - is the case its click goes straight to it.
+   */
+  it('counts only the seats that want a person', () => {
+    const wire = withHome({
+      agents: [agent('busy'), agent('waiter', { pending: 'permission' })],
+    });
+    expect(chipState(wire), 'a seat that does not want a person counted').toEqual({
+      state: 'one',
+      count: 1,
+      href: '/session/TestOrg/proj/waiter',
+      label: '1 seat needs you',
+    });
+  });
+
+  /** Several, any failure among them, or none: the home is where you pick. */
+  it('goes home for several, for any failure and for none', () => {
+    const many = chipState(
+      withHome({
+        agents: [agent('a', { pending: 'permission' }), agent('b', { pending: 'permission' })],
+      }),
+    );
+    expect(many.state, 'two wanting seats did not read as several').toBe('many');
+    expect(many.href, 'several did not go home').toBe('/');
+    expect(many.label).toBe('2 seats need you');
+
+    const failed = chipState(
+      withHome({
+        agents: [agent('a', { failed_turn: { secs_since_epoch: 1, nanos_since_epoch: 0 } })],
+      }),
+    );
+    expect(failed, 'a lone failure did not go home').toMatchObject({
+      state: 'failed',
+      href: '/',
+      count: 1,
+    });
+    expect(failed.label, 'the failure is not in the accessible name').toBe(
+      '1 seat needs you, one failed',
+    );
+
+    const none = chipState(withHome({ agents: [agent('busy')] }));
+    expect(none, 'a quiet fleet did not read as the calm word').toEqual({
+      state: 'none',
+      count: 0,
+      href: '/',
+      label: 'projects',
+    });
+  });
+});
+
+describe("the palette's rows", () => {
+  const agent = (label: string, over: Partial<AgentRow> = {}): AgentRow => ({
+    slot: { org: 'TestOrg', project: 'proj', label },
+    label,
+    lifecycle: 'Idle',
+    has_background_work: false,
+    pending: null,
+    pending_depth: 0,
+    last_activity: null,
+    reason: null,
+    failed_turn: null,
+    work: null,
+    ...over,
+  });
+
+  /**
+   * A project's identity is (org, name) here as everywhere else: a namesake
+   * in another org must not wear the chip, or Enter lands in the wrong org's
+   * seat.
+   */
+  it('marks the lead by its org and project both', () => {
+    const wire = withHome({
+      agents: [
+        agent('lead', { slot: { org: 'Other', project: 'proj', label: 'lead' } }),
+        agent('lead'),
+      ],
+    });
+    const leads = paletteRows(wire, LEAD)
+      .flatMap((section) => section.rows)
+      .filter((row) => row.lead === true);
+    expect(leads, 'two orgs sharing a project name both wore the chip').toHaveLength(1);
+    expect(leads[0]?.id, 'the wrong org wore it').toBe('TestOrg/proj/lead');
+  });
+
+  /**
+   * **The fleet grouped its own way**: the seats that want a person, the ones
+   * working, the ones asleep - then forge's commands, then the doings. The
+   * current project's lead wears `lead`, which is where the cursor starts, so
+   * Cmd+K then Enter lands on it.
+   */
+  it('groups needs-you, working, asleep, commands and doings, in order', () => {
+    // The grouping IS rankOf's: an idle live session ranks as working (the
+    // rail draws it so), and only a sleeping or logged-out one is asleep.
+    const wire = withHome({
+      agents: [
+        agent('waiter', { lifecycle: 'Attention', pending: 'permission' }),
+        agent('runner', { lifecycle: 'Running' }),
+        agent('dozer', { lifecycle: 'Sleeping' }),
+        agent('lead'),
+      ],
+    });
+    const sections = paletteRows(wire, LEAD);
+    expect(sections.map((section) => section.title)).toEqual([
+      'needs you',
+      'working',
+      'asleep',
+      'commands',
+      'doings',
     ]);
-    expect(view.summary).toBe('1 of 2');
-    expect(view.rows[0]?.subject).toBe('still going');
-    expect(view.rows[0]?.klass).toBe('tk now');
-    expect(view.rows[0]?.meta).toBe('in progress \u{b7} PR 1204 \u{b7} 2h');
-    expect(view.rows[1]?.klass).toBe('tk done');
+    expect(sections[0]?.rows.map((row) => row.label)).toEqual(['waiter']);
+    expect(sections[0]?.rows[0]?.mark, 'a needing seat wears the needs mark').toBe('needs');
+    expect(sections[1]?.rows.map((row) => row.label)).toEqual(['runner', 'lead']);
+    expect(sections[2]?.rows.map((row) => row.label)).toEqual(['dozer']);
+    const leadRow = sections[1]?.rows.find((row) => row.label === 'lead');
+    expect(leadRow?.lead, 'the lead is the row the cursor starts on').toBe(true);
+    expect(leadRow?.href).toBe('/session/TestOrg/proj/lead');
+    // The command rows are the composer's own table, whole: a command the
+    // box offers cannot be missing here, and nothing extra rides along.
+    const commands = sections[3]?.rows ?? [];
+    expect(
+      commands.map((row) => row.label),
+      'the palette and the box disagree on the command set',
+    ).toEqual(FORGE_COMMANDS.map((command) => command.name));
+    const compact = commands.find((row) => row.label === '/compact');
+    expect(compact?.text, 'a command row carries its prompt text').toBe('/compact');
+    const doings = sections[4]?.rows.map((row) => row.label) ?? [];
+    expect(doings).toContain('peek at the fleet');
+    expect(doings).toContain('close this seat');
+    const home = sections[4]?.rows.find((row) => row.label === 'go home');
+    expect(home?.href, 'the home doing is a href').toBe('/');
+  });
+
+  /**
+   * **The table is commands.rs's, and this reading keeps them equal.** The
+   * client's copy is static so the box opens without a round trip; a static
+   * copy drifts silently, so the pin reads the Rust side.
+   */
+  it('keeps the command table equal to commands.rs', () => {
+    const rust = readFileSync(
+      new URL('../../../crates/forge-server/src/commands.rs', import.meta.url),
+      'utf8',
+    );
+    const names = [...rust.matchAll(/name:\s*"(\/[a-z]+)"/g)].map((match) => match[1] ?? '');
+    expect(names.length, 'the Rust table parsed to nothing').toBeGreaterThan(0);
+    expect(
+      FORGE_COMMANDS.map((command) => command.name),
+      'the client table drifted from commands.rs',
+    ).toEqual(names);
+  });
+
+  /** A logged-out seat reads asleep, the same way a sleeping one does. */
+  it('reads a logged-out seat as asleep', () => {
+    const wire = withHome({ agents: [agent('gone', { lifecycle: 'LoggedOut' })] });
+    const row = paletteRows(wire, LEAD)[0]?.rows[0];
+    expect(row?.detail, 'a logged-out seat did not read asleep').toContain('asleep');
   });
 });
 
@@ -573,7 +968,60 @@ describe('process figures', () => {
   });
 });
 
-describe('the monitors section', () => {
+describe('the monitors the strip draws', () => {
+  it('keys each row by its own call and states whether it is running', () => {
+    const rows = monitorRows(
+      [
+        {
+          tool_use_id: 'm1',
+          task_id: null,
+          description: 'ci-watch',
+          command: 'gh run watch',
+          persistent: true,
+          timeout_ms: 0,
+          status: 'running',
+          output_file: null,
+          ended_at: null,
+        },
+        {
+          tool_use_id: 'm2',
+          task_id: null,
+          description: 'log-tail',
+          command: 'tail -f forge.log',
+          persistent: false,
+          timeout_ms: 0,
+          status: 'timed_out',
+          output_file: null,
+          ended_at: null,
+        },
+        {
+          tool_use_id: 'm3',
+          task_id: null,
+          description: 'done',
+          command: 'true',
+          persistent: false,
+          timeout_ms: 0,
+          status: 'completed',
+          output_file: null,
+          ended_at: null,
+        },
+      ],
+      0,
+    );
+    expect(rows[0]).toEqual({
+      id: 'm1',
+      running: true,
+      completed: false,
+      name: 'ci-watch',
+      label: 'persistent',
+      command: 'gh run watch',
+    });
+    expect(rows[1]?.running, 'a settled monitor does not read as live').toBe(false);
+    expect(rows[1]?.completed, 'a timed-out watch did not complete').toBe(false);
+    expect(rows[1]?.label).toBe('timed out');
+    expect(rows[2]?.completed, 'a completed watch did').toBe(true);
+  });
+
   it('draws an age only when the record stated an instant', () => {
     const base = {
       tool_use_id: 'm1',
@@ -619,6 +1067,30 @@ const withPool = (snapshot: unknown): HomeWire =>
   });
 
 describe('the rail footer', () => {
+  /**
+   * The pair, both sides stated whether or not they agree: a mismatch is
+   * then a difference the reader sees, not the absence of a notice. The
+   * `skewed` flag is that difference, stated once.
+   */
+  it('states the server and client protocol pair, and marks a mismatch', () => {
+    const agreed = railFooter(homeWire, LEAD, PROTOCOL_VERSION);
+    expect(agreed.versions).toMatchObject({
+      serverProtocol: PROTOCOL_VERSION,
+      clientProtocol: PROTOCOL_VERSION,
+      skewed: false,
+    });
+
+    const oneBack = railFooter(homeWire, LEAD, PROTOCOL_VERSION - 1);
+    expect(oneBack.versions.serverProtocol, 'the server did not state its own').toBe(
+      PROTOCOL_VERSION - 1,
+    );
+    expect(oneBack.versions.skewed, 'a mismatch read as agreement').toBe(true);
+
+    const early = railFooter(homeWire, LEAD);
+    expect(early.versions.serverProtocol, 'no greeting yet claimed a protocol').toBeNull();
+    expect(early.versions.skewed).toBe(false);
+  });
+
   it('states the five figures a spend-billed account reports', () => {
     const footer = railFooter(
       withPool({
@@ -686,8 +1158,8 @@ describe('the rail footer', () => {
 
   it('names the versions, and the newer CLI only when npm has one', () => {
     const footer = railFooter(withPool(null), LEAD);
-    expect(footer.versions.forge).toBe(homeWire.forge_version_short);
-    expect(footer.versions.socket, 'the protocol this app speaks').toBe(PROTOCOL_VERSION);
+    expect(footer.versions.serverForge).toBe(homeWire.forge_version_short);
+    expect(footer.versions.clientProtocol, 'the protocol this app speaks').toBe(PROTOCOL_VERSION);
     expect(footer.versions.claude).toBe('1.0.0');
     expect(footer.versions.update, 'a newer claude went unstated').toBe('1.1.0');
 
@@ -815,6 +1287,86 @@ describe('the dictation overrides', () => {
       Object.hasOwn(held, 'dictate_overrides'),
       'the record must not carry a field nothing reads',
     ).toBe(false);
+  });
+});
+
+describe('the MCP rows the strip draws', () => {
+  it('states the state, and leaves the reason to the row line beneath', () => {
+    expect(mcpState({ name: 'forge', status: 'failed', error: '  ' })).toBe('failed');
+    expect(
+      mcpState({ name: 'forge', status: 'failed', error: ' the CLI refused ' }),
+      'the reason drew in the state cell as well as its own line',
+    ).toBe('failed');
+    expect(mcpState({ name: 'forge', status: 'connected', tools: [] })).toBe('no tools');
+    expect(mcpState({ name: 'forge', status: 'connected', tools: [{}, {}] })).toBe('2 tools');
+  });
+
+  it('carries the status detail a server row draws: tools, command, reason', () => {
+    const held = sessionFrom({
+      ...(session as unknown as Record<string, unknown>),
+      mcp: {
+        error: null,
+        servers: [
+          {
+            name: 'context7',
+            status: 'connected',
+            config: { type: 'stdio', command: 'npx', args: ['-y', '@upstash/context7-mcp'] },
+            tools: [
+              { name: 'query-docs', description: 'Ask the docs' },
+              { name: 'resolve-library-id' },
+            ],
+          },
+          {
+            name: 'forge',
+            status: 'failed',
+            error: ' the CLI refused ',
+            config: { type: 'http', url: 'https://mcp.example.test' },
+          },
+        ],
+      },
+    });
+
+    const rows = mcpRows(held);
+
+    expect(rows, 'one row per server').toHaveLength(2);
+    expect(rows[0], 'a connected server names its tools and its backing command').toMatchObject({
+      name: 'context7',
+      k: 'context7 \u{b7} session',
+      v: '2 tools',
+      tools: ['query-docs', 'resolve-library-id'],
+      command: 'npx -y @upstash/context7-mcp',
+      reason: null,
+      synthetic: false,
+    });
+    expect(rows[1], 'a failed server carries its reason and reaches its URL').toMatchObject({
+      name: 'forge',
+      k: 'forge \u{b7} session',
+      v: 'failed',
+      command: 'https://mcp.example.test',
+      reason: 'the CLI refused',
+    });
+  });
+
+  it('draws nothing for a session that reported nothing, and the failure for a read that failed', () => {
+    const bare = sessionFrom({
+      ...(session as unknown as Record<string, unknown>),
+      mcp: { error: null, servers: [] },
+    });
+    expect(mcpRows(bare), 'no servers and no failure: no rows at all').toEqual([]);
+    expect(mcpRows(null), 'a record that has not landed draws nothing').toEqual([]);
+
+    const refused = sessionFrom({
+      ...(session as unknown as Record<string, unknown>),
+      mcp: { error: 'the CLI refused', servers: [] },
+    });
+    const rows = mcpRows(refused);
+    expect(rows, 'an empty read that failed is a state of its own').toHaveLength(1);
+    expect(rows[0], 'and it draws as itself, with the reason').toMatchObject({
+      k: 'servers',
+      v: 'failed',
+      reason: 'the CLI refused',
+      synthetic: true,
+    });
   });
 });
 
@@ -1028,5 +1580,105 @@ describe("a seat's own connector rows", () => {
     expect(rows[1]?.value, 'an unconnected workspace reads on its row').toBe(
       'mentions anywhere \u{b7} mentions only \u{b7} not connected',
     );
+  });
+});
+
+describe("the project's schedule rows", () => {
+  const NOW = 1_700_000_000_000;
+  const cron = (over: Partial<CronEntry> = {}): CronEntry => ({
+    id: 'c-1',
+    project_name: 'proj',
+    kind: { Recurring: '0 9 * * *' },
+    prompt: 'sweep the rules',
+    description: 'rules sweep',
+    created_at: { secs_since_epoch: 1_699_000_000, nanos_since_epoch: 0 },
+    // 27 days past NOW: the countdown in the assertions below.
+    next_fire: { secs_since_epoch: 1_702_332_800, nanos_since_epoch: 0 },
+    ...over,
+  });
+
+  it('names a schedule by its description and states its countdown and kind', () => {
+    const home = withProject({ crons: [cron()] });
+
+    const rows = seatScheduleRows(home, LEAD, NOW);
+
+    expect(rows, 'one schedule').toHaveLength(1);
+    expect(rows[0], 'the description leads, the countdown and kind follow').toEqual({
+      id: 'c-1',
+      key: 'rules sweep',
+      value: 'in 27d \u{b7} recurring',
+    });
+  });
+
+  it("falls back to the prompt's first line, and reads a one-shot as one", () => {
+    // No description at all, which is the legacy shape the fallback is for.
+    const bare = cron({
+      id: 'c-2',
+      prompt: 'audit the plugins\nand then report',
+      // `Once` carries the instant, so it crosses as an object rather than a
+      // bare variant name.
+      kind: { Once: { secs_since_epoch: 1_702_332_800, nanos_since_epoch: 0 } },
+    });
+    delete bare.description;
+    const home = withProject({ crons: [bare] });
+
+    const rows = seatScheduleRows(home, LEAD, NOW);
+
+    expect(rows[0]?.key, 'the first line of the prompt, not all of it').toBe('audit the plugins');
+    expect(rows[0]?.value, 'a one-shot is a one-shot').toBe('in 27d \u{b7} one-shot');
+  });
+
+  /**
+   * **A cron names the seat that created it** (`team_role`, absent for the
+   * lead), so the page keeps its own label's set - the same ownership rule
+   * the connector row applies.
+   */
+  it("keeps another seat's crons off this page, and this seat's own on it", () => {
+    const home = withProject({
+      crons: [cron(), cron({ id: 'c-w1', description: 'the worker sweep', team_role: 'w1' })],
+    });
+
+    const lead = seatScheduleRows(home, LEAD, NOW);
+    expect(
+      lead.map((row) => row.key),
+      "a worker's cron drew on the lead's page",
+    ).toEqual(['rules sweep']);
+
+    const worker = seatScheduleRows(home, { ...LEAD, label: 'w1' }, NOW);
+    expect(
+      worker.map((row) => row.key),
+      "the lead's cron drew on a worker's page",
+    ).toEqual(['the worker sweep']);
+  });
+
+  it('keeps two schedules reading the same words apart by their ids', () => {
+    const home = withProject({
+      crons: [cron(), cron({ id: 'c-9' })],
+    });
+
+    const rows = seatScheduleRows(home, LEAD, NOW);
+
+    expect(rows, 'both schedules draw').toHaveLength(2);
+    expect(new Set(rows.map((row) => row.id)).size, 'with distinct ids to key by').toBe(2);
+  });
+
+  it('reads only the seat project, whatever the order on the home', () => {
+    // The OTHER project comes first on purpose, so a lookup that took
+    // `projects[0]` would read the wrong schedules.
+    const home = withHome({
+      projects: [
+        {
+          ...project(),
+          project: { ...project().project, name: 'other', key: 'TestOrg-other' },
+          crons: [cron({ id: 'c-x', description: 'the other project' })],
+        },
+        { ...project(), crons: [cron()] },
+      ],
+    });
+
+    const rows = seatScheduleRows(home, LEAD, NOW);
+
+    expect(rows, 'one row, from the seat project').toHaveLength(1);
+    expect(rows[0]?.key, "another project's schedule drew on this seat").toBe('rules sweep');
   });
 });

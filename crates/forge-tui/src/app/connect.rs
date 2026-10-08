@@ -184,6 +184,7 @@ fn create_app_impl(
         workspace: Some(workspace),
         #[rustfmt::skip] #[cfg(feature = "testing")] test_dispatched_permission_outcomes: std::cell::RefCell::new(Vec::new()),
         #[rustfmt::skip] #[cfg(feature = "testing")] test_dispatched_slack_posts: std::cell::RefCell::new(Vec::new()),
+        #[rustfmt::skip] #[cfg(feature = "testing")] test_dispatched_browser_hand_offs: std::cell::RefCell::new(Vec::new()),
         #[rustfmt::skip] #[cfg(feature = "testing")] test_dispatched_question_outcomes: std::cell::RefCell::new(Vec::new()),
         #[rustfmt::skip] #[cfg(feature = "testing")] test_notifications: std::cell::RefCell::new(Vec::new()),
         sessions,

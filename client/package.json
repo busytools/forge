@@ -7,8 +7,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "test": "vitest run",
-    "mutate": "stryker run",
+    "test": "TMPDIR=\"$PWD/node_modules/.vitest-tmp\" vitest run; rc=$?; rm -rf node_modules/.vitest-tmp; exit $rc",
+    "mutate": "TMPDIR=\"$PWD/node_modules/.vitest-tmp\" stryker run; rc=$?; rm -rf node_modules/.vitest-tmp; exit $rc",
     "typecheck": "tsc --noEmit",
     "typecheck:markup": "svelte-check --tsconfig ./tsconfig.json",
     "lint": "eslint .",
@@ -39,7 +39,7 @@
     "ws": "^8.22.0"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2",
+    "@tauri-apps/api": "^2.12.0",
     "highlight.js": "^11.12.0",
     "markdown-it": "^15.0.2",
     "virtua": "^0.52.9"

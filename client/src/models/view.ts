@@ -228,6 +228,41 @@ export function candidateFacts(row: CatalogueRow): CandidateFacts {
 }
 
 /**
+ * The candidate's facts as its recommendation draws them: what it costs,
+ * what the feed measured against the model in use, its licence, and what it
+ * reads. Every part is the feed's own figure; a fact it did not carry is no
+ * part at all.
+ */
+export function updateFacts(update: ModelUpdate, row: CatalogueRow): FactPart[] {
+  const parts: FactPart[] = [{ text: paramsLabel(row.params) }];
+
+  if (row.download !== null) {
+    parts.push({ text: `${row.download.quant} ${sizeLabel(row.download.size_bytes)}` });
+  }
+  if (row.speed !== null) {
+    parts.push({
+      text: `${speedLabel(row.speed.xrt_wall)} vs ${speedLabel(update.current.speed_x)}`,
+      hl: true,
+    });
+  }
+  if (row.wer !== null) {
+    parts.push({
+      text: `${row.wer.dataset.toUpperCase()}-${row.wer.language} ${row.wer.err_pct} vs ${update.current.fleurs_en_wer}`,
+    });
+  }
+  if (row.license !== null) parts.push({ text: row.license });
+
+  const languages = languagesLabel(row.languages);
+  parts.push({
+    text: [languages, row.streaming ? 'streaming' : 'offline']
+      .filter((word) => word !== null)
+      .join(', '),
+  });
+
+  return parts;
+}
+
+/**
  * What one comparison row says about its candidate, in the column order the
  * table draws: the speed against the model in use, the error the same way,
  * the licence, and what the rule makes of it.
@@ -483,6 +518,48 @@ export function activateLine(activate: ActivateState): OpLine | null {
         percent: null,
       };
   }
+}
+
+/** One of the feed's families, and how many entries it holds. */
+export interface Family {
+  name: string;
+  count: number;
+}
+
+/**
+ * The classes the feed holds, most-populated first and then by name.
+ *
+ * The box is blind on its own - a reader who does not already know a model
+ * name has nothing to type - and the family is the feed's own word for what
+ * a thing is.
+ *
+ * **Each count is `search`'s own answer for that name**, so the number on a
+ * chip is always the number the click will draw. Counting exact family
+ * membership instead would promise fewer rows than the click shows wherever
+ * one family's name is a substring of a sibling's - the feed's `moonshine`
+ * and `moonshine-streaming` are the live pair. A familyless row contributes
+ * no chip: its name matches nothing, so a chip for it would be a control
+ * that does nothing.
+ */
+export function families(rows: CatalogueRow[]): Family[] {
+  const names = new Set(rows.map((row) => row.family).filter((name) => name !== ''));
+  return [...names]
+    .map((name) => ({ name, count: search(rows, name).length }))
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+}
+
+/**
+ * The fastest entries the feed measured, which is the ranking this page can
+ * stand on: the feed's documents do carry `measured_on` dates, but nothing
+ * forge reads keeps one - `SpeedRow` drops them - so "latest" is not
+ * something this read can say, and a row with no measured speed is not a
+ * recommendation either.
+ */
+export function fastest(rows: CatalogueRow[], take: number): CatalogueRow[] {
+  return rows
+    .filter((row) => row.speed !== null)
+    .sort((a, b) => (b.speed?.xrt_wall ?? 0) - (a.speed?.xrt_wall ?? 0))
+    .slice(0, take);
 }
 
 /** An in-use row's two fact lines. */

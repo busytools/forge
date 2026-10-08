@@ -199,7 +199,7 @@ fn try_emit(workspace: &Workspace, label: &'static str, update: SessionUpdate) {
     // Held before it goes out: a fatal error is an App-level event with no
     // state behind it, so without this a view that was not subscribed when
     // it fired can never learn of it at all.
-    if let SessionUpdate::FatalError(error) = &update {
+    if let SessionUpdate::FatalError { error, .. } = &update {
         workspace.record_fatal_error(error.clone());
     }
     if !workspace.update_tx().send(update) {
@@ -1217,11 +1217,10 @@ pub(crate) fn handle_start_default(
                     fatal: true,
                 },
             );
-            try_emit(
-                workspace,
-                "start_default::FatalError",
-                SessionUpdate::FatalError(forge_primitives::error::AppError::ConnectionFailed),
-            );
+            try_emit(workspace, "start_default::FatalError", {
+                let error = forge_primitives::error::AppError::ConnectionFailed;
+                SessionUpdate::FatalError { message: error.user_message().to_owned(), error }
+            });
             return;
         }
     };
@@ -1262,11 +1261,10 @@ pub(crate) fn handle_start_default(
                 "start_default::ConnectionFailed",
                 SessionUpdate::ConnectionFailed { key: session_key, message, fatal: true },
             );
-            try_emit(
-                workspace,
-                "start_default::FatalError",
-                SessionUpdate::FatalError(forge_primitives::error::AppError::ConnectionFailed),
-            );
+            try_emit(workspace, "start_default::FatalError", {
+                let error = forge_primitives::error::AppError::ConnectionFailed;
+                SessionUpdate::FatalError { message: error.user_message().to_owned(), error }
+            });
         }
     }
 }
@@ -2484,7 +2482,14 @@ mod tests {
 
         assert!(ws.last_fatal_error().is_none(), "nothing has failed fatally yet");
 
-        try_emit(&ws, "test", SessionUpdate::FatalError(failed.clone()));
+        try_emit(
+            &ws,
+            "test",
+            SessionUpdate::FatalError {
+                message: failed.user_message().to_owned(),
+                error: failed.clone(),
+            },
+        );
 
         assert_eq!(
             ws.last_fatal_error(),
@@ -2693,7 +2698,7 @@ provider = "anthropic"
         }
         let second = rx.try_recv().expect("second update");
         assert!(
-            matches!(second, SessionUpdate::FatalError(_)),
+            matches!(second, SessionUpdate::FatalError { .. }),
             "startup spawn failure must follow with FatalError"
         );
     }
@@ -2726,7 +2731,7 @@ provider = "anthropic"
         // assertion is that nothing here is a FatalError.
         while let Ok(update) = rx.try_recv() {
             assert!(
-                !matches!(update, SessionUpdate::FatalError(_)),
+                !matches!(update, SessionUpdate::FatalError { .. }),
                 "spawn_session failure must not emit FatalError"
             );
             if let SessionUpdate::ConnectionFailed { fatal, .. } = update {
@@ -2767,7 +2772,7 @@ provider = "anthropic"
 
         while let Ok(update) = rx.try_recv() {
             assert!(
-                !matches!(update, SessionUpdate::FatalError(_)),
+                !matches!(update, SessionUpdate::FatalError { .. }),
                 "unknown target must not emit FatalError"
             );
         }
@@ -3651,6 +3656,67 @@ provider = "anthropic"
             matches!(ws.test_spawn_listing(), crate::workspace::RecordedListing::NoListing),
             "a lead's spawn must hand no listing, or its resume list would be a worker's",
         );
+    }
+
+    /// **The browser family the spawn composes asks through the WORKSPACE's
+    /// relay.** The server is built inside the spawn and handed to a call a
+    /// stand-in replaces, so its wiring is otherwise dropped unobserved - and
+    /// a spawn composing its browser facade over a relay of its own would
+    /// answer every browser tool "no browser-capable client connected" while
+    /// a capably client sat attached. This drives a tool through the server
+    /// the spawn actually built, so the facade's own construction is the
+    /// thing under test rather than a copy of it.
+    #[tokio::test]
+    async fn a_spawn_composes_the_browser_family_over_the_workspaces_own_relay() {
+        let dir = tempdir().expect("tempdir");
+        write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
+        let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
+        ws.seed_test_ready_account("Stargate");
+        ws.seed_test_gateway_ready(true);
+
+        // A host registered through the accessor the transport registers
+        // through: the tool's ask lands here only if the spawn's server asks
+        // the same relay.
+        let (to_host, mut asks) = tokio::sync::mpsc::unbounded_channel();
+        let (notices, _notice_rx) = tokio::sync::mpsc::unbounded_channel();
+        assert!(ws.browser_relay().register(1, to_host, notices), "fixture: the role is free");
+
+        let (stand_in, _agent_rx) = Workspace::testing_stub_handle();
+        ws.install_test_spawn_handle(stand_in);
+        handle_spawn_project(&ws, "forge", SessionLaunchSettings::default());
+
+        let server = ws.test_spawn_server().expect("the spawn composed its MCP server");
+        let host = tokio::spawn(async move {
+            let request = asks.recv().await.expect("the ask reached the registered host");
+            assert_eq!(request.tool, "browser_close");
+            request
+                .reply
+                .send(Ok(vec![forge_primitives::browser::BrowserPart::Text {
+                    text: "closed".to_owned(),
+                }]))
+                .ok();
+        });
+        let answer = server
+            .dispatch(&forge_sdk::mcp::protocol::JsonRpcRequest {
+                jsonrpc: "2.0".to_owned(),
+                id: Some(serde_json::json!(1)),
+                method: "tools/call".to_owned(),
+                params: Some(serde_json::json!({ "name": "browser_close", "arguments": {} })),
+            })
+            .await
+            .expect("a tools/call is answered");
+        // Bounded, so a facade wired to a relay of its own fails here naming
+        // what never happened rather than holding the run open.
+        tokio::time::timeout(std::time::Duration::from_secs(5), host)
+            .await
+            .expect(
+                "the ask reached the registered host rather than the tool answering without one",
+            )
+            .expect("the host task ran");
+
+        let encoded = format!("{answer:?}");
+        assert!(encoded.contains("closed"), "the host's parts are the answer: {encoded}");
+        assert!(!encoded.contains("no browser-capable client"), "{encoded}");
     }
 
     /// A spawn refused before it reaches the project leaves the caller's

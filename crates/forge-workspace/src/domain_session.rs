@@ -47,6 +47,14 @@ pub struct ContextUsage {
     pub max_tokens: Option<u64>,
 }
 
+/// A continuation waiting for its delay to run out: the words the model
+/// will receive and the instant the sweep may send them.
+#[derive(Debug, Clone)]
+pub struct PendingAutoContinue {
+    pub due_at: std::time::SystemTime,
+    pub reason: String,
+}
+
 /// Workspace's owned per-session state. One `DomainSession` per
 /// active `SessionTask`. Single writer (the `SessionTask`); accessed
 /// via `Arc<parking_lot::Mutex<DomainSession>>` so the `Workspace`
@@ -156,6 +164,36 @@ pub struct DomainSession {
     /// Turn committed at `Command::Prompt` routing, ahead of the
     /// wire-lagged `runtime_state`; the guards OR it in.
     pub turn_pending: bool,
+    /// Whether the reader asked to stop the in-flight turn. Stamped
+    /// where `Command::Cancel` routes and spent when that turn's
+    /// `Result` lands: a cancelled turn ends with the same failed
+    /// `Result` a genuine error does, so `failed_turn_at` below cannot
+    /// tell the two apart without it.
+    pub pending_cancel: bool,
+    /// When the slot's newest turn ended in failure, for the rail's
+    /// mark. Cleared when a new turn is committed, dropped with the
+    /// occupant, and never set for a turn the reader cancelled.
+    pub failed_turn_at: Option<std::time::SystemTime>,
+    /// What the CLI last said about a retried request on this seat's newest
+    /// turn: the classification and its HTTP status. Read once, where the
+    /// turn's failed `Result` is folded, to tell a failure the terminal's
+    /// dead-turn path already continues from the ones this seat's nudge
+    /// exists for. Cleared where the turn it described ends.
+    pub last_api_retry: Option<(forge_primitives::ApiRetryError, Option<u16>)>,
+    /// The continuation pending for this seat's newest failed turn: what the
+    /// model will be told and when the sweep may send it. Armed with the
+    /// failure mark, cleared by the fire, a new turn, a success, or the
+    /// occupant changing.
+    pub auto_continue: Option<PendingAutoContinue>,
+    /// Whether a continuation has already gone out for the seat's current
+    /// unopened failure. Held until a view shows the seat or a turn
+    /// completes, so a failure that persists is nudged once rather than in
+    /// a prompt loop.
+    pub auto_continue_spent: bool,
+    /// When a view last showed this seat - a hold taken or given back. A
+    /// failure newer than this is one nobody has looked at yet, which is
+    /// the boundary the rail's failure mark clears on (#1612).
+    pub shown_at: Option<std::time::SystemTime>,
     /// Whether the CLI last reported live background work here - the
     /// `background_tasks_changed` snapshot, which carries the whole set
     /// each change, so an empty one clears. Held on the session rather
@@ -451,6 +489,12 @@ impl DomainSession {
             spawn_wrote_row: false,
             runtime_state: None,
             turn_pending: false,
+            pending_cancel: false,
+            failed_turn_at: None,
+            last_api_retry: None,
+            auto_continue: None,
+            auto_continue_spent: false,
+            shown_at: None,
             background_work: false,
             background_tasks: Vec::new(),
             background_commands: HashMap::new(),

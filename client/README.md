@@ -63,6 +63,55 @@ as its own boolean `--ci` flag, so a `CI` holding anything but `true` or
 starts; passing `--ci` explicitly overrides it. And `npm` swallows a bare
 `--`, so a cargo flag has to arrive as `run tauri -- build -- <flags>`.
 
+## The browser host
+
+The client hosts the browser a session's `browser_*` tools drive: it owns
+the browser process, its profile and the driver, and answers the asks the
+socket routes to it. `just vendor-browser-stack` fetches and verifies the
+three pinned artifacts into the gitignored `src-tauri/browser-stack/`
+directory - node, `@playwright/mcp` and Chrome for Testing - and
+`bundle.resources` carries that tree into the bundle, so a release ships
+the browser with the app and nothing downloads at first use. The bundling
+recipes run the vendoring themselves; `just client-tauri-check` does not,
+because it copies no resources.
+
+`src-tauri/src/browser/` is the host, and four things in it are worth
+knowing before changing them:
+
+- **The browser outlives the client**, so it is launched detached against a
+  profile under the app's data directory, and a launch is found again by the
+  `DevToolsActivePort` file Chromium writes into that profile. Chrome for
+  Testing 155 writes that file only when it is asked for
+  `--remote-debugging-port=0` - handed a number it writes none - so the port
+  is the browser's own choice, read back, rather than a constant.
+- **The driver is upstream's own** `@playwright/mcp`, spawned as a child
+  process and spoken to as an MCP client through `rmcp`, pointed at the
+  browser's CDP endpoint with `--no-webmcp` (without which the tool surface
+  would depend on what the open page chooses to expose).
+- **The capability is declared only where a host is really there**
+  (`canHost`, `src/browser/host.ts`): the subscribe carries `browser: true`
+  from the shell and never from a page opened outside it, because an ask
+  routed to a client that cannot serve it arrives as a session's tool call
+  failing.
+- **A named context is a driver of its own.** Upstream multiplexes nothing:
+  attached to a CDP endpoint it drives the browser's own context unless
+  `--isolated` makes it create one. So `context: "name"` on a tool call picks
+  a separate driver, owned by the session that opened it (another session is
+  refused by name until it is released) and saved after every call - cookies
+  into its storage file, open tab URLs beside it - so opening it again reopens
+  what it had.
+
+`client/src-tauri/tests/browser_live.rs` drives the whole chain - launch,
+driver, `browser_navigate` and `browser_snapshot` - against the vendored
+stack, and `tests/contexts_live.rs` proves the contexts layer: two drivers
+over one browser with separate cookies, and the ownership-release-reopen
+walk. They are `#[ignore]`d because that stack is half a gigabyte and absent
+from a fresh checkout; run them where it is vendored:
+
+```sh
+cargo nextest run --manifest-path client/src-tauri/Cargo.toml --run-ignored ignored-only
+```
+
 A start has no terminal to report to, so it writes to
 `~/Library/Logs/dev.vedhavyas.forge/forge.log` instead. That file is
 named after the product rather than the crate, and it is appended to
@@ -304,13 +353,18 @@ is still the port's source for the markup.
 so it is carried rather than derived, and the client draws the state when
 it is handed one.
 
-## Two the snapshot carries and nothing draws
+## The status the snapshot carries, and the frames that draw it
 
-`service_status` and `fatal_error` DO cross on the home subject, and no
-page reads either. So a forge that is exiting or that failed at startup
-draws as a healthy fleet. Dropped on purpose for now rather than by
-oversight: both are a view of their own, and the home's band is not where
-they belong.
+`service_status` and `fatal_error` cross on the home subject. Both now draw
+live: the service report and the core's fatal are keyless frames that ride
+every connection, so each open conversation draws them as they arrive
+rather than reading them back off the snapshot. The home's own
+`fatal_error` row draws above the header - the read a view attaching late
+finds, which for a fatal is the wind-down window before the process goes.
+`service_status`'s field itself stays undrawn: the report is live-only by
+design, and a page opened later has nothing to replay it from. A forge that
+failed at startup draws nothing anywhere - no client ever reached its
+socket, and the connect screen is all there is.
 
 Two more ride the home row and no page in this slice draws them: `crons`,
 which is the inspector's schedules section, and `chip`, which is the

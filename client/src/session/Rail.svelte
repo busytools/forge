@@ -6,6 +6,7 @@
   import type { SessionSlot } from '../wire/types';
   import CloseChip from './CloseChip.svelte';
   import { closeSeat, closingSeat } from './close';
+  import type { RailMode } from './rail-mode';
   import GroupFold from './GroupFold.svelte';
   import SleeperFold from './SleeperFold.svelte';
   import {
@@ -29,7 +30,11 @@
     current,
     now,
     connection,
-    onclose,
+    notice = null,
+    mode = 'static',
+    onpin = null,
+    onenter = null,
+    onleave = null,
   }: {
     home: HomeWire;
     /** The seat the page is showing, which is the one row the rail marks. */
@@ -37,8 +42,18 @@
     now: number;
     /** What a row's close chip acts through, and what moves the reader after it. */
     connection: Connection;
-    /** Brings the header's handle back, which the collapsed rail has covered. */
-    onclose: () => void;
+    /** The connection's own line - a protocol skew or a reconnect - drawn
+     *  over the versions, where the build facts live. */
+    notice?: string | null;
+    /** The rail's presence, which the pin's own word follows. */
+    mode?: RailMode;
+    /** Flips the column and the peek: pinned open, or floating on hover.
+     *  Absent, the pin is not drawn - a harness that reads the list alone. */
+    onpin?: (() => void) | null;
+    /** The pointer arriving here holds a hover-summoned peek open. */
+    onenter?: (() => void) | null;
+    /** And leaving arms its close, the chip's own grace again. */
+    onleave?: (() => void) | null;
   } = $props();
 
   const groups = $derived(railGroups(home, current, now, closingSeat));
@@ -46,7 +61,7 @@
    * The account and the two builds, which sit under the list rather than in it:
    * the projects scroll behind them.
    */
-  const foot = $derived(railFooter(home, current));
+  const foot = $derived(railFooter(home, current, connection.serverProtocol()));
 
   /**
    * Close one row's seat. The command the row sends and where the reader
@@ -63,21 +78,34 @@
   landmarks with the same implicit name are one landmark to a screen reader,
   and neither can be navigated to by name.
 -->
-<aside class="rail left" aria-label="projects">
+<aside
+  class="rail left"
+  aria-label="projects"
+  onpointerenter={(event) => {
+    if (event.pointerType === 'mouse') onenter?.();
+  }}
+  onpointerleave={(event) => {
+    if (event.pointerType === 'mouse') onleave?.();
+  }}
+>
   <div class="banner">
     <span class="t">projects</span>
     <span class="n ml">{fleetCount(home)}</span>
-    <!-- A rail covering the page carries its own way out: the header handle
-         that opened it is underneath. -->
-    <button
-      class="close"
-      type="button"
-      title="close"
-      aria-label="close the projects rail"
-      onclick={onclose}
-    >
-      <Icon name="x" />
-    </button>
+    <!-- The pin says where the rail is next: pinned open is the column,
+         floating is the hover-summoned peek. There is no close - the rail
+         is always one of the two, and the overlay closes by Esc, a click
+         outside or Back. -->
+    {#if onpin !== null}
+      <button
+        class="pin"
+        type="button"
+        title={mode === 'static' ? 'float the rail on hover' : 'pin the rail open'}
+        aria-label={mode === 'static' ? 'float the rail on hover' : 'pin the rail open'}
+        onclick={onpin}
+      >
+        <Icon name={mode === 'static' ? 'out' : 'in'} />
+      </button>
+    {/if}
   </div>
   <div class="scroll">
     <!-- One project's block, drawn the same in a folded group and an open
@@ -151,6 +179,9 @@
        key-hint line, and a second `.foot` would take that rule's mono and its
        size with it. -->
   <div class="rfoot">
+    {#if notice !== null}
+      <div class="notice" role="status">{notice}</div>
+    {/if}
     {#if foot.account !== null}
       <div class="who">
         <span class="led {foot.account.tone}"></span>
@@ -180,8 +211,16 @@
       </div>
     {/if}
     <div class="vers">
-      <div class="v">forge v{foot.versions.forge}</div>
-      <div class="v">socket v{foot.versions.socket}</div>
+      <!-- The pair, both sides stated: a mismatch is then a difference the
+           reader sees here, with the notice above naming what to run. -->
+      <div class="v" class:skewed={foot.versions.skewed}>
+        <span class="vt">server {`v${foot.versions.serverForge}`}</span>
+        <span class="vs">{`\u{b7} socket v${foot.versions.serverProtocol ?? '\u{2014}'}`}</span>
+      </div>
+      <div class="v" class:skewed={foot.versions.skewed}>
+        <span class="vt">client {`v${foot.versions.clientForge}`}</span>
+        <span class="vs">{`\u{b7} socket v${foot.versions.clientProtocol}`}</span>
+      </div>
       {#if foot.versions.claude !== null}
         <div class="v">
           <!-- The space between the version and the arrow is part of the row,

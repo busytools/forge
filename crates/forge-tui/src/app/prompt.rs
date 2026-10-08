@@ -57,6 +57,16 @@ pub enum PromptSource {
         key: forge_primitives::SessionSlot,
         draft: forge_primitives::slack::SlackDraft,
     },
+    /// A browser hand-off waiting for a person. The terminal cannot raise a
+    /// browser window, so the prompt states the hand-off and offers the one
+    /// answer a terminal can honestly give (decline) plus Done, which settles
+    /// it for a person who acted in a client that does show the browser - and
+    /// never a silent drop, which would hold the session forever.
+    BrowserHandOff {
+        /// The session that asked. The answer goes back addressed to it.
+        key: forge_primitives::SessionSlot,
+        handoff: forge_primitives::browser::HandOff,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -194,6 +204,47 @@ impl PromptState {
         }
     }
 
+    /// Construct the prompt for a browser hand-off. Two options: Done settles
+    /// it for a person who acted in a client that shows the browser, and
+    /// every other exit declines - the terminal raises no window, and a drop
+    /// would hold the asking session forever.
+    pub fn from_browser_hand_off(
+        key: forge_primitives::SessionSlot,
+        handoff: forge_primitives::browser::HandOff,
+    ) -> Self {
+        use forge_primitives::permission_interaction::{
+            PermissionAction, PermissionOption, PermissionOptionKind,
+        };
+        let options = vec![
+            PermissionOption {
+                option_id: "done".into(),
+                name: "Done".into(),
+                kind: PermissionOptionKind::Allow,
+                action: PermissionAction::Allow,
+            },
+            PermissionOption {
+                option_id: "not_now".into(),
+                name: "Not now".into(),
+                kind: PermissionOptionKind::Deny,
+                action: PermissionAction::Deny,
+            },
+        ];
+        Self {
+            source: PromptSource::BrowserHandOff { key, handoff },
+            tool_id: String::new(),
+            options,
+            // **Not now is focused, unlike the draft's Post.** Done asserts
+            // the person acted, and the terminal cannot even show them a
+            // browser to act in - so a reflexive Enter must not put words in
+            // their mouth about an act that may never have happened.
+            focused_option_index: 1,
+            selected_option_indices: BTreeSet::new(),
+            mode: PromptMode::OptionPicker,
+            edited_input: None,
+            enqueued_at: std::time::SystemTime::now(),
+        }
+    }
+
     /// Is the prompt a multi-select Question?
     pub fn is_multi_select(&self) -> bool {
         matches!(&self.source, PromptSource::Question { prompt, .. } if prompt.multi_select)
@@ -212,6 +263,20 @@ pub fn retire_slack_draft(session: &mut crate::app::session::UiSession, id: uuid
     let before = session.prompt_queue.len();
     session.prompt_queue.retain(|prompt| {
         !matches!(&prompt.source, PromptSource::SlackDraft { draft, .. } if draft.id == id)
+    });
+    session.prompt_queue.len() != before
+}
+
+/// Retire the queued browser hand-off with `id`, on the same grounds: the
+/// core has resolved it - answered in another view, or its asking session
+/// gone - so no dock goes on offering a decision for it.
+pub fn retire_browser_hand_off(
+    session: &mut crate::app::session::UiSession,
+    id: uuid::Uuid,
+) -> bool {
+    let before = session.prompt_queue.len();
+    session.prompt_queue.retain(|prompt| {
+        !matches!(&prompt.source, PromptSource::BrowserHandOff { handoff, .. } if handoff.id == id)
     });
     session.prompt_queue.len() != before
 }
@@ -536,6 +601,17 @@ pub fn submit_prompt(app: &mut crate::app::App) {
             });
             crate::app::events::turn::dispatch_slack_post_outcome(app, asking, draft.id, approved);
         }
+        PromptSource::BrowserHandOff { key: asking, handoff } => {
+            // Done is the focused option's action, on the same rule: only an
+            // explicit Done settles the hand-off, and every other exit
+            // declines.
+            let done = prompt.options.get(prompt.focused_option_index).is_some_and(|option| {
+                option.action == forge_primitives::permission_interaction::PermissionAction::Allow
+            });
+            crate::app::events::turn::dispatch_browser_hand_off_outcome(
+                app, asking, handoff.id, done,
+            );
+        }
     }
 
     restore_draft_if_empty_queue(app);
@@ -586,6 +662,14 @@ pub fn cancel_prompt(app: &mut crate::app::App) {
             // `slack__post` rather than leaving it waiting on a prompt
             // that is no longer on screen.
             crate::app::events::turn::dispatch_slack_post_outcome(app, &asking, draft.id, false);
+        }
+        PromptSource::BrowserHandOff { key: asking, handoff } => {
+            // Cancelling a hand-off declines it, releasing the blocked
+            // `browser_hand_off` - which waits with no timeout, so a prompt
+            // dropped without an answer would hold the session forever.
+            crate::app::events::turn::dispatch_browser_hand_off_outcome(
+                app, &asking, handoff.id, false,
+            );
         }
     }
 
@@ -727,6 +811,87 @@ pub(crate) mod tests {
             *app.test_dispatched_slack_posts.borrow(),
             vec![(id, false)],
             "Do not post answers with a rejection",
+        );
+    }
+
+    fn app_with_pending_hand_off() -> (crate::app::App, uuid::Uuid) {
+        let mut app = crate::app::App::test_default();
+        let key = app.active_session_key.clone().expect("active session");
+        let handoff = forge_primitives::browser::HandOff {
+            id: uuid::Uuid::new_v4(),
+            reason: "solve the CAPTCHA".to_owned(),
+            context: Some("job-hunt".to_owned()),
+        };
+        let id = handoff.id;
+        let prompt = PromptState::from_browser_hand_off(key.clone(), handoff);
+        if let Some(session) = app.session_mut(&key) {
+            enqueue_prompt(session, prompt);
+        }
+        (app, id)
+    }
+
+    /// A hand-off's two verbs, and **Not now is the focused one**: Done
+    /// asserts the person acted, the terminal cannot show them a browser to
+    /// act in, and a reflexive Enter must not speak for an act that may never
+    /// have happened.
+    #[test]
+    fn a_hand_off_prompt_offers_done_and_not_now_with_not_now_focused() {
+        let (mut app, _id) = app_with_pending_hand_off();
+        let key = app.active_session_key.clone().expect("active session");
+        let Some(session) = app.session_mut(&key) else { panic!("active session bucket") };
+        let Some(prompt) = session.prompt_queue.front() else { panic!("a queued prompt") };
+
+        assert_eq!(prompt.options.len(), 2, "exactly the two answers");
+        assert_eq!(prompt.options[0].name, "Done");
+        assert_eq!(prompt.options[0].action, PermissionAction::Allow);
+        assert_eq!(prompt.options[1].name, "Not now");
+        assert_eq!(prompt.options[1].action, PermissionAction::Deny);
+        assert_eq!(prompt.focused_option_index, 1, "Not now is focused, so Enter declines");
+    }
+
+    /// **A reflexive Enter declines** rather than claiming the person acted.
+    #[test]
+    fn enter_on_a_hand_off_declines_it() {
+        let (mut app, id) = app_with_pending_hand_off();
+        submit_prompt(&mut app);
+
+        assert_eq!(
+            *app.test_dispatched_browser_hand_offs.borrow(),
+            vec![(id, false)],
+            "the focused Not now releases the blocked handler as a decline",
+        );
+    }
+
+    /// Focusing Done is the person's own assertion that they acted.
+    #[test]
+    fn done_on_a_hand_off_settles_it() {
+        let (mut app, id) = app_with_pending_hand_off();
+        let key = app.active_session_key.clone().expect("active session");
+        if let Some(session) = app.session_mut(&key)
+            && let Some(prompt) = session.prompt_queue.front_mut()
+        {
+            prompt.focused_option_index = 0;
+        }
+        submit_prompt(&mut app);
+
+        assert_eq!(
+            *app.test_dispatched_browser_hand_offs.borrow(),
+            vec![(id, true)],
+            "Done settles the hand-off",
+        );
+    }
+
+    /// **Cancelling declines**: the handler waits with no timeout, so a dock
+    /// dropped without an answer would hold the session forever.
+    #[test]
+    fn cancelling_a_hand_off_declines_it() {
+        let (mut app, id) = app_with_pending_hand_off();
+        cancel_prompt(&mut app);
+
+        assert_eq!(
+            *app.test_dispatched_browser_hand_offs.borrow(),
+            vec![(id, false)],
+            "a cancelled hand-off is declined rather than left waiting",
         );
     }
 

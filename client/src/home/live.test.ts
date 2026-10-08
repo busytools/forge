@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ServerMessage, Subject } from '../protocol';
+import { PROTOCOL_VERSION } from '../protocol';
 import type { Connection, ConnectionStatus } from '../socket';
 import { Stores } from '../stores';
 import type { SessionSlot } from '../wire/types';
@@ -39,6 +40,10 @@ function fakeConnection() {
     refresh(what) {
       refreshed.push(what);
     },
+    onBrowserAsk: () => () => {},
+    browserRole: () => false,
+    onBrowserRole: () => () => {},
+    takeBrowserRole: () => {},
     onMessage(fn) {
       messages.add(fn);
       return () => {
@@ -58,6 +63,7 @@ function fakeConnection() {
     store: () => undefined,
     settings: () => null,
     skew: () => null,
+    serverProtocol: () => PROTOCOL_VERSION,
     status: () => 'open',
     close: () => {},
   };

@@ -635,6 +635,14 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
                         app, &asking, draft.id, false,
                     );
                 }
+                crate::app::prompt::PromptSource::BrowserHandOff { key: asking, handoff } => {
+                    // Same on the way out: a hand-off waits with no timeout,
+                    // so an unanswered one is declined rather than left
+                    // holding its session.
+                    crate::app::events::turn::dispatch_browser_hand_off_outcome(
+                        app, &asking, handoff.id, false,
+                    );
+                }
             }
         }
     }

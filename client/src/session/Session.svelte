@@ -9,23 +9,36 @@
   import type { HomeWire } from '../wire/home';
   import type { SessionSlot } from '../wire/types';
   import SessionId from './SessionId.svelte';
-  import Inspector from './Inspector.svelte';
+  import Palette from './Palette.svelte';
   import Rail from './Rail.svelte';
   import { closingSeat } from './close';
   import { chosenAfterPop, railEntry, railOnTop, type RailSide } from './rail-history';
   import Queue from '../chat/Queue.svelte';
+  import { rememberedRailMode, rememberRailMode, type RailMode } from './rail-mode';
   import { connectors } from '../chat/connectors.svelte';
+  import { git } from '../chat/git.svelte';
+  import { mcp } from '../chat/mcp.svelte';
+  import { monitors } from '../chat/monitors.svelte';
   import { outcomesFrom } from '../chat/outcomes';
   import { processes } from '../chat/processes.svelte';
+  import { schedules } from '../chat/schedules.svelte';
   import { subagents } from '../chat/subagents.svelte';
+  import { tasks } from '../chat/tasks.svelte';
   import { watchSession, type SessionRead } from './live';
   import { askCompaction } from './scroll-ask';
   import {
     compactionFigure,
+    chipState,
+    gitStrip,
     headerFacts,
+    mcpRows,
+    monitorRows,
     orgNeeded,
+    projectOf,
     seatConnectorRows,
+    seatScheduleRows,
     seatState,
+    taskRows,
     type ComposerProps,
     type ConversationProps,
   } from './view';
@@ -47,6 +60,7 @@
     mark = null,
     conversation = null,
     composer = null,
+    notice = null,
   }: {
     slot: SessionSlot;
     connection: Connection;
@@ -58,6 +72,13 @@
     conversation?: Snippet<[ConversationProps]> | null;
     /** The box under it, which replaces itself while the seat cannot take keys. */
     composer?: Snippet<[ComposerProps]> | null;
+    /**
+     * The connection's own line for this page - a protocol skew, or a
+     * reconnect - drawn in the rail footer where the build facts live. The
+     * shell's strip would be an in-flow row above a `100dvh` page, which is
+     * a page that scrolls.
+     */
+    notice?: string | null;
   } = $props();
 
   // Raw: a read answers with a whole new record, so nothing here is mutated in
@@ -65,7 +86,8 @@
   let read = $state.raw<SessionRead>({ wire: null, refused: null });
   $effect(() => {
     // Read here rather than through `$derived`, so a seat change subscribes the
-    // seat it moved to - the seat it left keeps its record and its subscription.
+    // seat it moved to - the seat it left keeps its record, and its
+    // subscription goes back with the page (live.ts's leave).
     const open = connection;
     const seat = slot;
     // The page answers for a seat only when it can: the dock that answers a
@@ -110,6 +132,42 @@
    */
   $effect(() => {
     connectors.sync(seatConnectorRows(wire, slot));
+  });
+
+  /**
+   * The schedules row reads the page's own clock: a countdown is part of every
+   * row, so the list re-derives as `now` moves rather than going stale between
+   * home reads. A cron names the seat that created it, so the row keeps its
+   * own label's set.
+   */
+  $effect(() => {
+    schedules.sync(seatScheduleRows(wire, slot, now));
+  });
+
+  /**
+   * The MCP rows follow the seat's own record, not the home: the servers are
+   * this session's bridge read, and a failed read draws as itself.
+   */
+  $effect(() => {
+    mcp.sync(mcpRows(record));
+  });
+
+  /** The project's own row on the home, which the tasks row reads. */
+  const project = $derived(projectOf(wire, slot));
+
+  /**
+   * The tree and the monitors are the seat's own reads; the tasks are the
+   * project's set on the home. The monitors read `now` so a settled one's age
+   * re-derives on the page's clock rather than going stale between reads.
+   */
+  $effect(() => {
+    git.sync(record === null ? null : gitStrip(record, slot));
+  });
+  $effect(() => {
+    tasks.sync(taskRows(project?.tasks ?? [], slot));
+  });
+  $effect(() => {
+    monitors.sync(record === null ? null : monitorRows(record.monitors, now));
   });
   const seat = $derived(seatState(wire, slot));
   /** Whether this seat's name needs its org on the header line (#1707). */
@@ -167,9 +225,12 @@
     if (asked.has(key)) return;
     asked.add(key);
     try {
-      void open.dispatch({
-        spawn_project: { project_name: seatSlot.project, launch_settings: {} },
-      });
+      void open.dispatch(
+        {
+          spawn_project: { project_name: seatSlot.project, launch_settings: {} },
+        },
+        seatSlot,
+      );
     } catch (error) {
       // A closed socket has nothing to start: the seat keeps drawing its
       // not-running state, which is the truth about it - and the click did
@@ -186,46 +247,76 @@
   );
 
   /**
-   * Whether each rail is shown, and the two widths a rail stops being a
-   * column at.
+   * Whether the projects rail is over the session, and how it got there.
    *
-   * The server held this in hidden checkboxes, because a page with no script
-   * had nowhere else to put it - and the same box meant `hidden` above the
-   * breakpoint and `shown` below it, which is a control that cannot be
-   * labelled honestly. Here the state is what it says, the default is each
-   * band's own, and the sheet turns a shown rail into a sheet below the step
-   * rather than inverting the word.
+   * **The rail is summoned now, at every width**: it is never a column, so
+   * nothing of the conversation is spent on it while it is away. The chip's
+   * hover summons the peek (`summoned`, no scrim, no history - a mouse that
+   * only crossed the chip dims nothing); Cmd+Left and the palette open it to
+   * stay (`leftChosen`, scrim, history entry, Esc).
    */
-  const BELOW_980 = '(max-width: 980px)';
-  const BELOW_1280 = '(max-width: 1280px)';
+  // jsdom carries no `matchMedia`, so the capability is part of having a DOM
+  // at all here - without the check every mount under vitest throws.
   const hasDom = typeof window !== 'undefined' && typeof window.matchMedia === 'function';
-  const matches = (query: string) => hasDom && window.matchMedia(query).matches;
 
-  let narrow = $state(matches(BELOW_980));
-  let inspectorNarrow = $state(matches(BELOW_1280));
+  /** The rail's presence, which is a per-device preference (rail-mode.ts). */
+  let railMode = $state<RailMode>(hasDom ? rememberedRailMode() : 'static');
 
+  /** The width a static column folds to the overlay at, whatever the mode. */
+  const BELOW_980 = '(max-width: 980px)';
+  let narrow = $state(hasDom && window.matchMedia(BELOW_980).matches);
   $effect(() => {
     if (!hasDom) return;
-    const rails = window.matchMedia(BELOW_980);
-    const inspector = window.matchMedia(BELOW_1280);
-    const sync = () => {
-      narrow = rails.matches;
-      inspectorNarrow = inspector.matches;
-    };
-    rails.addEventListener('change', sync);
-    inspector.addEventListener('change', sync);
-    return () => {
-      rails.removeEventListener('change', sync);
-      inspector.removeEventListener('change', sync);
-    };
+    const mq = window.matchMedia(BELOW_980);
+    const sync = () => (narrow = mq.matches);
+    mq.addEventListener('change', sync);
+    return () => mq.removeEventListener('change', sync);
   });
 
-  // `null` is "whatever this band does by default", which is the state a
-  // reader who has never touched the handles is in.
+  const columned = $derived(railMode === 'static' && !narrow);
+
+  // `null` and `false` are both "closed": the overlay opens by its own
+  // doors, and a reader has not chosen it on arriving.
   let leftChosen = $state<boolean | null>(null);
-  let rightChosen = $state<boolean | null>(null);
-  const leftShown = $derived(leftChosen ?? !narrow);
-  const rightShown = $derived(rightChosen ?? !inspectorNarrow);
+  let summoned = $state(false);
+  const overlaid = $derived(leftChosen === true || summoned);
+  const leftShown = $derived(columned || overlaid);
+  const peekOnly = $derived(!columned && summoned && leftChosen !== true);
+
+  /** Set the preference: the pin and the rail's own close both land here. */
+  function setRail(mode: RailMode) {
+    railMode = mode;
+    rememberRailMode(mode);
+  }
+
+  /** A shadow of the strip panels' grace: crossing the chip-to-rail gap lands. */
+  let graced: ReturnType<typeof setTimeout> | null = null;
+
+  function summon() {
+    // **The fold decides, not the stored preference.** Wherever the rail is
+    // not the column - the hover mode, or a static rail folded by the width -
+    // the chip's hover summons it; a mouse-only reader at a folded width has
+    // no other pointer door.
+    if (columned) return;
+    if (graced !== null) clearTimeout(graced);
+    graced = null;
+    summoned = true;
+  }
+
+  function unsummon() {
+    if (graced !== null) clearTimeout(graced);
+    graced = setTimeout(() => {
+      graced = null;
+      summoned = false;
+    }, 250);
+  }
+
+  $effect(() => () => {
+    if (graced !== null) clearTimeout(graced);
+  });
+
+  /** The chip's own data: the seats that want a person, fleet-wide. */
+  const chip = $derived(chipState(wire));
 
   /**
    * A covering rail opens onto history, so Back closes what it opened; a rail
@@ -235,39 +326,44 @@
   let lastRail: RailSide | null = hasDom ? railOnTop(history.state) : null;
   let closedUnder: RailSide | null = null;
 
-  function openRail(side: RailSide) {
-    if (side === 'left' ? narrow : inspectorNarrow) {
-      // One entry covers the open state: a second rail opened over the first
-      // joins it rather than stacking a step of its own.
-      if (lastRail === null) {
-        history.pushState(railEntry(history.state, side), '', location.href);
-        lastRail = side;
-      }
+  /** The projects rail, opened to STAY: Cmd+Left or the palette's own verb. */
+  function openRail() {
+    // A static rail is already over the page; there is nothing to open.
+    if (columned) return;
+    summoned = false;
+    // One entry covers the open state: a second opening joins it rather
+    // than stacking a step of its own.
+    if (lastRail === null) {
+      history.pushState(railEntry(history.state), '', location.href);
+      lastRail = 'left';
     }
     closedUnder = null;
-    if (side === 'left') leftChosen = true;
-    else rightChosen = true;
+    leftChosen = true;
   }
 
-  function closeRail(side: RailSide) {
-    if (side === 'left') leftChosen = false;
-    else rightChosen = false;
-    // A covering rail still open keeps the entry earned: the press closes the
-    // side it names, and the step stays for the Back that closes the last one.
-    const stillCovering = side === 'left' ? inspectorNarrow && rightShown : narrow && leftShown;
-    if (stillCovering) return;
-    if (railOnTop(history.state) === side) {
+  function closeRail() {
+    leftChosen = false;
+    summoned = false;
+    if (railOnTop(history.state) === 'left') {
       history.back();
       return;
     }
     // The entry sits beneath another navigation's, where no pop can reach it
     // without leaving that page: it is stepped down instead, and the Back
     // that walks past it drops it without re-opening anything.
-    closedUnder = side;
+    closedUnder = 'left';
   }
 
   $effect(() => {
     const restore = () => {
+      // Any pop is a navigation: the palette goes with the page it was over,
+      // and the keyboard goes back to where it was before the palette took it.
+      if (paletteOpen) {
+        const back = opener;
+        opener = null;
+        if (back !== null && back.isConnected) back.focus();
+      }
+      paletteOpen = false;
       const landed = railOnTop(history.state);
       if (landed !== null && landed === closedUnder) {
         // The inert entry a close stepped down: dropped here, so it is
@@ -277,15 +373,101 @@
         history.back();
         return;
       }
-      const chosen = chosenAfterPop(history.state, narrow, lastRail, closedUnder);
+      const chosen = chosenAfterPop(history.state, lastRail, closedUnder);
       lastRail = landed;
       closedUnder = null;
       if (chosen === null) return;
       leftChosen = chosen.left;
-      rightChosen = chosen.right;
+      summoned = false;
     };
     addEventListener('popstate', restore);
     return () => removeEventListener('popstate', restore);
+  });
+
+  /**
+   * The palette: Cmd+K's own door, and the magnifier beside the chip where
+   * there is no keyboard. Its entry rides the same history channel as the
+   * rail's, so Android's Back closes what it opened.
+   */
+  let paletteOpen = $state(false);
+  /** Where the keyboard was before the palette took it. */
+  let opener: HTMLElement | null = null;
+
+  function openPalette() {
+    if (paletteOpen) return;
+    opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    if (railOnTop(history.state) === null) {
+      history.pushState(railEntry(history.state, 'palette'), '', location.href);
+    }
+    paletteOpen = true;
+  }
+
+  function closePalette() {
+    paletteOpen = false;
+    const back = opener;
+    opener = null;
+    if (back !== null && back.isConnected) back.focus();
+    if (railOnTop(history.state) === 'palette') history.back();
+  }
+
+  /**
+   * The palette's own peek: the palette closes and its history entry becomes
+   * the RAIL's, rather than leaving a step under a step.
+   *
+   * Closing first and opening after would queue a `history.back()` that
+   * resolves only after `openRail` has pushed - the pop would then land on
+   * the entry beneath, the push would sit as an unreachable forward entry,
+   * and one Back would leave the page instead of closing the rail.
+   */
+  function handOffToRail(): void {
+    paletteOpen = false;
+    if (railOnTop(history.state) === 'palette') {
+      history.replaceState(railEntry(history.state), '', location.href);
+      lastRail = 'left';
+    }
+    openRail();
+  }
+
+  /**
+   * The rail's keyboard doors: Cmd+Left (or Ctrl+Left) opens the peek and
+   * closes it again, and Escape closes it. Both stand down while a field has
+   * the keyboard - Cmd+Left is the caret's own key and Escape belongs to
+   * whatever the reader is typing in.
+   */
+  $effect(() => {
+    const onkey = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
+      const target = event.target;
+      const typing =
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        (target instanceof HTMLElement && target.isContentEditable);
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        if (paletteOpen) closePalette();
+        else openPalette();
+        return;
+      }
+      if (event.key === 'Escape') {
+        if (paletteOpen) {
+          closePalette();
+          return;
+        }
+        if (typing || !leftShown) return;
+        event.preventDefault();
+        closeRail();
+        return;
+      }
+      if (event.key !== 'ArrowLeft' || !(event.metaKey || event.ctrlKey)) return;
+      if (typing) return;
+      // The column is already shown; there is nothing to toggle over it.
+      if (columned) return;
+      event.preventDefault();
+      if (overlaid) closeRail();
+      else openRail();
+    };
+    window.addEventListener('keydown', onkey);
+    return () => window.removeEventListener('keydown', onkey);
   });
 
   // One clock for the page: every age and every countdown reads against the
@@ -307,63 +489,93 @@
     reason: seat.reason,
     slot,
     connection,
+    queue: seatQueue,
   });
 </script>
 
 <div
   class="app"
-  class:left-shown={leftShown}
-  class:left-hidden={!leftShown}
-  class:right-shown={rightShown}
-  class:right-hidden={!rightShown}
+  class:rail-static={columned}
+  class:rail-open={overlaid && !columned}
+  class:rail-peek={peekOnly}
 >
-  <Rail home={wire} current={slot} {now} {connection} onclose={() => closeRail('left')} />
+  <!-- The scrim a summoned rail closes on. It is a click-catcher rather than
+       a control: Escape is its keyboard door and the rail's own close chip
+       is the visible one, so presentation is the honest role. -->
+  <div class="scrim" role="presentation" onclick={() => closeRail()}></div>
+  <Rail
+    home={wire}
+    current={slot}
+    {now}
+    {connection}
+    {notice}
+    mode={railMode}
+    onpin={() => setRail(railMode === 'static' ? 'hover' : 'static')}
+    onenter={summon}
+    onleave={unsummon}
+  />
+  <Palette
+    open={paletteOpen}
+    {wire}
+    {slot}
+    {connection}
+    sessionId={facts?.sessionId ?? null}
+    onclose={() => closePalette()}
+    onpeek={columned ? null : () => handOffToRail()}
+  />
 
   <main class="chat">
     <div class="sess">
-      <!-- The wordmark, the way home: the home's own brand a size down so the
-           session's name still leads, in a real anchor so the keyboard reaches
-           it, the URL stays real and the router follows it in place. The
-           hairline is what separates the app's brand from the seat's own. -->
-      <a class="brand" href="/" title="home">
-        <Brand name={mark} />
-        <span class="word">forge</span>
-      </a>
-      <span class="mastsep" aria-hidden="true"></span>
-      <!-- The handle to each column lives with the title, so a folded column
-           leaves no edge behind and its control stays reachable. -->
-      <button
-        class="rail-tog tog-l"
-        type="button"
-        title="projects"
-        aria-label="projects"
+      <!-- The chip: the brand's own mark as the face of the one projects
+           control. It counts seats that want a PERSON - a question, a
+           permission, a died turn, never a mere change - and its click is
+           smart: exactly one, and it is not an error, goes straight to that
+           seat; several, or any failure among them, goes to the home page to
+           pick; none goes home too, from a quiet `projects` word. A real
+           anchor, so keyboard, middle-click and new-tab all behave. Hover
+           summons the rail as the peek. -->
+      <a
+        class="needchip"
+        class:calm={chip.state === 'none' && notice === null}
+        class:bad={chip.state === 'failed'}
+        href={chip.href}
+        title={notice ?? chip.label}
+        aria-label={notice === null ? chip.label : `${chip.label}, ${notice}`}
         aria-expanded={leftShown}
-        onclick={() => (leftShown ? closeRail('left') : openRail('left'))}
+        onpointerenter={(event) => {
+          if (event.pointerType === 'mouse') summon();
+        }}
+        onpointerleave={(event) => {
+          if (event.pointerType === 'mouse') unsummon();
+        }}
       >
-        <svg
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18" /></svg
-        >
-      </button>
+        <Brand name={mark} class="ch-mk" />
+        <!-- The connection's own line lives in the rail footer, and the rail
+             may be away: the chip is the page's visible pane element, so the
+             stale read states itself here too. -->
+        {#if notice !== null}
+          <span class="dot warn ch-nd" aria-hidden="true"></span>
+        {/if}
+        {#if chip.state === 'none'}
+          <span class="ch-w">projects</span>
+        {:else if chip.state === 'failed'}
+          <span class="dot needs ch-tri" aria-hidden="true"></span>
+          <Icon name="x" class="ch-ic" />
+        {:else}
+          <span class="dot needs ch-tri" aria-hidden="true"></span>
+          <span class="ch-n">{chip.count}</span>
+        {/if}
+      </a>
+      <!-- The palette's door where there is no keyboard (a coarse pointer
+           only): the same palette Cmd+K opens. -->
       <button
-        class="rail-tog tog-r"
+        class="pal-btn"
         type="button"
-        title="inspector"
-        aria-label="inspector"
-        aria-expanded={rightShown}
-        onclick={() => (rightShown ? closeRail('right') : openRail('right'))}
+        title="search seats and commands (Cmd+K)"
+        aria-label="search seats and commands"
+        onclick={() => openPalette()}
       >
-        <svg
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          ><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M15 4v16" /></svg
-        >
+        <Icon name="search" class="ic" />
       </button>
       <span class="dot {seat.mark}"></span>
       <!-- **The name leads and the org qualifies it** (#1707): the org shows
@@ -497,14 +709,18 @@
     {/if}
   </main>
 
-  <Inspector {wire} {record} {slot} {now} onclose={() => closeRail('right')} />
-
   {#if composer !== null && record !== null}
     <div class="composer">
-      <!-- The queue sits between the pinned turn row (drawn by the chat
-           column above) and the box: what is waiting, then what you type. -->
-      <Queue rows={record.queue} ended={record.queue_ended} {slot} {connection} />
       {@render composer({ record, slot, seat, connection })}
     </div>
   {/if}
 </div>
+
+<!-- The waiting prompts. The page owns the data; the chat column owns the
+     place - between the turns and the pinned row, so the queue reads against
+     what is running and the strip keeps its place right above the box. -->
+{#snippet seatQueue()}
+  {#if record !== null}
+    <Queue rows={record.queue} ended={record.queue_ended} {slot} {connection} />
+  {/if}
+{/snippet}

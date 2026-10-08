@@ -175,6 +175,24 @@ impl ViewSurface {
         self.workspace.refresh_context_usage(slot)
     }
 
+    /// Ask the session's bridge for a fresh MCP snapshot, which it answers
+    /// with [`SessionUpdate::McpSnapshot`](crate::SessionUpdate::McpSnapshot).
+    ///
+    /// The ask rather than the read, for the same reason as
+    /// [`Self::refresh_context_usage`]: the snapshot only exists once the
+    /// bridge has answered one, and the socket asks for the seat a client
+    /// reads the way the terminal asks for the seat it is addressing.
+    ///
+    /// # Errors
+    ///
+    /// See [`Self::refresh_context_usage`].
+    pub fn refresh_mcp_snapshot(
+        &self,
+        slot: &SessionSlot,
+    ) -> Result<(), forge_workspace::DispatchError> {
+        self.workspace.refresh_mcp_snapshot(slot)
+    }
+
     /// The monitors the session has running, and the ones that settled
     /// while it did, folded from the wire.
     ///

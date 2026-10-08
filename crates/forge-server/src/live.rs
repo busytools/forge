@@ -1,14 +1,15 @@
 //! What a view has learned from the stream, which its first render and every
 //! later one both read.
 //!
-//! Three of the facts here are announced on the wire once and retained by
-//! nobody: whether a completion has been shown, what a take is doing, and
-//! which seats a view is showing. A view that attaches to an already-running
-//! session cannot reconstruct them, so they are folded here rather than in
-//! the view.
+//! Four of the facts here are announced on the wire once and retained by
+//! nobody: whether a completion has been shown, what a take is doing, which
+//! seats a view is showing, and whether a seat's failed turn has been shown
+//! since it failed. A view that attaches to an already-running session
+//! cannot reconstruct them, so they are folded here rather than in the view.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
+use std::time::SystemTime;
 
 use forge_primitives::Message;
 use forge_primitives::SessionSlot;
@@ -28,6 +29,12 @@ pub struct Live {
     /// The seats a page is open on, by how many connections are showing
     /// them: a turn finishing on one of those is a turn the reader watched.
     attached: HashMap<SessionSlot, usize>,
+    /// When each seat was last shown, by any connection. A failure newer
+    /// than the stamp is one the reader has not seen, which is what the
+    /// rail's failure mark reads (#1612): one `Live` is folded per server
+    /// and shared by every connection, so showing a seat spends its mark
+    /// for all of them.
+    seen_failed: HashMap<SessionSlot, SystemTime>,
     composer: Composer,
 }
 
@@ -38,6 +45,28 @@ pub struct Live {
 pub struct LiveState {
     pub unseen: Unseen,
     pub composer: Composer,
+    /// The seats a page is open on, by how many connections are showing
+    /// them, and when each seat was last shown: together these answer
+    /// whether a failure on it is the reader's to see, which the home read
+    /// filters rows with.
+    attached: HashMap<SessionSlot, usize>,
+    seen_failed: HashMap<SessionSlot, SystemTime>,
+}
+
+impl LiveState {
+    /// The failure instant the rail should draw for `slot`, or `None`
+    /// when there is no failure to mark: the seat is being shown (some
+    /// connection is watching it fail), or it has been shown since the
+    /// failure landed.
+    pub fn failed_mark(&self, slot: &SessionSlot, at: SystemTime) -> Option<SystemTime> {
+        if self.attached.contains_key(slot) {
+            return None;
+        }
+        match self.seen_failed.get(slot) {
+            Some(shown) if shown >= &at => None,
+            _ => Some(at),
+        }
+    }
 }
 
 impl Live {
@@ -51,20 +80,27 @@ impl Live {
     }
 
     pub fn snapshot(&self) -> LiveState {
-        LiveState { unseen: self.unseen.clone(), composer: self.composer.clone() }
+        LiveState {
+            unseen: self.unseen.clone(),
+            composer: self.composer.clone(),
+            attached: self.attached.clone(),
+            seen_failed: self.seen_failed.clone(),
+        }
     }
 
     /// This view has shown `slot`, so nothing about it is unseen.
     pub fn seen(&mut self, slot: &SessionSlot) {
         self.unseen.clear(slot);
+        self.seen_failed.insert(slot.clone(), SystemTime::now());
     }
 
-    /// A page is open on `slot`, which is this view showing it, so a mark
+    /// A page is open on `slot`, which is a connection showing it, so a mark
     /// armed before the page opened goes with it. Counted, because two tabs
     /// on one seat are one seat still being shown.
     pub fn attach(&mut self, slot: &SessionSlot) {
         *self.attached.entry(slot.clone()).or_default() += 1;
         self.unseen.clear(slot);
+        self.seen_failed.insert(slot.clone(), SystemTime::now());
     }
 
     /// One page on `slot` has gone. The seat is let go with the last of them.
@@ -75,6 +111,9 @@ impl Live {
         *count -= 1;
         if *count == 0 {
             self.attached.remove(slot);
+            // The seat is no longer shown, and it was shown up to now: a
+            // failure that landed while the page was open is not news.
+            self.seen_failed.insert(slot.clone(), SystemTime::now());
         }
     }
 
@@ -153,10 +192,15 @@ pub fn fleet_news(update: &SessionUpdate) -> FleetNews<'_> {
         // A prompt frame is a user turn: neither arm below draws anything of
         // it, so the origin does not change what the fleet folds.
         SessionUpdate::ChatAppended { key, msg, .. } => match msg {
-            Message::Result { is_error, subtype, .. }
-                if is_success_result(*is_error, subtype) =>
-            {
-                FleetNews::Completed(key)
+            Message::Result { is_error, subtype, .. } => {
+                if is_success_result(*is_error, subtype) {
+                    FleetNews::Completed(key)
+                } else {
+                    // A failed turn can arm the row's failure mark, so the
+                    // rows are re-read; a cancelled turn only redraws the
+                    // rows it left.
+                    FleetNews::Redraw
+                }
             }
             Message::System { subtype, data, .. } if subtype == "session_state_changed" => {
                 if parse_runtime_session_state(data.get("state")) == Some(RuntimeSessionState::Running)
@@ -198,9 +242,12 @@ pub fn fleet_news(update: &SessionUpdate) -> FleetNews<'_> {
         // A held draft is the third kind of ask: its seat moves into the
         // needs-you group while it waits and back out when it resolves, so a
         // home-only subscriber has to be sent the pair or its row reads as
-        // it stood before the draft (#1758).
+        // it stood before the draft (#1758). A browser hand-off is the same
+        // shape on the same grounds.
         | SessionUpdate::SlackPostPending { .. }
         | SessionUpdate::SlackDraftResolved { .. }
+        | SessionUpdate::BrowserHandOffPending { .. }
+        | SessionUpdate::BrowserHandOffResolved { .. }
         | SessionUpdate::WorkerStatusChanged { .. }
         // The project's task set, its schedules and its connector
         // subscriptions moved - the three sections the home's project row
@@ -249,6 +296,62 @@ mod tests {
 
     fn appended(key: &SessionSlot, msg: Message) -> SessionUpdate {
         SessionUpdate::ChatAppended { key: key.clone(), msg, origin: None }
+    }
+
+    /// The failure mark is the view's own: a failure on a seat this page
+    /// has not shown marks; showing the seat clears it; a failure after
+    /// that marks again; and one that lands while the page is showing the
+    /// seat marks nothing, because the reader is watching it happen.
+    #[test]
+    fn a_failure_marks_until_the_view_shows_the_seat() {
+        let slot = SessionSlot::lead("Org", "forge");
+        let mut live = Live::new();
+        let first = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(100);
+
+        assert_eq!(
+            live.snapshot().failed_mark(&slot, first),
+            Some(first),
+            "a failure nobody has shown marks",
+        );
+
+        live.attach(&slot);
+        assert_eq!(
+            live.snapshot().failed_mark(&slot, first),
+            None,
+            "showing the seat clears the mark",
+        );
+        live.detach(&slot);
+        assert_eq!(
+            live.snapshot().failed_mark(&slot, first),
+            None,
+            "and it stays clear once the page leaves - the reader saw it",
+        );
+
+        // The two stamps are taken from the clock, so each instant below is
+        // given a gap to sit strictly after the one before it: on a coarse
+        // clock, `now()` twice in a row reads equal.
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let second = std::time::SystemTime::now();
+        assert_eq!(
+            live.snapshot().failed_mark(&slot, second),
+            Some(second),
+            "a failure after the showing is news again",
+        );
+
+        live.attach(&slot);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let third = std::time::SystemTime::now();
+        assert_eq!(
+            live.snapshot().failed_mark(&slot, third),
+            None,
+            "a failure landing while the page is open marks nothing",
+        );
+        live.detach(&slot);
+        assert_eq!(
+            live.snapshot().failed_mark(&slot, third),
+            None,
+            "and leaving does not resurrect it",
+        );
     }
 
     fn session_state(state: &str) -> Message {
@@ -325,18 +428,22 @@ mod tests {
         assert!(unseen.is_unseen(&untouched), "and the slot that did not keeps its diamond");
     }
 
-    /// Catches a diamond armed by the wrong result, and a page redrawn for
-    /// the conversation it does not show.
+    /// Catches a diamond armed by the wrong result, and a failed turn that
+    /// redraws the rows without arming one - the mark it arms is the
+    /// failure mark, not the diamond.
     #[test]
     fn only_a_finished_turn_arms_the_diamond() {
         let slot = SessionSlot::lead("Org", "forge");
         let mut live = Live::new();
 
         assert!(
-            !live.apply(&appended(&slot, result_message("error_during_execution", true))).fleet,
-            "a turn that failed is not a turn that finished",
+            live.apply(&appended(&slot, result_message("error_during_execution", true))).fleet,
+            "a failed turn redraws the rows the failure mark rides",
         );
-        assert!(!live.snapshot().unseen.is_unseen(&slot), "so nothing is unseen");
+        assert!(
+            !live.snapshot().unseen.is_unseen(&slot),
+            "but a turn that failed is not a turn that finished, so no diamond",
+        );
 
         assert!(
             live.apply(&appended(&slot, result_message("success", false))).fleet,

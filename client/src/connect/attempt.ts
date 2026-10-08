@@ -8,6 +8,7 @@
  * cause is on the far side.
  */
 
+import { hostTheBrowser } from '../browser/host';
 import { readableProtocol, skewMessage, skewOf, type Skew } from '../protocol';
 import { connect, type Connection } from '../socket';
 import { DEFAULT_SERVER_PORT, settingsFrom, type ClientSettings } from '../wire/types';
@@ -206,6 +207,10 @@ export async function connectTo(
   if ('why' in normalized) return { ok: false, kind: 'address', why: normalized.why };
 
   const connection = connect(normalized.url);
+  // The shell is the browser host: a page's subscription declares the
+  // capability (see the subscribes), and the asks that follow land here, on
+  // their way to the Rust side.
+  hostTheBrowser(connection);
   try {
     const { settings, version, skew } = await greeting(connection, handshakeMs);
     // The protocol's only mismatch detector, and the range is the client's

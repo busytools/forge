@@ -310,13 +310,41 @@ describe('applyUpdate', () => {
         work_changed: {
           key: SLOT,
           work: { branch: 'main', changed: 2, gate: 'in_repo' },
-          pr: { number: 1249, url: 'https://example.test/pull/1249' },
+          git: {
+            default_branch: 'main',
+            worktree: {
+              files: [{ path: 'a.rs', added: 1, removed: 0, status: 'modified' }],
+            },
+            ahead: { commit_count: 1, commits: [{ sha: 'a1b2c3d', subject: 'the commit' }] },
+          },
+          pr: { number: 1249, url: 'https://example.test/pull/1249', draft: true },
           closes: [{ number: 1215, url: 'https://example.test/1215' }],
         },
       });
 
       expect(next.work).toEqual({ branch: 'main', changed: 2, gate: 'in_repo' });
-      expect(next.pr).toEqual({ number: 1249, url: 'https://example.test/pull/1249' });
+      // A frame's stats block without totals falls back to the file list's
+      // own length and zeroes, and a layer the frame does not carry states
+      // nothing rather than guessing.
+      expect(next.git, 'the tree behind the row rides the same frame').toEqual({
+        defaultBranch: 'main',
+        worktree: {
+          files: [{ path: 'a.rs', added: 1, removed: 0, status: 'modified' }],
+          totalFiles: 1,
+          totalAdded: 0,
+          totalRemoved: 0,
+        },
+        ahead: {
+          count: 1,
+          commits: [{ sha: 'a1b2c3d', subject: 'the commit', stats: null, time: 0 }],
+          stats: null,
+        },
+      });
+      expect(next.pr).toEqual({
+        number: 1249,
+        url: 'https://example.test/pull/1249',
+        draft: true,
+      });
       expect(next.closes).toEqual([{ number: 1215, url: 'https://example.test/1215' }]);
     });
 
@@ -703,6 +731,34 @@ describe('applyUpdate', () => {
         applyUpdate(held, { slack_draft_resolved: { key: SLOT, id: 'd1' } }).pending_asks,
       ).toEqual([]);
       expect(applyUpdate(held, { slack_draft_resolved: { key: SLOT, id: 'd2' } })).toBe(held);
+    });
+
+    it('parks a browser hand-off, ahead of the asks already waiting, the way the read orders it', () => {
+      const kinds = (held: SessionRecord): unknown[] =>
+        held.pending_asks.map((ask) => (ask as Record<string, unknown>)['kind']);
+
+      const asked = applyUpdate(empty(), {
+        question_request: {
+          key: SLOT,
+          tool_id: 'toolu_q',
+          request: { tool_call: { tool_call_id: 'toolu_q' }, prompt: { question: 'which?' } },
+        },
+      });
+      const handoff = { id: 'h1', reason: 'solve the CAPTCHA', context: 'job-hunt' };
+      const parked = applyUpdate(asked, { browser_hand_off_pending: { key: SLOT, handoff } });
+
+      expect(kinds(parked), 'the hand-off leads the question that was already waiting').toEqual([
+        'browser_hand_off',
+        'question',
+      ]);
+      expect(
+        kinds(applyUpdate(parked, { browser_hand_off_resolved: { key: SLOT, id: 'h1' } })),
+        'and its resolution falls back to the question',
+      ).toEqual(['question']);
+      expect(
+        applyUpdate(parked, { browser_hand_off_resolved: { key: SLOT, id: 'h2' } }),
+        'a resolution naming another hand-off leaves this one parked',
+      ).toBe(parked);
     });
   });
 
@@ -1102,6 +1158,8 @@ const EVERY_VARIANT = [
   'slack_message_appended',
   'slack_post_pending',
   'slack_draft_resolved',
+  'browser_hand_off_pending',
+  'browser_hand_off_resolved',
   'prompt_queued_while_busy',
   'prompt_queued',
   'prompt_lifecycle',
@@ -1175,9 +1233,9 @@ describe('the variant list', () => {
     // raise it in the same edit that adds a variant, as the plan says.
     expect(
       EVERY_VARIANT.length,
-      'the census no longer carries every variant the enum declares (73 of them): a truncated ' +
+      'the census no longer carries every variant the enum declares (75 of them): a truncated ' +
         'census leaves the assertions below checking only the names it still has',
-    ).toBe(73);
+    ).toBe(75);
   });
 
   it('classifies every variant the core can send', () => {

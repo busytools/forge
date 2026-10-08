@@ -3,6 +3,15 @@ import { JSDOM } from 'jsdom';
 import { render } from 'svelte/server';
 import { describe, expect, it } from 'vitest';
 
+import Pinned from './chat/Pinned.svelte';
+import { connectors } from './chat/connectors.svelte';
+import { git } from './chat/git.svelte';
+import { mcp } from './chat/mcp.svelte';
+import { monitors } from './chat/monitors.svelte';
+import { processes } from './chat/processes.svelte';
+import { schedules } from './chat/schedules.svelte';
+import { subagents } from './chat/subagents.svelte';
+import { tasks } from './chat/tasks.svelte';
 import Composer from './composer/Composer.svelte';
 import type { ComposerProps, ComposerRecord } from './composer/view';
 import {
@@ -18,17 +27,15 @@ import {
 import Turn from './chat/Turn.svelte';
 import Connect from './connect/Connect.svelte';
 import { homeWire } from './dev/fixture.data';
-import session from './dev/fixtures/session.json';
 import Home from './home/Home.svelte';
 import Models from './models/Models.svelte';
 import ModelsBody from './models/ModelsBody.svelte';
 import { modelsWire } from './models/testing';
-import Inspector from './session/Inspector.svelte';
+import Palette from './session/Palette.svelte';
 import Session from './session/Session.svelte';
-import { sessionFrom, type SessionRecord } from './session/wire';
+import { PROTOCOL_VERSION } from './protocol';
 import type { Connection } from './socket';
 import { updateState } from './update/state';
-import type { HomeWire } from './wire/home';
 import { DEFAULT_SETTINGS } from './wire/types';
 
 /**
@@ -48,14 +55,34 @@ function untouched(): Connection {
     more: refuse,
     devices: refuse,
     frame: refuse,
+    onBrowserAsk: refuse,
+    browserRole: refuse,
+    onBrowserRole: refuse,
+    takeBrowserRole: refuse,
     onMessage: refuse,
     onStatus: refuse,
     store: refuse,
     settings: refuse,
     skew: refuse,
+    // The rail's footer reads the protocol pair as it RENDERS, so this one
+    // answers: refusing it would be refusing the page, not the socket.
+    serverProtocol: () => PROTOCOL_VERSION,
     status: refuse,
     close: refuse,
   };
+}
+
+/**
+ * A connection the strip's own segments may read: the browser segment
+ * registers a role listener and reads the role as it draws, so this answers
+ * those and refuses nothing - the check never presses Take over.
+ */
+function browserIdle(): Connection {
+  return {
+    browserRole: () => false,
+    onBrowserRole: () => () => {},
+    takeBrowserRole: () => {},
+  } as unknown as Connection;
 }
 
 type AxeWindow = Window & typeof globalThis & { axe: typeof axe };
@@ -129,6 +156,24 @@ describe('axe over the rendered pages', () => {
     } finally {
       updateState.set({ stage: 'current' });
     }
+  });
+
+  /**
+   * The stopped-forge state (#1638): the home's one fatal row, in front of
+   * axe like every other state a page can be in.
+   */
+  it('draws the stopped-forge home with no violations', async () => {
+    const html = render(Home, {
+      props: {
+        wire: {
+          ...homeWire,
+          fatal_error: 'Failed to establish or maintain the Agent SDK bridge connection.',
+        },
+        address: '127.0.0.1:8790',
+      },
+    }).body;
+    expect(html, 'the fatal row was not rendered').toContain('forge stopped:');
+    expect(await idsOf(html)).toEqual([]);
   });
 
   it('draws the connect screen with no violations', async () => {
@@ -386,26 +431,37 @@ describe('axe over the rendered pages', () => {
   });
 
   /**
-   * A page with NO record draws eight of its nine sections nowhere, so the
-   * case above sees the rail, the header and an empty conversation. This is
-   * the one that puts a section body in front of axe - eight of them.
+   * The strip with every row populated, which is where the inspector's
+   * sections live now. Rendered with NO turn pinned, which is also the shape
+   * an idle seat draws - the case the strip had no rendering for at all
+   * before it outlived the turn.
    *
    * The header's facts row and the account chip's popover are NOT in this
    * file's set: the chip lives in the header, and the header is `Session`'s,
    * which no server render can populate. Worth closing when a page can be
    * mounted in a test with a record.
    */
-  it('draws the inspector with every section populated, with no violations', async () => {
-    const html = render(Inspector, {
-      props: {
-        wire: populatedHome(),
-        record: populated(),
-        slot: { org: 'TestOrg', project: 'proj', label: 'lead' },
-        now: 1_700_000_000_000,
-        onclose: () => {},
-      },
-    }).body;
-    expect(await idsOf(html)).toEqual([]);
+  it('draws the strip with every row populated, with no violations', async () => {
+    seedStrip(true);
+    try {
+      const html = render(Pinned, { props: { info: null, connection: browserIdle() } }).body;
+      // Every row drew, so axe saw all of them.
+      for (const [mark, what] of [
+        ['i-subagents', 'the agents row'],
+        ['i-processes', 'the processes row'],
+        ['i-gotify', 'the connectors row'],
+        ['i-schedules', 'the schedules row'],
+        ['i-mcp', 'the servers row'],
+        ['i-git', 'the tree row'],
+        ['i-tasks', 'the tasks row'],
+        ['i-monitors', 'the monitors row'],
+      ] as const) {
+        expect(html, `${what} drew, so axe saw it`).toContain(mark);
+      }
+      expect(await idsOf(`<main>${html}</main>`)).toEqual([]);
+    } finally {
+      seedStrip(false);
+    }
   });
 
   /**
@@ -413,6 +469,26 @@ describe('axe over the rendered pages', () => {
    * proposal, the chips, the search form, the check's own control and the
    * row controls.
    */
+  /**
+   * **The palette's open dialog**, which no other case renders: the session
+   * page draws it closed, so its combobox roles, the listbox's options and
+   * the dialog's name would otherwise go unguarded.
+   */
+  it('draws the open command palette with no violations', async () => {
+    const body = render(Palette, {
+      props: {
+        open: true,
+        wire: homeWire,
+        slot: SLOT,
+        connection: untouched(),
+        sessionId: 'd4f70669-1f2a-4c88',
+        onclose: () => undefined,
+        onpeek: () => undefined,
+      },
+    }).body;
+    expect(await violationsOf(body)).toEqual([]);
+  });
+
   it('draws the models page with no violations', async () => {
     const html = render(ModelsBody, {
       props: {
@@ -517,112 +593,115 @@ describe('axe over the rendered pages', () => {
   });
 });
 
-/** A record with something behind every section the inspector can draw. */
-function populated(): SessionRecord {
-  const base = sessionFrom(session);
-  return {
-    ...base,
-    mcp: {
-      servers: [
-        { name: 'forge', status: 'connected', tools: [{}, {}] },
-        { name: 'other', status: 'failed', error: 'refused' },
-      ],
-      error: null,
-    },
-    processes: {
-      scanned_at: { secs_since_epoch: 1_700_000_000, nanos_since_epoch: 0 },
-      processes: [
-        { pid: 10, parent_pid: 1, name: 'claude', command: 'claude', memory_bytes: 0 },
-        { pid: 20, parent_pid: 10, name: 'cargo', command: 'cargo test', memory_bytes: 412 },
-      ],
-    },
-    monitors: [
-      {
-        tool_use_id: 'm1',
-        task_id: null,
-        description: 'ci-watch',
-        command: 'gh run watch',
-        persistent: true,
-        timeout_ms: 0,
-        status: 'running',
-        output_file: null,
-        ended_at: null,
-      },
-    ],
-    conversation: {
-      ...base.conversation,
-      turns: [
-        {
-          key: null,
-          messages: [
-            {
-              type: 'assistant',
-              message: { content: [{ type: 'tool_use', id: 'tu1', name: 'Task', input: {} }] },
-              parent_tool_use_id: null,
-            },
+/**
+ * Every strip row's store, seeded (or cleared) as one.
+ *
+ * The strip reads the module singletons rather than props, and this file
+ * shares them with the checks around it, so the clear is as much the fixture
+ * as the seed.
+ */
+function seedStrip(on: boolean): void {
+  subagents.sync(
+    on
+      ? [
+          {
+            name: 'map the calls',
+            dispatch_id: 'tu-sub',
+            agent_type: 'general-purpose',
+            running: true,
+            failed: false,
+            backgrounded: false,
+            ended_at: null,
+            calls: 2,
+            tail: [],
+            usage: null,
+          },
+        ]
+      : null,
+  );
+  processes.sync(
+    on
+      ? {
+          scanned_at: { secs_since_epoch: 1_700_000_000, nanos_since_epoch: 0 },
+          processes: [
+            { pid: 10, parent_pid: 1, name: 'cargo', command: 'cargo test', memory_bytes: 412 },
           ],
-        },
-      ],
-    },
-  };
-}
-
-/** A home whose project carries a task, a schedule and both connectors. */
-function populatedHome(): HomeWire {
-  const project = homeWire.projects[0];
-  if (project === undefined) throw new Error('the fixture holds no project');
-  return {
-    ...homeWire,
-    projects: [
-      {
-        ...project,
-        chip: { account_name: 'Acct', state: 'ready' },
-        tasks: [
+        }
+      : null,
+    on
+      ? [
+          {
+            task_id: 't-1',
+            task_type: 'local_bash',
+            description: 'run the gate',
+            command: 'cargo test',
+            tool_use_id: 'tu-bash',
+          },
+        ]
+      : null,
+    false,
+    { calls: new Map(), owners: new Map() },
+  );
+  connectors.sync(on ? [{ kind: 'gotify', id: 'g-1', key: 'ci', value: 'any priority' }] : null);
+  schedules.sync(on ? [{ id: 'c-1', key: 'rules sweep', value: 'in 27d \u{b7} recurring' }] : null);
+  mcp.sync(
+    on
+      ? [
+          {
+            name: 'forge',
+            k: 'forge \u{b7} session',
+            v: '2 tools',
+            tools: ['roster'],
+            command: 'node forge-server.js',
+            reason: null,
+            synthetic: false,
+          },
+        ]
+      : null,
+  );
+  git.sync(
+    on
+      ? {
+          label: 'feat/x \u{b7} 3 files',
+          head: "the project's tree",
+          ahead: null,
+          uncommitted: {
+            files: [{ path: 'a.rs', added: 1, removed: 0, status: 'modified' as const }],
+            totalFiles: 1,
+            totalAdded: 1,
+            totalRemoved: 0,
+          },
+          pr: null,
+          gate: null,
+        }
+      : null,
+  );
+  tasks.sync(
+    on
+      ? [
           {
             id: 't1',
-            project_name: 'proj',
-            subject: 'a task',
-            active_form: null,
-            detail: null,
             status: 'in_progress',
-            owner: { org: 'TestOrg', project: 'proj', label: 'lead' },
-            parent: null,
-            artifact: null,
-            estimate: '2h',
-            created_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
-            updated_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+            display: 'doing a task',
+            subject: 'a task',
+            owner: 'lead',
+            meta: 'in progress \u{b7} 2h',
           },
-        ],
-        crons: [
+        ]
+      : null,
+  );
+  monitors.sync(
+    on
+      ? [
           {
-            id: 'c1',
-            project_name: 'proj',
-            kind: { Recurring: '0 9 * * *' },
-            prompt: 'sweep',
-            description: 'deps sweep',
-            created_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
-            next_fire: { secs_since_epoch: 1_700_003_600, nanos_since_epoch: 0 },
+            id: 'm1',
+            running: true,
+            completed: false,
+            name: 'ci-watch',
+            label: 'persistent',
+            command: 'gh run watch 18234567',
           },
-        ],
-        connectors: {
-          gotify: [{ applications: ['homelab'], min_priority: 4 }],
-          slack: [
-            {
-              id: 's1',
-              workspace: 'Trust Machines',
-              target: { Conversation: { id: 'C1', name: '#alerts', mode: 'All' } },
-            },
-            { id: 's2', workspace: 'Trust Machines', target: 'Mentions' },
-          ],
-        },
-      },
-    ],
-    connectors: {
-      gotify: { connected: true },
-      slack: {
-        connected_workspaces: [['Trust Machines', true]],
-        load_failed: false,
-      },
-    },
-  };
+        ]
+      : null,
+  );
 }

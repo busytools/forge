@@ -24,7 +24,7 @@ The first message a client receives is the greeting, before it has asked
 for anything:
 
 ```json
-{"kind": "greeting", "version": 5, "forge_version": "1.0.114 · abc1234", "forge_version_short": "1.0.114+abc1234", "settings": {"mark": null, "theme": null, "font": null, "dictate": {"styling": "semi_formal", "structure": "prose", "context": "general"}}}
+{"kind": "greeting", "version": 6, "forge_version": "1.0.115 · abc1234", "forge_version_short": "1.0.115+abc1234", "settings": {"mark": null, "theme": null, "font": null, "dictate": {"styling": "semi_formal", "structure": "prose", "context": "general"}}}
 ```
 
 `version` is the protocol the server speaks. It is fixed rather than
@@ -92,12 +92,12 @@ variant's own name rather than on `kind`:
 {"kind": "command", "command": {"cancel": {"key": {"org": "Acme", "project": "proj", "label": "lead"}}}, "reply_to": null}
 ```
 
-A command's variant is its name around its field bag - `Command` has 38
-variants, 37 of them struct variants; the one unit variant,
+A command's variant is its name around its field bag - `Command` has 39
+variants, 38 of them struct variants; the one unit variant,
 `dictate_catalogue_check`, crosses as the name alone. An update is the same
 shape one level in,
 `{"kind": "update", "update": {"chat_appended": {"key": ..., "msg": ...}}}`,
-and 68 of `SessionUpdate`'s 73 variants are struct variants too. The other
+and 70 of `SessionUpdate`'s 75 variants are struct variants too. The other
 five are why the payload is not one shape: four are unit variants and cross
 as the name alone - `"catalog_loaded"`, `"cli_version_changed"`,
 `"dictate_availability"` and `"accounts_changed"` - and one is a newtype,
@@ -105,8 +105,8 @@ its name around the value inside it.
 
 ## What a client sends
 
-**`subscribe {what, answering}`** - answered with a `snapshot` of the whole
-subject. The subscription this opens is the one updates arrive on.
+**`subscribe {what, answering, browser}`** - answered with a `snapshot` of
+the whole subject. The subscription this opens is the one updates arrive on.
 
 **`answering` declares whether this client can answer a prompt, and it is
 off unless you say otherwise.** The core parks a turn on the reply of
@@ -123,9 +123,25 @@ is what the core counts when it decides whether a prompt can be answered,
 and a client that has drawn a dock once is not made an observer again by a
 second message. So say it on the first subscribe and expect it to stand.
 
-Neither way takes the pre-attach backlog: it goes to the first subscriber,
-and the view that draws the boot notice is the terminal. A client reads
-what it missed from the subject's snapshot.
+**`browser` declares whether this client can host the browser, and it is
+off unless you say otherwise.** One connection holds that role at a time -
+the first capable one to declare it - and every browser tool call a session
+makes is routed to that connection as a `browser_ask`. **Declaring it is a
+claim about what the client can DO**: a client that declares the capability
+it does not have is sent asks it can only answer with a failure, and that
+arrives at the far end as a session's tool call failing rather than as the
+client's mistake. A second capable client changes nothing about the first -
+it stays a view like any other, and the role is not an error to be second
+for; it WAITS. The role moves on by itself when its holder goes: the oldest
+waiter is promoted, without declaring anything again, so a client attached
+and capable is never left beside a `no browser-capable client connected`
+that is false about the machine. With no capable client attached at all, a
+browser tool answers that named error rather than waiting for one to
+appear.
+
+Neither declaration takes the pre-attach backlog: it goes to the first
+subscriber, and the view that draws the boot notice is the terminal. A
+client reads what it missed from the subject's snapshot.
 
 **`unsubscribe {what}`** - nothing comes back, because the client asked to
 stop hearing. Note that a second `subscribe` to one subject adds a second
@@ -195,21 +211,87 @@ machine's, and it lists them itself, which also means their names are the
 browser's own - blank until the origin has been allowed the microphone
 once.
 
-**Binary messages are dictation audio, and nothing else.** A client that
-captures sends one per 20 ms of speech:
+**`browser_answer {id, parts, error}`** - the host's answer to one
+`browser_ask`, under that ask's own id. `parts` are what the tool returned,
+in order; `error` is the reason the call failed, and a failed answer carries
+no parts. **An image part's bytes do NOT cross here** - the part names its
+`mime_type` and the bytes ride a binary frame of their own (below), because
+base64 inside this JSON would pay a third again for a screenshot. Every
+answer is sent by the connection that holds the browser role and by no
+other; an answer naming an ask the connection was never sent is dropped with
+a debug record.
+
+**The order is part of the contract: the answer FIRST, then one frame per
+image part, in the order the parts are listed.** A frame that arrives before
+the answer that declares its image is a malformed pair rather than slowness,
+and the ask FAILS naming that - it is not left waiting for parts nothing has
+declared. A frame whose bytes cannot be taken fails every ask on that
+connection waiting for an image, with the refusal as the reason: the part it
+was for can never be filled, and a session reading a failure can act where a
+session waiting forever cannot. **Only the refusals an image frame can be do
+that** - a short header, an unknown kind, a truncated image header, an
+oversized image. The dictation stream's own refusals (an oversized or uneven
+audio payload) belong to the microphone and name nothing about a screenshot,
+so they leave the image waits standing.
+
+**A partial answer has no timeout of its own, and that is the contract.**
+Nothing here waits out a host that stops mid-answer; the ask ends when the
+host's connection goes, and the tool call fails naming that. A host that
+sends an answer and then dies between frames is therefore a failure the
+session reads at disconnect time, not after a clock nobody set.
+
+**`browser_take_role`** - take the browser role from whoever holds it. The
+claimant must have declared itself capable on a `subscribe` first; the server
+answers with a `browser_role` frame either way, so a refused take is visible
+rather than silent. The displaced holder is TOLD (the same frame with
+`hosting: false`), stops reading asks, and the calls it was carrying fail as
+if its connection had gone - a take-over is loud on both sides rather than
+half-done.
+
+**Binary messages are frames, and a frame's first byte says which kind.** A
+client that captures sends one dictation frame per 20 ms of speech:
 
 | bytes | field | value |
 |---|---|---|
-| 1 | codec | `0` = `pcm_i16`; other values reserved |
+| 1 | kind | `0` = dictation; other values reserved but `1` is taken |
 | rest | samples | i16 little-endian, mono, 16 kHz |
 
-A frame carries no seat. It addresses the take its own CONNECTION started:
-one connection streams one take at a time and its messages are ordered, so
-a frame can only arrive between its own take's start and its stop. A frame
-this server cannot decode - a short header, an unknown codec, a payload
-past 16 KiB - or one that arrives with no take to hold it is dropped with a
-debug record and no answer, because a take's audio has no reply channel and
-the take's own outcome is what a reader sees either way.
+A dictation frame carries no seat. It addresses the take its own CONNECTION
+started: one connection streams one take at a time and its messages are
+ordered, so a frame can only arrive between its own take's start and its
+stop. A frame this server cannot decode - a short header, an unknown kind, a
+payload past 16 KiB - or one that arrives with no take to hold it is dropped
+with a debug record and no answer, because a take's audio has no reply
+channel and the take's own outcome is what a reader sees either way.
+
+**`1` is a browser image part's bytes**, and it belongs to an answer rather
+than to a take:
+
+| bytes | field | value |
+|---|---|---|
+| 1 | kind | `1` = browser image |
+| 8 | id | the `browser_ask`'s id, big-endian u64 |
+| rest | bytes | the image, whose mime type the answer's part named |
+
+A client sends one per image part, **after** the answer that declares them
+and in the order the parts are listed: the first frame fills the first image
+part, the second the second. The id is what says which answer the bytes
+belong to, so two sessions asking at once cannot be handed each other's
+picture. The payload cap is 16 MiB, and the socket's own frame limit is that
+cap plus one byte, set at the upgrade - so an image a shade too big is
+refused by the decoder, which fails the ask it belongs to, rather than
+tearing the connection down at the socket layer where the asker would only
+be told its host went away.
+
+**What a frame that cannot be delivered does depends on whether anything is
+waiting for it**, and the two cases are worth telling apart when reading a
+debug record. A frame this server refuses - an unknown kind, a payload past
+the cap - fails every ask on that connection that is waiting for an image,
+because the part it was for can never be filled. A frame that matches NO ask
+in flight is a record and nothing else: one for an image part that is
+already filled, or one naming an ask that was never sent on this connection.
+Neither is answered - a binary frame has no reply channel - so the record is
+what makes it legible.
 
 **`dictate_stream {key, options}`** - begin a take the CLIENT captures.
 The connection that sends it feeds the audio as the binary frames above,
@@ -283,6 +365,20 @@ was asked for.
   renders where the list would have been - the two are the request's only
   outcomes.
 - **`reply {reply_to, body}`** - in answer to a command that asked for one.
+- **`browser_ask {id, seat, tool, args}`** - one browser tool call, sent to
+  the client that holds the browser role. **This is the socket's only
+  request in the direction a client answers**: `id` is what pairs it with
+  the `browser_answer` that settles it, `seat` is the session whose turn is
+  waiting, `tool` is upstream's own unprefixed name, and `args` is what the
+  CLI sent verbatim. Nothing else pairs the two, so an ask left unanswered
+  is a session's tool call waiting - a client that cannot serve it answers
+  with the reason rather than with silence.
+- **`browser_role {hosting}`** - whether THIS connection holds the browser
+  role, sent on every change of it: when a capable declare is granted, when
+  a waiter is promoted because the holder went, and when a force-take takes
+  the role away (`browser_take_role`, above). A client's own browser row
+  reads it to say which client drives - before this frame, "could host" and
+  "does host" looked the same from the client's side.
 - **`error {what, why}`** - `what` failed and `why`, in the core's own
   words.
 
@@ -320,14 +416,15 @@ conversation, and what the composer is doing.
 | `conversation` | The NEWEST turns, in order, with the compaction count - the same twenty `more` answers a page with, so a client that wants more asks for it the way it already does. Each turn carries `key` and `messages`, the frames the turn ran as. The live `update` stream carries those too, and differs in ways a client sees: a run of consecutive token appends inside one flush arrives there as ONE frame carrying the summed `estimated_tokens_delta`, and a frame the server forged carries no `uuid` where one the CLI sent does. A page differs the other way as well - it carries an ending for a backgrounded task's call as a frame of its own, which the stream never sends - so read these as the ones this row states rather than as the whole list. |
 | `has_dispatches` | Whether the conversation holds a sub-agent dispatch at all, anywhere in it - not only in the window `conversation` carries - pushed as `dispatches_changed` when one is made. A view deciding whether to draw a sub-agents section reads this rather than scanning the window, which would report a seat that dispatched an hour ago as one where nothing ran. |
 | `work` | The working tree as state: branch, how much changed, and whether git runs here. |
-| `pr`, `closes` | The open pull request this seat's branch is on - its number and URL - and the issues it closes, which is the `PR #N -> closes #M` line the inspector draws. `null` and an empty list when there is none, or when the branch is not pushed. |
+| `git` | The tree behind the row's depth, all three from the same scan: `default_branch` (which branch the tree is measured against), `worktree` (the uncommitted files, each with its path, added and removed counts and its `status` - `modified` / `added` / `deleted` / `renamed` / `copied` / `typechange` / `unmerged` / `untracked`), and `ahead` (the branch's `commit_count`, the chain itself - each commit a short `sha`, `subject`, its own `stats` and the instant it was committed in unix seconds - and the range's own `stats`). Every `stats` block carries the full totals and the busiest files up to the scan's cap of seven, each classified with the same statuses the uncommitted layer speaks; the chain is capped at the scan's walk. `null` layers are nothing to state - a clean tree, an unscanned one - and it moves with `work_changed` frames like the row above it. |
+| `pr`, `closes` | The open pull request this seat's branch is on - its number and URL, and whether it is a `draft` - and the issues it closes, which is the `PR #N -> closes #M` line a view draws under its PR row. `null` and an empty list when there is none, or when the branch is not pushed. |
 | `diff` | The changed files with their raw hunks - data, never a rendering. Both layers the `work` row's state describes (`worktree` against `HEAD`, `branch_ahead` against the merge base), each `clean`, `populated` or `scan_failed`; a populated file carries its path, the old path a rename came from, its status, `binary` / `submodule` / `truncated` flags, and the carried lines with their kind, text and line numbers. Bounded per file and per read - 400 lines and 32 KiB per file, 512 KiB of carried line text over 100 files - with every cap that bites flagged. Read once per record and never pushed, so a client that wants it fresher re-reads the seat; the tree's movement arrives as `work` updates. |
 | `file_index` | Every file under the session's scan cwd, walked with the user's own gitignore preference, and pushed as `file_index_changed` when a walk finds it moved. The walk follows the seat's change watch: writes inside one poke become one walk, a still tree is walked at most once per five seconds, and a frame goes out only when the index differs from the one last announced. |
 | `mcp` | The session's MCP servers, their status and tools, and the failure when the read did not complete. |
 | `processes` | The last walk of the session's process tree, or `null` for a seat nothing has walked - a seat somebody is showing is walked once a second and its movement is pushed as a `processes_changed` update, a seat nobody holds is not walked at all, and a session ending clears it. |
 | `background_tasks` | The CLI's background-task registry: what it reports running, each entry with the line the row leads with, the command its own call carried and the call that began it. The processes feed leads its rows with these, because a backgrounded bash is detached from claude's tree and the OS walk cannot see it for itself. |
 | `monitors` | The watches the session has running. |
-| `pending_asks` | Every prompt the seat is holding, oldest first, drafts leading. Two questions of one batch or two calls that ran in parallel park several at once, so this is what a client that attached mid-batch reads. |
+| `pending_asks` | Every prompt the seat is holding, oldest first, the held kinds leading (a Slack draft, a browser hand-off). Two questions of one batch or two calls that ran in parallel park several at once, so this is what a client that attached mid-batch reads. |
 | `pending_ask` | The front of `pending_asks` - the prompt a client that draws a single ask waits on, `null` when there is none. Kept beside the list so a client reading only this one still draws the oldest ask. |
 | `reviews` | The review threads and the submitted reviews, each read separately so an unreadable one is not reported as empty. |
 | `slash_commands`, `subagents` | What the CLI last advertised: its commands and its agent-type catalogue, pushed as `slash_commands_changed` / `subagents_changed` when a turn's init (or a plugin reload, for the commands) moves them. |

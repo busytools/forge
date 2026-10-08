@@ -3783,7 +3783,10 @@ mod tests {
 
         apply_session_update(
             &mut app,
-            SessionUpdate::FatalError(crate::error::AppError::ConnectionFailed),
+            SessionUpdate::FatalError {
+                error: crate::error::AppError::ConnectionFailed,
+                message: crate::error::AppError::ConnectionFailed.user_message().to_owned(),
+            },
         );
 
         assert!(matches!(app.status, AppStatus::Error));
@@ -3944,7 +3947,10 @@ mod tests {
 
         apply_session_update(
             &mut app,
-            SessionUpdate::FatalError(crate::error::AppError::ConnectionFailed),
+            SessionUpdate::FatalError {
+                error: crate::error::AppError::ConnectionFailed,
+                message: crate::error::AppError::ConnectionFailed.user_message().to_owned(),
+            },
         );
 
         assert_eq!(app.active_turn_assistant_idx(), None);

@@ -30,8 +30,8 @@ either.
 | Header | the brand mark, `forge`, the page's name, and the way back to the home | `ClientSettings.mark` from the greeting; the route |
 | The page's state | a refused action in the core's own words, and whichever download or activation is in flight with its progress | `refusal` (an `error` frame); `install`, `activate` |
 | In use | one row per model forge runs: its role - **the selector for the updates below** - its file, the facts the spec declares (size, quant, parameters, digest, licence), the feed's own measurement when it has one, the live state as a chip, and a line saying where the model came from | `in_use` |
-| Updates | the check's own line - up to date, an update, checking, unreachable, or a state this client cannot read - with both roles' news under it, then the selected role's recommendation with the one control that takes it, then the comparison table behind a door; the cleanup role's own view instead, where no feed measures a normalizer: its candidates with each one's own runs under it | `check`, `updates`, `rows`, `installed`, `results` |
-| Find a model | a box that filters the feed's rows as it is typed: the variant, the quant a machine would run, the measured speed and error, the licence, what it transcribes, and the row's control. Each row links to the entry's own document | `rows` |
+| Updates | what a check reads, the check's own line - up to date, an update, checking, unreachable, or a state this client cannot read - with both roles' news under it, then the selected role's recommendation with the one control that takes it, then the comparison table behind a door; the cleanup role's own view instead, where no feed measures a normalizer: its candidates with each one's own runs under it | `check`, `updates`, `rows`, `installed`, `results` |
+| Find a model | a box that filters the feed's rows as it is typed, with the feed's families and its fastest rows offered before a name is known: the variant, the quant a machine would run, the measured speed and error, the licence, what it transcribes, and the row's control. Each row links to the entry's own document | `rows` |
 | Benchmark | the fixtures first - the read-aloud set's own state with the record control and the count line - then the one press that scores the picks on this machine and leaves a verdict, then two doors: every run scored here, and every model a bench can run | `bench`, `read_aloud`, `results` |
 
 **A model in use is drawn from its spec.** The first fact line comes off the
@@ -78,10 +78,13 @@ is the section below, not a second control in the line.
 **A line that says there is an update shows the update.** The check line
 carries both roles' news, and under it the selected role's recommendation
 is its own row: the model, its numbers against the one running, its licence
-and size, and the one control that takes it - download then load, or the
-download alone where `forge.toml` pins the role. A role with nothing
-proposed says so rather than leaving a blank. The table below it is
-evidence, not the pick, so it folds.
+and size, the rule it was picked on in words - it beats the model in use on
+both of the feed's own measurements, and its licence is not marked
+non-commercial - and what taking it does: downloads it if it is not here,
+then loads it as that role's model. The one control that takes it is the
+row's own - download then load, or the download alone where `forge.toml`
+pins the role. A role with nothing proposed says so rather than leaving a
+blank. The table below it is evidence, not the pick, so it folds.
 
 **The comparison table is the rule's own working**, one row per model and
 one column per axis. Its columns are fixed widths, so the geometry holds
@@ -189,11 +192,17 @@ the sweep fetched and nobody adopted go back off the disk**: the sweep takes
 its own downloads back once the verdict is in, so a candidate it did not
 adopt costs its bytes again if the switch is pressed later.
 
+**The note under the check line says what a check is**, because the control
+does not: it reads the catalogue the runtime publishes - every variant with
+its sizes, licences and the speeds and error rates its maintainers measured
+- and compares that with the models pinned here. Nothing is measured on
+this machine.
+
 **The search is the client's, and it filters as the box is typed.** The
-whole feed arrives with the read, so there is no button to press and nothing
-is asked of the server. The rows are the feed's own figures; the note says
-they are measured on an m4 max, not on this machine. **Each row is a link to
-its catalogue entry** - the feed's own document, in the same tree the server
+whole feed arrives with the read, so there is no submit step and nothing is
+asked of the server. The rows are the feed's own figures; the note says they
+are measured on an m4 max, not on this machine. **Each row is a link to its
+catalogue entry** - the feed's own document, in the same tree the server
 fetches from - because a list of rows that goes nowhere is what a reader
 clicks first, and the marker that says so is drawn at rest rather than
 uncovered by the pointer.
@@ -202,6 +211,21 @@ uncovered by the pointer.
 core checks a download against the feed's own byte length and the engine's
 own load, and the page's note says exactly that. Nothing on this page may
 print `verified`, `checksum` or a digest the spec did not declare.
+
+**The box is blind on its own, so the page offers what can be searched.**
+Before a name is typed it draws the feed's own families as chips - each one
+naming a class the feed holds, with its entry count, most-populated first -
+and its three fastest measured rows under them. Both set the query, so a
+pick is the same mechanism as typing rather than a second one. **A count is
+`search`'s own answer for that name**, so the number on a chip is always the
+number the click draws; and the feed carries no date for a variant, and
+nothing this read keeps carries one either, so "latest" is not a thing this
+page can say - its own measurement is the only ranking it has.
+
+**A catalogue that has not landed is its own state.** With dictation on and
+no rows - a first enable offline, or the boot fetch still out - the section
+draws a line saying so rather than a box whose every query would answer "no
+entry matches" and chips pointing at nothing.
 
 ## The states the page can be in
 

@@ -404,6 +404,71 @@ describe('one turn folded into the units a view draws', () => {
     ).toBe('# Ux\n\nDo it.');
   });
 
+  it('hangs a body the CLI marked synthetic on its call, without the plumbing line', () => {
+    // **The mark, not the text** (#1543): a launched skill's body can arrive
+    // with neither the plumbing line nor a matching heading - the timesheet
+    // fill's did - and the one signal every injected body carries is the
+    // synthetic mark. It rides the call that loaded the skill, by position,
+    // and never draws as the reader's own turn.
+    const load = said([use('toolu_fill', 'Skill', { skill: 'timesheet-fill' })]);
+    // Neither recognizer's shape: no plumbing line, and no heading either -
+    // the fresh case drew as a turn precisely because both missed it.
+    const body = heard([text('You are filling a timesheet. Ask for the week first.')], {
+      isSynthetic: true,
+    });
+
+    const units = fold([load, body]);
+    expect(kinds(units), 'the call unit alone, no turn of the reader').toEqual(['leaves']);
+    const [group] = units;
+    const held = callsOf(group).map((call) => call.leaf);
+    expect(held[0]?.skill, 'the call opens onto the body the mark claims').toContain(
+      'You are filling a timesheet',
+    );
+  });
+
+  it('draws an unclaimed synthetic body as a notice, never as the reader', () => {
+    const body = heard([text('An injected line with no call behind it.')], { isSynthetic: true });
+    const units = fold([body]);
+
+    expect(kinds(units), "a synthetic frame drew as the reader's own").toEqual(['notice']);
+  });
+
+  it('leaves a stamped heading with no matching call off a call that is waiting', () => {
+    // Only the nameless marked body pairs by position; a named frame that
+    // matches no waiting call must never ride one that happens to be waiting.
+    const load = said([use('toolu_alpha', 'Skill', { skill: 'alpha-skill' })]);
+    const heading = heard([text('# Beta Report\n\nBeta body words.')], { isSynthetic: true });
+
+    const units = fold([load, heading]);
+    const [group] = units;
+    const held = callsOf(group).map((call) => call.leaf);
+    expect(held[0]?.skill, 'the waiting call keeps waiting').toBeNull();
+    expect(kinds(units), 'and the heading falls through as an ordinary frame').toEqual([
+      'leaves',
+      'user',
+    ]);
+  });
+
+  it('claims nothing for a whitespace-only stamped frame', () => {
+    const load = said([use('toolu_alpha', 'Skill', { skill: 'alpha-skill' })]);
+    const blank = heard([text('   \n\t  ')], { isSynthetic: true });
+
+    const units = fold([load, blank]);
+    const [group] = units;
+    const held = callsOf(group).map((call) => call.leaf);
+    expect(held[0]?.skill, 'a whitespace-only stamped frame claims nothing').toBeNull();
+  });
+
+  it('takes the mark as the harness talking, and an unmarked frame as the reader', () => {
+    const plain = heard([text('the reader typed this')]);
+    const stamped = heard([text('a line nobody typed, and no family claims it')], {
+      isSynthetic: true,
+    });
+
+    expect(kinds(fold([plain])), 'an ordinary frame still draws as the reader').toEqual(['user']);
+    expect(kinds(fold([stamped])), "a stamped frame drew as the reader's own").toEqual(['notice']);
+  });
+
   it('draws nothing for the local-command family, by decision', () => {
     // The reader's typing in the LAUNCH terminal arrives as plumbing, and the
     // terminal's own chat filters the same heads. Ved's ruling, 2026-10-03:
@@ -424,6 +489,63 @@ describe('one turn folded into the units a view draws', () => {
     expect(kinds(fold([heard([text('a real prompt')])]))).toEqual(['user']);
   });
 
+  it('draws a background task end as its summary line, never the XML', () => {
+    // The CLI delivers a task's end as a user frame nobody typed - the
+    // `<task-notification>` envelope - so it draws as an info line of its
+    // own: not the raw XML, and not the reader's own turn (#1680, Ved's
+    // shape: the summary line alone).
+    const envelope = heard([
+      text(
+        '<task-notification>\n<task-id>bsybtnmwj</task-id>\n<tool-use-id>call_01a1</tool-use-id>\n<output-file>/tmp/x.output</output-file>\n<status>completed</status>\n<summary>Background command "Run both gates" completed (exit code 0)</summary>\n</task-notification>',
+      ),
+    ]);
+
+    const units = fold([envelope]);
+    expect(kinds(units), 'not a turn the reader took').toEqual(['notice']);
+    const [row] = units;
+    expect(row?.kind === 'notice' ? row.notice.severity : '', 'informational').toBe('info');
+    expect(
+      row?.kind === 'notice' ? row.notice.text : '',
+      'the summary line alone, no envelope around it',
+    ).toBe('Background command "Run both gates" completed (exit code 0)');
+
+    // No summary parsed, no claim: the frame draws as itself, the rule-25
+    // default rather than a silent drop.
+    const bare = heard([text('<task-notification><task-id>t</task-id></task-notification>')]);
+    expect(kinds(fold([bare])), 'a summary-less envelope is not claimed').toEqual(['user']);
+  });
+
+  it('draws the invisible-output nudge as the page own line, never the bracket', () => {
+    // The harness asks the MODEL to continue after a response with no visible
+    // output - a marked frame nobody typed - and the terminal draws the raw
+    // bracket; the page draws its own line (#1858).
+    const nudge = heard(
+      [
+        text(
+          '[Your previous response had no visible output. Please continue and produce a user-visible response.]',
+        ),
+      ],
+      { isSynthetic: true },
+    );
+    const units = fold([nudge]);
+
+    expect(kinds(units), 'not a turn the reader took').toEqual(['notice']);
+    const [row] = units;
+    expect(
+      row?.kind === 'notice' ? row.notice.text : '',
+      'the page own words, not the raw bracket',
+    ).toBe('no visible output - the harness asked the agent to continue');
+
+    // A bracket this does not recognize falls through: with the stamp it
+    // draws as the raw marked line, the shape it had before.
+    const odd = heard([text('[Some other bracketed sentence entirely.]')], { isSynthetic: true });
+    const [held] = fold([odd]);
+    expect(
+      held?.kind === 'notice' ? held.notice.text : '',
+      'an unknown bracket draws as itself',
+    ).toContain('[Some other bracketed sentence entirely.]');
+  });
+
   it("hangs the harness's image note on the call that read the picture", () => {
     // The image rides the Read call's own result; the note arrives right after
     // as a user frame. On that call's row it is the picture's caption; as the
@@ -438,11 +560,16 @@ describe('one turn folded into the units a view draws', () => {
         ],
       },
     ]);
-    const note = heard([
-      text(
-        '[Image: original 2782x1034, displayed at 2000x743. Multiply coordinates by 1.39 to map to original image.]',
-      ),
-    ]);
+    // Stamped as synthetic, the way the wire carries it - the mark is why a
+    // reader of the fold has to claim it HERE, before the mark's own branch.
+    const note = heard(
+      [
+        text(
+          '[Image: original 2782x1034, displayed at 2000x743. Multiply coordinates by 1.39 to map to original image.]',
+        ),
+      ],
+      { isSynthetic: true },
+    );
 
     const units = fold([read, picture, note]);
     const [group] = units;
@@ -457,13 +584,17 @@ describe('one turn folded into the units a view draws', () => {
     );
     expect(kinds(units), 'nothing of the reader draws here').toEqual(['leaves']);
 
-    // A note with no picture behind it still draws, as a line of its own.
+    // A note with no picture behind it still draws, as a line of its own -
+    // stamped like the rest, so the claim order is what the mark branch sees.
     const orphan = fold([
-      heard([
-        text(
-          '[Image: original 100x100, displayed at 100x100. Multiply coordinates by 1.00 to map to original image.]',
-        ),
-      ]),
+      heard(
+        [
+          text(
+            '[Image: original 100x100, displayed at 100x100. Multiply coordinates by 1.00 to map to original image.]',
+          ),
+        ],
+        { isSynthetic: true },
+      ),
     ]);
     expect(kinds(orphan), 'a note nothing holds draws a notice').toEqual(['notice']);
   });
@@ -524,11 +655,16 @@ describe('one turn folded into the units a view draws', () => {
       uuid: 'cb-1',
       compact_metadata: { trigger: 'auto', pre_tokens: 68_031, post_tokens: 9_149 },
     };
-    const summary = heard([
-      text(
-        'This session is being continued from a previous conversation that ran out of context. And so on.',
-      ),
-    ]);
+    // Stamped as synthetic, the way the wire carries it: the continuation is
+    // claimed by its own recognizer, so the mark must not reach it first.
+    const summary = heard(
+      [
+        text(
+          'This session is being continued from a previous conversation that ran out of context. And so on.',
+        ),
+      ],
+      { isSynthetic: true },
+    );
 
     const units = fold([boundary, summary]);
     expect(kinds(units), 'one row, not a turn beside it').toEqual(['compaction']);
@@ -542,11 +678,14 @@ describe('one turn folded into the units a view draws', () => {
   it('draws a continuation prompt with no boundary as the compaction it is', () => {
     // The cut happened whether or not its frame reached this fold; the row
     // carries what it has, and the summary is what it has.
-    const summary = heard([
-      text(
-        'This session is being continued from a previous conversation that ran out of context. More.',
-      ),
-    ]);
+    const summary = heard(
+      [
+        text(
+          'This session is being continued from a previous conversation that ran out of context. More.',
+        ),
+      ],
+      { isSynthetic: true },
+    );
 
     const units = fold([summary]);
     expect(kinds(units)).toEqual(['compaction']);
@@ -653,10 +792,9 @@ describe('one turn folded into the units a view draws', () => {
 
   it("draws the harness skill reminder as a line of its own, not the reader's turn", () => {
     // The CLI tells the MODEL that a skill was already loaded; nobody typed it.
-    // The terminal drops it live (every wire user text is treated as an input
-    // echo there) and renders it as a user turn on resume, so this is the
-    // client's own shape rather than parity - a notice, because rule 25 says
-    // it still has to be drawn.
+    // The frame reaches the wire stamped, and the terminal draws every stamped
+    // user frame as an info row on both paths, live and resume - so this is
+    // parity, not the client's own shape, and rule 25 is why it draws at all.
     const reminder = heard([
       text(
         'Skill /unslop was loaded earlier (see the invoked-skills reminder above); this is a NEW invocation - follow those instructions now, including any setup steps.',
@@ -687,6 +825,11 @@ describe('one turn folded into the units a view draws', () => {
     expect(kinds(refused)).toEqual(['notice']);
     expect(refused[0]?.kind === 'notice' ? refused[0].notice.severity : '').toBe('error');
     expect(refused[0]?.kind === 'notice' ? refused[0].notice.text : '').toContain('Usage: /resume');
+
+    // The third level: a line this PAGE authors may carry it (the rate-limit
+    // explainer), where the wire's own NoticeSeverity has only two.
+    const warned = fold([line('warning')]);
+    expect(warned[0]?.kind === 'notice' ? warned[0].notice.severity : '').toBe('warning');
 
     // A severity word this page does not know is not a failure: the line is
     // still drawn, and it says so quietly rather than shouting.
@@ -1793,6 +1936,86 @@ describe('one turn folded into the units a view draws', () => {
     expect(calls[1]?.status, 'and the one it started afterwards is still out').toBe('pending');
   });
 
+  /**
+   * #1836: a restart kills the CLI mid-call, the resumed history keeps the
+   * call's `tool_use` with no result and no failing frame, and a fold that
+   * reads only boundaries leaves the row spinning forever. The terminal
+   * settles exactly these failed on its resume
+   * (`finalize_turn_runtime_artifacts(Failed)`), and the caller's `ended`
+   * says the same: this turn's history is closed, so its unanswered call is
+   * never coming back.
+   */
+  it('settles the call a closed turn never answered, backgrounded or not', () => {
+    const load = said([use('tu_never', 'Skill', { skill: 'slow-skill' })]);
+
+    const [live] = fold([load]);
+    expect(
+      callsOf(live).map((call) => call.leaf.status),
+      'a turn still being written waits for the answer',
+    ).toEqual(['pending']);
+
+    const [settled] = fold([load], null, false, true);
+    expect(
+      callsOf(settled).map((call) => call.leaf.status),
+      'the turn ended without an answer: the call draws failed, not spinning',
+    ).toEqual(['failed']);
+
+    // A backgrounded call whose launch never landed is the same spinner one
+    // call type over: the terminal clears its background roster before the
+    // resume's sweep, so an input-keyed exemption would leave it standing.
+    const launched = said([
+      {
+        type: 'tool_use',
+        id: 'tu_bg',
+        name: 'Bash',
+        input: { command: 'sleep 30', run_in_background: true },
+      },
+    ]);
+    const [bg] = fold([launched], null, false, true);
+    expect(
+      callsOf(bg).map((call) => call.leaf.status),
+      'a launch with no task frames fails with the turn',
+    ).toEqual(['failed']);
+
+    // What DOES hold one open is the task's own fact: a start the wire
+    // carried exempts the call, input or no input.
+    const started = {
+      type: 'system',
+      subtype: 'task_started',
+      task_id: 'bj5g0t2kq',
+      tool_use_id: 'tu_bg',
+      is_backgrounded: true,
+    };
+    const [held] = fold([launched, started], null, false, true);
+    expect(
+      callsOf(held).map((call) => call.leaf.status),
+      'a live task holds its call open past the turn',
+    ).toEqual(['in_progress']);
+  });
+
+  /**
+   * The FRAME-BUILT carrier is the other half of the settle: frames arrive on
+   * a live page, whose `live` stays true for good there (#1486), so `ended`
+   * never fires for it - the RESULT frame inside the fold is what closes the
+   * turn, and a call the frames never answered before it settles failed.
+   */
+  it('settles an unanswered call when the fold own frames carried the end', () => {
+    const load = said([use('tu_frame', 'Skill', { skill: 'slow-skill' })]);
+    const ended = { type: 'result', is_error: false, subtype: 'success' };
+
+    const [framed] = fold([load, ended], null, true, false);
+    expect(
+      callsOf(framed).map((call) => call.leaf.status),
+      'the result frame closed the turn: the call before it draws failed',
+    ).toEqual(['failed']);
+
+    const [open] = fold([load], null, true, false);
+    expect(
+      callsOf(open).map((call) => call.leaf.status),
+      'and with no end in the frames it still waits',
+    ).toEqual(['pending']);
+  });
+
   it('sweeps the calls of every failure in the turn, not only the first', () => {
     // Two failing turns in one fold - which the live path reaches when no page
     // lands between them - settle BOTH turns' calls. First-wins sweeps the
@@ -2493,5 +2716,91 @@ describe("the CLI's retry line", () => {
       notice?.kind === 'notice' ? notice.notice.sub : null,
       'milliseconds read as themselves',
     ).toBe('retrying in 250ms');
+  });
+});
+
+describe('the rate-limit windows', () => {
+  /**
+   * One `rate_limit_event` frame, as the wire shapes it. The reset sits long
+   * past, so the countdown those words end on is "now" forever - the pins
+   * below stay exact without a faked clock.
+   */
+  const windowed = (info: Record<string, unknown>): unknown => ({
+    type: 'rate_limit_event',
+    rate_limit_info: { resetsAt: 1_741_280_000, rateLimitType: 'five_hour', ...info },
+    uuid: 'r-limit',
+    session_id: 's-1',
+  });
+
+  const noticed = (units: Unit[]) => units.filter((unit) => unit.kind === 'notice');
+
+  it("draws a window closing as a warning line, in the terminal's words", () => {
+    const units = fold([windowed({ status: 'allowed_warning', utilization: 0.91 })]);
+
+    const notices = noticed(units);
+    expect(notices, 'one line for the window').toHaveLength(1);
+    const notice = notices[0]?.kind === 'notice' ? notices[0].notice : null;
+    expect(notice?.severity, 'a closing window is a warning').toBe('warning');
+    expect(notice?.text, "the terminal's own words, so the two views agree").toBe(
+      "Approaching rate limit, you've used 91% of your 5-hour rate limit. Resets in now at 16:53 UTC.",
+    );
+  });
+
+  it('upgrades the same window to an error in place, rather than stacking', () => {
+    // The key is the window, not the status: a window that escalates from
+    // warning to rejected rewrites the line it already drew.
+    const units = fold([
+      windowed({ status: 'allowed_warning' }),
+      windowed({ status: 'rejected', utilization: 0.99 }),
+    ]);
+
+    const notices = noticed(units);
+    expect(notices, 'one line for the whole window').toHaveLength(1);
+    const notice = notices[0]?.kind === 'notice' ? notices[0].notice : null;
+    expect(notice?.severity, 'a rejected window is an error').toBe('error');
+    expect(notice?.text).toBe(
+      "Rate limit reached, you've used 99% of your 5-hour rate limit. Resets in now at 16:53 UTC.",
+    );
+  });
+
+  it('keeps the loudest line when the same window walks back', () => {
+    // The terminal's no-downgrade guard (`upsert_turn_notice` refuses a lower
+    // stage): a window that flips from rejected back to a warning keeps the
+    // line it already drew, where a fresh warning would soften "Rate limit
+    // reached" to "Approaching".
+    const units = fold([
+      windowed({ status: 'rejected', utilization: 0.99 }),
+      windowed({ status: 'allowed_warning', utilization: 0.8 }),
+    ]);
+
+    const notices = noticed(units);
+    expect(notices, 'one line for the whole window').toHaveLength(1);
+    const notice = notices[0]?.kind === 'notice' ? notices[0].notice : null;
+    expect(notice?.severity, 'the loudest stage holds').toBe('error');
+    expect(notice?.text).toBe(
+      "Rate limit reached, you've used 99% of your 5-hour rate limit. Resets in now at 16:53 UTC.",
+    );
+  });
+
+  it('opens a fresh line when the window resets', () => {
+    const units = fold([
+      windowed({ status: 'rejected' }),
+      windowed({ status: 'allowed_warning', resetsAt: 1_741_280_000 + 18_000 }),
+    ]);
+
+    expect(noticed(units), 'a new window is a new incident').toHaveLength(2);
+  });
+
+  it('draws nothing for a window that is allowed or unknown to this build', () => {
+    // The terminal routes both to no notice, and this fold matches rather
+    // than draws a line the other view does not have.
+    const units = fold([
+      said([text('working')]),
+      windowed({ status: 'allowed' }),
+      windowed({ status: 'something_new' }),
+    ]);
+
+    expect(noticed(units)).toHaveLength(0);
+    expect(kinds(units)).toEqual(['text']);
   });
 });

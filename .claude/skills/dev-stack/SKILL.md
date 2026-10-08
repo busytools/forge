@@ -51,13 +51,21 @@ history is the record.
    - `mkdir -p $STACK/config/forge $STACK/home`
    - Write `$STACK/config/forge/forge.toml`:
      - `[[accounts]]` - ONE account, its flat `token` key copied read-only
-       from the main config (`~/.claude/forge/forge.toml`); name which
-       account in the worker's report.
+       from the main config (`~/.claude/forge/forge.toml`). **A non-Anthropic
+       one where the config carries one** (an `openrouter` provider block) -
+       a scratch must never spend the Anthropic pool; name which account in
+       the worker's report.
      - `[[orgs]]` + `[[orgs.projects]]` - the repo's path, `auto_start = true`,
        a `model`, `permission_mode = "auto"`.
      - `[server] enabled = true, bind = "127.0.0.1", port = 8791` and
        `[gateway] port = 8788` - a distinct port pair per stack (8791+idx /
        8788+idx for parallel stacks).
+     - **A dictation-touching stack points `models_dir` at the REAL cache,
+       spelled ABSOLUTELY** (the live config's value with `~` expanded to the
+       real home at setup time): a `~` in the scratch config re-expands under
+       the stack's HOME, and the default is the platform cache under that
+       same HOME - so anything but the absolute path silently fetches and
+       loads its own ~3 GB of models.
 2. **The binary**
    - **Always build from the tree** (the worker's worktree) -
      `nice -n 10 cargo build -p forge-tui --bin forge -p forge-server --bin forge-protocol-client`
@@ -81,7 +89,10 @@ history is the record.
    hold the forge pid; `$STACK/home/Library/Application Support/forge-tui/`
    carries a fresh `db.redb`; the log has no store-failure line; the first
    session connects ~3s in (the boot spawn is held until the account's usage
-   probe settles - that is normal).
+   probe settles - that is normal). **Confirm it is YOUR stack**: the build
+   stamp on the home (it rides the greeting too) is the invariant check, and
+   the roster's org is the cross-check - together they catch a wrong-forge
+   connect in one read.
 5. **The client** - judgment call per feature:
    - Browser tab (default): the dev client from the worktree - hot reload, the
      maintainer's own browser. Point it at the stack through its own connect
@@ -95,7 +106,14 @@ history is the record.
      when the stack dies.
    - App shell (when the feature needs one - browser hosting, dictation
      capture): the Tauri debug shell from the worktree, same connect screen,
-     same address.
+     same address. **A scratch shell is a rebuilt BUNDLE with its own
+     identifier** (the browser E2E rebuilt under `dev.vedhavyas.forge.e2ebrowser`)
+     - and it must be the built bundle, not `tauri dev`: an unbundled dev
+     shell's storage is keyed by process name rather than by identifier, so
+     every client on this Mac shares it, a scratch window auto-connects to
+     the LIVE forge, and no in-app door leads back to the connect screen.
+     (The built bundle is also the client that does not collide when another
+     stack already holds the ports.)
    - The stack takes browser WebSockets as they come - a raw handshake with an
      Origin header answers 101 plus the greeting; no CORS step exists.
 6. **Drive headlessly when useful**: `forge-protocol-client --url
@@ -121,7 +139,11 @@ history is the record.
    never a pattern), confirm the port and pid are gone, then
    `find $STACK -depth -delete` (rm -rf is permission-blocked on this
    machine; find -delete passes). The lock sits inside `$STACK` under the
-   HOME redirect, so the tree delete covers it.
+   HOME redirect, so the tree delete covers it. **The stack's windows and
+   browser processes are its own to reap**: whoever brought the stack up
+   closes its app windows and kills its own browser processes by port or
+   PID - nothing of the stack outlives it, and another worker's windows are
+   theirs, never yours.
 10. **Teardown invariants (prove, don't assume)**: the live forge's PID and
    start time unchanged; the real store's holder unchanged; `~/.claude` read,
    never written (checksum the config if anything is in doubt).
@@ -136,14 +158,21 @@ history is the record.
 2. **The build stamp goes stale in a linked worktree** (measured): `build.rs`
    watches `../../.git/HEAD` and friends, but a worktree's `.git` is a FILE,
    so the watches never arm and the binary can report the wrong commit while
-   running another. Until the forge-side fix (#1829) lands, `touch` the build
-   script (mtime only) before a rebuild in a worktree, and read the boot log's
-   stamp with that in mind.
+   running another. Until the forge-side fix (#1829) lands, `touch`
+   `crates/forge-server/build.rs` (mtime only - the Rust workspace's one
+   build script; a bare `touch` on any other `build.rs` path creates an
+   empty file and the build dies on it) before a rebuild in a worktree, and
+   read the boot log's stamp with that in mind.
 3. The store follows HOME, not the config dir - see the mandatory redirect
    above and #1826.
-4. Both default ports are the live forge's (8790/8787); a taken gateway port
-   is the worse collision - it holds the spawn gate shut. Allocate the next
-   free pair (8791/8788, then 8792/8789, ...) and keep one pair per stack.
+4. Both default ports are the live forge's (8790/8787). A taken gateway port
+   holds the spawn gate shut and is drawn with the port named; **a taken
+   SOCKET port fails invisibly**: the log carries
+   `server_socket_bind_failed` / "the socket is not serving" while the ports
+   read bound (the other stack's listeners) and the handshake answers you
+   with ANOTHER stack's roster. **lsof the pair before booting** and take
+   the next one; a bind-failure line is a collision to fix the pair for, not
+   to investigate. One pair per stack.
 5. `[web]` is refused by name; scratch configs use `[server]` + `[client]`.
 6. A fresh config dir has no trust record; the CLI then ignores the project's
    permission-allow entries and says so with the exact remedy

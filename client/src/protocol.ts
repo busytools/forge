@@ -24,7 +24,7 @@ import type { ClientSettings, SessionSlot } from './wire/types';
  * not, and a mismatch fails plainly instead of silently. What is tolerated
  * below this one is `MIN_PROTOCOL`, and nothing above it is.
  */
-export const PROTOCOL_VERSION = 5;
+export const PROTOCOL_VERSION = 6;
 
 /**
  * The oldest protocol this client reads.
@@ -61,8 +61,13 @@ export interface Skew {
   serverVersion: string | null;
 }
 
-/** The release part of a build stamp, without the sha the build adds. */
-function releaseOf(version: string): string {
+/**
+ * The release part of a build stamp, without the sha the build adds.
+ *
+ * Exported because the tests word the same sentences from it: a message
+ * naming a release to install names the bare number, never the stamp.
+ */
+export function releaseOf(version: string): string {
   const [release] = version.split(/[+ ]/);
   return release ?? version;
 }
@@ -249,6 +254,16 @@ export type ClientMessage =
        * for the connection.
        */
       answering: boolean;
+      /**
+       * Whether this client can host the browser.
+       *
+       * Off unless the client says otherwise, and the declaration is a claim
+       * about what this client can DO: one connection holds the role, every
+       * browser ask routes to it, and a client that declared the capability
+       * it does not have is sent asks it will answer with a failure - which
+       * shows up as a session's tool call failing, not as the client's.
+       */
+      browser: boolean;
     }
   | { kind: 'unsubscribe'; what: Subject }
   | { kind: 'command'; command: Command; reply_to: number | null }
@@ -261,7 +276,22 @@ export type ClientMessage =
    * would be a permission check per frame and per connection. The answer is a
    * `devices` message or an `error` naming it, and those are its only two.
    */
-  | { kind: 'devices' };
+  | { kind: 'devices' }
+  /**
+   * The host's answer to one `browser_ask`.
+   *
+   * `parts` are what the tool returned, in order; an image part's BYTES do
+   * not cross here - they ride a binary frame under this same id, one frame
+   * per image part in the order the parts are listed. `error` is the call's
+   * failure, and a failed answer carries no parts.
+   */
+  | { kind: 'browser_answer'; id: number; parts: BrowserPart[]; error: string | null }
+  /**
+   * Take the browser role from whoever holds it, which is the force override
+   * a second capable client offers. The server answers with a `browser_role`
+   * frame either way, so a refused take is visible rather than silent.
+   */
+  | { kind: 'browser_take_role' };
 
 /** What the server sends. */
 export type ServerMessage =
@@ -309,7 +339,59 @@ export type ServerMessage =
    * holding several seats' asks drains only its own. Absent from a server that
    * predates the field, and from refusals that are about nothing seat-shaped.
    */
-  | { kind: 'error'; what: string; why: string; seat?: SessionSlot };
+  | { kind: 'error'; what: string; why: string; seat?: SessionSlot }
+  /**
+   * One browser tool call, sent to the client that holds the browser role.
+   *
+   * The socket's first request in this direction. It is answered with a
+   * `browser_answer` under this same `id`; nothing else pairs the two, so an
+   * ask left unanswered is a session's tool call waiting.
+   */
+  | { kind: 'browser_ask'; id: number; seat: SessionSlot; tool: string; args: unknown }
+  /**
+   * Whether THIS connection holds the browser role: sent when a capable
+   * declare is granted, and when a force-take takes the role away. Before
+   * this frame a client knew only that it COULD host, and a strip that went
+   * on saying "you" after losing the role would be a lie its reader acts on.
+   */
+  | { kind: 'browser_role'; hosting: boolean };
+
+/**
+ * One part of a browser tool's answer, as it crosses the socket.
+ *
+ * An image names its mime type here and its bytes travel in their own binary
+ * frame: base64 inside this JSON would pay a third again for a screenshot.
+ */
+export type BrowserPart = { type: 'text'; text: string } | { type: 'image'; mime_type: string };
+
+/**
+ * One part as a host holds it: the same shape, with an image's bytes in hand.
+ *
+ * The socket strips the bytes into their frame, so what a handler returns is
+ * this and what crosses is {@link BrowserPart}.
+ */
+export type BrowserAnswerPart =
+  { type: 'text'; text: string } | { type: 'image'; mime_type: string; bytes: Uint8Array };
+
+/** One browser ask, as the handler that answers it reads it. */
+export interface BrowserAsk {
+  /** The id the answer must come back under. */
+  id: number;
+  /** The seat whose session asked. */
+  seat: SessionSlot;
+  /** Upstream's own tool name, unprefixed. */
+  tool: string;
+  /** The arguments the CLI sent, exactly as it sent them. */
+  args: unknown;
+}
+
+/**
+ * What a host answers an ask with: the tool's parts, or the reason it failed.
+ *
+ * A failure is an ANSWER, not a silence - the session's tool call returns it
+ * as the reason the call did not happen, which is what a person reads.
+ */
+export type BrowserAnswer = { parts: BrowserAnswerPart[] } | { error: string };
 
 /**
  * How many turns one `more` asks for.

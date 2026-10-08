@@ -149,6 +149,16 @@ impl Workspace {
         self.record_spawn_failure(slot, message);
     }
 
+    /// Stamp a slot's failed-turn record the way an errored `Result`
+    /// does, so a cross-crate test can read the row the surface builds.
+    /// Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn record_failed_turn_for_test(&self, slot: &SessionSlot, at: std::time::SystemTime) {
+        if let Some(domain) = self.domain_session_for(slot) {
+            domain.lock().failed_turn_at = Some(at);
+        }
+    }
+
     /// Push one update onto the fan-out, so a test can watch a view react
     /// to the core without driving a session. Test-only.
     #[cfg(any(test, feature = "testing"))]
@@ -193,6 +203,14 @@ impl Workspace {
             installed: installed.map(str::to_owned),
             latest: latest.map(str::to_owned),
         });
+    }
+
+    /// Hold the last fatal, as the boot spawn's failure records it, so a
+    /// cross-crate test can read the home's encoding without a dying spawn.
+    /// Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn seed_test_fatal_error(&self, error: forge_primitives::error::AppError) {
+        self.record_fatal_error(error);
     }
 
     /// Register a fresh testing-stub agent against `key`'s
@@ -335,6 +353,7 @@ impl Workspace {
             #[cfg(any(test, feature = "testing"))]
             test_spawn_handle: Mutex::new(None),
             test_spawn_listing: Mutex::new(crate::workspace::RecordedListing::None),
+            test_spawn_server: Mutex::new(None),
             accounts,
             gateway,
             // A stub workspace pretends the listener is bound: the
@@ -350,6 +369,7 @@ impl Workspace {
             dictate: Arc::new(crate::dictate::DictateState::new(&config_dictate)),
             dictate_runtime: Mutex::new(crate::dictate::DictateRuntime::default()),
             dictate_device_pick: Mutex::new(None),
+            browser: Arc::new(crate::browser::BrowserRelay::new()),
             dictate_catalogue: Mutex::new(crate::catalogue::CatalogueState::default()),
             dictate_install: Mutex::new(crate::install::InstallState::default()),
             dictate_activate: Mutex::new(crate::install::ActivateState::default()),
@@ -374,6 +394,7 @@ impl Workspace {
             review_activity: Mutex::new(HashMap::new()),
             usage_poller_started: std::sync::atomic::AtomicBool::new(false),
             cron_scheduler_started: std::sync::atomic::AtomicBool::new(false),
+            auto_continue_sweep_started: std::sync::atomic::AtomicBool::new(false),
             kick_dispatcher_tx,
             kick_dispatcher_rx_slot: Mutex::new(Some(kick_dispatcher_rx)),
             _single_instance_lock: None,
@@ -400,6 +421,7 @@ impl Workspace {
             slack_user_names: Mutex::new(std::collections::BTreeMap::new()),
             slack_author_failures: Mutex::new(std::collections::HashSet::new()),
             slack_drafts: Mutex::new(HashMap::new()),
+            browser_handoffs: Mutex::new(HashMap::new()),
             slack_recently_delivered: Mutex::new(HashMap::new()),
             slack_load_failed: std::sync::atomic::AtomicBool::new(false),
             slack_user_id_retries: Mutex::new(std::collections::BTreeMap::new()),
@@ -521,6 +543,12 @@ impl Workspace {
     #[cfg(any(test, feature = "testing"))]
     pub fn test_spawn_listing(&self) -> crate::workspace::RecordedListing {
         self.test_spawn_listing.lock().clone()
+    }
+
+    /// The `forge` MCP server the last spawn composed, so a test can drive a
+    /// tool through the spawn's OWN wiring rather than a copy of it.
+    pub fn test_spawn_server(&self) -> Option<forge_sdk::mcp::server::McpServer> {
+        self.test_spawn_server.lock().clone()
     }
 
     pub fn seed_test_gateway_ready(&self, ready: bool) {

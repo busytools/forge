@@ -117,6 +117,13 @@ impl Fleet {
         Arc::clone(&self.surface)
     }
 
+    /// The workspace under the fixture, for a test that has to build
+    /// something FROM it - the transport a binary builds, above all, whose
+    /// browser relay has to be this workspace's own.
+    pub fn workspace(&self) -> Arc<Workspace> {
+        Arc::clone(&self.workspace)
+    }
+
     /// Arm dictation for `key`: an engine over a temp models directory
     /// whose weights are absent, and the seat marked live, so a test can
     /// drive a take without hardware, a model or a CLI. The returned
@@ -168,6 +175,12 @@ impl Fleet {
     /// line without a real `claude --version` and npm probe.
     pub fn set_cli_version(&self, installed: Option<&str>, latest: Option<&str>) {
         self.workspace.seed_test_cli_version(installed, latest);
+    }
+
+    /// Hold the core's last fatal, as the boot spawn's failure records it, so
+    /// a test can read the home's encoding without a dying spawn.
+    pub fn set_fatal_error(&self, error: forge_primitives::error::AppError) {
+        self.workspace.seed_test_fatal_error(error);
     }
 
     /// Hold the CLI's per-user preferences document, so a view test reads a

@@ -149,6 +149,13 @@
     border: 1px solid var(--line); border-radius: 9px; padding: 8px 11px; }
   .models .find::placeholder { color: var(--dim); }
   .models .note { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); margin-top: 10px; }
+  /* What can be searched before a reader knows a name: the feed's families as
+     chips, and its fastest rows as links in the note under them. */
+  .models .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .models .chip b { color: var(--dim); font-weight: 400; }
+  .models .link { border: 0; background: none; padding: 0; font: inherit; cursor: pointer;
+    color: var(--muted); text-decoration: underline; }
+  .models .link:hover { color: var(--text); }
 
   .models .list { margin-top: 12px; border: 1px solid var(--line); border-radius: var(--r);
     overflow: hidden; background: rgba(13,17,26,.4); }
@@ -285,6 +292,8 @@
           <button class="chip" type="button">Check now</button>
         </div>
 
+        <p class="note">a check reads the catalogue the transcribe.cpp runtime publishes - every variant with its sizes, licences, and the speeds and error rates its maintainers measured - and compares it with the two models pinned here. It measures nothing on this machine.</p>
+
         <div class="status warn">
           <span class="dot warn"></span>
           <span class="t">Granite Speech 5.0 470M TurboCTC</span>
@@ -292,15 +301,31 @@
           <span class="spacer"></span>
           <button class="chip" type="button">use for transcribing</button>
           <span class="detail">473M &middot; Q4_K_M 279 MB &middot; <b>388.8&times; vs 72.9&times;</b> &middot; FLEURS-en 4.61 vs 5.08 &middot; Apache-2.0 &middot; English only, offline</span>
-          <span class="detail">Faster and more accurate than the model in use, on the feed's own test set. Install it, then make it the transcribing model - it loads while the current one keeps running. The bench that scores a candidate on your own recordings is not built yet, so every number here is the feed's own.</span>
+          <span class="detail">Proposed because it beats the model in use on both of the feed's own measurements - fewer errors on its English test set, and a faster realtime factor on an m4-max - and its licence is not marked non-commercial. Taking it downloads it here if it is not already, and loads it as the transcribing model.</span>
         </div>
       </section>
 
       <section class="block">
         <h2 class="hd4">Find a model <span class="why">search the catalogue the runtime publishes</span></h2>
 
-        <input class="find" type="search" aria-label="Search the model catalogue" placeholder="search 73 variants - parakeet, granite, whisper, moonshine...">
-        <p class="note">type a name &middot; the feed's whole catalogue is already here, so this reads nothing off the network</p>
+        <input class="find" type="search" aria-label="Search the model catalogue" placeholder="search 74 variants - parakeet, granite, whisper, moonshine...">
+        <p class="note">type a name, or pick a family below &middot; the feed's whole catalogue is already here, so this reads nothing off the network</p>
+        <!-- An excerpt: the live page draws all of them and they wrap. Each
+             count is what the click will show, so moonshine's 17 includes the
+             three moonshine-streaming rows its name also matches. -->
+        <div class="chips">
+          <button class="chip" type="button">parakeet<b>16</b></button>
+          <button class="chip" type="button">moonshine<b>17</b></button>
+          <button class="chip" type="button">whisper<b>13</b></button>
+          <button class="chip" type="button">canary<b>5</b></button>
+          <button class="chip" type="button">gigaam<b>4</b></button>
+          <span class="chip" aria-hidden="true">&hellip;</span>
+        </div>
+        <p class="note">fastest on the feed:
+          <button class="link" type="button">medasr 881.5&times;</button> &middot;
+          <button class="link" type="button">gigaam-v3-ctc 526.3&times;</button> &middot;
+          <button class="link" type="button">gigaam-v3-e2e-ctc 511.4&times;</button>
+        </p>
       </section>
 
       <section class="block">
@@ -469,7 +494,7 @@
   <div class="tile">
     <div class="tcap">a search that matches a family, and one that matches nothing</div>
     <div class="models">
-      <p class="note" style="margin-top:0">2 of 73 entries &middot; each opens its catalogue entry</p>
+      <p class="note" style="margin-top:0">2 of 74 entries &middot; each opens its catalogue entry</p>
       <ul class="list" aria-label="Catalogue results">
         <li>
           <a class="cand" href="#">

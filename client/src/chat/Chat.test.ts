@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
-import { flushSync, mount, unmount } from 'svelte';
+import { createRawSnippet, flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { Chat as HandedChat, type Conversation } from './conversation';
 import { echoes } from './echoes.svelte';
+import { git } from './git.svelte';
 import { freeze } from './testing/frozen';
 import { subjectKey } from '../protocol';
 import type { ClientMessage, ServerMessage, SessionUpdate } from '../protocol';
@@ -61,6 +62,12 @@ function stub() {
       return () => listeners.delete(fn);
     },
     onStatus: () => () => undefined,
+    // The browser segment of the strip registers a role listener and reads
+    // the role as it draws, so those two answer; Take over is never pressed
+    // here and stays out.
+    browserRole: () => false,
+    onBrowserRole: () => () => undefined,
+    takeBrowserRole: () => undefined,
     store: (what: Parameters<Connection['store']>[0]) => stores.get(what),
     settings: () => null,
     status: () => 'open' as const,
@@ -163,9 +170,83 @@ afterEach(async () => {
   if (app !== null) await unmount(app);
   app = null;
   document.body.innerHTML = '';
+  git.sync(null);
 });
 
 describe('the chat column as it draws', () => {
+  /**
+   * **The queue sits above the pin, and both above the box.** The queue's
+   * DATA is the page's, but its place is the column's: what is waiting reads
+   * against what is running, and the strip keeps its place right above the
+   * composer.
+   */
+  it('draws the queue snippet above the strip', () => {
+    const server = stub();
+    const queue = createRawSnippet(() => ({ render: () => '<span class="pile"></span>' }));
+    git.sync({
+      label: 'feat/x',
+      head: "the project's tree",
+      ahead: null,
+      uncommitted: null,
+      pr: null,
+      gate: null,
+    });
+    draw({ queue }, server);
+    // A page with a turn on it: the column's empty state owns a seat with no
+    // history, and the strip and the queue live in the drawn column.
+    server.answer([{ key: 't1', messages: [] }]);
+
+    const pile = document.querySelector('.pile');
+    const strip = document.querySelector('.strip');
+    expect(pile, 'the queue snippet did not draw').not.toBeNull();
+    expect(strip, 'the strip did not draw').not.toBeNull();
+    if (pile === null || strip === null) return;
+    expect(
+      pile.compareDocumentPosition(strip) & Node.DOCUMENT_POSITION_FOLLOWING,
+      'the strip did not follow the queue in the column',
+    ).not.toBe(0);
+  });
+
+  /**
+   * **The strip stands in every conversation state, not only under the
+   * list.** A seat coming up, refused, not yet read or empty holds the same
+   * tree, tasks and watchers as one mid-turn - and the rows are the whole
+   * way into them, so nesting the strip back inside any one state's arm is
+   * the regression this pins.
+   */
+  it('draws the strip on seats with no list at all', async () => {
+    const server = stub();
+    git.sync({
+      label: 'feat/x',
+      head: "the project's tree",
+      ahead: null,
+      uncommitted: null,
+      pr: null,
+      gate: null,
+    });
+    const redraw = async (props: Record<string, unknown>): Promise<void> => {
+      if (app !== null) await unmount(app);
+      document.body.innerHTML = '';
+      draw(props, server);
+    };
+
+    await redraw({ waking: true });
+    expect(document.querySelector('.strip'), 'no strip on a seat coming up').not.toBeNull();
+
+    await redraw({});
+    expect(document.querySelector('.strip'), 'no strip before the first read').not.toBeNull();
+
+    server.send({ kind: 'error', what: 'more', why: 'the conversation is not held yet' });
+    expect(
+      document.querySelector('.strip'),
+      'no strip on a refused seat with nothing under it',
+    ).not.toBeNull();
+
+    await redraw({});
+    server.answer([]);
+    expect(document.querySelector('.strip'), 'no strip on an empty seat').not.toBeNull();
+  });
+
   it('asks for the newest page before it draws anything', () => {
     const server = stub();
     draw({}, server);
@@ -1018,6 +1099,37 @@ describe('the reader own words before the core has them', () => {
     // settles the mark by that id, so a second mint beside it would leave the
     // cancel unable to reach the retry.
     expect(resent?.id, 'and the mark names the id the retry went out under').toBe(resentUuid);
+  });
+
+  /**
+   * A retry refused at the socket gets its one telling from the echo row -
+   * the reason plus the way back - so the retry hands dispatch no seat and no
+   * notice line joins it (the round-1 find): two phrasings of one loss read
+   * as two losses.
+   */
+  it('tells a refused retry once, through the echo row', () => {
+    const server = stub();
+    draw({}, server);
+    server.answer([{ key: 't1', messages: [frame('a1', 12)] }]);
+
+    echoes.post(key, 'and run the gate too', false, 'e-gate');
+    echoes.refuse(key, 'the session is not running');
+    flushSync();
+
+    // The socket closes under the retry: dispatch throws like the real one,
+    // and what it was called with is what says whether a notice was asked for.
+    let handed: unknown[] = [];
+    server.connection.dispatch = (...args: unknown[]) => {
+      handed = args;
+      throw new Error('the socket is not open');
+    };
+    const retry = document.querySelector<HTMLButtonElement>('.mine .retry');
+    if (retry === null) throw new Error('the failed row drew no way to send it again');
+    retry.click();
+    flushSync();
+
+    expect(drawn(), 'the row says why').toContain('not sent · the socket is closed');
+    expect(handed, 'the command alone, no seat handed over').toHaveLength(1);
   });
 
   /**

@@ -18,6 +18,18 @@ describe('versionParts', () => {
       expect(versionParts(odd), odd).toBeNull();
     }
   });
+
+  /**
+   * **A build stamp after `+` is dropped, semver's own rule.** The client's
+   * own version carries one now, and a compare that refused it would stop
+   * offering updates to every stamped build.
+   */
+  it('drops the build stamp after a plus', () => {
+    expect(versionParts('1.0.116+65c8a7695')).toEqual([1, 0, 116]);
+    expect(versionParts('v1.0.116+abc')).toEqual([1, 0, 116]);
+    expect(isNewer('1.1.0+def', '1.0.116+abc')).toBe(true);
+    expect(isNewer('1.0.116+abc', '1.0.116+def')).toBe(false);
+  });
 });
 
 describe('isNewer', () => {

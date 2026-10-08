@@ -129,6 +129,10 @@ fn run() -> anyhow::Result<()> {
         // crons as they come due, advancing/removing each.
         workspace.start_cron_scheduler();
 
+        // Start the auto-continue sweep: a failed turn nobody has looked at
+        // gets one prompt of forge's own once its delay has run out.
+        workspace.start_auto_continue_sweep();
+
         // Start the Gotify subsystem when configured with at least one
         // durable subscription loaded at boot; no-op otherwise.
         workspace.start_gotify_subsystem();
@@ -159,20 +163,14 @@ fn run() -> anyhow::Result<()> {
         let server = workspace.server_config();
         if server.enabled {
             let addr = std::net::SocketAddr::new(server.bind, server.port);
-            let state = std::sync::Arc::new(forge_server::transport::TransportState {
-                surface: std::sync::Arc::new(forge_server::surface::ViewSurface::new(
-                    std::sync::Arc::clone(&workspace),
-                )),
-                work: std::sync::Arc::new(forge_server::work::WorkCache::new()),
-                conversations: std::sync::Arc::new(
-                    forge_server::transport::conversation::Conversations::new(),
-                ),
-                // This process is another viewer of the same seats, so the
-                // attachment count has to see it: a turn finishing on a seat
-                // this terminal is showing is one the reader watched.
-                live: std::sync::Mutex::new(forge_server::live::Live::new()),
-                client: workspace.client_config(),
-            });
+            // Built from the workspace so every piece the socket needs is
+            // derived where the workspace is in hand - the browser relay
+            // above all, which must be the one the sessions ask through.
+            let state =
+                std::sync::Arc::new(forge_server::transport::TransportState::for_workspace(
+                    &workspace,
+                    workspace.client_config(),
+                ));
             match tokio::net::TcpListener::bind(addr).await {
                 Ok(listener) => {
                     let bound = listener.local_addr().unwrap_or(addr);

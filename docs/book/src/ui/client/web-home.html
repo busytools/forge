@@ -101,6 +101,12 @@
     padding-bottom: 18px; margin-bottom: 18px;
     border-bottom: 1px solid var(--line);
   }
+  /* The core's last fatal, above everything (#1638). */
+  .stopped {
+    border: 1px solid rgba(224,104,62,.4); border-left: 3px solid var(--bad);
+    background: rgba(224,104,62,.07); color: var(--bad);
+    border-radius: 9px; padding: 9px 13px; margin-bottom: 18px; font-size: 13.5px;
+  }
   .brand { display: flex; align-items: center; gap: 10px; }
   .brand .mark { width: 30px; height: 30px; flex: 0 0 30px; color: var(--accent); }
   .brand .mark svg { display: block; width: 100%; height: 100%; }
@@ -488,6 +494,11 @@
     </p>
 
     <div class="cat">
+      <h4>the core's last fatal <span class="why">drawn above the header: the page is served by a forge that has stopped, whose words ride the home wire</span></h4>
+      <div class="stopped">forge stopped: Failed to establish or maintain the Agent SDK bridge connection.</div>
+    </div>
+
+    <div class="cat">
       <h4>state marks <span class="why">one shape per meaning, so colour is never the only signal</span></h4>
       <ul class="list">
         <li class="node">
@@ -571,6 +582,19 @@
             <span class="when">failed</span>
           </div>
           <div class="note">OAuth token expired; run /login to retry</div>
+        </li>
+        <!-- The other failure: the seat is alive and nothing is running,
+             but its newest turn died unwatched. Same shape as the row
+             above, different lifetime - this one goes the moment the seat
+             is opened. -->
+        <li class="node">
+          <div class="row failed">
+            <span class="dot bad"></span>
+            <span class="name">turn failed</span>
+            <span class="where"></span>
+            <span class="what"><span class="txt">a turn ended in failure and you have not opened the seat</span></span>
+            <span class="when">9m</span>
+          </div>
         </li>
         <li class="node">
           <div class="row asleep">
@@ -778,7 +802,7 @@
 
     <div class="cat">
       <h4>a forge one protocol behind <span class="why">the shell's own line, above whatever page is drawn: the connection is live and a step back is read, so it names the command that updates the stale half rather than stopping</span></h4>
-      <p class="shellline">this forge server speaks protocol 4; this client is v1.0.114 (protocol 5). In the forge checkout run <code>just install</code> and restart forge.</p>
+      <p class="shellline">this forge server speaks protocol 5; this client is v1.0.115 (protocol 6). In the forge checkout run <code>just install</code> and restart forge.</p>
     </div>
 
     <div class="cat">

@@ -95,6 +95,14 @@ punctuation gate, which CI runs too, and the client's Prettier step do.
 `just client-tauri-bundle` adds the bundles, and the first is the one to
 run before handing over a change there.
 
+A client that BUNDLES takes one step of its own first: `just
+vendor-browser-stack` fetches and verifies the browser the client hosts -
+node, `@playwright/mcp` and Chrome for Testing, about half a gigabyte into
+the client's gitignored `browser-stack/` directory - and
+`client-tauri-bundle` and `client-release` run it themselves, so a release
+cannot ship without it. It needs network access the first time and nothing
+after that; the three pins it verified are printed on every run.
+
 The run ends on a verdict line naming its own result, `[OK] check: ...`
 or `[ERROR] check: <step> failed`, and stops at the first failing step,
 naming the ones it did not reach. That line is deliberately the last one

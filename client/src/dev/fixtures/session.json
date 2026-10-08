@@ -274,9 +274,68 @@
     "changed": 2,
     "gate": "in_repo"
   },
+  "git": {
+    "default_branch": "main",
+    "worktree": {
+      "files": [
+        {
+          "path": "added.txt",
+          "added": 1,
+          "removed": 0,
+          "status": "added"
+        },
+        {
+          "path": "kept.txt",
+          "added": 1,
+          "removed": 0,
+          "status": "modified"
+        }
+      ],
+      "total_files": 2,
+      "total_added": 2,
+      "total_removed": 0
+    },
+    "ahead": {
+      "commit_count": 1,
+      "stats": {
+        "files": [
+          {
+            "path": "branch.txt",
+            "added": 1,
+            "removed": 0,
+            "status": "added"
+          }
+        ],
+        "total_files": 1,
+        "total_added": 1,
+        "total_removed": 0
+      },
+      "commits": [
+        {
+          "sha": "31ac1b5",
+          "subject": "branch",
+          "stats": {
+            "files": [
+              {
+                "path": "branch.txt",
+                "added": 1,
+                "removed": 0,
+                "status": "added"
+              }
+            ],
+            "total_files": 1,
+            "total_added": 1,
+            "total_removed": 0
+          },
+          "time": 1767225600
+        }
+      ]
+    }
+  },
   "pr": {
     "number": 1249,
-    "url": "https://example.test/pull/1249"
+    "url": "https://example.test/pull/1249",
+    "draft": false
   },
   "closes": [
     {

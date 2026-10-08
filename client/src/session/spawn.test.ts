@@ -4,6 +4,7 @@ import { writable } from 'svelte/store';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { homeWire } from '../dev/fixture.data';
+import { PROTOCOL_VERSION } from '../protocol';
 import type { Connection } from '../socket';
 import type { Store, StoreValue } from '../stores';
 import type { HomeWire } from '../wire/home';
@@ -55,11 +56,16 @@ function recording(): { connection: Connection; sent: Record<string, unknown>[] 
     more: () => false,
     devices: () => false,
     frame: () => false,
+    onBrowserAsk: () => () => {},
+    browserRole: () => false,
+    onBrowserRole: () => () => {},
+    takeBrowserRole: () => {},
     onMessage: () => () => {},
     onStatus: () => () => {},
     store: () => undefined,
     settings: () => null,
     skew: () => null,
+    serverProtocol: () => PROTOCOL_VERSION,
     status: () => 'open',
     close: () => {},
   };

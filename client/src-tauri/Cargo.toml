@@ -1,6 +1,6 @@
 [package]
 name = "forge-client"
-version = "1.0.116"
+version = "1.1.1"
 description = "The forge desktop client"
 edition = "2024"
 rust-version = "1.90"
@@ -24,6 +24,12 @@ tauri-build = { version = "2", features = [] }
 serde_json = "1"
 tauri = { version = "2", features = [] }
 tauri-plugin-log = "2"
+# The browser host: an MCP CLIENT for the first time on this side of forge.
+# rmcp carries the child-process transport, id correlation and cancellation
+# the driver needs, so the host speaks MCP rather than reimplementing it.
+rmcp = { version = "=3.5.0", features = ["client", "transport-child-process"] }
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["process", "rt-multi-thread", "macros", "time"] }
 
 # Desktop-only: no plugin path exists for Android, where the APK updates
 # through the system installer instead (a Kotlin side of its own).
@@ -33,3 +39,6 @@ tauri-plugin-updater = "2"
 # The payloads and answers the Android commands hand to the Kotlin plugin.
 [target.'cfg(target_os = "android")'.dependencies]
 serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = "3"

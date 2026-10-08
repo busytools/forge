@@ -10,6 +10,7 @@
  * refilling on every blip.
  */
 
+import { refused } from './refusals';
 import {
   MORE_TURNS,
   readableProtocol,
@@ -17,6 +18,9 @@ import {
   skewOf,
   slotOf,
   subjectKey,
+  type BrowserAnswer,
+  type BrowserAsk,
+  type BrowserPart,
   type ClientMessage,
   type Command,
   type ServerMessage,
@@ -56,7 +60,7 @@ export interface Connection {
    * subscribes to one subject are two subscriptions, and one unsubscribe must
    * not take the seat out of the set the other is still watching.
    */
-  subscribe(what: Subject, options?: { answering?: boolean }): Store;
+  subscribe(what: Subject, options?: { answering?: boolean; browser?: boolean }): Store;
   unsubscribe(what: Subject): void;
   /**
    * Ask again for a subject this connection already holds.
@@ -99,7 +103,7 @@ export interface Connection {
    * A caller that dispatches one of the four owes the returned promise an
    * answer: nothing else carries the outcome.
    */
-  dispatch(command: Command): Promise<unknown> | null;
+  dispatch(command: Command, at?: SessionSlot): Promise<unknown> | null;
   /**
    * Ask for older turns of one conversation, answering whether the ask went.
    *
@@ -129,6 +133,39 @@ export interface Connection {
    * the ring is for.
    */
   frame(bytes: Uint8Array): boolean;
+  /**
+   * Answer the browser asks this connection is sent, as its host.
+   *
+   * The handler is what drives the browser: the ask arrives and it answers
+   * with the tool's parts or the reason it failed, and the socket puts the
+   * answer on the wire under the ask's own id. An image part's bytes ride
+   * their own frame, so what a handler returns carries them.
+   *
+   * **Declaring `browser: true` and registering a handler travel together.**
+   * A connection that declares the capability and registers nothing is sent
+   * asks it answers with a failure, which reads at the far end as a session's
+   * tool call failing; one that registers a handler and declares nothing is
+   * never asked at all. The last registration wins, and a handler that throws
+   * answers with the thrown reason rather than with silence.
+   */
+  onBrowserAsk(fn: (ask: BrowserAsk) => BrowserAnswer | Promise<BrowserAnswer>): () => void;
+  /**
+   * Whether this connection holds the browser role, as the server last said.
+   *
+   * The grant a capable declare is answered with, and the loss a force-take
+   * sends. A strip reads this to say who drives the browser it is drawing.
+   */
+  browserRole(): boolean;
+  /** Hear each change of the role. Answers a function that stops listening. */
+  onBrowserRole(fn: (hosting: boolean) => void): () => void;
+  /**
+   * Take the browser role from whoever holds it.
+   *
+   * The claimant must have declared itself capable, which a shell with a
+   * browser host does on every subscribe; the server answers with the role
+   * frame either way, so a refused take is visible rather than silent.
+   */
+  takeBrowserRole(): void;
   /** Every message the server sent, unparsed by anything here. Answers a function that stops listening. */
   onMessage(fn: (message: ServerMessage) => void): () => void;
   /**
@@ -150,6 +187,14 @@ export interface Connection {
    * here rather than from a number they have no build for.
    */
   skew(): Skew | null;
+  /**
+   * The protocol the last greeting carried, or `null` before one lands.
+   *
+   * The number behind `skew()`, kept whether or not there is a skew: the
+   * footer draws both sides of the pair, so a match is a fact to show and
+   * not the absence of a notice.
+   */
+  serverProtocol(): number | null;
   status(): ConnectionStatus;
   close(): void;
 }
@@ -192,6 +237,25 @@ function variantOf(command: Command): string {
   return only;
 }
 
+/** The kind tag a browser image frame carries, which is the wire's own. */
+const BROWSER_IMAGE_TAG = 1;
+
+/**
+ * One image frame at the wire's shape: the kind tag, the answer's id as a
+ * big-endian u64, then the bytes.
+ *
+ * Big-endian because the server reads it that way; the id is what pairs the
+ * frame with the answer that declared the image, so two asks in flight at
+ * once cannot be handed each other's picture.
+ */
+export function imageFrame(id: number, bytes: Uint8Array): Uint8Array {
+  const frame = new Uint8Array(1 + 8 + bytes.length);
+  frame[0] = BROWSER_IMAGE_TAG;
+  new DataView(frame.buffer).setBigUint64(1, BigInt(id));
+  frame.set(bytes, 9);
+  return frame;
+}
+
 /**
  * One line about something the client could not do.
  *
@@ -207,9 +271,24 @@ export function report(what: string, why: unknown): void {
 export function connect(url: string): Connection {
   const stores = new Stores();
   /** What to ask for again on a reconnect, in the order it was first asked. */
-  const held = new Map<string, { subject: Subject; answering: boolean }>();
+  const held = new Map<string, { subject: Subject; answering: boolean; browser: boolean }>();
   const listeners = new Set<(message: ServerMessage) => void>();
   const statuses = new Set<(status: ConnectionStatus) => void>();
+  /**
+   * The handler that drives the browser, registered by the shell that owns
+   * one. `null` until then, and a connection with none answers an ask with
+   * the reason rather than with nothing.
+   */
+  let onBrowserAsk: ((ask: BrowserAsk) => BrowserAnswer | Promise<BrowserAnswer>) | null = null;
+  /**
+   * Whether this connection holds the browser role, as the server last said.
+   *
+   * `false` until a `browser_role` frame says otherwise, because before the
+   * grant the truth is "not hosting": a strip that drew "you" off the declare
+   * alone would say so while another client is still the one being asked.
+   */
+  let browserRole = false;
+  const roleListeners = new Set<(hosting: boolean) => void>();
   const pending = new Map<
     number,
     { resolve: (body: unknown) => void; reject: (why: Error) => void }
@@ -231,6 +310,8 @@ export function connect(url: string): Connection {
   let status: ConnectionStatus = 'connecting';
   let settings: ClientSettings | null = null;
   let protocolSkew: Skew | null = null;
+  /** The greeting's own number, kept whether or not it skews. */
+  let greetingProtocol: number | null = null;
   let nextReplyId = 1;
   let retry: ReturnType<typeof setTimeout> | null = null;
   let retryDelay = RETRY_MS;
@@ -294,9 +375,24 @@ export function connect(url: string): Connection {
   }
 
   /** One subscribe on the wire, remembered as outstanding until it is answered. */
-  function askFor(what: Subject, answering: boolean): void {
-    sendNow({ kind: 'subscribe', what, answering });
+  function askFor(what: Subject, answering: boolean, browser: boolean): void {
+    sendNow({ kind: 'subscribe', what, answering, browser });
     awaiting.push(subjectKey(what));
+  }
+
+  /**
+   * Re-declare the browser capability on what this connection already
+   * watches.
+   *
+   * A take needs it: the relay registers only connections that declared, and
+   * one displaced by an earlier take is no longer in its line - so the claim
+   * below would be answered `false` with the click visibly doing nothing.
+   * Nothing is declared when the page watches nothing yet.
+   */
+  function declare(): void {
+    const watching = held.values().next();
+    if (watching.done) return;
+    askFor(watching.value.subject, watching.value.answering, true);
   }
 
   /** A subject the server has answered, which is no longer outstanding. */
@@ -315,6 +411,7 @@ export function connect(url: string): Connection {
         // prevent. Recorded either way, because a refusal has to name the
         // server it is refusing.
         protocolSkew = skewOf(message);
+        greetingProtocol = typeof message.version === 'number' ? message.version : null;
         if (protocolSkew === null) return;
         // One step back is READ rather than refused, because a floor whose
         // read is pinned by `wire/floor.test.ts` beats a client that cannot
@@ -357,6 +454,77 @@ export function connect(url: string): Connection {
       case 'page':
       case 'devices':
         return;
+      // An ask is answered here rather than handed to a page: the handler is
+      // the shell's, and the answer has to go back under the ask's own id.
+      case 'browser_ask':
+        void answerAsk(message);
+        return;
+      // Whether THIS connection holds the role - the grant, and the loss to a
+      // force-take. Kept here rather than on a page: it is the connection's
+      // own fact, and every strip reads it from one place.
+      case 'browser_role':
+        browserRole = message.hosting;
+        for (const hear of roleListeners) hear(browserRole);
+        return;
+      // A frame whose kind this client does not know is REPORTED rather than
+      // dropped in silence: a message that arrived and drew nothing is
+      // indistinguishable from one that never arrived.
+      default:
+        report('the server sent a frame this client does not know', message);
+        return;
+    }
+  }
+
+  /**
+   * One ask answered and put back on the wire.
+   *
+   * Every path answers: a handler that throws, and a connection with no
+   * handler at all, both send the failed shape naming why. A session's tool
+   * call is waiting on this, so silence here is a turn that hangs.
+   */
+  async function answerAsk(ask: BrowserAsk): Promise<void> {
+    let answer: BrowserAnswer;
+    try {
+      answer =
+        onBrowserAsk === null
+          ? { error: 'this client cannot host the browser' }
+          : await onBrowserAsk(ask);
+    } catch (why) {
+      answer = { error: `the browser handler failed: ${String(why)}` };
+    }
+    // The connection the ask arrived on is gone: there is nothing to send the
+    // answer down, and the server frees the role with the connection.
+    if (!isOpen()) {
+      report('a browser ask was answered after the socket closed', ask);
+      return;
+    }
+    if ('error' in answer) {
+      sendNow({ kind: 'browser_answer', id: ask.id, parts: [], error: answer.error });
+      return;
+    }
+    // The mime types cross on the answer; the bytes follow as frames, in the
+    // order the parts are listed. **The answer goes first**, which is what the
+    // server reads: it declares the images before any frame can fill them.
+    const parts: BrowserPart[] = answer.parts.map((part) =>
+      part.type === 'image' ? { type: 'image', mime_type: part.mime_type } : part,
+    );
+    sendNow({ kind: 'browser_answer', id: ask.id, parts, error: null });
+    for (const part of answer.parts) {
+      if (part.type !== 'image') continue;
+      try {
+        // `send` takes an ArrayBufferView over an ArrayBuffer; the frame's own
+        // view is one, and TS cannot see that through the default.
+        socket?.send(imageFrame(ask.id, part.bytes) as Uint8Array<ArrayBuffer>);
+      } catch (why) {
+        // **A frame that could not be sent cannot be skipped.** The answer is
+        // already on the wire and its images will never all arrive, so the
+        // tool call would wait on a promise this client cannot keep. Dropping
+        // the connection ends that ask - the server fails it naming the host
+        // that went away - and the reconnect re-declares the capability.
+        report('an image frame could not be sent; dropping the connection', why);
+        socket?.close();
+        return;
+      }
     }
   }
 
@@ -383,14 +551,14 @@ export function connect(url: string): Connection {
       if (next !== socket) return;
       move('open');
       retryDelay = RETRY_MS;
-      for (const { subject, answering } of held.values()) {
+      for (const { subject, answering, browser } of held.values()) {
         // Once per subscription, which is how many times the server was asked
         // before the drop: one unsubscribe drops one of its entries, so
         // re-asking once for a subject held twice would leave its count lower
         // than this side's, and a later unsubscribe would take the subject
         // away from a caller still drawing it.
         for (let remaining = stores.count(subject); remaining > 0; remaining -= 1) {
-          askFor(subject, answering);
+          askFor(subject, answering, browser);
         }
       }
     };
@@ -429,6 +597,16 @@ export function connect(url: string): Connection {
     next.onclose = () => {
       if (next !== socket) return;
       socket = null;
+      // **The role dies with the connection it belonged to.** The relay keeps
+      // the role for the CONNECTION id, not for the page, so a reconnected
+      // client is a new one - and a strip that went on saying "this client
+      // drives the browser" through a drop would hide the Take over that is
+      // the only way back. Reset before the drop guard, so even the final
+      // close says the truth.
+      if (browserRole) {
+        browserRole = false;
+        for (const hear of roleListeners) hear(browserRole);
+      }
       // A mismatched protocol is not something a retry answers, so the close
       // that follows it must not be read as a drop.
       if (status === 'closed' || status === 'mismatched') return;
@@ -454,7 +632,7 @@ export function connect(url: string): Connection {
     retryDelay = Math.min(retryDelay * 2, MAX_RETRY_MS);
   }
 
-  function subscribe(what: Subject, options?: { answering?: boolean }): Store {
+  function subscribe(what: Subject, options?: { answering?: boolean; browser?: boolean }): Store {
     if (status === 'closed') {
       // Nothing replays a subscribe made after the socket went, so a live
       // store here would promise a snapshot that is never coming.
@@ -462,19 +640,26 @@ export function connect(url: string): Connection {
     }
 
     const answering = options?.answering ?? false;
+    const browser = options?.browser ?? false;
     const key = subjectKey(what);
     const store = stores.open(what);
 
     const existing = held.get(key);
     if (existing === undefined) {
-      held.set(key, { subject: what, answering });
-    } else if (answering) {
+      held.set(key, { subject: what, answering, browser });
+    } else {
       // The core's stream only ever escalates, so a later answering
-      // subscribe raises the role the reconnect re-declares.
-      existing.answering = true;
+      // subscribe raises the role the reconnect re-declares. The browser
+      // capability is the same: a connection that has declared it does not
+      // un-declare it by subscribing again without it.
+      if (answering) existing.answering = true;
+      if (browser) existing.browser = true;
     }
 
-    if (isOpen()) askFor(what, held.get(key)?.answering ?? answering);
+    if (isOpen()) {
+      const declaration = held.get(key);
+      askFor(what, declaration?.answering ?? answering, declaration?.browser ?? browser);
+    }
     return store;
   }
 
@@ -492,13 +677,22 @@ export function connect(url: string): Connection {
     // everything held, and that answer is fresher than this ask would be.
     if (!isOpen()) return;
     sendNow({ kind: 'unsubscribe', what });
-    askFor(what, held.get(subjectKey(what))?.answering ?? false);
+    const declaration = held.get(subjectKey(what));
+    askFor(what, declaration?.answering ?? false, declaration?.browser ?? false);
   }
 
-  function dispatch(command: Command): Promise<unknown> | null {
+  function dispatch(command: Command, at?: SessionSlot): Promise<unknown> | null {
     // Before anything is registered, so a command that never went leaves no
     // promise behind for a later failure to reject.
-    if (!isOpen()) throw new Error('the socket is not open');
+    if (!isOpen()) {
+      // The throw is what callers catch and report; this is what the reader
+      // sees: the loss noted for the seat the click was made in (#1638). The
+      // seat is the caller's to state - a command's own payload names its
+      // TARGET, which is another seat for a rail's close - and a dispatch the
+      // caller gives no seat for (a command no column sent) notes nothing.
+      if (at !== undefined) refused(at);
+      throw new Error('the socket is not open');
+    }
 
     const variant = variantOf(command);
     if (!ANSWERS_THROUGH_A_REPLY.has(variant)) {
@@ -554,6 +748,39 @@ export function connect(url: string): Connection {
       }
       return true;
     },
+    onBrowserAsk(fn) {
+      onBrowserAsk = fn;
+      return () => {
+        // Only the registration that is still in place is cleared: a listener
+        // that unregisters after another took over must not take the live one
+        // with it.
+        if (onBrowserAsk === fn) onBrowserAsk = null;
+      };
+    },
+    browserRole() {
+      return browserRole;
+    },
+    onBrowserRole(fn) {
+      roleListeners.add(fn);
+      return () => roleListeners.delete(fn);
+    },
+    takeBrowserRole() {
+      // A click while the socket is down is dropped with a record rather than
+      // thrown into the click handler: a command that cannot cross is the
+      // connection's state, not a page error.
+      if (!isOpen()) {
+        report('the browser role could not be claimed', 'the socket is not open');
+        return;
+      }
+      // The claim re-declares first: the relay holds a channel only for a
+      // connection that declared, and a connection displaced by an earlier
+      // take is no longer registered - so the bare claim would come back
+      // `false` with nothing re-registered. The declare puts this connection
+      // back in the line the claim moves; the watch entry and hold it adds
+      // are balanced when the page leaves.
+      declare();
+      sendNow({ kind: 'browser_take_role' });
+    },
     onMessage(fn) {
       listeners.add(fn);
       return () => listeners.delete(fn);
@@ -570,6 +797,9 @@ export function connect(url: string): Connection {
     },
     skew() {
       return protocolSkew;
+    },
+    serverProtocol() {
+      return greetingProtocol;
     },
     status() {
       return status;

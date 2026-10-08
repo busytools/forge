@@ -21,6 +21,40 @@ pub enum GitBranch {
     Unknown,
 }
 
+/// How git classified one file's change.
+///
+/// Lives here rather than in the scanner because it crosses: the
+/// snapshot the terminal reads and the view a client draws carry the
+/// same glyph, and one shape for both is what keeps them agreeing.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FileStatus {
+    #[default]
+    Modified,
+    Added,
+    Deleted,
+    Renamed,
+    Copied,
+    /// File mode changed (regular to symlink, file to submodule).
+    Typechange,
+    /// Unmerged - caught mid-merge-conflict.
+    Unmerged,
+    Untracked,
+}
+
+/// One commit of a branch's chain ahead of its default branch, as the
+/// chain draws it: the short sha, the subject line, the files the commit
+/// itself changed - the same shape a layer's stats take, bounded the same
+/// way - and when it was committed, unix seconds, so a reader can tell
+/// the newest from the oldest without counting positions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitCommit {
+    pub sha: String,
+    pub subject: String,
+    pub stats: crate::git_diff::GitDiffStats,
+    pub time: u64,
+}
+
 /// Open pull request associated with the current branch. Populated
 /// by the git-diff scanner via `gh pr list --head <branch>`; surfaces
 /// in the Inspector pane's GIT section as the `PR #N` row.
@@ -28,6 +62,10 @@ pub enum GitBranch {
 pub struct GitPrInfo {
     pub number: u64,
     pub url: String,
+    /// Whether GitHub reports it as a draft; an open PR is one or the
+    /// other, and the row says which.
+    #[serde(default)]
+    pub draft: bool,
 }
 
 /// Issue closed by an open PR (parsed from `closingIssuesReferences`

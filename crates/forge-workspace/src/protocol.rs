@@ -72,27 +72,29 @@ pub enum PendingInteractionSlot {
 /// What a seat is held on, as the core kept it: the prompt a view that
 /// attached late has no other way to read.
 ///
-/// The three kinds are every member of the category, not the two the dock
+/// The kinds are every member of the category, not the two the dock
 /// happened to draw first: a Slack draft parks on a reply the same way a
-/// permission and a question do, so a record carrying two of the three
-/// told a builder the category was covered when it was not.
+/// permission and a question do - and a browser hand-off parks on a person -
+/// so a record carrying two of them told a builder the category was covered
+/// when it was not.
 #[derive(Clone)]
 pub enum PendingAsk {
     Permission(Box<PermissionRequest>),
     Question(Box<QuestionRequest>),
     SlackDraft(Box<forge_primitives::slack::SlackDraft>),
+    BrowserHandOff(Box<forge_primitives::browser::HandOff>),
 }
 
 impl PendingAsk {
     /// The tool call this prompt is about, which is the id an answer names.
     ///
-    /// `None` for a Slack draft: it is answered by `Command::RespondSlackPost`
-    /// with the draft's own id, and names no tool call at all.
+    /// `None` for a Slack draft and a browser hand-off: each is answered by
+    /// its own command with its own id, and names no tool call at all.
     pub fn tool_id(&self) -> Option<&str> {
         match self {
             Self::Permission(request) => Some(&request.tool_call.tool_call_id),
             Self::Question(request) => Some(&request.tool_call.tool_call_id),
-            Self::SlackDraft(_) => None,
+            Self::SlackDraft(_) | Self::BrowserHandOff(_) => None,
         }
     }
 }
@@ -335,6 +337,15 @@ pub enum Command {
         key: SessionSlot,
         id: uuid::Uuid,
         approved: bool,
+    },
+    /// Answer a parked browser hand-off. The blocked `browser_hand_off`
+    /// handler is awaiting this; `done: false` is the person declining.
+    /// App-level like `RespondSlackPost`: the registry is workspace state,
+    /// and `key` names the owner the answer is checked against.
+    RespondBrowserHandOff {
+        key: SessionSlot,
+        id: uuid::Uuid,
+        done: bool,
     },
     RespondQuestion {
         key: SessionSlot,
@@ -774,6 +785,7 @@ impl Command {
             | Self::CloseSession { .. }
             | Self::UpsertReviewThread { .. }
             | Self::RespondSlackPost { .. }
+            | Self::RespondBrowserHandOff { .. }
             | Self::SubmitReview { .. } => None,
         }
     }
@@ -833,6 +845,12 @@ impl std::fmt::Debug for Command {
                 .field("key", key)
                 .field("id", id)
                 .field("approved", approved)
+                .finish_non_exhaustive(),
+            Self::RespondBrowserHandOff { key, id, done } => f
+                .debug_struct("RespondBrowserHandOff")
+                .field("key", key)
+                .field("id", id)
+                .field("done", done)
                 .finish_non_exhaustive(),
             Self::SetDictateOverride { key, .. } => {
                 f.debug_struct("SetDictateOverride").field("key", key).finish_non_exhaustive()
@@ -1397,6 +1415,10 @@ pub enum SessionUpdate {
     WorkChanged {
         key: SessionSlot,
         work: crate::work::WorkState,
+        /// The tree behind the row's depth: the uncommitted files with
+        /// their marks and counts, the branch's chain ahead of its
+        /// default, and which branch that is.
+        git: forge_primitives::git_diff::GitWorkView,
         pr: Option<forge_primitives::git::GitPrInfo>,
         closes: Vec<forge_primitives::git::GitIssueRef>,
     },
@@ -1666,6 +1688,25 @@ pub enum SessionUpdate {
         id: Uuid,
         ending: forge_primitives::slack::SlackDraftEnding,
     },
+    /// A browser hand-off waits for the person at a client: the session asked
+    /// them to act in a browser tab, and its tool handler is blocked on a
+    /// oneshot until `Command::RespondBrowserHandOff` answers it.
+    ///
+    /// **No timeout rides this one.** The ask dock's own timelines say a held
+    /// prompt sits for hours, and the session is meant to wait as long as it
+    /// takes; the handler's drop, not a clock, is what ends the wait.
+    BrowserHandOffPending {
+        key: SessionSlot,
+        handoff: forge_primitives::browser::HandOff,
+    },
+    /// A browser hand-off left the core's registry: answered in some view, or
+    /// its asking session gone. `ending` is what a view that did not answer
+    /// it says happened.
+    BrowserHandOffResolved {
+        key: SessionSlot,
+        id: Uuid,
+        ending: forge_primitives::browser::HandOffEnding,
+    },
     /// A workspace-originated prompt (cron fire, peer, gotify or slack
     /// delivery, kick) landed while the target session's turn was in
     /// flight. The TUI counts it into the bucket's queued-send bridge
@@ -1802,7 +1843,13 @@ pub enum SessionUpdate {
         #[serde(skip)]
         initiator: Option<u64>,
     },
-    FatalError(AppError),
+    /// The core's fatal: the app is going away. `message` is what the
+    /// terminal prints on exit - `AppError::user_message()` - so a view that
+    /// draws the line words it the same way without a second copy.
+    FatalError {
+        error: AppError,
+        message: String,
+    },
     /// The catalogue check landed: the models page's whole view, re-read.
     /// Carries no slot - the feed belongs to the machine, not a seat - and
     /// a session page ignores it. Sentinel rows the page draws (the
@@ -1854,6 +1901,8 @@ impl SessionUpdate {
             | Self::DictateEnded { key, .. }
             | Self::SlackPostPending { key, .. }
             | Self::SlackDraftResolved { key, .. }
+            | Self::BrowserHandOffPending { key, .. }
+            | Self::BrowserHandOffResolved { key, .. }
             | Self::RuntimeReloadCompleted { key }
             | Self::RuntimeReloadFailed { key, .. }
             | Self::ChatAppended { key, .. }
@@ -1892,7 +1941,7 @@ impl SessionUpdate {
             | Self::PluginsRollbackFailed { .. }
             | Self::WorkerStatusChanged { .. }
             | Self::DictateAvailability { .. }
-            | Self::FatalError(..)
+            | Self::FatalError { .. }
             | Self::DictateModelsChanged { .. } => None,
         }
     }
@@ -2135,6 +2184,18 @@ impl std::fmt::Debug for SessionUpdate {
                 .field("id", id)
                 .field("ending", ending)
                 .finish(),
+            Self::BrowserHandOffPending { key, handoff } => f
+                .debug_struct("BrowserHandOffPending")
+                .field("key", key)
+                .field("id", &handoff.id)
+                .field("context", &handoff.context)
+                .finish_non_exhaustive(),
+            Self::BrowserHandOffResolved { key, id, ending } => f
+                .debug_struct("BrowserHandOffResolved")
+                .field("key", key)
+                .field("id", id)
+                .field("ending", ending)
+                .finish(),
             Self::PromptQueuedWhileBusy { key } => {
                 f.debug_struct("PromptQueuedWhileBusy").field("key", key).finish()
             }
@@ -2183,7 +2244,9 @@ impl std::fmt::Debug for SessionUpdate {
                 .field("key", key)
                 .field("outcome", outcome)
                 .finish_non_exhaustive(),
-            Self::FatalError(err) => f.debug_struct("FatalError").field("error", err).finish(),
+            Self::FatalError { error, .. } => {
+                f.debug_struct("FatalError").field("error", error).finish()
+            }
             Self::DictateModelsChanged { models } => f
                 .debug_struct("DictateModelsChanged")
                 .field("in_use", &models.in_use.len())
@@ -2223,6 +2286,13 @@ pub enum DispatchError {
         "that Slack draft is no longer waiting: it has been answered, it expired, or its asking session went away"
     )]
     NoDraftWaiting { key: SessionSlot, id: Uuid },
+    /// A browser hand-off answer named a hand-off the registry does not hold:
+    /// answered in another view, or its asking session went away. Its own
+    /// word for the same reason [`Self::NoDraftWaiting`] has one.
+    #[error(
+        "that browser hand-off is no longer waiting: it has been answered, or its asking session went away"
+    )]
+    NoBrowserHandOffWaiting { key: SessionSlot, id: Uuid },
     /// A catalogue check was asked for with `[dictate]` switched off:
     /// there are no pinned models for a check to be about.
     #[error("dictation is off, so there is no catalogue to check")]

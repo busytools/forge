@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use forge_sdk::mcp::server::McpServerBuilder;
-use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput, ToolOutputBlock};
+use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput};
 
 use forge_primitives::cron::{CronEntry, CronId, CronKind};
 
@@ -47,7 +47,7 @@ pub(crate) fn add_tools(
 }
 
 fn tool_error(text: String) -> ToolOutput {
-    ToolOutput { blocks: vec![ToolOutputBlock { text }], is_error: true }
+    ToolOutput::error(text)
 }
 
 /// Parse an RFC3339 timestamp to a `SystemTime` via the `time` crate
@@ -310,6 +310,7 @@ impl Tool for Delete {
 mod tests {
     use super::*;
     use crate::mcp::cron::facade::MockCronFacade;
+    use crate::mcp::test_support::text_of;
 
     fn caller_slot() -> SessionSlot {
         SessionSlot::from_str_for_test("caller")
@@ -342,8 +343,8 @@ mod tests {
         let out = tool
             .call(input(serde_json::json!({ "schedule": "0 9 * * *", "prompt": "stand-up" })))
             .await;
-        assert!(!out.is_error, "valid create succeeds: {}", out.blocks[0].text);
-        assert!(out.blocks[0].text.contains("c1"), "output carries the id");
+        assert!(!out.is_error, "valid create succeeds: {}", text_of(&out));
+        assert!(text_of(&out).contains("c1"), "output carries the id");
 
         let calls = mock.create_calls.lock();
         assert_eq!(calls.len(), 1);
@@ -364,7 +365,7 @@ mod tests {
                 "description": "  Morning summary  "
             })))
             .await;
-        assert!(!out.is_error, "create with description succeeds: {}", out.blocks[0].text);
+        assert!(!out.is_error, "create with description succeeds: {}", text_of(&out));
         assert_eq!(
             mock.create_calls.lock()[0].3.as_deref(),
             Some("Morning summary"),
@@ -396,7 +397,7 @@ mod tests {
                 serde_json::json!({ "run_once_at": "2030-01-01T09:00:00Z", "prompt": "deploy" }),
             ))
             .await;
-        assert!(!out.is_error, "valid rfc3339 accepted: {}", out.blocks[0].text);
+        assert!(!out.is_error, "valid rfc3339 accepted: {}", text_of(&out));
         assert!(matches!(mock.create_calls.lock()[0].1, CronKind::Once(_)));
     }
 
@@ -440,7 +441,7 @@ mod tests {
         let out =
             tool.call(input(serde_json::json!({ "schedule": "nonsense", "prompt": "x" }))).await;
         assert!(out.is_error);
-        assert!(out.blocks[0].text.contains("bad pattern"), "facade error surfaced to the LLM");
+        assert!(text_of(&out).contains("bad pattern"), "facade error surfaced to the LLM");
     }
 
     #[tokio::test]
@@ -451,7 +452,7 @@ mod tests {
 
         let out = tool.call(input(serde_json::json!({}))).await;
         assert!(!out.is_error);
-        assert!(out.blocks[0].text.contains("\"a\"") && out.blocks[0].text.contains("\"b\""));
+        assert!(text_of(&out).contains("\"a\"") && text_of(&out).contains("\"b\""));
     }
 
     #[tokio::test]
@@ -481,7 +482,7 @@ mod tests {
         assert!(!out.is_error, "delete succeeds: {out:?}");
         assert_eq!(out.blocks.len(), 1, "the envelope stays one text block: {out:?}");
         let json: serde_json::Value =
-            serde_json::from_str(&out.blocks[0].text).expect("the result is the adopted envelope");
+            serde_json::from_str(text_of(&out)).expect("the result is the adopted envelope");
         assert_eq!(json["status"], "deleted");
         assert_eq!(
             json["removed"],
@@ -504,7 +505,7 @@ mod tests {
         let not_yours = tool.call(input(serde_json::json!({ "id": "c1" }))).await;
         assert!(not_yours.is_error, "a refused delete is an error");
         assert_eq!(
-            not_yours.blocks[0].text,
+            text_of(&not_yours),
             "cron c1 exists in this project but was not registered by you",
             "a cron that exists but is not the caller's own must say so, without naming a session",
         );
@@ -513,7 +514,8 @@ mod tests {
         let not_there = tool.call(input(serde_json::json!({ "id": "c1" }))).await;
         assert!(not_there.is_error, "an unknown id is an error");
         assert_eq!(
-            not_there.blocks[0].text, "no cron with id c1 in this project",
+            text_of(&not_there),
+            "no cron with id c1 in this project",
             "an id the project never had must not read as another session's cron",
         );
     }

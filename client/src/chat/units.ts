@@ -8,7 +8,7 @@
  * moved. A client that restated them would draw the same turn two ways the
  * first time either changed.
  *
- * Nine places it deliberately differs from the terminal, and each is a
+ * Eight places it deliberately differs from the terminal, and each is a
  * decision rather than an accident:
  *
  * - a mutation folds as an `edit` family inside the run instead of breaking
@@ -23,10 +23,6 @@
  *   own turn, and the three external kinds that carry something to read - a
  *   cron fire, a Slack message, a Gotify push - join the list as rows of
  *   their own kind, the same shape every other row draws;
- * - the harness's own reminder that a skill was already loaded draws as a
- *   notice rather than the reader's turn, where the terminal drops every wire
- *   user text live as an input echo and draws this one as a user turn on
- *   resume;
  * - a monitor is not in the conversation at all, because the inspector is its
  *   surface;
  * - a compaction boundary is a row at the cut, where the terminal draws none:
@@ -45,6 +41,7 @@
 import { cronNames } from './cron-names.svelte';
 import { taskStatus, type CallStatus } from './families';
 import { blocksOf, bodyOf, leafOf, type Block, type TaskFact, type ToolLeaf } from './leaves';
+import { formatRateLimitSummary, rateLimitNoticeKey } from './rate-limit';
 import { firstLine, isSlackId, stripEscapes } from './text';
 
 /** One question the assistant asked, with what was answered. */
@@ -407,6 +404,8 @@ interface Frame {
   max_retries?: unknown;
   retry_delay_ms?: unknown;
   error_status?: unknown;
+  /** The snapshot a `rate_limit_event` carries: status, window type, reset, overage. */
+  rate_limit_info?: unknown;
   duration_ms?: unknown;
   duration_api_ms?: unknown;
   total_cost_usd?: unknown;
@@ -417,6 +416,8 @@ interface Frame {
   error?: unknown;
   usage?: unknown;
   tool_use_result?: unknown;
+  /** The CLI's own mark that a user frame is the harness talking, not the reader (#1543). */
+  isSynthetic?: unknown;
   state?: unknown;
   timestamp?: unknown;
   message?: {
@@ -516,9 +517,9 @@ function queuedText(prompt: unknown): string {
  * above); this is a NEW invocation...`.
  *
  * Nobody typed it, so it is a line the conversation carries rather than a turn
- * the reader took. Matched on the CLI's own sentence because that is all the
- * frame carries here - the `isMeta` flag that marks it on disk is not in the
- * wire type, so it does not survive to this fold.
+ * the reader took. Matched on the CLI's own sentence: the frame is also marked
+ * synthetic, but the reminder has its own decided treatment and the sentence is
+ * what names which reminder this is.
  */
 function isSkillReminder(text: string): boolean {
   return text.startsWith('Skill /') && text.includes('was loaded earlier');
@@ -528,9 +529,12 @@ function isSkillReminder(text: string): boolean {
  * A skill's body, which the CLI injects as the reader's own user frame.
  *
  * The frame is one text block: a plumbing line naming the skill's directory,
- * then the skill's markdown. That line is the only marker the wire carries -
- * the disk's own meta flag does not survive to it - so the row is built from
- * it, its name read off the path, and the line itself dropped from the body.
+ * then the skill's markdown, so the row is built from that line - its name read
+ * off the path and the line itself dropped from the body.
+ *
+ * **Not every body carries the line** (#1543): the frame reaches the fold
+ * marked `isSynthetic` either way, which is what the fold trusts when this
+ * recognizer finds nothing.
  */
 export function skillBody(text: string): { name: string; body: string } | null {
   const [lead, ...rest] = text.split('\n');
@@ -562,6 +566,37 @@ function isLocalCommand(text: string): boolean {
     held.startsWith('<command-name>') ||
     held.startsWith('<command-message>')
   );
+}
+
+/**
+ * The summary a task notification's envelope carries, or null for every other
+ * text.
+ *
+ * The CLI delivers a background task's end as a user frame whose text is this
+ * envelope, with no stamp and no reader behind it - so the summary draws as an
+ * info line of its own and the XML never reaches the page (#1680, Ved's shape:
+ * the summary line alone). A frame carrying no summary is not claimed here.
+ */
+function taskNotificationOf(text: string): string | null {
+  const held = text.trim();
+  if (!held.startsWith('<task-notification>')) return null;
+  const open = held.indexOf('<summary>');
+  const close = held.indexOf('</summary>', open + 1);
+  if (open === -1 || close === -1) return null;
+  const summary = held.slice(open + '<summary>'.length, close).trim();
+  return summary === '' ? null : summary;
+}
+
+/**
+ * Whether a frame is the CLI's nudge after a response with no visible output.
+ *
+ * The harness asks the MODEL to continue; nobody typed it and the terminal
+ * draws the raw bracket, where the page draws its own line (#1858). Keyed on
+ * the opening sentence alone: a reworded tail still recognizes, and a
+ * reworded head falls through to the raw draw - the frame is never lost.
+ */
+function noOutputNudge(text: string): boolean {
+  return text.trim().startsWith('[Your previous response had no visible output.');
 }
 
 /** The harness's own line about an image, or null for every other text. */
@@ -1233,13 +1268,23 @@ function beside(sentence: string, word: string | null): string {
 /**
  * The core's own severity word, narrowed where it enters.
  *
- * `NoticeSeverity` on the Rust side is two levels; a word this page does not
- * know reads as an informational line, because a line nobody can classify is
- * not a failure to shout about.
+ * The wire's `NoticeSeverity` is two levels, but a line this page authors
+ * itself may carry the third the notice row draws (the rate-limit explainer
+ * at warning); a word nobody classifies reads as informational, because a
+ * line nobody can classify is not a failure to shout about.
  */
 function noticeSeverity(value: unknown): NoticeSeverity {
-  return value === 'error' ? 'error' : 'info';
+  if (value === 'error') return 'error';
+  if (value === 'warning') return 'warning';
+  return 'info';
 }
+
+/**
+ * The rank a notice key sits at, the terminal's own `NoticeStage` order
+ * (`Warning < Rejected < PlanLimitTurnError`): a later stage may rewrite the
+ * line already drawn, a lower one may not.
+ */
+const NOTICE_STAGE = { warning: 0, rejected: 1 } as const;
 
 /**
  * The terminal's own words for a retry classification, so the two views name
@@ -1381,8 +1426,20 @@ function noticeFields(words: string): {
  * result frame either, because the transcript holds none, so "no result" also
  * means "read from disk". A turn still being written draws a running report
  * from what its frames already carry.
+ *
+ * `ended` is the caller's OTHER half of that fact, and the default says
+ * "unknown": a turn the core reports as settled is a history the CLI has
+ * finished writing, so a call the frames never answered is the restart's
+ * unterminated call and settles failed. The terminal's own resume does the
+ * same (`finalize_turn_runtime_artifacts(Failed)`), where leaving it pending
+ * spins the row forever.
  */
-export function fold(messages: readonly unknown[], self: Self | null = null, live = false): Unit[] {
+export function fold(
+  messages: readonly unknown[],
+  self: Self | null = null,
+  live = false,
+  ended = false,
+): Unit[] {
   const frames = messages as Frame[];
   /** Every result the turn holds, by the call it answers. */
   const results = new Map<string, ReturnType<typeof blocksOf>[number]>();
@@ -1404,6 +1461,18 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
    * turn's first call draws red until its own result lands.
    */
   let failedAt: number | null = null;
+  /**
+   * The LAST `result` frame's index, which is where the turn ENDED.
+   *
+   * A call opened before it that never came back is an unterminated call -
+   * the restart case: forge kills and respawns the CLI mid-turn, the replayed
+   * history keeps the call's `tool_use` with no result, and the resumed turn
+   * never answers it. The terminal settles exactly these as failed on its
+   * resume (`finalize_turn_runtime_artifacts(Failed)`, "resumed a tool call
+   * whose result never arrived"), where a fold reading only failing frames
+   * leaves the row spinning forever.
+   */
+  let resultAt: number | null = null;
   /** What the wire reported about each backgrounded call, by call. */
   const tasks = new Map<string, TaskFact>();
   /** The call a task belongs to, which the frames that carry one name. */
@@ -1427,6 +1496,9 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
     // result is.
     if (frame.type === 'error' || (frame.type === 'result' && frame.is_error === true)) {
       failedAt = at;
+    }
+    if (frame.type === 'result') {
+      resultAt = at;
     }
     if (frame.type === 'system') {
       const task = str(frame, 'task_id');
@@ -1552,17 +1624,22 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
    * that follows it lands on that row rather than drawing as the reader's.
    */
   let lastCompaction: number | null = null;
+  /** The stage each notice key sits at, so a walk-back cannot soften a line. */
+  const noticeStages = new Map<string, number>();
 
   /**
-   * Hang a skill's body on the call that loaded it, by name.
+   * Hang a skill's body on the call that loaded it.
    *
-   * The first unclaimed call naming that skill takes it - the order bodies
-   * arrive in is the order their calls were made - and the row is the leaf
-   * itself, so a run that flushed between the two changes nothing.
+   * The first unclaimed call takes it - the order bodies arrive in is the order
+   * their calls were made - and the row is the leaf itself, so a run that
+   * flushed between the two changes nothing. `name` is the body's own evidence
+   * where it carries one; `null` is a body whose text names no skill, claimed
+   * by position the way the synthetic mark says it should be (#1543).
    */
-  const attachSkillBody = (name: string, body: string): boolean => {
+  const attachSkillBody = (name: string | null, body: string): boolean => {
     for (const held of skillCalls) {
-      if (held.leaf.skill !== null || !namesSkill(held.want, name)) continue;
+      if (held.leaf.skill !== null) continue;
+      if (name !== null && !namesSkill(held.want, name)) continue;
       held.leaf.skill = body;
       return true;
     }
@@ -1596,13 +1673,19 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
   };
 
   /**
-   * Rewrite the retry line this turn already drew, or open it.
+   * Rewrite the line this key already drew, or open it.
    *
-   * A retry run reports every attempt it makes and the row is the RUN, so a
-   * later frame replaces its own line - the shape the terminal's deduped turn
-   * notice draws, and why a storm is one row rather than fifty.
+   * A run reports every step it takes and the row is the RUN, so a later frame
+   * replaces its own line - the shape the terminal's deduped turn notice
+   * draws, and why a storm is one row rather than fifty. **A lower stage
+   * never replaces a higher one**: the same guard `upsert_turn_notice` keeps,
+   * so a window that walks back from rejected to a warning holds the line it
+   * already drew.
    */
-  const upsertNotice = (key: string, notice: Notice): void => {
+  const upsertNotice = (key: string, stage: number, notice: Notice): void => {
+    const held = noticeStages.get(key);
+    if (held !== undefined && stage < held) return;
+    noticeStages.set(key, stage);
     for (let at = units.length - 1; at >= 0; at -= 1) {
       const unit = units[at];
       if (unit?.kind !== 'notice' || unit.key !== key) continue;
@@ -1688,10 +1771,22 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
   for (const [at, frame] of frames.entries()) {
     // A sub-agent's frames are the SUBAGENTS surface's, not the chat's.
     if (isDispatched(frame)) continue;
-    // Whether this call was open when the turn failed: the ones before that
-    // frame are the ones it abandoned, and a call the CLI opened after it is
-    // one the CLI is still running.
-    const abandoned = failedAt !== null && at < failedAt;
+    // Whether this call was open when the turn ENDED: one before a failing
+    // frame is a call the failure abandoned, one before any result frame is a
+    // call the turn closed on, and - when the caller says the turn's history
+    // is CLOSED - any call the frames never answered, which is the restart's
+    // unterminated call: the resumed turn never brings its result, and a fold
+    // reading only boundaries leaves the row spinning forever. A call opened
+    // after a boundary is one the CLI is still running.
+    //
+    // **One stated divergence from the terminal** (rule 24): its normal
+    // turn-end sweep draws a still-open call COMPLETED, where this settles it
+    // failed. The two can only disagree when a turn ends CLEANLY with a
+    // foreground call unanswered - the interrupted shapes carry an error
+    // result, where both sides already say failed - and failed is the honest
+    // word for a call that never came back.
+    const abandoned =
+      (failedAt !== null && at < failedAt) || (resultAt !== null && at < resultAt) || ended;
 
     // Watched before anything else reads the frame: whatever a turn turns out
     // to be, the clock on its own rows is the only one a later row can report.
@@ -1722,7 +1817,7 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
         const delay = typeof frame.retry_delay_ms === 'number' ? frame.retry_delay_ms : null;
         if (attempt !== null && cap !== null && delay !== null) {
           const status = typeof frame.error_status === 'number' ? frame.error_status : null;
-          upsertNotice('api-retry', {
+          upsertNotice('api-retry', NOTICE_STAGE.warning, {
             severity: 'warning',
             text: `API retry after ${retryLabel(frame.error)}${status === null ? '' : ` HTTP ${status}`}`,
             chip: `attempt ${attempt} / ${cap}`,
@@ -1806,6 +1901,29 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
       continue;
     }
 
+    // A rate-limit window's state transition, as the terminal draws it: one
+    // notice per incident - the window's type and its reset bucket - so a
+    // later frame in the same window rewrites this line rather than stacking
+    // beside it, and a new window opens one of its own. Allowed and unknown
+    // statuses draw nothing, which is the terminal's own neutral rather than
+    // a drop (`app/events/rate_limit.rs` routes them to no notice).
+    if (frame.type === 'rate_limit_event') {
+      const info = obj(frame.rate_limit_info);
+      const status = str(info, 'status');
+      if (status === 'allowed_warning' || status === 'rejected') {
+        const rejected = status === 'rejected';
+        upsertNotice(
+          rateLimitNoticeKey(info),
+          rejected ? NOTICE_STAGE.rejected : NOTICE_STAGE.warning,
+          {
+            severity: rejected ? 'error' : 'warning',
+            text: formatRateLimitSummary(info),
+          },
+        );
+      }
+      continue;
+    }
+
     if (frame.type === 'assistant' && typeof frame.message?.model === 'string') {
       model = frame.message.model;
     }
@@ -1884,6 +2002,34 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
           // typing in the launch terminal, and the terminal's own chat filters
           // the same heads. A decided ignore, not a dropped frame.
           if (isLocalCommand(stripped)) continue;
+          // A background task's end arrives as a user frame nobody typed -
+          // the CLI's `<task-notification>` envelope - and draws as its own
+          // summary line, never as the raw XML and never as the reader's turn
+          // (#1680). No summary parsed, no claim: it falls through and draws
+          // as itself, the default rule 25 keeps.
+          const taskEnd = taskNotificationOf(stripped);
+          if (taskEnd !== null) {
+            push({
+              kind: 'notice',
+              key: keyOf(at, frame, blockAt),
+              notice: { severity: 'info', text: taskEnd },
+            });
+            continue;
+          }
+          // The harness nudging the model after an invisible response: the
+          // page's own line, never the raw bracket (#1858). A bracket this
+          // does not recognize falls through and draws as itself.
+          if (noOutputNudge(stripped)) {
+            push({
+              kind: 'notice',
+              key: keyOf(at, frame, blockAt),
+              notice: {
+                severity: 'info',
+                text: 'no visible output - the harness asked the agent to continue',
+              },
+            });
+            continue;
+          }
           const envelope = inbound(stripped, self);
           if (envelope !== null) {
             if (envelope.kind === 'peer') {
@@ -1968,6 +2114,27 @@ export function fold(messages: readonly unknown[], self: Self | null = null, liv
                 notice: { severity: 'info', text: note },
               });
             }
+            continue;
+          }
+          // **The mark the CLI gives every injected frame** (#1543), read LAST
+          // on purpose: every family that claims a reader-shaped frame it did
+          // not write sits above this - the reminder, a skill's body, a
+          // compaction's continuation, an image's caption - and each of those
+          // frames carries the mark too, so a mark read earlier would steal
+          // them from their own rows. What reaches here is what none of them
+          // claimed: a skill's body arriving with neither the plumbing line
+          // nor a matching heading, which rides the first call still waiting
+          // for one - named by position the way the CLI injects it, right
+          // after the call that loaded the skill. With no call waiting it
+          // still draws, as a notice - never as the reader's own turn.
+          const body = stripped.trim();
+          if (carried === null && body !== '' && frame.isSynthetic === true) {
+            if (attachSkillBody(null, body)) continue;
+            push({
+              kind: 'notice',
+              key: keyOf(at, frame, blockAt),
+              notice: { severity: 'info', text: stripped },
+            });
             continue;
           }
         }

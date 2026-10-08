@@ -356,6 +356,13 @@ describe('the walk and the box in one composer', () => {
     flushSync();
     expect(document.activeElement, 'the walk out returns the keyboard').toBe(harness.box());
 
+    // Escape is the third handback door, and it must reach the box too.
+    harness.pile().focus();
+    flushSync();
+    key(harness.pile(), 'Escape');
+    flushSync();
+    expect(document.activeElement, 'Escape returned to the box').toBe(harness.box());
+
     // And a pile that empties under a focused reader hands it back the same
     // way, rather than dropping it on the body with the next keystroke.
     harness.pile().focus();

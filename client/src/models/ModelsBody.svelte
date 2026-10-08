@@ -24,6 +24,8 @@
     cleanupPick as cleanupPickOf,
     comparison,
     entryUrl,
+    families,
+    fastest,
     inUseLicense,
     inUseRowFacts,
     installLine,
@@ -45,6 +47,7 @@
     sweepPlan,
     sweepScope,
     tierWord,
+    updateFacts,
     updateWhy,
     type FactPart,
     type SweepPlan,
@@ -276,6 +279,11 @@
     );
     return meterWindow(levels, REC_CELLS);
   });
+
+  // What a reader can browse before they know a name: the feed's own
+  // families, and its fastest entries.
+  const familyList = $derived(families(wire.rows));
+  const fastestRows = $derived(fastest(wire.rows, 3));
 </script>
 
 {#snippet facts(list: FactPart[])}
@@ -433,6 +441,14 @@
       {#if line.detail !== null}<span class="detail">{line.detail}</span>{/if}
     </div>
 
+    {#if wire.enabled}
+      <p class="note">
+        a check reads the catalogue the transcribe.cpp runtime publishes - every variant with its
+        sizes, licences, and the speeds and error rates its maintainers measured - and compares it
+        with the models pinned here. It measures nothing on this machine.
+      </p>
+    {/if}
+
     {#if shownRole === 'normalization'}
       <!-- The cleanup role's own view: no feed publishes speed or error for
            a normalizer, so the bench decides. The candidates are the Hub's
@@ -514,17 +530,10 @@
              folds, and the row that carried the control keeps only its
              verdict. -->
         {#if proposal !== null}
-          <div class="status">
+          <div class="status warn">
             <span class="dot warn"></span>
-            <span class="t">
-              recommended for {roleWord(update.role)}: {proposal.row.display_name}
-            </span>
-            <span class="when">
-              {proposal.row.speed === null ? '?' : speedLabel(proposal.row.speed.xrt_wall)} vs {speedLabel(
-                update.current.speed_x,
-              )}
-              &middot; {proposal.row.wer?.err_pct ?? '?'}% vs {update.current.fleurs_en_wer}%
-            </span>
+            <span class="t">{proposal.row.display_name}</span>
+            <span class="when">replaces the {roleWord(update.role)} model</span>
             <span class="spacer"></span>
             {#if update.role === 'transcribing' && pinnedTranscribing}
               <!-- A pinned role refuses the load by name, so the row keeps the
@@ -540,7 +549,13 @@
                 >Update to this model</button
               >
             {/if}
-            <span class="detail">{@render facts(candidateFacts(proposal.row).spec)}</span>
+            <span class="detail">{@render facts(updateFacts(update, proposal.row))}</span>
+            <span class="detail">
+              Proposed because it beats the model in use on both of the feed's own measurements -
+              fewer errors on its English test set, and a faster realtime factor on an m4-max - and
+              its licence is not marked non-commercial. Taking it downloads it here if it is not
+              already, and loads it as the {roleWord(update.role)} model.
+            </span>
           </div>
         {:else}
           <p class="note">
@@ -639,11 +654,42 @@
       />
 
       <div aria-live="polite">
-        {#if query.trim() === ''}
+        {#if wire.rows.length === 0}
+          <!-- Enabled, and the feed has not answered: a first enable offline,
+               or the boot fetch still out. Its own state, because a box here
+               would answer every query with "no entry matches" and the
+               discovery chips would point at nothing. -->
           <p class="note">
-            type a name &middot; the feed's whole catalogue is already here, so this reads nothing
-            off the network
+            the catalogue has not been read yet &middot; the check above is what reads it, and its
+            rows land here
           </p>
+        {:else if query.trim() === ''}
+          <p class="note">
+            type a name, or pick a family below &middot; the feed's whole catalogue is already here,
+            so this reads nothing off the network
+          </p>
+          <!-- What can be searched, and what is worth trying: the feed's own
+               families and its own fastest rows. Both set the query, so a
+               pick is the same mechanism as typing. -->
+          <div class="chips">
+            {#each familyList as family (family.name)}
+              <button class="chip" type="button" onclick={() => (query = family.name)}>
+                {family.name}<b>{family.count}</b>
+              </button>
+            {/each}
+          </div>
+          {#if fastestRows.length > 0}
+            <p class="note">
+              fastest on the feed:
+              {#each fastestRows as pick, i (pick.variant)}{#if i > 0}{' \u{b7} '}{/if}<button
+                  class="link"
+                  type="button"
+                  onclick={() => (query = pick.variant)}
+                  >{pick.variant} {speedLabel(pick.speed?.xrt_wall ?? 0)}</button
+                >
+              {/each}
+            </p>
+          {/if}
         {:else if results.length === 0}
           <p class="note">no entry matches <code>{query}</code> &middot; try a family name</p>
         {:else}

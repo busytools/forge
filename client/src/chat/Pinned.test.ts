@@ -3,7 +3,22 @@ import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import Pinned from './Pinned.svelte';
+import { git } from './git.svelte';
+import type { Connection } from '../socket';
 import type { TurnInfo } from './units';
+
+/**
+ * The connection the strip's segments read on mount: the browser segment
+ * registers a role listener and reads the role as it draws, so this answers
+ * those two and refuses nothing - these tests never press Take over.
+ */
+function untouched(): Connection {
+  return {
+    browserRole: () => false,
+    onBrowserRole: () => () => {},
+    takeBrowserRole: () => {},
+  } as unknown as Connection;
+}
 
 /**
  * The strip pinned above the box: the row it is handed, and what a running
@@ -47,7 +62,7 @@ const opening = (): TurnInfo => ({
 let app: Record<string, unknown> | null = null;
 
 function draw(info: TurnInfo | null): void {
-  app = mount(Pinned, { target: document.body, props: { info } });
+  app = mount(Pinned, { target: document.body, props: { info, connection: untouched() } });
   flushSync();
 }
 
@@ -68,6 +83,7 @@ afterEach(async () => {
   if (app !== null) await unmount(app);
   app = null;
   document.body.innerHTML = '';
+  git.sync(null);
   vi.useRealTimers();
 });
 
@@ -84,11 +100,14 @@ describe('the strip pinned above the box', () => {
   it('draws only what has arrived early in a turn', () => {
     // A turn seconds old: one frame, and no usage on it. Nothing is filled in
     // with a placeholder - the row grows as the frames land, and a dash on a
-    // running row reads as a figure the turn reported.
+    // running row reads as a figure the turn reported. The strip's own
+    // segments (the browser count) are not the turn's figures and are read
+    // separately: what is asserted here is the row's.
     draw(opening());
 
     expect(row(), 'the mark and the clock').toContain('class="ring"');
-    expect(words().trim(), 'the clock, and nothing else').toBe('0.0s');
+    expect(words(), 'the clock').toContain('0.0s');
+    expect(words(), 'and no figure no frame carried').not.toContain('\u{2191}');
   });
 
   it('moves the clock on the tick, so a row does not freeze on a call that waits', () => {
@@ -96,17 +115,38 @@ describe('the strip pinned above the box', () => {
     // on one call - which is the stretch a reader is watching the clock
     // through, and the row would read one number for all of it.
     draw(opening());
-    expect(words().trim()).toBe('0.0s');
+    expect(words()).toContain('0.0s');
 
     vi.advanceTimersByTime(2000);
     flushSync();
 
-    expect(words().trim(), 'the clock the tick moved').toBe('2.0s');
+    expect(words(), 'the clock the tick moved').toContain('2.0s');
   });
 
-  it('draws nothing where the column holds no row for it', () => {
+  it('draws nothing where the column holds no row for it and the rows hold nothing', () => {
     draw(null);
 
-    expect(row(), 'no row, no strip').toBe('');
+    expect(row(), 'no row and nothing to say, no strip').toBe('');
+  });
+
+  /**
+   * **The strip outlives the turn.** An idle seat draws the rows it holds -
+   * this used to draw nothing at all, which is what left a reader with no way
+   * into a sleeping seat's tree, tasks or watchers on the page itself.
+   */
+  it('draws the rows on an idle seat, with no turn row above them', () => {
+    git.sync({
+      label: 'feat/x \u{b7} 3 files',
+      head: "the project's tree",
+      ahead: null,
+      uncommitted: null,
+      pr: null,
+      gate: null,
+    });
+    draw(null);
+
+    expect(row(), 'the strip stands without a turn').not.toBe('');
+    expect(row(), 'the tree row drew').toContain('i-git');
+    expect(row(), 'and no turn row was invented').not.toContain('class="ring"');
   });
 });

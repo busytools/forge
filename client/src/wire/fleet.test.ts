@@ -253,9 +253,12 @@ describe('what one update asks of the fleet', () => {
   it("draws nothing of a turn's own words", () => {
     expect(fleetNews(appended({ type: 'assistant' }))).toEqual({ kind: 'nothing' });
     expect(fleetNews(appended({ type: 'user' }))).toEqual({ kind: 'nothing' });
-    // A result that FAILED is not a completion, and no row changes for it.
+    // A result that FAILED is not a completion, but it is news: the rows
+    // are re-read so the failure mark can arm - the server sends the same
+    // frame as its own Redraw, and a client that dropped it left the mark
+    // to the next unrelated re-read.
     expect(fleetNews(appended({ type: 'result', is_error: true, subtype: 'error' }))).toEqual({
-      kind: 'nothing',
+      kind: 'redraw',
     });
   });
 
@@ -317,6 +320,8 @@ describe('what one update asks of the fleet', () => {
       { pending_interaction_resolved: { key: LEAD } },
       { slack_post_pending: { key: LEAD } },
       { slack_draft_resolved: { key: LEAD } },
+      { browser_hand_off_pending: { key: LEAD } },
+      { browser_hand_off_resolved: { key: LEAD } },
       { worker_status_changed: {} },
     ];
     for (const update of redraws) {
@@ -446,7 +451,7 @@ describe('the variant census', () => {
         'set. Raise or lower it in the same edit that adds or removes one - the census below names ' +
         'the bucket an added variant belongs in - and if you moved no variant, the parse read a ' +
         'different set of names than the enum holds',
-    ).toBe(73);
+    ).toBe(75);
     expect(news.size, 'the `fleet_news` arms were not read out of live.rs at all').toBeGreaterThan(
       5,
     );
