@@ -47,6 +47,7 @@
     device = null,
     onaxes,
     ondevice,
+    onclose,
   }: {
     /** The connection the models read and the switch ride on, when there is
      * one: a panel without it draws the axes and the input alone. */
@@ -63,6 +64,8 @@
     device?: string | null;
     onaxes: (axes: DictateAxes) => void;
     ondevice: (device: string | null) => void;
+    /** The visible way out, which a touch screen needs: a phone has no Escape. */
+    onclose: () => void;
   } = $props();
 
   /**
@@ -274,6 +277,9 @@
     {#if hint !== null}
       <span class="k"><b>{hint}</b></span>
     {/if}
+    <button class="x" type="button" aria-label="close dictation settings" onclick={onclose}>
+      <Icon name="x" />
+    </button>
   </div>
   <div class="scope">axes this session &#183; input on this machine</div>
 
