@@ -213,10 +213,11 @@ impl Tool for AskChoice {
          alternatives, or as a second opinion when you are leaning toward one option and want \
          the alternatives weighed. Beyond those moments, reach for a decision when the outcome \
          matters to the user and is not obvious, and skip it when both outcomes would lead you \
-         to the same action; a routing call with several plausible owners and no obvious one \
-         is exactly that case. List every option in `criteria`. A null value is fine when the \
-         name stands alone; add a \"when this applies\" clause only where a subtle distinction \
-         needs naming, because nulls are the common case and six clauses for a five-way choice \
+         to the same action; a routing call with several plausible owners and no evidence \
+         separating them is exactly that case. List every option in `criteria`. A null \
+         value is fine when the name stands alone; add a \"when this applies\" clause only \
+         where a subtle distinction needs naming, because nulls are the common case and \
+         six clauses for a five-way choice \
          cost more than the choice returns (at most 255 options); when nothing may fit the \
          state, include an explicit no-match option, because the model can only choose among \
          the options you list. Reading \
@@ -386,6 +387,21 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The choice text names its routing moment by the test that decides it:
+    /// no evidence separating the owners. Pinned so the vaguer trigger it
+    /// replaced cannot come back.
+    #[test]
+    fn the_choice_description_names_its_routing_evidence_test() {
+        let choice = AskChoice { facade: MockSystemOneFacade::new().into_arc() };
+        assert!(
+            choice.description().contains(
+                "a routing call with several plausible owners and no evidence separating them"
+            ),
+            "the routing moment's evidence test is pinned: {}",
+            choice.description()
+        );
     }
 
     #[tokio::test]
