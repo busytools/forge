@@ -8,7 +8,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { connect, type Connection } from './socket';
 import { onRefusal, type Refusal } from './refusals';
 import {
-  MIN_PROTOCOL,
   PROTOCOL_VERSION,
   slotOf,
   subjectKey,
@@ -225,13 +224,11 @@ describe('the connection', () => {
   });
 
   /**
-   * The protocol's only mismatch detector, and it is checked on EVERY
-   * greeting rather than the first: a page left open across a forge upgrade
-   * reconnects to a protocol it cannot read, and drawing against that shape
-   * silently is the failure the check exists to prevent. It does not retry,
-   * because a retry meets the same answer.
+   * The skew is checked on EVERY greeting rather than the first: a page left
+   * open across a forge upgrade reconnects with a different pair, and the
+   * surfaces redraw the notice from here. Nothing stops the connection.
    */
-  it('stops when a later greeting speaks another protocol', async () => {
+  it('records a later greeting that speaks another protocol, and keeps reading', async () => {
     const { server, conn } = await connected();
     conn.subscribe(HOME);
     await until(() => server.received.length === 1, 'the subscribe');
@@ -242,23 +239,22 @@ describe('the connection', () => {
       settings: DEFAULT_SETTINGS,
     });
 
-    await until(() => conn.status() === 'mismatched', 'the mismatch to be reported');
+    await until(() => conn.skew() !== null, 'the skew to be recorded');
+    expect(conn.status(), 'a version difference stopped the connection').toBe('open');
   });
 
   /**
-   * The floor: a server one step back is read rather than refused, because
-   * a client with no way to draw is worse than one drawing against a shape
-   * whose read is proven - and refusing one is what leaves a person with no
-   * channel to their own forge at all.
+   * A server a version behind connects like any other, the skew records the
+   * pair, and the socket is genuinely still working.
    */
-  it('keeps reading a server one step back, and says so', async () => {
+  it('keeps reading a server a version behind, and says so', async () => {
     const { server, conn } = await connected();
 
-    server.send({ kind: 'greeting', version: MIN_PROTOCOL, settings: DEFAULT_SETTINGS });
+    server.send({ kind: 'greeting', version: PROTOCOL_VERSION - 1, settings: DEFAULT_SETTINGS });
 
     await until(() => conn.skew() !== null, 'the skew to be recorded');
-    expect(conn.status(), 'a server in range was refused').toBe('open');
-    expect(conn.skew()).toEqual({ serverProtocol: MIN_PROTOCOL, serverVersion: null });
+    expect(conn.status(), 'a version difference stopped the connection').toBe('open');
+    expect(conn.skew()).toEqual({ serverProtocol: PROTOCOL_VERSION - 1, serverVersion: null });
 
     // And the socket is genuinely still working, not merely not closed.
     conn.subscribe(HOME);
@@ -266,33 +262,27 @@ describe('the connection', () => {
   });
 
   /**
-   * A server below the floor is refused, and the refusal has to name the two
-   * halves and the command: the numbers alone name no build and no way out.
+   * A version far from this client's own connects like any other: the skew
+   * is recorded for the surfaces to draw, and nothing here refuses.
    */
-  it('refuses a server below the floor, naming the halves and the command', async () => {
-    const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  it("records a skew for a server far from this client's own, and keeps reading", async () => {
     const { server, conn } = await connected();
 
-    server.send({ kind: 'greeting', version: MIN_PROTOCOL - 1, settings: DEFAULT_SETTINGS });
+    server.send({ kind: 'greeting', version: 3, settings: DEFAULT_SETTINGS });
 
-    await until(() => conn.status() === 'mismatched', 'the refusal');
-    const said = warned.mock.calls.flat().join(' ');
-    expect(said).toContain(`protocol ${MIN_PROTOCOL - 1}`);
-    expect(said).toContain(`protocol ${PROTOCOL_VERSION}`);
-    expect(said, 'the refusal named no way out').toContain('just install');
-    // And it does not retry into the same answer.
-    await settle();
-    expect(conn.status()).toBe('mismatched');
+    await until(() => conn.skew() !== null, 'the skew to be recorded');
+    expect(conn.status(), 'a version difference stopped the connection').toBe('open');
+    // And the socket is genuinely still working, not merely not closed.
+    conn.subscribe(HOME);
+    await until(() => server.received.length === 1, 'the subscribe to reach the server');
   });
 
   /**
-   * The release identity the greeting carries is what lets a skew name a
+   * The release identity the greeting carries is what lets the notice name a
    * build rather than a number, so the socket hands it on rather than
-   * keeping it to itself - including on a refusal, which is the case with a
-   * release to name today.
+   * keeping it to itself.
    */
-  it('carries the release a refused greeting named', async () => {
-    const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  it('carries the release a skewed greeting named', async () => {
     const { server, conn } = await connected();
 
     server.send({
@@ -303,12 +293,11 @@ describe('the connection', () => {
       settings: DEFAULT_SETTINGS,
     });
 
-    await until(() => conn.status() === 'mismatched', 'the refusal');
-    expect(conn.skew(), 'the refusal kept the build it was named').toEqual({
+    await until(() => conn.skew() !== null, 'the skew to be recorded');
+    expect(conn.skew()).toEqual({
       serverProtocol: PROTOCOL_VERSION + 1,
       serverVersion: '1.0.116+abc1234',
     });
-    expect(warned.mock.calls.flat().join(' ')).toContain('1.0.116+abc1234');
   });
 
   /** This client's own protocol is not a skew, and says nothing. */
@@ -329,10 +318,10 @@ describe('the connection', () => {
    * swapped underneath a running client reconnects to one that agrees, and
    * a notice left standing would accuse a build that is current.
    */
-  it('clears a tolerated skew when a later greeting agrees', async () => {
+  it('clears the skew when a later greeting agrees', async () => {
     const { server, conn } = await connected();
 
-    server.send({ kind: 'greeting', version: MIN_PROTOCOL, settings: DEFAULT_SETTINGS });
+    server.send({ kind: 'greeting', version: PROTOCOL_VERSION - 1, settings: DEFAULT_SETTINGS });
     await until(() => conn.skew() !== null, 'the skew to be recorded');
 
     server.send({ kind: 'greeting', version: PROTOCOL_VERSION, settings: DEFAULT_SETTINGS });

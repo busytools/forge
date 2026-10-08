@@ -109,17 +109,17 @@ the socket off refuses in silence, with nothing wrong at either end, and
 a generic "could not connect" sends the reader off to look at their
 network.
 
-**A forge that answers and speaks a protocol this client does not read is
-a failure of its own**, with its own line. The connection was made, so the
-unreachable hint would send the reader to look at their network and their
-`forge.toml` for a problem that is neither. The line is the skew sentence
-itself: the command that updates the stale half, this client's build, and
-the answering build where the greeting carried it - a server ahead carries
-it, and one a step back predates it.
+**A forge that answers and speaks a different protocol raises the notice,
+not a failure.** The connection is live, so the unreachable hint would send
+the reader to look at their network and their `forge.toml` for a problem
+that is neither. The line is the skew sentence itself: the command that
+updates the stale half, this client's build, and the answering build where
+the greeting carried it - a server ahead carries it, and an older one may
+predate it.
 
-**A forge one protocol behind is read rather than refused, and the door
-says so.** The client tolerates one step back, so a connect to an older
-forge presses through to the home; and while `/connect` is up over a
+**The connect presses through to the home either way, and the door says
+so while it is up.** Nothing is refused over a version, so a connect to
+another protocol lands on the home; and while `/connect` is up over a
 connection that is skewed - the reader went back to the door - it draws a
 one-line notice above the field naming what the wire carries: the command
 that updates the stale half and this client's build. It is a notice rather

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { backgroundTaskFrom } from './wire';
+import { backgroundTaskFrom, gitFrom } from './wire';
 
 describe('the background-task registry parse', () => {
   it('drops a row missing its id, its kind or its words rather than drawing it blank', () => {
@@ -15,5 +15,21 @@ describe('the background-task registry parse', () => {
     ).toEqual([
       { task_id: 't', task_type: 'local_bash', description: 'x', command: null, tool_use_id: null },
     ]);
+  });
+});
+
+describe('a git record a server never sent', () => {
+  /**
+   * The fold's absent case: an older server states no git at all, and the row
+   * must read as nothing to state rather than as a failure. The only pin of
+   * this branch went with the floor fixture, and it matters more now - a
+   * server on another protocol connects and is folded rather than refused.
+   */
+  it('reads an absent git record as nothing to state', () => {
+    expect(gitFrom(undefined), 'no git at all').toEqual({
+      defaultBranch: null,
+      worktree: null,
+      ahead: null,
+    });
   });
 });

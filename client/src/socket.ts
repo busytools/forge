@@ -13,8 +13,6 @@
 import { refused } from './refusals';
 import {
   MORE_TURNS,
-  readableProtocol,
-  skewMessage,
   skewOf,
   slotOf,
   subjectKey,
@@ -34,18 +32,7 @@ import { settingsFrom } from './wire/types';
 import type { ClientSettings, SessionSlot } from './wire/types';
 
 /** Where a connection is in its life. */
-export type ConnectionStatus =
-  | 'connecting'
-  | 'open'
-  | 'closed'
-  /**
-   * The server greeted with a protocol outside the range this client reads.
-   * It is not a connection failure and retrying cannot fix it, so the
-   * connection stops rather than reconnecting into the same answer and
-   * drawing against a shape it cannot read. What the greeting said is on
-   * `skew()`, so the refusal can name the builds the wire carried.
-   */
-  | 'mismatched';
+export type ConnectionStatus = 'connecting' | 'open' | 'closed';
 
 export interface Connection {
   /**
@@ -181,10 +168,9 @@ export interface Connection {
    * What the last greeting said that this client's own protocol does not
    * agree with, or `null` when they agree.
    *
-   * Set for a server one step back, which is read with the skew drawn as a
-   * notice, and for one outside the range, where the status says the
-   * connection stopped. Either way the surfaces name the two builds from
-   * here rather than from a number they have no build for.
+   * Set for any server whose protocol differs from this client's own: the
+   * surfaces draw the notice and name the two builds from here rather than
+   * from a number they have no build for.
    */
   skew(): Skew | null;
   /**
@@ -405,22 +391,11 @@ export function connect(url: string): Connection {
     switch (message.kind) {
       case 'greeting': {
         settings = settingsFrom(message.settings);
-        // Checked on every greeting rather than only the first: a page left
-        // open across a forge upgrade reconnects to a protocol it cannot
-        // read, and drawing against it silently is what this arm exists to
-        // prevent. Recorded either way, because a refusal has to name the
-        // server it is refusing.
+        // Recorded on every greeting rather than only the first: a page left
+        // open across a forge upgrade reconnects with a different pair, and
+        // the surfaces draw the notice from here. Nothing refuses.
         protocolSkew = skewOf(message);
         greetingProtocol = typeof message.version === 'number' ? message.version : null;
-        if (protocolSkew === null) return;
-        // One step back is READ rather than refused, because a floor whose
-        // read is pinned by `wire/floor.test.ts` beats a client that cannot
-        // draw at all; outside the range there is no read to stand on, and
-        // the connection stops.
-        if (readableProtocol(message.version)) return;
-        report(skewMessage(protocolSkew), message);
-        move('mismatched');
-        socket?.close();
         return;
       }
       case 'snapshot':
@@ -607,9 +582,7 @@ export function connect(url: string): Connection {
         browserRole = false;
         for (const hear of roleListeners) hear(browserRole);
       }
-      // A mismatched protocol is not something a retry answers, so the close
-      // that follows it must not be read as a drop.
-      if (status === 'closed' || status === 'mismatched') return;
+      if (status === 'closed') return;
       move('connecting');
       // A command that was in flight has no answer coming: the reply died
       // with the connection that would have carried it. So did every ask -

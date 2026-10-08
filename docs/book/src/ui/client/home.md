@@ -126,16 +126,13 @@ failed`, and its mark goes the moment the seat is opened.
   above it, and the notice stays until a fresh read lands rather than clearing
   the moment the socket reopens - the window between those two is the one
   place a reader cannot tell stale rows from current ones.
-- **A forge one protocol behind**: the shell draws one line above the page
+- **A forge on another protocol**: the shell draws one line above the page
   naming the command that updates the stale half and this client's build -
   and the answering build where the greeting carried it - and the page
-  behind it is live. The client reads a floor rather than refusing a step
-  back, so this is a notice rather than an error. A forge below the floor
-  stops the connection instead, and that same sentence is what says why: it
-  is drawn on every route, because a connection that stopped is not a
-  milder case and the door must not relabel it. The tolerated notice is the
-  one the shell stands down on at the door's route, where the door draws its
-  own copy in its own column.
+  behind it is live. Nothing is refused over a version: the notice is the
+  whole answer, drawn wherever a surface meets the skew. It is the one the
+  shell stands down on at the door's route, where the door draws its own
+  copy in its own column.
 
 **The unseen mark is drawn from a read of its own.** `unseen` is the list
 of seats whose last turn finished while no client was attached to them,

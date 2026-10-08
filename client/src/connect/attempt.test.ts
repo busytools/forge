@@ -2,7 +2,7 @@ import { type AddressInfo, WebSocketServer } from 'ws';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { brandPath } from '../brand';
-import { MIN_PROTOCOL, PROTOCOL_VERSION } from '../protocol';
+import { PROTOCOL_VERSION } from '../protocol';
 import { DEFAULT_MARK, DEFAULT_SERVER_PORT, MARK_NAMES } from '../wire/types';
 import {
   DEFAULT_ADDRESS,
@@ -131,76 +131,63 @@ describe('one attempt', () => {
   });
 
   /**
-   * The greeting carries the protocol, the server fixes it, and it is the
-   * only mismatch detector there is - so a client that read it and drew
-   * anyway would draw against a shape it cannot know it understands.
-   *
-   * Above this client's own version is still a refusal: a shipped client
-   * cannot be retro-fitted, so that direction has nothing to do but say so.
+   * A version difference is not a gate: the connection opens and the skew
+   * sits on it for whatever draws the notice. Nothing here refuses.
    */
-  it('refuses a forge speaking a protocol this client does not', async () => {
+  it('carries a forge speaking a different protocol, with the skew on the connection', async () => {
     const server = await stubServer(PROTOCOL_VERSION + 1);
     servers.push(server);
 
     const answer = await connectTo(server.address);
-    expect(answer.ok).toBe(false);
-    expect(answer.ok === false && answer.kind).toBe('version');
-    expect(answer.ok === false && answer.why).toContain(`protocol ${PROTOCOL_VERSION + 1}`);
-    // The ahead direction is this client's to fix: the command it names
-    // updates this half, and `just install` - which rebuilds the server, the
-    // half that is NOT stale - is not the one offered.
-    expect(answer.ok === false && answer.why).toContain('just client-release');
-    expect(answer.ok === false && answer.why).not.toContain('just install');
+    expect(answer.ok).toBe(true);
+    expect(answer.ok && answer.connection.status()).toBe('open');
+    expect(answer.ok && answer.connection.skew()).not.toBeNull();
   });
 
   /**
-   * One step back connects: the client has a proven read for it, and a
-   * person whose server is a version behind keeps their connection.
+   * A server a version behind connects like any other, and the skew carries
+   * the pair the notice words.
    */
-  it('carries a forge one step back, with the skew on the connection', async () => {
-    const server = await stubServer(MIN_PROTOCOL);
+  it('carries a forge a version behind, with the skew on the connection', async () => {
+    const server = await stubServer(PROTOCOL_VERSION - 1);
     servers.push(server);
 
     const answer = await connectTo(server.address);
     expect(answer.ok).toBe(true);
     expect(answer.ok && answer.connection.status()).toBe('open');
     expect(answer.ok && answer.connection.skew()).toEqual({
-      serverProtocol: MIN_PROTOCOL,
+      serverProtocol: PROTOCOL_VERSION - 1,
       serverVersion: null,
     });
   });
 
   /**
-   * Below the floor the connection is refused, and the refusal names both
-   * halves and the command - the numbers alone are not something a person
-   * can act on.
+   * A server below any former floor connects too: the stamps are drawn,
+   * nothing stops the connection.
    */
-  it('refuses a forge below the floor, naming the halves and the command', async () => {
-    const server = await stubServer(MIN_PROTOCOL - 1);
+  it('carries a forge below any former floor, with the skew on the connection', async () => {
+    const server = await stubServer(3);
     servers.push(server);
 
     const answer = await connectTo(server.address);
-    expect(answer.ok).toBe(false);
-    expect(answer.ok === false && answer.kind).toBe('version');
-    const why = answer.ok === false ? answer.why : '';
-    expect(why).toContain(`protocol ${MIN_PROTOCOL - 1}`);
-    expect(why).toContain(`protocol ${PROTOCOL_VERSION}`);
-    expect(why, 'the refusal named no way out').toContain('just install');
+    expect(answer.ok).toBe(true);
+    expect(answer.ok && answer.connection.skew()).toEqual({
+      serverProtocol: 3,
+      serverVersion: null,
+    });
   });
 
   /**
-   * A server old enough to be below the floor predates the greeting's
-   * release fields, so the common refusal has no build to name - but a
-   * newer one does, and the refusal names it rather than a bare number.
+   * The skew names the build the greeting carried, when one crossed - the
+   * notice words the halves from here, never from a bare number.
    */
-  it('names the release a refused greeting carried, when one crossed', async () => {
+  it('names the release a skewed greeting carried, when one crossed', async () => {
     const server = await stubServer(PROTOCOL_VERSION + 1, '1.0.116+def5678');
     servers.push(server);
 
     const answer = await connectTo(server.address);
-    expect(answer.ok).toBe(false);
-    const why = answer.ok === false ? answer.why : '';
-    expect(why, 'the refusal named the build it was given').toContain('1.0.116+def5678');
+    expect(answer.ok).toBe(true);
+    expect(answer.ok && answer.connection.skew()?.serverVersion).toBe('1.0.116+def5678');
   });
 
   /** A socket that opens and then says nothing is not one this client can draw. */
@@ -266,9 +253,8 @@ describe('one submit, as the screen sees it', () => {
    */
   it('never rejects, however the connection failed', async () => {
     const boom = () => Promise.reject(new Error('boom'));
-    // A socket that never greets, rather than one that greets a version this
-    // client cannot read: the deadline is what makes the promise settle at
-    // all, and the point of the test is that every arm settles.
+    // A socket that never greets: the deadline is what makes the promise
+    // settle at all, and the point of the test is that every arm settles.
     const silent = new WebSocketServer({ port: 0 });
     await new Promise((resolve) => silent.once('listening', resolve));
     const { port } = silent.address() as AddressInfo;
