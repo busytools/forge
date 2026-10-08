@@ -558,9 +558,9 @@
   details.leaf[open] > summary { color: var(--text); }
   details.leaf[open] > summary .arw { color: var(--accent); }
 
-  /* A call that stands alone and breaks the run: a peer block, an
-     unanswered question, or a lifecycle call such as a Monitor. An edit is
-     NOT one of these - it is a family inside the group, drawn above. */
+  /* A call that stands alone and breaks the run: a question's card. A peer
+     block and a monitor's call join the list, and an edit is a family
+     inside the group, drawn above. */
   .body { margin: 3px 0 6px 27px; }
   .code { border: 1px solid var(--line); border-radius: 9px;
     background: var(--s2); overflow: hidden; }
@@ -2556,11 +2556,11 @@ branch main, nothing to commit</div>
               1 of 3</button>
           </span>
           <!-- The monitors row, eighth: the commands this session is
-               watching. Monitors live here and not in the chat, so this row
-               is the surface that says it - and the tail under a monitor
-               stays uncarried, because a tail is read off the machine
-               running forge and this client does not read the server's
-               disk. -->
+               watching. A monitor's call draws in the chat as the call row
+               it is; this row is the live watcher's surface - and the tail
+               under a monitor stays uncarried, because a tail is read off
+               the machine running forge and this client does not read the
+               server's disk. -->
           <span class="sg-seg">
             <button type="button" class="sg-tog">
               <svg class="ic"><use href="#i-monitors"/></svg>

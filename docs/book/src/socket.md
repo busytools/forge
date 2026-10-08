@@ -516,8 +516,9 @@ lets a view hold the forged row while the prompt waits in the pile: the
 **The server's fold is not what a terminal reads.** The terminal groups a
 message's blocks itself, in `forge-tui`'s `ui::message::grouping`, and the
 server's fold is drawn by `forge-web`, which is parked. So a view that draws
-a conversation makes those calls for itself: a monitor draws no chat row, and
-a settled turn's status is aggregated. Both are rules about a drawing rather
+a conversation makes those calls for itself: a monitor's call is the plain
+call row it is where the terminal carves out its lifecycle block, and a
+settled turn's status is aggregated. Both are rules about a drawing rather
 than facts about a session.
 
 ## What is not here
