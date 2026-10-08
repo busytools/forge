@@ -76,13 +76,14 @@ pub mod wire;
 /// frames as nothing rather than as news. `baselines/socket/5/` is the record
 /// a v5 server emitted.
 ///
-/// **v7 is a bump for the models read's own shape.** A proposal's `candidate`
-/// is now `candidates`, ranked rows rather than the one the server picked,
-/// and the in-use row's `sha256` is nullable where an installed model
-/// publishes none - the first is a rename and the second is a value a v6
-/// client dereferences (`slice`), so a same-version skew is a client that
-/// throws while drawing rather than one that shows less. `baselines/socket/6/`
-/// is the record a v6 server emitted.
+/// **v7 is a bump for the browser's hand-off field and for the models read's
+/// own shape.** The hand-off's `context` is renamed `profile`, and a
+/// proposal's `candidate` is now `candidates`, ranked rows rather than the
+/// one the server picked, while the in-use row's `sha256` is nullable where
+/// an installed model publishes none. The first two are renames a v6 client
+/// reads as nothing, and the third is a value it dereferences (`slice`), so a
+/// same-version skew is a client that throws while drawing rather than one
+/// that shows less. `baselines/socket/6/` is the record a v6 server emitted.
 pub const PROTOCOL_VERSION: u32 = 7;
 
 /// What a connection answers from: the surface it reads and dispatches

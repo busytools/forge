@@ -10,7 +10,7 @@ import type { TurnInfo } from './units';
 /**
  * The connection the strip's segments read on mount: the browser segment
  * registers a role listener and reads the role as it draws, so this answers
- * those two and refuses nothing - these tests never press Take over.
+ * those two and refuses nothing - these tests never press override.
  */
 function untouched(): Connection {
   return {

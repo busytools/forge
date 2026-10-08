@@ -26,8 +26,8 @@ pub(crate) struct ToolSpec {
 
 /// The whole surface, in upstream's own order.
 ///
-/// Every tool carries the optional `context` name: a session says which
-/// context a call drives, and the client routes on it.
+/// Every tool carries the optional `profile` name: a session says which
+/// profile a call drives, and the client routes on it.
 pub(crate) fn specs() -> Vec<ToolSpec> {
     let mut specs = vec![
         ToolSpec {
@@ -745,19 +745,20 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
         let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) else {
             continue;
         };
-        // The hand-off is the one tool whose `context` chooses what the PERSON
+        // The hand-off is the one tool whose `profile` chooses what the PERSON
         // is shown rather than what this session drives, so its description
         // says that instead.
         let description = if spec.name == "browser_hand_off" {
-            "Name of the browser context to raise for the person. Omit to raise the shared \
-             browser context."
+            "Name of the browser profile to raise for the person. Omit to raise the browser's \
+             own profile."
         } else {
-            "Name of the browser context to drive. A context is owned by \
-                the session that first names it, and another session naming it is refused \
-                until it is released; omit it to use the shared browser context."
+            "Name of the browser profile to drive. **Omit it to use the browser's own \
+                profile**, which is the right choice unless the work genuinely needs its own \
+                logins; a named profile is owned by the session that first names it, and another \
+                session naming it is refused until it is released."
         };
         properties
-            .insert("context".to_owned(), json!({ "type": "string", "description": description }));
+            .insert("profile".to_owned(), json!({ "type": "string", "description": description }));
     }
     specs
 }
@@ -832,25 +833,25 @@ mod tests {
         }
     }
 
-    /// **Every tool takes an optional `context` name.** A session says which
-    /// context a call drives; a call that names none drives the shared one.
+    /// **Every tool takes an optional `profile` name.** A session says which
+    /// profile a call drives; a call that names none drives the browser's own.
     /// The schema is where the model learns the argument exists, and a closed
     /// schema that did not declare it would REFUSE the call - so this is the
     /// contract's own half, not decoration.
     #[test]
-    fn every_tool_takes_an_optional_context_name() {
+    fn every_tool_takes_an_optional_profile_name() {
         for spec in specs() {
             assert_eq!(
-                spec.schema["properties"]["context"]["type"],
+                spec.schema["properties"]["profile"]["type"],
                 json!("string"),
-                "{} declares no context name: {}",
+                "{} declares no profile name: {}",
                 spec.name,
                 spec.schema,
             );
             let required = &spec.schema["required"];
             assert!(
-                required.as_array().is_none_or(|required| !required.contains(&json!("context"))),
-                "{} must not require a context: {}",
+                required.as_array().is_none_or(|required| !required.contains(&json!("profile"))),
+                "{} must not require a profile: {}",
                 spec.name,
                 spec.schema,
             );

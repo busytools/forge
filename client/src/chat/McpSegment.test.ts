@@ -36,15 +36,15 @@ describe('the MCP segment', () => {
     const body = render(McpSegment, {}).body;
 
     expect(body, 'the glyph says what the segment is').toContain('i-mcp');
-    expect(body, 'the plural count reads plainly').toContain('2 servers');
+    expect(body, 'the plural count reads plainly').toContain('2 MCPs');
   });
 
   it('counts a single server in the singular', () => {
     mcp.sync(SERVERS.slice(0, 1));
     const body = render(McpSegment, {}).body;
 
-    expect(body, 'one reads as one').toContain('1 server');
-    expect(body, 'and not as a plural').not.toContain('1 servers');
+    expect(body, 'one reads as one').toContain('1 MCP');
+    expect(body, 'and not as a plural').not.toContain('1 MCPs');
   });
 
   /**
@@ -65,8 +65,8 @@ describe('the MCP segment', () => {
     ]);
     const body = render(McpSegment, {}).body;
 
-    expect(body, 'the failure is stated').toContain('servers failed');
-    expect(body, 'and not miscounted as a server').not.toContain('1 server');
+    expect(body, 'the failure is stated').toContain('MCP failed');
+    expect(body, 'and not miscounted as a server').not.toContain('1 MCP');
   });
 
   it('draws nothing for a session that reported no servers', () => {

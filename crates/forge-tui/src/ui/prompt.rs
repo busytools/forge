@@ -214,10 +214,10 @@ fn build_header_lines(prompt: &PromptState, content_width: usize) -> Vec<Line<'s
             // The terminal raises no browser window, so the header says
             // where the act happens rather than pretending otherwise; the
             // reason is the session's own words, verbatim.
-            let where_to = match &handoff.context {
-                Some(context) => {
+            let where_to = match &handoff.profile {
+                Some(profile) => {
                     format!(
-                        "Browser hand-off · context {context} · act in a client that shows the browser"
+                        "Browser hand-off · profile {profile} · act in a client that shows the browser"
                     )
                 }
                 None => "Browser hand-off · act in a client that shows the browser".to_owned(),

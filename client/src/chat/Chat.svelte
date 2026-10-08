@@ -1169,4 +1169,4 @@
      being written stops depending on where the reader is looking. It is a
      sibling of the scroller rather than a row of the grid, so the composer
      and the dock - both drawn under this column - never have to know it. -->
-<Pinned info={pinned?.info ?? null} {connection} />
+<Pinned info={pinned?.info ?? null} {connection} {slot} />

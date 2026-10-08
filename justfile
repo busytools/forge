@@ -325,10 +325,11 @@ client-tauri-bundle: vendor-browser-stack
 
     npm --prefix client run tauri -- build --ci -- --locked
 
-# Fetch, verify and unpack the browser stack the client bundles: node,
-# @playwright/mcp and Chrome for Testing, half a gigabyte into the client's
-# gitignored `browser-stack/` directory. Idempotent at its pins, and it
-# prints the three pins so a release log names the stack it shipped.
+# Fetch, verify and unpack the driver stack the client bundles: node and
+# @playwright/mcp, into the client's gitignored `browser-stack/` directory.
+# (The browser itself is the machine's own - the host drives the installed
+# Brave or Chrome - so nothing here fetches one.) Idempotent at its pins,
+# and it prints both pins so a release log names the stack it shipped.
 #
 # The bundling recipes run it themselves - a release must not ship without
 # it - and `client-tauri-check` does not, because it passes `--no-bundle`

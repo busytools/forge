@@ -1,27 +1,22 @@
 #!/usr/bin/env bash
-# scripts/vendor_browser_stack.sh - fetch, verify and unpack the browser
-# stack the client bundles inside the app: node, @playwright/mcp and Chrome
-# for Testing.
+# scripts/vendor_browser_stack.sh - fetch, verify and unpack the driver
+# stack the client bundles inside the app: node and @playwright/mcp. The
+# browser itself is the machine's own - the host drives the installed Brave
+# or Google Chrome - so nothing here fetches one.
 #
 # Idempotent at the pins below: anything already there at its pinned version
 # is left alone. `just client-tauri-bundle` and `just client-release` run
-# this before they build, so a release never ships without it, and the three
-# pins are printed either way so a release log names the stack it shipped.
+# this before they build, so a release never ships without it, and the pins
+# are printed either way so a release log names the stack it shipped.
 #
-# Where each hash comes from, because they are not all the same kind:
+# Where each hash comes from, because they are not both the same kind:
 #
 #   node    - nodejs.org publishes SHASUMS256.txt per release; the value
 #             below is that file's line for the pinned platform's tarball.
-#   Chrome  - Chrome for Testing publishes no per-file hash. The value below
-#             is the pinned version's own zip, hashed once when this script
-#             was written: the version pins WHICH artifact, the hash pins
-#             the bytes, and the unpacked binary's --version is checked
-#             against the pin after unpacking.
 #   mcp     - npm verifies every tarball against the registry's own
 #             integrity, so the pin is the version itself.
 #             `--ignore-scripts` keeps playwright's installer from fetching
-#             a browser: the host points the driver at the bundled
-#             Chromium's CDP endpoint instead.
+#             a browser the host does not use.
 #
 # Usage:
 #   scripts/vendor_browser_stack.sh
@@ -39,15 +34,12 @@ REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
 NODE_VERSION="v24.21.0"
 NODE_SHA256="bed7eea5325e1108f32ce5228ddd6a5f0f08a499ee42aa7442aea583702f6057"
 PLAYWRIGHT_MCP_VERSION="0.0.83"
-CHROME_VERSION="155.0.8059.12"
-CHROME_SHA256="d64771a096fffd48b49a65e481dda50ae43a7de55fb93acfa6aece26ec3b10db"
 
 STACK="${FORGE_BROWSER_STACK_DIR:-$REPO/client/src-tauri/browser-stack}"
 
 case "$(uname -s)-$(uname -m)" in
     Darwin-arm64)
         NODE_ARCH="darwin-arm64"
-        CHROME_PLATFORM="mac-arm64"
         ;;
     Darwin-x86_64)
         echo "[ERROR] only Apple Silicon is vendored so far: the x64 artifacts carry their" >&2
@@ -55,7 +47,7 @@ case "$(uname -s)-$(uname -m)" in
         exit 1
         ;;
     *)
-        echo "[ERROR] the browser stack is vendored for macOS only: this is $(uname -s)-$(uname -m)." >&2
+        echo "[ERROR] the driver stack is vendored for macOS only: this is $(uname -s)-$(uname -m)." >&2
         echo "        Windows is parked (issue #1774); Android uses the system WebView." >&2
         exit 1
         ;;
@@ -71,10 +63,18 @@ need curl
 need npm
 need shasum
 need tar
-need unzip
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/forge-browser-stack.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
+
+# The browser is the machine's own now, and a `browser/` tree from when one
+# was vendored is removed here: `bundle.resources` globs the whole stack, so
+# a leftover would keep packing a Chromium nothing can launch into every
+# release.
+if [ -d "$STACK/browser" ]; then
+    echo "[..] removing the stale vendored browser tree"
+    find "$STACK/browser" -depth -delete
+fi
 
 # Fail on bytes that are not the pinned ones. A partial download and a
 # tampered one look the same here, and both must not reach the bundle.
@@ -131,38 +131,13 @@ else
     fi
 fi
 
-# --- Chrome for Testing: the full build, so the window toggle can show one -
-
-chrome_app="$STACK/browser/chrome-$CHROME_PLATFORM/Google Chrome for Testing.app"
-chrome_bin="$chrome_app/Contents/MacOS/Google Chrome for Testing"
-if [ -x "$chrome_bin" ] && "$chrome_bin" --version 2>/dev/null | grep -q "$CHROME_VERSION"; then
-    echo "[..] Chrome for Testing $CHROME_VERSION is already vendored"
-else
-    zip="chrome-$CHROME_PLATFORM.zip"
-    fetch "https://storage.googleapis.com/chrome-for-testing-public/$CHROME_VERSION/$CHROME_PLATFORM/$zip" \
-        "$WORK/$zip"
-    verify_sha256 "$WORK/$zip" "$CHROME_SHA256" "Chrome for Testing $CHROME_VERSION"
-    mkdir -p "$STACK/browser"
-    unzip -q -o "$WORK/$zip" -d "$STACK/browser"
-    if ! "$chrome_bin" --version | grep -q "$CHROME_VERSION"; then
-        echo "[ERROR] the unpacked Chrome does not report $CHROME_VERSION:" >&2
-        "$chrome_bin" --version >&2 || true
-        exit 1
-    fi
-    # The quarantine bit would have the first launch ask a person to approve
-    # a download; this tree is one the app opens itself.
-    xattr -dr com.apple.quarantine "$STACK/browser" 2>/dev/null || true
-fi
-
-printf 'node %s %s\n@playwright/mcp %s (npm integrity)\nChrome for Testing %s %s\n' \
-    "$NODE_VERSION" "$NODE_SHA256" "$PLAYWRIGHT_MCP_VERSION" "$CHROME_VERSION" "$CHROME_SHA256" \
+printf 'node %s %s\n@playwright/mcp %s (npm integrity)\n' \
+    "$NODE_VERSION" "$NODE_SHA256" "$PLAYWRIGHT_MCP_VERSION" \
     > "$STACK/manifest.txt"
 
 node_size="$(du -sh "$STACK/node" 2>/dev/null | awk '{print $1}')"
 mcp_size="$(du -sh "$STACK/playwright-mcp" 2>/dev/null | awk '{print $1}')"
-browser_size="$(du -sh "$STACK/browser" 2>/dev/null | awk '{print $1}')"
 
-echo "[OK] browser stack at $STACK"
+echo "[OK] driver stack at $STACK"
 echo "     node $NODE_VERSION ($node_size)"
 echo "     @playwright/mcp $PLAYWRIGHT_MCP_VERSION ($mcp_size)"
-echo "     Chrome for Testing $CHROME_VERSION ($browser_size)"

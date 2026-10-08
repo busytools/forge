@@ -65,6 +65,17 @@ pub fn tool_family(sdk_tool_name: &str) -> ToolFamily {
     }
 }
 
+/// Whether a call drives the sessions' browser - a name of its own rather
+/// than the driver's server, which is plumbing: the browser is the client's.
+/// `mcp__playwright__browser_click` and `browser_hand_off` alike.
+pub fn is_browser_tool(sdk_tool_name: &str) -> bool {
+    let tool = match sdk_tool_name.strip_prefix("mcp__") {
+        Some(rest) => rest.split_once("__").map_or(rest, |(_, tool)| tool),
+        None => sdk_tool_name,
+    };
+    tool.starts_with("browser_")
+}
+
 /// The label a tool's own row and card carry, and the prefix a chat title is
 /// stripped of. Unknown names fall back to `Tool`.
 pub fn tool_label(sdk_tool_name: &str) -> &'static str {
@@ -110,6 +121,10 @@ fn row_label(sdk_tool_name: &str) -> Option<&'static str> {
         "DesignSync" => "DesignSync",
         "ReportFindings" => "ReportFindings",
         "ShareOnboardingGuide" => "ShareOnboardingGuide",
+        // Every browser tool carries one row, whatever server a name wore:
+        // they drive the client's own browser, and the verb is the card's
+        // business.
+        _ if is_browser_tool(sdk_tool_name) => "Browser",
         _ => return None,
     })
 }
@@ -159,6 +174,11 @@ mod tests {
         ("ShareOnboardingGuide", ToolFamily::Own("ShareOnboardingGuide"), "ShareOnboardingGuide"),
         ("Monitor", ToolFamily::Tool, "Tool"),
         ("brand_new_tool", ToolFamily::Tool, "Tool"),
+        ("mcp__playwright__browser_click", ToolFamily::Own("Browser"), "Browser"),
+        ("mcp__forge__browser_snapshot", ToolFamily::Own("Browser"), "Browser"),
+        ("browser_hand_off", ToolFamily::Own("Browser"), "Browser"),
+        // A tool merely NAMING the browser is not one.
+        ("mcp__otherserver__browsing", ToolFamily::Tool, "Tool"),
         // Dropped from the theme's table, so they share the generic row; a
         // transcript that already carries one still replays it.
         ("CronCreate", ToolFamily::Tool, "Tool"),

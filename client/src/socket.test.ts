@@ -1077,7 +1077,7 @@ describe('the browser role', () => {
   /**
    * **A take re-declares first.** The relay registers only declared
    * connections, so a connection displaced by an earlier take - the very one
-   * whose strip draws Take over - must declare again for the claim to move
+   * whose strip draws the override - must declare again for the claim to move
    * anything; without it the click comes back `false` and nothing happens.
    */
   it('re-declares with a take, so a displaced connection can claim', async () => {

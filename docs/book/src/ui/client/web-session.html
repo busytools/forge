@@ -1804,12 +1804,12 @@ docs: Render the message body into rows.</div>
           </details>
 
           <details class="leaf">
-            <summary><svg class="ic gl ok"><use href="#i-mcp"/></svg><span class="tn">browser_navigate</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-            <div class="body"><div class="term">http://127.0.0.1:8765/web-session.html &#183; forge &#183; session</div></div>
+            <summary><svg class="ic gl ok"><use href="#i-web"/></svg><span class="tn">browser: navigate</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body"><div class="pbody"><div class="prose"><h3>Page</h3><ul><li>Page URL: http://127.0.0.1:8765/web-session.html</li><li>Page Title: forge &#183; session</li></ul></div></div></div>
           </details>
           <details class="leaf">
-            <summary><svg class="ic gl err"><use href="#i-mcp"/></svg><span class="tn">browser_click &#183; label[for="diff"]</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-            <div class="body"><div class="term"><span class="err">Timeout 5000ms exceeded waiting for the element to be stable</span></div></div>
+            <summary><svg class="ic gl err"><use href="#i-web"/></svg><span class="tn">browser: click</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body"><div class="errhint"><div class="m">the element was not stable in 5000ms</div></div></div>
           </details>
 
           <details class="leaf">
@@ -2433,17 +2433,17 @@ branch main, nothing to commit</div>
                that has not arrived is the thing this row never draws. -->
           <span class="sep" id="lv-cost-sep" style="display:none">&#183;</span>
           <span id="lv-cost" style="display:none">$4.82 cumulative</span>
-          <!-- The browser row, beside the agents row: how many named contexts
+          <!-- The browser row, beside the agents row: how many named profiles
                this client holds. Opened, its list carries the role line (who
-               drives the browser), a Take over where this client is capable
-               and not holding, the Show browser control with its restart cost
-               on the same panel, and a close on every context row - the door
-               a context whose owning session is gone comes back through.
+               drives the browser), an override where this client is capable
+               and not holding, the show control - which raises the real
+               browser window - and a close on every profile row: the door a
+               profile whose owning session is gone comes back through.
                Drawn CLOSED here: the open list is runtime state. -->
           <span class="bz-seg">
             <button type="button" class="bz-tog">
               <svg class="ic"><use href="#i-web"/></svg>
-              browser <span class="n">2 contexts</span></button>
+              browser <span class="n">2 profiles</span></button>
           </span>
           <!-- The agents row, at the strip's right: the seat's instances, the
                count it has out and the count it has finished. It is where a
@@ -2502,7 +2502,7 @@ branch main, nothing to commit</div>
           <span class="sg-seg">
             <button type="button" class="sg-tog">
               <svg class="ic"><use href="#i-mcp"/></svg>
-              3 servers</button>
+              3 MCPs</button>
           </span>
           <!-- The tree row, sixth: this seat's branch and what moved in it.
                The hover opens on what the tree IS (the project's, or a

@@ -171,6 +171,29 @@
         "project"
       ]
     },
+    "BrowserHandOffPending": {
+      "": [
+        "kind",
+        "update"
+      ],
+      "/update": [
+        "browser_hand_off_pending"
+      ],
+      "/update/browser_hand_off_pending": [
+        "handoff",
+        "key"
+      ],
+      "/update/browser_hand_off_pending/handoff": [
+        "id",
+        "profile",
+        "reason"
+      ],
+      "/update/browser_hand_off_pending/key": [
+        "label",
+        "org",
+        "project"
+      ]
+    },
     "BrowserRole": {
       "": [
         "hosting",

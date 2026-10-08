@@ -20,8 +20,24 @@ describe('the row a call is summarised under', () => {
   it('keys an unknown MCP call to the mcp row', () => {
     // A server's name is known only at runtime, and a row draws the mcp glyph
     // rather than the server: two servers are two rows of one kind.
-    expect(rowOf('mcp__playwright__browser_click')).toEqual({ kind: 'mcp' });
     expect(rowOf('mcp__otherserver__thing')).toEqual({ kind: 'mcp' });
+  });
+
+  it('gives the browser tools their own row and globe', () => {
+    // The sessions drive the client's own browser, so the row names what it
+    // drives rather than the driver's server that carried it - and a browser
+    // call is one whatever server the name wore.
+    for (const name of [
+      'mcp__playwright__browser_click',
+      'mcp__playwright__browser_navigate',
+      'mcp__forge__browser_snapshot',
+      'browser_hand_off',
+    ]) {
+      expect(rowOf(name), `${name} is a browser call`).toEqual({ kind: 'browser' });
+      expect(iconOf(rowOf(name)), `${name} draws the globe`).toBe('web');
+    }
+    // A tool merely NAMING the browser is not one.
+    expect(rowOf('mcp__otherserver__browsing')).toEqual({ kind: 'mcp' });
   });
 
   it('gives the systemone decisions their own row and fork', () => {
@@ -65,7 +81,7 @@ describe('the row a call is summarised under', () => {
   it('names the sprite each row draws', () => {
     expect(iconOf(rowOf('Read'))).toBe('read');
     expect(iconOf(rowOf('Edit'))).toBe('edit');
-    expect(iconOf(rowOf('mcp__playwright__browser_click'))).toBe('mcp');
+    expect(iconOf(rowOf('mcp__otherserver__thing'))).toBe('mcp');
     expect(iconOf(rowOf('brand_new_tool'))).toBe('tool');
     // Three families draw a symbol of a nearer name than their own: the boxed
     // terminal, the settings gear and the git branch - the family words name

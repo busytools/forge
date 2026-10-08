@@ -19,6 +19,8 @@ import type { BrowserAnswer, BrowserAnswerPart, BrowserAsk } from '../protocol';
 import type { Connection } from '../socket';
 
 /** One part as the shell returns it: an image's bytes are base64 there. */
+import { callDown, callUp } from './inflight.svelte';
+
 export type HostPart =
   { type: 'text'; text: string } | { type: 'image'; mime_type: string; data_base64: string };
 
@@ -32,7 +34,15 @@ export type Invoke = (command: 'browser_call', request: InvokeArgs) => Promise<u
 
 /** Whether this page runs inside the shell that owns a browser host. */
 export function canHost(): boolean {
-  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+  return (
+    typeof window !== 'undefined' &&
+    '__TAURI_INTERNALS__' in window &&
+    // **The phone is not a browser client yet.** Its engine is the system
+    // WebView, a later phase; a page that declared the capability there would
+    // hold the exclusive role and fail every ask on a command this build does
+    // not register.
+    !/Android/i.test(navigator.userAgent)
+  );
 }
 
 /** The bytes a base64 string carries. */
@@ -68,6 +78,9 @@ export function answerPart(part: HostPart): BrowserAnswerPart {
  */
 export function hostTheBrowser(connection: Connection, invoke: Invoke = defaultInvoke): () => void {
   return connection.onBrowserAsk(async (ask: BrowserAsk): Promise<BrowserAnswer> => {
+    // The strip's live mark: up while the call runs, so the row says "the
+    // browser is working" from the same fact that makes it true.
+    callUp();
     try {
       const reply = (await invoke('browser_call', {
         seat: ask.seat,
@@ -77,6 +90,8 @@ export function hostTheBrowser(connection: Connection, invoke: Invoke = defaultI
       return { parts: reply.parts.map(answerPart) };
     } catch (why) {
       return { error: whyText(why) };
+    } finally {
+      callDown();
     }
   });
 }
@@ -84,7 +99,7 @@ export function hostTheBrowser(connection: Connection, invoke: Invoke = defaultI
 /**
  * The reason a rejected command carried, as a sentence.
  *
- * Exported for the strip's own reads: a failed `listContexts` or a refused
+ * Exported for the strip's own reads: a failed `listProfiles` or a refused
  * close has the shell's own words in its rejection, and a caller that drew
  * anything else would be inventing a reason.
  */
@@ -106,71 +121,103 @@ async function defaultInvoke(_command: 'browser_call', request: InvokeArgs): Pro
 }
 
 /**
- * Bring the browser up visibly, which is what a hand-off's Open asks for.
+ * Bring the browser up visibly, which is what a hand-off's Open asks for:
+ * the person's own browser window over the profile the agents drive
+ * (headless until then). **`profile` names which one**: `null` is the
+ * shared profile, a name is that profile's own window over its own browser
+ * - the CAPTCHA in the right session, not a lookalike in the wrong one.
  *
- * **Answers whether a browser was really raised.** `false` outside the shell
- * and on a failed raise - an unvendored build, a host that cannot start -
- * and the caller draws that truth rather than claiming a window is up. A
- * dock that said "The browser is up" over a raise that never happened would
- * have the person press Done and tell the session they acted.
+ * **Answers why it could not be raised, or `null` when it was.** The shell
+ * carries the actionable sentence - a machine with no browser to drive is
+ * told which one to install - and a caller that drew a reason of its own
+ * would throw that away. Outside the shell the reason is the page's own.
+ * A dock that claimed a window was up over a raise that never happened
+ * would have the person press Done and tell the session they acted.
  */
-export async function showBrowser(): Promise<boolean> {
+export async function showBrowser(profile: string | null = null): Promise<string | null> {
+  if (!canHost()) return 'this page is not the client';
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('browser_show', { profile });
+    return null;
+  } catch (why) {
+    return whyText(why);
+  }
+}
+
+/**
+ * Take the hand-off's window back down: the browser closes, and the next
+ * agent call relaunches it headless over the same profile. **The hand-off
+ * itself is answered separately** - Done or Not now - and answering it
+ * lowers the window, so the cycle opens and closes as one act.
+ *
+ * **Answers why it could not come down, or `null` when it did** - the same
+ * shape a raise answers with, so a strip button that said hide and then
+ * drew nothing on a refusal cannot happen.
+ */
+export async function hideBrowser(profile: string | null = null): Promise<string | null> {
+  if (!canHost()) return 'this page is not the client';
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('browser_hide', { profile });
+    return null;
+  } catch (why) {
+    return whyText(why);
+  }
+}
+
+/** Whether a session has driven this client's browser since it came up. */
+export async function browserUsed(): Promise<boolean> {
   if (!canHost()) return false;
   try {
     const { invoke } = await import('@tauri-apps/api/core');
-    await invoke('browser_show');
-    return true;
+    return await invoke<boolean>('browser_used');
   } catch {
     return false;
   }
 }
 
 /**
- * Whether a browser window is already up.
- *
- * A dock asks before offering to open one: a button that says Open over a
- * window already open is a click that cannot do what it says - nothing can
- * raise another application's window - so the dock says the window is up
- * instead. `false` outside the shell, where nothing was raised.
- */
-export async function browserWindowUp(): Promise<boolean> {
-  if (!canHost()) return false;
-  try {
-    const { invoke } = await import('@tauri-apps/api/core');
-    return await invoke<boolean>('browser_window');
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Close a named context from the client's own UI: the strip's row, acting
- * for the person rather than for a session - the door a context whose
+ * Close a named profile from the client's own UI: the strip's row, acting
+ * for the person rather than for a session - the door a profile whose
  * owning session is gone comes back through.
  */
-export async function closeContext(name: string): Promise<void> {
+export async function closeProfile(name: string): Promise<void> {
   if (!canHost()) return;
   const { invoke } = await import('@tauri-apps/api/core');
-  await invoke('browser_context_close', { name });
+  await invoke('browser_profile_close', { name });
 }
 
-/** One named context, as the client's own browser strip draws it. */
-export interface ContextRow {
+/**
+ * Whether a profile's browser is up as a window - the shared one for `null` -
+ * which is what the strip's show/hide button toggles on.
+ */
+export async function profileWindowed(name: string | null = null): Promise<boolean> {
+  if (!canHost()) return false;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return await invoke<boolean>('browser_windowed', { name });
+}
+
+/** One named profile, as the client's own browser strip draws it. */
+export interface ProfileRow {
   name: string;
   /** The slot of the session that opened it. */
   owner: string;
   /** Whether its driver is still there to answer. */
   running: boolean;
+  /** Whether its browser is up as a WINDOW right now: the row's button says
+   *  hide where it is, and show where it is not. */
+  windowed: boolean;
 }
 
 /**
- * The named contexts this client holds, for its own strip.
+ * The named profiles this client holds, for its own strip.
  *
- * The contexts are the client's own state - it owns the drivers - so this is
+ * The profiles are the client's own state - it owns the drivers - so this is
  * the client reading itself, and a page outside the shell holds none.
  */
-export async function listContexts(): Promise<ContextRow[]> {
+export async function listProfiles(): Promise<ProfileRow[]> {
   if (!canHost()) return [];
   const { invoke } = await import('@tauri-apps/api/core');
-  return await invoke<ContextRow[]>('browser_contexts');
+  return await invoke<ProfileRow[]>('browser_profiles');
 }

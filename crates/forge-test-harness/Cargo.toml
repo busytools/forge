@@ -22,6 +22,8 @@ parking_lot.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true
+# `socket_replay` samples a hand-off's own fields, whose id is a uuid.
+uuid.workspace = true
 # `socket_replay` names the enums that cross the socket - `ServerMessage`,
 # `Subject`, `Command`, `SessionUpdate` - and the protocol version its
 # records are filed under. Dev-only for the same reason as the dependency

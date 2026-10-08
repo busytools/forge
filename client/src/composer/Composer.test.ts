@@ -3,19 +3,22 @@ import { readFileSync } from 'node:fs';
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { browserWindowUp, showBrowser } from '../browser/host';
+import { hideBrowser, showBrowser } from '../browser/host';
 
 /**
  * The shell's own door, mock-able so both halves of Open's claim are testable
- * here: outside the shell the real one always answers false, which only ever
+ * here: outside the shell the real one answers a reason, which only ever
  * proved the could-not line.
  */
 vi.mock('../browser/host', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../browser/host')>();
   return {
     ...actual,
-    showBrowser: vi.fn(actual.showBrowser),
-    browserWindowUp: vi.fn(() => Promise.resolve(false)),
+    // No window in tests: the shell's raise answers the reason it could not
+    // land, or null when it did. The default takes it as landing; a case
+    // that wants the failure resolves the reason instead.
+    showBrowser: vi.fn(() => Promise.resolve(null)),
+    hideBrowser: vi.fn(() => Promise.resolve()),
   };
 });
 
@@ -132,6 +135,7 @@ afterEach(() => {
   if (second !== null) void unmount(second);
   app = null;
   second = null;
+  vi.mocked(hideBrowser).mockClear();
   document.body.innerHTML = '';
   // The pending send outlives the page that drew it, so a case that leaves one
   // behind would hand it to the next.
@@ -4174,6 +4178,38 @@ describe('the dock', () => {
         },
       },
     ]);
+    // **Answering also lowers the window** (Ved live, 2026-10-07: "I said
+    // done, but the browser tab is still open"): Open raised it, and the
+    // answer is what takes it down. This line was the live bug's fix and
+    // nothing pinned it.
+    expect(hideBrowser, 'the window comes down with the answer').toHaveBeenCalledTimes(1);
+    // **The hand-off's own profile, not the shared one**: lowering the wrong
+    // window would leave the person's browser up while the answer said done.
+    expect(hideBrowser, "and it is that hand-off's profile that comes down").toHaveBeenCalledWith(
+      'job-hunt',
+    );
+  });
+
+  /** **An answer from another view lowers the window here.** The local Done
+   *  takes its own window down; a Done from the terminal never touches this
+   *  shell, and without this the browser stays headed for the next agent call
+   *  to attach to while the answer says the person finished. */
+  it('lowers the window when another view answers the hand-off', () => {
+    const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
+    expect(hideBrowser, 'nothing is lowered while the hand-off waits').not.toHaveBeenCalled();
+
+    harness.say({
+      kind: 'update',
+      update: {
+        browser_hand_off_resolved: {
+          key: { org: 'Busytools', project: 'forge', label: 'lead' },
+          id: '0192e1c0-0000-7000-8000-0000000000aa',
+          ending: { type: 'done' },
+        },
+      },
+    });
+
+    expect(hideBrowser, 'the hand-off profile comes down').toHaveBeenCalledWith('job-hunt');
   });
 
   it('declines the hand-off with Not now, which is the same release', () => {
@@ -4263,78 +4299,32 @@ describe('the dock', () => {
     expect(drawn(), "the reader's own click is not another view's").not.toContain('another view');
   });
 
-  /** Open is the client's own act, and **its claim follows its answer**:
-   * outside the shell nothing raises, so the dock says so rather than
-   * claiming "the browser is up" over a click that did nothing. */
-  it('says the browser could not be raised when nothing raised it', async () => {
-    const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
-
-    action('Open browser').click();
-    // The raise answers on a microtask; one flush after it lands.
-    await Promise.resolve();
-    flushSync();
-
-    expect(drawn(), 'no false "up"').not.toContain('The browser window is up.');
-    expect(drawn()).toContain('could not be raised here');
-    expect(commands(harness), 'and no answer crossed: Open answers nothing').toEqual([]);
-  });
-
-  /** **A raise that answered true is the claim the dock may make**: the real
-   * window is up, and the line says so rather than the could-not. */
-  it('says the browser is up once a raise really raised it', async () => {
-    vi.mocked(showBrowser).mockResolvedValueOnce(true);
+  /** **The window, not an overlay** (Ved, 2026-10-07): Open raises the
+   * person's own browser over the profile the agents drive. */
+  it('opens the browser window', async () => {
+    vi.mocked(showBrowser).mockResolvedValueOnce(null);
     open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
 
     action('Open browser').click();
-    await Promise.resolve();
-    flushSync();
-
-    expect(drawn(), 'the claim follows the raise that answered').toContain(
-      'The browser window is up.',
+    await vi.waitFor(() =>
+      expect(showBrowser, 'the raise the approval is for').toHaveBeenCalledWith('job-hunt'),
     );
-    expect(drawn()).not.toContain('could not be raised here');
   });
 
-  /** A window already up is said, not offered again: Open over one cannot do
-   * what it says, so the button goes and the line says the window is up. */
-  it('does not offer Open over a window already up', async () => {
-    vi.mocked(browserWindowUp).mockResolvedValueOnce(true);
-    open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
-
-    await vi.waitFor(() => {
-      expect(drawn(), 'the up line lands when the read answers').toContain(
-        'The browser window is up.',
-      );
-    });
-    expect(drawn(), 'and the button that cannot serve is gone').not.toContain('Open browser');
-  });
-
-  /** **The read must not freeze in the up case.** The record replaces the ask
-   * on every frame and the id stays the same, so a read that caches by id
-   * would stop asking after its first true. */
-  it('re-reads whether a window is up whenever the ask is replaced', async () => {
-    vi.mocked(browserWindowUp).mockResolvedValueOnce(true);
+  /** A window that will not open says why, in the shell's own words: the
+   *  sentence a machine with no browser to drive carries names what to
+   *  install, and a dock that replaced it with boilerplate would throw the
+   *  one actionable line away. */
+  it("says the raise failed in the shell's own words", async () => {
     const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
-    await vi.waitFor(() => expect(browserWindowUp).toHaveBeenCalledTimes(1));
+    vi.mocked(showBrowser).mockResolvedValueOnce(
+      'no browser to drive: this client drives the browser already on the machine - install Brave or Google Chrome',
+    );
 
-    harness.page.record = record({ pending_asks: [browserHandOffAsk()] });
-    flushSync();
+    action('Open browser').click();
+    await vi.waitFor(() => expect(drawn()).toContain('install Brave or Google Chrome'));
 
-    await vi.waitFor(() => expect(browserWindowUp).toHaveBeenCalledTimes(2));
-  });
-
-  /** And the other direction: a window closed while the dock is up stops
-   * being claimed, so Open comes back as the door that can serve. */
-  it('stops claiming the window is up when a later read says it is not', async () => {
-    vi.mocked(browserWindowUp).mockResolvedValueOnce(true);
-    const open_ = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
-    await vi.waitFor(() => expect(drawn()).toContain('The browser window is up.'));
-
-    vi.mocked(browserWindowUp).mockResolvedValueOnce(false);
-    open_.page.record = record({ pending_asks: [browserHandOffAsk()] });
-    flushSync();
-
-    await vi.waitFor(() => expect(drawn()).toContain('Open browser'));
+    expect(commands(harness), 'and no answer crossed: Open answers nothing').toEqual([]);
   });
 
   it("draws the question's own mark for its header, not a character-cell glyph", () => {

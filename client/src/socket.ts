@@ -600,7 +600,7 @@ export function connect(url: string): Connection {
       // **The role dies with the connection it belonged to.** The relay keeps
       // the role for the CONNECTION id, not for the page, so a reconnected
       // client is a new one - and a strip that went on saying "this client
-      // drives the browser" through a drop would hide the Take over that is
+      // drives the browser" through a drop would hide the override that is
       // the only way back. Reset before the drop guard, so even the final
       // close says the truth.
       if (browserRole) {

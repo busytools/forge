@@ -45,45 +45,40 @@ pub fn run() {
     // The updater plugin stops at the desktop; the phone's fetch, download,
     // signer check and installer handoff live in its own Kotlin plugin. Both
     // platforms answer the same commands, so the client's update line is one
-    // surface either way. The browser's commands ride the same handler - a
-    // second `invoke_handler` would replace this one rather than add to it -
-    // and the host itself is the client's on both platforms, so the mobile arm
-    // registers them too.
+    // surface either way. The browser's commands are DESKTOP-ONLY with the
+    // host itself: the phone's engine is its system WebView, a later phase,
+    // and a page that cannot host never claims the capability - while a
+    // registered command set with no host behind it would hold the exclusive
+    // role and fail every ask.
     #[cfg(desktop)]
     let builder = builder.plugin(tauri_plugin_updater::Builder::new().build()).invoke_handler(
         tauri::generate_handler![
             browser::browser_call,
-            browser::browser_context_close,
-            browser::browser_contexts,
+            browser::browser_profile_close,
+            browser::browser_profiles,
+            browser::browser_windowed,
             browser::browser_show,
-            browser::browser_window,
+            browser::browser_hide,
+            browser::browser_used,
             check_update,
             install_update,
             restart_app
         ],
     );
+    // The iOS arm is desktop-less too, and it registers nothing: the
+    // browser's set stays off there for the Android arm's own reason - no
+    // host exists to serve an ask - and the update commands are the Kotlin
+    // plugin's, which is Android's own.
     #[cfg(not(desktop))]
-    let builder = builder.invoke_handler(tauri::generate_handler![
-        browser::browser_call,
-        browser::browser_context_close,
-        browser::browser_contexts,
-        browser::browser_show,
-        browser::browser_window
-    ]);
+    let builder = builder;
 
     // **`invoke_handler` REPLACES the handler, it does not add to it** - so
-    // the Android arm carries every command the desktop arm does, the
-    // browser's among them. The host is the client's on the phone too, and a
-    // webview that declares `browser: true` while its commands are
-    // unregistered would hold the exclusive role and fail every ask on a
-    // missing invoke.
+    // the Android arm carries every command the desktop arm does, and the
+    // browser's set stays desktop-only with the host itself: the phone's
+    // engine is its system WebView, a later phase, and a page that cannot
+    // host never invokes these (its `canHost` answers false there).
     #[cfg(target_os = "android")]
     let builder = builder.plugin(android::init()).invoke_handler(tauri::generate_handler![
-        browser::browser_call,
-        browser::browser_context_close,
-        browser::browser_contexts,
-        browser::browser_show,
-        browser::browser_window,
         check_update,
         install_update
     ]);
@@ -91,46 +86,66 @@ pub fn run() {
     let run = builder
         .setup(|app| {
             tauri_plugin_log::log::info!("forge client started");
-            // The browser host is handed to the frontend whether or not its
-            // directories resolve: a client that cannot host says so when it
-            // is asked, rather than refusing to start.
-            let host = match browser::StackPaths::resolve(app.handle()) {
-                Ok(paths) => {
-                    tauri_plugin_log::log::info!("browser stack at {}", paths.stack.display());
-                    std::sync::Arc::new(browser::BrowserHost::new(paths))
-                }
-                Err(why) => {
-                    tauri_plugin_log::log::warn!("browser host unavailable: {why}");
-                    std::sync::Arc::new(browser::BrowserHost::unavailable(why))
-                }
-            };
-            // **The browser comes up with the app**, so it is there before
-            // any session asks for it: the launch takes seconds and a tool
-            // call should not pay for it, and a browser that cannot start
-            // says so here, in the client's log, rather than as a failed tool
-            // call nobody can attribute. Spawned rather than awaited - the
-            // window does not wait on a browser - and the driver stays lazy,
-            // since it exists to serve calls.
-            let starting = std::sync::Arc::clone(&host);
-            tauri::async_runtime::spawn(async move {
-                match starting.start().await {
-                    Ok(active) => {
-                        tauri_plugin_log::log::info!("the browser is up on port {}", active.port)
+            // **The browser host is desktop-only until the Android phase.**
+            // The phone's engine is its system WebView, which this build has
+            // no path to yet: a host here would answer every call with a
+            // macOS-shaped sentence (install Brave) and warn once per launch
+            // about a browser it was never going to start, while the
+            // capability the page declares would hold the role and fail every
+            // ask. With the host absent the phone simply is not a browser
+            // client, and a session reads the named "no browser-capable
+            // client connected" instead.
+            #[cfg(desktop)]
+            {
+                // The host is handed to the frontend whether or not its
+                // directories resolve: a client that cannot host says so when
+                // it is asked, rather than refusing to start.
+                let host = match browser::StackPaths::resolve(app.handle()) {
+                    Ok(paths) => {
+                        tauri_plugin_log::log::info!("browser stack at {}", paths.stack.display());
+                        std::sync::Arc::new(browser::BrowserHost::new(paths))
                     }
-                    Err(why) => tauri_plugin_log::log::warn!("the browser did not start: {why}"),
-                }
-            });
-            app.manage(host);
+                    Err(why) => {
+                        tauri_plugin_log::log::warn!("browser host unavailable: {why}");
+                        std::sync::Arc::new(browser::BrowserHost::unavailable(why))
+                    }
+                };
+                // **The browser comes up with the app**, so it is there
+                // before any session asks for it: the launch takes seconds
+                // and a tool call should not pay for it, and a browser that
+                // cannot start says so here, in the client's log, rather than
+                // as a failed tool call nobody can attribute. Spawned rather
+                // than awaited - the window does not wait on a browser - and
+                // the driver stays lazy, since it exists to serve calls.
+                let starting = std::sync::Arc::clone(&host);
+                tauri::async_runtime::spawn(async move {
+                    match starting.start().await {
+                        Ok(active) => tauri_plugin_log::log::info!(
+                            "the browser is up on port {}",
+                            active.port
+                        ),
+                        Err(why) => {
+                            tauri_plugin_log::log::warn!("the browser did not start: {why}")
+                        }
+                    }
+                });
+                app.manage(host);
+            }
             Ok(())
         })
-        .run(context);
+        .build(context);
 
-    if let Err(err) = run {
-        let line = format!("forge client failed to start: {err}");
-        record(log_file.as_deref(), &line);
-        eprintln!("{line}");
-        std::process::exit(1);
-    }
+    let app = match run {
+        Ok(app) => app,
+        Err(err) => {
+            let line = format!("forge client failed to start: {err}");
+            record(log_file.as_deref(), &line);
+            eprintln!("{line}");
+            std::process::exit(1);
+        }
+    };
+
+    app.run(|_handle, _event| {});
 }
 
 /// The version an update check found, or `None` when this build is current.

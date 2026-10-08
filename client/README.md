@@ -68,22 +68,25 @@ starts; passing `--ci` explicitly overrides it. And `npm` swallows a bare
 The client hosts the browser a session's `browser_*` tools drive: it owns
 the browser process, its profile and the driver, and answers the asks the
 socket routes to it. `just vendor-browser-stack` fetches and verifies the
-three pinned artifacts into the gitignored `src-tauri/browser-stack/`
-directory - node, `@playwright/mcp` and Chrome for Testing - and
-`bundle.resources` carries that tree into the bundle, so a release ships
-the browser with the app and nothing downloads at first use. The bundling
-recipes run the vendoring themselves; `just client-tauri-check` does not,
-because it copies no resources.
+driver into the gitignored `src-tauri/browser-stack/` directory - node
+and `@playwright/mcp` - and `bundle.resources` carries that tree into the
+bundle, so nothing downloads at first use. **The browser itself is the
+machine's own**: the host drives the installed Brave, else Google Chrome,
+headless until a hand-off's Open raises the window - install one of those
+for the browser tools to answer, as there is no vendored fallback. The
+bundling recipes run the vendoring themselves; `just client-tauri-check`
+does not, because it copies no resources.
 
 `src-tauri/src/browser/` is the host, and four things in it are worth
 knowing before changing them:
 
 - **The browser outlives the client**, so it is launched detached against a
   profile under the app's data directory, and a launch is found again by the
-  `DevToolsActivePort` file Chromium writes into that profile. Chrome for
-  Testing 155 writes that file only when it is asked for
-  `--remote-debugging-port=0` - handed a number it writes none - so the port
-  is the browser's own choice, read back, rather than a constant.
+  `DevToolsActivePort` file Chromium writes into that profile. Measured on
+  Chrome for Testing 155 and true of the Brave and Chrome builds this runs
+  against: the file appears only when the launch asks for
+  `--remote-debugging-port=0` - handed a number the browser writes none - so
+  the port is the browser's own choice, read back, rather than a constant.
 - **The driver is upstream's own** `@playwright/mcp`, spawned as a child
   process and spoken to as an MCP client through `rmcp`, pointed at the
   browser's CDP endpoint with `--no-webmcp` (without which the tool surface
@@ -93,20 +96,21 @@ knowing before changing them:
   from the shell and never from a page opened outside it, because an ask
   routed to a client that cannot serve it arrives as a session's tool call
   failing.
-- **A named context is a driver of its own.** Upstream multiplexes nothing:
-  attached to a CDP endpoint it drives the browser's own context unless
-  `--isolated` makes it create one. So `context: "name"` on a tool call picks
-  a separate driver, owned by the session that opened it (another session is
-  refused by name until it is released) and saved after every call - cookies
-  into its storage file, open tab URLs beside it - so opening it again reopens
-  what it had.
+- **A named profile is a browser of its own.** `profile: "name"` on a tool
+  call launches (or attaches to) a browser on its OWN data directory, and the
+  driver attaches to it exactly as it attaches to the shared one. Logins,
+  cookies and sessions persist natively, the session that opened it owns it
+  (another session is refused by name until it is released), and a hand-off
+  naming it raises THAT profile's window on THAT profile's page - a CAPTCHA
+  solved in the right session, not a lookalike in the wrong one.
 
 `client/src-tauri/tests/browser_live.rs` drives the whole chain - launch,
 driver, `browser_navigate` and `browser_snapshot` - against the vendored
-stack, and `tests/contexts_live.rs` proves the contexts layer: two drivers
-over one browser with separate cookies, and the ownership-release-reopen
-walk. They are `#[ignore]`d because that stack is half a gigabyte and absent
-from a fresh checkout; run them where it is vendored:
+driver, and `tests/profiles_live.rs` proves the profiles layer: two names are
+two browsers with separate cookies, show raises the named profile's own
+window on its own page, a second session is refused by name, and a profile
+reopened after a close keeps its logins. They are `#[ignore]`d because the
+stack is absent from a fresh checkout; run them where it is vendored:
 
 ```sh
 cargo nextest run --manifest-path client/src-tauri/Cargo.toml --run-ignored ignored-only

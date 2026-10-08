@@ -2188,7 +2188,7 @@ impl std::fmt::Debug for SessionUpdate {
                 .debug_struct("BrowserHandOffPending")
                 .field("key", key)
                 .field("id", &handoff.id)
-                .field("context", &handoff.context)
+                .field("profile", &handoff.profile)
                 .finish_non_exhaustive(),
             Self::BrowserHandOffResolved { key, id, ending } => f
                 .debug_struct("BrowserHandOffResolved")
