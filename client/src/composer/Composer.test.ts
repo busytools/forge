@@ -2515,6 +2515,24 @@ describe('the frame', () => {
     );
   });
 
+  /**
+   * **The phone's floors are read on the block itself**, because the coarse
+   * rules sit on one line inside the media query, where the per-selector scan
+   * above reaches only their base rules - and that is exactly how they went
+   * unpinned while two changes crossed.
+   */
+  it("keeps the mic and the panel's close at a finger's size, and the mic's accent", () => {
+    const coarse = /@media \(pointer: coarse\) \{[^\n]*\.foot \.mic[^\n]*\}/.exec(sheet)?.[0] ?? '';
+    expect(coarse, 'the mic lost its height floor on a finger').toContain('min-height: 44px');
+    expect(coarse, 'the mic lost its width floor on a finger').toContain('min-width: 44px');
+    expect(coarse, "the panel's close lost its width floor").toContain(
+      '.pop .hd .x { min-width: 44px; }',
+    );
+    expect(sheetRule('.foot .mic:hover'), 'the mic lost its accent hover').toContain(
+      'color: var(--accent)',
+    );
+  });
+
   it('keeps the separation the rows above the draft had before C moved the field and the footer', () => {
     expect(sheet, 'a row above the draft lost the 8px the box used to give it').toMatch(
       /\.comp \.notice \+ \.line[^{]*\{[^}]*margin-top: 8px/,
