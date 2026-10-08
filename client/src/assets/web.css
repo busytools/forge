@@ -1598,7 +1598,7 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
 /* The mic is the phone's primary dictate control and carries the hold, so its
    width takes the same 44px floor as the dock's (the sheet's button rule gives
    the height; a finger drifting off 24px would cancel the hold). */
-@media (pointer: coarse) { .line .mic { min-height: 44px; min-width: 44px; } }
+@media (pointer: coarse) { .line .mic { min-height: 44px; min-width: 44px; } .pop .hd .x { min-width: 44px; } }
 /* The send, at the same 24px pointer floor as the mic and centred in whatever
    box it gets, since the phone width gives every control a 44px floor and the
    icon would otherwise sit at the top of it. */

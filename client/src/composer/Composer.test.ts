@@ -1035,6 +1035,31 @@ describe('the box', () => {
     }
   });
 
+  it("re-anchors the swallow at the release, so a long hold's click is not a press", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = open({ dictation: true });
+      const mic = document.querySelector('.mic');
+      if (!(mic instanceof HTMLElement))
+        throw new Error('an install that can dictate draws no way in');
+
+      // A slow hold: past the threshold AND past the swallow's window measured
+      // from the fire - the release's click is still the hold's, not a press.
+      mic.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+      vi.advanceTimersByTime(450);
+      vi.advanceTimersByTime(900);
+      mic.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }));
+      mic.click();
+      for (let turn = 0; turn < 4; turn += 1) await Promise.resolve();
+      flushSync();
+
+      expect(document.querySelector('.pop'), 'the hold is still the door').not.toBeNull();
+      expect(harness.sent, 'a long hold does not start a take on release').toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('expires the swallow, so a hold with no trailing click does not eat the next press', async () => {
     vi.useFakeTimers();
     try {
@@ -5446,10 +5471,14 @@ describe('the dictation panel', () => {
 
     const x = document.querySelector('.pop .hd .x');
     if (!(x instanceof HTMLElement)) throw new Error('the panel drew no close');
+    // The browser focuses what it activates: jsdom's click does not, and
+    // without this the mount's own field focus answers the assertion below.
+    x.focus();
     x.click();
     flushSync();
 
     expect(document.querySelector('.pop'), 'the close is the door out').toBeNull();
+    expect(document.activeElement, 'the keyboard returns to the field').toBe(field());
   });
 
   /**

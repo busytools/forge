@@ -943,6 +943,11 @@
     if (holdTimer !== null) {
       clearTimeout(holdTimer);
       holdTimer = null;
+    } else if (heldAt !== 0) {
+      // The hold fired, so its release is when the trailing click arrives:
+      // re-anchor the swallow here, or a hold longer than its window would
+      // start a take on release.
+      heldAt = Date.now();
     }
   }
 
@@ -1167,7 +1172,12 @@
         device={seatDevice}
         onaxes={setAxes}
         ondevice={setDevice}
-        onclose={() => (panel = false)}
+        onclose={() => {
+          panel = false;
+          // The keyboard goes back where Escape puts it, so closing by the
+          // button is not a dead end for a keyboard reader.
+          field?.focus();
+        }}
       />
     {/if}
   </div>
