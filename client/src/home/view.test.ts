@@ -15,6 +15,55 @@ import type {
   WorkState,
 } from '../wire/home';
 import { homeFrom } from '../wire/home';
+
+describe('an agent row from a server that names no failure', () => {
+  /**
+   * The fold's own `?? null`: a server old enough not to state the failure
+   * leaves the field out, and it must read as `null` rather than as a
+   * failure. The only pin of this branch went with the floor fixture, and it
+   * matters more now - a server on another protocol connects and is folded
+   * rather than refused.
+   */
+  it('reads an absent failed_turn as null rather than as a failure', () => {
+    const raw = {
+      projects: [],
+      agents: [
+        {
+          slot: { org: 'O', project: 'P', label: 'lead' },
+          label: 'lead',
+          lifecycle: 'Idle',
+          has_background_work: false,
+          pending: null,
+          pending_depth: 0,
+          last_activity: null,
+          reason: null,
+          work: null,
+        },
+      ],
+      unseen: [],
+      accounts: {
+        loading: [],
+        all_loaded: true,
+        gateway: { ready: true, port: 0, bind_error: null },
+        usage: [],
+        orgs: [],
+      },
+      plugins: { update_records: [] },
+      workers: [],
+      connectors: null,
+      dictate: { enabled: false, snapshot: { models: [], failure: null }, models_dir: null },
+      cli_version: null,
+      forge_version: '1.0.0',
+      forge_version_short: '1.0.0',
+      service_status: null,
+      fatal_error: null,
+    };
+    expect(
+      homeFrom(raw as unknown as HomeWire).agents[0]?.failed_turn,
+      'an absent failure reads as null',
+    ).toBeNull();
+  });
+});
 import {
   artifactLabel,
   availableVersion,
