@@ -32,6 +32,16 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(150);
 /// even [`CALL_TIMEOUT`]. A start that cannot answer names it instead.
 const START_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// The phone's bounds, its own: the in-app node's boot is seconds of real
+/// work (measured 8 s warm, 39 s on a loaded emulator) where the desktop's
+/// child spawn is immediate, and it redials every second until the shell is
+/// listening - so the accept window is generous, and the MCP handshake after
+/// it is wider than the desktop's because cli.js loads after the dial.
+#[cfg(target_os = "android")]
+const IN_APP_ACCEPT_TIMEOUT: Duration = Duration::from_secs(90);
+#[cfg(target_os = "android")]
+const IN_APP_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// One part of a tool's answer, on its way to the socket.
 ///
 /// An image's bytes cross here as the base64 the MCP client's own model
@@ -156,22 +166,22 @@ impl Driver {
             .map_err(|why| format!("the driver socket could not be bound: {why}"))?;
         let relay = engine.start_driver(socket, output_dir).await?;
         tauri_plugin_log::log::info!("the engine answers (relay port {})", relay.relay_port);
-        let accept = tokio::time::timeout(START_TIMEOUT, listener.accept())
+        let accept = tokio::time::timeout(IN_APP_ACCEPT_TIMEOUT, listener.accept())
             .await
             .map_err(|_| {
                 format!(
                     "the on-device driver did not dial its socket within {} s",
-                    START_TIMEOUT.as_secs()
+                    IN_APP_ACCEPT_TIMEOUT.as_secs()
                 )
             })?
             .map_err(|why| format!("the driver socket did not accept: {why}"))?;
         let (stream, _) = accept;
-        let service = tokio::time::timeout(START_TIMEOUT, ().serve(stream))
+        let service = tokio::time::timeout(IN_APP_HANDSHAKE_TIMEOUT, ().serve(stream))
             .await
             .map_err(|_| {
                 format!(
                     "the on-device driver did not answer its MCP handshake within {} s",
-                    START_TIMEOUT.as_secs()
+                    IN_APP_HANDSHAKE_TIMEOUT.as_secs()
                 )
             })?
             .map_err(|why| format!("the driver did not answer its MCP handshake: {why}"))?;

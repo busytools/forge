@@ -117,13 +117,16 @@
   });
 
   /**
-   * The phone's takeover bar lowering itself (its back, or the hardware
-   * Back): nothing here acted, so the shared row's window state re-reads on
-   * the bar's word - see `installTakeoverHook`.
+   * The phone's takeover bar coming down - its back, its Done, the hardware
+   * Back: nothing here acted, so the shared row's window state re-reads on
+   * the bar's word - see `installTakeoverHook`. **Done counts**: it lowers
+   * too, and a read the bar does not trigger would leave the row saying
+   * "hide" over a window already down (measured live).
    */
   $effect(() => {
     const onTakeover = (event: Event): void => {
-      if ((event as CustomEvent<string>).detail !== 'lowered') return;
+      const what = (event as CustomEvent<string>).detail;
+      if (what !== 'lowered' && what !== 'done') return;
       void readProfiles();
     };
     window.addEventListener('forge-takeover', onTakeover);

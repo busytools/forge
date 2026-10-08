@@ -34,7 +34,12 @@ android {
     compileSdk = 37
     namespace = "dev.vedhavyas.forge"
     defaultConfig {
-        manifestPlaceholders["usesCleartextTraffic"] = "false"
+        // **Cleartext ws:// is how the app reaches a forge.** The client
+        // connects to a server on the user's own machine or LAN (`ws://` to
+        // an address they type), and Android has blocked cleartext by
+        // default since 9 - a release build that kept the default failed to
+        // connect where the same page in Chrome worked (Ved, 2026-10-08).
+        manifestPlaceholders["usesCleartextTraffic"] = "true"
         applicationId = "dev.vedhavyas.forge"
         minSdk = 24
         targetSdk = 37

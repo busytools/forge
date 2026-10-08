@@ -40,13 +40,18 @@ function parseArgs(argv) {
 }
 
 const opts = parseArgs(process.argv);
+console.error('[bootstrap] payload up ' + process.version + ' at ' + Date.now());
 if (!opts.mcp || !opts.mcpSocket || !opts.cdp || !opts.cdpToken || !opts.output) {
   console.error('[bootstrap] missing an argument: ' + JSON.stringify(opts));
   throw new Error('the bootstrap was not given its full argv');
 }
 
+// **stderr, never stdout**: once the stream pair below is installed,
+// `process.stdout` IS the MCP channel - a log line written there is non-JSON
+// garbage in the server's transport, which wedges the handshake (measured:
+// the first dial connected and the initialize never answered).
 function log(line) {
-  console.log('[bootstrap] ' + line);
+  console.error('[bootstrap] ' + line);
 }
 
 // --- the environment fixes the driver needs on Android ---------------------
@@ -80,6 +85,7 @@ Object.defineProperty(process, 'stdout', { value: fromServer, configurable: true
 // frames again - nothing is re-handshaken here.
 let link = null;
 function dial() {
+  console.error('[bootstrap] dialing ' + opts.mcpSocket + ' at ' + Date.now());
   link = net.connect({ path: opts.mcpSocket });
   link.on('connect', () => {
     log('mcp socket connected');

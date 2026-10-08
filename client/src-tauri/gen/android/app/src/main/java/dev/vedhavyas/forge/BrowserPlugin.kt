@@ -191,7 +191,7 @@ internal class BrowserEngine(private val activity: Activity) {
    */
   fun unpackAssets() {
     val dest = File(activity.filesDir, "browser/engine")
-    val marker = File(dest, ".unpacked-2")
+    val marker = File(dest, ".unpacked-3")
     val entry = File(dest, "payload/bootstrap.js")
     val cli = File(dest, "playwright-mcp/node_modules/@playwright/mcp/cli.js")
     if (marker.exists() && entry.isFile && cli.isFile) {
@@ -347,7 +347,14 @@ internal class BrowserEngine(private val activity: Activity) {
           return true
         }
       }
-    Log.i(TAG, "browser webview created (offscreen)")
+    // **A navigation, or the renderer never starts**: a WebView created and
+    // left untouched has no renderer behind its page target, so every
+    // renderer-scoped CDP command (Runtime.enable, Page.enable) hangs
+    // forever while browser-scoped ones answer - measured live: playwright's
+    // connectOverCDP timed out on the inert page. about:blank is enough; the
+    // view stays unattached until a takeover.
+    view.loadUrl("about:blank")
+    Log.i(TAG, "browser webview created (offscreen, about:blank)")
     return view
   }
 
@@ -427,7 +434,17 @@ internal class BrowserEngine(private val activity: Activity) {
         client.close()
         return
       }
-      if (!authorized(String(head, Charsets.ISO_8859_1))) {
+      val headText = String(head, Charsets.ISO_8859_1)
+      Log.i(TAG, "relay request: " + headText.lineSequence().firstOrNull()?.take(90) + " hdr=" + (headText.contains("X-Forge-Token: ", ignoreCase = true)))
+      // **Only the discovery request is gated.** The token keeps another app
+      // on the device from learning the browser's WebSocket path; the
+      // WebSocket upgrade itself rides the uuid nobody can guess, and
+      // playwright sends the header on the discovery request alone -
+      // gating the upgrade refused the driver's own connection (measured:
+      // the handshake wedged until the start timed out).
+      val discovery = headText.lineSequence().firstOrNull()?.startsWith("GET /json") == true
+      if (discovery && !authorized(headText)) {
+        Log.w(TAG, "relay refused an ungated discovery request")
         val out = client.getOutputStream()
         out.write("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n".toByteArray())
         out.flush()
