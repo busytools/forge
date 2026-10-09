@@ -109,6 +109,13 @@
       onact={boardAct}
       notice={home.report}
     />
+  {:else if home.refused}
+    <!-- The board reads the same snapshot the fleet does, so a subscription
+         the server turned down leaves it with nothing to draw - and saying so
+         is not the same page as never having read. -->
+    <main class="wrap">
+      <p class="pending">This forge would not answer for the home: {home.refused}</p>
+    </main>
   {:else if connected}
     <main class="wrap"><p class="pending">Reading the fleet...</p></main>
   {:else}

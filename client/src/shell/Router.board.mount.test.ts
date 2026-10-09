@@ -151,4 +151,34 @@ describe('a board edit through the router', () => {
     expect(document.body.textContent).toContain('waiting on you');
     expect(document.body.textContent).toContain(LEAD.label);
   });
+
+  /**
+   * A subscription the server turned down is its own state here too: the
+   * board reads the same snapshot the fleet does, so a refused read leaves it
+   * with nothing - and "Reading the fleet..." forever is the page lying about
+   * a read that is never coming.
+   */
+  it('says so when the home read was refused, rather than reading forever', () => {
+    const { connection } = recording([]);
+    app = mount(Router, {
+      target: document.body,
+      props: {
+        route: { name: 'board', org: 'TestOrg', project: 'proj' },
+        settings: DEFAULT_SETTINGS,
+        address: '127.0.0.1:8790',
+        home: { wire: null, refused: 'not this client', report: null },
+        failure: null,
+        connected: true,
+        connection,
+        notice: null,
+        onconnect: () => {},
+      },
+    });
+    flushSync();
+
+    expect(document.body.textContent).toContain('not this client');
+    expect(document.body.textContent, 'the page claimed a read was coming').not.toContain(
+      'Reading the fleet',
+    );
+  });
 });
