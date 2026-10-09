@@ -535,6 +535,69 @@ describe('the conversation the chat draws', () => {
   });
 
   /**
+   * A return page heals a held live turn whose counter frames it missed.
+   *
+   * The strip draws its clock from the held row and its thinking count from
+   * the counter frames the row carries - so a held turn that grew without
+   * them (the frames crossed while the seat was away) shows a ticking clock
+   * and no count until a page puts them back. Ved saw exactly that on
+   * 2026-10-09: "the duration just appeared... thinking tokens does not
+   * appear."
+   */
+  it('heals a held live turn with the counters a return page carries', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'one')], 'c1'));
+    server.update({ chat_appended: { key: LEAD, msg: said('working') } });
+
+    chat.leaving();
+    chat.showing();
+    server.send(
+      page([{ key: 't1', messages: [typed('one'), said('working'), counted(40)] }], 'c1'),
+    );
+
+    const turns = get(chat.value).turns;
+    const units = fold(turns[turns.length - 1]?.messages ?? [], null, true, false);
+    const report = units.at(-1) as
+      { kind?: string; info?: { thinking_tokens?: number | null } } | undefined;
+    expect(
+      report?.info?.thinking_tokens,
+      'the counters the page carries reach the running row',
+    ).toBe(40);
+    stop();
+  });
+
+  /**
+   * A completion keeps the live row while the record still says a turn is in
+   * flight: the CLI ends a turn per delivered prompt, so a mid-turn message
+   * fires `turn_complete` while the seat is still running - and taking that
+   * frame as the end killed the clock and the thinking count until a
+   * remount (Ved, 2026-10-09: "the thinking tokens... is also very finicky").
+   */
+  it('keeps the live row through a completion the record says is not the end', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'one')], null));
+    server.update({ chat_appended: { key: LEAD, msg: said('working') } });
+    // The core's own record says the seat has a turn in flight.
+    server.send({
+      kind: 'snapshot',
+      subject: { session: LEAD },
+      data: { header: { turn_in_flight: true } },
+    });
+
+    server.update({ turn_complete: { key: LEAD } });
+
+    expect(
+      get(chat.value).turns.at(-1)?.running,
+      'the completion is one queued prompt ending, not the seat',
+    ).toBe(true);
+    stop();
+  });
+
+  /**
    * A tail no page can carry walks nothing: a `forge_notice` row is written
    * on this page and nowhere else, so targeting one would fetch the whole
    * history one page per landing for a turn no transcript holds.
