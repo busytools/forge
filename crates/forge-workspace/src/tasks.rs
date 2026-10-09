@@ -34,8 +34,9 @@ pub(crate) enum ClaimError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum MoveError {
     /// Completing a root row while its children are open; cancel them
-    /// first to abandon the epic.
-    OpenChildren(usize),
+    /// first to abandon the epic. The children's own SUBJECTS ride it:
+    /// "cancel them first" names nothing a reader can go and do.
+    OpenChildren(Vec<String>),
     /// The caller does not own the row it is trying to wait.
     NotOwner,
     /// No row carries the id.
@@ -69,7 +70,19 @@ impl std::fmt::Display for MoveError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::OpenChildren(open) => {
-                write!(f, "{open} children are still open; cancel them first to abandon the epic")
+                let names = open.join(", ");
+                if open.len() == 1 {
+                    write!(
+                        f,
+                        "1 child is still open ({names}); cancel it first to abandon the epic"
+                    )
+                } else {
+                    write!(
+                        f,
+                        "{} children are still open ({names}); cancel them first to abandon the epic",
+                        open.len()
+                    )
+                }
             }
             Self::NotOwner => write!(f, "you do not own this row"),
             Self::NotFound => write!(f, "no such row"),
@@ -186,15 +199,16 @@ impl Workspace {
             let closing = next.parent.is_none() && next.status == TaskStatus::Completed;
             let mut removed: Vec<Task> = Vec::new();
             if closing {
-                let open = tasks
+                let open: Vec<String> = tasks
                     .iter()
                     .filter(|t| {
                         t.project_name == project_name
                             && t.parent.as_ref() == Some(&next.id)
                             && !is_terminal(t.status)
                     })
-                    .count();
-                if open > 0 {
+                    .map(|t| t.subject.clone())
+                    .collect();
+                if !open.is_empty() {
                     return Err(MoveError::OpenChildren(open));
                 }
                 next.archived_at = Some(at);
@@ -1394,8 +1408,8 @@ mod tests {
             ws.update_task("proj", &TaskId::from("epic"), By::Seat(lead), |task| {
                 task.status = TaskStatus::Completed;
             }),
-            Err(MoveError::OpenChildren(1)),
-            "cancel the child first to abandon the epic",
+            Err(MoveError::OpenChildren(vec!["subject child".to_owned()])),
+            "the refusal names the child that still has to be cancelled",
         );
         assert_eq!(ws.tasks_for_project("proj").len(), 2, "nothing moved");
         assert!(archived_of(&ws, "proj").is_empty(), "nothing archived");

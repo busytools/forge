@@ -404,12 +404,23 @@
             {#if row.verification}
               {#if row.detail !== null}<div class="b-detail">{row.detail}</div>{/if}
               <div class="b-do">
-                <button
-                  type="button"
-                  class="b-btn b-ok"
-                  onclick={() => act({ task_verdict: { project, id: row.id, approve: true } })}
-                  >approve</button
-                >
+                {#if row.open > 0}
+                  <!-- A root cannot complete while a child is open, so an
+                       approve here is a press the core refuses. The strip
+                       says what still has to close, and offers only the
+                       send-back - which the core does take. -->
+                  <span class="b-hold"
+                    >{row.rollup} done &middot; {row.open} still open, and a row closes when its children
+                    do</span
+                  >
+                {:else}
+                  <button
+                    type="button"
+                    class="b-btn b-ok"
+                    onclick={() => act({ task_verdict: { project, id: row.id, approve: true } })}
+                    >approve</button
+                  >
+                {/if}
                 <input
                   class="b-in"
                   data-editor="board"

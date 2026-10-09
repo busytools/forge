@@ -489,6 +489,43 @@ describe("the board's controls", () => {
   });
 
   /**
+   * **A press the core would refuse is not offered.** A root cannot complete
+   * while any child is open, so the strip draws what still has to close and
+   * withholds the approve - the send-back stays, because the core takes it.
+   */
+  it('holds the approve back while a root still has open children', () => {
+    summon(
+      wireWith([
+        row(
+          task('epic', 'the epic', 'waiting', {
+            waiting_on: { kind: 'decision', detail: null, on: null, verification: true },
+          }),
+          { rollup: [2, 4] },
+        ),
+      ]),
+    );
+
+    expect(document.body.textContent, 'the strip did not say what holds it').toContain(
+      '2 still open',
+    );
+    expect(byText('approve'), 'the doomed approve was offered').toBeNull();
+    expect(byText('send back'), 'the send-back is the one that works, and it went').not.toBeNull();
+  });
+
+  it('offers the approve when the row has nothing left to close', () => {
+    summon(
+      wireWith([
+        row(
+          task('t1', 'a row', 'waiting', {
+            waiting_on: { kind: 'decision', detail: null, on: null, verification: true },
+          }),
+        ),
+      ]),
+    );
+    expect(byText('approve'), 'a row that can complete lost its approve').not.toBeNull();
+  });
+
+  /**
    * Every card draws whole: its mark, its subject, its meta line and its
    * measure line - owned or not. An unclaimed card says so rather than
    * leaving the meta blank.

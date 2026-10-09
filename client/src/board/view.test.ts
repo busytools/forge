@@ -114,7 +114,9 @@ describe("one project's board", () => {
         task('verify', 'a look', 'waiting', {
           waiting_on: { kind: 'decision', detail: 'the mock', on: null, verification: true },
         }),
-        { updated_secs_ago: 2_400 },
+        // An epic with two of its four children still open: the strip has to
+        // carry that, because the core refuses the approve over it.
+        { updated_secs_ago: 2_400, rollup: [2, 4] },
       ),
       row(
         task('ask', 'a question', 'waiting', {
@@ -134,6 +136,13 @@ describe("one project's board", () => {
     expect(view.waiting[0]?.verification).toBe(true);
     expect(view.waiting[0]?.age).toBe('40m');
     expect(view.waiting[1]?.verification).toBe(false);
+    // The children a root still waits on ride the strip's own row: an approve
+    // offered over them is a press the core refuses.
+    expect(view.waiting[0]?.open, 'the open children did not reach the strip').toBe(2);
+    expect(view.waiting[0]?.rollup).toBe('2/4');
+    // A row with no children at all can complete, so nothing is held.
+    expect(view.waiting[1]?.open).toBe(0);
+    expect(view.waiting[1]?.rollup).toBeNull();
   });
 
   /** The marks become words, and the wait's kind decides the chip. */

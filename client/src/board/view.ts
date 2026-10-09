@@ -138,6 +138,14 @@ export interface WaitingView {
   detail: string | null;
   /** How long it has waited. */
   age: string;
+  /**
+   * How many of the row's children are not closed. A root cannot complete
+   * while any is open, so an approve offered over one would be a press the
+   * core refuses - the strip says so instead, and withholds the control.
+   */
+  open: number;
+  /** The row's children, as the server counted them: `done/total`. */
+  rollup: string | null;
 }
 
 export interface BoardView {
@@ -307,6 +315,8 @@ export function boardView(wire: HomeWire, org: string, project: string): BoardVi
       verification: entry.task.waiting_on?.verification === true,
       detail: entry.task.waiting_on?.detail ?? null,
       age: fmtSecs(entry.updated_secs_ago),
+      open: entry.rollup === null ? 0 : entry.rollup[1] - entry.rollup[0],
+      rollup: entry.rollup === null ? null : `${entry.rollup[0]}/${entry.rollup[1]}`,
     }));
   return {
     name: project,
