@@ -248,11 +248,11 @@ impl Tool for Update {
 
     fn description(&self) -> &'static str {
         "Change a task in YOUR project by id, stating only the fields to move - everything else \
-         is left alone. `status` is the usual one (pending / in_progress / blocked / completed), \
-         and `owner` takes a session label (\"lead\" for the lead) or the label of a worker. Any \
-         session in the project may move any of its tasks, so a lead can complete a worker's \
-         task and a worker can block its own parent. An unknown id is an error, not a no-op. \
-         Returns the task as the write left it."
+         is left alone. `status` is the usual one (pending / in_progress / waiting / completed / \
+         failed / canceled), and `owner` takes a session label (\"lead\" for the lead) or the \
+         label of a worker. Any session in the project may move any of its tasks, so a lead can \
+         complete a worker's task and a worker can put a row it holds into waiting. An unknown \
+         id is an error, not a no-op. Returns the task as the write left it."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -862,10 +862,10 @@ mod tests {
         }
     }
 
-    /// The spelling a caller reads in a result and the spelling it must
-    /// send back are the same four. Both `input_schema`s write them out by
-    /// hand rather than deriving them from the enum, so nothing else pins
-    /// them to it.
+    /// The spelling a caller reads in a result, the spelling it must send
+    /// back, and the spelling the description names are the same six. Every
+    /// one of those sites writes them out by hand rather than deriving them
+    /// from the enum, so nothing else pins them to it.
     #[test]
     fn the_status_spellings_agree_across_the_output_and_both_schemas() {
         for (status, spelling) in [
@@ -894,6 +894,24 @@ mod tests {
                 "a caller must be able to send back what it read",
             );
         }
+
+        // The description is the site an agent reads BEFORE it writes anything,
+        // and the one nothing checks: it named `blocked` for a release after
+        // the enum dropped it, so a session following it took a hard
+        // `invalid arguments` where the schema would have said the same thing
+        // more cheaply.
+        let description =
+            Update { facade: MockTasksFacade::new().into_arc(), slot: lead_slot() }.description();
+        for spelling in ["pending", "in_progress", "waiting", "completed", "failed", "canceled"] {
+            assert!(
+                description.contains(spelling),
+                "the description does not name {spelling}, which the schema accepts",
+            );
+        }
+        assert!(
+            !description.contains("blocked"),
+            "the description names a status the enum no longer carries",
+        );
     }
 
     /// Every field the list description promises is in the block the model
