@@ -70,16 +70,21 @@ impl std::fmt::Display for MoveError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::OpenChildren(open) => {
-                let names = open.join(", ");
+                // The first few by name, the rest counted: an epic with thirty
+                // open children is one line on the board's service line, and a
+                // thirty-subject sentence is not a sentence a reader reads.
+                let named = open.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+                let rest = open.len().saturating_sub(3);
+                let more = if rest == 0 { String::new() } else { format!(" and {rest} more") };
                 if open.len() == 1 {
                     write!(
                         f,
-                        "1 child is still open ({names}); cancel it first to abandon the epic"
+                        "1 child is still open ({named}); cancel it first to abandon the epic"
                     )
                 } else {
                     write!(
                         f,
-                        "{} children are still open ({names}); cancel them first to abandon the epic",
+                        "{} children are still open ({named}{more}); cancel them first to abandon the epic",
                         open.len()
                     )
                 }
@@ -1413,6 +1418,24 @@ mod tests {
         );
         assert_eq!(ws.tasks_for_project("proj").len(), 2, "nothing moved");
         assert!(archived_of(&ws, "proj").is_empty(), "nothing archived");
+
+        // Thirty open children is one line on the board's service line: the
+        // message names the first few and counts the rest rather than
+        // inlining a thirty-subject sentence.
+        for n in 0..30 {
+            ws.push_task(sample_task_with_parent(&format!("c{n}"), Some("epic"), "proj"));
+        }
+        let said = ws
+            .update_task("proj", &TaskId::from("epic"), By::User, |task| {
+                task.status = TaskStatus::Completed;
+            })
+            .expect_err("the root is refused")
+            .to_string();
+        assert!(said.contains("28 more"), "the tail was not counted: {said}");
+        assert!(
+            !said.contains("c20"),
+            "the message inlines every subject rather than eliding: {said}"
+        );
     }
 
     #[test]

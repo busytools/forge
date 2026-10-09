@@ -1007,6 +1007,42 @@ describe('what a row says', () => {
     expect(rows[1]?.task.status, 'a v7 blocked row read as ready').toBe('waiting');
   });
 
+  /**
+   * **The links reader is total.** A payload carrying `links` as anything but
+   * an array of objects - `{}`, a string, `[null]` - is a shape this client
+   * has no type for, and throwing inside the read is the one outcome the step
+   * back exists to prevent: the whole page draws nothing. Nothing shipped
+   * sends one; the point is that nothing draws nothing either.
+   */
+  it('reads a row whose links are not an array of objects', () => {
+    const first = homeWire.projects[0];
+    if (first === undefined) throw new Error('the fixture holds no project');
+    const base = {
+      id: 'odd',
+      project_name: 'proj',
+      subject: 'a row with odd links',
+      active_form: null,
+      detail: null,
+      status: 'pending',
+      owner: null,
+      parent: null,
+      estimate: null,
+      created_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+      updated_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+    };
+
+    for (const links of [{}, 'x', [null], [42]]) {
+      const odd = {
+        ...homeWire,
+        projects: [{ ...first, rows: [{ task: { ...base, links }, worked_secs: 0 }] }],
+      } as unknown as HomeWire;
+      expect(
+        homeFrom(odd).projects[0]?.rows[0]?.task.links,
+        `a row with links = ${JSON.stringify(links)} read as something else`,
+      ).toEqual([]);
+    }
+  });
+
   it('reads a project a server sends no rows for as an empty board', () => {
     const first = homeWire.projects[0];
     if (first === undefined) throw new Error('the fixture holds no project');

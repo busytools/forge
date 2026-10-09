@@ -139,13 +139,30 @@ export interface WaitingView {
   /** How long it has waited. */
   age: string;
   /**
-   * How many of the row's children are not closed. A root cannot complete
-   * while any is open, so an approve offered over one would be a press the
-   * core refuses - the strip says so instead, and withholds the control.
+   * Whether the row is a ROOT. Only a root's completion closes a tree, so
+   * only a root can be refused for what its children are doing.
+   */
+  root: boolean;
+  /**
+   * How many of the row's children are not TERMINAL - the core's own word for
+   * `Completed | Failed | Canceled`, and the set its close rule counts. A
+   * root cannot complete while any child is non-terminal, so an approve
+   * offered over one would be a press the core refuses; the strip says so
+   * instead, and withholds the control.
    */
   open: number;
-  /** The row's children, as the server counted them: `done/total`. */
+  /** The row's children as the server counted them: `completed/total`. */
   rollup: string | null;
+}
+
+/**
+ * Whether a status is an end. **The core's own rule** (`is_terminal` in
+ * `forge-workspace/src/tasks.rs`), mirrored because the strip has to know
+ * which children a root's close would still be refused over - a failed or
+ * canceled child is not a child the close waits for.
+ */
+function terminal(status: TaskStatus): boolean {
+  return status === 'completed' || status === 'failed' || status === 'canceled';
 }
 
 export interface BoardView {
@@ -315,7 +332,13 @@ export function boardView(wire: HomeWire, org: string, project: string): BoardVi
       verification: entry.task.waiting_on?.verification === true,
       detail: entry.task.waiting_on?.detail ?? null,
       age: fmtSecs(entry.updated_secs_ago),
-      open: entry.rollup === null ? 0 : entry.rollup[1] - entry.rollup[0],
+      root: entry.task.parent === null,
+      // Counted from the rows themselves, NOT from the rollup: the rollup's
+      // first number counts completed children, and a failed or canceled
+      // child is one the close no longer waits for.
+      open: ordered.filter(
+        (child) => child.task.parent === entry.task.id && !terminal(child.task.status),
+      ).length,
       rollup: entry.rollup === null ? null : `${entry.rollup[0]}/${entry.rollup[1]}`,
     }));
   return {

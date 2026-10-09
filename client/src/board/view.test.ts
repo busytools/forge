@@ -129,6 +129,12 @@ describe("one project's board", () => {
         }),
       ),
       row(task('run', 'running', 'in_progress')),
+      // The epic's four children: two the close still waits on, two it does
+      // not. The hold is counted from these rows, not from the rollup.
+      row(task('c1', 'first child', 'in_progress', { parent: 'verify' })),
+      row(task('c2', 'second child', 'pending', { parent: 'verify' })),
+      row(task('c3', 'third child', 'completed', { parent: 'verify' })),
+      row(task('c4', 'fourth child', 'canceled', { parent: 'verify' })),
     ]);
 
     const view = boardView(wire, 'TestOrg', 'proj');
@@ -143,6 +149,63 @@ describe("one project's board", () => {
     // A row with no children at all can complete, so nothing is held.
     expect(view.waiting[1]?.open).toBe(0);
     expect(view.waiting[1]?.rollup).toBeNull();
+  });
+
+  /**
+   * **What the hold counts, and over what.** The core refuses a root's close
+   * only while a child is NOT TERMINAL (`Completed | Failed | Canceled`), and
+   * only a root's completion closes a tree at all - so the held set is the
+   * root's non-terminal children, not "everything the rollup has not counted
+   * as done".
+   */
+  it('holds a root for the children the core would still refuse over', () => {
+    const child = (id: string, status: TaskStatus, parent: string | null) =>
+      row(task(id, id, status, { parent }));
+    const wire = wireWith([
+      row(task('epic', 'the epic', 'pending')),
+      child('done', 'completed', 'epic'),
+      // A canceled child is terminal: the core accepts the epic's close, and
+      // the strip must not draw a hold the core would contradict.
+      child('gone', 'canceled', 'epic'),
+      // A child with children of its own is still nobody the close counts.
+      child('mid', 'waiting', 'epic'),
+    ]);
+
+    const view = boardView(wire, 'TestOrg', 'proj');
+    expect(view.lanes.flatMap((lane) => lane.cards).length).toBe(4);
+    // Nothing is in the strip here; the hold's numbers are what this pins, so
+    // they are read off a root put in the gate.
+    const gated = wireWith([
+      row(
+        task('epic2', 'the epic', 'waiting', {
+          waiting_on: { kind: 'decision', detail: null, on: null, verification: true },
+        }),
+        { rollup: [1, 3] },
+      ),
+      child('done2', 'completed', 'epic2'),
+      child('gone2', 'failed', 'epic2'),
+      child('open2', 'in_progress', 'epic2'),
+    ]);
+    const held = boardView(gated, 'TestOrg', 'proj').waiting[0];
+    expect(held?.open, 'a failed child was counted as one the close waits on').toBe(1);
+    expect(held?.rollup).toBe('1/3');
+    expect(held?.root).toBe(true);
+
+    // And a CHILD in the gate is never held: its approval closes no tree.
+    const asChild = wireWith([
+      row(task('root3', 'the root', 'pending')),
+      row(
+        task('kid', 'a child', 'waiting', {
+          parent: 'root3',
+          waiting_on: { kind: 'decision', detail: null, on: null, verification: true },
+        }),
+        { rollup: [0, 1] },
+      ),
+      child('grand', 'pending', 'kid'),
+    ]);
+    const childRow = boardView(asChild, 'TestOrg', 'proj').waiting[0];
+    expect(childRow?.root, 'a child row read as a root').toBe(false);
+    expect(childRow?.open, 'a child counted children the close never waits on').toBe(1);
   });
 
   /** The marks become words, and the wait's kind decides the chip. */

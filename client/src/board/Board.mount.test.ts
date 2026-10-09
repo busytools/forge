@@ -502,14 +502,42 @@ describe("the board's controls", () => {
           }),
           { rollup: [2, 4] },
         ),
+        // Two children the close still waits on, and one it does not: a
+        // canceled child is terminal, so it must not be what holds the root.
+        row(task('c1', 'a child', 'in_progress', { parent: 'epic' })),
+        row(task('c2', 'another child', 'pending', { parent: 'epic' })),
+        row(task('c3', 'a canceled one', 'canceled', { parent: 'epic' })),
       ]),
     );
 
     expect(document.body.textContent, 'the strip did not say what holds it').toContain(
-      '2 still open',
+      '2 not finished',
     );
     expect(byText('approve'), 'the doomed approve was offered').toBeNull();
     expect(byText('send back'), 'the send-back is the one that works, and it went').not.toBeNull();
+  });
+
+  /**
+   * And a CHILD in the gate keeps its approve however its own children look:
+   * only a root's completion closes a tree, so nothing about a child's
+   * children is a refusal the core would make.
+   */
+  it("leaves a child's approve alone while its own children are open", () => {
+    summon(
+      wireWith([
+        row(task('root', 'the root', 'pending')),
+        row(
+          task('kid', 'a child', 'waiting', {
+            parent: 'root',
+            waiting_on: { kind: 'decision', detail: null, on: null, verification: true },
+          }),
+          { rollup: [0, 1] },
+        ),
+        row(task('grand', 'a grandchild', 'pending', { parent: 'kid' })),
+      ]),
+    );
+    expect(byText('approve'), 'a child row lost the approve the core accepts').not.toBeNull();
+    expect(document.querySelector('.b-hold'), 'a child row drew a hold').toBeNull();
   });
 
   it('offers the approve when the row has nothing left to close', () => {

@@ -404,14 +404,15 @@
             {#if row.verification}
               {#if row.detail !== null}<div class="b-detail">{row.detail}</div>{/if}
               <div class="b-do">
-                {#if row.open > 0}
-                  <!-- A root cannot complete while a child is open, so an
-                       approve here is a press the core refuses. The strip
-                       says what still has to close, and offers only the
-                       send-back - which the core does take. -->
+                {#if row.root && row.open > 0}
+                  <!-- A root cannot complete while a child is non-terminal,
+                       so an approve here is a press the core refuses. The
+                       strip says what it still waits on, and offers only the
+                       send-back - which the core does take. A CHILD's approve
+                       closes no tree, so nothing is held there. -->
                   <span class="b-hold"
-                    >{row.rollup} done &middot; {row.open} still open, and a row closes when its children
-                    do</span
+                    >{row.rollup} done &middot; {row.open} not finished, and a root closes when its children
+                    are</span
                   >
                 {:else}
                   <button

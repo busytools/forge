@@ -116,9 +116,10 @@ pub enum LinkKind {
 }
 
 impl LinkKind {
-    /// Classify a bare target by its shape: a pull-request url reads `Pr`,
-    /// everything else `Path`. Nothing decides on the kind, so a miss
-    /// costs a drawn word.
+    /// Classify a bare target by its shape: a target containing `/pull/`
+    /// reads `Pr`, everything else `Path`. Nothing decides on the kind, so a
+    /// miss costs a drawn word - and the key is GitHub's own path, so a
+    /// GitLab merge request reads `Path` until a shape names it.
     pub fn for_target(target: &str) -> Self {
         if target.contains("/pull/") { Self::Pr } else { Self::Path }
     }
