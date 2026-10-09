@@ -1509,7 +1509,7 @@ pub(crate) fn execute_command_via_handle(
         // the task's own and never crosses to the agent. A caller reading
         // this as dead code should note the arm in `SessionTask::execute_command`
         // is what returns early - the match here is exhaustive, not a route.
-        Command::ReplayConversation { key: _ } | Command::ReadCallOutput { key: _, .. } => Ok(()),
+        Command::ReplayConversation { key: _ } | Command::ReadCallOutput { .. } => Ok(()),
         Command::Prompt { key: _, text, attachments } => {
             let Some(sid) = session_id else {
                 return Err(warn_no_session(key, "Prompt"));
@@ -2465,6 +2465,8 @@ mod tests {
     use crate::update_fanout::SubscriberRole;
     use forge_agent::Agent;
     use forge_agent::client::SpawnFailureKind;
+    // For the write! macros the output-file fixtures build their lines with.
+    use std::fmt::Write as _;
 
     fn empty_domain() -> DomainSession {
         let (handle, _rx) = Agent::testing_stub();
@@ -5580,7 +5582,10 @@ provider = "anthropic"
         // so the bound is pinned rather than incidental.
         let path =
             std::env::temp_dir().join(format!("forge-call-output-{}.log", std::process::id()));
-        let written: String = (0..15).map(|at| format!("line-{at:02}\n")).collect();
+        let written = (0..15).fold(String::new(), |mut all, at| {
+            let _ = writeln!(all, "line-{at:02}");
+            all
+        });
         std::fs::write(&path, written).expect("write the output file");
         task.translate_event(AgentEvent::SdkMessage {
             session_id: session_key.display(),
