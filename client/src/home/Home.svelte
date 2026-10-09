@@ -29,8 +29,10 @@
   // data, and a re-read needs an update the fleet may never send, so a page
   // opened at nine on a quiet forge would still say "3h" at three.
   let now = $state(Date.now());
+  /** The ready fact as a value, so the timer below does not restart on every update that rewrites `wire`. */
+  const ready = $derived(wire !== null);
   $effect(() => {
-    if (!wire) return;
+    if (!ready) return;
     now = Date.now();
     const tick = setInterval(() => {
       now = Date.now();
