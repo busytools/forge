@@ -291,12 +291,14 @@ fn flush_keyboard_flags_restore(app: &mut App) {
     }
 }
 
-/// Re-enable raw mode and crossterm features after a child process finishes.
+/// Bring the terminal into the state the TUI runs in: raw mode, bracketed
+/// paste, mouse capture, focus reporting and the keyboard-enhancement flags.
+/// Boot is its only caller.
 ///
 /// Returns false when the terminal went away inside the keyboard-enhancement
-/// query: crossterm's query never returns once its poll fails, so the caller
-/// has to take the lost-pane exit rather than open the event stream on a
-/// reader the abandoned query still holds.
+/// query: on a closed pane crossterm's query never returns, so the caller has
+/// to take the lost-pane exit rather than open the event stream on a reader
+/// the abandoned query still holds.
 pub(crate) fn resume_terminal() -> bool {
     let _ = crossterm::terminal::enable_raw_mode();
     let _ = crossterm::execute!(
@@ -327,7 +329,7 @@ pub(crate) fn resume_terminal() -> bool {
     // events, not just drags - needed for the pointer-shape affordance.
     // crossterm's EnableMouseCapture only sets 1000/1002/1006.
     let _ = crossterm::execute!(std::io::stdout(), crossterm::style::Print("\x1b[?1003h"));
-    report_keyboard_enhancement_support()
+    report_keyboard_enhancement_support(bounded_keyboard_enhancement_query())
 }
 
 /// The startup keyboard-enhancement negotiation's answer, set once by
@@ -337,15 +339,19 @@ static KEYBOARD_ENHANCEMENT_SUPPORTED: std::sync::OnceLock<bool> = std::sync::On
 /// The longest the boot handshake waits for the terminal's answer to the
 /// keyboard-enhancement query.
 ///
-/// Clears crossterm's own 2s query timeout, so a live but silent terminal
-/// still resolves through crossterm's path; a query still running past this
-/// is one whose poll is failing and spinning.
+/// Clears crossterm's own 2s poll timeout, so a live but silent terminal
+/// still resolves through crossterm's path; a budget below that would
+/// abandon a slow terminal as if it were a dead one. A query still running
+/// past this is wedged the way a closed pane wedges it: crossterm's event
+/// source takes the pty's EOF in a read loop that never breaks, so
+/// `poll_internal` never returns and the reader guard it holds is never
+/// released.
 const KEYBOARD_ENHANCEMENT_QUERY_BUDGET: Duration = Duration::from_secs(3);
 
 /// The boot query, run off the main thread so a terminal that never answers
 /// cannot park boot inside it. `None` means the budget passed with no answer
-/// and the query is abandoned: crossterm's retry loop spins forever once its
-/// poll fails, and a pane lost during boot never returns from it (#1932).
+/// and the query is abandoned: a pane lost during boot never returns from
+/// the query at all (#1932), so the caller cannot wait on it.
 fn bounded_keyboard_enhancement_query() -> Option<std::io::Result<bool>> {
     answer_within_budget(
         KEYBOARD_ENHANCEMENT_QUERY_BUDGET,
@@ -354,8 +360,11 @@ fn bounded_keyboard_enhancement_query() -> Option<std::io::Result<bool>> {
 }
 
 /// Run `query` on its own thread and wait at most `budget` for its answer;
-/// `None` when the budget passed with no answer. The thread is not stopped -
-/// the bound is that the caller is not parked in it.
+/// `None` when the budget passed with no answer, which is the abandonment
+/// the boot handshake is built around. The thread is not stopped - the bound
+/// is that the caller is not parked in it. A query thread that dies without
+/// answering is an error, not an abandonment: it must not read as a terminal
+/// that is gone.
 fn answer_within_budget(
     budget: Duration,
     query: impl FnOnce() -> std::io::Result<bool> + Send + 'static,
@@ -364,7 +373,13 @@ fn answer_within_budget(
     std::thread::spawn(move || {
         let _ = tx.send(query());
     });
-    rx.recv_timeout(budget).ok()
+    match rx.recv_timeout(budget) {
+        Ok(answered) => Some(answered),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Some(Err(std::io::Error::other(
+            "the keyboard enhancement query thread died before answering",
+        ))),
+    }
 }
 
 /// Ask whether the flags just pushed actually took, so a terminal or
@@ -379,11 +394,17 @@ fn answer_within_budget(
 /// flags half, which is a prompt `Ok(false)`; a terminal that answers
 /// neither costs crossterm's 2s timeout once at startup.
 ///
-/// Returns false when the query was abandoned at its budget, which is what a
-/// terminal that is gone looks like. The once-lock is left unset on that
-/// path: there is no verdict to report, and the caller is on its way out.
-fn report_keyboard_enhancement_support() -> bool {
-    let supported = match bounded_keyboard_enhancement_query() {
+/// Takes the query's outcome rather than running the query, so the verdict
+/// mapping stays drivable in tests; the boot path passes what
+/// [`bounded_keyboard_enhancement_query`] returned. Returns false when the
+/// query was abandoned at its budget, which is what a terminal that is gone
+/// looks like - an inference, not a fact: every realistic live terminal
+/// resolves through crossterm's own 2s timeout first, and only one starved
+/// past the budget exits where it would otherwise have booted, a cost
+/// accepted against the wedge. The once-lock is left unset on that path:
+/// there is no verdict to report, and the caller is on its way out.
+fn report_keyboard_enhancement_support(answer: Option<std::io::Result<bool>>) -> bool {
+    let supported = match answer {
         None => {
             tracing::warn!(
                 target: crate::logging::targets::APP_LIFECYCLE,
@@ -2370,15 +2391,15 @@ mod tests {
         assert_eq!(app.spinner_frame, 2);
     }
 
-    /// #1932: crossterm's query never returns once its poll fails, so the
-    /// boot handshake cannot park in it. A query that does not answer must
-    /// be abandoned at its budget, and promptly - the point is that it does
-    /// not block boot.
+    /// #1932: crossterm's query never returns on a closed pane, so the boot
+    /// handshake cannot park in it. A query that does not answer must be
+    /// abandoned at its budget, and promptly - the point is that it does not
+    /// block boot.
     #[test]
     fn a_boot_query_that_never_answers_is_abandoned_at_its_budget() {
         let (_hold, hold_rx) = std::sync::mpsc::channel::<()>();
         let started = Instant::now();
-        let answer = answer_within_budget(Duration::from_millis(50), move || {
+        let answer = answer_within_budget(Duration::from_millis(100), move || {
             let _ = hold_rx.recv();
             Ok(true)
         });
@@ -2387,8 +2408,8 @@ mod tests {
             "a query past its budget must be abandoned, not waited on; got {answer:?}",
         );
         assert!(
-            started.elapsed() < Duration::from_secs(1),
-            "the bound trips at its budget, not when the query returns; took {:?}",
+            started.elapsed() < Duration::from_millis(500),
+            "the bound trips at its budget, not a multiple of it; took {:?}",
             started.elapsed(),
         );
     }
@@ -2401,6 +2422,33 @@ mod tests {
         assert!(
             matches!(answer, Some(Ok(true))),
             "an answered query keeps its verdict; got {answer:?}",
+        );
+    }
+
+    /// The budget must clear crossterm's own 2s poll timeout: below it, a
+    /// live but slow terminal is abandoned as a dead one, and the boot exit
+    /// then ends a startup that would have waited and booted.
+    #[test]
+    fn the_boot_query_budget_clears_crossterms_poll_timeout() {
+        assert!(
+            KEYBOARD_ENHANCEMENT_QUERY_BUDGET > Duration::from_secs(2),
+            "the budget must clear crossterm's 2s poll timeout; got {KEYBOARD_ENHANCEMENT_QUERY_BUDGET:?}",
+        );
+    }
+
+    /// The boot exit hangs off the false: an abandoned query must read as a
+    /// failed handshake, not as a verdict.
+    #[test]
+    fn an_abandoned_query_answers_unsupported() {
+        let (_hold, hold_rx) = std::sync::mpsc::channel::<()>();
+        let answer = answer_within_budget(Duration::from_millis(50), move || {
+            let _ = hold_rx.recv();
+            Ok(true)
+        });
+        assert!(answer.is_none(), "the parked query must be abandoned; got {answer:?}");
+        assert!(
+            !report_keyboard_enhancement_support(answer),
+            "an abandoned query must answer unsupported, which is what run_tui turns into the boot exit",
         );
     }
 }
