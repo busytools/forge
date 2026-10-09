@@ -282,6 +282,10 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
 .b-read { font-size: var(--fs-label); color: var(--dim); }
 .b-read b { font-weight: 560; color: var(--hot); }
 .b-spacer { flex: 1; }
+/* the service line: the core's own words for an edit that did not land */
+.b-said { margin: -6px 0 16px; padding: 9px 13px; border-radius: 10px; font-size: var(--fs-data); }
+.b-said.warning { background: rgba(201,161,59,.12); color: var(--warn); }
+.b-said.error { background: rgba(224,104,62,.12); color: var(--bad); }
 .b-seat {
   font-family: var(--mono); font-size: var(--fs-label); color: var(--blue);
   text-decoration: none; background: var(--s2); border-radius: 999px; padding: 4px 11px;
@@ -349,7 +353,12 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
 .b-card { background: var(--s2); border-radius: 13px; padding: 15px 16px 14px; }
 .b-card + .b-card { margin-top: 10px; }
 .b-card:hover { background: var(--s3); }
-.b-card { cursor: grab; }
+/* `touch-action: none` is what makes the drag work under a finger: without it
+   the scroller claims the gesture and cancels the pointer, so a phone could
+   never move a card - and this client ships on Android. It costs the card as
+   a surface to scroll FROM, which is why the lanes keep their own space
+   between and around them. */
+.b-card { cursor: grab; touch-action: none; }
 .b-card.dragging { opacity: .45; }
 
 /* dragging: the card under the pointer, the lane it would land in, and the

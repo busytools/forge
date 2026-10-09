@@ -153,6 +153,29 @@ export function coversHome(update: SessionUpdate): boolean {
   return fleetNews(update).kind !== 'nothing' || slotOf(update) === null;
 }
 
+/** One service report's own words, narrowed where it enters. */
+export interface ServiceReport {
+  severity: 'warning' | 'error';
+  message: string;
+}
+
+/**
+ * The core's service line, when this update is one.
+ *
+ * The report is keyless on the wire, so every home subscriber is sent it. The
+ * board is one of its producers: an edit the core refused says so here, and a
+ * page that folded the update into a re-read alone would leave a press that
+ * did nothing and a press the core refused reading the same.
+ */
+export function serviceReport(update: SessionUpdate): ServiceReport | null {
+  if (typeof update === 'string') return null;
+  const report = (update as { service_status?: { severity?: unknown; message?: unknown } })
+    .service_status;
+  const message = report?.message;
+  if (typeof message !== 'string' || message === '') return null;
+  return { severity: report?.severity === 'error' ? 'error' : 'warning', message };
+}
+
 /** Classify one update for the fleet region. */
 export function fleetNews(update: SessionUpdate): FleetNews {
   if (typeof update === 'string') {

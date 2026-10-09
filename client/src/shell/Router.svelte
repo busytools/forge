@@ -102,7 +102,13 @@
     <!-- One project's board, a takeover over wherever the reader was: the
          top bar's back and done return through history. The page reads the
          same snapshot the fleet does - its rows ride the wire. -->
-    <Board wire={home.wire} org={route.org} project={route.project} onact={boardAct} />
+    <Board
+      wire={home.wire}
+      org={route.org}
+      project={route.project}
+      onact={boardAct}
+      notice={home.report}
+    />
   {:else if connected}
     <main class="wrap"><p class="pending">Reading the fleet...</p></main>
   {:else}

@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { SessionUpdate } from '../protocol';
 import type { SessionSlot } from './types';
-import { coversHome, fleetNews, REDRAWS } from './fleet';
+import { coversHome, fleetNews, REDRAWS, serviceReport } from './fleet';
 
 /**
  * The variant names the server's own `fleet_news` puts in one of its arms,
@@ -372,6 +372,27 @@ describe('what one update asks of the fleet', () => {
     // A turn's own words on a watched seat are neither fleet news nor
     // slot-less, so a home subscriber is never sent them.
     expect(coversHome(appended({ type: 'assistant' }))).toBe(false);
+  });
+
+  /**
+   * The service line's own words, read off the update that carried them: it
+   * is the page's only copy - the snapshot holds no such field - and a report
+   * whose words were dropped would leave a refused edit reading as one that
+   * landed.
+   */
+  it("reads the service line's own words", () => {
+    expect(
+      serviceReport({ service_status: { severity: 'error', message: 'the API is down' } }),
+    ).toEqual({ severity: 'error', message: 'the API is down' });
+    // A severity this client is older than reads as the warning it can word,
+    // and a report with no words at all is no report.
+    expect(
+      serviceReport({ service_status: { severity: 'catastrophe', message: 'oy' } })?.severity,
+    ).toBe('warning');
+    expect(serviceReport({ service_status: { severity: 'warning', message: '' } })).toBeNull();
+    expect(serviceReport({ service_status: { severity: 'warning' } })).toBeNull();
+    expect(serviceReport({ tasks_changed: { key: LEAD, tasks: [] } })).toBeNull();
+    expect(serviceReport('accounts_changed')).toBeNull();
   });
 
   /**

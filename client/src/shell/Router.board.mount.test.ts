@@ -118,7 +118,7 @@ function summon(sent: Record<string, unknown>[]): void {
       route: { name: 'board', org: 'TestOrg', project: 'proj' },
       settings: DEFAULT_SETTINGS,
       address: '127.0.0.1:8790',
-      home: { wire: wireWithWaiting(), refused: null },
+      home: { wire: wireWithWaiting(), refused: null, report: null },
       failure: null,
       connected: true,
       connection,

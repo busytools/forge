@@ -1,9 +1,10 @@
 <script lang="ts">
   import { hrefForSlot } from '../routes';
+  import type { ServiceReport } from '../wire/fleet';
   import type { HomeWire, TaskStatus } from '../wire/home';
   import { TASK_STATUSES } from '../wire/home';
   import Picker from './Picker.svelte';
-  import { applyMoves, boardView } from './view';
+  import { applyMoves, boardView, landed } from './view';
   import type { BoardCardView, PendingMove } from './view';
 
   /**
@@ -22,11 +23,14 @@
     org,
     project,
     onact = null,
+    notice = null,
   }: {
     wire: HomeWire;
     org: string;
     project: string;
     onact?: ((command: Record<string, Record<string, unknown>>) => void) | null;
+    /** The core's last service report, which carries a refused edit's words. */
+    notice?: ServiceReport | null;
   } = $props();
 
   const view = $derived(boardView(wire, org, project));
@@ -55,9 +59,30 @@
   let subject = $state('');
   let parent = $state('');
 
-  function act(command: Record<string, Record<string, unknown>>): void {
-    onact?.(command);
+  /**
+   * Hand one edit to the app, and say so when the socket will not carry it.
+   *
+   * A dispatch on a closed socket THROWS, and a throw out of a press handler
+   * is a press that leaves the page mid-gesture: the drag's own state stays
+   * set, the ghost stays up and the card is drawn where the core never put it.
+   * So the loss is caught here, said on the page's line, and reported to the
+   * caller - the drag only places its card optimistically when the edit went.
+   */
+  let lost: ServiceReport | null = $state(null);
+
+  function act(command: Record<string, Record<string, unknown>>): boolean {
+    try {
+      onact?.(command);
+      lost = null;
+      return true;
+    } catch {
+      lost = { severity: 'warning', message: 'the socket is closed, so that edit was not sent' };
+      return false;
+    }
   }
+
+  /** What the page says above the lanes: the local loss, or the core's words. */
+  const line = $derived(lost ?? notice);
 
   /** Close the takeover: back the way the reader came, or home from a deep link. */
   function close(): void {
@@ -66,16 +91,39 @@
   }
 
   /**
-   * The keyboard's half of the drag: the arrows re-order a focused card
-   * within its lane. The pointer is the board's first interaction, and
-   * this keeps the same power for a keyboard without a row of buttons.
+   * The keyboard's half of the drag, on a focused card: the arrows do what
+   * the pointer does. Up and down re-order the card within its lane; left and
+   * right move it to the neighbouring lane, in the order the lanes are drawn,
+   * so what the keys walk is what the reader sees. A key that arrives from a
+   * control inside the card - the owner picker's own arrows - belongs to that
+   * control, not to the card.
    */
-  function keyReorder(event: KeyboardEvent, row: BoardCardView): void {
-    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+  function keyMove(event: KeyboardEvent, row: BoardCardView): void {
+    const target = event.target;
+    if (target instanceof Element && target.closest('button, input, select, a') !== null) return;
+    if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+      event.preventDefault();
+      act({ task_rank: { project, id: row.id, to: event.key === 'ArrowUp' ? 'up' : 'down' } });
+      return;
+    }
+    const step = event.key === 'ArrowLeft' ? -1 : event.key === 'ArrowRight' ? 1 : 0;
+    if (step === 0) return;
+    const to = laneStep(row.status, step);
+    if (to === null) return;
     event.preventDefault();
-    act({
-      task_rank: { project, id: row.id, to: event.key === 'ArrowUp' ? 'up' : 'down' },
-    });
+    const box = boardEl?.querySelector(`.b-card[data-id="${row.id}"]`)?.getBoundingClientRect();
+    if (act({ task_move: { project, id: row.id, to } })) {
+      moved[row.id] = { to, before: null, at: Date.now() };
+      if (box !== undefined) settle(row.id, box);
+    }
+  }
+
+  /** The lane one step along the drawn order, or nothing at its ends. */
+  function laneStep(status: TaskStatus, step: number): TaskStatus | null {
+    const keys = view.lanes.map((lane) => lane.key);
+    const at = keys.indexOf(status);
+    if (at === -1) return null;
+    return keys[at + step] ?? null;
   }
 
   /** The status mark's class, one per state - shape and colour both. */
@@ -159,17 +207,37 @@
   }
 
   /**
-   * Drop a drag's overlay once the wire shows the row where it was put:
-   * the snapshot is the truth, and the overlay only bridges the gap.
+   * How long a drag's own placement waits for the wire to agree with it.
+   *
+   * A refused edit, or one the core found nothing to apply, sends no frame
+   * this page can match - so without a bound the card would sit in a lane the
+   * core never accepted for the rest of the session. The board's own tick is
+   * the clock, so the bound costs no second timer.
+   */
+  const SETTLE_SECS = 12;
+
+  /**
+   * Drop a drag's overlay once the wire shows the row where it was put - or
+   * once the core has had long enough to say otherwise, in which case the card
+   * goes back to the wire's own answer and the page says so.
    */
   $effect(() => {
     const snapshot = wire;
+    const tick = nowSecs;
+    const row = snapshot.projects.find(
+      (entry) => entry.project.org === org && entry.project.name === project,
+    );
     for (const [id, want] of Object.entries(moved)) {
-      const card = snapshot.projects
-        .find((entry) => entry.project.org === org && entry.project.name === project)
-        ?.rows.find((entry) => entry.task.id === id);
-      if (card !== undefined && card.task.status === want.to) {
+      const here = landed(row?.rows ?? [], id, want);
+      const waited = tick - Math.floor(want.at / 1_000) > SETTLE_SECS;
+      if (here || waited) {
         delete moved[id];
+        if (!here) {
+          lost = {
+            severity: 'warning',
+            message: "that edit did not land, so the card went back to the core's own answer",
+          };
+        }
       }
     }
   });
@@ -182,6 +250,9 @@
     // Without this the press starts a text selection, and every pointermove
     // drags the highlight across the board.
     event.preventDefault();
+    // And it takes the focus a press would have given the card with it, so
+    // the arrows would only ever reach a card that Tab reached.
+    if (event.currentTarget instanceof HTMLElement) event.currentTarget.focus();
     pending = { id: row.id, x0: event.clientX, y0: event.clientY };
   }
 
@@ -259,14 +330,18 @@
       if (dropSeat !== null) {
         act({ task_assign: { project, id: dragging.id, owner: dropSeat } });
       } else if (dropLane !== null && card !== undefined && card.status !== dropLane) {
-        // The card lands where it was dropped right away; the wire catches up.
-        moved[dragging.id] = { to: dropLane, before: dropBefore };
-        act({ task_move: { project, id: dragging.id, to: dropLane } });
-        if (box !== undefined) settle(dragging.id, box);
+        // The card lands where it was dropped right away; the wire catches
+        // up. Only when the edit went: a move the socket never took must not
+        // leave the card where the core will never put it.
+        if (act({ task_move: { project, id: dragging.id, to: dropLane } })) {
+          moved[dragging.id] = { to: dropLane, before: dropBefore, at: Date.now() };
+          if (box !== undefined) settle(dragging.id, box);
+        }
       } else if (dropLane !== null) {
-        moved[dragging.id] = { to: dropLane, before: dropBefore };
-        act({ task_rank: { project, id: dragging.id, to: { before: dropBefore } } });
-        if (box !== undefined) settle(dragging.id, box);
+        if (act({ task_rank: { project, id: dragging.id, to: { before: dropBefore } } })) {
+          moved[dragging.id] = { to: dropLane, before: dropBefore, at: Date.now() };
+          if (box !== undefined) settle(dragging.id, box);
+        }
       }
     }
     pending = null;
@@ -297,6 +372,12 @@
     {/each}
     <button type="button" class="b-done" onclick={close}>done</button>
   </div>
+
+  {#if line !== null}
+    <!-- The core's own words for an edit that did not land. A press that did
+         nothing and a press the core refused must not read the same. -->
+    <p class="b-said {line.severity}" role="status">{line.message}</p>
+  {/if}
 
   {#if view.waiting.length > 0}
     <section class="b-you" aria-label="waiting on you">
@@ -384,11 +465,12 @@
         </div>
         {#each lane.cards as row (row.id)}
           <!-- The card itself is the interaction: it takes the pointer for a
-               drag and the arrows for the keyboard's reorder, so it is
-               focusable without being a widget role - `option` and `button`
-               are lies over a card that holds a link and a picker, and two
-               hidden buttons per card would be two extra tab stops each for
-               the moves the arrows already reach. -->
+               drag and the arrows for the keyboard's half of it - up and down
+               re-order the row, left and right move it between lanes - so it
+               is focusable without being a widget role. `option` and `button`
+               are lies over a card that holds a link and a picker, and hidden
+               buttons per card would be more tab stops for the moves the
+               arrows already reach. -->
           <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
           <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
           <article
@@ -397,7 +479,7 @@
             data-id={row.id}
             tabindex="0"
             onpointerdown={(event) => down(event, row)}
-            onkeydown={(event) => keyReorder(event, row)}
+            onkeydown={(event) => keyMove(event, row)}
           >
             <div class="b-row1">
               <span class="b-mark {markClass(row.status)}" aria-hidden="true"></span>

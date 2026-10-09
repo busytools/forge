@@ -28,7 +28,7 @@
   let route = $state<Route>(onDoor ? { name: 'connect' } : opened);
   let settings = $state<ClientSettings>(DEFAULT_SETTINGS);
   let address = $state(remembered ?? DEFAULT_ADDRESS);
-  let home = $state<HomeRead>({ wire: null, refused: null });
+  let home = $state<HomeRead>({ wire: null, refused: null, report: null });
   // Raw, so the connection is handed around as the object it is rather than
   // as a reactive proxy of it.
   let connection = $state.raw<Connection | null>(null);

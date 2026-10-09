@@ -81,15 +81,14 @@ function wireWith(rows: BoardRow[]): HomeWire {
   return { ...homeWire, projects: [{ ...first, rows }] };
 }
 
-function summon(wire: HomeWire): void {
+function summon(
+  wire: HomeWire,
+  onact: (command: Record<string, Record<string, unknown>>) => void = (command) =>
+    acts.push(command),
+): void {
   app = mount(Board, {
     target: document.body,
-    props: {
-      wire,
-      org: 'TestOrg',
-      project: 'proj',
-      onact: (command: Record<string, Record<string, unknown>>) => acts.push(command),
-    },
+    props: { wire, org: 'TestOrg', project: 'proj', onact },
   });
   flushSync();
 }
@@ -299,6 +298,125 @@ describe("the board's controls", () => {
     } else {
       Reflect.deleteProperty(document, 'elementFromPoint');
     }
+  });
+
+  /**
+   * The keyboard has the whole drag, not half of it. The arrows re-order a
+   * card within its lane, and left and right move it to the neighbouring lane
+   * in the order the lanes are drawn - the board's headline action, which the
+   * pointer and the keys have to reach alike.
+   */
+  it('moves a focused card between lanes with the arrows', () => {
+    summon(wireWith([row(task('t1', 'a row', 'pending'))]));
+    const press = (key: string): void => {
+      // Re-queried per press: the card is drawn in its new lane between them.
+      const card = document.querySelector<HTMLElement>('.b-card[data-id="t1"]');
+      if (card === null) throw new Error('the card is not on the page');
+      card.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+      flushSync();
+    };
+
+    // Ready's neighbour to the right is Completed, and to the left Waiting.
+    press('ArrowRight');
+    expect(acts[0]).toEqual({ task_move: { project: 'proj', id: 't1', to: 'completed' } });
+    expect(
+      document.querySelector('.b-lane[data-state="completed"] .b-card[data-id="t1"]'),
+      'the card is in the lane the key sent it to',
+    ).not.toBeNull();
+    press('ArrowLeft');
+    expect(acts[1]).toEqual({ task_move: { project: 'proj', id: 't1', to: 'waiting' } });
+  });
+
+  /**
+   * A key that arrives from a control inside the card belongs to that control:
+   * the owner picker's own arrows walk its menu, and must not also re-order
+   * the row underneath them.
+   */
+  it('leaves the keys inside a card to the control that holds them', () => {
+    summon(wireWith([row(task('t1', 'a row', 'pending', { rank: 1 }))]));
+    const pick = document.querySelector<HTMLElement>('button[aria-label="the seat holding a row"]');
+    if (pick === null) throw new Error('the owner picker is not on the page');
+    pick.click();
+    flushSync();
+
+    pick.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    flushSync();
+    expect(acts, 'the picker key reached the board as a re-order').toEqual([]);
+  });
+
+  /**
+   * A press on a card focuses it. `preventDefault` on the press is what stops
+   * the text selection, and it takes the focus a press would have given with
+   * it - so without this the arrows would only ever reach a card that Tab
+   * reached.
+   */
+  it('focuses the card a press lands on', () => {
+    summon(wireWith([row(task('t1', 'a row', 'pending'))]));
+    const card = document.querySelector<HTMLElement>('.b-card[data-id="t1"]');
+    if (card === null) throw new Error('the card is not on the page');
+    card.dispatchEvent(
+      new MouseEvent('pointerdown', { bubbles: true, button: 0, clientX: 5, clientY: 5 }),
+    );
+    flushSync();
+    expect(document.activeElement, 'the press left the focus elsewhere').toBe(card);
+  });
+
+  /**
+   * An edit the socket will not carry says so, and the card does not move:
+   * `dispatch` throws synchronously on a closed socket, and an optimistic
+   * placement laid over that throw would leave the board drawing a lane the
+   * core never accepted.
+   */
+  it('says so when the socket will not carry an edit, and moves nothing', () => {
+    summon(wireWith([row(task('t1', 'a row', 'pending'))]), () => {
+      throw new Error('the socket is not open');
+    });
+
+    const original = Object.getOwnPropertyDescriptor(document, 'elementFromPoint');
+    document.elementFromPoint = () => document.querySelector('.b-lane[data-state="waiting"]');
+    const card = document.querySelector<HTMLElement>('.b-card[data-id="t1"]');
+    if (card === null) throw new Error('the card is not on the page');
+    card.dispatchEvent(
+      new MouseEvent('pointerdown', { bubbles: true, clientX: 10, clientY: 10, button: 0 }),
+    );
+    window.dispatchEvent(new MouseEvent('pointermove', { clientX: 60, clientY: 60 }));
+    window.dispatchEvent(new MouseEvent('pointerup', {}));
+    flushSync();
+
+    expect(document.querySelector('.b-said')?.textContent, 'the loss went unsaid').toContain(
+      'the socket is closed',
+    );
+    expect(
+      document.querySelector('.b-lane[data-state="waiting"] .b-card[data-id="t1"]'),
+      'the card was placed in a lane the core never accepted',
+    ).toBeNull();
+
+    if (original !== undefined) {
+      Object.defineProperty(document, 'elementFromPoint', original);
+    } else {
+      Reflect.deleteProperty(document, 'elementFromPoint');
+    }
+  });
+
+  /**
+   * The core's own words for a refused edit draw on the page: a press that
+   * did nothing and a press the core refused must not read the same.
+   */
+  it("draws the core's refusal where the reader is looking", () => {
+    app = mount(Board, {
+      target: document.body,
+      props: {
+        wire: wireWith([row(task('t1', 'a row', 'pending'))]),
+        org: 'TestOrg',
+        project: 'proj',
+        onact: () => {},
+        notice: { severity: 'warning' as const, message: 'The board refused a move: nope' },
+      },
+    });
+    flushSync();
+    expect(document.querySelector('.b-said.warning')?.textContent).toBe(
+      'The board refused a move: nope',
+    );
   });
 
   /**
