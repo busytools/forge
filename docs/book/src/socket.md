@@ -82,8 +82,8 @@ variant's own name rather than on `kind`:
 {"kind": "command", "command": {"cancel": {"key": {"org": "Acme", "project": "proj", "label": "lead"}}}, "reply_to": null}
 ```
 
-A command's variant is its name around its field bag - `Command` has 49
-variants, 47 of them struct variants; the two unit variants,
+A command's variant is its name around its field bag - `Command` has 56
+variants, 54 of them struct variants; the two unit variants,
 `dictate_catalogue_check` and `dictate_bench_stop`, cross as the name
 alone. An update is the same shape one level in,
 `{"kind": "update", "update": {"chat_appended": {"key": ..., "msg": ...}}}`,
@@ -386,7 +386,8 @@ facts a row is drawn from.
 
 | Field | What it is |
 |---|---|
-| `projects` | One row per project: `project` (name, org, path, sessions, `has_model`), `work` (branch, changed, gate) read at the project's own path, `tasks`, `crons`, `connectors` (this project's own gotify and slack subscription sets), `would_bind`, and `chip` - the account the row binds and its state. |
+| `projects` | One row per project: `project` (name, org, path, sessions, `has_model`), `work` (branch, changed, gate) read at the project's own path, `rows` (the board: each one a task with its worked time, ages and marks, plus its rollup and its epic's subject), `crons`, `connectors` (this project's own gotify and slack subscription sets), `would_bind`, and `chip` - the account the row binds and its state. |
+| `fleet` | One glance per project, for the home's own fleet row: how many seats are live against the project's cap, the queue (ready and unowned), the rows waiting on the user, and the project's own misses by name. |
 | `agents` | Every seat's row: slot, label, lifecycle, whether it has background work, what it is waiting on, when it was last active, why it failed if it did, and `work` (branch, changed, gate) read at that seat's OWN directory, which for a worker is its worktree and not its project. |
 | `unseen` | The seats whose last turn finished while nobody was showing them. A mark is drawn from this, and nothing else can reconstruct it. |
 | `accounts` | Loading state per account, whether all of them settled, the gateway listener's ready state and port, each account's cached usage snapshot, and the org views with budget and unusable reasons. |
