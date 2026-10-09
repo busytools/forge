@@ -362,18 +362,10 @@ impl Driver {
         let capture: chromium::HintCapture =
             serde_json::from_value(hints_payload(&text_of(&parts))?)
                 .map_err(|why| format!("the hint capture answered an unreadable shape: {why}"))?;
-        if capture.brands.is_empty() {
-            return Err(
-                "the capture document reported no client-hint brands to rebuild from".to_owned()
-            );
-        }
-        if !capture.blanked {
-            // **The browser reports its own hints** - an unmasked launch -
-            // and rebuilding over them would replace real values with
-            // derived ones.
-            return Ok(
-                "the browser reports its own high-entropy hints; nothing to rebuild".to_owned()
-            );
+        match hint_verdict(&capture) {
+            HintVerdict::Unreadable(why) => return Err(why),
+            HintVerdict::StandDown(note) => return Ok(note),
+            HintVerdict::Rebuild => {}
         }
         let platform_version = chromium::platform_version().await?;
         let architecture =
@@ -676,21 +668,35 @@ fn file_url(path: &Path) -> String {
 /// the driver's own ref spelling (measured: the snapshot refs' `f<seq>`
 /// prefix counts the frame's navigations, so an extra one hands the session
 /// different refs).
+///
+/// A read that fails answers an `error` rather than a blanked verdict: the
+/// caller must be able to tell "the browser reports its own hints" from "the
+/// read did not happen".
 fn hint_capture_snippet(hints_page: &Path) -> String {
     format!(
         "async (page) => {{\
-         const read = () => {{\
+         const read = async () => {{\
          const ua_data = navigator.userAgentData;\
          const out = {{ user_agent: navigator.userAgent, brands: ua_data ? ua_data.brands : null, \
          platform: ua_data ? ua_data.platform : null, mobile: ua_data ? ua_data.mobile : null, \
-         blanked: false }};\
-         if (!ua_data) return Promise.resolve(out);\
-         return ua_data.getHighEntropyValues(['architecture', 'bitness', 'platformVersion', \
-         'uaFullVersion', 'fullVersionList']).then((high) => {{\
+         blanked: false, error: null }};\
+         if (!ua_data) {{\
+         out.error = 'the capture document has no navigator.userAgentData';\
+         return out;\
+         }}\
+         try {{\
+         const high = await ua_data.getHighEntropyValues(['architecture', 'bitness', \
+         'platformVersion', 'uaFullVersion', 'fullVersionList']);\
+         if (!Array.isArray(high.fullVersionList)) {{\
+         out.error = 'the high-entropy hints answered without a fullVersionList';\
+         return out;\
+         }}\
          out.blanked = !high.architecture && !high.bitness && !high.platformVersion && \
          !high.uaFullVersion && high.fullVersionList.length === 0;\
+         }} catch (why) {{\
+         out.error = 'the high-entropy hints could not be read: ' + why;\
+         }}\
          return out;\
-         }}).catch(() => out);\
          }};\
          let seen = {{}};\
          const scratch_context = await page.context().browser().newContext();\
@@ -705,6 +711,44 @@ fn hint_capture_snippet(hints_page: &Path) -> String {
          }}",
         custom::js_string(&file_url(hints_page)),
     )
+}
+
+/// What a capture leaves the mask to do.
+#[derive(Debug, PartialEq, Eq)]
+enum HintVerdict {
+    /// The five came back blank: rebuild them from the capture.
+    Rebuild,
+    /// The browser reports its own high-entropy hints (an unmasked launch)
+    /// and nothing should be rebuilt over them.
+    StandDown(String),
+    /// The capture could not be read, with the reason.
+    Unreadable(String),
+}
+
+/// The capture's verdict.
+///
+/// **A failed read is never a verdict.** A rejection from the page, an
+/// answer without its lists, or a document with no `userAgentData` at all
+/// must warn by name - standing down on one would claim the browser reports
+/// its own hints when nothing was read, re-arming the very tell the mask
+/// exists to close.
+fn hint_verdict(capture: &chromium::HintCapture) -> HintVerdict {
+    if let Some(error) = &capture.error {
+        return HintVerdict::Unreadable(format!(
+            "the hint capture did not read the browser's hints: {error}"
+        ));
+    }
+    if capture.brands.is_empty() {
+        return HintVerdict::Unreadable(
+            "the capture document reported no client-hint brands to rebuild from".to_owned(),
+        );
+    }
+    if !capture.blanked {
+        return HintVerdict::StandDown(
+            "the browser reports its own high-entropy hints; nothing to rebuild".to_owned(),
+        );
+    }
+    HintVerdict::Rebuild
 }
 
 /// The snippet that masks every page the driver drives with the rebuilt
@@ -1189,10 +1233,11 @@ mod tests {
     }
 
     /// The capture reads the CLIENT's document and nothing else: the values
-    /// are taken in a scratch context's `file://` page, and the driven page
-    /// is neither read nor navigated (a page in the driven realm could bend
-    /// the metadata or claim real hints, and a navigation shifts the
-    /// driver's snapshot refs).
+    /// are taken in a scratch context's `file://` page, the driven page is
+    /// neither read nor navigated (a page in the driven realm could bend the
+    /// metadata or claim real hints, and a navigation shifts the driver's
+    /// snapshot refs), and every failed read answers an `error` instead of a
+    /// blanked verdict.
     #[test]
     fn the_capture_reads_only_the_clients_own_document() {
         let snippet = hint_capture_snippet(Path::new("/out/browser-hints.html"));
@@ -1212,6 +1257,51 @@ mod tests {
             snippet.contains("await fresh.goto(\"file:///out/browser-hints.html\")"),
             "the scratch reads the capture file as a file URL: {snippet}",
         );
+        assert!(
+            snippet.contains("out.error = 'the capture document has no navigator.userAgentData'")
+                && snippet.contains("out.error = 'the high-entropy hints could not be read: '")
+                && snippet.contains(
+                    "out.error = 'the high-entropy hints answered without a fullVersionList'"
+                ),
+            "every failed read answers an error, not a blanked verdict: {snippet}",
+        );
+    }
+
+    /// The capture's verdict: a failed read warns by name, an unmasked
+    /// browser stands the mask down, and only a genuinely blanked set
+    /// rebuilds. **The thief this pins: a capture whose read failed must not
+    /// read as "the browser reports its own hints"**, which would re-arm the
+    /// tell silently.
+    #[test]
+    fn a_failed_read_is_not_a_stand_down() {
+        let capture = |error: Option<&str>, blanked: bool| chromium::HintCapture {
+            user_agent: "Chrome/155.0.0.0".to_owned(),
+            brands: vec![chromium::HintBrand {
+                brand: "Brave".to_owned(),
+                version: "155".to_owned(),
+            }],
+            platform: "macOS".to_owned(),
+            mobile: false,
+            blanked,
+            error: error.map(str::to_owned),
+        };
+
+        let HintVerdict::Unreadable(why) = hint_verdict(&capture(Some("the read threw"), true))
+        else {
+            panic!("a failed read must be unreadable");
+        };
+        assert!(why.contains("the read threw"), "the reason is carried: {why}");
+
+        let HintVerdict::StandDown(note) = hint_verdict(&capture(None, false)) else {
+            panic!("an unmasked browser must stand the mask down");
+        };
+        assert!(note.contains("reports its own"), "{note}");
+
+        assert_eq!(hint_verdict(&capture(None, true)), HintVerdict::Rebuild);
+
+        // A capture with no brands carries nothing usable, however it reads.
+        let brandless = chromium::HintCapture { brands: Vec::new(), ..capture(None, true) };
+        assert!(matches!(hint_verdict(&brandless), HintVerdict::Unreadable(_)));
     }
 
     /// **The mask snippet never detaches**: a detached session's override is

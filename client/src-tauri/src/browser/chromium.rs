@@ -177,6 +177,10 @@ pub struct HintCapture {
     /// browser reports its own (an unmasked launch) and nothing should be
     /// rebuilt over them.
     pub blanked: bool,
+    /// Why the read itself failed, when it did: a failed read is not a
+    /// verdict, and the fields beside it carry nothing usable.
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 /// One client-hint brand, as the page lists it.
@@ -1592,6 +1596,7 @@ mod tests {
             platform: "macOS".to_owned(),
             mobile: false,
             blanked: true,
+            error: None,
         };
         let metadata =
             user_agent_metadata(&capture, "26.5.2", "arm", "64").expect("the capture rebuilds");
