@@ -166,4 +166,20 @@ describe('the forge card body', () => {
     expect(drawn, 'the block draws').toContain('fam-text');
     expect(drawn, 'with its own words').toContain('this project also has reviews on: work/x.');
   });
+
+  it('renders a quote as markdown, so a spawn charter draws as it was written', () => {
+    // The charter is written in markdown and drew raw before (Ved, 2026-10-09);
+    // the quote piece is prose wherever it comes from, so it renders.
+    const drawn = draw({
+      pieces: [
+        { kind: 'tag', text: 'charter' },
+        { kind: 'quote', text: '## Steps\n\n- **first** the run, then `code`.' },
+      ],
+    });
+
+    expect(drawn, 'the quote draws').toContain('fam-quote');
+    expect(drawn, 'the heading does not draw as its hashes').not.toContain('## Steps');
+    expect(drawn, 'a bold run renders').toContain('<strong>first</strong>');
+    expect(drawn, 'and code renders').toContain('<code>code</code>');
+  });
 });
