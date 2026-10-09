@@ -761,14 +761,22 @@ fn hint_verdict(capture: &chromium::HintCapture) -> HintVerdict {
 /// **The override belongs to the session that set it** (measured: a detached
 /// session's override is gone, and a new page inherits nothing), so the
 /// snippet keeps one session per page in a map the context's `page` listener
-/// feeds - every page the driver opens later is masked the moment it exists -
-/// and never detaches one.
+/// feeds - every page the driver opens later is masked as its `page` event
+/// fires, and never detaches one. A page's FIRST document can still commit
+/// before the attach lands, the same race playwright's own emulation runs;
+/// everything the page does after it is masked.
+///
+/// A per-page failure has no return to ride once the listener is live, so it
+/// is recorded - the install's own sweep reports its failures in the note -
+/// and written to the driver's stderr, which the client inherits (the
+/// child's stderr is `Stdio::inherit`).
 fn hint_mask_snippet(user_agent: &str, metadata: &serde_json::Value) -> String {
     format!(
         "async (page) => {{\
          const user_agent = {ua};\
          const metadata = JSON.parse({metadata});\
          const held = new Map();\
+         const failed = [];\
          const mask = async (target) => {{\
          try {{\
          if (held.has(target)) return;\
@@ -777,11 +785,15 @@ fn hint_mask_snippet(user_agent: &str, metadata: &serde_json::Value) -> String {
          userAgentMetadata: metadata }});\
          held.set(target, cdp);\
          target.on('close', () => {{ held.delete(target); }});\
-         }} catch (why) {{}}\
+         }} catch (why) {{\
+         failed.push(String(why));\
+         console.error('the client-hint mask failed on a page: ' + why);\
+         }}\
          }};\
          page.context().on('page', (target) => {{ mask(target); }});\
          for (const target of page.context().pages()) {{ await mask(target); }}\
-         return 'the client hints are masked on ' + held.size + ' page(s)';\
+         return 'the client hints are masked on ' + held.size + ' page(s)' + \
+         (failed.length ? ', ' + failed.length + ' failed: ' + failed.join('; ') : '');\
          }}",
         ua = custom::js_string(user_agent),
         metadata = custom::js_string(&metadata.to_string()),
@@ -1334,6 +1346,13 @@ mod tests {
         assert!(
             !snippet.contains("detach"),
             "detaching clears the override (measured); the mask must never detach: {snippet}",
+        );
+        assert!(
+            snippet.contains("failed.push(String(why))")
+                && snippet.contains("console.error('the client-hint mask failed on a page: '")
+                && snippet.contains("', ' + failed.length + ' failed: '"),
+            "a per-page failure is recorded, written to the driver's stderr the client inherits, \
+             and reported in the install's note: {snippet}",
         );
         assert!(
             snippet.contains(r#"\" quoted"#),
