@@ -205,13 +205,23 @@ describe("one project's board", () => {
     ]);
   });
 
-  /** A project the snapshot does not carry reads as an empty board, named. */
-  it('reads a project the snapshot does not carry as an empty board', () => {
+  /**
+   * A project the snapshot does not carry is UNKNOWN, not empty: the two read
+   * the same on a lane count, and only one of them may offer the create line -
+   * an unknown project has nothing to file a row against. The name still
+   * draws, because the page is a route and the reader addressed it.
+   */
+  it('reads a project the snapshot does not carry as unknown, not empty', () => {
     const view = boardView(homeWire, 'TestOrg', 'nope');
-    expect(view.empty).toBe(true);
+    expect(view.known, 'an absent project read as one this forge carries').toBe(false);
+    expect(view.empty, 'an absent project read as an empty one').toBe(false);
     expect(view.name).toBe('nope');
     expect(view.lanes.every((lane) => lane.cards.length === 0)).toBe(true);
     expect(view.read).toEqual({ onYou: 0, rows: 0, running: 0 });
+
+    // The control: a project the snapshot DOES carry reads as known, so the
+    // assertion above is reading the flag rather than a constant.
+    expect(boardView(homeWire, 'TestOrg', 'proj').known).toBe(true);
   });
 
   /**

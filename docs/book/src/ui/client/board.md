@@ -113,9 +113,12 @@ every one of them stamps the change as the user's.
   - cut a row in the create line, or tell the lead what is next - with the
   six lanes still drawn under it.
 - **Before the first frame**: a route can be addressed before the snapshot
-  lands, and a project the snapshot does not carry reads as an empty board
-  under its name. The page arrives with the connection rather than drawing a
-  second loading state of its own.
+  lands. The page arrives with the connection rather than drawing a second
+  loading state of its own, and a subscription the server turns down says so
+  in its own words instead of reading forever.
+- **Unknown**: a project the snapshot does not carry draws its name and one
+  line saying this forge does not hold it, with no lanes and no create line -
+  a row filed there would name a project `forge.toml` has no entry for.
 - **A set of seats**: the seat chips draw only when the project holds one; a
   project with nothing running draws none.
 

@@ -420,6 +420,34 @@ describe("the board's controls", () => {
   });
 
   /**
+   * A project the fleet does not carry draws as unknown: no lanes to move a
+   * card between and no create line, because a row filed here would name a
+   * project this forge does not hold. The route is addressable, so the page
+   * has to answer for the address rather than invite work against nothing.
+   */
+  it('draws an unknown project as unknown, and offers it no create line', () => {
+    app = mount(Board, {
+      target: document.body,
+      props: {
+        wire: homeWire,
+        org: 'TestOrg',
+        project: 'nope',
+        onact: () => {},
+      },
+    });
+    flushSync();
+
+    expect(document.body.textContent, 'the page did not say the project is unknown').toContain(
+      'not one of this forge',
+    );
+    expect(
+      document.querySelector('.b-create'),
+      'an unknown project offered a create line',
+    ).toBeNull();
+    expect(document.querySelector('.b-lanes'), 'an unknown project drew lanes').toBeNull();
+  });
+
+  /**
    * Every card draws whole: its mark, its subject, its meta line and its
    * measure line - owned or not. An unclaimed card says so rather than
    * leaving the meta blank.

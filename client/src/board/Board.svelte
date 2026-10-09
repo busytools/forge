@@ -445,146 +445,162 @@
     </section>
   {/if}
 
-  {#if view.empty}
+  {#if !view.known}
+    <!-- The page is a route and this one names a project the fleet does not
+         carry: it has no rows to draw and no board to edit, and the create
+         line would file a row against nothing. -->
     <p class="b-empty">
-      nothing owned, nothing waiting - cut a row below, or tell the lead what is next
+      {project} is not one of this forge's projects - check the name in forge.toml, or open the board
+      from its row on the home.
     </p>
-  {/if}
+  {:else}
+    {#if view.empty}
+      <p class="b-empty">
+        nothing owned, nothing waiting - cut a row below, or tell the lead what is next
+      </p>
+    {/if}
 
-  <div class="b-lanes">
-    {#each lanes as lane (lane.key)}
-      <section
-        class="b-lane b-lane-{lane.key}"
-        class:drop={dropLane === lane.key}
-        data-state={lane.key}
-      >
-        <div class="b-cap">
-          <span class="b-lane-nm">{lane.name}</span>
-          <span class="b-count">{lane.count}</span>
-          <span class="b-rule"></span>
-        </div>
-        {#each lane.cards as row (row.id)}
-          <!-- The card itself is the interaction: it takes the pointer for a
+    <div class="b-lanes">
+      {#each lanes as lane (lane.key)}
+        <section
+          class="b-lane b-lane-{lane.key}"
+          class:drop={dropLane === lane.key}
+          data-state={lane.key}
+        >
+          <div class="b-cap">
+            <span class="b-lane-nm">{lane.name}</span>
+            <span class="b-count">{lane.count}</span>
+            <span class="b-rule"></span>
+          </div>
+          {#each lane.cards as row (row.id)}
+            <!-- The card itself is the interaction: it takes the pointer for a
                drag and the arrows for the keyboard's half of it - up and down
                re-order the row, left and right move it between lanes - so it
                is focusable without being a widget role. `option` and `button`
                are lies over a card that holds a link and a picker, and hidden
                buttons per card would be more tab stops for the moves the
                arrows already reach. -->
-          <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-          <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-          <article
-            class="b-card"
-            class:dragging={dragging?.id === row.id}
-            data-id={row.id}
-            tabindex="0"
-            onpointerdown={(event) => down(event, row)}
-            onkeydown={(event) => keyMove(event, row)}
-          >
-            <div class="b-row1">
-              <span class="b-mark {markClass(row.status)}" aria-hidden="true"></span>
-              <span class="b-sub" class:settled={row.status === 'completed'} title={row.subject}>
-                <span class="b-line">{row.display}</span>
-                {#if row.display !== row.subject}<span class="b-sub2">{row.subject}</span>{/if}
-              </span>
-            </div>
-            <div class="b-meta">
-              {#if row.owner !== null}
-                {#if ownerHref(row.owner) !== null}
-                  <a class="b-owner" href={ownerHref(row.owner)}>
-                    <span class="b-ava">{row.initials}</span>{row.owner}
-                  </a>
+            <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+            <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+            <article
+              class="b-card"
+              class:dragging={dragging?.id === row.id}
+              data-id={row.id}
+              tabindex="0"
+              onpointerdown={(event) => down(event, row)}
+              onkeydown={(event) => keyMove(event, row)}
+            >
+              <div class="b-row1">
+                <span class="b-mark {markClass(row.status)}" aria-hidden="true"></span>
+                <span class="b-sub" class:settled={row.status === 'completed'} title={row.subject}>
+                  <span class="b-line">{row.display}</span>
+                  {#if row.display !== row.subject}<span class="b-sub2">{row.subject}</span>{/if}
+                </span>
+              </div>
+              <div class="b-meta">
+                {#if row.owner !== null}
+                  {#if ownerHref(row.owner) !== null}
+                    <a class="b-owner" href={ownerHref(row.owner)}>
+                      <span class="b-ava">{row.initials}</span>{row.owner}
+                    </a>
+                  {:else}
+                    <span class="b-owner"><span class="b-ava">{row.initials}</span>{row.owner}</span
+                    >
+                  {/if}
                 {:else}
-                  <span class="b-owner"><span class="b-ava">{row.initials}</span>{row.owner}</span>
+                  <span class="b-un">unclaimed</span>
                 {/if}
-              {:else}
-                <span class="b-un">unclaimed</span>
-              {/if}
-              {#if row.epic !== null}<span class="b-epic">{row.epic}</span>{/if}
-              {#each row.links as link (link.label)}
-                {#if link.href !== null}
-                  <a href={link.href} target="_blank" rel="noreferrer">{link.label}</a>
-                {:else}
-                  <span class="b-link">{link.label}</span>
-                {/if}
-              {/each}
-              <span class="b-chips">
-                {#if row.rollup !== null}<span class="b-chip">{row.rollup} done</span>{/if}
-                {#each row.chips as chip (chip.label)}
-                  <span class="b-chip {chip.tone}">{chip.label}</span>
+                {#if row.epic !== null}<span class="b-epic">{row.epic}</span>{/if}
+                {#each row.links as link (link.label)}
+                  {#if link.href !== null}
+                    <a href={link.href} target="_blank" rel="noreferrer">{link.label}</a>
+                  {:else}
+                    <span class="b-link">{link.label}</span>
+                  {/if}
                 {/each}
-              </span>
-            </div>
-            <div class="b-last">
-              <span class="b-prog" class:over={row.tone === 'over'} class:bad={row.tone === 'bad'}>
-                <span class="b-time"
-                  >worked {row.worked}{#if row.estimate !== null}
-                    / {row.estimate}{/if}</span
+                <span class="b-chips">
+                  {#if row.rollup !== null}<span class="b-chip">{row.rollup} done</span>{/if}
+                  {#each row.chips as chip (chip.label)}
+                    <span class="b-chip {chip.tone}">{chip.label}</span>
+                  {/each}
+                </span>
+              </div>
+              <div class="b-last">
+                <span
+                  class="b-prog"
+                  class:over={row.tone === 'over'}
+                  class:bad={row.tone === 'bad'}
                 >
-                {#if row.estimate !== null}
-                  <span class="b-bar"><span class="b-fill" style="width:{fill(row)}"></span></span>
-                {/if}
-              </span>
-              <span class="b-wrote" class:live={live(row)}>wrote {ago(row.updatedAt)} ago</span>
-              <span class="b-acts">
-                <Picker
-                  label="the seat holding {row.subject}"
-                  value={row.owner ?? ''}
-                  options={[
-                    { value: '', label: 'unclaimed' },
-                    ...seats.map((seat) => ({ value: seat.label, label: seat.label })),
-                  ]}
-                  onpick={(value) =>
-                    act({
-                      task_assign: {
-                        project,
-                        id: row.id,
-                        owner: value === '' ? null : value,
-                      },
-                    })}
-                />
-              </span>
-            </div>
-          </article>
-        {/each}
-      </section>
-    {/each}
-  </div>
+                  <span class="b-time"
+                    >worked {row.worked}{#if row.estimate !== null}
+                      / {row.estimate}{/if}</span
+                  >
+                  {#if row.estimate !== null}
+                    <span class="b-bar"><span class="b-fill" style="width:{fill(row)}"></span></span
+                    >
+                  {/if}
+                </span>
+                <span class="b-wrote" class:live={live(row)}>wrote {ago(row.updatedAt)} ago</span>
+                <span class="b-acts">
+                  <Picker
+                    label="the seat holding {row.subject}"
+                    value={row.owner ?? ''}
+                    options={[
+                      { value: '', label: 'unclaimed' },
+                      ...seats.map((seat) => ({ value: seat.label, label: seat.label })),
+                    ]}
+                    onpick={(value) =>
+                      act({
+                        task_assign: {
+                          project,
+                          id: row.id,
+                          owner: value === '' ? null : value,
+                        },
+                      })}
+                  />
+                </span>
+              </div>
+            </article>
+          {/each}
+        </section>
+      {/each}
+    </div>
 
-  <div class="b-create">
-    <input
-      class="b-in"
-      data-editor="board"
-      type="text"
-      placeholder="a new row"
-      bind:value={subject}
-    />
-    <Picker
-      label="the epic it belongs under"
-      value={parent}
-      options={[
-        { value: '', label: 'no epic' },
-        ...epics.map((epic) => ({ value: epic.task.id, label: epic.task.subject })),
-      ]}
-      onpick={(value: string) => {
-        parent = value;
-      }}
-    />
-    <button
-      type="button"
-      class="b-btn b-add"
-      onclick={() => {
-        act({
-          task_create: {
-            project,
-            subject,
-            parent: parent === '' ? null : parent,
-          },
-        });
-        subject = '';
-      }}>+ add</button
-    >
-  </div>
+    <div class="b-create">
+      <input
+        class="b-in"
+        data-editor="board"
+        type="text"
+        placeholder="a new row"
+        bind:value={subject}
+      />
+      <Picker
+        label="the epic it belongs under"
+        value={parent}
+        options={[
+          { value: '', label: 'no epic' },
+          ...epics.map((epic) => ({ value: epic.task.id, label: epic.task.subject })),
+        ]}
+        onpick={(value: string) => {
+          parent = value;
+        }}
+      />
+      <button
+        type="button"
+        class="b-btn b-add"
+        onclick={() => {
+          act({
+            task_create: {
+              project,
+              subject,
+              parent: parent === '' ? null : parent,
+            },
+          });
+          subject = '';
+        }}>+ add</button
+      >
+    </div>
+  {/if}
 
   {#if dragging !== null}
     <div class="b-ghost" style="left:{dragging.x + 14}px; top:{dragging.y + 10}px">

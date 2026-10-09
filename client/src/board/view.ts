@@ -135,6 +135,8 @@ export interface BoardView {
   read: { onYou: number; rows: number; running: number };
   lanes: LaneView[];
   waiting: WaitingView[];
+  /** Whether the snapshot carries this project at all. */
+  known: boolean;
   /** Whether the project holds no live rows at all. */
   empty: boolean;
 }
@@ -234,9 +236,10 @@ function cardView(row: BoardRow, epic: string | null): BoardCardView {
 
 /**
  * `(org, project)`'s board: cards in lanes by state, rank order inside each,
- * and the rows waiting on the user in the strip above. A project no snapshot
- * carries reads as an empty board with its name - the page is a route, and
- * a route can be addressed before the first frame lands.
+ * and the rows waiting on the user in the strip above. A project the snapshot
+ * does not carry is UNKNOWN rather than empty - a route can be addressed
+ * before the first frame lands, and a board with an active create line for a
+ * project this forge does not hold invites a row against nothing.
  */
 export function boardView(wire: HomeWire, org: string, project: string): BoardView {
   const row = wire.projects.find(
@@ -261,7 +264,8 @@ export function boardView(wire: HomeWire, org: string, project: string): BoardVi
       read: { onYou: 0, rows: 0, running: 0 },
       lanes,
       waiting: [],
-      empty: true,
+      known: false,
+      empty: false,
     };
   }
   // The rank order the server would dispatch from: rank first, then
@@ -302,6 +306,7 @@ export function boardView(wire: HomeWire, org: string, project: string): BoardVi
     },
     lanes,
     waiting,
+    known: true,
     empty: row.rows.length === 0,
   };
 }
