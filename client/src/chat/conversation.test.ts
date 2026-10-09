@@ -3036,6 +3036,81 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
     expect(words(chat), 'no start is owed to a dead occupant').not.toContain('doomed');
   });
 
+  /**
+   * The pulled prompt's row stays mounted, keyed, across the hold.
+   *
+   * Removed (the old shape), the list's virtualiser splices the last row's
+   * size away and the drain re-adds it uncached - drawn at the estimate for
+   * one frame, which is the chat-wide up-and-down on every Enter (#1890,
+   * confirmed live 2026-10-09). Kept, the size survives and the words land
+   * back in the row they left.
+   */
+  it('keeps a pulled prompt row mounted, so the list cannot flash', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'kept')], null));
+
+    // The row arrives before the pile hears about the queue (the race the
+    // retraction exists for): it opens the live turn...
+    server.update({ chat_appended: { key: LEAD, msg: forgedUnder('the words', 'p1') } });
+    const opened = get(chat.value).turns;
+    const key = opened[opened.length - 1]?.key;
+    expect(key, 'the row opened a turn').toBeDefined();
+    expect(JSON.stringify(opened), 'precondition: the words drew').toContain('the words');
+
+    // ...and the queue's announcement pulls them into the card - the row must
+    // STAY, under the same key, drawing nothing.
+    server.update({ prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'the words' } });
+    const held = get(chat.value).turns;
+    expect(held[held.length - 1]?.key, 'the row keeps its key').toBe(key);
+    expect(held[held.length - 1]?.held, 'and is marked held').toBe(true);
+    expect(JSON.stringify(held), 'and draws nothing while it waits').not.toContain('the words');
+
+    // The drain fills the row in place: the same key, the hold over, the words
+    // back.
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } });
+    const drained = get(chat.value).turns;
+    expect(drained[drained.length - 1]?.key, 'the drain lands in the same row').toBe(key);
+    expect(drained[drained.length - 1]?.held, 'and the hold is over').toBe(false);
+    expect(JSON.stringify(drained), 'with the words back in it').toContain('the words');
+    stop();
+  });
+
+  /**
+   * A reconnect that takes the queue with it must not leave a held row standing
+   * empty: clearing the hold bookkeeping without the row strands it, no drain
+   * can fill it, and the page that later carries the prompt draws it again.
+   */
+  it('releases a held row when a reconnect takes the queue that held it', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'kept')], null));
+
+    server.update({ chat_appended: { key: LEAD, msg: forgedUnder('the words', 'p1') } });
+    server.update({ prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'the words' } });
+    expect(get(chat.value).turns.at(-1)?.held, 'precondition: the row is held').toBe(true);
+
+    // The process is gone, and its queue with it.
+    server.update({ connected: { key: LEAD, session_id: 's-2', cwd: '/tmp' } });
+
+    expect(
+      get(chat.value).turns.some((row) => row.held === true),
+      'no row is left held',
+    ).toBe(false);
+
+    // And a page carrying the same prompt draws it once, not beside a blank row.
+    server.send(
+      page([turn('t1', 'kept'), { key: null, messages: [forgedUnder('the words', 'p1')] }], null),
+    );
+    const rows = get(chat.value).turns.filter((row) =>
+      JSON.stringify(row.messages).includes('the words'),
+    );
+    expect(rows, 'the words draw in one row').toHaveLength(1);
+    stop();
+  });
+
   it('pairs the drained row with the page copy carried by its attachment', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);

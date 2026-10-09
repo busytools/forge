@@ -72,6 +72,19 @@ export interface Turn {
    * the turn under it, finds this row rather than drawing a second.
    */
   also?: string[];
+  /**
+   * A turn whose content is in the pile's card, kept in the list as an empty
+   * row at the height it measured.
+   *
+   * **The row is never removed for the hold.** The list's virtualiser caches
+   * row sizes positionally and splices a removed last item's away, so the
+   * send's own pull-and-return drew the re-added row at the estimate for one
+   * frame - the chat-wide up-and-down on every Enter (#1890, confirmed live
+   * 2026-10-09). Kept keyed and present, the size survives; the wrapper's
+   * remembered height keeps the row's space while it draws nothing, and the
+   * drain fills it in place.
+   */
+  held?: boolean;
 }
 
 /** Whether a turn's own frames carry the frame it ends on - a result, or the CLI giving up. */
@@ -1602,6 +1615,11 @@ export class Chat {
     // coming for anything it held, so the waits go rather than standing
     // forever. A fresh connect is the same fact from the other side.
     if (variant === 'connected') {
+      // A process that is gone takes its queue with it - and a row the hold
+      // already emptied is drawn bare rather than left standing empty: cleared
+      // bookkeeping alone strands it, no drain fills it, and the page that
+      // later carries the prompt draws it a second time beside the blank row.
+      this.releaseHeld();
       this.waiting.clear();
       this.drained.clear();
       return;
@@ -1840,6 +1858,18 @@ export class Chat {
   }
 
   /**
+   * Draw every held row bare, its queue forgotten.
+   *
+   * A hold whose bookkeeping is being cleared - a reconnect, a failed
+   * connection - would otherwise leave an emptied row that no drain fills and
+   * no page reconciles. The words come back the way a settled ask's do.
+   */
+  private releaseHeld(): void {
+    for (const uuid of [...this.drained.keys()]) this.release(uuid);
+    for (const uuid of [...this.waiting.keys()]) this.release(uuid);
+  }
+
+  /**
    * Whether this message is the row of a prompt the pile is still holding,
    * taking it into the hold on the way.
    *
@@ -1876,7 +1906,10 @@ export class Chat {
         changed = true;
         pulled = hit;
         const messages = turn.messages.filter((message) => uuidOf(message) !== uuid);
-        if (messages.length > 0) turns.push({ ...turn, messages });
+        // **The emptied row stays, marked held.** Dropped, the list splices its
+        // size away and the drain's re-add flashes (#1890); kept, the row holds
+        // its measured space and the words land back in it.
+        turns.push(messages.length > 0 ? { ...turn, messages } : { ...turn, messages, held: true });
       }
       return changed ? { ...held, turns } : held;
     });
@@ -2057,7 +2090,7 @@ export class Chat {
           this.unturned.push(message);
           return held;
         }
-        const grown: Turn = { ...last, messages: [...last.messages, message] };
+        const grown: Turn = { ...last, messages: [...last.messages, message], held: false };
         return this.answered({
           ...held,
           following: follow,
