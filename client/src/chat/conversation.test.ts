@@ -225,7 +225,196 @@ function fakeConnection() {
   };
 }
 
+/** The core's own turn for words nobody typed, carrying the prompt's id. */
+const forgedUnder = (text: string, id: string): unknown => ({
+  type: 'user',
+  uuid: id,
+  message: { role: 'user', content: [{ type: 'text', text }] },
+});
+
+const words = (chat: Chat): string => JSON.stringify(get(chat.value).turns);
+
 describe('the conversation the chat draws', () => {
+  /**
+   * A seat the reader has left folds nothing.
+   *
+   * **The frames keep arriving anyway** - the client holds the home
+   * subscription for the whole session, and it carries every seat's
+   * `chat_appended` for the fleet rows - so a kept conversation that folded
+   * them would grow for every seat ever visited, and a return would re-mount
+   * all of it. Held back, the return's own reads put the seat current again:
+   * the re-subscribe's snapshot and the newest page asked here.
+   */
+  it('folds nothing while unshown, and asks the newest page on the return', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    // The first ask's own answer: an ask that never landed would swallow the
+    // return's refresh under the in-flight guard.
+    server.send(page([turn('t1', 'kept')], null));
+    let notifies = 0;
+    const off = chat.value.subscribe(() => (notifies += 1));
+
+    server.update({ chat_appended: { key: LEAD, msg: said('while shown') } });
+    const shownNotifies = notifies;
+    expect(shownNotifies, 'a shown seat folds and notifies').toBeGreaterThan(0);
+
+    chat.leaving();
+    server.update({ chat_appended: { key: LEAD, msg: said('while away') } });
+    expect(notifies, 'an unshown seat neither folds nor notifies').toBe(shownNotifies);
+    // The notify alone is paint-gated, so the fold itself is read here too:
+    // the frame is dropped, not folded and left undrawn.
+    expect(
+      JSON.stringify(get(chat.value).turns),
+      'and the frame was dropped, not folded',
+    ).not.toContain('while away');
+
+    const asked = server.more().length;
+    chat.showing();
+    expect(server.more().length, 'the return asks the newest page').toBe(asked + 1);
+    expect(server.more().at(-1), 'for the newest page, this seat').toEqual({
+      kind: 'more',
+      conversation: LEAD,
+      before: null,
+      turns: 20,
+    });
+
+    off();
+    stop();
+  });
+
+  /**
+   * A swap that lands while the seat is away is structural, so it folds
+   * anyway: the held conversation empties and the return's page - the NEW
+   * occupant's - merges onto nothing. Gated, the swap never ran and the
+   * return merged the new occupant's page onto the old one's turns, which
+   * the keep-above arm then kept: both drew, persistently, and no later
+   * read heals it because the swap frame is never re-sent.
+   */
+  it('empties the conversation on a swap that lands while the seat is away', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'the old occupant')], null));
+
+    chat.leaving();
+    const asked = server.more().length;
+    server.update({ session_replaced: { key: LEAD } });
+    expect(server.more().length, 'the swap runs while away and asks for the new occupant').toBe(
+      asked + 1,
+    );
+    chat.showing();
+    server.send(page([turn('t2', 'the new occupant')], null));
+
+    const drawn = words(chat);
+    expect(drawn, 'the old occupant is gone').not.toContain('the old occupant');
+    expect(drawn, 'and the new one draws').toContain('the new occupant');
+    stop();
+  });
+
+  /**
+   * A return after more than one page of away turns drops the stale tail
+   * rather than stranding the gap: the held turns and the new page share
+   * nothing, the turns in between are in no page, and older() walks from the
+   * OLDEST held - so the middle was unreachable for good (rule 25's rows).
+   * The page's own cursor is the walk-back, so scrolling up loads the
+   * history again from the transcript.
+   */
+  it("drops the stale tail when the return's page does not reach it", () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'kept tail')], 'tail-cursor'));
+
+    chat.leaving();
+    chat.showing();
+    server.send(page([turn('t2', 'a new turn')], 'newest-cursor'));
+
+    const held = get(chat.value);
+    expect(words(chat), 'the unreachable tail is gone').not.toContain('kept tail');
+    expect(words(chat), 'and the newest page draws').toContain('a new turn');
+    expect(held.cursor, "the walk-back is the page's own cursor").toBe('newest-cursor');
+    stop();
+  });
+
+  /**
+   * A return whose ask was swallowed by one in flight fires when that ask
+   * settles: the stale page is not the read a return needs, and the want
+   * has to outlive it.
+   */
+  it("fires the return's ask once the in-flight one settles", () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    chat.refresh();
+    const asked = server.more().length;
+
+    chat.leaving();
+    chat.showing();
+    expect(server.more().length, 'the return did not ask yet').toBe(asked);
+
+    server.send(page([turn('t1', 'first')], null));
+    expect(server.more().length, 'the held want fires on the settle').toBe(asked + 1);
+    stop();
+  });
+
+  /**
+   * A held return-want dies with the socket. The reconnect answers with an
+   * ask of its own, so a want that outlived the drop fires a second ask at
+   * the same core for the same page.
+   */
+  it('drops a held return-want when the socket goes', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    chat.refresh();
+    chat.leaving();
+    chat.showing();
+    // The socket drops before the in-flight ask settles: the want goes with
+    // it, and the reconnect's own read is the ask a return gets.
+    server.reach('closed');
+    const asked = server.more().length;
+    server.reach('open');
+    server.send(page([turn('t1', 'first')], null));
+
+    expect(server.more().length, 'the reconnect asked once, and the want did not ask again').toBe(
+      asked + 1,
+    );
+    stop();
+  });
+
+  /**
+   * A turn no page can put back survives the reach arm. A `forge_notice` line
+   * lives in this conversation alone - the CLI wrote no row for it - so the
+   * newest page a reconnect asks for carries no copy, and dropped with the
+   * stale tail the row the reader was looking at is gone with no read that
+   * can bring it back. The shown seat is the worst case: the reconnect's own
+   * read is what empties it.
+   */
+  it('keeps the row the reader has when a reconnect re-serves around it', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    // A notice on a seat with no turn yet opens its own row, which is its
+    // only copy anywhere.
+    server.update({ notice: { key: LEAD, severity: 'error', text: 'the plan is spent' } });
+
+    // The socket drops and reconnects; the reconnect asks a newest page of
+    // its own, and what lands shares no frame with what is held.
+    server.reach('closed');
+    server.reach('open');
+    server.send(page([turn('t1', 'after the reconnect')], 'c1'));
+
+    const drawn = words(chat);
+    expect(drawn, 'the notice row is still drawn').toContain('the plan is spent');
+    expect(drawn, 'and the newest page draws').toContain('after the reconnect');
+    stop();
+  });
+
   /**
    * The core's own line, which no transcript holds: the CLI never wrote a row
    * for it, so this store is the only place it can be drawn from.
@@ -1698,7 +1887,9 @@ describe('the conversation the chat draws', () => {
     server.send(page([turn('t1', 'first')], null));
     // A page read before the answer: the row this client holds carries the
     // reader's words and nothing else, which is what a read taken early gives.
-    server.send(page([{ key: null, messages: [typed('mine')] }], '1'));
+    // The page still carries the turn above it, as every page does - whole
+    // turns, contiguous - so the merge reaches what is held.
+    server.send(page([turn('t1', 'first'), { key: null, messages: [typed('mine')] }], '1'));
     const held = get(chat.value).turns.at(-1)?.key ?? '';
     // The answer then arrives as frames, opening a live turn over that row.
     server.update({ chat_appended: { key: LEAD, msg: said('answer-1') } });
@@ -1709,7 +1900,10 @@ describe('the conversation the chat draws', () => {
     // are older - asking THAT object is asking the wrong copy.
     server.send(
       page(
-        [{ key: null, messages: [typed('mine'), said('answer-1'), said('answer-2'), ended()] }],
+        [
+          turn('t1', 'first'),
+          { key: null, messages: [typed('mine'), said('answer-1'), said('answer-2'), ended()] },
+        ],
         '1',
       ),
     );
@@ -2073,15 +2267,6 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
     // would hand it to the next.
     echoes.clear(subjectKey({ session: LEAD }));
   });
-
-  /** The core's own turn for words nobody typed, carrying the prompt's id. */
-  const forgedUnder = (text: string, id: string): unknown => ({
-    type: 'user',
-    uuid: id,
-    message: { role: 'user', content: [{ type: 'text', text }] },
-  });
-
-  const words = (chat: Chat): string => JSON.stringify(get(chat.value).turns);
 
   it('holds the forged row while the pile is drawing it, and drains it at started', () => {
     const server = fakeConnection();
@@ -2568,5 +2753,54 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
     );
 
     expect(words(chat).split('mid-turn words').length - 1, 'one prompt, one row').toBe(1);
+  });
+
+  /**
+   * The queue's own frames fold while the seat is away: the lifecycle that
+   * lets a held prompt go is what no read repeats - dropped, the return's
+   * page re-withheld the row its own started frame had released, and the
+   * words appeared nowhere (the echo draws nothing for a queued send).
+   */
+  it('lets a held prompt go when its start lands while the seat is away', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    server.update({ prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'held words' } });
+    chat.leaving();
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } });
+    chat.showing();
+    server.send(
+      page([turn('t1', 'first'), { key: 't2', messages: [forgedUnder('held words', 'p1')] }], null),
+    );
+
+    expect(words(chat), 'the row draws on the return').toContain('held words');
+    stop();
+  });
+
+  /**
+   * A connect that lands while the seat is away releases the queue hold: the
+   * process is gone and its queue with it, and a connect is that fact from
+   * the other side. It is home news, so it reaches an away seat - dropped,
+   * the hold outlives the queue and the return's page re-withholds a row
+   * nothing will ever release.
+   */
+  it('lets a connect that lands while the seat is away release the queue hold', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    server.update({ prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'held words' } });
+    chat.leaving();
+    server.update({ connected: { key: LEAD, session_id: 's-2', cwd: '/tmp' } });
+    chat.showing();
+    server.send(
+      page([turn('t1', 'first'), { key: 't2', messages: [forgedUnder('held words', 'p1')] }], null),
+    );
+
+    expect(words(chat), 'the row draws on the return').toContain('held words');
+    stop();
   });
 });

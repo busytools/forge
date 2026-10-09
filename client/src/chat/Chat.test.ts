@@ -12,6 +12,7 @@ import type { Connection } from '../socket';
 import { Stores } from '../stores';
 import type { SessionSlot } from '../wire/types';
 import Chat from './Chat.svelte';
+import SeatSwitch from './testing/seat-switch.svelte';
 import { installResizeObserver } from './testing/viewport';
 
 installResizeObserver();
@@ -255,6 +256,60 @@ describe('the chat column as it draws', () => {
     // reader already has, and asking with one before anything is held is how
     // the page opens at the top of a conversation instead of the end.
     expect(server.asks).toEqual([{ kind: 'more', conversation: LEAD, before: null, turns: 20 }]);
+  });
+
+  /**
+   * A seat the reader has left holds its frames back, and the return refreshes
+   * it.
+   *
+   * The frames for a seat the reader has left still arrive - the home
+   * subscription carries every seat's `chat_appended` for the fleet rows - so
+   * a column that kept folding them would grow a conversation per seat ever
+   * visited, and every return would re-mount all of it. What the seat missed
+   * comes back through its own reads on the return: the re-subscribe's
+   * snapshot, and the newest page this pins.
+   */
+  it('holds a left seat back, and refreshes it on the return', () => {
+    const say = (text: string): unknown => ({
+      type: 'assistant',
+      message: {
+        id: `m-${text}`,
+        role: 'assistant',
+        model: 'claude-opus-5',
+        content: [{ type: 'text', text }],
+      },
+    });
+    const server = stub();
+    // The wrapper's own handle, typed: `mount` hands back the component's
+    // exports, and the test drives the switch through them.
+    const column = mount(SeatSwitch, {
+      target: document.body,
+      props: { connection: server.connection, first: LEAD, second: { ...LEAD, label: 'w1' } },
+    }) as unknown as { flip: () => void };
+    app = column;
+    flushSync();
+
+    server.answer([{ key: 't1', messages: [say('kept')] }]);
+    expect(drawn(), 'the seat drew').toContain('kept');
+
+    // The switch: another seat on screen, and a frame for the seat left
+    // arrives through the home feed while it is away.
+    column.flip();
+    flushSync();
+    server.send({
+      kind: 'update',
+      update: { chat_appended: { key: LEAD, msg: say('arrived while away') } },
+    });
+
+    const asked = server.asks.filter((ask) => ask.kind === 'more').length;
+    column.flip();
+    flushSync();
+    expect(
+      server.asks.filter((ask) => ask.kind === 'more').length,
+      'the return asks the newest page',
+    ).toBe(asked + 1);
+    expect(drawn(), 'what was kept still draws').toContain('kept');
+    expect(drawn(), 'and the missed frame is not folded in').not.toContain('arrived while away');
   });
 
   it('says a seat has no history rather than drawing a blank column', () => {
