@@ -46,9 +46,13 @@ pub fn read_output_file_tail(path: &Path, max_lines: usize) -> Option<Vec<String
     let mut file = match File::open(path) {
         Ok(f) => f,
         Err(err) => {
-            tracing::warn!(
-                event_name = "monitor_output_file_open_failed",
-                message = "could not open Monitor output_file; tail unavailable",
+            // A file that will not open is the session's own condition, and
+            // a view is answered for it by name (`FileGone`): it is not
+            // forge's health, so it stays out of WARN's signal - the level a
+            // reader acts on (rule 20).
+            tracing::debug!(
+                event_name = "output_tail_open_failed",
+                message = "could not open an output file; tail unavailable",
                 outcome = "failure",
                 path = %path.display(),
                 error_kind = ?err.kind(),
@@ -86,8 +90,8 @@ pub fn read_output_file_tail(path: &Path, max_lines: usize) -> Option<Vec<String
                 // read, while a failed read may well come right at the
                 // next one.
                 tracing::debug!(
-                    event_name = "monitor_output_file_line_unreadable",
-                    message = "Monitor output_file holds a line that could not be read; skipping it",
+                    event_name = "output_tail_line_unreadable",
+                    message = "an output file holds a line that could not be read; skipping it",
                     outcome = "skipped",
                     path = %path.display(),
                     error_kind = ?err.kind(),

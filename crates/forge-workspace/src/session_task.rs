@@ -1012,7 +1012,13 @@ impl SessionTask {
                             tool_use_id: Some(id),
                             output_file,
                             ..
-                        } if id == &call_id => Some(output_file.clone()),
+                        // An empty path is a path the frame does not carry:
+                        // the wire sends `output_file: ""` for a task with no
+                        // file, and reading that as a path would answer
+                        // "gone" about a file that never existed.
+                        } if id == &call_id && !output_file.is_empty() => {
+                            Some(output_file.clone())
+                        }
                         _ => None,
                     })
                 });
@@ -5611,11 +5617,12 @@ provider = "anthropic"
 
         let mut answered = None;
         while let Ok(update) = update_rx.try_recv() {
-            if let SessionUpdate::CallOutput { call_id, output, .. } = update {
-                answered = Some((call_id, output));
+            if let SessionUpdate::CallOutput { key, call_id, output } = update {
+                answered = Some((key, call_id, output));
             }
         }
-        let (call_id, output) = answered.expect("the read is answered by the task");
+        let (key, call_id, output) = answered.expect("the read is answered by the task");
+        assert_eq!(key, session_key, "the answer names the seat it routes on");
         assert_eq!(call_id, "tu-1", "the answer names the call it answers");
         let expected: Vec<String> = (3..15).map(|at| format!("line-{at:02}")).collect();
         assert_eq!(
@@ -5627,7 +5634,8 @@ provider = "anthropic"
     }
 
     /// The read never answers blank: a call the conversation does not name is
-    /// the no-path reason, and a file that is gone is its own.
+    /// the no-path reason, an empty path the frame carries is the same
+    /// reason, and a file that is gone is its own.
     #[tokio::test]
     async fn a_calls_output_read_names_what_is_missing() {
         let (workspace, mut update_rx) = crate::Workspace::testing_stub();
@@ -5668,9 +5676,27 @@ provider = "anthropic"
             }))
             .expect("a task notification frame"),
         });
+        // A call whose frame carries no path at all: the wire really sends an
+        // empty string, and reading that as a path would answer "gone" about
+        // a file that never existed.
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: session_key.display(),
+            msg: serde_json::from_value(serde_json::json!({
+                "type": "system",
+                "subtype": "task_notification",
+                "task_id": "t-empty",
+                "tool_use_id": "tu-empty",
+                "status": "completed",
+                "output_file": "",
+                "summary": "Background command \"true\" completed",
+                "session_id": session_key.display(),
+                "uuid": "u-empty",
+            }))
+            .expect("a task notification frame"),
+        });
         while update_rx.try_recv().is_ok() {}
 
-        for call_id in ["tu-unknown", "tu-gone"] {
+        for call_id in ["tu-unknown", "tu-empty", "tu-gone"] {
             task.execute_command(crate::protocol::Command::ReadCallOutput {
                 key: session_key.clone(),
                 call_id: call_id.to_owned(),
@@ -5679,17 +5705,24 @@ provider = "anthropic"
 
         let mut answers = Vec::new();
         while let Ok(update) = update_rx.try_recv() {
-            if let SessionUpdate::CallOutput { call_id, output, .. } = update {
-                answers.push((call_id, output));
+            if let SessionUpdate::CallOutput { key, call_id, output } = update {
+                answers.push((key, call_id, output));
             }
         }
         assert_eq!(
             answers,
             vec![
-                ("tu-unknown".to_owned(), forge_primitives::CallOutput::NoPath),
-                ("tu-gone".to_owned(), forge_primitives::CallOutput::FileGone),
+                (
+                    session_key.clone(),
+                    "tu-unknown".to_owned(),
+                    forge_primitives::CallOutput::NoPath
+                ),
+                (session_key.clone(), "tu-empty".to_owned(), forge_primitives::CallOutput::NoPath),
+                (session_key.clone(), "tu-gone".to_owned(), forge_primitives::CallOutput::FileGone),
             ],
-            "a call with no frame is no-path, a call whose file is gone is gone - neither blanks",
+            "each answer names the seat it routes on and the call it answers; a call with no \
+             frame and a call with an empty path are both no-path, and a call whose file is gone \
+             is gone - none of them blanks",
         );
     }
 

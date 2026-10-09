@@ -175,23 +175,28 @@ pub enum Message {
         extras: Extras,
     },
 
-    /// Terminal notification when a sub-agent `Task` completes,
-    /// fails, or is stopped. Subtype `"task_notification"`. v0.1.64
-    /// `TaskNotificationMessage`.
+    /// Terminal notification when a task completes, fails, or is stopped:
+    /// a sub-agent `Task`, a backgrounded `Bash` or a `Monitor`. Subtype
+    /// `"task_notification"`. v0.1.64 `TaskNotificationMessage`.
     ///
-    /// Despite the generic-sounding name, captures confirm this
-    /// variant only fires for the `Task` sub-agent tool - backgrounded
-    /// `Bash` and `Monitor` use the `task_started` / `task_updated`
-    /// pair (see [`Self::TaskStarted`], [`Self::TaskProgress`]) and
-    /// Monitor stream events arrive as `Result` frames with
-    /// `origin: {kind: "task-notification"}` rather than as system
-    /// notifications.
+    /// **Every task flavour fires it, not only the sub-agent tool.** The
+    /// wire baselines record it ending a backgrounded command
+    /// (`baselines/sdk/2.1.280/backgrounded_bash_lifecycle.jsonl` in
+    /// forge-test-harness), carrying the `output_file` its output went to;
+    /// `monitor.jsonl` under the claude-cli-upgrade skill records the same
+    /// for a Monitor. The `task_started` / `task_updated` pair (see
+    /// [`Self::TaskStarted`], [`Self::TaskUpdated`]) rides alongside while
+    /// the task runs rather than instead of this. Monitor stream events
+    /// also arrive as `Result` frames with
+    /// `origin: {kind: "task-notification"}`.
     TaskNotification {
         /// Stable identifier for this task instance.
         task_id: String,
         /// How the task ended.
         status: TaskNotificationStatus,
-        /// Path on disk where the task wrote its result transcript.
+        /// Path on disk the task's output went to: its result transcript for
+        /// a sub-agent, the command's own stream for a backgrounded task.
+        /// Empty when the frame carries none - a path is never assumed.
         output_file: String,
         /// Short natural-language summary of the outcome.
         summary: String,

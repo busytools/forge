@@ -61,7 +61,8 @@ forge-test-harness ─→ primitives + sdk + workspace + server
   run of blocks, the transcript
   fold that turns a conversation's messages into the units a view draws,
   the sub-agent instance list the session task's own fold keeps and
-  pushes, a Monitor's watched-command output tail, and the socket
+  pushes, the `ReadCallOutput` verb (with the workspace's tail reader
+  re-exported for views), and the socket
   that carries all of it to whatever is drawing.
   Sits between `forge-workspace` and the clients, so a second client
   attaches beside the TUI rather than duplicating it. Nothing here may

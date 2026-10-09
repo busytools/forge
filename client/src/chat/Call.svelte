@@ -221,19 +221,35 @@
   );
 
   /**
-   * Ask for the call's own output the moment the row opens - once per open.
+   * Ask for the call's own output when the row opens - ONCE per open.
    *
    * **Only a backgrounded call has one to ask about, and only once it has
    * settled**: the file is named by the task's own ending frames, so a row
    * that asked while the command still ran would be answered with no path
-   * about a file that is being written. The answer arrives on the wire and
-   * is kept for the id below; a re-open re-asks, which is what heals a file
-   * that went away between visits.
+   * about a file that is being written. `running` is read through the
+   * derived, so a row opened mid-run asks the moment the call settles - the
+   * one transition that turns a held row into a readable one.
+   *
+   * **Not once per re-fold.** The fold hands this row a NEW object on every
+   * frame its turn appends, so an effect that depended on the call would ask
+   * per frame of the row's own streaming turn - a dispatch, a file read and
+   * an answer each. The id asked in this open is remembered instead and the
+   * ask armed once: the effect may re-run freely (a fold, a settle) and the
+   * memory is what decides. Closing the row forgets it, so a re-open asks
+   * again, which is what heals a file that went away between visits.
    */
+  let asked: string | null = null;
+
   $effect(() => {
-    if (opened && call.backgrounded && !running && onreadoutput !== null) {
-      onreadoutput(call.id);
+    if (!opened) {
+      asked = null;
+      return;
     }
+    if (!call.backgrounded || running || onreadoutput === null) return;
+    const id = untrack(() => call.id);
+    if (asked === id) return;
+    asked = id;
+    onreadoutput(id);
   });
 
   /** The output the read answered with, read only while the row is open. */
@@ -574,8 +590,13 @@
                task read back, or a named reason there is none - never a
                blank. The escapes come off HERE, which is the page's job: the
                read hands over what the command wrote. -->
-          {#if readback.kind === 'lines'}
+          {#if readback.kind === 'lines' && readback.lines.length > 0}
             <div class="term">{stripEscapes(readback.lines.join('\n'))}</div>
+          {:else if readback.kind === 'lines'}
+            <!-- An empty tail is not nothing said: the file was read and it
+                 holds no lines, and an empty box would be the blank the
+                 contract forbids. -->
+            <div class="sg-pr">the command wrote nothing</div>
           {:else if readback.kind === 'file_gone'}
             <div class="sg-pr">the output file is gone</div>
           {:else if readback.kind === 'no_path'}

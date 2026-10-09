@@ -262,7 +262,7 @@ impl super::App {
     ///   (Monitor just started, hasn't received its first
     ///   `task_notification` with the path)
     /// - the helper returns `None` (file missing / permission denied
-    ///   / IO error - the helper logs the WARN; we preserve the
+    ///   / IO error - the helper logs why at `debug`; we preserve the
     ///   prior tail)
     pub fn refresh_monitor_output_tail_from_file(&mut self, task_id: &str) {
         let path = self

@@ -863,6 +863,24 @@ describe('the output a backgrounded row reads back', () => {
 
     const open = render(Call, { props: { k: 'f1', call: backgrounded(null), open: true } }).body;
     expect(open, 'the reason is drawn in words').toContain('the output file is gone');
+
+    outputs.post('seat', 'toolu_012ygCheCDa6s8YmU5JxxVp2', { kind: 'no_path' });
+    const bare = render(Call, { props: { k: 'f1', call: backgrounded(null), open: true } }).body;
+    expect(bare, 'so is the no-path reason').toContain('no output file was recorded for this call');
+  });
+
+  /**
+   * An empty tail is not nothing said: a zero-byte file, a path that names a
+   * directory and a file of undecodable bytes all read as no lines, and an
+   * empty box would be the blank the contract forbids.
+   */
+  it('says a tail that read as no lines in words', () => {
+    outputs.post('seat', 'toolu_012ygCheCDa6s8YmU5JxxVp2', { kind: 'lines', lines: [] });
+
+    const open = render(Call, { props: { k: 'f1', call: backgrounded(null), open: true } }).body;
+    expect(open, 'the empty tail is drawn as the word it is').toContain(
+      'the command wrote nothing',
+    );
   });
 
   /** Rule 25 at the seam: a shape the build cannot name draws as itself. */

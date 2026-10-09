@@ -23,3 +23,28 @@ pub enum CallOutput {
     /// not in the conversation the task carries.
     NoPath,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The wire shape the client narrows, held from the Rust side: a name for
+    /// the lines and a bare word for each reason. No compiler links the two
+    /// sides, so this is what keeps serde's output and the client's
+    /// `callOutputOf` together - the `draftEndingLine` precedent.
+    #[test]
+    fn a_call_output_serialises_as_the_client_narrows_it() {
+        assert_eq!(
+            serde_json::to_value(CallOutput::Lines(vec!["one".to_owned()])).expect("encodes"),
+            serde_json::json!({ "lines": ["one"] }),
+        );
+        assert_eq!(
+            serde_json::to_value(CallOutput::FileGone).expect("encodes"),
+            serde_json::json!("file_gone"),
+        );
+        assert_eq!(
+            serde_json::to_value(CallOutput::NoPath).expect("encodes"),
+            serde_json::json!("no_path"),
+        );
+    }
+}

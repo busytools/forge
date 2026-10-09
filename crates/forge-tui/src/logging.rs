@@ -532,7 +532,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         assert!(
-            caught.contains("monitor_output_file_line_unreadable"),
+            caught.contains("output_tail_line_unreadable"),
             "the demoted record must land under the default directives: {caught}",
         );
     }

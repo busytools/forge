@@ -533,12 +533,12 @@ than facts about a session.
   highlighting - and the heavier reads a review surface may want beyond
   those two layers, like a per-commit history or a diff against an
   arbitrary base.
-- **A monitor's output tail.** A `MonitorRecord` carries the path the
-  watched command writes to, and that path is on the server's machine: the
-  live tail is not reachable over this socket. It is a deliberate gap
-  rather than an oversight, and a small one - the finished output lands in
-  the conversation like any other tool result, which the transcript does
-  carry. A client that wants the running tail has to be on the machine.
+- **A monitor's tail as it runs.** `read_call_output` answers a call's own
+  output - the newest lines of the file the task wrote to, or a named
+  reason there is none - and a Monitor's file is the same read, so the
+  tail itself is reachable. Nothing pushes a growing tail, though: each
+  ask is one answer, so a client that wants a command's tail while it
+  still runs re-asks per beat. Filed as its own piece of work.
 - **The extensions surface.** Only the update records cross, above.
   Installing, updating, rolling back and repairing a plugin are the
   `claude plugin` CLI, and the page that drives them reads its inventory

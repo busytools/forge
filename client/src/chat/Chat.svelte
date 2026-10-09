@@ -250,7 +250,12 @@
    * conversation folds into the store the row reads.
    */
   function readOutput(callId: string): void {
-    void connection.dispatch({ read_call_output: { key: slot, call_id: callId } }, slot);
+    try {
+      void connection.dispatch({ read_call_output: { key: slot, call_id: callId } }, slot);
+    } catch {
+      // A closed socket throws rather than answering: the row keeps the ack
+      // it has, and the next open asks again.
+    }
   }
   /**
    * Every seat's conversation, kept after the reader leaves it.
