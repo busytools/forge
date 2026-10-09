@@ -1138,12 +1138,19 @@ export class Chat {
      * and TypeScript does not widen a captured `let` after the call - the
      * reads below would be narrowed to `never`.
      */
-    const walk: { key: string | null; below: Set<string> | null; reached: Set<string> | null } = {
+    const walk: {
+      key: string | null;
+      below: Set<string> | null;
+      reached: Set<string> | null;
+      fill: boolean;
+    } = {
       key: null,
       below: null,
       reached: null,
+      fill: false,
     };
     this.fold((held) => {
+      const first = !held.loaded;
       const healed = this.healedOf(held, fromPage);
       const known = new Map(healed.turns.map((turn) => [turn.key, turn]));
       // A turn a page has settled is also known by the page's own name for it,
@@ -1394,6 +1401,9 @@ export class Chat {
         walk.key = carriable.length > 0 ? (carriable[carriable.length - 1]?.key ?? null) : null;
         walk.below = walk.key === null ? null : new Set(rest.map((turn) => turn.key));
       }
+      // The fresh fill: a FIRST landing that brought nothing but one running
+      // turn has history above it that no reader can reach without a scroll.
+      walk.fill = direction === 'newest' && first && drawn.length <= 1 && cursor !== null;
       walk.reached = inPage;
       // A turn being written that no row of this page accounts for is kept - a
       // page of OLDER turns, or one serialized before those frames landed -
@@ -1461,6 +1471,16 @@ export class Chat {
       } else {
         this.older();
       }
+    }
+    // **One pull on a fresh open, not a chain.** A first landing that brought
+    // nothing but one running turn asks once for the history above it - enough
+    // to show there is something up - and the reader's own walking fills as
+    // they move (Ved, 2026-10-09: "it should pull at least something so that I
+    // know that there is something up. And as I move up, it should start
+    // filling up"). The ask guard makes a second call a no-op when the walk
+    // above already asked.
+    if (walk.fill) {
+      this.older();
     }
     this.returnIfWanted();
   }
