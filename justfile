@@ -349,15 +349,28 @@ vendor-browser-stack-android:
     ./scripts/vendor_browser_stack.sh --android
 
 
-# The Android half's own gate. Neither `just check` nor `client-tauri-check`
-# reaches it: the shell crate is its own workspace root, and the Kotlin lives
-# in the Gradle project, so without this the update plugin and its version
-# compare are compiled only at release time. The Kotlin compile and its unit
-# tests need the SDK and a JDK; a device and the release keystore are not.
-#
-# The target has to be installed (`rustup target add aarch64-linux-android`)
-# for the shell check.
-client-android-check: vendor-browser-stack vendor-browser-stack-android
+# The android target's own warnings check: the shell crate compiled for
+# aarch64-linux-android with warnings denied. **It is the only thing that
+# catches desktop-only code going dead there** - a `#[cfg(desktop)]` helper
+# whose only caller is gated compiles fine everywhere else this repo
+# builds, dies under `-D dead-code` here, and no other check or CI job
+# compiles this target (measured: the hint mask's failure-flush helpers
+# reached a review exactly that way). Cheap enough to gate: measured about
+# a second warm and 14 s into a fresh target dir, so `just check` runs it
+# beside the other client steps and CI runs it as its own job.
+client-android-warnings:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    rustup target add aarch64-linux-android
+    RUSTFLAGS="-D warnings" cargo check --manifest-path client/src-tauri/Cargo.toml --target aarch64-linux-android
+
+# The Android half's own gate. The shell crate is its own workspace root
+# and the Kotlin lives in the Gradle project; the WARNINGS half of the
+# target now rides `just check` (`client-android-warnings`), while the
+# Kotlin compile and its unit tests - which need the SDK and a JDK - stay
+# here, so they are compiled only when this runs. A device and the release
+# keystore are not needed.
+client-android-check: vendor-browser-stack vendor-browser-stack-android client-android-warnings
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -403,7 +416,6 @@ client-android-check: vendor-browser-stack vendor-browser-stack-android
     done
     # Universal is the variant `--target aarch64` builds (the release APK too).
     (cd client/src-tauri/gen/android && ./gradlew --console=plain :app:testUniversalDebugUnitTest)
-    RUSTFLAGS="-D warnings" cargo check --manifest-path client/src-tauri/Cargo.toml --target aarch64-linux-android
 
 # Bundle the client as an app and install it over /Applications/forge.app.
 # It does not bump anything, so it can be re-run after a failed build -
@@ -894,7 +906,7 @@ check:
     #!/usr/bin/env bash
     set -euo pipefail
 
-    steps=(fmt-check unicode-punct-check script-tests client-format client-lint client-typecheck client-test clippy test-all doctest doc)
+    steps=(fmt-check unicode-punct-check script-tests client-format client-lint client-typecheck client-test client-android-warnings clippy test-all doctest doc)
     verdict=""
 
     on_exit() {

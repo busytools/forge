@@ -166,3 +166,20 @@ jobs:
       - run: npm run typecheck:markup
       - run: npm run typecheck
       - run: npm test
+
+  # The android target's warnings check: the shell crate compiled for
+  # aarch64-linux-android with warnings denied. **No other job compiles
+  # this target**, so a desktop-only helper going dead there passes every
+  # other gate and surfaces only when someone runs the android check by
+  # hand - measured: the hint mask's failure-flush helpers reached a review
+  # that way. The target itself is host-independent; what this job adds is
+  # the ubuntu host-side compile of the build dependencies, which no local
+  # run can prove. It mirrors `just check`'s `client-android-warnings` step.
+  client-android:
+    name: client android warnings check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/rust
+      - run: rustup target add aarch64-linux-android
+      - run: RUSTFLAGS="-D warnings" cargo check --manifest-path client/src-tauri/Cargo.toml --target aarch64-linux-android
