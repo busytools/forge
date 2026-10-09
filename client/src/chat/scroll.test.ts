@@ -83,6 +83,13 @@ function stub() {
       }
       flushSync();
     },
+    /** One session update for this seat, as the socket delivers it. */
+    update(update: unknown): void {
+      for (const fn of listeners) {
+        fn({ kind: 'update', update } as ServerMessage);
+      }
+      flushSync();
+    },
     /** One turn arriving below the reader, the way a live turn does. */
     append(): void {
       for (const fn of listeners) {
@@ -129,6 +136,35 @@ beforeEach(() => {
 });
 
 describe('the compensation the list is handed', () => {
+  it('keeps a pulled prompt row mounted at its height, so a send cannot flash it', () => {
+    const server = stub();
+    draw(server);
+    server.page([turn('t1'), turn('t2')], null);
+
+    // The row arrives before the pile hears about the queue, opening the live
+    // turn - the race the retraction exists for (#1890).
+    server.update({
+      chat_appended: {
+        key: LEAD,
+        msg: {
+          type: 'user',
+          uuid: 'p1',
+          message: { role: 'user', content: [{ type: 'text', text: 'the words' }] },
+        },
+      },
+    });
+    const rows = [...document.querySelectorAll('.turn .turn')];
+    const row = rows[rows.length - 1];
+    expect(row, 'the words opened a row').toBeDefined();
+
+    // The queue pulls the words into the card. The ROW stays the same element
+    // - removed, the list splices its measured size away and the drain's
+    // re-add draws it at the estimate for one frame.
+    server.update({ prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'the words' } });
+    const after = [...document.querySelectorAll('.turn .turn')];
+    expect(after[after.length - 1], 'the row is the same element').toBe(row);
+  });
+
   it('is armed before an older page arrives, and off again after it lands', async () => {
     const server = stub();
     draw(server);

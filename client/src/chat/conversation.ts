@@ -72,6 +72,19 @@ export interface Turn {
    * the turn under it, finds this row rather than drawing a second.
    */
   also?: string[];
+  /**
+   * A turn whose content is in the pile's card, kept in the list as an empty
+   * row at the height it measured.
+   *
+   * **The row is never removed for the hold.** The list's virtualiser caches
+   * row sizes positionally and splices a removed last item's away, so the
+   * send's own pull-and-return drew the re-added row at the estimate for one
+   * frame - the chat-wide up-and-down on every Enter (#1890, confirmed live
+   * 2026-10-09). Kept keyed and present, the size survives; the wrapper's
+   * remembered height keeps the row's space while it draws nothing, and the
+   * drain fills it in place.
+   */
+  held?: boolean;
 }
 
 /** Whether a turn's own frames carry the frame it ends on - a result, or the CLI giving up. */
@@ -1876,7 +1889,10 @@ export class Chat {
         changed = true;
         pulled = hit;
         const messages = turn.messages.filter((message) => uuidOf(message) !== uuid);
-        if (messages.length > 0) turns.push({ ...turn, messages });
+        // **The emptied row stays, marked held.** Dropped, the list splices its
+        // size away and the drain's re-add flashes (#1890); kept, the row holds
+        // its measured space and the words land back in it.
+        turns.push(messages.length > 0 ? { ...turn, messages } : { ...turn, messages, held: true });
       }
       return changed ? { ...held, turns } : held;
     });
@@ -2057,7 +2073,7 @@ export class Chat {
           this.unturned.push(message);
           return held;
         }
-        const grown: Turn = { ...last, messages: [...last.messages, message] };
+        const grown: Turn = { ...last, messages: [...last.messages, message], held: false };
         return this.answered({
           ...held,
           following: follow,
