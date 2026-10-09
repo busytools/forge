@@ -657,7 +657,8 @@ pub fn tab_call_refusal(tool: &str, args: &Value, listed: &str, ui_origin: &str)
 /// rather than by the driver's formatting.
 const HINTS_MARKER: &str = "FORGE-HINTS ";
 
-/// The page the hint capture reads when the launch's own page cannot serve.
+/// The page the hint capture always reads: the client's own document, never
+/// the page the driver is driving.
 ///
 /// **`navigator.userAgentData` is undefined on `about:blank`** (measured), so
 /// the real values have to come from a document with a real origin - and this
@@ -1003,8 +1004,8 @@ fn write_mask(output_dir: &Path) -> Option<PathBuf> {
 }
 
 /// Write the client-hint capture page and answer its path, or `None` where it
-/// could not be written: the capture then has no document to hop to, and the
-/// hint mask stands down with its own warn rather than a failure.
+/// could not be written: the capture then has no document to read, and the
+/// mask fails by name rather than standing down.
 fn write_hints_page(output_dir: &Path) -> Option<PathBuf> {
     let path = hints_path(output_dir);
     match write_whole(&path, HINTS_PAGE) {
@@ -1465,7 +1466,7 @@ mod tests {
 
     /// The capture page is written whole under its own name, with no temp
     /// left behind, and a write that cannot land answers `None` rather than a
-    /// refusal - the mask then stands down with its own warn.
+    /// refusal - the mask then fails by name, never standing down.
     #[test]
     fn the_capture_page_is_written_whole_under_its_own_name() {
         let dir = tempfile::tempdir().expect("a temp dir");
