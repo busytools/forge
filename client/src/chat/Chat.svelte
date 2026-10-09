@@ -240,6 +240,18 @@
       echoes.refuse(seat, 'the socket is closed');
     }
   }
+
+  /**
+   * Ask the core for a call's own output, on the row's behalf.
+   *
+   * The ask rather than the read: the file the CLI streamed a backgrounded
+   * command's output to is named by the task's own frames, which the core
+   * holds - and the answer comes back as a `call_output` update this
+   * conversation folds into the store the row reads.
+   */
+  function readOutput(callId: string): void {
+    void connection.dispatch({ read_call_output: { key: slot, call_id: callId } }, slot);
+  }
   /**
    * Every seat's conversation, kept after the reader leaves it.
    *
@@ -1156,6 +1168,7 @@
           {slot}
           {history}
           carried={turn.key === newest ? (pinned?.key ?? null) : null}
+          onreadoutput={readOutput}
         />
         <!-- The echo rides the newest row, which is where the words will land:
              the row it is drawn in is the one the core's own copy opens or

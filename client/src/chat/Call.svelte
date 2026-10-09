@@ -10,8 +10,9 @@
   import { iconOf, isBrowserTool, mcpParts } from './families';
   import { languageFor, opensByDefault, type CallBody, type ToolLeaf } from './leaves';
   import { duration, tokens } from './numbers';
+  import { outputs } from './outputs.svelte';
   import Prose from './Prose.svelte';
-  import { firstLine, searchHits } from './text';
+  import { firstLine, searchHits, stripEscapes } from './text';
   import Thought from './Thought.svelte';
   import { subagents } from './subagents.svelte';
   import { dispatchFrames } from './timeline';
@@ -34,6 +35,7 @@
     open = false,
     k,
     messages = null,
+    onreadoutput = null,
   }: {
     call: ToolLeaf;
     open?: boolean;
@@ -48,6 +50,15 @@
      * LATER turns than the dispatch that opened it.
      */
     messages?: readonly unknown[] | null;
+    /**
+     * The way the row asks for a backgrounded call's own output, handed down
+     * by the column - which holds the connection the ask goes over.
+     *
+     * `null` for a row that is not in a column: the ask is a wire round trip
+     * and a row drawn without one (a fixture, another view) draws the ack it
+     * already has rather than inventing an ask nobody hears.
+     */
+    onreadoutput?: ((callId: string) => void) | null;
     /**
      * The fold's own name for this row, which the row draws in `data-k`.
      *
@@ -208,6 +219,25 @@
       ? call.status !== 'completed' && call.status !== 'failed' && call.status !== 'killed'
       : card.running,
   );
+
+  /**
+   * Ask for the call's own output the moment the row opens - once per open.
+   *
+   * **Only a backgrounded call has one to ask about, and only once it has
+   * settled**: the file is named by the task's own ending frames, so a row
+   * that asked while the command still ran would be answered with no path
+   * about a file that is being written. The answer arrives on the wire and
+   * is kept for the id below; a re-open re-asks, which is what heals a file
+   * that went away between visits.
+   */
+  $effect(() => {
+    if (opened && call.backgrounded && !running && onreadoutput !== null) {
+      onreadoutput(call.id);
+    }
+  });
+
+  /** The output the read answered with, read only while the row is open. */
+  const readback = $derived(opened ? (outputs.of(call.id) ?? null) : null);
 
   /** Whether the call failed, which a forge row states on the row itself. */
   const failed = $derived(call.status === 'failed' || call.status === 'killed');
@@ -477,7 +507,7 @@
     <div class="body">
       <Forge card={call.forge} {glyph} />
     </div>
-  {:else if opened && call.body.length > 0}
+  {:else if opened && (call.body.length > 0 || readback !== null)}
     <div class="body">
       {#if hits !== null}
         {#each hits as hit, at (at)}
@@ -539,6 +569,21 @@
           </div>
         {/if}
         {@render pieces(rest)}
+        {#if readback !== null}
+          <!-- The command's own output, asked for on the open: the tail the
+               task read back, or a named reason there is none - never a
+               blank. The escapes come off HERE, which is the page's job: the
+               read hands over what the command wrote. -->
+          {#if readback.kind === 'lines'}
+            <div class="term">{stripEscapes(readback.lines.join('\n'))}</div>
+          {:else if readback.kind === 'file_gone'}
+            <div class="sg-pr">the output file is gone</div>
+          {:else if readback.kind === 'no_path'}
+            <div class="sg-pr">no output file was recorded for this call</div>
+          {:else}
+            <div class="sg-pr">the output arrived in a shape this build does not draw</div>
+          {/if}
+        {/if}
         {#if tail === -1 && call.note !== null}
           <div class="term"><span class={call.note.tone ?? undefined}>{call.note.text}</span></div>
         {/if}

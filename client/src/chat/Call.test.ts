@@ -1,8 +1,9 @@
 import { render } from 'svelte/server';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import Call from './Call.svelte';
 import type { ToolLeaf } from './leaves';
+import { outputs } from './outputs.svelte';
 import { subagents } from './subagents.svelte';
 import type { SubagentCard } from '../session/wire';
 
@@ -14,6 +15,7 @@ const backgrounded = (note: ToolLeaf['note']): ToolLeaf => ({
   title: 'Echo test string after brief sleep',
   command: 'sleep 2 && echo test string',
   status: 'completed',
+  backgrounded: true,
   note,
   body: [{ kind: 'text', text: 'Command running in background with ID: bj5g0t2kq.' }],
   mutation: null,
@@ -36,6 +38,7 @@ const mcp = (name: string, text: string): ToolLeaf => ({
   title: 'browser: https://example.org',
   command: null,
   status: 'completed',
+  backgrounded: false,
   note: null,
   body: [{ kind: 'text', text }],
   mutation: null,
@@ -209,6 +212,7 @@ describe('the row one call draws', () => {
           title: '/Users/ved/shot.png',
           command: null,
           status: 'completed',
+          backgrounded: false,
           note: null,
           body: [],
           mutation: null,
@@ -376,6 +380,7 @@ describe('the forge card row', () => {
     title: 'Wire the review notice into the chat',
     command: null,
     status: 'completed',
+    backgrounded: false,
     note: null,
     body: [],
     mutation: null,
@@ -620,6 +625,7 @@ describe('the dispatch row, joined to its instance', () => {
     title: 'review the fold',
     command: null,
     status: 'completed',
+    backgrounded: false,
     note: null,
     body: [{ kind: 'text', text: 'Report: **closed**.' }],
     mutation: null,
@@ -829,5 +835,53 @@ describe('the dispatch row, joined to its instance', () => {
     );
 
     subagents.sync(null);
+  });
+});
+
+describe('the output a backgrounded row reads back', () => {
+  afterEach(() => outputs.clear('seat'));
+
+  /**
+   * The answer the row asked for, drawn onto its open: the command's own
+   * bytes with the escapes taken off HERE - which is the page's job, because
+   * the read hands over exactly what the command wrote.
+   */
+  it("draws the command's tail onto the open, escapes taken off", () => {
+    outputs.post('seat', 'toolu_012ygCheCDa6s8YmU5JxxVp2', {
+      kind: 'lines',
+      lines: ['\u001b[32mline one\u001b[0m', 'line two'],
+    });
+
+    const open = render(Call, { props: { k: 'f1', call: backgrounded(null), open: true } }).body;
+    expect(open, 'the tail draws').toContain('line one');
+    expect(open, 'and the escapes came off at the drawing').not.toContain('\u001b[32m');
+  });
+
+  /** The read never answers blank: a reason is drawn in words. */
+  it('names a reason where there is no tail, never a blank', () => {
+    outputs.post('seat', 'toolu_012ygCheCDa6s8YmU5JxxVp2', { kind: 'file_gone' });
+
+    const open = render(Call, { props: { k: 'f1', call: backgrounded(null), open: true } }).body;
+    expect(open, 'the reason is drawn in words').toContain('the output file is gone');
+  });
+
+  /** Rule 25 at the seam: a shape the build cannot name draws as itself. */
+  it('draws an answer it cannot name rather than reading it as nothing', () => {
+    outputs.post('seat', 'toolu_012ygCheCDa6s8YmU5JxxVp2', { kind: 'unknown' });
+
+    const open = render(Call, { props: { k: 'f1', call: backgrounded(null), open: true } }).body;
+    expect(open, 'the unknown shape is drawn plainly').toContain('the output arrived in a shape');
+  });
+
+  /** The tail draws even where the call's own body drew nothing: the row opens on the answer. */
+  it('draws the tail for a row whose own body drew nothing', () => {
+    outputs.post('seat', 'toolu_012ygCheCDa6s8YmU5JxxVp2', {
+      kind: 'lines',
+      lines: ['late line'],
+    });
+
+    const bare: ToolLeaf = { ...backgrounded(null), body: [] };
+    const open = render(Call, { props: { k: 'f1', call: bare, open: true } }).body;
+    expect(open, 'the tail draws with no other body').toContain('late line');
   });
 });

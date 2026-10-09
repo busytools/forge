@@ -107,6 +107,14 @@ export interface ToolLeaf {
   command: string | null;
   status: CallStatus;
   /**
+   * Whether the CLI ran this call as a background task.
+   *
+   * Read by the row to ask for the command's own output when it opens: the
+   * file the CLI streamed it to is named only by the task's own frames, so a
+   * call that ran in the foreground has none to ask about.
+   */
+  backgrounded: boolean;
+  /**
    * What the harness said when a BACKGROUNDED call ended: drawn as the last
    * line of the box the call's result drew, and `null` for every other call.
    */
@@ -626,6 +634,7 @@ export function leafOf(
       titleOf(name, input),
     command: field(input, 'command')?.trim() || null,
     status: settled,
+    backgrounded: task?.backgrounded === true,
     note: task?.backgrounded === true ? task.note : null,
     body: shown,
     mutation: marksOf(name, input, body, record),

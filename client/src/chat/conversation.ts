@@ -29,8 +29,10 @@ import { inFlightOf } from '../session/apply';
 import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
 import { echoes } from './echoes.svelte';
+import { outputs } from './outputs.svelte';
 import { fold, headingNameOf, namesSkill, queuedWords, skillBody } from './units';
 import { onRefusal } from '../refusals';
+import { callOutputOf } from '../wire/call-output';
 
 /** One turn as a page carries it: the fold's name, and the CLI's messages. */
 export interface PageTurn {
@@ -1419,11 +1421,14 @@ export class Chat {
     // Frames the last occupant's run left waiting for a turn go with it: they
     // are its conversation, and the new one's rows are not where they belong.
     // The rides it left behind go too - their rows are gone with the swap, and
-    // the record is only ever read against rows this conversation holds.
+    // the record is only ever read against rows this conversation holds. The
+    // read answers go the same way: they are about calls the new occupant
+    // never made.
     this.unturned = [];
     this.ridden.clear();
     // A return's want is about a conversation that is gone.
     this.returnWanted = false;
+    outputs.clear(this.key);
     // A swap is not a frame's draw: the reset lands now, whatever any paint
     // was waiting for.
     this.held = NOTHING;
@@ -1510,6 +1515,18 @@ export class Chat {
     if (variant === 'connected') {
       this.waiting.clear();
       this.drained.clear();
+      return;
+    }
+    // The answer to the row's own ask, kept where the row reads it: by the
+    // call's id, in the store the row holds, because it is content of a row
+    // and not a frame of any turn - no page will carry it back.
+    if (variant === 'call_output') {
+      const answered = (update as { call_output?: { call_id?: unknown; output?: unknown } })
+        .call_output;
+      const callId = answered?.call_id;
+      if (typeof callId === 'string') {
+        outputs.post(this.key, callId, callOutputOf(answered?.output));
+      }
       return;
     }
     // The failure itself is drawn, not only the roster row's reason: the

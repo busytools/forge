@@ -29,6 +29,7 @@
     slot = null,
     history = null,
     carried = null,
+    onreadoutput = null,
   }: {
     turn: HeldTurn;
     slot?: Self | null;
@@ -48,6 +49,8 @@
      * and dropping none would draw the one it holds twice.
      */
     carried?: string | null;
+    /** Passed straight through: a call row's ask for its own output. */
+    onreadoutput?: ((callId: string) => void) | null;
   } = $props();
 
   const folded = $derived(fold(turn.messages, slot, beingWritten(turn), !beingWritten(turn)));
@@ -145,7 +148,7 @@
           {#if unit.kind === 'text'}
             <Prose text={unit.text} />
           {:else if unit.kind === 'leaves'}
-            <Leaves rows={unit.rows} messages={history ?? turn.messages} />
+            <Leaves rows={unit.rows} messages={history ?? turn.messages} {onreadoutput} />
           {:else if unit.kind === 'question'}
             <Card asked={unit.asked} />
           {:else if unit.kind === 'notice'}

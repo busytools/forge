@@ -26,10 +26,13 @@
   let {
     rows,
     messages = null,
+    onreadoutput = null,
   }: {
     rows: WorkRow[];
     /** The turn's messages, handed down for a dispatch row's own timeline. */
     messages?: readonly unknown[] | null;
+    /** Passed straight through: a call row's ask for its own output. */
+    onreadoutput?: ((callId: string) => void) | null;
   } = $props();
 
   /** What identifies a row: its own key, or a card's id under its own prefix. */
@@ -46,7 +49,7 @@
 <div class="leaves">
   {#each rows as row (rowKey(row))}
     {#if row.tag === 'call'}
-      <Call call={row.leaf} k={row.key} open={opens(row.leaf)} {messages} />
+      <Call call={row.leaf} k={row.key} open={opens(row.leaf)} {messages} {onreadoutput} />
     {:else if row.tag === 'hook'}
       <Hook run={row.run} />
     {:else if row.tag === 'inbound'}
