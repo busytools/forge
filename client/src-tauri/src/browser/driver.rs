@@ -867,6 +867,17 @@ mod tests {
         );
     }
 
+    /// **A mask that cannot be written answers `None`, which is what lets
+    /// the driver start without it** rather than refusing: the directory is
+    /// not there, so the write cannot land, and the caller's own arm turns
+    /// that into a warn-and-continue start.
+    #[test]
+    fn a_mask_that_cannot_be_written_is_not_a_refusal() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let missing = dir.path().join("no-such-directory");
+        assert_eq!(write_mask(&missing), None);
+    }
+
     /// The script written for the driver masks the three tells a page can
     /// read in JavaScript, and each is conditional: the engine's own false,
     /// its own window.chrome and its own clean UA are left untouched, since
