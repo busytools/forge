@@ -171,6 +171,9 @@ impl super::App {
             .and_then(|m| m.blocks.get_mut(bi))
         {
             let tc = tc.as_mut();
+            if tc.answered_questions.iter().any(|held| held.question == answered.question) {
+                return;
+            }
             tc.answered_questions.push(answered);
             tc.hidden = false;
             request_tool_call_render_dirty(tc);
