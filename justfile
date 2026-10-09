@@ -359,7 +359,9 @@ vendor-browser-stack-android:
 # compiles this target (measured: the hint mask's failure-flush helpers
 # reached a review exactly that way). Cheap enough to gate: measured about
 # a second warm and 14 s into a fresh target dir, so `just check` runs it
-# beside the other client steps and CI runs it as its own job.
+# beside the other client steps. **CI runs no such step yet**: the vendoring
+# this build needs refuses non-macOS hosts, so an ubuntu job cannot pass it
+# and the CI side is filed as #1959 rather than patched here.
 #
 # **The vendored stack is a prerequisite** (as it is for
 # `client-android-check`): the shell crate's build script resolves the
