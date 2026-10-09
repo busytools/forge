@@ -39,13 +39,33 @@ const LAUNCH_TIMEOUT: Duration = Duration::from_secs(15);
 /// pressed Open to act on a page must not land on a blank one. `None` for a
 /// cold launch, which opens `about:blank` (a browser with no tab makes the
 /// first navigation depend on the driver inventing one).
-pub fn launch_args(profile: &Path, headed: bool, page: Option<&str>) -> Vec<String> {
+///
+/// `user_agent` is the mask's own half - the UA a headless launch presents,
+/// from [`masked_user_agent`] - and `None` for a headed launch, which
+/// presents the browser's real one.
+///
+/// **The mask rides the launch because this is the only place it can.** A
+/// driven browser reports `navigator.webdriver` true and brands its UA
+/// `HeadlessChrome`, and a server reads both; the flag leaves the engine's
+/// own webdriver getter reporting false, and the UA pair fixes the string
+/// and the header together. See `masked_user_agent` for why the UA cannot
+/// come from the driver instead.
+pub fn launch_args(
+    profile: &Path,
+    headed: bool,
+    page: Option<&str>,
+    user_agent: Option<&str>,
+) -> Vec<String> {
     let mut args = vec![
         // Let the browser choose, and read the choice from its port file:
         // handed a number it writes no file, which is a browser nothing can
         // find again.
         "--remote-debugging-port=0".to_owned(),
         format!("--user-data-dir={}", profile.display()),
+        // The automation tell, switched off at the source: the engine's own
+        // webdriver getter then reports false, which is what a real browser
+        // reports - no page patch, nothing for a page to notice.
+        "--disable-blink-features=AutomationControlled".to_owned(),
     ];
     if !headed {
         args.push("--headless".to_owned());
@@ -55,6 +75,15 @@ pub fn launch_args(profile: &Path, headed: bool, page: Option<&str>) -> Vec<Stri
         // and the agents' CDP connection survive a person closing the
         // window. The tab dies with its window; the next call re-navigates.
         args.push("--keep-alive-for-test".to_owned());
+    }
+    if let Some(user_agent) = user_agent {
+        args.push(format!("--user-agent={user_agent}"));
+        // **Chromium blanks a page's client hints when the UA is overridden**
+        // (measured on Brave 155: without this, `sec-ch-ua` goes empty on
+        // every request). Switched off, the override fixes the UA string and
+        // leaves the real `sec-ch-ua` and `sec-ch-ua-platform` beside it.
+        // This is the one `--disable-features` switch a launch carries.
+        args.push("--disable-features=UACHOverrideBlank".to_owned());
     }
     args.extend([
         // **Never the OS keychain.** This profile is forge's own and holds
@@ -71,6 +100,57 @@ pub fn launch_args(profile: &Path, headed: bool, page: Option<&str>) -> Vec<Stri
     ]);
     args.push(page.unwrap_or("about:blank").to_owned());
     args
+}
+
+/// How long the browser is given to answer `--version` before the mask is
+/// given up on for this launch.
+const VERSION_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The user agent a headless launch presents: the browser's own, with the
+/// headless brand removed.
+///
+/// **It cannot come from the driver**, which is where the initial script
+/// rides: measured, the driver's own `--user-agent` is inert over a
+/// `--cdp-endpoint` connection, and the header is what a site's server
+/// reads, so the launch's own switch is the one route to it.
+///
+/// The version is read from the binary rather than spelled out here, because
+/// the reduced UA freezes the platform and the version's last three
+/// components: a real build reports `Chrome/<major>.0.0.0` whatever its full
+/// version is, so the major - all `--version` is parsed for - is the only
+/// part that moves across browser updates. A version that cannot be read
+/// leaves the UA unmasked and says so; it is not a reason to refuse the
+/// launch.
+async fn masked_user_agent(binary: &Path) -> Result<String, String> {
+    let answer = tokio::time::timeout(
+        VERSION_TIMEOUT,
+        tokio::process::Command::new(binary).arg("--version").output(),
+    )
+    .await
+    .map_err(|_| format!("--version did not answer within {} s", VERSION_TIMEOUT.as_secs()))?
+    .map_err(|why| format!("--version could not be run: {why}"))?;
+    let said = String::from_utf8_lossy(&answer.stdout);
+    reduced_user_agent(&said).ok_or_else(|| format!("the version line did not name one: {said:?}"))
+}
+
+/// The reduced user agent for a browser's `--version` line (`Brave Browser
+/// 155.1.97.56`, `Google Chrome 155.0.1234.56`).
+///
+/// The platform and the version's tail are Chromium's frozen ones - a real
+/// macOS build reports `Macintosh; Intel Mac OS X 10_15_7` and
+/// `Chrome/<major>.0.0.0` - which is what the launched browser's own UA was
+/// measured to carry. macOS is the platform this client ships on; a second
+/// one brings its own string here.
+fn reduced_user_agent(version: &str) -> Option<String> {
+    let named = version.lines().next()?.split_whitespace().last()?;
+    let major = named.split('.').next()?;
+    if !named.contains('.') || major.is_empty() || !major.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    Some(format!(
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) \
+         Chrome/{major}.0.0.0 Safari/537.36"
+    ))
 }
 
 /// Make the profile start fresh for the launch about to happen: the clean
@@ -103,8 +183,7 @@ fn fresh_session(profile: &Path) {
     let prefs = default.join("Preferences");
     let Ok(text) = std::fs::read_to_string(&prefs) else { return };
     let Ok(mut parsed) = serde_json::from_str::<serde_json::Value>(&text) else { return };
-    let Some(profile_prefs) =
-        parsed.get_mut("profile").and_then(serde_json::Value::as_object_mut)
+    let Some(profile_prefs) = parsed.get_mut("profile").and_then(serde_json::Value::as_object_mut)
     else {
         return;
     };
@@ -155,14 +234,13 @@ fn try_lock(profile: &Path) -> Locked {
     };
     match rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
         Ok(()) => Locked::Held(LaunchLock { _file: file }),
-        Err(why)
-            if why == rustix::io::Errno::WOULDBLOCK || why == rustix::io::Errno::AGAIN =>
-        {
+        Err(why) if why == rustix::io::Errno::WOULDBLOCK || why == rustix::io::Errno::AGAIN => {
             Locked::Contended
         }
-        Err(why) => {
-            Locked::Unavailable(format!("the launch lock at {} cannot be taken: {why}", path.display()))
-        }
+        Err(why) => Locked::Unavailable(format!(
+            "the launch lock at {} cannot be taken: {why}",
+            path.display()
+        )),
     }
 }
 
@@ -381,8 +459,27 @@ pub async fn launch_with(
     forget_launch(profile);
     fresh_session(profile);
 
+    // Only a headless launch needs the UA: a headed one presents the
+    // browser's real user agent already. Read here rather than earlier, so
+    // a launch that adopts the running browser pays nothing for it.
+    let user_agent = if headed {
+        None
+    } else {
+        match masked_user_agent(binary).await {
+            Ok(user_agent) => Some(user_agent),
+            Err(why) => {
+                // A launch without the mask must not be a silent one.
+                tauri_plugin_log::log::warn!(
+                    "the headless user agent is unmasked (event_name browser_mask_user_agent): \
+                     {why}"
+                );
+                None
+            }
+        }
+    };
+
     let mut command = tokio::process::Command::new(binary);
-    for arg in launch_args(profile, headed, page) {
+    for arg in launch_args(profile, headed, page, user_agent.as_deref()) {
         command.arg(arg);
     }
     command
@@ -393,8 +490,7 @@ pub async fn launch_with(
         // otherwise - "did not answer within 15 s" - which names nothing a
         // reader can act on.
         .stderr(std::process::Stdio::piped());
-    let mut child =
-        command.spawn().map_err(|why| format!("the browser would not start: {why}"))?;
+    let mut child = command.spawn().map_err(|why| format!("the browser would not start: {why}"))?;
     // The id before the handle goes: the browser is meant to outlive this
     // call, and this process reaps nothing it did not spawn as its own work -
     // but a caller that must reap it needs the id, and the handle is what
@@ -816,7 +912,7 @@ mod tests {
     /// tab: the page rides as the launch's own argument.
     #[test]
     fn a_launch_lets_the_browser_choose_its_port_and_carries_its_profile_and_a_page() {
-        let args = launch_args(Path::new("/tmp/forge-profile"), false, None);
+        let args = launch_args(Path::new("/tmp/forge-profile"), false, None, None);
         assert!(
             args.contains(&"--remote-debugging-port=0".to_owned()),
             "the port is the browser's choice, read back from its own file: {args:?}",
@@ -835,7 +931,7 @@ mod tests {
         );
 
         let carried =
-            launch_args(Path::new("/tmp/forge-profile"), true, Some("https://example.com/x"));
+            launch_args(Path::new("/tmp/forge-profile"), true, Some("https://example.com/x"), None);
         assert_eq!(
             carried.last().map(String::as_str),
             Some("https://example.com/x"),
@@ -848,8 +944,8 @@ mod tests {
     /// it, and the X must not take the agents' browser down with the window.
     #[test]
     fn a_headed_launch_drops_headless_and_keeps_the_browser_alive() {
-        let headless = launch_args(Path::new("/tmp/forge-profile"), false, None);
-        let headed = launch_args(Path::new("/tmp/forge-profile"), true, None);
+        let headless = launch_args(Path::new("/tmp/forge-profile"), false, None, None);
+        let headed = launch_args(Path::new("/tmp/forge-profile"), true, None, None);
         assert!(headless.contains(&"--headless".to_owned()), "{headless:?}");
         assert!(!headed.contains(&"--headless".to_owned()), "{headed:?}");
         assert!(
@@ -860,6 +956,79 @@ mod tests {
             !headless.contains(&"--keep-alive-for-test".to_owned()),
             "the headless launch has no window to keep it alive past: {headless:?}",
         );
+    }
+
+    /// **The webdriver tell is switched off on both launches.** Measured
+    /// through the real driver: with the flag, `navigator.webdriver` reads
+    /// false from the engine's own native getter - no page patch, so nothing
+    /// for a page to notice - and the headed launch needs it exactly as the
+    /// headless one does.
+    #[test]
+    fn a_launch_switches_the_automation_tell_off() {
+        for headed in [false, true] {
+            let args = launch_args(Path::new("/tmp/forge-profile"), headed, None, None);
+            assert!(
+                args.contains(&"--disable-blink-features=AutomationControlled".to_owned()),
+                "webdriver must read false from the engine itself (headed: {headed}): {args:?}",
+            );
+        }
+    }
+
+    /// **The headless UA mask: the browser's own string, and the client
+    /// hints kept.** Measured: the UA override alone blanks `sec-ch-ua` on
+    /// every request, and the pair leaves the real hints beside the clean
+    /// string. A headed launch passes none of it - its UA is the real one -
+    /// and an unmasked launch (the version unreadable) adds nothing either.
+    #[test]
+    fn a_headless_launch_presents_the_masked_user_agent() {
+        let user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 \
+                          (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36";
+        let headless = launch_args(Path::new("/tmp/forge-profile"), false, None, Some(user_agent));
+        assert!(
+            headless.contains(&format!("--user-agent={user_agent}")),
+            "the header a server reads is fixed by the launch's own switch: {headless:?}",
+        );
+        assert!(
+            headless.contains(&"--disable-features=UACHOverrideBlank".to_owned()),
+            "without it the override blanks the client hints: {headless:?}",
+        );
+        assert_eq!(headless.last().map(String::as_str), Some("about:blank"), "{headless:?}");
+
+        let carried =
+            launch_args(Path::new("/tmp/forge-profile"), true, Some("https://example.com"), None);
+        assert!(
+            !carried.iter().any(|arg| arg.starts_with("--user-agent=")),
+            "a headed launch presents the browser's real user agent: {carried:?}",
+        );
+        assert!(!carried.iter().any(|arg| arg.starts_with("--disable-features=")), "{carried:?}",);
+
+        let unmasked = launch_args(Path::new("/tmp/forge-profile"), false, None, None);
+        assert!(
+            !unmasked.iter().any(|arg| arg.starts_with("--user-agent=")),
+            "a launch whose version could not be read adds nothing: {unmasked:?}",
+        );
+    }
+
+    /// The reduced UA is built from the browser's own version line, with
+    /// Chromium's frozen platform and version tail - the string the launched
+    /// browser's own UA was measured to carry on this machine.
+    #[test]
+    fn the_masked_user_agent_is_built_from_the_browsers_own_version() {
+        let expected = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 \
+                        (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36";
+        assert_eq!(reduced_user_agent("Brave Browser 155.1.97.56\n").as_deref(), Some(expected),);
+        assert_eq!(
+            reduced_user_agent("Google Chrome 156.0.1234.56\n"),
+            Some(
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, \
+                 like Gecko) Chrome/156.0.0.0 Safari/537.36"
+                    .to_owned(),
+            ),
+        );
+
+        for gibberish in ["", "\n", "not a version\n", "Brave Browser x.y.z\n", "155\n"] {
+            assert_eq!(reduced_user_agent(gibberish), None, "{gibberish:?} names no version");
+        }
     }
 
     /// The page a closed window's Open reopens on: the last headed launch
@@ -970,8 +1139,11 @@ mod tests {
         std::fs::create_dir_all(default.join("Sessions")).expect("a Default profile");
         // Every entry the clearing covers, or a new one added without a
         // write here is one nothing checks.
-        for stale in ["Sessions/Session_1", "Current Session", "Current Tabs", "Last Session", "Last Tabs"] {
-            std::fs::write(default.join(stale), b"stale").unwrap_or_else(|why| panic!("{stale}: {why}"));
+        for stale in
+            ["Sessions/Session_1", "Current Session", "Current Tabs", "Last Session", "Last Tabs"]
+        {
+            std::fs::write(default.join(stale), b"stale")
+                .unwrap_or_else(|why| panic!("{stale}: {why}"));
         }
         let prefs = default.join("Preferences");
         std::fs::write(
@@ -990,7 +1162,11 @@ mod tests {
                 .expect("prefs are JSON");
         assert_eq!(parsed["profile"]["exit_type"], serde_json::json!("Normal"), "{parsed}");
         assert_eq!(parsed["profile"]["exited_cleanly"], serde_json::json!(true), "{parsed}");
-        assert_eq!(parsed["profile"]["name"], serde_json::json!("Person 1"), "everything else stays");
+        assert_eq!(
+            parsed["profile"]["name"],
+            serde_json::json!("Person 1"),
+            "everything else stays"
+        );
         assert_eq!(parsed["other"], serde_json::json!(7), "{parsed}");
 
         // A file that is not JSON must not be clobbered by the normalizer.
@@ -1018,10 +1194,7 @@ mod tests {
             "a second take is contended while the first is held",
         );
         drop(first);
-        assert!(
-            matches!(try_lock(dir.path()), Locked::Held(_)),
-            "and free once the first drops",
-        );
+        assert!(matches!(try_lock(dir.path()), Locked::Held(_)), "and free once the first drops",);
     }
 
     /// **The wait path, with the clock under the test's hand**: a contended
@@ -1194,7 +1367,8 @@ mod tests {
     #[tokio::test]
     async fn an_unusable_launch_lock_answers_why() {
         let dir = tempfile::tempdir().expect("a temp dir");
-        std::fs::create_dir(dir.path().join("launch.lock")).expect("a directory in the lock's place");
+        std::fs::create_dir(dir.path().join("launch.lock"))
+            .expect("a directory in the lock's place");
         let refused = LaunchLock::acquire(dir.path()).await;
         assert!(
             matches!(refused, Err(ref why) if why.contains("launch.lock")),
