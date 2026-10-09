@@ -524,3 +524,96 @@ async fn the_hint_mask_keeps_off_a_windowed_launch() {
         "a windowed launch is left to report its own hints - the mask must stand down: {read}",
     );
 }
+
+/// A logger that keeps every record, for a test asserting on the client's
+/// own log lines. A process runs one test under nextest, so this can be the
+/// process's logger.
+fn capture_logs_into() -> Arc<Mutex<Vec<String>>> {
+    struct Keep(Arc<Mutex<Vec<String>>>);
+
+    impl log::Log for Keep {
+        fn enabled(&self, _: &log::Metadata) -> bool {
+            true
+        }
+        fn log(&self, record: &log::Record) {
+            self.0.lock().expect("the log").push(format!("[{}] {}", record.level(), record.args()));
+        }
+        fn flush(&self) {}
+    }
+
+    let kept = Arc::new(Mutex::new(Vec::new()));
+    let _ = log::set_boxed_logger(Box::new(Keep(Arc::clone(&kept))));
+    log::set_max_level(log::LevelFilter::Info);
+    kept
+}
+
+/// **The mask's failures reach the client's log.** A page that fails to mask
+/// after the install has no return of its own to ride, and the sandbox the
+/// listener runs in can reach nothing - measured: fresh globals per call and
+/// a `console` that writes nowhere - so the failures are accumulated on the
+/// context object and taken by the next browser call that returns, which
+/// logs them under `browser_hint_mask_failure`. This stages exactly what a
+/// listener's catch would record, through the host's own snippet door, and
+/// watches it arrive in the host's own log; a later call must not repeat it.
+#[tokio::test]
+#[ignore = "drives the vendored stack; needs `just vendor-browser-stack`"]
+async fn the_hint_masks_failures_reach_the_clients_log() {
+    let logs = capture_logs_into();
+    let stack = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("browser-stack");
+    assert!(
+        stack.join("node/bin/node").is_file(),
+        "the vendored stack is not there - run `just vendor-browser-stack`",
+    );
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let paths = StackPaths {
+        stack,
+        user_data: dir.path().join("user-data"),
+        output: dir.path().join("output"),
+        profiles: dir.path().join("profiles"),
+    };
+    let (origin, _headers) = hints_origin().await;
+
+    let host = BrowserHost::new(paths.clone());
+    let active = host.start().await.expect("the browser comes up");
+    let browser = Launched::new(active.pid, active.port, paths.user_data.clone());
+    host.call(&seat(), "browser_navigate", json!({ "url": origin }))
+        .await
+        .unwrap_or_else(|why| panic!("the page: {why}"));
+
+    host.call(
+        &seat(),
+        "browser_run_code_unsafe",
+        json!({
+            "code": "async (page) => { page.context().__forgeHintFailures.push('staged: a page \
+                     would not mask'); return 'staged'; }",
+        }),
+    )
+    .await
+    .unwrap_or_else(|why| panic!("the staged failure: {why}"));
+
+    // Calls that return carry it out; one more must not repeat it.
+    for _ in 0..2 {
+        host.call(&seat(), "browser_snapshot", json!({}))
+            .await
+            .unwrap_or_else(|why| panic!("a carry call: {why}"));
+    }
+    browser.reap();
+
+    let seen: Vec<String> = logs
+        .lock()
+        .expect("the log")
+        .iter()
+        .filter(|line| line.contains("browser_hint_mask_failure"))
+        .cloned()
+        .collect();
+    assert_eq!(
+        seen.len(),
+        1,
+        "the staged failure must reach the client's log exactly once (taken, so not repeated): \
+         {seen:?}",
+    );
+    assert!(
+        seen[0].contains("staged: a page would not mask") && seen[0].contains("profile shared"),
+        "the log line carries the reason and the profile: {seen:?}",
+    );
+}

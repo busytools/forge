@@ -147,6 +147,12 @@ impl Profile {
 
     /// One call through this profile's driver, rebuilt when it is not there,
     /// when it died, or when the browser it was built against moved.
+    ///
+    /// **The call that returns is also the hint mask's chance to report**: a
+    /// page that failed to mask after the install has no return of its own,
+    /// so its failure waits on the context object and is taken here, after
+    /// the routed call, and logged. Best-effort by design - a failure check
+    /// must not fail the call it rides behind.
     pub(super) async fn call(
         &self,
         start: &DriverStart<'_>,
@@ -155,7 +161,10 @@ impl Profile {
     ) -> Result<Vec<ReplyPart>, String> {
         let mut held = self.held.lock().await;
         let driver = live_driver(&mut held, start).await?;
-        routed_call(&driver, tool, &args).await
+        let outcome = routed_call(&driver, tool, &args).await;
+        #[cfg(desktop)]
+        driver.flush_hint_failures(start.profile_label).await;
+        outcome
     }
 
     /// Forget the driver, so the next call builds a fresh one. Called when a

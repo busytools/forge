@@ -394,6 +394,44 @@ impl Driver {
         Ok(text_of(&parts))
     }
 
+    /// The mask's accumulated per-page failures, taken and cleared, or
+    /// `None` when there are none.
+    ///
+    /// **This is the channel a listener's failure has.** The installer's own
+    /// sweep reports through its return, but once the listener is live a
+    /// failure has no call of its own to ride, and the sandbox can reach
+    /// nothing else - so the failures wait on the context object until the
+    /// next browser call asks for them here. Taking them clears them, so each
+    /// failure is logged once.
+    pub async fn take_hint_failures(&self) -> Result<Option<String>, String> {
+        let parts = self
+            .call_raw(
+                "browser_run_code_unsafe",
+                serde_json::json!({ "code": hint_flush_snippet() }),
+            )
+            .await?;
+        let failed: Vec<String> = serde_json::from_value(hints_payload(&text_of(&parts))?)
+            .map_err(|why| format!("the mask's failure list came back unreadable: {why}"))?;
+        Ok((!failed.is_empty()).then(|| failed.join("; ")))
+    }
+
+    /// Log the mask's failures, if any, naming the profile - best-effort:
+    /// this rides after every browser call, and a check that cannot run must
+    /// not fail the call it rides behind.
+    pub(super) async fn flush_hint_failures(&self, profile: &str) {
+        match self.take_hint_failures().await {
+            Ok(Some(note)) => tauri_plugin_log::log::warn!(
+                "the client-hint mask failed on a page (event_name browser_hint_mask_failure, \
+                 profile {profile}): {note}"
+            ),
+            Ok(None) => {}
+            Err(why) => tauri_plugin_log::log::debug!(
+                "the client-hint mask's failure check did not run (event_name \
+                 browser_hint_mask_failure, profile {profile}): {why}"
+            ),
+        }
+    }
+
     /// Whether the child is still there to answer.
     pub fn is_running(&self) -> bool {
         !self.client.is_transport_closed()
@@ -767,17 +805,21 @@ fn hint_verdict(capture: &chromium::HintCapture) -> HintVerdict {
 /// before the attach lands, the same race playwright's own emulation runs;
 /// everything the page does after it is masked.
 ///
-/// A per-page failure has no return to ride once the listener is live, so it
-/// is recorded - the install's own sweep reports its failures in the note -
-/// and written to the driver's stderr, which the client inherits (the
-/// child's stderr is `Stdio::inherit`).
+/// **A per-page failure is accumulated on the context object**, the one
+/// handle that persists across snippet calls: a snippet runs in a vm sandbox
+/// with fresh globals per call and a `console` that writes nowhere
+/// (measured), so nothing written here reaches anyone by itself, and the
+/// context is a node object the vm only holds a reference to - what is set
+/// on it survives. [`Driver::take_hint_failures`] collects and clears them,
+/// and the profile's call path logs what it finds.
 fn hint_mask_snippet(user_agent: &str, metadata: &serde_json::Value) -> String {
     format!(
         "async (page) => {{\
          const user_agent = {ua};\
          const metadata = JSON.parse({metadata});\
+         const store = page.context();\
+         store.__forgeHintFailures = [];\
          const held = new Map();\
-         const failed = [];\
          const mask = async (target) => {{\
          try {{\
          if (held.has(target)) return;\
@@ -787,18 +829,33 @@ fn hint_mask_snippet(user_agent: &str, metadata: &serde_json::Value) -> String {
          held.set(target, cdp);\
          target.on('close', () => {{ held.delete(target); }});\
          }} catch (why) {{\
-         failed.push(String(why));\
-         console.error('the client-hint mask failed on a page: ' + why);\
+         store.__forgeHintFailures.push(String(why));\
          }}\
          }};\
-         page.context().on('page', (target) => {{ mask(target); }});\
-         for (const target of page.context().pages()) {{ await mask(target); }}\
-         return 'the client hints are masked on ' + held.size + ' page(s)' + \
-         (failed.length ? ', ' + failed.length + ' failed: ' + failed.join('; ') : '');\
+         store.on('page', (target) => {{ mask(target); }});\
+         for (const target of store.pages()) {{ await mask(target); }}\
+         return 'the client hints are masked on ' + held.size + ' page(s)';\
          }}",
         ua = custom::js_string(user_agent),
         metadata = custom::js_string(&metadata.to_string()),
     )
+}
+
+/// The snippet that takes the mask's accumulated failures, if any, and
+/// clears them. It answers behind the same marker the capture uses, so the
+/// client parses it with the same reader.
+///
+/// **Run after every browser call the driver serves** ([`crate::browser::profiles`]'s
+/// call path), because a listener's failure happens after its install
+/// returned and the sandbox it runs in can reach nothing but some later
+/// call's own answer - which is this one.
+fn hint_flush_snippet() -> &'static str {
+    "async (page) => {\
+     const store = page.context();\
+     const failed = Array.isArray(store.__forgeHintFailures) ? store.__forgeHintFailures : [];\
+     store.__forgeHintFailures = [];\
+     return 'FORGE-HINTS ' + JSON.stringify(failed);\
+     }"
 }
 
 /// The payload a capture answered with, out of the driver's own prose.
@@ -1337,7 +1394,7 @@ mod tests {
         assert!(snippet.contains("userAgentMetadata"), "{snippet}");
         assert!(snippet.contains("newCDPSession"), "{snippet}");
         assert!(
-            snippet.contains("context().on('page', (target) => { mask(target); })"),
+            snippet.contains("store.on('page', (target) => { mask(target); })"),
             "a page the driver opens later is masked the moment it exists: {snippet}",
         );
         assert!(
@@ -1349,17 +1406,41 @@ mod tests {
             "detaching clears the override (measured); the mask must never detach: {snippet}",
         );
         assert!(
-            snippet.contains("failed.push(String(why))")
-                && snippet.contains("console.error('the client-hint mask failed on a page: '")
-                && snippet.contains("', ' + failed.length + ' failed: '"),
-            "a per-page failure is recorded, written to the driver's stderr the client inherits, \
-             and reported in the install's note: {snippet}",
+            snippet.contains("store.__forgeHintFailures.push(String(why))"),
+            "a per-page failure is accumulated on the context object - the one handle a later \
+             snippet call can reach: {snippet}",
+        );
+        assert!(
+            !snippet.contains("console."),
+            "the sandbox's console writes nowhere (measured); no channel may look like one: \
+             {snippet}",
         );
         assert!(
             snippet.contains(r#"\" quoted"#),
             "the UA is a JS string literal, its escapes carried: {snippet}",
         );
         assert!(snippet.contains("155.0.0.0"), "the metadata rides in the snippet: {snippet}");
+    }
+
+    /// The flush snippet takes the mask's accumulated failures off the
+    /// context object and clears them, answering behind the marker the
+    /// capture uses so the client's reader parses both.
+    #[test]
+    fn the_flush_snippet_takes_and_clears_the_failures() {
+        let snippet = hint_flush_snippet();
+        assert!(
+            snippet.contains("store.__forgeHintFailures"),
+            "the failures live on the context object: {snippet}",
+        );
+        assert!(
+            snippet.contains("store.__forgeHintFailures = []"),
+            "taking them clears them, so each failure is logged once: {snippet}",
+        );
+        assert!(snippet.contains(HINTS_MARKER), "the marker the client reads: {snippet}");
+        assert!(
+            snippet.contains("JSON.stringify(failed)"),
+            "the list crosses as JSON: {snippet}",
+        );
     }
 
     /// The capture's payload is read out of the driver's own prose, in both
