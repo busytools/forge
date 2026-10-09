@@ -225,6 +225,15 @@ function fakeConnection() {
   };
 }
 
+/** The core's own turn for words nobody typed, carrying the prompt's id. */
+const forgedUnder = (text: string, id: string): unknown => ({
+  type: 'user',
+  uuid: id,
+  message: { role: 'user', content: [{ type: 'text', text }] },
+});
+
+const words = (chat: Chat): string => JSON.stringify(get(chat.value).turns);
+
 describe('the conversation the chat draws', () => {
   /**
    * A seat the reader has left folds nothing.
@@ -271,6 +280,35 @@ describe('the conversation the chat draws', () => {
     });
 
     off();
+    stop();
+  });
+
+  /**
+   * A swap that lands while the seat is away is structural, so it folds
+   * anyway: the held conversation empties and the return's page - the NEW
+   * occupant's - merges onto nothing. Gated, the swap never ran and the
+   * return merged the new occupant's page onto the old one's turns, which
+   * the keep-above arm then kept: both drew, persistently, and no later
+   * read heals it because the swap frame is never re-sent.
+   */
+  it('empties the conversation on a swap that lands while the seat is away', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'the old occupant')], null));
+
+    chat.leaving();
+    const asked = server.more().length;
+    server.update({ session_replaced: { key: LEAD } });
+    expect(server.more().length, 'the swap runs while away and asks for the new occupant').toBe(
+      asked + 1,
+    );
+    chat.showing();
+    server.send(page([turn('t2', 'the new occupant')], null));
+
+    const drawn = words(chat);
+    expect(drawn, 'the old occupant is gone').not.toContain('the old occupant');
+    expect(drawn, 'and the new one draws').toContain('the new occupant');
     stop();
   });
 
@@ -1746,7 +1784,9 @@ describe('the conversation the chat draws', () => {
     server.send(page([turn('t1', 'first')], null));
     // A page read before the answer: the row this client holds carries the
     // reader's words and nothing else, which is what a read taken early gives.
-    server.send(page([{ key: null, messages: [typed('mine')] }], '1'));
+    // The page still carries the turn above it, as every page does - whole
+    // turns, contiguous - so the merge reaches what is held.
+    server.send(page([turn('t1', 'first'), { key: null, messages: [typed('mine')] }], '1'));
     const held = get(chat.value).turns.at(-1)?.key ?? '';
     // The answer then arrives as frames, opening a live turn over that row.
     server.update({ chat_appended: { key: LEAD, msg: said('answer-1') } });
@@ -1757,7 +1797,10 @@ describe('the conversation the chat draws', () => {
     // are older - asking THAT object is asking the wrong copy.
     server.send(
       page(
-        [{ key: null, messages: [typed('mine'), said('answer-1'), said('answer-2'), ended()] }],
+        [
+          turn('t1', 'first'),
+          { key: null, messages: [typed('mine'), said('answer-1'), said('answer-2'), ended()] },
+        ],
         '1',
       ),
     );
@@ -2121,15 +2164,6 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
     // would hand it to the next.
     echoes.clear(subjectKey({ session: LEAD }));
   });
-
-  /** The core's own turn for words nobody typed, carrying the prompt's id. */
-  const forgedUnder = (text: string, id: string): unknown => ({
-    type: 'user',
-    uuid: id,
-    message: { role: 'user', content: [{ type: 'text', text }] },
-  });
-
-  const words = (chat: Chat): string => JSON.stringify(get(chat.value).turns);
 
   it('holds the forged row while the pile is drawing it, and drains it at started', () => {
     const server = fakeConnection();
@@ -2616,5 +2650,29 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
     );
 
     expect(words(chat).split('mid-turn words').length - 1, 'one prompt, one row').toBe(1);
+  });
+
+  /**
+   * The queue's own frames fold while the seat is away: the lifecycle that
+   * lets a held prompt go is what no read repeats - dropped, the return's
+   * page re-withheld the row its own started frame had released, and the
+   * words appeared nowhere (the echo draws nothing for a queued send).
+   */
+  it('lets a held prompt go when its start lands while the seat is away', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    server.update({ prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'held words' } });
+    chat.leaving();
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } });
+    chat.showing();
+    server.send(
+      page([turn('t1', 'first'), { key: 't2', messages: [forgedUnder('held words', 'p1')] }], null),
+    );
+
+    expect(words(chat), 'the row draws on the return').toContain('held words');
+    stop();
   });
 });

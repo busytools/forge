@@ -495,6 +495,46 @@ function isForgeNotice(message: unknown): boolean {
   return frame?.type === 'system' && frame.subtype === 'forge_notice';
 }
 
+/**
+ * The frames a read cannot restore, folded even while the seat is away.
+ *
+ * **The gate exists for the bulk stream** - `chat_appended` above all - which
+ * a return's own reads put right. What these carry is what nothing else will
+ * say again: a swap is structural (the held conversation must empty, or the
+ * return merges the new occupant's page onto the old one's turns), the
+ * queue's lifecycle is what lets a held prompt go, and a notice or a
+ * plan-limit line arrives once - no page carries it, so a return has no way
+ * to draw it later.
+ */
+function keepsWhileAway(update: SessionUpdate): boolean {
+  const variant = variantOf(update);
+  if (variant === null) return false;
+  if (
+    variant === 'session_replaced' ||
+    variant === 'prompt_queued' ||
+    variant === 'prompt_lifecycle'
+  ) {
+    return true;
+  }
+  if (
+    variant === 'connection_failed' ||
+    variant === 'fatal_error' ||
+    variant === 'service_status' ||
+    variant === 'notice' ||
+    variant === 'review_activity_notice' ||
+    variant === 'set_mode_failed' ||
+    variant === 'set_model_failed'
+  ) {
+    return true;
+  }
+  // The plan-limit hint is a turn_error the core classified: the reader's own
+  // next steps, which no read restores.
+  return (
+    variant === 'turn_error' &&
+    (update as { turn_error?: { class?: unknown } }).turn_error?.class === 'plan_limit'
+  );
+}
+
 /** The update's variant name, for the ones the chat acts on. */
 function variantOf(update: SessionUpdate): string | null {
   if (typeof update === 'string') return update;
@@ -999,7 +1039,7 @@ export class Chat {
         // return re-mount all of it. What the seat missed comes back through
         // its own reads on the return: the re-subscribe's snapshot, and the
         // newest page `showing` asks for.
-        if (!this.shown) return;
+        if (!this.shown && !keepsWhileAway(message.update)) return;
         this.takeUpdate(message.update);
         return;
       default:
