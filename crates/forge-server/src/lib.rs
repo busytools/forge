@@ -25,7 +25,6 @@ mod fixtures;
 pub mod grouping;
 pub mod live;
 pub mod model;
-pub mod monitor;
 pub mod peer_outbound;
 pub mod subagents;
 pub mod surface;
@@ -91,4 +90,5 @@ pub use forge_workspace::DispatchError;
 /// code beneath is the workspace's own.
 pub use forge_workspace::env::git_diff;
 pub use forge_workspace::env::timezone;
+pub use forge_workspace::output_tail;
 pub use forge_workspace::translate;

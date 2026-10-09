@@ -1101,7 +1101,7 @@ async fn monitor_tails(monitors: &[MonitorRecord]) -> HashMap<String, Vec<String
         named
             .into_iter()
             .map(|(id, path)| {
-                let lines = forge_server::monitor::read_output_file_tail(
+                let lines = forge_server::output_tail::read_output_file_tail(
                     Path::new(&path),
                     MONITOR_TAIL_LINES,
                 )

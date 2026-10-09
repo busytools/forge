@@ -524,7 +524,7 @@ mod tests {
         std::fs::write(&path, b"one\ntwo\n\xff\xfe not utf-8\n").expect("write the probe file");
 
         let caught = emitted_under_defaults(|| {
-            let _ = forge_server::monitor::read_output_file_tail(&path, 12);
+            let _ = forge_server::output_tail::read_output_file_tail(&path, 12);
         });
         let _ = std::fs::remove_file(&path);
 

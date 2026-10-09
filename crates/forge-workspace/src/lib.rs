@@ -81,6 +81,7 @@ mod gotify;
 pub mod install;
 pub mod launch_settings;
 pub(crate) mod mcp;
+pub mod output_tail;
 mod parked;
 pub mod prompt;
 pub mod protocol;
