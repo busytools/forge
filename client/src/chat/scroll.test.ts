@@ -132,7 +132,9 @@ describe('the compensation the list is handed', () => {
   it('is armed before an older page arrives, and off again after it lands', async () => {
     const server = stub();
     draw(server);
-    server.page([turn('t2')], '2');
+    // Two turns, so the fresh open's fill has nothing of its own to ask for
+    // and the reader's own reach is the ask this test is about.
+    server.page([turn('t1'), turn('t2')], '2');
     await tick();
 
     // The reader reaches the top, which asks for what is above. The
@@ -143,7 +145,7 @@ describe('the compensation the list is handed', () => {
     flushSync();
     expect(server.asks, 'the ask went').toHaveLength(2);
 
-    expect(last(), 'armed as the ask goes out').toEqual({ length: 1, shift: true });
+    expect(last(), 'armed as the ask goes out').toEqual({ length: 2, shift: true });
 
     server.page([turn('t0'), turn('t2')], null);
     const grew = firstGrowth();
@@ -157,7 +159,7 @@ describe('the compensation the list is handed', () => {
   it('is not armed by an ask the socket refused', async () => {
     const server = stub();
     draw(server);
-    server.page([turn('t2')], '2');
+    server.page([turn('t1'), turn('t2')], '2');
     await tick();
 
     server.shut();
@@ -177,7 +179,7 @@ describe('the compensation the list is handed', () => {
   it('is held while a second ask is still in flight', async () => {
     const server = stub();
     draw(server);
-    server.page([turn('t2')], '2');
+    server.page([turn('t1'), turn('t2')], '2');
     await tick();
 
     list()?.scrolledTo(0, 500, 320);

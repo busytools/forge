@@ -306,7 +306,9 @@ describe('the conversation the chat draws', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
     const stop = chat.start();
-    server.send(page([turn('t1', 'kept tail')], 'tail-cursor'));
+    // Two turns, so the fresh open's fill has nothing to ask for - the return's
+    // own newest page is the landing that has to reach back.
+    server.send(page([turn('t1', 'kept tail'), turn('t1b', 'kept too')], 'tail-cursor'));
 
     chat.leaving();
     chat.showing();
@@ -598,6 +600,36 @@ describe('the conversation the chat draws', () => {
   });
 
   /**
+   * A fresh open keeps asking until history joins the newest turn.
+   *
+   * A page is twenty TURNS - and a seat whose running turn is giant fills
+   * that whole page alone, so a first open drew the newest turn and nothing
+   * above it (Ved, 2026-10-09: "it is only showing me the latest one... not
+   * able to pull down the older messages"). The fill asks for what is above
+   * once, from the page's own cursor, and stops as soon as a landing brings
+   * settled turns with it.
+   */
+  it('a fresh open keeps asking until history joins the newest turn', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t9', 'the newest turn')], 'above-cursor'));
+    expect(
+      server.more().at(-1),
+      'a page that brought nothing but the newest turn asks for the history above it',
+    ).toEqual({ kind: 'more', conversation: LEAD, before: 'above-cursor', turns: 20 });
+
+    const asked = server.more().length;
+    server.send(page([turn('t7', 'seven'), turn('t8', 'eight')], 'older-cursor'));
+    const keys = get(chat.value).turns.map((row) => row.key);
+    expect(keys, 'the history above draws with the newest turn').toEqual(['t7', 't8', 't9']);
+    expect(server.more().length, 'and the fill stops once a landing brings history with it').toBe(
+      asked,
+    );
+    stop();
+  });
+
+  /**
    * A tail no page can carry walks nothing: a `forge_notice` row is written
    * on this page and nowhere else, so targeting one would fetch the whole
    * history one page per landing for a turn no transcript holds.
@@ -614,7 +646,9 @@ describe('the conversation the chat draws', () => {
     });
 
     const asked = server.more().length;
-    server.send(page([turn('t2', 'a new turn')], 'floor'));
+    // Two turns on the first page, so the fresh fill cannot fire and the only
+    // ask this test can see is a walk's.
+    server.send(page([turn('t2', 'a new turn'), turn('t2b', 'and another')], 'floor'));
     expect(
       server.more().length,
       'a notice-only tail has nothing in the transcript to walk for',
@@ -1439,10 +1473,14 @@ describe('the conversation the chat draws', () => {
     chat.start();
 
     // An empty newest page - a cursor and no rows - so the frame has no turn
-    // to join and the walk still has somewhere above to go.
+    // to join and the walk still has somewhere above to go. The fresh fill
+    // asks for what is above it the moment it lands.
     server.update({ chat_appended: { key: LEAD, msg: counted(9) } });
     server.send(page([], '5'));
-    expect(chat.older(), 'the empty page left somewhere to walk').toBe(true);
+    expect(
+      server.more().at(-1),
+      'the empty page left somewhere to walk, and the fill asked for it',
+    ).toEqual({ kind: 'more', conversation: LEAD, before: '5', turns: MORE_TURNS });
 
     server.send(page([turn('t0', 'older')], null));
 
@@ -1895,7 +1933,9 @@ describe('the conversation the chat draws', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
     chat.start();
-    server.send(page([turn('t1', 'first')], '2'));
+    // Two turns, so the fresh fill asks nothing of its own and the reader's
+    // walk is the ask this test is about.
+    server.send(page([turn('t1', 'first'), turn('t1b', 'and then')], '2'));
 
     // The reader walks back while the seat's conversation is not held yet, so
     // the ask is refused - and the refusal is about THAT ask, not about the
@@ -1915,7 +1955,7 @@ describe('the conversation the chat draws', () => {
     expect(
       after.turns.map((row) => row.key),
       'with the page it waited for',
-    ).toEqual(['t0', 't1']);
+    ).toEqual(['t0', 't1', 't1b']);
   });
 
   it('asks a refused page again while the column is live, and stops once one lands', () => {
@@ -1977,7 +2017,9 @@ describe('the conversation the chat draws', () => {
     const after = get(chat.value);
     expect(after.turns, 'the previous occupant turns are gone').toEqual([]);
     expect(after.loaded, 'and the column is not claiming to hold a page').toBe(false);
-    expect(server.more().length, 'and it asks for the new occupant page').toBe(2);
+    // The first page, the fresh fill it earned (one turn, with history above),
+    // and the swap's own ask for the new occupant.
+    expect(server.more().length, 'and it asks for the new occupant page').toBe(3);
   });
 
   /**
