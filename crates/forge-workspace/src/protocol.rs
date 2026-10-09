@@ -304,6 +304,19 @@ pub enum Command {
     ReplayConversation {
         key: SessionSlot,
     },
+    /// A view opened the row of a finished call and asks for the command's
+    /// own output: the tail of the file the CLI streamed it to.
+    ///
+    /// Answered by this task rather than the agent, for the same reason a
+    /// replay is: the conversation is the task's own, and the frame that
+    /// named the call's `output_file` is still in it. The answer is
+    /// [`SessionUpdate::CallOutput`] - the tail, or a named reason there is
+    /// none. Asking again re-reads, which is the whole of what a running
+    /// tail would need.
+    ReadCallOutput {
+        key: SessionSlot,
+        call_id: String,
+    },
     SetMode {
         key: SessionSlot,
         mode: PermissionMode,
@@ -743,6 +756,7 @@ impl Command {
             | Self::Cancel { key }
             | Self::CancelQueuedPrompt { key, .. }
             | Self::ReplayConversation { key }
+            | Self::ReadCallOutput { key, .. }
             | Self::SetMode { key, .. }
             | Self::SetModel { key, .. }
             | Self::NewSession { key, .. }
@@ -813,6 +827,11 @@ impl std::fmt::Debug for Command {
             Self::ReplayConversation { key } => {
                 f.debug_struct("ReplayConversation").field("key", key).finish()
             }
+            Self::ReadCallOutput { key, call_id } => f
+                .debug_struct("ReadCallOutput")
+                .field("key", key)
+                .field("call_id", call_id)
+                .finish(),
             Self::SetMode { key, mode } => {
                 f.debug_struct("SetMode").field("key", key).field("mode", mode).finish()
             }
@@ -1188,6 +1207,18 @@ pub enum SessionUpdate {
         key: SessionSlot,
         history: Vec<Message>,
         compaction_count: u32,
+    },
+    /// A call's own output, asked for by `Command::ReadCallOutput`: the tail
+    /// of the file the CLI streamed the call's output to, or a named reason
+    /// there is none.
+    ///
+    /// Emitted by the task that carries the conversation, because the frame
+    /// naming the call's `output_file` lives there and nowhere else a read
+    /// could reach without walking the transcript.
+    CallOutput {
+        key: SessionSlot,
+        call_id: String,
+        output: forge_primitives::CallOutput,
     },
     /// The slot's occupant changed under it - a `/new`, a `/resume`, a
     /// login or a logout. The slot keeps its bucket, in its place on
@@ -1886,6 +1917,7 @@ impl SessionUpdate {
             Self::Spawning { key, .. }
             | Self::Connected { key, .. }
             | Self::HistoryReplayed { key, .. }
+            | Self::CallOutput { key, .. }
             | Self::SessionReplaced { key, .. }
             | Self::ConnectionFailed { key, .. }
             | Self::Releasing { key }
@@ -1980,6 +2012,11 @@ impl std::fmt::Debug for SessionUpdate {
             Self::HistoryReplayed { key, .. } => {
                 f.debug_struct("HistoryReplayed").field("key", key).finish_non_exhaustive()
             }
+            Self::CallOutput { key, call_id, .. } => f
+                .debug_struct("CallOutput")
+                .field("key", key)
+                .field("call_id", call_id)
+                .finish_non_exhaustive(),
             Self::SessionReplaced { key, .. } => {
                 f.debug_struct("SessionReplaced").field("key", key).finish_non_exhaustive()
             }

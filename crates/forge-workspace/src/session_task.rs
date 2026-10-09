@@ -874,6 +874,11 @@ impl SessionTask {
         });
     }
 
+    /// How many lines of a call's own output a read answers with, matching
+    /// the terminal's Monitor tail: the row is about what the command is
+    /// doing, not a transcript of everything it printed.
+    const CALL_OUTPUT_MAX_LINES: usize = 12;
+
     fn execute_command(&self, cmd: Command) {
         // A prompt's queued row is recorded here, where its id is minted (or
         // is already the caller's) and its source is known: the lifecycle
@@ -994,6 +999,34 @@ impl SessionTask {
                     history: history.clone(),
                     compaction_count: *compaction_count,
                 });
+            }
+            // Answered here for the same reason a replay is: the frame that
+            // named the call's output file is in the conversation this task
+            // carries, and nowhere a read could reach without walking the
+            // transcript. A call the conversation no longer names - or the
+            // window has carried off - is the no-path reason, not a blank.
+            Command::ReadCallOutput { key: _, call_id } => {
+                let path = self.conversation.as_ref().and_then(|(history, _)| {
+                    history.iter().find_map(|message| match message {
+                        forge_primitives::Message::TaskNotification {
+                            tool_use_id: Some(id),
+                            output_file,
+                            ..
+                        } if id == &call_id => Some(output_file.clone()),
+                        _ => None,
+                    })
+                });
+                let output = match path {
+                    None => forge_primitives::CallOutput::NoPath,
+                    Some(path) => match crate::output_tail::read_output_file_tail(
+                        std::path::Path::new(&path),
+                        Self::CALL_OUTPUT_MAX_LINES,
+                    ) {
+                        None => forge_primitives::CallOutput::FileGone,
+                        Some(lines) => forge_primitives::CallOutput::Lines(lines),
+                    },
+                };
+                self.emit(SessionUpdate::CallOutput { key: self.key.clone(), call_id, output });
             }
             other => {
                 let sid = self.session_id_string();
@@ -1476,7 +1509,7 @@ pub(crate) fn execute_command_via_handle(
         // the task's own and never crosses to the agent. A caller reading
         // this as dead code should note the arm in `SessionTask::execute_command`
         // is what returns early - the match here is exhaustive, not a route.
-        Command::ReplayConversation { key: _ } => Ok(()),
+        Command::ReplayConversation { key: _ } | Command::ReadCallOutput { key: _, .. } => Ok(()),
         Command::Prompt { key: _, text, attachments } => {
             let Some(sid) = session_id else {
                 return Err(warn_no_session(key, "Prompt"));
@@ -5514,6 +5547,145 @@ provider = "anthropic"
             held.capacity(),
         );
         assert_eq!(held.len(), history.len(), "and holds the frames the replay answered with");
+    }
+
+    /// The on-open read of a call's own output: a view asks with the call's
+    /// id, and the task answers from its own conversation - the frame that
+    /// named the output file is there, and nothing else a read could reach
+    /// holds it without walking the transcript.
+    #[tokio::test]
+    async fn a_calls_output_is_answered_from_the_tasks_own_conversation() {
+        let (workspace, mut update_rx) = crate::Workspace::testing_stub();
+        let session_key = SessionSlot::from_str_for_test("call-output-uuid");
+        let domain =
+            Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
+        let (handle, _agent_cmd_rx) = Agent::testing_stub();
+        let (_cmd_tx, command_rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
+        let mut task = SessionTask {
+            key: session_key.clone(),
+            handle: Arc::new(handle),
+            command_rx,
+            domain,
+            update_tx: workspace.update_sender(),
+            connected_once: false,
+            workspace: Arc::downgrade(&workspace),
+            conversation: None,
+        };
+        task.translate_event(connected_event(&session_key.display(), "/tmp/call-output"));
+
+        // The frame that ended a backgrounded call, in the shape the wire
+        // carries it: the call's own id, its status, and the file the
+        // command's output went to. More lines than the read answers with,
+        // so the bound is pinned rather than incidental.
+        let path =
+            std::env::temp_dir().join(format!("forge-call-output-{}.log", std::process::id()));
+        let written: String = (0..15).map(|at| format!("line-{at:02}\n")).collect();
+        std::fs::write(&path, written).expect("write the output file");
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: session_key.display(),
+            msg: serde_json::from_value(serde_json::json!({
+                "type": "system",
+                "subtype": "task_notification",
+                "task_id": "t-1",
+                "tool_use_id": "tu-1",
+                "status": "completed",
+                "output_file": path.display().to_string(),
+                "summary": "Background command \"sleep 2\" completed",
+                "session_id": session_key.display(),
+                "uuid": "u-1",
+            }))
+            .expect("a task notification frame"),
+        });
+        while update_rx.try_recv().is_ok() {}
+
+        task.execute_command(crate::protocol::Command::ReadCallOutput {
+            key: session_key.clone(),
+            call_id: "tu-1".to_owned(),
+        });
+
+        let mut answered = None;
+        while let Ok(update) = update_rx.try_recv() {
+            if let SessionUpdate::CallOutput { call_id, output, .. } = update {
+                answered = Some((call_id, output));
+            }
+        }
+        let (call_id, output) = answered.expect("the read is answered by the task");
+        assert_eq!(call_id, "tu-1", "the answer names the call it answers");
+        let expected: Vec<String> = (3..15).map(|at| format!("line-{at:02}")).collect();
+        assert_eq!(
+            output,
+            forge_primitives::CallOutput::Lines(expected),
+            "and carries the command's own bytes, bounded to the newest twelve lines",
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The read never answers blank: a call the conversation does not name is
+    /// the no-path reason, and a file that is gone is its own.
+    #[tokio::test]
+    async fn a_calls_output_read_names_what_is_missing() {
+        let (workspace, mut update_rx) = crate::Workspace::testing_stub();
+        let session_key = SessionSlot::from_str_for_test("call-output-reasons");
+        let domain =
+            Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
+        let (handle, _agent_cmd_rx) = Agent::testing_stub();
+        let (_cmd_tx, command_rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
+        let mut task = SessionTask {
+            key: session_key.clone(),
+            handle: Arc::new(handle),
+            command_rx,
+            domain,
+            update_tx: workspace.update_sender(),
+            connected_once: false,
+            workspace: Arc::downgrade(&workspace),
+            conversation: None,
+        };
+        task.translate_event(connected_event(&session_key.display(), "/tmp/call-output-reasons"));
+
+        // A call the conversation names, whose file is not there.
+        let gone =
+            std::env::temp_dir().join(format!("forge-call-output-gone-{}.log", std::process::id()));
+        let _ = std::fs::remove_file(&gone);
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: session_key.display(),
+            msg: serde_json::from_value(serde_json::json!({
+                "type": "system",
+                "subtype": "task_notification",
+                "task_id": "t-gone",
+                "tool_use_id": "tu-gone",
+                "status": "completed",
+                "output_file": gone.display().to_string(),
+                "summary": "Background command \"true\" completed",
+                "session_id": session_key.display(),
+                "uuid": "u-gone",
+            }))
+            .expect("a task notification frame"),
+        });
+        while update_rx.try_recv().is_ok() {}
+
+        for call_id in ["tu-unknown", "tu-gone"] {
+            task.execute_command(crate::protocol::Command::ReadCallOutput {
+                key: session_key.clone(),
+                call_id: call_id.to_owned(),
+            });
+        }
+
+        let mut answers = Vec::new();
+        while let Ok(update) = update_rx.try_recv() {
+            if let SessionUpdate::CallOutput { call_id, output, .. } = update {
+                answers.push((call_id, output));
+            }
+        }
+        assert_eq!(
+            answers,
+            vec![
+                ("tu-unknown".to_owned(), forge_primitives::CallOutput::NoPath),
+                ("tu-gone".to_owned(), forge_primitives::CallOutput::FileGone),
+            ],
+            "a call with no frame is no-path, a call whose file is gone is gone - neither blanks",
+        );
     }
 
     /// The count has coverage at both ends - the scan produces it, the

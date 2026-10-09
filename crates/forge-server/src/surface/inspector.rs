@@ -193,6 +193,31 @@ impl ViewSurface {
         self.workspace.refresh_mcp_snapshot(slot)
     }
 
+    /// Ask for a call's own output, which the session task answers with
+    /// [`SessionUpdate::CallOutput`](crate::SessionUpdate::CallOutput): the tail of
+    /// the file the CLI streamed the call's output to, or a named reason
+    /// there is none.
+    ///
+    /// The ask rather than the read, for the same reason as
+    /// [`Self::refresh_context_usage`], and by the call's id rather than a
+    /// path: the task that carries the conversation is the one that knows
+    /// which file the call wrote to, so the read happens where the id is
+    /// resolved and this only carries the ask.
+    ///
+    /// # Errors
+    ///
+    /// See [`Self::refresh_context_usage`].
+    pub fn read_call_output(
+        &self,
+        slot: &SessionSlot,
+        call_id: &str,
+    ) -> Result<(), forge_workspace::DispatchError> {
+        self.workspace.dispatch(forge_workspace::Command::ReadCallOutput {
+            key: slot.clone(),
+            call_id: call_id.to_owned(),
+        })
+    }
+
     /// The monitors the session has running, and the ones that settled
     /// while it did, folded from the wire.
     ///
@@ -234,6 +259,20 @@ mod tests {
 
     fn seat(label: &str) -> SessionSlot {
         SessionSlot::lead("TestOrg", label)
+    }
+
+    /// The output read is an ask routed by the slot like every other
+    /// dispatch: a seat nothing holds refuses it by name rather than
+    /// swallowing it into a success nobody will answer.
+    #[test]
+    fn the_output_read_refuses_a_seat_nothing_holds() {
+        let (workspace, _dir) = crate::surface::testing::workspace();
+        let surface = ViewSurface::new(Arc::clone(&workspace));
+
+        let err = surface
+            .read_call_output(&seat("no-such-seat"), "tu-1")
+            .expect_err("an unknown seat's read is refused");
+        assert!(matches!(err, forge_workspace::DispatchError::UnknownSession(_)));
     }
 
     /// The header reports the four facts the core was handed, rather than

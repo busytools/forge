@@ -178,6 +178,9 @@ function serverVariantNames(): { names: string[]; closed: boolean } {
  */
 const NOT_NEWS: readonly string[] = [
   'history_replayed',
+  // A call's own output, which the row that asked for it draws: the fleet
+  // region has no row for it.
+  'call_output',
   'slash_command_error',
   'notice',
   'runtime_reload_completed',

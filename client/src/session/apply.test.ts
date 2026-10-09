@@ -1117,6 +1117,7 @@ const EVERY_VARIANT = [
   'spawning',
   'connected',
   'history_replayed',
+  'call_output',
   'session_replaced',
   'connection_failed',
   'releasing',

@@ -510,6 +510,33 @@ mod tests {
         );
     }
 
+    /// The output read reaches the seat that asked and not the home: it is a
+    /// row's own content, and no home row draws a word of conversation.
+    ///
+    /// **The keyed pair is what this fails on.** A `CallOutput` that lost its
+    /// slot would be taken by the home's slot-less arm - sending one seat's
+    /// tail to every fleet subscriber - so `Session(covers)` and
+    /// `Home(does not)` are asserted together.
+    #[test]
+    fn the_output_read_reaches_its_seat_and_not_the_home() {
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        let update = SessionUpdate::CallOutput {
+            key: seat.clone(),
+            call_id: "tu-1".to_owned(),
+            output: forge_primitives::CallOutput::NoPath,
+        };
+
+        assert!(
+            Subject::Session(seat.clone()).covers(&update),
+            "the seat that asked is sent its own answer",
+        );
+        assert!(
+            !Subject::Home.covers(&update),
+            "and the home is not: no row draws a conversation's words, and the slot-less arm \
+             would take it if the key went",
+        );
+    }
+
     /// A parked draft is home news on its own: the seat's row moves into the
     /// needs-you group while the draft is held and back out when it resolves,
     /// so a home-ONLY subscriber that was never sent the pair reads the fleet
