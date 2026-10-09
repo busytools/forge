@@ -521,7 +521,7 @@ async fn the_hint_mask_keeps_off_a_windowed_launch() {
             "uaFullVersion": "",
             "fullVersionList": [],
         }),
-        "a windowed launch is left to report its own hints - the mask must stand down: {read}",
+        "the marker makes the driver skip the mask - the five stay the override's blanks: {read}",
     );
 }
 
