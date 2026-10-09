@@ -283,7 +283,6 @@ pub(crate) fn crossings(
             text: format!("task board: worker {label} holds no row - feed it or despawn it."),
         });
     }
-    let _ = now;
     out
 }
 
