@@ -964,14 +964,46 @@ describe('the box', () => {
     ).toBeNull();
   });
 
-  it('puts every control in the box footer, so the draft keeps the whole width', () => {
+  /**
+   * **An idle bar is one row, whatever else the seat is doing** (Ved,
+   * 2026-10-09), so the controls ride the field's own line.
+   *
+   * The gate was `filled || dictation || running`, which made a seat with a
+   * live turn two rows tall for a stop button nobody was looking at. **Both
+   * arms of the new gate are pinned by nothing else**: reverting it whole, or
+   * keeping `filled` alone, leaves every other test in this file green.
+   */
+  it('rests as one row with its controls on the field, draftless with a turn running', () => {
+    open({ dictation: true, record: record({ header: { turn_in_flight: true } }) });
+
+    expect(document.querySelector('.foot'), 'an idle bar drew a second row').toBeNull();
+    expect(document.querySelector('.line .mic'), 'the mic left the field line').not.toBeNull();
+    expect(document.querySelector('.line .stop'), 'the stop left the field line').not.toBeNull();
+  });
+
+  /** The other arm: a recording takes the second row, controls under the field. */
+  it('gives a recording its own row, with the controls below the field', () => {
+    const harness = open({ dictation: true });
+    harness.page.record = record({
+      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+    });
+    flushSync();
+
+    expect(document.querySelector('.foot'), 'a recording drew no bottom row').not.toBeNull();
+    expect(
+      document.querySelector('.foot .mic'),
+      'the mic did not follow the take down to the bottom row',
+    ).not.toBeNull();
+  });
+
+  it('gives a draft the second row, so its controls keep off the field', () => {
     open({ dictation: true, record: record({ header: { turn_in_flight: true } }) });
     type('a draft');
 
     for (const control of ['.line .mic', '.line .stop', '.line .send']) {
       expect(
         document.querySelector(control),
-        `${control} still holds a column of the draft`,
+        `${control} sits on the field's line beside a draft`,
       ).toBeNull();
     }
     for (const control of ['.foot .mic', '.foot .stop', '.foot .send']) {
@@ -2524,7 +2556,11 @@ describe('the frame', () => {
    * unpinned while two changes crossed.
    */
   it("keeps the mic and the panel's close at a finger's size, and the mic's accent", () => {
-    const coarse = /@media \(pointer: coarse\) \{[^\n]*\.mic[^\n]*\}/.exec(sheet)?.[0] ?? '';
+    // Anchored so `.mic` cannot match as the tail of another class: a pattern
+    // that also accepts `.foot .mic` keeps passing while the on-line mic has
+    // lost the floor this is checking it for.
+    const coarse =
+      /@media \(pointer: coarse\) \{[^\n]*[^.\w]\.mic\s*\{[^\n]*\}/.exec(sheet)?.[0] ?? '';
     expect(coarse, 'the mic lost its height floor on a finger').toContain('min-height: 44px');
     expect(coarse, 'the mic lost its width floor on a finger').toContain('min-width: 44px');
     expect(coarse, "the panel's close lost its width floor").toContain(
