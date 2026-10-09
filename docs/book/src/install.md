@@ -72,6 +72,8 @@ That runs, in order: `cargo fmt --check`, the Unicode punctuation gate,
 the release scripts' tests (`script-tests`), the client's Prettier check,
 its ESLint, `svelte-check` and `tsc --noEmit`
 and then its vitest run,
+the shell crate's android warnings check (`client-android-warnings`:
+`cargo check --target aarch64-linux-android` with warnings denied),
 `cargo clippy --all-targets --workspace -- -D warnings` once per feature
 set (with and without `--all-features`),
 `cargo nextest run --workspace --all-features`,
@@ -88,11 +90,15 @@ of which `just check` deliberately leaves out. The client's steps are in
 here too, so the client is not a second command to remember and a failure
 on either side lands on the same verdict line.
 
-The shell under `client/src-tauri/` is its own workspace root, so
-`just check`'s Rust steps and CI's cargo jobs do not reach it; the Unicode
-punctuation gate, which CI runs too, and the client's Prettier step do.
-`just client-tauri-check` builds it in the shipping configuration and
-`just client-tauri-bundle` adds the bundles, and the first is the one to
+The shell under `client/src-tauri/` is its own workspace root, so the
+workspace's cargo steps do not reach it. `just check` reaches it through
+`client-android-warnings` alone - the crate compiled for
+`aarch64-linux-android` with warnings denied, which is what catches
+desktop-only code going dead on Android, and CI mirrors that step as its
+own `client-android` job - and the Unicode punctuation gate and the
+client's Prettier step reach it too. Everything else about the shell needs
+`just client-tauri-check` (the shipping configuration) or
+`just client-tauri-bundle` (plus the bundles), and the first is the one to
 run before handing over a change there.
 
 A client that BUNDLES takes one step of its own first: `just

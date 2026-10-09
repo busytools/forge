@@ -820,12 +820,17 @@ inspected.
 22. **The client is gated like the Rust side, and it is a shell.** `just
     check` runs the client's steps too - Prettier, ESLint on
     typescript-eslint's type-checked configs, `svelte-check`, `tsc
-    --noEmit`, then vitest - so one command decides both stacks and its
+    --noEmit`, then vitest, then the shell's android warnings check
+    (`client-android-warnings`:
+    `cargo check --target aarch64-linux-android` with warnings
+    denied, the thing that catches desktop-only code going dead on
+    Android) - so one command decides both stacks and its
     verdict line names the first failing step. **The shell under
-    `client/src-tauri/` is its own workspace root**, so `just check`'s
-    Rust steps and CI's cargo jobs do not reach it; the Unicode
-    punctuation gate, which CI runs too, and the client's Prettier step
-    do. `just client-tauri-check` builds it in the shipping configuration
+    `client/src-tauri/` is its own workspace root**, so the workspace's
+    cargo steps do not reach it; `just check`'s `client-android-warnings`
+    reaches it, CI mirrors that step as its own `client-android` job, and
+    the Unicode punctuation gate and the client's Prettier step reach it
+    too. `just client-tauri-check` builds it in the shipping configuration
     and `just client-tauri-bundle` adds the bundles. **Denied as errors**, the
     analogue of the denied Rust lints: `any`, non-null assertion,
     `@ts-ignore`, `innerHTML`, `eval` and floating promises. **A waiver

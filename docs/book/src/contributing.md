@@ -23,9 +23,11 @@ A fresh worktree has no `client/node_modules`, so the first `just check`
 there stops at the Prettier step with exit 127. `npm --prefix client ci`
 first, and the whole run goes through.
 
-The shell under `client/src-tauri/` is its own workspace root, so
-`just check`'s Rust steps and CI's cargo jobs do not reach it; the Unicode
-punctuation gate, which CI runs too, and the client's Prettier step do.
+The shell under `client/src-tauri/` is its own workspace root, so the
+workspace's cargo steps do not reach it. `just check` reaches it through
+`client-android-warnings` (the crate compiled for `aarch64-linux-android`
+with warnings denied), which CI mirrors as its own `client-android` job;
+the Unicode punctuation gate and the client's Prettier step reach it too.
 `just client-tauri-check` builds the shipping configuration and `just
 client-tauri-bundle` adds the bundles. `just client-android-check`
 compiles the Kotlin half and runs its unit tests, because nothing else
