@@ -12511,6 +12511,46 @@ mod worker_activity_tests {
         );
     }
 
+    /// **A turn that opens with the model's own output reads in flight.**
+    ///
+    /// The wire header went idle while a worker was demonstrably working:
+    /// `turn_pending` is spent by the previous `Result` and
+    /// `session_state_changed` no longer arrives, so thinking and prose left
+    /// it false for 41 seconds (measured on the seat, 2026-10-09) while the
+    /// terminal showed the turn running. The model's own frames are the proof
+    /// the terminal reads; this is that reading on the wire's side.
+    #[test]
+    fn a_turn_opening_with_the_models_own_output_reads_in_flight() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("w-opening");
+        let domain = ws.register_domain_session(key, None);
+        let mut guard = domain.lock();
+
+        // The previous turn's Result has landed, which is the state the header
+        // was stuck in: the routed-prompt stamp is spent and nothing else has
+        // said a turn is open.
+        guard.turn_pending = false;
+        assert!(!guard.turn_in_flight(), "precondition: nothing yet says a turn is open");
+
+        guard.note_liveness(crate::domain_session::TurnLiveness::Working);
+        assert!(guard.turn_in_flight(), "the model is producing output, so a turn is open");
+    }
+
+    /// The same mirror closes: a `Result` ends the turn the frames opened.
+    #[test]
+    fn a_result_closes_the_turn_the_frames_opened() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("w-closing");
+        let domain = ws.register_domain_session(key, None);
+        let mut guard = domain.lock();
+
+        guard.note_liveness(crate::domain_session::TurnLiveness::Working);
+        assert!(guard.turn_in_flight(), "precondition: the frames opened a turn");
+
+        guard.note_liveness(crate::domain_session::TurnLiveness::Ended);
+        assert!(!guard.turn_in_flight(), "the Result ended it");
+    }
+
     /// Every state the derivation can land on, including the precedence
     /// that matters: a pending interaction outranks the in-flight turn it
     /// is blocking, otherwise the deadlock stays invisible.
