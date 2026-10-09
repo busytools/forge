@@ -14,6 +14,7 @@
   import { closingSeat } from './close';
   import { chosenAfterPop, railEntry, railOnTop, type RailSide } from './rail-history';
   import Queue from '../chat/Queue.svelte';
+  import { emptyComposer } from '../composer/view';
   import { rememberedRailMode, rememberRailMode, type RailMode } from './rail-mode';
   import { connectors } from '../chat/connectors.svelte';
   import { git } from '../chat/git.svelte';
@@ -709,9 +710,21 @@
     {/if}
   </main>
 
-  {#if composer !== null && record !== null}
+  <!-- The box draws the moment the seat is shown, not after its first read:
+       the absent box was a read round-trip long (measured 128 ms on a cold
+       open, 2026-10-09), and an empty record draws the idle box. It fills in
+       when the seat's own record lands, which is where the turn's own state
+       comes from - the stub claims none, so nothing here reads the connection
+       (a server render reaches nothing). Writes carry the shown seat, so one
+       made in the gap goes to the right place. -->
+  {#if composer !== null}
     <div class="composer">
-      {@render composer({ record, slot, seat, connection })}
+      {@render composer({
+        record: record ?? emptyComposer(slot),
+        slot,
+        seat,
+        connection,
+      })}
     </div>
   {/if}
 </div>

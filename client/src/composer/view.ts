@@ -159,6 +159,28 @@ export function dictationOffered(dictate: DictateWire): boolean {
 }
 
 /** The composer's own state, read off the record the page handed it. */
+/**
+ * An empty record for a seat whose own read has not landed yet.
+ *
+ * The page draws the composer as soon as a seat is shown rather than after its
+ * first read: the absent box was a read round-trip long, measured at 128 ms on
+ * a cold open (2026-10-09). Nothing here is a claim about the seat - the
+ * composer narrows an absent state to the idle box and every list is empty.
+ * It fills in when the seat's own record lands, which is where the turn's own
+ * state comes from.
+ */
+export function emptyComposer(slot: SessionSlot): ComposerRecord {
+  return {
+    slot,
+    composer: undefined,
+    pending_asks: [],
+    header: { turn_in_flight: false },
+    slash_commands: undefined,
+    subagents: undefined,
+    file_index: undefined,
+  };
+}
+
 export function composerState(record: ComposerRecord): ComposerState {
   return composerFrom(record.composer);
 }
