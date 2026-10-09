@@ -387,11 +387,13 @@ impl Workspace {
         thread_ids: &[String],
         origin: SessionSlot,
     ) -> Option<forge_primitives::ReviewSet> {
-        // Scope the `db` guard to the store write and drop it BEFORE taking
-        // `review_origin` - `drain_review_activity` locks these in the
-        // opposite order (`review_origin` then `db` via `review_list`), so
-        // holding both here would risk an AB-BA deadlock on the concurrent
-        // submit / worker-turn-end paths.
+        // Both paths take `db` first and `review_origin` second, one direction
+        // only: this scopes the `db` guard to the store write and drops it
+        // BEFORE taking `review_origin`, and `drain_review_activity` builds
+        // its notices under brief `db` locks and takes `review_origin` last.
+        // The AB-BA the concurrency test guards against needs both sides to
+        // nest them the other way round - `review_origin` held across a db
+        // lock and vice versa - which is what a regression here would be.
         let review = {
             let guard = self.db.lock();
             let db = guard.as_ref()?;
@@ -587,6 +589,12 @@ impl Workspace {
     /// one line per reply. Empty when the caller took no review actions this
     /// turn.
     pub(crate) fn drain_review_activity(&self, caller: &SessionSlot) -> Vec<SessionUpdate> {
+        // `review_activity` is this path's FIRST acquisition, while
+        // `note_review_activity` takes `db` first and `review_activity`
+        // second. Both release before their next acquisition, so no inversion
+        // exists today - and a nesting of that pair the other way round would
+        // be AB-BA exactly as the db / `review_origin` pair would, so keep
+        // this side free of any db-locking call while the guard is held.
         let touches = { self.review_activity.lock().remove(caller).unwrap_or_default() };
         if touches.is_empty() {
             return Vec::new();
@@ -1721,6 +1729,11 @@ mod tests {
 
     #[test]
     fn submit_and_drain_do_not_deadlock_under_concurrency() {
+        // The two threads' own progress, which the guard below reads. Statics
+        // rather than captured handles so both threads reach them without a
+        // clone each, and reset here so a re-run in one process starts clean.
+        static SUBMITS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        static DRAINS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         use forge_primitives::review::{
             ReviewAnchor, ReviewAuthor, ReviewComment, ReviewSide, ReviewStatus, ReviewThread,
         };
@@ -1764,8 +1777,11 @@ mod tests {
         // Hammer the two lock-ordering-sensitive paths from separate threads:
         // the TUI submit path (`db` then `review_origin`) and the worker
         // turn-end path (`review_origin` after `db`). A regression that
-        // reintroduces the opposite order deadlocks; a watchdog channel
-        // fails the test on timeout rather than hanging forever.
+        // reintroduces the opposite order deadlocks; each thread counts its
+        // own iterations so the guard below can tell that deadlock from a
+        // machine that is merely slow.
+        SUBMITS.store(0, std::sync::atomic::Ordering::Relaxed);
+        DRAINS.store(0, std::sync::atomic::Ordering::Relaxed);
         let (tx, rx) = std::sync::mpsc::channel();
         let ws_submit = ws.clone();
         let reviewer2 = reviewer.clone();
@@ -1775,22 +1791,75 @@ mod tests {
             let submitter = std::thread::spawn(move || {
                 for _ in 0..300 {
                     ws_submit.submit_review("forge", "feat", None, &[], reviewer2.clone());
+                    SUBMITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
             });
             let drainer = std::thread::spawn(move || {
                 for _ in 0..300 {
                     let _ = ws_drain.review_reply(&worker2, "forge", "feat", "a", "impl", "x", "t");
                     let _ = ws_drain.drain_review_activity(&worker2);
+                    DRAINS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
             });
             let _ = submitter.join();
             let _ = drainer.join();
             let _ = tx.send(());
         });
-        assert!(
-            rx.recv_timeout(std::time::Duration::from_secs(20)).is_ok(),
-            "submit_review + drain_review_activity deadlocked (AB-BA on db vs review_origin)",
+        // **The guard is progress, not a clock.** A healthy run of this test
+        // takes seconds unloaded and eleven-plus under the load a parallel
+        // gate brings, and a wall-clock budget read that as a deadlock: the
+        // two firings that filed #1921 ran to the 20s watchdog line (20.75s
+        // with setup and unwind in the log). Both threads count, and only a
+        // spell in which NEITHER has advanced is a deadlock: an inversion
+        // stops both counters, and no saturated run of the guard's own
+        // campaign (50 loaded repetitions) produced a no-advance spell.
+        let step = std::time::Duration::from_millis(200);
+        let quiet = std::time::Duration::from_secs(10);
+        let ceiling = std::time::Duration::from_secs(90);
+        let started = std::time::Instant::now();
+        let mut seen = (
+            SUBMITS.load(std::sync::atomic::Ordering::Relaxed),
+            DRAINS.load(std::sync::atomic::Ordering::Relaxed),
         );
+        let mut still_since = std::time::Instant::now();
+        while seen.0 < 300 || seen.1 < 300 {
+            if rx.try_recv().is_ok() {
+                break;
+            }
+            std::thread::sleep(step);
+            let now = (
+                SUBMITS.load(std::sync::atomic::Ordering::Relaxed),
+                DRAINS.load(std::sync::atomic::Ordering::Relaxed),
+            );
+            if now != seen {
+                seen = now;
+                still_since = std::time::Instant::now();
+            } else if still_since.elapsed() >= quiet {
+                panic!(
+                    "submit_review + drain_review_activity deadlocked (AB-BA on db vs \
+                     review_origin): submitted {}/300, drained {}/300, and neither moved for \
+                     {quiet:?}",
+                    seen.0, seen.1,
+                );
+            }
+            assert!(
+                started.elapsed() < ceiling,
+                "the two paths neither finished nor stalled: submitted {}/300, drained {}/300",
+                seen.0,
+                seen.1,
+            );
+        }
         let _ = coordinator.join();
+        // A worker thread that panicked ends its loop short of 300, and its
+        // join result is discarded above - so without this, a panicking
+        // submitter or drainer would read as a pass.
+        assert_eq!(
+            (
+                SUBMITS.load(std::sync::atomic::Ordering::Relaxed),
+                DRAINS.load(std::sync::atomic::Ordering::Relaxed),
+            ),
+            (300, 300),
+            "both threads ran to the end",
+        );
     }
 }
