@@ -18,10 +18,12 @@ pub const NO_BROWSER_CLIENT: &str = "no browser-capable client connected";
 const HOST_GONE: &str = "the browser-capable client went away before answering";
 
 /// **The longest one ask may wait on a host, derived from the layers under
-/// it**: the client's own bounds are a launch (`chromium`'s `LAUNCH_TIMEOUT`,
-/// 15 s), a driver handshake (`driver`'s `START_TIMEOUT`, 15 s) and one tool
-/// call (`driver`'s `CALL_TIMEOUT`, 150 s), plus 20 s of slack for the hops
-/// between the layers. It is a wedge-breaker, not a ceiling on every call:
+/// it**: the client's own typical bounds are a launch (`chromium`'s
+/// `LAUNCH_TIMEOUT`, 15 s), a driver handshake (`driver`'s `START_TIMEOUT`,
+/// 15 s), the driver's client-hint mask (15 s) and one tool call (`driver`'s
+/// `CALL_TIMEOUT`, 150 s), plus the failure flush that rides the call
+/// (5 s) - the segments the constant below sums. It is a wedge-breaker,
+/// not a ceiling on every call:
 /// a second ask on one profile queues behind the first call's own lock (up
 /// to the 150 s call bound), and a call waiting on a relaunch can wait
 /// longer than this entirely - so the named failure and a retry is the

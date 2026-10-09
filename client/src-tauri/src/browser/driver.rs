@@ -420,8 +420,9 @@ impl Driver {
     /// browser-side clear and the log - a reply dropped in transport, one
     /// the flush's [`HINT_FLUSH_TIMEOUT`] gives up on while the snippet that
     /// already ran has cleared the list, or a list that does not parse -
-    /// leaving no trace at all; the sandbox boundary offers nothing better,
-    /// and the bound is deliberately short rather than the call's.
+    /// losing the failures' content (the timeout leaves a debug line, and
+    /// the list is already gone browser-side); the sandbox boundary offers
+    /// nothing better.
     ///
     /// **Desktop only, like the mask itself**: the phone's WebView presents
     /// its own real UA, so no mask and no failures exist there, and an
@@ -934,10 +935,14 @@ const HINT_MASK_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// How long the failure flush that rides after every browser call is given:
 /// a local snippet with no CDP work, so a healthy answer is milliseconds -
-/// and this is the fifth segment of the desktop's worst honest ask chain
-/// (launch 15 + handshake 15 + mask 15 + call 150 + flush 5 = 200, the whole
-/// server bound), which is why it may not ride the 150 s call bound.
-/// Desktop only, with the flush it bounds.
+/// and this is the fifth segment of the desktop's typical ask chain
+/// (launch 15 + handshake 15 + mask 15 + call 150 + flush 5 = 200, the
+/// server bound's own value; a cold contested launch sits above it), which
+/// is why it may not ride the 150 s call bound. Desktop only, with the
+/// flush it bounds. The bound is short because it must fit the ask chain
+/// (its 5 of the 200), and that is the trade: a snippet that has already
+/// cleared the list loses a failure whose answer the bound gives up on, so
+/// a shorter bound widens that window rather than narrowing it.
 #[cfg(desktop)]
 const HINT_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
 
