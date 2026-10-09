@@ -498,32 +498,30 @@ function isForgeNotice(message: unknown): boolean {
 /**
  * The frames a read cannot restore, folded even while the seat is away.
  *
- * **The gate exists for the bulk stream** - `chat_appended` above all - which
- * a return's own reads put right. What these carry is what nothing else will
- * say again: a swap is structural (the held conversation must empty, or the
- * return merges the new occupant's page onto the old one's turns), the
- * queue's lifecycle is what lets a held prompt go, and a notice or a
- * plan-limit line arrives once - no page carries it, so a return has no way
- * to draw it later.
+ * **An away seat hears only the home feed, so this list is exactly what that
+ * feed carries for the conversation and the gate admits nothing it could not
+ * send.** The bulk stream - `chat_appended` above all - is dropped: the
+ * return's own reads put it right. What folds is what nothing else will say
+ * again, or what must land at once: a swap (structural - the held
+ * conversation must empty, or the return merges the new occupant's page onto
+ * the old one's turns), a connect (a process that is gone takes its queue
+ * with it, and its frame is the only word on that), the queue's lifecycle
+ * (what lets a held prompt go), and the live-only lines - a connection
+ * failure, a service or fatal word, a plan-limit note. Nothing here lists
+ * `prompt_queued`, `notice`, `review_activity_notice` or the `set_*_failed`
+ * pair: none of them is home news, so a seat that is away never hears them,
+ * and an exemption for one would be cover that does not exist.
  */
 function keepsWhileAway(update: SessionUpdate): boolean {
   const variant = variantOf(update);
   if (variant === null) return false;
-  if (
-    variant === 'session_replaced' ||
-    variant === 'prompt_queued' ||
-    variant === 'prompt_lifecycle'
-  ) {
+  if (variant === 'session_replaced' || variant === 'connected' || variant === 'prompt_lifecycle') {
     return true;
   }
   if (
     variant === 'connection_failed' ||
-    variant === 'fatal_error' ||
     variant === 'service_status' ||
-    variant === 'notice' ||
-    variant === 'review_activity_notice' ||
-    variant === 'set_mode_failed' ||
-    variant === 'set_model_failed'
+    variant === 'fatal_error'
   ) {
     return true;
   }
@@ -864,6 +862,10 @@ export class Chat {
         const held = this.inFlight !== null;
         this.inFlight = null;
         this.abandoned = 0;
+        // A held return-want dies with the socket: the reconnect answers with
+        // an ask of its own, and firing the want after it would be a second
+        // ask for the same page.
+        this.returnWanted = false;
         // And the column is TOLD, not left counting: its own twin of this ask
         // is what holds the prepend compensation on, and nothing else drains
         // it. Only an ask actually in flight counts - a closed socket that was
@@ -1352,6 +1354,15 @@ export class Chat {
       const rest = healed.turns.filter(
         (turn) => !(turn.live || turn.running === true) && !inPage.has(turn.key),
       );
+      // **A turn no page can put back is not the stale tail's to lose.** A
+      // `forge_notice` line is written here and nowhere else - the refusal,
+      // the service word, the plan-limit note - so the newest page a
+      // reconnect or a return asks for carries no copy of it: dropped with
+      // the stale tail, the row the reader was looking at is gone with no
+      // read that can bring it back. Transcript-carried turns go instead,
+      // which is the walk's own reach.
+      const noPageCarries = (turn: Turn): boolean =>
+        turn.messages.some((message) => isForgeNotice(message));
       // A turn being written that no row of this page accounts for is kept - a
       // page of OLDER turns, or one serialized before those frames landed -
       // because dropping it leaves the reader's own words nowhere, with nothing
@@ -1381,7 +1392,7 @@ export class Chat {
         turns:
           direction === 'older'
             ? [...drawn, ...rest, ...loose]
-            : [...(reachesHeld ? rest : []), ...drawn, ...loose],
+            : [...(reachesHeld ? rest : rest.filter(noPageCarries)), ...drawn, ...loose],
       });
     });
     this.returnIfWanted();

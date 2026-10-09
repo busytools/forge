@@ -361,6 +361,34 @@ describe('the conversation the chat draws', () => {
   });
 
   /**
+   * A turn no page can put back survives the reach arm. A `forge_notice` line
+   * lives in this conversation alone - the CLI wrote no row for it - so the
+   * newest page a reconnect asks for carries no copy, and dropped with the
+   * stale tail the row the reader was looking at is gone with no read that
+   * can bring it back. The shown seat is the worst case: the reconnect's own
+   * read is what empties it.
+   */
+  it('keeps the row the reader has when a reconnect re-serves around it', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    // A notice on a seat with no turn yet opens its own row, which is its
+    // only copy anywhere.
+    server.update({ notice: { key: LEAD, severity: 'error', text: 'the plan is spent' } });
+
+    // The socket drops and reconnects; the reconnect asks a newest page of
+    // its own, and what lands shares no frame with what is held.
+    server.reach('closed');
+    server.reach('open');
+    server.send(page([turn('t1', 'after the reconnect')], 'c1'));
+
+    const drawn = words(chat);
+    expect(drawn, 'the notice row is still drawn').toContain('the plan is spent');
+    expect(drawn, 'and the newest page draws').toContain('after the reconnect');
+    stop();
+  });
+
+  /**
    * The core's own line, which no transcript holds: the CLI never wrote a row
    * for it, so this store is the only place it can be drawn from.
    */
@@ -2725,27 +2753,27 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
   });
 
   /**
-   * Another client's queued prompt stays to one row across a return: the
-   * pile's card carries the words, and the hold has to be armed BEFORE the
-   * return's page lands - dropped while away, the page's copy drew beside
-   * the card, which is the duplicate the hold exists to prevent.
+   * A connect that lands while the seat is away releases the queue hold: the
+   * process is gone and its queue with it, and a connect is that fact from
+   * the other side. It is home news, so it reaches an away seat - dropped,
+   * the hold outlives the queue and the return's page re-withholds a row
+   * nothing will ever release.
    */
-  it("keeps another client's queued prompt to one row across a return", () => {
+  it('lets a connect that lands while the seat is away release the queue hold', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
     const stop = chat.start();
     server.send(page([turn('t1', 'first')], null));
 
+    server.update({ prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'held words' } });
     chat.leaving();
-    server.update({ prompt_queued: { key: LEAD, uuid: 'p1', source: 'peer', text: 'peer words' } });
+    server.update({ connected: { key: LEAD, session_id: 's-2', cwd: '/tmp' } });
     chat.showing();
     server.send(
-      page([turn('t1', 'first'), { key: 't2', messages: [forgedUnder('peer words', 'p1')] }], null),
+      page([turn('t1', 'first'), { key: 't2', messages: [forgedUnder('held words', 'p1')] }], null),
     );
-    expect(words(chat), 'the card is the only thing drawing it').not.toContain('peer words');
 
-    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } });
-    expect(words(chat).split('peer words').length - 1, 'then one row, once').toBe(1);
+    expect(words(chat), 'the row draws on the return').toContain('held words');
     stop();
   });
 });
