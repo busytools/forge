@@ -335,7 +335,12 @@ impl Driver {
     /// the browser's own UA and hints, and the caller keeps this off it (the
     /// capture's scratch document would otherwise open a window at it).
     pub async fn install_hint_mask(&self, output_dir: &Path, profile: &str) {
-        match tokio::time::timeout(HINT_MASK_TIMEOUT, self.rebuild_client_hints(output_dir)).await {
+        match tokio::time::timeout(
+            HINT_MASK_TIMEOUT,
+            self.rebuild_client_hints(output_dir, profile),
+        )
+        .await
+        {
             Ok(Ok(note)) => tauri_plugin_log::log::info!(
                 "the client-hint mask settled (event_name browser_hint_mask, profile {profile}): \
                  {note}"
@@ -355,8 +360,8 @@ impl Driver {
     /// The mask itself: read the client's own document, rebuild what the
     /// override blanks, then mask every page through the driver's own CDP
     /// session.
-    async fn rebuild_client_hints(&self, output_dir: &Path) -> Result<String, String> {
-        let hints = write_hints_page(output_dir).ok_or_else(|| {
+    async fn rebuild_client_hints(&self, output_dir: &Path, profile: &str) -> Result<String, String> {
+        let hints = write_hints_page(output_dir, profile).ok_or_else(|| {
             "the capture page could not be written, so the mask has no document to read".to_owned()
         })?;
         let parts = self
@@ -1008,13 +1013,14 @@ fn write_mask(output_dir: &Path) -> Option<PathBuf> {
 /// Write the client-hint capture page and answer its path, or `None` where it
 /// could not be written: the capture then has no document to read, and the
 /// mask fails by name rather than standing down.
-fn write_hints_page(output_dir: &Path) -> Option<PathBuf> {
+fn write_hints_page(output_dir: &Path, profile: &str) -> Option<PathBuf> {
     let path = hints_path(output_dir);
     match write_whole(&path, HINTS_PAGE) {
         Ok(()) => Some(path),
         Err(why) => {
             tauri_plugin_log::log::warn!(
-                "the client-hint capture page could not be written to {}: {why}",
+                "the client-hint capture page could not be written (event_name \
+                 browser_hint_mask_page, profile {profile}) to {}: {why}",
                 path.display()
             );
             None
@@ -1472,7 +1478,7 @@ mod tests {
     #[test]
     fn the_capture_page_is_written_whole_under_its_own_name() {
         let dir = tempfile::tempdir().expect("a temp dir");
-        let path = write_hints_page(dir.path()).expect("the page writes");
+        let path = write_hints_page(dir.path(), "shared").expect("the page writes");
         assert_eq!(path, dir.path().join("browser-hints.html"));
         let left: Vec<_> = std::fs::read_dir(dir.path())
             .expect("the dir lists")
@@ -1486,7 +1492,11 @@ mod tests {
         );
 
         let missing = dir.path().join("no-such-directory");
-        assert_eq!(write_hints_page(&missing), None, "a page that cannot be written is no refusal");
+        assert_eq!(
+            write_hints_page(&missing, "shared"),
+            None,
+            "a page that cannot be written is no refusal",
+        );
     }
 
     /// The capture path becomes a `file://` URL with the characters a URL
