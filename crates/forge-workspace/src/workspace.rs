@@ -12536,6 +12536,42 @@ mod worker_activity_tests {
         assert!(guard.turn_in_flight(), "the model is producing output, so a turn is open");
     }
 
+    /// **The mapping itself, not just the setter.**
+    ///
+    /// The two tests above drive `note_liveness` directly, so they pin the
+    /// predicate and stop short of the fold that feeds it: deleting the
+    /// `ThinkingTokens` arm here leaves them both green while a turn that
+    /// opens with thinking regresses to the 41-second idle window the mirror
+    /// exists to close. This is the arm, so it is the one pinned.
+    #[test]
+    fn a_frame_that_proves_a_turn_maps_to_working() {
+        let counter = forge_primitives::Message::ThinkingTokens {
+            estimated_tokens: 40,
+            estimated_tokens_delta: 40,
+            uuid: "tokens-1".to_owned(),
+            session_id: "s".to_owned(),
+            extras: serde_json::Map::new(),
+        };
+        assert_eq!(
+            crate::domain_session::liveness_of(&counter),
+            Some(crate::domain_session::TurnLiveness::Working),
+            "the model's own output opens a turn",
+        );
+
+        // A report ABOUT the turn says nothing about whether one is open, so it
+        // must leave the mirror where it stands.
+        let report = forge_primitives::Message::System {
+            subtype: "init".to_owned(),
+            session_id: None,
+            data: serde_json::Value::Null,
+        };
+        assert_eq!(
+            crate::domain_session::liveness_of(&report),
+            None,
+            "a system report is not a liveness signal",
+        );
+    }
+
     /// The same mirror closes: a `Result` ends the turn the frames opened.
     #[test]
     fn a_result_closes_the_turn_the_frames_opened() {
