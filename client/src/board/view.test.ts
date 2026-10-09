@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { homeWire } from '../dev/fixture.data';
 import type { BoardRow, HomeWire, Marks, Task, TaskStatus, TaskLinkWire } from '../wire/home';
-import { applyMoves, boardView, fmtSecs } from './view';
+import { applyMoves, boardView, fmtSecs, landed } from './view';
 
 function task(id: string, subject: string, status: TaskStatus, over: Partial<Task> = {}): Task {
   return {
@@ -228,13 +228,50 @@ describe("one project's board", () => {
       lanes.find((lane) => lane.key === key)?.cards.map((card) => card.id);
 
     // A move to another lane lands at once.
-    const movedUp = applyMoves(view.lanes, { b: { to: 'in_progress', before: null } });
+    const movedUp = applyMoves(view.lanes, { b: { to: 'in_progress', before: null, at: 1 } });
     expect(ids(movedUp, 'in_progress')).toEqual(['b']);
     expect(ids(movedUp, 'pending')).toEqual(['a']);
 
     // A drop above the first card places it there.
-    const ranked = applyMoves(view.lanes, { b: { to: 'pending', before: 'a' } });
+    const ranked = applyMoves(view.lanes, { b: { to: 'pending', before: 'a', at: 1 } });
     expect(ids(ranked, 'pending')).toEqual(['b', 'a']);
+  });
+
+  /**
+   * What the wire has to say before a drag's own placement is dropped: the
+   * row's PLACE, not only its state. A re-order inside a lane keeps the
+   * status, so a status-only test read every re-order as landed on the next
+   * tick and the card snapped back to the order the server still held.
+   */
+  it('confirms a move by the place the wire put the row in', () => {
+    const rows = [
+      row(task('a', 'first', 'pending', { rank: 1 })),
+      row(task('b', 'second', 'pending', { rank: 2 })),
+    ];
+    const pending = { to: 'pending' as const, before: 'a', at: 0 };
+
+    // The row is still where it was: the drop is not landed.
+    expect(landed(rows, 'b', pending), 'the old order read as landed').toBe(false);
+    // A row the wire does not carry at all is not landed either.
+    expect(landed(rows, 'gone', pending), 'a row that is not there read as landed').toBe(false);
+
+    // The re-order the wire holds: b sits directly above a, and its status
+    // never moved - this is the case a status test cannot see.
+    const swapped = [
+      row(task('b', 'second', 'pending', { rank: 1 })),
+      row(task('a', 'first', 'pending', { rank: 2 })),
+    ];
+    expect(landed(swapped, 'b', pending), 'the re-order the wire holds').toBe(true);
+    // And the end-of-lane drop answers the other way: last is not above a.
+    expect(
+      landed(swapped, 'b', { to: 'pending', before: null, at: 0 }),
+      'a drop at the end read as landed while the row leads the lane',
+    ).toBe(false);
+
+    // A cross-lane move is confirmed by the row arriving in that lane.
+    const moved = [...rows, row(task('b', 'second', 'in_progress'))];
+    expect(landed(moved, 'b', { to: 'in_progress', before: null, at: 0 })).toBe(true);
+    expect(landed(rows, 'b', { to: 'in_progress', before: null, at: 0 })).toBe(false);
   });
 
   it('words durations the way the board does', () => {
