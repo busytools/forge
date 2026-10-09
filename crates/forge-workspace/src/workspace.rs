@@ -5246,6 +5246,11 @@ impl Workspace {
     /// reaches Running. `live_workers` is the authoritative
     /// "this session is a child agent" registry.
     pub fn release_session_with_cascade(self: &Arc<Self>, session_key: &SessionSlot) {
+        // Announced before anything is torn down, so the seat's row starts
+        // saying where it is going at the gesture rather than after the
+        // workers this cascade takes with it (#1930). A viewer's mark is a
+        // set, so a second announcement would be spent.
+        self.announce_release(session_key);
         // The cascade is the lead's, and a lead's slot is the one whose
         // label says so: a worker's slot carries its own label, so a
         // closed worker cannot be misidentified as its lead however far
@@ -5270,6 +5275,18 @@ impl Workspace {
             }
         }
         self.release_session(session_key);
+    }
+
+    /// Announce that a seat's release has begun.
+    ///
+    /// One place for the close doors to say it, so a viewer draws the seat as
+    /// going to sleep from the gesture instead of keeping the state it last
+    /// read. Each door calls it where the close is certain and the teardown
+    /// has not started: a lead before its cascade, a worker before its own
+    /// kill - where a despawn's removal frame only follows the worktree
+    /// cleanup, minutes later (#1930).
+    pub(crate) fn announce_release(self: &Arc<Self>, key: &SessionSlot) {
+        let _ = self.update_tx.send(SessionUpdate::Releasing { key: key.clone() });
     }
 
     /// Non-cascading single-session release - the primitive. Drops
@@ -12776,6 +12793,40 @@ provider = "anthropic"
             }
         }
         assert_eq!(removed_count, 2, "two Removed events fire for the two workers");
+    }
+
+    /// **The release is announced before anything is torn down** (#1930).
+    /// A viewer marks the seat from this frame, so it has to be out ahead of
+    /// the cascade: announced after, a lead's row would keep reading as
+    /// working for exactly the seconds the teardown takes - and a close made
+    /// from another view has no other frame at all.
+    #[tokio::test]
+    async fn a_release_is_announced_before_the_cascade_runs() {
+        let dir = make_workspace_dir();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let mut rx = workspace.subscribe();
+
+        let project = workspace.list_projects().into_iter().next().expect("forge project");
+        let project_key = project.key.clone();
+        let lead_key = lead_slot();
+        workspace.insert_live_worker(&project_key, fake_entry("r1"));
+
+        workspace.release_session_with_cascade(&lead_key);
+
+        let announced: Vec<SessionUpdate> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        let first = announced.first().expect("the release announces something");
+        assert!(
+            matches!(first, SessionUpdate::Releasing { key } if key == &lead_key),
+            "the lead's release is the first thing announced: {first:?}",
+        );
+        assert!(
+            announced.iter().any(|update| matches!(
+                update,
+                SessionUpdate::WorkerStatusChanged { action, .. }
+                    if *action == crate::protocol::WorkerStatusAction::Removed
+            )),
+            "and the cascade's own removal follows it: {announced:?}",
+        );
     }
 
     /// `release_session_with_cascade` on a non-lead (or unknown) session

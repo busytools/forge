@@ -651,6 +651,36 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             }
             app.needs_redraw = true;
         }
+        SessionUpdate::Releasing { key } => {
+            // The seat is going away, and its row says so from here rather
+            // than from the removal that lands seconds later. The terminal's
+            // own close drops the bucket in the same breath as the click, so
+            // this is that same shape for a close made from another view
+            // (#1930). The toast and the worktree wording a worker's removal
+            // carries are the removal's own, not this frame's.
+            let was_active = app.active_session_key.as_ref() == Some(&key);
+            let drawn = if was_active { super::drawn_session_order(app) } else { Vec::new() };
+            app.sessions.remove(&key);
+            if was_active {
+                // The project's own lead first, which is the seat a worker's
+                // removal lands on and the client's `removedLanding` answers
+                // too; the frame carries no spawned-by, so the label is the
+                // whole of the preference here.
+                let lead = forge_workspace::SessionSlot::lead(key.org(), key.project());
+                let fallback = if app.sessions.contains_key(&lead) {
+                    Some(lead)
+                } else {
+                    super::adjacent_drawn_session(app, &drawn, &key)
+                        .or_else(|| app.sessions.keys().next().cloned())
+                };
+                if let Some(new_active) = fallback {
+                    app.switch_active_session(new_active);
+                } else {
+                    app.active_session_key = None;
+                }
+            }
+            app.needs_redraw = true;
+        }
         // The four deliveries were forged above, before the match.
         // `DictateAvailability`'s existence is the availability signal;
         // nothing caches either.
@@ -4679,6 +4709,57 @@ mod tests {
         assert_eq!(toast, "Worker notes closed.");
         assert!(!toast.contains("worktree"), "must not mention worktree: {toast:?}");
         assert!(!toast.contains("Worktree"), "must not mention worktree: {toast:?}");
+    }
+
+    /// **A release drops the seat's bucket from here, and says nothing else**
+    /// (#1930). The terminal's own close does this in the breath of the
+    /// click; a close made from another view arrives as this frame instead,
+    /// whose whole work is the row - the toast and the worktree wording a
+    /// worker's removal carries belong to the removal.
+    ///
+    /// **What this cannot pin, and does not claim to:** the arm prefers the
+    /// project's own lead as the landing, and this harness seeds no drawn
+    /// order, so the fallback's answer is the map's own order - the lead, the
+    /// next key and the adjacent helper are indistinguishable here. What is
+    /// pinned is that the reader leaves the released seat and lands on a seat
+    /// that still has a bucket.
+    #[test]
+    fn releasing_drops_the_bucket_and_lands_the_reader_without_a_toast() {
+        let mut app = App::test_default();
+        let lead = SessionSlot::lead("TestOrg", "test-project");
+        // A third bucket, so a fallback that merely took the next key would
+        // land somewhere other than the lead the preference is about.
+        let other = SessionSlot::from_str_for_test("other-uuid");
+        let worker_key = SessionSlot::from_str_for_test("worker-uuid");
+        for key in [&lead, &other, &worker_key] {
+            app.sessions.insert(
+                key.clone(),
+                crate::app::session::UiSession::new(key.clone(), "test-project"),
+            );
+        }
+        app.switch_active_session(worker_key.clone());
+        let before = app.sessions.get(&lead).expect("lead bucket").messages.len();
+
+        apply_session_update(&mut app, SessionUpdate::Releasing { key: worker_key.clone() });
+
+        assert!(
+            !app.sessions.contains_key(&worker_key),
+            "the released seat kept its bucket, so the row draws it as working",
+        );
+        assert!(
+            app.active_session_key.as_ref() != Some(&worker_key),
+            "the reader was left on a seat that is going away",
+        );
+        assert!(
+            app.active_session_key.as_ref().is_some_and(|active| app.sessions.contains_key(active)),
+            "the fallback landed on a key with no bucket",
+        );
+        assert_eq!(
+            app.sessions.get(&lead).expect("lead bucket").messages.len(),
+            before,
+            "a release pushed a toast that is the removal's own wording",
+        );
+        assert!(app.needs_redraw, "a release must request a redraw");
     }
 
     /// The close toast must land in the worker's OWNING lead session

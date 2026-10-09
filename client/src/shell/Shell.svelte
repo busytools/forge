@@ -8,11 +8,11 @@
   import { watchHome, type HomeRead } from '../home/live';
   import { skewMessage, subjectKey, type Skew } from '../protocol';
   import { hrefFor, parseRoute, type Route } from '../routes';
-  import { forgetClosed, removedLanding, watchRemovals } from '../session/close';
+  import { forgetClosed, removedLanding, watchReleases, watchRemovals } from '../session/close';
   import type { Connection, ConnectionStatus } from '../socket';
   import { applySettings } from '../theme';
   import { watchUpdate } from '../update/state';
-  import { DEFAULT_SETTINGS, type ClientSettings } from '../wire/types';
+  import { DEFAULT_SETTINGS, type ClientSettings, type SessionSlot } from '../wire/types';
   import Router from './Router.svelte';
 
   // The connect screen is the front door: it is the first thing a person
@@ -152,19 +152,19 @@
   });
 
   /**
-   * A seat removed under the reader moves them off it.
+   * A seat taken out from under the reader moves them off it.
    *
-   * The reader's own close lands them in the same handler (`closeSeat`);
-   * this is the other door - a lead's cascade releasing the workers under
-   * it, a despawn from another view - and it is the terminal's own
-   * `WorkerStatusChanged` answer. The marks of closes made here are
-   * forgotten as the roster catches up, so a project started again is not
-   * suppressed by an old one.
+   * Two frames ask for it: the removal a cascade or a despawn lands
+   * (`WorkerStatusChanged`), and the release announcement every close begins
+   * with - the only word a viewer gets when the close was made in ANOTHER
+   * view (#1930). The reader's own close lands them in `closeSeat`, and the
+   * marks are forgotten as the roster catches up, so a project started again
+   * is not suppressed by an old one.
    */
   $effect(() => {
     const open = connection;
     if (open === null) return;
-    const stop = watchRemovals(open, (seat, spawnedBy) => {
+    const land = (seat: SessionSlot, spawnedBy: SessionSlot | null): void => {
       // Both reads are untracked, so the effect subscribes once per
       // connection rather than once per roster read and route change.
       const wire = untrack(() => home.wire);
@@ -175,8 +175,13 @@
         showing.name === 'session' &&
         subjectKey({ session: showing.slot }) === subjectKey({ session: seat });
       if (onSeat) go(removedLanding(wire, seat, spawnedBy, Date.now()));
-    });
-    return stop;
+    };
+    const stopRemovals = watchRemovals(open, land);
+    const stopReleases = watchReleases(open, (seat) => land(seat, null));
+    return () => {
+      stopRemovals();
+      stopReleases();
+    };
   });
 
   /**

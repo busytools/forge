@@ -5,10 +5,11 @@ import { describe, expect, it } from 'vitest';
 
 import { homeWire } from '../dev/fixture.data';
 import { PROTOCOL_VERSION } from '../protocol';
+import type { ServerMessage } from '../protocol';
 import type { Connection } from '../socket';
 import type { AgentRow } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
-import { closeSeat, forgetClosed } from './close';
+import { closeSeat, forgetClosed, watchReleases } from './close';
 import Rail from './Rail.svelte';
 
 /**
@@ -171,6 +172,60 @@ describe('a closed seat', () => {
   function closes(): Connection {
     return { ...untouched(), dispatch: () => null };
   }
+
+  /** A connection that hands every message to whatever is listening on it. */
+  function speaking(): { open: Connection; deliver: (message: ServerMessage) => void } {
+    const listeners = new Set<(message: ServerMessage) => void>();
+    const open = {
+      ...untouched(),
+      onMessage: (fn: (message: ServerMessage) => void) => {
+        listeners.add(fn);
+        return () => listeners.delete(fn);
+      },
+    } as unknown as Connection;
+    return {
+      open,
+      deliver: (message) => {
+        for (const listener of listeners) listener(message);
+      },
+    };
+  }
+
+  /**
+   * The same row, one door over: the close was made in ANOTHER view, so there
+   * is no click here at all - the core's own release announcement is the only
+   * word before the seat is gone (#1930), and the rail draws it exactly as it
+   * draws a close made here.
+   */
+  it('draws a seat the core announces a release for as going to sleep', () => {
+    const template = homeWire.agents[0];
+    if (template === undefined) throw new Error('the fixture holds no agent');
+    const lead: AgentRow = { ...template, lifecycle: 'Running' };
+    const worker: AgentRow = { ...template, slot: { ...template.slot, label: 'w1' }, label: 'w1' };
+    const wire = { ...homeWire, agents: [lead, worker] };
+    const { open, deliver } = speaking();
+    const opened = (): string =>
+      render(Rail, { props: { home: wire, current: LEAD, now: 0, connection: open } }).body;
+
+    const stop = watchReleases(open, () => {});
+    try {
+      expect(opened(), 'a row nobody closed was settling').not.toContain('settling');
+
+      deliver({ kind: 'update', update: { releasing: { key: worker.slot } } });
+      const drawn = opened();
+      expect(drawn, 'the announced release did not fold the seat into asleep').toContain(
+        '1 asleep',
+      );
+      const rowAt = drawn.indexOf('<div class="wk"');
+      const row = drawn.slice(rowAt, drawn.indexOf('</div>', rowAt));
+      expect(row, 'the wire-announced row drew no settling dot').toContain(
+        '<span class="dot off settling"></span>',
+      );
+    } finally {
+      stop();
+      forgetClosed({ ...homeWire, agents: [] });
+    }
+  });
 
   /**
    * The gap #1712 named: the roster is a read that lands seconds after the

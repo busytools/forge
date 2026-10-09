@@ -262,6 +262,12 @@ pub fn fleet_news(update: &SessionUpdate) -> FleetNews<'_> {
         | SessionUpdate::BrowserHandOffPending { .. }
         | SessionUpdate::BrowserHandOffResolved { .. }
         | SessionUpdate::WorkerStatusChanged { .. }
+        // The seat's release has begun: its row says where it is going until
+        // the roster lands it asleep or gone. Announced at the start of the
+        // teardown rather than at the end, because the teardown is what takes
+        // the seconds - and a close made from another view reaches this page
+        // through this arm alone (#1930).
+        | SessionUpdate::Releasing { .. }
         // The project's task set, its schedules and its connector
         // subscriptions moved - the three sections the home's project row
         // draws from this stream.
@@ -629,6 +635,21 @@ mod tests {
         assert!(
             live.apply(&appended(&slot, announced)).fleet,
             "the registry moving is a row's re-read",
+        );
+    }
+
+    /// A release that has begun moves a row, wherever the close came from.
+    /// Its own frame is the only one a close made from another view sends
+    /// before the removal lands (#1930), so a home subscriber that did not
+    /// re-read here kept the row reading as working through the teardown.
+    #[test]
+    fn a_release_that_has_begun_redraws_the_page() {
+        let slot = SessionSlot::lead("Org", "forge");
+        let mut live = Live::new();
+
+        assert!(
+            live.apply(&SessionUpdate::Releasing { key: slot }).fleet,
+            "the seat going to sleep is a row's re-read",
         );
     }
 

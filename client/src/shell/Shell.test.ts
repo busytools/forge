@@ -175,6 +175,12 @@ async function stubForge(
         );
       }
     },
+    /** A release announcement, as the core sends it when any view closes a seat. */
+    release(seat: SessionSlot) {
+      for (const socket of server.clients) {
+        socket.send(JSON.stringify({ kind: 'update', update: { releasing: { key: seat } } }));
+      }
+    },
     async close() {
       for (const client of server.clients) client.terminate();
       await new Promise((resolve) => server.close(resolve));
@@ -514,6 +520,64 @@ describe('a seat removed under the reader', () => {
     expect(location.pathname, 'the reader was left on a seat with nothing behind it').toBe(
       '/session/TestOrg/proj/lead',
     );
+  });
+
+  /**
+   * **The door a close made in ANOTHER view opens** (#1930): no removal lands
+   * for the seat's own row - a released lead is simply gone from the roster
+   * later - so the release announcement is the only word the reader gets. It
+   * marks the row and moves the reader off the seat, exactly as the removal
+   * path does for a worker.
+   */
+  it('moves the reader off a seat the core announces a release for', async () => {
+    const forge = await stubForge({ mark: null, theme: null, font: null });
+    forges.push(forge);
+    await openAt('/session/TestOrg/proj/w1', forge.address);
+    await crossed();
+    expect(location.pathname, 'the fixture did not land on the worker').toBe(
+      '/session/TestOrg/proj/w1',
+    );
+
+    const W1: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'w1' };
+    forge.release(W1);
+    await crossed();
+
+    // The mark the frame leaves is the rail's own business, pinned where the
+    // sets are driven directly (close.test.ts, rail.test.ts); what the SHELL
+    // owes is the landing, and without it the reader sits on a seat with
+    // nothing behind it.
+    expect(location.pathname, 'the reader was left on a seat that is going away').toBe(
+      '/session/TestOrg/proj/lead',
+    );
+  });
+
+  /**
+   * **The released LEAD is the case the click path needed a whole-project
+   * mark for.** `removedLanding` prefers a seat's own project lead, and for
+   * a released lead that preference is the released seat itself - so a
+   * landing that consulted only the click's set left the reader exactly
+   * where they were, and once the roster caught up the page read as "start
+   * this project" and re-spawned the lead that was just closed.
+   */
+  it('moves the reader off a lead the core announces a release for', async () => {
+    const forge = await stubForge({ mark: null, theme: null, font: null });
+    forges.push(forge);
+    await openAt('/session/TestOrg/proj/lead', forge.address);
+    await crossed();
+    expect(location.pathname, 'the fixture did not land on the lead').toBe(
+      '/session/TestOrg/proj/lead',
+    );
+
+    forge.release({ org: 'TestOrg', project: 'proj', label: 'lead' });
+    await crossed();
+
+    // The walk may not offer the released seat and the fixture leaves no
+    // other live row, so the reader lands on the home - any route other than
+    // the lead's is the point, and this one is exact.
+    expect(
+      location.pathname,
+      'the reader stayed on the lead that is going away, where the page re-spawns it',
+    ).toBe('/');
   });
 
   /**

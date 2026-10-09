@@ -437,6 +437,10 @@ export const IGNORED: readonly string[] = [
   'plugins_update_run_finished',
   'plugins_update_run_progress',
   'prompt_queued_while_busy',
+  // The seat is being released: the record has no field for it, and what a
+  // release draws - the row's going-to-sleep mark and the reader's landing -
+  // belongs to `session/close.ts`, fed off the same stream.
+  'releasing',
   'review_activity_notice',
   'runtime_reload_completed',
   'runtime_reload_failed',

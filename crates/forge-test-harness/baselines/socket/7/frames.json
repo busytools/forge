@@ -63,6 +63,7 @@
     "PromptQueued": "prompt_queued",
     "PromptQueuedWhileBusy": "prompt_queued_while_busy",
     "QuestionRequest": "question_request",
+    "Releasing": "releasing",
     "ReviewActivityNotice": "review_activity_notice",
     "RuntimeReloadCompleted": "runtime_reload_completed",
     "RuntimeReloadFailed": "runtime_reload_failed",

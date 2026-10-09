@@ -1827,6 +1827,20 @@ pub(crate) fn handle_close_worker(
     project_key: &ProjectKey,
     label: &str,
 ) {
+    // Announced before the teardown, and only where a worker is really here:
+    // other views' rows say where the seat is going for the seconds the close
+    // takes, and a label with no live worker has no row to mark (#1930). The
+    // peek is the despawn handler's own shape, for the same reason - the
+    // single-threaded command loop means nothing moves between it and the
+    // teardown below.
+    let live = workspace
+        .list_live_workers(project_key)
+        .into_iter()
+        .rev()
+        .find(|worker| worker.label == label);
+    if let Some(entry) = live.as_ref() {
+        workspace.announce_release(&entry.slot);
+    }
     let Some(entry) = teardown_worker(workspace, project_key, label) else {
         tracing::warn!(
             target: "forge_workspace::spawn",
@@ -1988,6 +2002,14 @@ pub(crate) fn handle_despawn_worker(
     // owns. Without that, a despawn would report a worker gone while
     // leaving exactly what the live path exists to clear (#1142).
     if live.is_some() {
+        // Announced here rather than at the removal below: this despawn's
+        // own frame only goes out once the worktree cleanup finishes, and
+        // that can run for minutes - so other views' rows read the seat as
+        // working for the whole cleanup without this (#1930). Every refusal
+        // path returned above, so a blocked or absent despawn marks nothing.
+        if let Some(entry) = live.as_ref() {
+            workspace.announce_release(&entry.slot);
+        }
         // The single-threaded command loop means nothing mutated
         // `live_workers` between the peek above and here, but re-checking
         // the removal is defensive.
@@ -4922,15 +4944,64 @@ provider = "anthropic"
         handle_close_worker(&workspace, &project, "r1");
 
         assert!(workspace.list_live_workers(&project).is_empty());
-        let mut saw_removed = false;
+        let mut frames: Vec<(&str, SessionSlot)> = Vec::new();
         while let Ok(update) = rx.try_recv() {
-            if let SessionUpdate::WorkerStatusChanged { action, .. } = update
-                && action == WorkerStatusAction::Removed
-            {
-                saw_removed = true;
+            match update {
+                SessionUpdate::Releasing { key } => frames.push(("releasing", key)),
+                SessionUpdate::WorkerStatusChanged {
+                    action: WorkerStatusAction::Removed,
+                    status,
+                    ..
+                } => {
+                    frames.push(("removed", status.slot));
+                }
+                _ => {}
             }
         }
-        assert!(saw_removed, "Removed event was emitted");
+        // The release first, so other views' rows say where the seat is going
+        // from the gesture; the removal follows it (#1930).
+        assert_eq!(
+            frames.iter().map(|(kind, _)| *kind).collect::<Vec<_>>(),
+            vec!["releasing", "removed"],
+            "the close announces the release ahead of the removal: {frames:?}",
+        );
+        assert_eq!(frames[0].1, frames[1].1, "and both name the seat that closed");
+    }
+
+    /// **A live worker's despawn announces the release at the gesture**, not
+    /// at its removal: the worktree cleanup can run for minutes and the
+    /// removal frame only follows it, so without this every other view's row
+    /// reads that worker as working for the whole cleanup (#1930).
+    #[tokio::test]
+    async fn a_live_despawn_announces_the_release_before_its_removal() {
+        let (workspace, mut rx) = Workspace::testing_stub();
+        let project = ProjectKey::new("forge");
+        workspace.insert_live_worker(&project, fake_worker_entry("r1", "worker-1"));
+
+        let (tx, resp_rx) = tokio::sync::oneshot::channel();
+        handle_despawn_worker(&workspace, &project, "r1", false, tx);
+        let _ = resp_rx.await.expect("despawn result");
+
+        let mut frames: Vec<(&str, SessionSlot)> = Vec::new();
+        while let Ok(update) = rx.try_recv() {
+            match update {
+                SessionUpdate::Releasing { key } => frames.push(("releasing", key)),
+                SessionUpdate::WorkerStatusChanged {
+                    action: WorkerStatusAction::Removed,
+                    status,
+                    ..
+                } => {
+                    frames.push(("removed", status.slot));
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(
+            frames.iter().map(|(kind, _)| *kind).collect::<Vec<_>>(),
+            vec!["releasing", "removed"],
+            "the despawn announces the release ahead of the removal: {frames:?}",
+        );
+        assert_eq!(frames[0].1, frames[1].1, "and both name the seat that went");
     }
 
     /// Regression: closing ONE worker must NOT cascade to the others.
