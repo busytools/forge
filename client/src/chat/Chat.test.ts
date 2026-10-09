@@ -259,17 +259,15 @@ describe('the chat column as it draws', () => {
   });
 
   /**
-   * A seat the reader has left holds its frames back, and the return refreshes
-   * it.
+   * A seat the reader has left keeps FOLDING, and the return draws what was
+   * kept current.
    *
-   * The frames for a seat the reader has left still arrive - the home
-   * subscription carries every seat's `chat_appended` for the fleet rows - so
-   * a column that kept folding them would grow a conversation per seat ever
-   * visited, and every return would re-mount all of it. What the seat missed
-   * comes back through its own reads on the return: the re-subscribe's
-   * snapshot, and the newest page this pins.
+   * **The state is lossless for every seat; shown-ness gates only the draw**
+   * (Ved, 2026-10-09). The frames arrive through the home feed anyway, and a
+   * left seat's value is kept without being drawn - dropping them made the
+   * state the place a conversation was lost.
    */
-  it('holds a left seat back, and refreshes it on the return', () => {
+  it('folds a left seat and draws it current on the return', () => {
     const say = (text: string): unknown => ({
       type: 'assistant',
       message: {
@@ -309,7 +307,9 @@ describe('the chat column as it draws', () => {
       'the return asks the newest page',
     ).toBe(asked + 1);
     expect(drawn(), 'what was kept still draws').toContain('kept');
-    expect(drawn(), 'and the missed frame is not folded in').not.toContain('arrived while away');
+    expect(drawn(), 'and the frame that arrived while away draws on the return').toContain(
+      'arrived while away',
+    );
   });
 
   it('says a seat has no history rather than drawing a blank column', () => {

@@ -497,44 +497,6 @@ function isForgeNotice(message: unknown): boolean {
   return frame?.type === 'system' && frame.subtype === 'forge_notice';
 }
 
-/**
- * The frames a read cannot restore, folded even while the seat is away.
- *
- * **An away seat hears only the home feed, so this list is exactly what that
- * feed carries for the conversation and the gate admits nothing it could not
- * send.** The bulk stream - `chat_appended` above all - is dropped: the
- * return's own reads put it right. What folds is what nothing else will say
- * again, or what must land at once: a swap (structural - the held
- * conversation must empty, or the return merges the new occupant's page onto
- * the old one's turns), a connect (a process that is gone takes its queue
- * with it, and its frame is the only word on that), the queue's lifecycle
- * (what lets a held prompt go), and the live-only lines - a connection
- * failure, a service or fatal word, a plan-limit note. Nothing here lists
- * `prompt_queued`, `notice`, `review_activity_notice` or the `set_*_failed`
- * pair: none of them is home news, so a seat that is away never hears them,
- * and an exemption for one would be cover that does not exist.
- */
-function keepsWhileAway(update: SessionUpdate): boolean {
-  const variant = variantOf(update);
-  if (variant === null) return false;
-  if (variant === 'session_replaced' || variant === 'connected' || variant === 'prompt_lifecycle') {
-    return true;
-  }
-  if (
-    variant === 'connection_failed' ||
-    variant === 'service_status' ||
-    variant === 'fatal_error'
-  ) {
-    return true;
-  }
-  // The plan-limit hint is a turn_error the core classified: the reader's own
-  // next steps, which no read restores.
-  return (
-    variant === 'turn_error' &&
-    (update as { turn_error?: { class?: unknown } }).turn_error?.class === 'plan_limit'
-  );
-}
-
 /** The update's variant name, for the ones the chat acts on. */
 function variantOf(update: SessionUpdate): string | null {
   if (typeof update === 'string') return update;
@@ -612,7 +574,7 @@ export class Chat {
    */
   private inFlight: 'newest' | 'older' | null = null;
 
-  /** Whether the seat's page is on screen: frames for it fold only then. */
+  /** Whether the seat's page is on screen, which gates the draw, not the fold. */
   private shown = true;
 
   /**
@@ -719,6 +681,21 @@ export class Chat {
    */
   private missed = false;
   private reconciled = false;
+  /**
+   * The newest held turn a newest page failed to reach, while the
+   * conversation walks down to it.
+   *
+   * **A read that can be short walks on its own** (Ved, 2026-10-09): the
+   * held window's floor can sit inside the very stretch a client missed -
+   * a suspended page's gap - and the stretch between the page and the held
+   * tail is in no single page. The pages between come from the transcript
+   * rather than wait for a scroll. Set when a newest page shares nothing
+   * with the held turns; the walk stops when a page reaches this turn, the
+   * history ends, or a page repeats the cursor it was asked with.
+   */
+  private walkTo: string | null = null;
+  /** The cursor the in-flight ask went out with, so a page that repeats it stops the walk. */
+  private askedBefore: string | null = null;
 
   constructor(connection: Connection, slot: SessionSlot) {
     this.connection = connection;
@@ -925,12 +902,13 @@ export class Chat {
   }
 
   /**
-   * The seat's page has come on screen: frames fold again, and a return asks
-   * the newest page for what arrived while the seat was away.
+   * The seat's page has come on screen, which resumes the DRAW. The state
+   * never waited: every frame folded wherever the seat was, so a return
+   * draws what is already held.
    *
-   * **An ask already in flight swallows that refresh**, and the stale answer
-   * that lands is not the one a return needs - so the want is held and fired
-   * again when the ask settles.
+   * The refresh stays as a reconcile, for a read that failed or a stamp
+   * missed while the seat was away. **An ask already in flight swallows
+   * it**, so the want is held and fired when the ask settles.
    */
   showing(): void {
     if (this.shown) return;
@@ -945,7 +923,7 @@ export class Chat {
     this.ask(null);
   }
 
-  /** The seat's page has gone: frames for it are held back, not folded. */
+  /** The seat's page has gone: the draw stops, the fold does not. */
   leaving(): void {
     this.shown = false;
   }
@@ -970,11 +948,13 @@ export class Chat {
   private ask(before: string | null): boolean {
     if (this.inFlight !== null) return false;
     this.inFlight = before === null ? 'newest' : 'older';
+    this.askedBefore = before;
     // A closed socket answers nothing, so the flag must not stay set waiting
     // on a page that was never asked for - and the caller has to know, because
     // what it does with the answer is hold a reader's place while it arrives.
     if (this.connection.more(this.slot, before, MORE_TURNS)) return true;
     this.inFlight = null;
+    this.askedBefore = null;
     return false;
   }
 
@@ -1060,14 +1040,14 @@ export class Chat {
         }
         return;
       case 'update':
-        // **A seat nobody is showing folds nothing.** The frames arrive for
-        // every visited seat anyway - the home subscription carries every
-        // seat's `chat_appended` for the fleet rows - so folding them here is
-        // what grew a conversation per seat ever visited, and what made every
-        // return re-mount all of it. What the seat missed comes back through
-        // its own reads on the return: the re-subscribe's snapshot, and the
-        // newest page `showing` asks for.
-        if (!this.shown && !keepsWhileAway(message.update)) return;
+        // **Every frame folds, whatever the seat is doing** (Ved,
+        // 2026-10-09): the state is lossless for every seat, and whether a
+        // seat is shown gates only what is DRAWN - the column hands a left
+        // seat's value to `kept` rather than to the screen. Dropping frames
+        // for an unshown seat made its state the place a conversation was
+        // lost: the frames that crossed while a page was suspended or a
+        // seat was away were gone, and the return's reads could not restore
+        // what the bounded window had itself already dropped.
         this.takeUpdate(message.update);
         return;
       default:
@@ -1122,9 +1102,19 @@ export class Chat {
     this.inFlight = null;
     // A landed page is the refusal's ask answered: the timer that would ask
     // again is owed nothing, and the page's cursor is what the walk uses.
+    const askedBefore = this.askedBefore;
+    this.askedBefore = null;
     this.clearRetry();
     const pageRows = pageTurns(rows);
     const fromPage = pageRows.flatMap((row) => messagesOf(row));
+    /**
+     * What this landing found, read after the fold for the walk's own step.
+     *
+     * A holder rather than two `let`s: the fold writes them from its closure,
+     * and TypeScript does not widen a captured `let` after the call - the
+     * reads below would be narrowed to `never`.
+     */
+    const walk: { key: string | null; reached: Set<string> | null } = { key: null, reached: null };
     this.fold((held) => {
       const healed = this.healedOf(held, fromPage);
       const known = new Map(healed.turns.map((turn) => [turn.key, turn]));
@@ -1356,15 +1346,17 @@ export class Chat {
       const rest = healed.turns.filter(
         (turn) => !(turn.live || turn.running === true) && !inPage.has(turn.key),
       );
-      // **A turn no page can put back is not the stale tail's to lose.** A
-      // `forge_notice` line is written here and nowhere else - the refusal,
-      // the service word, the plan-limit note - so the newest page a
-      // reconnect or a return asks for carries no copy of it: dropped with
-      // the stale tail, the row the reader was looking at is gone with no
-      // read that can bring it back. Transcript-carried turns go instead,
-      // which is the walk's own reach.
-      const noPageCarries = (turn: Turn): boolean =>
-        turn.messages.some((message) => isForgeNotice(message));
+      // **A newest page that does not reach the held state starts the walk.**
+      // The held tail is never dropped for it (Ved, 2026-10-09): the compare
+      // names the newest held turn no page has covered yet, the pages between
+      // come from the transcript - `older()` walks from the page's own cursor
+      // - and the tail keeps drawing throughout rather than waiting on a
+      // scroll. The stop is a page reaching that turn, the history's end, or
+      // a cursor that repeats.
+      if (direction === 'newest' && !reachesHeld) {
+        walk.key = rest.length > 0 ? (rest[rest.length - 1]?.key ?? null) : null;
+      }
+      walk.reached = inPage;
       // A turn being written that no row of this page accounts for is kept - a
       // page of OLDER turns, or one serialized before those frames landed -
       // because dropping it leaves the reader's own words nowhere, with nothing
@@ -1392,11 +1384,27 @@ export class Chat {
         cursor: direction === 'older' || !held.loaded || !reachesHeld ? cursor : held.cursor,
         prepends: held.prepends + (direction === 'older' ? 1 : 0),
         turns:
-          direction === 'older'
-            ? [...drawn, ...rest, ...loose]
-            : [...(reachesHeld ? rest : rest.filter(noPageCarries)), ...drawn, ...loose],
+          direction === 'older' ? [...drawn, ...rest, ...loose] : [...rest, ...drawn, ...loose],
       });
     });
+    // The walk's own step, after the fold: the held tail is never dropped,
+    // and when this landing did not cover the newest held turn the next page
+    // down is asked now - one page per landing, so the socket is never
+    // flooded, and the stop is the turn reached, the history's end, or a
+    // cursor that did not move.
+    if (walk.key !== null) {
+      this.walkTo = walk.key;
+    }
+    if (this.walkTo !== null) {
+      const target = this.walkTo;
+      if (walk.reached !== null && walk.reached.has(target)) {
+        this.walkTo = null;
+      } else if (cursor === null || cursor === askedBefore) {
+        this.walkTo = null;
+      } else {
+        this.older();
+      }
+    }
     this.returnIfWanted();
   }
 
@@ -1426,6 +1434,9 @@ export class Chat {
     // never made.
     this.unturned = [];
     this.ridden.clear();
+    // A walk was walking toward a turn of the conversation that is gone.
+    this.walkTo = null;
+    this.askedBefore = null;
     // A return's want is about a conversation that is gone.
     this.returnWanted = false;
     outputs.clear(this.key);
