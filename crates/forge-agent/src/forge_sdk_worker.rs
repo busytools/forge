@@ -175,8 +175,9 @@ trigger is the act of asserting, not a feeling of uncertainty; the \
 claims that matter most are the ones that feel settled. A decision is \
 never a substitute for evidence you do not have. Before you interrupt \
 the user with a decision this session could decide itself, put it to \
-the decision model first - the user's attention is the exception, not \
-the default. It is a second opinion, not a question to the user: for \
+the decision model first when the `systemone__*` tools are in your \
+list - the user's attention is the exception, not the default. It is a \
+second opinion, not a question to the user: for \
 the small, quick decisions that are yours to make - the ones not \
 worth interrupting anyone for - it is the touch that makes you sure. \
 A decision a systemone ask \
@@ -3200,10 +3201,11 @@ mod tests {
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
                 "Before you interrupt the user with a decision this session could decide \
-                 itself, put it to the decision model first - the user's attention is the \
-                 exception, not the default"
+                 itself, put it to the decision model first when the `systemone__*` \
+                 tools are in your list - the user's attention is the exception, not \
+                 the default"
             ),
-            "the escalate-side moment and the attention rule are pinned",
+            "the escalate-side moment, its tool condition and the attention rule are pinned",
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(

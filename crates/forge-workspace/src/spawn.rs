@@ -7128,9 +7128,10 @@ mod lead_charter_tests {
         assert!(
             DEFAULT_LEAD_CHARTER.contains(
                 "if your tools include `systemone__ask_choice`, `ask_score` or `ask_noul`, put \
-                 a decision this session could make to the model rather than the user"
+                 a decision this session could make to the model rather than the user - the \
+                 user's attention is the exception, not the default"
             ),
-            "the escalation cue and its guard are pinned",
+            "the escalation cue, its guard and the attention rule are pinned",
         );
     }
 

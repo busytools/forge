@@ -131,7 +131,7 @@ impl Tool for AskNoul {
          `instructions` and criteria values may be any JSON - the question in one field, \
          referenced data in others, named with backticks. \
          When to reach for it: before interrupting the user with a question this session could \
-         probably decide itself (put the situation in `state` and the ask in `instructions`; \
+         decide itself (put the situation in `state` and the ask in `instructions`; when the \
          when the answer is decisive and the action reversible, act), or as a second opinion \
          when you are leaning one way and want it checked. Beyond those moments, reach for a \
          decision when the outcome matters to the user and is not obvious, and skip it when \
@@ -382,7 +382,7 @@ mod tests {
                 "The state carries what the decision needs",
                 "the exact numbers, the governing rules, precedents with how they turned out, \
                  the constraints, and whether the action is reversible",
-                "A thin state gets a thin answer",
+                "A thin state gets a thin answer; the model sees only what you put there",
                 "pass the context, not a pointer to it",
                 "must fit the live ~32k-token context; keep the state well inside it",
             ] {
@@ -411,7 +411,8 @@ mod tests {
 
     /// Every tool names the moment before a decision goes to the user, so a
     /// rewording that drops it fails instead of shipping. The three are one
-    /// cue: noul's predates the others; all three are pinned together.
+    /// cue at one strength: noul's older "probably" was dropped deliberately
+    /// to match the others, not preserved as a yes/no-specific hedge.
     #[test]
     fn the_tool_texts_name_their_escalate_moments() {
         let noul = AskNoul { facade: MockSystemOneFacade::new().into_arc() };
@@ -419,8 +420,7 @@ mod tests {
         let score = AskScore { facade: MockSystemOneFacade::new().into_arc() };
         assert!(
             noul.description().contains(
-                "before interrupting the user with a question this session could probably \
-                 decide itself"
+                "before interrupting the user with a question this session could decide itself"
             ),
             "noul's escalate moment is pinned: {}",
             noul.description()
