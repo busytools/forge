@@ -2989,6 +2989,11 @@ mod workers_command_tests {
             Command::TaskRank { project: "p".to_owned(), id: "t".to_owned(), to: RankMove::Top },
             Command::TaskAssign { project: "p".to_owned(), id: "t".to_owned(), owner: None },
             Command::TaskCreate { project: "p".to_owned(), subject: "s".to_owned(), parent: None },
+            Command::TaskMove {
+                project: "p".to_owned(),
+                id: "t".to_owned(),
+                to: forge_primitives::tasks::TaskStatus::InProgress,
+            },
         ] {
             assert!(command.key().is_none(), "app-level: {command:?}");
         }
