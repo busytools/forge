@@ -141,6 +141,11 @@ async fn masked_user_agent(binary: &Path) -> Result<String, String> {
 /// `Chrome/<major>.0.0.0` - which is what the launched browser's own UA was
 /// measured to carry. macOS is the platform this client ships on; a second
 /// one brings its own string here.
+///
+/// **A version line is read by shape, and a future one whose last token is a
+/// different dotted number would build a well-formed but wrong UA without
+/// saying so** - the price of not spelling the string out here, paid only if
+/// a browser ever prints something other than `<name> <version>`.
 fn reduced_user_agent(version: &str) -> Option<String> {
     let named = version.lines().next()?.split_whitespace().last()?;
     let major = named.split('.').next()?;
