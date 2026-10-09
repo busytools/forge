@@ -38,20 +38,22 @@ const START_TIMEOUT: Duration = Duration::from_secs(15);
 /// The phone's bounds, its own, and the ACCEPT-ONWARD segment must fit the
 /// server's ask budget: `ASK_TIMEOUT` (200 s) is derived from the DESKTOP's
 /// launch, handshake, hint mask, call and failure-flush bounds
-/// (15+15+15+150+5 = 200, exactly the bound - the mask rides a driver start
-/// and the flush rides every call), and the phone's cold FLOOR is what
-/// joins it - 40 s to accept a node's FIRST dial (its boot is real work:
-/// measured 8 s warm, 39 s on a loaded emulator) + 10 s to hand shake + the
-/// driver's own 150 s call = 200 s (no hint mask on the phone; its WebView
-/// presents the real UA). The phone's accept-onward path also carries the
-/// tab pin and the viewport seed, each bounded by that same 150 s call, so
-/// its cold worst case sits ABOVE the ask rather than at it - the bound is
-/// a wedge-breaker and the named failure plus a retry is the answer. The
-/// call also carries an unbounded pre-accept RPC segment (the engine
-/// generation read, the ensure spin, the asset unpack, the UI-thread origin
-/// latch), so the whole chain can MEET or exceed the 200 s ask rather than
-/// sit inside it. A node that was ALREADY up redials every second, so a
-/// later call waits only 6 s - a dead in-app node fails in seconds with the
+/// (15+15+15+150+5 = 200 - the mask rides a driver start and the flush
+/// rides every call), and the phone's cold FLOOR is what joins it - 40 s to
+/// accept a node's FIRST dial (its boot is real work: measured 8 s warm,
+/// 39 s on a loaded emulator) + 10 s to hand shake + the driver's own
+/// 150 s call = 200 s (no hint mask on the phone; its WebView presents the
+/// real UA). **Neither chain is a ceiling the bound contains**: a cold,
+/// contested desktop launch reaches about 37 s for its launch segment
+/// alone (the version probe's 5 s, the launch lock's `LAUNCH_TIMEOUT` + 2,
+/// and the port's `LAUNCH_TIMEOUT`), the phone's accept-onward path also
+/// carries the tab pin and the viewport seed (each bounded by the same
+/// 150 s call), and the call carries an unbounded pre-accept RPC segment
+/// (the engine generation read, the ensure spin, the asset unpack, the
+/// UI-thread origin latch). The bound is a wedge-breaker, and the named
+/// failure plus a retry is the answer rather than a ceiling either chain
+/// sits inside. A node that was ALREADY up redials every second, so a later
+/// call waits only 6 s - a dead in-app node fails in seconds with the
 /// reason instead of paying the cold window per call.
 #[cfg(target_os = "android")]
 const IN_APP_COLD_ACCEPT_TIMEOUT: Duration = Duration::from_secs(40);
@@ -415,9 +417,11 @@ impl Driver {
     /// nothing else - so the failures wait on the context object until the
     /// next browser call asks for them here. Taking them clears them, so each
     /// failure is logged once. A failure can still be lost between the
-    /// browser-side clear and the log - a reply dropped in transport, or a
-    /// list that does not parse - leaving no trace at all; the sandbox
-    /// boundary offers nothing better.
+    /// browser-side clear and the log - a reply dropped in transport, one
+    /// the flush's [`HINT_FLUSH_TIMEOUT`] gives up on while the snippet that
+    /// already ran has cleared the list, or a list that does not parse -
+    /// leaving no trace at all; the sandbox boundary offers nothing better,
+    /// and the bound is deliberately short rather than the call's.
     ///
     /// **Desktop only, like the mask itself**: the phone's WebView presents
     /// its own real UA, so no mask and no failures exist there, and an
@@ -899,15 +903,15 @@ pub fn hints_payload(text: &str) -> Result<serde_json::Value, String> {
     let line = text
         .lines()
         .find(|line| line.contains(HINTS_MARKER))
-        .ok_or_else(|| format!("the hint capture answered without its payload: {text:?}"))?;
+        .ok_or_else(|| format!("the answer behind the marker carried no payload: {text:?}"))?;
     let line = line.trim();
     let rendered = serde_json::from_str::<String>(line).unwrap_or_else(|_| line.to_owned());
     let at = rendered
         .find(HINTS_MARKER)
-        .ok_or_else(|| format!("the hint capture answered without its payload: {text:?}"))?;
+        .ok_or_else(|| format!("the answer behind the marker carried no payload: {text:?}"))?;
     let payload = &rendered[at + HINTS_MARKER.len()..];
     serde_json::from_str(payload)
-        .map_err(|why| format!("the hint capture answered unreadably ({why}): {payload}"))
+        .map_err(|why| format!("the answer behind the marker is unreadable ({why}): {payload}"))
 }
 
 /// The text one answer carries, which is every part that is not an image.
@@ -1506,7 +1510,7 @@ mod tests {
         assert_eq!(read["blanked"], serde_json::json!(true));
 
         let refused = hints_payload("### Result\n\"no marker here\"").expect_err("no marker");
-        assert!(refused.contains("without its payload"), "{refused}");
+        assert!(refused.contains("carried no payload"), "{refused}");
     }
 
     /// The capture page is written whole under its own name, with no temp

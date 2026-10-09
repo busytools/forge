@@ -27,21 +27,21 @@ const HOST_GONE: &str = "the browser-capable client went away before answering";
 /// longer than this entirely - so the named failure and a retry is the
 /// answer. A late answer costs nothing: the ask keeps its entry registered,
 /// and the reply's send drops it (`.ok()`) once this waiter is gone.
-// The client's worst honest ACCEPT-ONWARD path: accept + handshake + one
-// driver call, plus slack. The desktop is 15+15+15+150+5 (launch, handshake,
-// hint mask, call, failure flush) = 200 s, the whole bound with its slack
-// spent - the flush rides every call and is bounded at 5 s of its own, not
-// by the call's bound; an Android client's in-app driver boots, so its cold
-// figures are wider - 40 s accept (a node boot measured at 39 s on a loaded
-// emulator) + 10 s handshake + 150 s call = 200 s, the FLOOR of its path
-// rather than its whole: the same segment also carries the tab pin and the
-// viewport seed (the client's `pin_browser_tab` and `seed_viewport`), each
-// bounded by that same call, so the phone's cold path can step past this
-// bound, and the named failure and a retry is the answer rather than a
-// bigger ceiling. That is only the accept-onward segment besides: the call
-// also carries an unbounded pre-accept RPC segment (the engine generation
-// read, the ensure spin, the asset unpack, the UI-thread origin latch), so
-// the phone's whole cold chain can MEET or exceed this bound.
+// The client's ACCEPT-ONWARD chain, segment by segment: accept + handshake +
+// one driver call + the failure flush that rides it. The desktop is
+// 15+15+15+150+5 (launch, handshake, hint mask, call, failure flush) = 200 s
+// - the flush bounded at 5 s of its own, not by the call's bound - and
+// NEITHER this nor the phone's sum is a ceiling the bound contains: a cold,
+// contested desktop launch reaches about 37 s for its launch segment alone
+// (the version probe's 5 s, the launch lock's 15+2, and the port's 15), and
+// an Android client's in-app driver boots, so its cold floor is wider - 40 s
+// accept (a node boot measured at 39 s on a loaded emulator) + 10 s
+// handshake + 150 s call = 200 s, with the tab pin and the viewport seed
+// (the client's `pin_browser_tab` and `seed_viewport`, each up to a call's
+// bound) above it, and no hint mask or flush there. The call also carries an
+// unbounded pre-accept RPC segment (the engine generation read, the ensure
+// spin, the asset unpack, the UI-thread origin latch). The bound is a
+// wedge-breaker; the named failure and a retry is the answer.
 const ASK_TIMEOUT: Duration = Duration::from_secs(15 + 15 + 15 + 150 + 5);
 
 /// One ask, on its way to the registered host.
@@ -555,20 +555,20 @@ mod tests {
     }
 
     /// **The bound clears the accept-onward segment of every layer below
-    /// it.** The desktop client's own bounds are a launch (15 s), a driver
-    /// handshake (15 s), the driver's client-hint mask (15 s), one tool call
-    /// (150 s) and the failure flush that rides every call (5 s) - 200 s,
-    /// this whole bound; an Android client's in-app driver BOOTS, so its
-    /// cold floor is wider - 40 s to accept the node's first dial, 10 s to
-    /// hand shake, and the same 150 s call (200 s, and no hint mask or
-    /// flush there). The phone's path also carries the tab pin and the
-    /// viewport seed, each up to a call's bound, so its real worst case
-    /// sits ABOVE this bound - the named failure and a retry is the
-    /// answer - and the call's unbounded pre-accept RPC segment (the
-    /// generation read, the ensure spin, the unpack) can push either chain
-    /// past it besides. A bound under the floor sums would fail
-    /// slow-but-fine calls, which is the one change someone would plausibly
-    /// make here.
+    /// it.** The desktop client's own typical bounds are a launch (15 s), a
+    /// driver handshake (15 s), the driver's client-hint mask (15 s), one
+    /// tool call (150 s) and the failure flush that rides every call (5 s) -
+    /// 200 s; a cold contested launch reaches about 37 s for the launch
+    /// segment alone (the version probe's 5 s on top of the lock's 15+2 and
+    /// the port's 15), so the desktop's real worst sits above it. An Android
+    /// client's in-app driver BOOTS, so its cold floor is wider - 40 s to
+    /// accept the node's first dial, 10 s to hand shake, and the same 150 s
+    /// call (200 s, and no hint mask or flush there) - with the tab pin and
+    /// the viewport seed, each up to a call's bound, above it. Both chains
+    /// also carry the call's unbounded pre-accept RPC segment (the
+    /// generation read, the ensure spin, the unpack). A bound under the
+    /// typical sums would fail slow-but-fine calls, which is the one change
+    /// someone would plausibly make here.
     #[test]
     fn the_ask_bound_clears_the_client_layers_below_it() {
         assert!(
