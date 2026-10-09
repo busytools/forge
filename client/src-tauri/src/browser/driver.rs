@@ -379,7 +379,8 @@ impl Driver {
             bitness: (std::mem::size_of::<usize>() * 8).to_string(),
         };
         let metadata = chromium::user_agent_metadata(&capture, &machine).ok_or_else(|| {
-            "the page's user agent carries no version, so the rebuild would be a half-claim"
+            "the capture carries no version to rebuild from, so the rebuild would be a half-claim \
+             (the UA string's on Brave, the browser's own reported version elsewhere)"
                 .to_owned()
         })?;
         let parts = self
