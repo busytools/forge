@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { ForgeCard } from './forge';
   import Icon from '../components/Icon.svelte';
+  import Prose from './Prose.svelte';
 
   /**
    * One forge call's card: the facts its result carried, in the row grammar
@@ -25,7 +26,12 @@
           >{/if}<span class="lb">{label}</span>{value}{/each}
     </div>
   {:else if piece.kind === 'quote'}
-    <div class="fam-quote">{piece.text}</div>
+    <!-- A quote is prose - a spawn's charter and kick, a Slack message, a
+         review's prompt, a summary - so it renders as markdown: the charter is
+         written in markdown (headings, lists, code fences) and drew raw before
+         (Ved, 2026-10-09). Plain text is unaffected, since the renderer leaves
+         what is not markdown as text. -->
+    <div class="fam-quote"><Prose text={piece.text} /></div>
   {:else if piece.kind === 'tag'}
     <div class="fam-tag">{piece.text}</div>
   {:else if piece.kind === 'warnline'}
