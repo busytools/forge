@@ -83,4 +83,18 @@ describe('the router at a session address', () => {
       'Reading the conversation',
     );
   });
+
+  /**
+   * The composer draws with the page rather than after the seat's first read.
+   *
+   * It used to wait for a non-null record, so the box was absent for a read
+   * round-trip - measured at 128 ms on a cold open (Ved, 2026-10-09) - which
+   * read as the page arriving half-built. The empty record draws the idle box
+   * and the seat's own record fills it in.
+   */
+  it('mounts the composer before the seat has a record', () => {
+    const body = draw();
+    expect(body, 'the page drew no composer').toContain('class="composer"');
+    expect(body, 'and the box drew no field').toContain('<textarea');
+  });
 });

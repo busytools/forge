@@ -29,6 +29,7 @@ import {
 } from '../home/view';
 import type { Row, RowState } from '../home/view';
 import { FORGE_COMMANDS } from '../composer/forge-commands';
+import type { ComposerRecord } from '../composer/view';
 import { CLIENT_VERSION, PROTOCOL_VERSION } from '../protocol';
 import { hrefForSlot } from '../routes';
 import type { Connection } from '../socket';
@@ -438,7 +439,13 @@ export interface ConversationProps {
 
 /** What the composer is handed, and what its own task writes against. */
 export interface ComposerProps {
-  record: SessionRecord;
+  /**
+   * The record the box reads, which is the composer's own narrow type rather
+   * than the whole session record: the page may hand an empty one while a
+   * seat's first read is still landing, and the box draws from the same fields
+   * either way.
+   */
+  record: ComposerRecord;
   slot: SessionSlot;
   /** The seat behind the page, which its blocked states read. */
   seat: SeatState;
