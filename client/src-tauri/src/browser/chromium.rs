@@ -700,20 +700,23 @@ pub async fn launch_with(
             // on, so an Open after the person closed the window reopens that
             // page rather than a blank one.
             //
-            // **A marker that cannot be written is a masked-window risk, and
-            // the absence is the headless signal** (the hint mask reads this
-            // marker to keep off a headed launch, and its capture's scratch
-            // context could raise a window at the person), so nothing here
-            // can fail toward safety - no file looks exactly like a headless
-            // launch. The failure is named instead; the launch itself goes
-            // on, because a window is what the person asked for.
+            // **A marker that cannot be written is a scratch-window risk, and
+            // the absence is the headless signal**: the hint mask reads this
+            // marker to keep off a headed launch. A headed browser's own
+            // hints read real, so the mask itself would stand down - but the
+            // capture runs first, through a scratch context, and that can
+            // raise a window at the person. Nothing here can fail toward
+            // safety - no file looks exactly like a headless launch - so the
+            // failure is named; the launch goes on, because a window is what
+            // the person asked for.
             if headed
                 && let Err(why) = std::fs::write(windowed_marker(profile), page.unwrap_or(""))
             {
                 tauri_plugin_log::log::warn!(
                     "the headed launch's window marker could not be written (event_name \
                      browser_windowed_marker): the hint mask may take this window for a headless \
-                     launch and mask it: {why}"
+                     launch and read the capture through a scratch context, which can raise a \
+                     window at the person: {why}"
                 );
             }
             return Ok(ActivePort { pid, ..active });
