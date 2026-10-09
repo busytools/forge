@@ -100,31 +100,27 @@ impl Driver {
         }
         std::fs::create_dir_all(output_dir)
             .map_err(|why| format!("the browser output directory cannot be made: {why}"))?;
+        let mask = write_mask(output_dir);
 
         tauri_plugin_log::log::info!("starting the driver against {cdp_endpoint}");
         let transport =
             TokioChildProcess::new(tokio::process::Command::new(node).configure(|cmd| {
-                cmd.arg(cli);
-                cmd.arg("--cdp-endpoint")
-                    .arg(cdp_endpoint)
-                    .arg("--no-webmcp")
-                    // **No gate on what a session opens or reads, and a cwd
-                    // that is pinned.** Upstream resolves a relative file path
-                    // against `process.cwd()` and refuses a path outside its
-                    // roots, and this child inherits whatever directory the
-                    // CLIENT was launched from - so a `file_upload` worked
-                    // from Finder and failed from a shell. forge has no gates
-                    // here (the trust bound is the profile), so the flag
-                    // removes the root check outright and the cwd is pinned
-                    // under the app's data directory rather than left to the
-                    // launch directory.
-                    .arg("--allow-unrestricted-file-access")
-                    .current_dir(output_dir)
-                    // Where upstream's own screenshot default lands: the
-                    // client runs from a directory nobody chose, and a file
-                    // dropped there is one nobody finds.
-                    .arg("--output-dir")
-                    .arg(output_dir);
+                // **No gate on what a session opens or reads, and a cwd that
+                // is pinned.** Upstream resolves a relative file path against
+                // `process.cwd()` and refuses a path outside its roots, and
+                // this child inherits whatever directory the CLIENT was
+                // launched from - so a `file_upload` worked from Finder and
+                // failed from a shell. forge has no gates here (the trust
+                // bound is the profile), so the flag removes the root check
+                // outright and the cwd is pinned under the app's data
+                // directory rather than left to the launch directory. The
+                // `--output-dir` is where upstream's own screenshot default
+                // lands: the client runs from a directory nobody chose, and a
+                // file dropped there is one nobody finds.
+                for arg in driver_args(cli, cdp_endpoint, output_dir, mask.as_deref()) {
+                    cmd.arg(arg);
+                }
+                cmd.current_dir(output_dir);
             }))
             .map_err(|why| format!("the driver would not start: {why}"))?;
 
@@ -215,7 +211,8 @@ impl Driver {
             })?
             .map_err(|why| format!("the driver did not answer its MCP handshake: {why}"))?;
         let client = service.peer().clone();
-        let origin = if ui_origin.is_empty() { relay.ui_origin.clone() } else { ui_origin.to_owned() };
+        let origin =
+            if ui_origin.is_empty() { relay.ui_origin.clone() } else { ui_origin.to_owned() };
         if let Some(refusal) = start_origin_refusal(&origin) {
             return Err(refusal);
         }
@@ -240,7 +237,8 @@ impl Driver {
         if relay.viewport_width == 0 || relay.viewport_height == 0 {
             return;
         }
-        let args = serde_json::json!({ "width": relay.viewport_width, "height": relay.viewport_height });
+        let args =
+            serde_json::json!({ "width": relay.viewport_width, "height": relay.viewport_height });
         match self.call_raw("browser_resize", args).await {
             Ok(_) => tauri_plugin_log::log::info!(
                 "the driver's context seeded with the engine's viewport ({}x{})",
@@ -265,10 +263,8 @@ impl Driver {
             .collect::<Vec<_>>()
             .join("\n");
         let tabs = browser_tabs_of(&text);
-        let Some((index, url)) = tabs
-            .iter()
-            .find(|(_, url)| !origin_match(url, self.ui_origin.as_str()))
-            .cloned()
+        let Some((index, url)) =
+            tabs.iter().find(|(_, url)| !origin_match(url, self.ui_origin.as_str())).cloned()
         else {
             return Err(format!(
                 "the browser page could not be told apart from the client's own screen \
@@ -494,12 +490,7 @@ pub fn start_origin_refusal(origin: &str) -> Option<String> {
 /// tell any page apart from the client's own**, so a select under one is
 /// refused rather than run blind (`start_inapp` refuses the whole start on
 /// an empty origin too - this is the second line).
-pub fn tab_call_refusal(
-    tool: &str,
-    args: &Value,
-    listed: &str,
-    ui_origin: &str,
-) -> Option<String> {
+pub fn tab_call_refusal(tool: &str, args: &Value, listed: &str, ui_origin: &str) -> Option<String> {
     if tool == "browser_close" {
         return Some(
             "the phone's browser page is the app's own screen and is never closed: navigate \
@@ -538,6 +529,125 @@ pub fn tab_call_refusal(
         }
     }
     None
+}
+
+/// The mask script the driver loads as its initialization script: what a
+/// page can read in JavaScript about being driven.
+///
+/// **The engine's own launch does the real work** (`chromium.rs` carries
+/// `--disable-blink-features=AutomationControlled` and the headless UA), so
+/// each patch below only fires where that did not hold - a browser adopted
+/// from a launch older than this build - and everything here is left alone
+/// where the engine already reports the truth. Every patch is wrapped, and a
+/// page that froze one of these objects is not a reason to break the page.
+const MASK_SCRIPT: &str = r#"(() => {
+  // navigator.webdriver: a true is masked to the false a real browser
+  // reports; the engine's own false is left untouched, native getter and all.
+  try {
+    if (navigator.webdriver) {
+      Object.defineProperty(Object.getPrototypeOf(navigator), 'webdriver', {
+        get: () => false,
+        configurable: true,
+      });
+    }
+  } catch {}
+
+  // window.chrome: a shim only where the engine has none at all.
+  try {
+    if (!window.chrome) {
+      window.chrome = {
+        app: {
+          isInstalled: false,
+          InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
+          RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' },
+        },
+        runtime: {},
+      };
+    }
+  } catch {}
+
+  // The user agent's headless brand, where the engine reports it: the
+  // launch's own flag fixes this in the browser, and this is the fallback
+  // for a browser that was launched without it.
+  try {
+    if (navigator.userAgent.includes('HeadlessChrome')) {
+      const userAgent = navigator.userAgent.replace('HeadlessChrome', 'Chrome');
+      Object.defineProperty(Object.getPrototypeOf(navigator), 'userAgent', {
+        get: () => userAgent,
+        configurable: true,
+      });
+      const appVersion = navigator.appVersion.replace('HeadlessChrome', 'Chrome');
+      Object.defineProperty(Object.getPrototypeOf(navigator), 'appVersion', {
+        get: () => appVersion,
+        configurable: true,
+      });
+    }
+  } catch {}
+})();
+"#;
+
+/// Where the driver's initialization script is written: named so a reader
+/// finding it in the output directory knows it is forge's own.
+fn mask_path(output_dir: &Path) -> PathBuf {
+    output_dir.join("browser-mask.js")
+}
+
+/// The number behind one temp file's own name. The pid alone does not
+/// separate two writers in one client process - every profile shares the
+/// output directory and a start can land mid-thread - so this counts too.
+static MASK_TICKET: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Write the mask script and answer its path, or `None` where it could not
+/// be written.
+///
+/// **Whole or not at all**: two profiles' drivers can start at once and both
+/// write this one file, and a reader that caught a half-written script would
+/// load half a mask - so each call writes to a temp name of its own (pid and
+/// a ticket, unique per write whatever the threads) and renames it into
+/// place, where the last complete file wins. Rewritten on every driver start,
+/// so a running browser from an older client cannot hand the driver a stale
+/// mask.
+///
+/// **A write that fails is not a refusal.** The engine's own launch carries
+/// the mask that matters; the script is the fallback, so a start without it
+/// warns by name and goes on, exactly as a launch whose version could not be
+/// read does.
+fn write_mask(output_dir: &Path) -> Option<PathBuf> {
+    let path = mask_path(output_dir);
+    let ticket = MASK_TICKET.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let temp = output_dir.join(format!("browser-mask.js.{}.{ticket}.tmp", std::process::id()));
+    match std::fs::write(&temp, MASK_SCRIPT).and_then(|()| std::fs::rename(&temp, &path)) {
+        Ok(()) => Some(path),
+        Err(why) => {
+            let _ = std::fs::remove_file(&temp);
+            tauri_plugin_log::log::warn!(
+                "the page-visible mask is not loaded this run (event_name browser_mask_script): \
+                 the script could not be written to {}: {why}",
+                path.display()
+            );
+            None
+        }
+    }
+}
+
+/// The command line one driver start runs: the vendored CLI, the browser's
+/// own endpoint, and the mask - **an option the pinned driver already has**
+/// (`--init-script`), so nothing vendored is patched. No mask, no argument.
+fn driver_args(cli: &Path, endpoint: &str, output_dir: &Path, mask: Option<&Path>) -> Vec<String> {
+    let mut args = vec![
+        cli.display().to_string(),
+        "--cdp-endpoint".to_owned(),
+        endpoint.to_owned(),
+        "--no-webmcp".to_owned(),
+        "--allow-unrestricted-file-access".to_owned(),
+        "--output-dir".to_owned(),
+        output_dir.display().to_string(),
+    ];
+    if let Some(mask) = mask {
+        args.push("--init-script".to_owned());
+        args.push(mask.display().to_string());
+    }
+    args
 }
 
 /// The CLI inside the vendored package, run by the vendored node.
@@ -610,10 +720,14 @@ mod tests {
         let text = "### Result\n- 0: (current) [](https://ui.forge.local/)\n- 1: [](https://browser.forge.local/)\n";
         assert_eq!(
             browser_tabs_of(text),
-            vec![(0, "https://ui.forge.local/".to_owned()), (1, "https://browser.forge.local/".to_owned())],
+            vec![
+                (0, "https://ui.forge.local/".to_owned()),
+                (1, "https://browser.forge.local/".to_owned())
+            ],
         );
 
-        let with_error_page = "- 0: (current) [Webpage not available](chrome-error://chromewebdata/)";
+        let with_error_page =
+            "- 0: (current) [Webpage not available](chrome-error://chromewebdata/)";
         assert_eq!(
             browser_tabs_of(with_error_page),
             vec![(0, "chrome-error://chromewebdata/".to_owned())],
@@ -635,10 +749,7 @@ mod tests {
             start_origin_refusal("").is_some(),
             "an empty origin would invert the pin and disarm the guard - the start must fail",
         );
-        assert!(
-            start_origin_refusal("http://tauri.localhost").is_none(),
-            "a real origin starts",
-        );
+        assert!(start_origin_refusal("http://tauri.localhost").is_none(), "a real origin starts",);
     }
 
     /// The phone's tab-shaped refusals, pinned where `cfg(android)` cannot
@@ -648,20 +759,24 @@ mod tests {
     #[test]
     fn a_tab_call_is_refused_where_the_phone_has_no_answer_for_it() {
         let ui = "http://tauri.localhost";
-        let list = "- 0: (current) [](http://tauri.localhost/session/x)\n- 1: [](https://example.com/)";
+        let list =
+            "- 0: (current) [](http://tauri.localhost/session/x)\n- 1: [](https://example.com/)";
 
         let closed = tab_call_refusal("browser_close", &json!({}), "", ui);
         assert!(closed.is_some(), "the MCP's close-page tool takes the engine's only page");
 
-        let close_no_index = tab_call_refusal("browser_tabs", &json!({ "action": "close" }), "", ui);
+        let close_no_index =
+            tab_call_refusal("browser_tabs", &json!({ "action": "close" }), "", ui);
         assert!(
             close_no_index.is_some(),
             "close with no index targets the CURRENT tab - the pinned browser page",
         );
-        let close_index = tab_call_refusal("browser_tabs", &json!({ "action": "close", "index": 1 }), "", ui);
+        let close_index =
+            tab_call_refusal("browser_tabs", &json!({ "action": "close", "index": 1 }), "", ui);
         assert!(close_index.is_some(), "and a close with an index is the same door");
 
-        let onto_ui = tab_call_refusal("browser_tabs", &json!({ "action": "select", "index": 0 }), list, ui);
+        let onto_ui =
+            tab_call_refusal("browser_tabs", &json!({ "action": "select", "index": 0 }), list, ui);
         assert!(
             onto_ui.as_deref().unwrap_or_default().contains("tab 0"),
             "selecting the client's own page is refused by name: {onto_ui:?}",
@@ -713,6 +828,90 @@ mod tests {
         assert_eq!(
             cli_path(Path::new("/stack")),
             Path::new("/stack/playwright-mcp/node_modules/@playwright/mcp/cli.js"),
+        );
+    }
+
+    /// **The mask rides the driver's own `--init-script` option** - the
+    /// pinned driver's, so nothing vendored is forked or patched - and it
+    /// names a real file, because the driver refuses a start whose
+    /// init-script file is missing.
+    #[test]
+    fn the_driver_command_line_carries_the_mask_script() {
+        let args = driver_args(
+            Path::new("/stack/driver.js"),
+            "http://127.0.0.1:9333",
+            Path::new("/out"),
+            Some(Path::new("/out/browser-mask.js")),
+        );
+        assert_eq!(args.first().map(String::as_str), Some("/stack/driver.js"), "{args:?}");
+        let after =
+            |flag: &str| args.windows(2).find(|pair| pair[0] == flag).map(|pair| pair[1].clone());
+        assert_eq!(after("--cdp-endpoint").as_deref(), Some("http://127.0.0.1:9333"), "{args:?}");
+        assert_eq!(
+            after("--init-script").as_deref(),
+            Some("/out/browser-mask.js"),
+            "the mask is the driver's own initialization script: {args:?}",
+        );
+        assert!(args.contains(&"--no-webmcp".to_owned()), "{args:?}");
+        assert!(args.contains(&"--allow-unrestricted-file-access".to_owned()), "{args:?}");
+
+        let unmasked = driver_args(
+            Path::new("/stack/driver.js"),
+            "http://127.0.0.1:9333",
+            Path::new("/out"),
+            None,
+        );
+        assert!(
+            !unmasked.contains(&"--init-script".to_owned()),
+            "a start whose script could not be written goes on without the flag: {unmasked:?}",
+        );
+    }
+
+    /// **A mask that cannot be written answers `None`, which is what lets
+    /// the driver start without it** rather than refusing: the directory is
+    /// not there, so the write cannot land, and the caller's own arm turns
+    /// that into a warn-and-continue start.
+    #[test]
+    fn a_mask_that_cannot_be_written_is_not_a_refusal() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let missing = dir.path().join("no-such-directory");
+        assert_eq!(write_mask(&missing), None);
+    }
+
+    /// The script written for the driver masks the three tells a page can
+    /// read in JavaScript, and each is conditional: the engine's own false,
+    /// its own window.chrome and its own clean UA are left untouched, since
+    /// a patch that always fires is a tell of its own.
+    #[test]
+    fn the_written_mask_script_masks_the_three_page_tells() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let path = write_mask(dir.path()).expect("the mask writes");
+        assert_eq!(path, dir.path().join("browser-mask.js"));
+        let left: Vec<_> = std::fs::read_dir(dir.path())
+            .expect("the dir lists")
+            .map(|entry| entry.expect("an entry").file_name())
+            .collect();
+        assert_eq!(
+            left,
+            [std::ffi::OsString::from("browser-mask.js")],
+            "the write lands whole under its own name, with no temp left behind",
+        );
+        let written = std::fs::read_to_string(&path).expect("the mask reads back");
+        assert!(
+            written.contains("if (navigator.webdriver)"),
+            "the webdriver tell, masked only when it reads true: {written}",
+        );
+        assert!(
+            written.contains("get: () => false"),
+            "a masked webdriver reads the false a real browser reports, not undefined: {written}",
+        );
+        assert!(
+            written.contains("if (!window.chrome)"),
+            "the chrome-object tell, shimmed only when missing: {written}",
+        );
+        assert!(
+            written.contains("navigator.userAgent.includes('HeadlessChrome')"),
+            "the user agent tell, scrubbed only where the brand is there: {written}",
         );
     }
 }
