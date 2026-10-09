@@ -8,32 +8,38 @@
  * live 2026-10-09). This map is the column's own memory of what each row
  * measured, and the list is seeded from it - a re-added row comes back at the
  * height it had, so the two frames of the send's own cycle land as one.
- */
-const heights = new Map<string, number>();
-
-/**
- * The size a row with no measurement is drawn at, until it is measured.
  *
- * The virtualiser's own estimate for an unmeasured row (its median, measured
- * at 386px during #1890), so seeding the list changes nothing for rows this
- * map has never seen - a new turn draws exactly as it did before this.
+ * **One store per column, not one per module.** Keys are the turn's own and
+ * not seat-qualified, and a column prunes every key it does not hold - so a
+ * shared map would let one seat's prune forget a neighbour's rows and bring the
+ * shake back on the next switch. `sizes()` closes the map over each column.
  */
 export const ROW_ESTIMATE = 386;
 
-/** What `key`'s row last measured, or `undefined` for one never measured. */
-export function sizeOf(key: string | null | undefined): number | undefined {
-  return key === null || key === undefined ? undefined : heights.get(key);
+/** A column's own memory of what each of its rows measured. */
+export interface RowSizes {
+  /** What `key`'s row last measured, or `undefined` for one never measured. */
+  sizeOf(key: string | null | undefined): number | undefined;
+  /** Record a row's height. A zero-size render is a layout in flight, not a fact. */
+  remember(key: string, height: number): void;
+  /** Forget every key the conversation no longer holds, so the map stays the seat's. */
+  prune(keys: Iterable<string>): void;
 }
 
-/** Record a row's height. A zero-size render is a layout in flight, not a fact. */
-export function remember(key: string, height: number): void {
-  if (height > 0) heights.set(key, height);
-}
-
-/** Forget every key the conversation no longer holds, so the map stays the seat's. */
-export function prune(keys: Iterable<string>): void {
-  const held = new Set(keys);
-  for (const key of heights.keys()) {
-    if (!held.has(key)) heights.delete(key);
-  }
+export function sizes(): RowSizes {
+  const heights = new Map<string, number>();
+  return {
+    sizeOf(key) {
+      return key === null || key === undefined ? undefined : heights.get(key);
+    },
+    remember(key, height) {
+      if (height > 0) heights.set(key, height);
+    },
+    prune(keys) {
+      const held = new Set(keys);
+      for (const key of heights.keys()) {
+        if (!held.has(key)) heights.delete(key);
+      }
+    },
+  };
 }

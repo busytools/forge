@@ -2,7 +2,7 @@
   import { untrack, type Snippet } from 'svelte';
   import { SvelteMap } from 'svelte/reactivity';
   import { VList, type VListHandle } from 'virtua/svelte';
-  import { prune, remember, ROW_ESTIMATE, sizeOf } from './row-sizes';
+  import { ROW_ESTIMATE, sizes } from './row-sizes';
 
   import Icon from '../components/Icon.svelte';
   import { subjectKey } from '../protocol';
@@ -313,8 +313,10 @@
   let timer: ReturnType<typeof setTimeout> | null = null;
 
   const shift = $derived(outstanding > 0 || settling);
+  /** This column's own memory of its rows' heights, kept out of a module global. */
+  const rowSizes = sizes();
   // The measured heights belong to the turns this conversation holds.
-  $effect(() => prune(held.turns.map((turn) => turn.key)));
+  $effect(() => rowSizes.prune(held.turns.map((turn) => turn.key)));
 
   /** Whether the events arriving are the reader's own, made moments ago. */
   function readerMoved(): boolean {
@@ -347,7 +349,7 @@
    */
   function measureTurn(node: HTMLElement, key: string): () => void {
     const observer = new ResizeObserver((entries) => {
-      for (const entry of entries) remember(key, entry.contentRect.height);
+      for (const entry of entries) rowSizes.remember(key, entry.contentRect.height);
     });
     observer.observe(node);
     return () => observer.disconnect();
@@ -1183,7 +1185,7 @@
     {#snippet children(turn: HeldTurn)}
       <div
         class="turn"
-        style:min-height={turn.held ? `${sizeOf(turn.key) ?? ROW_ESTIMATE}px` : undefined}
+        style:min-height={turn.held ? `${rowSizes.sizeOf(turn.key) ?? ROW_ESTIMATE}px` : undefined}
         {@attach (node: HTMLElement) => measureTurn(node, turn.key)}
       >
         <Turn
