@@ -338,6 +338,29 @@ describe('the conversation the chat draws', () => {
   });
 
   /**
+   * A return whose ask was swallowed by one in flight fires when that ask
+   * settles: the stale page is not the read a return needs, and the want
+   * has to outlive it.
+   */
+  it("fires the return's ask once the in-flight one settles", () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    chat.refresh();
+    const asked = server.more().length;
+
+    chat.leaving();
+    chat.showing();
+    expect(server.more().length, 'the return did not ask yet').toBe(asked);
+
+    server.send(page([turn('t1', 'first')], null));
+    expect(server.more().length, 'the held want fires on the settle').toBe(asked + 1);
+    stop();
+  });
+
+  /**
    * The core's own line, which no transcript holds: the CLI never wrote a row
    * for it, so this store is the only place it can be drawn from.
    */

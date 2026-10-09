@@ -614,6 +614,15 @@ export class Chat {
 
   /** Whether the seat's page is on screen: frames for it fold only then. */
   private shown = true;
+
+  /**
+   * A return whose ask was swallowed by one already in flight.
+   *
+   * The stale page is not the read a return needs, so the want is held and
+   * fired when that ask settles - the shape `session/live.ts`'s
+   * `replaceWanted` has.
+   */
+  private returnWanted = false;
   /**
    * Answers still coming for asks this conversation stopped wanting.
    *
@@ -907,18 +916,29 @@ export class Chat {
   }
 
   /** Ask for the newest page again, which is what replaces a settled turn. */
-  refresh(): void {
-    this.ask(null);
+  refresh(): boolean {
+    return this.ask(null);
   }
 
   /**
    * The seat's page has come on screen: frames fold again, and a return asks
    * the newest page for what arrived while the seat was away.
+   *
+   * **An ask already in flight swallows that refresh**, and the stale answer
+   * that lands is not the one a return needs - so the want is held and fired
+   * again when the ask settles.
    */
   showing(): void {
     if (this.shown) return;
     this.shown = true;
-    this.refresh();
+    if (!this.refresh()) this.returnWanted = true;
+  }
+
+  /** A return whose refresh was swallowed: fire it now that the ask settled. */
+  private returnIfWanted(): void {
+    if (!this.returnWanted) return;
+    this.returnWanted = false;
+    this.ask(null);
   }
 
   /** The seat's page has gone: frames for it are held back, not folded. */
@@ -1008,6 +1028,10 @@ export class Chat {
         // spent on pages that are never coming.
         this.inFlight = null;
         this.abandoned = 0;
+        // A refusal is a settled ask like any other, and what a return wanted
+        // is what the retry below asks for - the want goes with it rather
+        // than riding a second ask at the same refused core.
+        this.returnWanted = false;
         this.fold((held) => ({
           ...held,
           refused: message.why,
@@ -1360,6 +1384,7 @@ export class Chat {
             : [...(reachesHeld ? rest : []), ...drawn, ...loose],
       });
     });
+    this.returnIfWanted();
   }
 
   /**
@@ -1386,6 +1411,8 @@ export class Chat {
     // the record is only ever read against rows this conversation holds.
     this.unturned = [];
     this.ridden.clear();
+    // A return's want is about a conversation that is gone.
+    this.returnWanted = false;
     // A swap is not a frame's draw: the reset lands now, whatever any paint
     // was waiting for.
     this.held = NOTHING;
