@@ -346,14 +346,17 @@ impl Driver {
         }
     }
 
-    /// The mask itself: read the page's own facts, rebuild what the override
-    /// blanks, then mask every page through the driver's own CDP session.
+    /// The mask itself: read the client's own document, rebuild what the
+    /// override blanks, then mask every page through the driver's own CDP
+    /// session.
     async fn rebuild_client_hints(&self, output_dir: &Path) -> Result<String, String> {
-        let hints = write_hints_page(output_dir);
+        let hints = write_hints_page(output_dir).ok_or_else(|| {
+            "the capture page could not be written, so the mask has no document to read".to_owned()
+        })?;
         let parts = self
             .call_raw(
                 "browser_run_code_unsafe",
-                serde_json::json!({ "code": hint_capture_snippet(hints.as_deref()) }),
+                serde_json::json!({ "code": hint_capture_snippet(&hints) }),
             )
             .await?;
         let capture: chromium::HintCapture =
@@ -361,15 +364,13 @@ impl Driver {
                 .map_err(|why| format!("the hint capture answered an unreadable shape: {why}"))?;
         if capture.brands.is_empty() {
             return Err(
-                "no secure document reported client-hint brands to rebuild from (the capture \
-                 page could not be read, and the driver's page reads no hints itself)"
-                    .to_owned(),
+                "the capture document reported no client-hint brands to rebuild from".to_owned()
             );
         }
         if !capture.blanked {
-            // **The browser reports its own hints** - an unmasked or headed
-            // launch - and rebuilding over them would replace real values
-            // with derived ones.
+            // **The browser reports its own hints** - an unmasked launch -
+            // and rebuilding over them would replace real values with
+            // derived ones.
             return Ok(
                 "the browser reports its own high-entropy hints; nothing to rebuild".to_owned()
             );
@@ -658,35 +659,24 @@ fn file_url(path: &Path) -> String {
 
 /// The snippet that reads the browser's client-hint facts.
 ///
-/// The driven page is read exactly as it is: a real page reports the
-/// low-entropy hints for real, and **the page is never navigated** - the
-/// launch's own page is `about:blank`, where the hints do not exist at all,
-/// and both driving it to the capture file and back would lose a session's
-/// page state and disturb the driver's own ref spelling (measured: the
-/// snapshot refs' `f<seq>` prefix counts the frame's navigations, so an
-/// extra one hands the session different refs). A page that reads no brands
-/// instead reads the capture file through a scratch context of the same
-/// browser - a document with a real origin that touches nothing the session
-/// holds, and `file://` exposes the real low-entropy hints under the mask
-/// (measured). The client-hint values are the browser's, not the page's, so
-/// a scratch document reports the same ones.
-fn hint_capture_snippet(hints_page: Option<&Path>) -> String {
-    let scratch = match hints_page {
-        Some(page) => format!(
-            "if (!seen.brands) {{\
-             const scratch_context = await page.context().browser().newContext();\
-             try {{\
-             const fresh = await scratch_context.newPage();\
-             await fresh.goto({});\
-             seen = await fresh.evaluate(read);\
-             }} finally {{\
-             await scratch_context.close();\
-             }}\
-             }}",
-            custom::js_string(&file_url(page)),
-        ),
-        None => String::new(),
-    };
+/// **The values are read out of the client's own document, never out of the
+/// page the driver is driving.** A page can patch `navigator.userAgent` and
+/// `userAgentData` - or hand back a fabricated `getHighEntropyValues` - so a
+/// capture read in the driven page's realm would let the very page being
+/// masked choose the metadata it is masked with, or claim real hints and
+/// stand the whole mask down. The document read here is a `file://` page the
+/// client itself writes, reached through a scratch context of the same
+/// browser: no page controls it, it touches nothing the session holds, and
+/// the client-hint values are the browser's own rather than any page's, so a
+/// scratch document reports the same ones (measured).
+///
+/// **The driven page is also never navigated** - the launch's own page is
+/// `about:blank`, where the hints do not exist at all, and carrying it to
+/// the capture file and back would lose a session's page state and disturb
+/// the driver's own ref spelling (measured: the snapshot refs' `f<seq>`
+/// prefix counts the frame's navigations, so an extra one hands the session
+/// different refs).
+fn hint_capture_snippet(hints_page: &Path) -> String {
     format!(
         "async (page) => {{\
          const read = () => {{\
@@ -702,10 +692,18 @@ fn hint_capture_snippet(hints_page: Option<&Path>) -> String {
          return out;\
          }}).catch(() => out);\
          }};\
-         let seen = await page.evaluate(read);\
-         {scratch}\
+         let seen = {{}};\
+         const scratch_context = await page.context().browser().newContext();\
+         try {{\
+         const fresh = await scratch_context.newPage();\
+         await fresh.goto({});\
+         seen = await fresh.evaluate(read);\
+         }} finally {{\
+         await scratch_context.close();\
+         }}\
          return '{HINTS_MARKER}' + JSON.stringify(seen);\
          }}",
+        custom::js_string(&file_url(hints_page)),
     )
 }
 
@@ -1190,38 +1188,30 @@ mod tests {
         );
     }
 
-    /// The capture reads the driven page as it is and answers behind a marker
-    /// of ours, and a page that reads no brands is read through a scratch
-    /// context instead. **The driven page is never navigated**: a navigation
-    /// there would disturb the session's page and shift the driver's own
-    /// snapshot refs (measured: the `f<seq>` prefix counts the frame's
-    /// navigations).
+    /// The capture reads the CLIENT's document and nothing else: the values
+    /// are taken in a scratch context's `file://` page, and the driven page
+    /// is neither read nor navigated (a page in the driven realm could bend
+    /// the metadata or claim real hints, and a navigation shifts the
+    /// driver's snapshot refs).
     #[test]
-    fn the_capture_snippet_reads_without_navigating_the_driven_page() {
-        let with_file = hint_capture_snippet(Some(Path::new("/out/browser-hints.html")));
-        assert!(with_file.contains(HINTS_MARKER), "{with_file}");
-        assert!(with_file.contains("getHighEntropyValues"), "{with_file}");
-        assert!(with_file.contains("JSON.stringify"), "{with_file}");
+    fn the_capture_reads_only_the_clients_own_document() {
+        let snippet = hint_capture_snippet(Path::new("/out/browser-hints.html"));
+        assert!(snippet.contains(HINTS_MARKER), "{snippet}");
+        assert!(snippet.contains("getHighEntropyValues"), "{snippet}");
+        assert!(snippet.contains("JSON.stringify"), "{snippet}");
         assert!(
-            !with_file.contains("page.goto("),
-            "the driven page is never navigated: {with_file}",
+            !snippet.contains("page.evaluate"),
+            "the driven page's realm is never read - it could bend the values: {snippet}",
+        );
+        assert!(!snippet.contains("page.goto("), "nor navigated: {snippet}");
+        assert!(
+            snippet.contains("newContext()") && snippet.contains("scratch_context.close()"),
+            "the client's document is read through a scratch context, closed after: {snippet}",
         );
         assert!(
-            with_file.contains("newContext()") && with_file.contains("scratch_context.close()"),
-            "a page with no brands is read through a scratch context, closed after: {with_file}",
+            snippet.contains("await fresh.goto(\"file:///out/browser-hints.html\")"),
+            "the scratch reads the capture file as a file URL: {snippet}",
         );
-        assert!(
-            with_file.contains("await fresh.goto(\"file:///out/browser-hints.html\")"),
-            "the scratch reads the capture file as a file URL: {with_file}",
-        );
-
-        let without_file = hint_capture_snippet(None);
-        assert!(
-            !without_file.contains("newContext"),
-            "no capture file, no scratch: {without_file}"
-        );
-        assert!(!without_file.contains(".goto("), "{without_file}");
-        assert!(without_file.contains(HINTS_MARKER), "the answer still happens: {without_file}");
     }
 
     /// **The mask snippet never detaches**: a detached session's override is

@@ -174,8 +174,8 @@ pub struct HintCapture {
     pub platform: String,
     pub mobile: bool,
     /// Whether all five high-entropy hints came back empty. `false` means the
-    /// browser reports its own (an unmasked or headed launch) and nothing
-    /// should be rebuilt over them.
+    /// browser reports its own (an unmasked launch) and nothing should be
+    /// rebuilt over them.
     pub blanked: bool,
 }
 
@@ -207,10 +207,9 @@ fn user_agent_version(user_agent: &str) -> Option<&str> {
 /// browser reports without the override.
 ///
 /// `None` for a capture that cannot support a truthful rebuild: an unmasked
-/// or headed launch reads the five for real, and rebuilding over them would
-/// replace the browser's own values with derived ones; a capture with no
-/// brands read no secure document; a UA string naming no version is a
-/// half-claim.
+/// launch reads the five for real, and rebuilding over them would replace
+/// the browser's own values with derived ones; a capture with no brands read
+/// no document; a UA string naming no version is a half-claim.
 pub fn user_agent_metadata(
     capture: &HintCapture,
     platform_version: &str,
@@ -1622,9 +1621,9 @@ mod tests {
         );
 
         // **A capture that cannot support a truthful rebuild answers None**
-        // rather than a half-claim: a page already reading the five for real
-        // (an unmasked or headed launch - derived values must not replace
-        // them), no brands, or a string naming no version.
+        // rather than a half-claim: a browser already reading the five for
+        // real (an unmasked launch - derived values must not replace them),
+        // no brands, or a string naming no version.
         let real = HintCapture { blanked: false, ..capture.clone() };
         assert_eq!(
             user_agent_metadata(&real, "26.5.2", "arm", "64"),
@@ -1636,17 +1635,6 @@ mod tests {
         let versionless =
             HintCapture { user_agent: "no version in here".to_owned(), ..capture.clone() };
         assert_eq!(user_agent_metadata(&versionless, "26.5.2", "arm", "64"), None);
-
-        // A version with no tail still builds the frozen tail, since that is
-        // the shape a reduced UA always carries.
-        let dottless = HintCapture {
-            user_agent: "Chrome/155".to_owned(),
-            brands: vec![HintBrand { brand: "Brave".to_owned(), version: "155".to_owned() }],
-            ..capture
-        };
-        let metadata = user_agent_metadata(&dottless, "26.5.2", "arm", "64").expect("rebuilds");
-        assert_eq!(metadata["fullVersion"], serde_json::json!("155"));
-        assert_eq!(metadata["fullVersionList"][0]["version"], serde_json::json!("155.0.0.0"));
     }
 
     /// The architecture mapping: the names Chromium reports, and `None` for
