@@ -2495,11 +2495,13 @@ describe('the frame', () => {
     ).toThrow(/cannot read/);
   });
 
-  it('puts the controls in the box footer, off the draft and under the caret', () => {
-    expect(
-      sheetRule('.foot .ctls'),
-      'the controls lost the footer row the draft no longer shares',
-    ).toContain('margin-left: auto');
+  it('puts the controls at the right end of whichever row holds them', () => {
+    // The bar is one row while the field is empty and the controls ride it;
+    // a draft takes the second row and they follow it down. One rule serves
+    // both, so neither row can drop them to the left of the field.
+    expect(sheetRule('.ctls'), 'the controls lost the right end they take in either row').toContain(
+      'margin-left: auto',
+    );
     expect(() => sheetRule('.line .mic'), 'the mic still holds a column of the draft open').toThrow(
       /writes no rule/,
     );
@@ -2522,13 +2524,13 @@ describe('the frame', () => {
    * unpinned while two changes crossed.
    */
   it("keeps the mic and the panel's close at a finger's size, and the mic's accent", () => {
-    const coarse = /@media \(pointer: coarse\) \{[^\n]*\.foot \.mic[^\n]*\}/.exec(sheet)?.[0] ?? '';
+    const coarse = /@media \(pointer: coarse\) \{[^\n]*\.mic[^\n]*\}/.exec(sheet)?.[0] ?? '';
     expect(coarse, 'the mic lost its height floor on a finger').toContain('min-height: 44px');
     expect(coarse, 'the mic lost its width floor on a finger').toContain('min-width: 44px');
     expect(coarse, "the panel's close lost its width floor").toContain(
       '.pop .hd .x { min-width: 44px; }',
     );
-    expect(sheetRule('.foot .mic:hover'), 'the mic lost its accent hover').toContain(
+    expect(sheetRule('.mic:hover'), 'the mic lost its accent hover').toContain(
       'color: var(--accent)',
     );
   });
@@ -2550,8 +2552,8 @@ describe('the frame', () => {
     ).not.toContain('padding-top');
   });
 
-  it("gives the footer's controls the same pointer floor", () => {
-    for (const control of ['.foot .mic', '.stop', '.send']) {
+  it('gives the controls the same pointer floor in either row', () => {
+    for (const control of ['.mic', '.stop', '.send']) {
       const rule = sheetRule(control);
       expect(rule, `${control} is a bare glyph rather than a 24px target`).toContain('width: 24px');
       expect(rule, `${control} takes no height of its own`).toContain('height: 24px');
