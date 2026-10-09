@@ -131,7 +131,7 @@ impl Tool for AskNoul {
          `instructions` and criteria values may be any JSON - the question in one field, \
          referenced data in others, named with backticks. \
          When to reach for it: before interrupting the user with a question this session could \
-         decide itself (put the situation in `state` and the ask in `instructions`; when the \
+         decide itself (put the situation in `state` and the ask in `instructions`; \
          when the answer is decisive and the action reversible, act), or as a second opinion \
          when you are leaning one way and want it checked. Beyond those moments, reach for a \
          decision when the outcome matters to the user and is not obvious, and skip it when \
@@ -423,6 +423,12 @@ mod tests {
                 "before interrupting the user with a question this session could decide itself"
             ),
             "noul's escalate moment is pinned: {}",
+            noul.description()
+        );
+        assert!(
+            noul.description()
+                .contains("when the answer is decisive and the action reversible, act"),
+            "noul's act-on-decisive-and-reversible clause is pinned: {}",
             noul.description()
         );
         assert!(
