@@ -218,6 +218,28 @@ async function crossed(): Promise<void> {
   flushSync();
 }
 
+/**
+ * Wait for the page to arrive at a path, rather than for a fixed count of
+ * turns.
+ *
+ * **`crossed` is a race under load**: ten 5ms turns is about 50ms of wall
+ * clock whatever else the machine is doing, and the full gate runs this suite
+ * beside the Rust ones - so a removal crossing a real socket can land after it
+ * and the assertion fails on a page that was merely slow (measured twice in
+ * one day, both times green on the standalone re-run). Waiting on the
+ * condition removes the race and keeps the assertion's own message for the
+ * case where the page genuinely never arrives; the deadline only stops a
+ * broken page from hanging the suite.
+ */
+async function landed(path: string): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (location.pathname !== path && Date.now() < deadline) {
+    flushSync();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  flushSync();
+}
+
 /** The font stack the page is drawing with, which is what a greeting put there. */
 function appliedFont(): string {
   return document.documentElement.style.getPropertyValue('--ui');
@@ -515,7 +537,7 @@ describe('a seat removed under the reader', () => {
     const W1: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'w1' };
     const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
     forge.remove(W1, LEAD);
-    await crossed();
+    await landed('/session/TestOrg/proj/lead');
 
     expect(location.pathname, 'the reader was left on a seat with nothing behind it').toBe(
       '/session/TestOrg/proj/lead',
