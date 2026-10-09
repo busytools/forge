@@ -67,6 +67,8 @@ function stub() {
     onStatus: () => () => undefined,
     store: () => undefined,
     settings: () => null,
+    browserRole: () => false,
+    onBrowserRole: () => () => undefined,
     status: () => (open ? ('open' as const) : ('closed' as const)),
     close: () => undefined,
   } as unknown as Connection;
@@ -125,6 +127,12 @@ async function tick(): Promise<void> {
   flushSync();
 }
 
+/** Let a stream frame's own publish land: the chat draws it on a frame (#1670). */
+async function frame(): Promise<void> {
+  await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+  flushSync();
+}
+
 afterEach(async () => {
   if (app !== null) await unmount(app);
   app = null;
@@ -136,10 +144,11 @@ beforeEach(() => {
 });
 
 describe('the compensation the list is handed', () => {
-  it('keeps a pulled prompt row mounted at its height, so a send cannot flash it', () => {
+  it('keeps a pulled prompt row mounted at its height, so a send cannot flash it', async () => {
     const server = stub();
     draw(server);
     server.page([turn('t1'), turn('t2')], null);
+    await frame();
 
     // The row arrives before the pile hears about the queue, opening the live
     // turn - the race the retraction exists for (#1890).
@@ -153,6 +162,9 @@ describe('the compensation the list is handed', () => {
         },
       },
     });
+    // The chat publishes on a frame (#1670), so the update reaches the DOM one
+    // RAF later - without this the reads below are of a stale tree.
+    await frame();
     const rows = [...document.querySelectorAll('.turn .turn')];
     const row = rows[rows.length - 1];
     expect(row, 'the words opened a row').toBeDefined();
@@ -161,6 +173,7 @@ describe('the compensation the list is handed', () => {
     // - removed, the list splices its measured size away and the drain's
     // re-add draws it at the estimate for one frame.
     server.update({ prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'the words' } });
+    await frame();
     const after = [...document.querySelectorAll('.turn .turn')];
     expect(after[after.length - 1], 'the row is the same element').toBe(row);
   });
