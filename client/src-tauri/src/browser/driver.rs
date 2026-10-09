@@ -764,7 +764,6 @@ fn hint_verdict(capture: &chromium::HintCapture) -> HintVerdict {
 fn hint_mask_snippet(user_agent: &str, metadata: &serde_json::Value) -> String {
     format!(
         "async (page) => {{\
-         if (globalThis.__forgeClientHints) return 'the client hints are already masked';\
          const user_agent = {ua};\
          const metadata = JSON.parse({metadata});\
          const held = new Map();\
@@ -778,7 +777,6 @@ fn hint_mask_snippet(user_agent: &str, metadata: &serde_json::Value) -> String {
          target.on('close', () => {{ held.delete(target); }});\
          }} catch (why) {{}}\
          }};\
-         globalThis.__forgeClientHints = mask;\
          page.context().on('page', (target) => {{ mask(target); }});\
          for (const target of page.context().pages()) {{ await mask(target); }}\
          return 'the client hints are masked on ' + held.size + ' page(s)';\
