@@ -536,9 +536,10 @@ than facts about a session.
 - **A monitor's tail as it runs.** `read_call_output` answers a call's own
   output - the newest lines of the file the task wrote to, or a named
   reason there is none - and a Monitor's file is the same read, so the
-  tail itself is reachable. Nothing pushes a growing tail, though: each
-  ask is one answer, so a client that wants a command's tail while it
-  still runs re-asks per beat. Filed as its own piece of work.
+  finished tail is reachable. The file is named only by the frame that
+  ENDS the task, though, so a command still running answers no-path: what
+  this carries is the tail of work that has ended. Filed as its own piece
+  of work.
 - **The extensions surface.** Only the update records cross, above.
   Installing, updating, rolling back and repairing a plugin are the
   `claude plugin` CLI, and the page that drives them reads its inventory

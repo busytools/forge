@@ -124,12 +124,15 @@ pub enum Message {
 
     /// Incremental lifecycle update for any long-running tool task
     /// (backgrounded `Bash`, `Monitor`, sub-agent `Task`). Subtype
-    /// `"task_updated"`. Wire captures (`backgrounded_bash_lifecycle.jsonl`,
-    /// `monitor_persistent_stream.jsonl`) show the CLI emits this
-    /// instead of `task_notification` for the local-bash flavour:
-    /// it carries a `patch` object with status / end_time deltas.
-    /// Without a typed variant, the reducer can't transition a
-    /// backgrounded Bash from `running` to `completed`.
+    /// `"task_updated"`; it carries a `patch` object with status /
+    /// end_time deltas. Without a typed variant, the reducer can't
+    /// transition a backgrounded Bash from `running` to `completed`.
+    ///
+    /// **It rides alongside `task_notification`, not instead of it.** The
+    /// wire baseline (`baselines/sdk/2.1.280/backgrounded_bash_lifecycle.jsonl`
+    /// in forge-test-harness) carries `task_started`, this and the ending
+    /// `task_notification` together for one local-bash command, and it is
+    /// that ending frame which names the output file.
     TaskUpdated {
         /// Stable identifier for this task instance - same id surface
         /// as `task_started` / `task_progress` / `task_notification`.
