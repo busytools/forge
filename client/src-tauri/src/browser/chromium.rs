@@ -709,8 +709,7 @@ pub async fn launch_with(
             // safety - no file looks exactly like a headless launch - so the
             // failure is named; the launch goes on, because a window is what
             // the person asked for.
-            if headed
-                && let Err(why) = std::fs::write(windowed_marker(profile), page.unwrap_or(""))
+            if headed && let Err(why) = std::fs::write(windowed_marker(profile), page.unwrap_or(""))
             {
                 tauri_plugin_log::log::warn!(
                     "the headed launch's window marker could not be written (event_name \

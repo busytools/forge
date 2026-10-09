@@ -37,21 +37,22 @@ const START_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// The phone's bounds, its own, and the ACCEPT-ONWARD segment must fit the
 /// server's ask budget: `ASK_TIMEOUT` (200 s) is derived from the DESKTOP's
-/// launch, handshake, hint mask and call bounds (15+15+15+150 = 195, the
-/// hint mask included since it rides a driver start), and the phone's cold
-/// FLOOR is what joins it - 40 s to accept a node's FIRST dial (its boot is
-/// real work: measured 8 s warm, 39 s on a loaded emulator) + 10 s to hand
-/// shake + the driver's own 150 s call = 200 s (no hint mask on the phone;
-/// its WebView presents the real UA). The phone's accept-onward path also
-/// carries the tab pin and the viewport seed, each bounded by that same
-/// 150 s call, so its cold worst case sits ABOVE the ask rather than at
-/// it - the bound is a wedge-breaker and the named failure plus a retry is
-/// the answer. The call also carries an unbounded pre-accept RPC segment
-/// (the engine generation read, the ensure spin, the asset unpack, the
-/// UI-thread origin latch), so the whole chain can MEET or exceed the 200 s
-/// ask rather than sit inside it. A node that was ALREADY up redials every
-/// second, so a later call waits only 6 s - a dead in-app node fails in
-/// seconds with the reason instead of paying the cold window per call.
+/// launch, handshake, hint mask, call and failure-flush bounds
+/// (15+15+15+150+5 = 200, exactly the bound - the mask rides a driver start
+/// and the flush rides every call), and the phone's cold FLOOR is what
+/// joins it - 40 s to accept a node's FIRST dial (its boot is real work:
+/// measured 8 s warm, 39 s on a loaded emulator) + 10 s to hand shake + the
+/// driver's own 150 s call = 200 s (no hint mask on the phone; its WebView
+/// presents the real UA). The phone's accept-onward path also carries the
+/// tab pin and the viewport seed, each bounded by that same 150 s call, so
+/// its cold worst case sits ABOVE the ask rather than at it - the bound is
+/// a wedge-breaker and the named failure plus a retry is the answer. The
+/// call also carries an unbounded pre-accept RPC segment (the engine
+/// generation read, the ensure spin, the asset unpack, the UI-thread origin
+/// latch), so the whole chain can MEET or exceed the 200 s ask rather than
+/// sit inside it. A node that was ALREADY up redials every second, so a
+/// later call waits only 6 s - a dead in-app node fails in seconds with the
+/// reason instead of paying the cold window per call.
 #[cfg(target_os = "android")]
 const IN_APP_COLD_ACCEPT_TIMEOUT: Duration = Duration::from_secs(40);
 #[cfg(target_os = "android")]
@@ -360,7 +361,11 @@ impl Driver {
     /// The mask itself: read the client's own document, rebuild what the
     /// override blanks, then mask every page through the driver's own CDP
     /// session.
-    async fn rebuild_client_hints(&self, output_dir: &Path, profile: &str) -> Result<String, String> {
+    async fn rebuild_client_hints(
+        &self,
+        output_dir: &Path,
+        profile: &str,
+    ) -> Result<String, String> {
         let hints = write_hints_page(output_dir, profile).ok_or_else(|| {
             "the capture page could not be written, so the mask has no document to read".to_owned()
         })?;
@@ -409,8 +414,17 @@ impl Driver {
     /// failure has no call of its own to ride, and the sandbox can reach
     /// nothing else - so the failures wait on the context object until the
     /// next browser call asks for them here. Taking them clears them, so each
-    /// failure is logged once.
-    pub async fn take_hint_failures(&self) -> Result<Option<String>, String> {
+    /// failure is logged once. A failure can still be lost between the
+    /// browser-side clear and the log - a reply dropped in transport, or a
+    /// list that does not parse - leaving no trace at all; the sandbox
+    /// boundary offers nothing better.
+    ///
+    /// **Desktop only, like the mask itself**: the phone's WebView presents
+    /// its own real UA, so no mask and no failures exist there, and an
+    /// ungated method would be dead code under `-D warnings` on the android
+    /// target.
+    #[cfg(desktop)]
+    async fn take_hint_failures(&self) -> Result<Option<String>, String> {
         let parts = self
             .call_raw(
                 "browser_run_code_unsafe",
@@ -424,9 +438,17 @@ impl Driver {
 
     /// Log the mask's failures, if any, naming the profile - best-effort:
     /// this rides after every browser call, and a check that cannot run must
-    /// not fail the call it rides behind.
+    /// not fail the call it rides behind. Bounded by
+    /// [`HINT_FLUSH_TIMEOUT`], not the call bound, so the second round trip
+    /// it costs cannot stretch a call's own worst case by a call's worth.
+    #[cfg(desktop)]
     pub(super) async fn flush_hint_failures(&self, profile: &str) {
-        match self.take_hint_failures().await {
+        let taken = tokio::time::timeout(HINT_FLUSH_TIMEOUT, self.take_hint_failures()).await;
+        let taken = match taken {
+            Ok(taken) => taken,
+            Err(_) => Err(format!("it did not answer within {} s", HINT_FLUSH_TIMEOUT.as_secs())),
+        };
+        match taken {
             Ok(Some(note)) => tauri_plugin_log::log::warn!(
                 "the client-hint mask failed on a page (event_name browser_hint_mask_failure, \
                  profile {profile}): {note}"
@@ -659,9 +681,9 @@ pub fn tab_call_refusal(tool: &str, args: &Value, listed: &str, ui_origin: &str)
     None
 }
 
-/// The marker the hint capture answers behind. The driver renders a snippet's
-/// return into prose of its own, so the payload is found by a name of ours
-/// rather than by the driver's formatting.
+/// The marker the hint capture and the failure flush answer behind. The
+/// driver renders a snippet's return into prose of its own, so a payload is
+/// found by a name of ours rather than by the driver's formatting.
 const HINTS_MARKER: &str = "FORGE-HINTS ";
 
 /// The page the hint capture always reads: the client's own document, never
@@ -856,7 +878,9 @@ fn hint_mask_snippet(user_agent: &str, metadata: &serde_json::Value) -> String {
 /// **Run after every browser call the driver serves** ([`crate::browser::profiles`]'s
 /// call path), because a listener's failure happens after its install
 /// returned and the sandbox it runs in can reach nothing but some later
-/// call's own answer - which is this one.
+/// call's own answer - which is this one. Desktop only, with the mask it
+/// flushes.
+#[cfg(desktop)]
 fn hint_flush_snippet() -> &'static str {
     "async (page) => {\
      const store = page.context();\
@@ -866,7 +890,8 @@ fn hint_flush_snippet() -> &'static str {
      }"
 }
 
-/// The payload a capture answered with, out of the driver's own prose.
+/// The payload a marker-carrying answer brought - the capture's or the
+/// failure flush's - out of the driver's own prose.
 ///
 /// The driver renders a returned string JSON-encoded (quotes and escapes) on
 /// its own line; a driver that ever renders it raw is read raw.
@@ -902,6 +927,15 @@ fn text_of(parts: &[ReplyPart]) -> String {
 /// document and two snippet calls, so the bound is generous rather than
 /// tight; a wedge here must not park the call that started the driver.
 const HINT_MASK_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// How long the failure flush that rides after every browser call is given:
+/// a local snippet with no CDP work, so a healthy answer is milliseconds -
+/// and this is the fifth segment of the desktop's worst honest ask chain
+/// (launch 15 + handshake 15 + mask 15 + call 150 + flush 5 = 200, the whole
+/// server bound), which is why it may not ride the 150 s call bound.
+/// Desktop only, with the flush it bounds.
+#[cfg(desktop)]
+const HINT_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The mask script the driver loads as its initialization script: what a
 /// page can read in JavaScript about being driven.
@@ -1435,6 +1469,7 @@ mod tests {
     /// context object and clears them, answering behind the marker the
     /// capture uses so the client's reader parses both.
     #[test]
+    #[cfg(desktop)]
     fn the_flush_snippet_takes_and_clears_the_failures() {
         let snippet = hint_flush_snippet();
         assert!(
@@ -1446,9 +1481,11 @@ mod tests {
             "taking them clears them, so each failure is logged once: {snippet}",
         );
         assert!(snippet.contains(HINTS_MARKER), "the marker the client reads: {snippet}");
+        assert!(snippet.contains("JSON.stringify(failed)"), "the list crosses as JSON: {snippet}",);
         assert!(
-            snippet.contains("JSON.stringify(failed)"),
-            "the list crosses as JSON: {snippet}",
+            !snippet.contains("console."),
+            "the sandbox's console writes nowhere (measured); the flush has no more of a \
+             console channel than the mask does: {snippet}",
         );
     }
 
