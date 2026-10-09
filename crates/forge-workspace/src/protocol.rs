@@ -538,6 +538,12 @@ pub enum Command {
         subject: String,
         parent: Option<String>,
     },
+    /// The user moves a row's state directly - the drag across the board.
+    TaskMove {
+        project: String,
+        id: String,
+        to: forge_primitives::tasks::TaskStatus,
+    },
     /// Cross-project delivery (#114 v1). Dispatched by the
     /// `mcp__forge__agents__send_message` tool impl via
     /// `WorkspaceFacade::deliver_peer_prompt`. Routed to
@@ -842,7 +848,8 @@ impl Command {
             | Self::TaskAnswer { .. }
             | Self::TaskRank { .. }
             | Self::TaskAssign { .. }
-            | Self::TaskCreate { .. } => None,
+            | Self::TaskCreate { .. }
+            | Self::TaskMove { .. } => None,
         }
     }
 }
@@ -1084,6 +1091,12 @@ impl std::fmt::Debug for Command {
                 .field("project", project)
                 .field("subject", subject)
                 .finish_non_exhaustive(),
+            Self::TaskMove { project, id, to } => f
+                .debug_struct("TaskMove")
+                .field("project", project)
+                .field("id", id)
+                .field("to", to)
+                .finish_non_exhaustive(),
         }
     }
 }
@@ -1197,7 +1210,7 @@ pub enum PromptSource {
 }
 
 /// Where the user moved a row in its queue.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RankMove {
     /// Above everything ranked.
@@ -1206,6 +1219,9 @@ pub enum RankMove {
     Up,
     /// One place toward the back.
     Down,
+    /// Where a drag landed: the row this one should sit above in the queue,
+    /// or nothing for the end of it.
+    Before(Option<String>),
 }
 
 /// One prompt waiting in the CLI's queue, as a view reads it.

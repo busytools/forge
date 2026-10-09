@@ -154,19 +154,30 @@ describe("the board's controls", () => {
       ]),
     );
 
-    // The board draws the queue's order, so t2 (rank 1) leads and its
-    // controls are the ones a reader meets first.
-    document.querySelector<HTMLElement>('button[title="move to the top"]')?.click();
+    // The board draws the queue's order, so t2 (rank 1) leads. There are no
+    // rank buttons: a focused card's arrow keys are the keyboard's half of
+    // the drag, so the arrow on the leading card is where a move comes from.
+    const first = document.querySelector<HTMLElement>(
+      '.b-lane[data-state="pending"] .b-card[data-id="t2"]',
+    );
+    if (first === null) throw new Error('the leading card is not on the page');
+    first.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
     flushSync();
-    expect(acts[0]).toEqual({ task_rank: { project: 'proj', id: 't2', to: 'top' } });
+    expect(acts[0]).toEqual({ task_rank: { project: 'proj', id: 't2', to: 'down' } });
 
-    const pick = document.querySelector<HTMLSelectElement>(
-      'select[aria-label="the seat holding another"]',
+    // The owner picker is the board's own: the button opens the list, and
+    // the list's item is what assigns.
+    const pick = document.querySelector<HTMLElement>(
+      'button[aria-label="the seat holding another"]',
     );
     if (pick === null) throw new Error('the owner picker is not on the page');
-    pick.value = 'lead';
-    // Bubbling, because Svelte delegates `change` at the root.
-    pick.dispatchEvent(new Event('change', { bubbles: true }));
+    pick.click();
+    flushSync();
+    const item = [...document.querySelectorAll<HTMLElement>('.b-menu .b-item')].find(
+      (entry) => entry.textContent?.trim() === 'lead',
+    );
+    if (item === undefined) throw new Error('the seat is not in the open list');
+    item.click();
     flushSync();
     expect(acts[1]).toEqual({ task_assign: { project: 'proj', id: 't2', owner: 'lead' } });
   });
@@ -179,12 +190,17 @@ describe("the board's controls", () => {
     subject.value = 'a fresh row';
     subject.dispatchEvent(new Event('input'));
     flushSync();
-    const parent = document.querySelector<HTMLSelectElement>(
-      'select[aria-label="the epic it belongs under"]',
+    const parent = document.querySelector<HTMLElement>(
+      'button[aria-label="the epic it belongs under"]',
     );
     if (parent === null) throw new Error('the epic picker is not on the page');
-    parent.value = 'epic';
-    parent.dispatchEvent(new Event('change'));
+    parent.click();
+    flushSync();
+    const item = [...document.querySelectorAll<HTMLElement>('.b-menu .b-item')].find(
+      (entry) => entry.textContent?.trim() === 'the epic',
+    );
+    if (item === undefined) throw new Error('the epic is not in the open list');
+    item.click();
     flushSync();
     byText('+ add')?.click();
     flushSync();
@@ -224,5 +240,93 @@ describe("the board's controls", () => {
     for (const cls of ['b-pend', 'b-run', 'b-wait', 'b-done', 'b-fail', 'b-cancel']) {
       expect(document.querySelector(`.b-mark.${cls}`), `${cls} is drawn`).not.toBeNull();
     }
+  });
+
+  /**
+   * Drag and drop is the board's own interaction: a drop on another lane
+   * is a move, a drop in the card's own lane is a rank, and a seat takes
+   * it as an assignment. The arrows on a focused card are the keyboard's.
+   */
+  it('drags a card to a lane, within a lane, and onto a seat', () => {
+    const lead = { org: 'TestOrg', project: 'proj', label: 'lead' };
+    summon(
+      wireWith([
+        row(task('t1', 'a row', 'pending', { rank: 1 })),
+        row(task('t2', 'another', 'pending', { owner: lead })),
+      ]),
+    );
+
+    // jsdom performs no layout and carries no elementFromPoint, so the hit
+    // test is stubbed: the point resolves to whichever element the case is
+    // about. The descriptor comes back out afterwards.
+    const original = Object.getOwnPropertyDescriptor(document, 'elementFromPoint');
+    document.elementFromPoint = () => null;
+
+    const drag = (onto: () => Element | null): void => {
+      // Found per drag: the card is re-rendered in its new lane between
+      // cases, so a held element would be the detached one.
+      const card = document.querySelector<HTMLElement>('.b-card[data-id="t2"]');
+      if (card === null) throw new Error('the card is not on the page');
+      card.dispatchEvent(
+        new MouseEvent('pointerdown', { bubbles: true, clientX: 10, clientY: 10, button: 0 }),
+      );
+      document.elementFromPoint = onto;
+      window.dispatchEvent(new MouseEvent('pointermove', { clientX: 60, clientY: 60 }));
+      window.dispatchEvent(new MouseEvent('pointerup', {}));
+      flushSync();
+    };
+
+    // Onto the Waiting lane: the row moves state, and the card lands in
+    // that lane at once - before any wire snapshot could arrive.
+    drag(() => document.querySelector('.b-lane[data-state="waiting"]'));
+    expect(acts[0]).toEqual({ task_move: { project: 'proj', id: 't2', to: 'waiting' } });
+    expect(
+      document.querySelector('.b-lane[data-state="waiting"] .b-card[data-id="t2"]'),
+      'the card is in its new lane the moment the pointer lets go',
+    ).not.toBeNull();
+
+    // Back in its own lane: the drop position is a rank (the end, here:
+    // jsdom's zeroed rects put no card above the point).
+    drag(() => document.querySelector('.b-lane[data-state="pending"]'));
+    expect(acts[1]).toEqual({ task_rank: { project: 'proj', id: 't2', to: { before: null } } });
+
+    // Onto the lead's seat: the row is assigned to it.
+    drag(() => document.querySelector('[data-seat="lead"]'));
+    expect(acts[2]).toEqual({ task_assign: { project: 'proj', id: 't2', owner: 'lead' } });
+
+    if (original !== undefined) {
+      Object.defineProperty(document, 'elementFromPoint', original);
+    } else {
+      Reflect.deleteProperty(document, 'elementFromPoint');
+    }
+  });
+
+  /**
+   * Every card draws whole: its mark, its subject, its meta line and its
+   * measure line - owned or not. An unclaimed card says so rather than
+   * leaving the meta blank.
+   */
+  it('draws each card whole, owned or not', () => {
+    summon(
+      wireWith([
+        row(
+          task('o1', 'owned', 'in_progress', {
+            owner: { org: 'TestOrg', project: 'proj', label: 'lead' },
+          }),
+        ),
+        row(task('u1', 'unclaimed', 'pending')),
+      ]),
+    );
+
+    const cards = document.querySelectorAll('.b-lanes .b-card');
+    expect(cards.length, 'a card per row').toBe(2);
+    for (const card of cards) {
+      expect(card.querySelector('.b-mark'), 'the mark').not.toBeNull();
+      expect(card.querySelector('.b-row1 .b-sub'), 'the subject').not.toBeNull();
+      expect(card.querySelector('.b-meta'), 'the meta line').not.toBeNull();
+      expect(card.querySelector('.b-last .b-prog'), 'the measure line').not.toBeNull();
+    }
+    const unowned = [...cards].find((card) => card.querySelector('.b-un') !== null);
+    expect(unowned, 'the unclaimed card names its owner-less state').not.toBeUndefined();
   });
 });

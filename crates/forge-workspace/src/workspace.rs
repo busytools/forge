@@ -5029,6 +5029,20 @@ impl Workspace {
                 Command::TaskRank { project, id, to } => {
                     let _ = self.rank_task(&project, &TaskId::from(id.as_str()), to);
                 }
+                Command::TaskMove { project, id, to } => {
+                    if let Err(refused) =
+                        self.user_move_task(&project, &TaskId::from(id.as_str()), to)
+                    {
+                        tracing::debug!(
+                            target: "forge_workspace::tasks",
+                            project = %project,
+                            id = %id.as_str(),
+                            refusal = %refused,
+                            "a board move was refused",
+                        );
+                        self.board_edit_refused("a move", &refused.to_string());
+                    }
+                }
                 Command::TaskAssign { project, id, owner } => {
                     let owner_slot = owner.map(|label| {
                         self.config.projects.iter().find(|p| p.name == project).map_or_else(

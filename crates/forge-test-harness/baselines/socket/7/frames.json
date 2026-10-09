@@ -147,6 +147,7 @@
     "TaskAnswer": "task_answer",
     "TaskAssign": "task_assign",
     "TaskCreate": "task_create",
+    "TaskMove": "task_move",
     "TaskRank": "task_rank",
     "TaskVerdict": "task_verdict",
     "ToggleMcpServer": "toggle_mcp_server",

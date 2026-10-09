@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { homeWire } from '../dev/fixture.data';
 import type { BoardRow, HomeWire, Marks, Task, TaskStatus, TaskLinkWire } from '../wire/home';
-import { boardView, fmtSecs } from './view';
+import { applyMoves, boardView, fmtSecs } from './view';
 
 function task(id: string, subject: string, status: TaskStatus, over: Partial<Task> = {}): Task {
   return {
@@ -60,21 +60,48 @@ function wireWith(rows: BoardRow[]): HomeWire {
 
 describe("one project's board", () => {
   /**
-   * Two levels, in the queue's own order: rank first, then creation, so an
-   * unranked row sorts after the ranked ones - the order a lead dispatches
-   * from is the order the board shows.
+   * Cards file into lanes, one lane per state, in the queue's own order
+   * inside each: rank first, then creation, so an unranked row sorts after
+   * the ranked ones - the order a lead dispatches from is the order a lane
+   * shows. A child carries its epic's subject, and a row waiting on the
+   * reader sits in the waiting lane like any other waiting row.
    */
-  it('orders epics by rank and nests their children under them', () => {
+  it('files cards into lanes, rank order inside each', () => {
     const wire = wireWith([
       row(task('late', 'late epic', 'pending', { rank: 5 })),
       row(task('early', 'early epic', 'pending', { rank: 1 })),
       row(task('child', 'a child', 'in_progress', { parent: 'early' })),
+      row(
+        task('dep', 'a dependency', 'waiting', {
+          waiting_on: { kind: 'dependency', detail: null, on: 'other', verification: false },
+        }),
+      ),
+      row(
+        task('ask', 'a question', 'waiting', {
+          waiting_on: { kind: 'decision', detail: null, on: null, verification: false },
+        }),
+      ),
     ]);
 
     const view = boardView(wire, 'TestOrg', 'proj');
-    expect(view.rows.map((entry) => entry.id)).toEqual(['early', 'child', 'late']);
-    expect(view.rows[0]?.depth).toBe(0);
-    expect(view.rows[1]?.depth).toBe(1);
+    const lane = (key: string) => view.lanes.find((entry) => entry.key === key);
+    // Every state has its lane, in the order the states run.
+    expect(view.lanes.map((entry) => entry.name)).toEqual([
+      'In progress',
+      'Waiting',
+      'Ready',
+      'Completed',
+      'Failed',
+      'Canceled',
+    ]);
+    expect(lane('in_progress')?.cards.map((card) => card.id)).toEqual(['child']);
+    expect(lane('in_progress')?.cards[0]?.epic).toBe('early epic');
+    expect(lane('pending')?.cards.map((card) => card.id)).toEqual(['early', 'late']);
+    // A decision wait is a waiting row like any other in the lane; the
+    // strip is where the reader acts on it.
+    expect(lane('waiting')?.cards.map((card) => card.id)).toEqual(['dep', 'ask']);
+    expect(lane('completed')?.cards).toEqual([]);
+    expect(view.waiting.map((entry) => entry.id)).toEqual(['ask']);
   });
 
   /**
@@ -124,14 +151,27 @@ describe("one project's board", () => {
         }),
         { updated_secs_ago: 18_000, marks: marks({ waiting_too_long: true }) },
       ),
+      row(
+        task('t3', 'very over', 'in_progress', {
+          estimate: { words: '1h', secs: 3_600 },
+        }),
+        { worked_secs: 9_000 },
+      ),
     ]);
 
     const view = boardView(wire, 'TestOrg', 'proj');
-    const over = view.rows.find((entry) => entry.id === 't1');
+    const cards = view.lanes.flatMap((lane) => lane.cards);
+    const card = (id: string) => cards.find((entry) => entry.id === id);
+    const over = card('t1');
     expect(over?.worked).toBe('25h');
     expect(over?.estimate).toBe('1d');
     expect(over?.chips.map((chip) => chip.label)).toEqual(['overdue']);
-    const waits = view.rows.find((entry) => entry.id === 't2');
+    // Past the estimate the measure takes a tone; past 1.5x it is the loud one.
+    expect(over?.ratio).toBe(1);
+    expect(over?.tone).toBe('over');
+    expect(card('t3')?.tone).toBe('bad');
+    expect(card('t3')?.ratio).toBe(1);
+    const waits = card('t2');
     expect(waits?.chips.map((chip) => chip.label)).toEqual(
       expect.arrayContaining(['waiting on a resource', 'waiting 5h']),
     );
@@ -158,7 +198,8 @@ describe("one project's board", () => {
     const wire = wireWith([row(task('t1', 'linked', 'pending', { links }))]);
 
     const view = boardView(wire, 'TestOrg', 'proj');
-    expect(view.rows[0]?.links).toEqual([
+    const card = view.lanes.flatMap((lane) => lane.cards).find((entry) => entry.id === 't1');
+    expect(card?.links).toEqual([
       { label: '#1889', href: 'https://example.test/pull/1889' },
       { label: 'plan.md', href: null },
     ]);
@@ -169,7 +210,31 @@ describe("one project's board", () => {
     const view = boardView(homeWire, 'TestOrg', 'nope');
     expect(view.empty).toBe(true);
     expect(view.name).toBe('nope');
-    expect(view.rows).toEqual([]);
+    expect(view.lanes.every((lane) => lane.cards.length === 0)).toBe(true);
+    expect(view.read).toEqual({ onYou: 0, rows: 0, running: 0 });
+  });
+
+  /**
+   * A drag shows at once: applyMoves puts a moved card in its target lane
+   * and re-orders inside a lane, without touching the wire.
+   */
+  it('applies a drag to the lanes before the wire catches up', () => {
+    const wire = wireWith([
+      row(task('a', 'first', 'pending', { rank: 1 })),
+      row(task('b', 'second', 'pending', { rank: 2 })),
+    ]);
+    const view = boardView(wire, 'TestOrg', 'proj');
+    const ids = (lanes: typeof view.lanes, key: string) =>
+      lanes.find((lane) => lane.key === key)?.cards.map((card) => card.id);
+
+    // A move to another lane lands at once.
+    const movedUp = applyMoves(view.lanes, { b: { to: 'in_progress', before: null } });
+    expect(ids(movedUp, 'in_progress')).toEqual(['b']);
+    expect(ids(movedUp, 'pending')).toEqual(['a']);
+
+    // A drop above the first card places it there.
+    const ranked = applyMoves(view.lanes, { b: { to: 'pending', before: 'a' } });
+    expect(ids(ranked, 'pending')).toEqual(['b', 'a']);
   });
 
   it('words durations the way the board does', () => {

@@ -254,11 +254,22 @@ impl Workspace {
         Ok(Some(task))
     }
 
-    /// Claim the top of a queue: the row `by_id`, or the first ready row
-    /// of `in_epic` by rank. Owner and in_progress land in one write, the
-    /// attempt ticks, and the claim is refused - by name - for a row a
-    /// live seat holds, a row that is waiting, or a caller already
-    /// working another row.
+    /// The user moves a row's state directly - the drag across the board.
+    /// Any wait the row was holding drops with the move, and the verify
+    /// gate holds for the user's own drag too: a drag into `completed` on a
+    /// verify=user row lands in waiting for a look, not done.
+    pub(crate) fn user_move_task(
+        &self,
+        project_name: &str,
+        id: &TaskId,
+        to: TaskStatus,
+    ) -> Result<Option<Task>, MoveError> {
+        self.update_task(project_name, id, By::User, |task| {
+            task.waiting_on = None;
+            task.status = to;
+        })
+    }
+
     /// The user's approval of a row waiting on their look: the wait
     /// clears, the verify gate is satisfied, and the row completes - a
     /// root closing its tree like any completion.
@@ -324,8 +335,10 @@ impl Workspace {
     }
 
     /// Move a row in its queue: `Top` above everything, `Up` and `Down`
-    /// one place. The whole queue is renumbered in one write, so the
-    /// order a reader sees is the order the next read returns.
+    /// one place, and `Before` where a drag landed - directly above the row
+    /// it was dropped on, or the end of the queue when it names none. The
+    /// whole queue is renumbered in one write, so the order a reader sees is
+    /// the order the next read returns.
     pub(crate) fn rank_task(
         &self,
         project_name: &str,
@@ -345,12 +358,20 @@ impl Workspace {
                 .collect();
             queue.sort_by_key(|i| (tasks[*i].rank.unwrap_or(i64::MAX), tasks[*i].created_at));
             let position = queue.iter().position(|i| *i == index)?;
+            let moved = queue.remove(position);
             let target = match to {
+                // A drag's drop position: the row to sit above, looked up in
+                // the queue the removal leaves, so a drag downwards and one
+                // upwards land alike.
+                RankMove::Before(before) => before
+                    .as_deref()
+                    .and_then(|id| queue.iter().position(|i| tasks[*i].id.as_str() == id))
+                    .unwrap_or(queue.len()),
                 RankMove::Top => 0,
                 RankMove::Up => position.saturating_sub(1),
-                RankMove::Down => (position + 1).min(queue.len() - 1),
+                // The queue is one shorter for the row that just left it.
+                RankMove::Down => (position + 1).min(queue.len()),
             };
-            let moved = queue.remove(position);
             queue.insert(target, moved);
             for (rank, i) in queue.iter().enumerate() {
                 tasks[*i].rank = Some(i64::try_from(rank).unwrap_or(i64::MAX));
@@ -377,6 +398,11 @@ impl Workspace {
         })
     }
 
+    /// Claim the top of a queue: the row `by_id`, or the first ready row
+    /// of `in_epic` by rank. Owner and in_progress land in one write, the
+    /// attempt ticks, and the claim is refused - by name - for a row a
+    /// live seat holds, a row that is waiting, or a caller already
+    /// working another row.
     pub(crate) fn claim_task(
         &self,
         project_name: &str,
@@ -961,6 +987,56 @@ mod tests {
         assert_eq!(last.by, By::User, "the verdict is stamped as the user's own move");
     }
 
+    /// The user drags a row across the board: the state moves, the wait the
+    /// row was holding drops, and the move is stamped as the user's own.
+    #[test]
+    fn a_user_move_moves_the_row_and_clears_its_wait() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        install_db(&ws, dir.path());
+        let mut waiting = sample_task("t-1", "forge");
+        waiting.status = TaskStatus::Waiting;
+        waiting.waiting_on = Some(Waiting {
+            kind: Some(WaitingKind::Dependency),
+            detail: None,
+            on: None,
+            verification: false,
+        });
+        ws.push_task(waiting);
+
+        let moved = ws
+            .user_move_task("forge", &TaskId::from("t-1"), TaskStatus::InProgress)
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(moved.status, TaskStatus::InProgress, "the drag moved the state");
+        assert_eq!(moved.waiting_on, None, "and dropped the wait it was holding");
+        let history = history_of(&ws, "forge");
+        let last = history.last().expect("a last transition");
+        assert_eq!((last.from, last.to), (Some(TaskStatus::Waiting), TaskStatus::InProgress));
+        assert_eq!(last.by, By::User, "the drag is the user's own move");
+    }
+
+    /// The gate holds for the user's own drag too: completing a verify=user
+    /// row lands it in waiting for a look rather than done.
+    #[test]
+    fn a_user_move_still_takes_the_verify_gate() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        let mut row = sample_task("t-1", "forge");
+        row.verify = Some(Verify::User);
+        ws.push_task(row);
+
+        let landed = ws
+            .user_move_task("forge", &TaskId::from("t-1"), TaskStatus::Completed)
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(landed.status, TaskStatus::Waiting, "the gate lands it in waiting");
+        assert!(
+            landed.waiting_on.as_ref().is_some_and(|wait| wait.verification),
+            "as a verification wait"
+        );
+    }
+
     #[test]
     fn a_send_back_returns_the_row_and_ticks_the_attempt() {
         let dir = tempdir().expect("tempdir");
@@ -1029,8 +1105,7 @@ mod tests {
             ws.push_task(Task { rank: Some(rank), ..sample_task(id, "proj") });
         }
 
-        ws.rank_task("proj", &TaskId::from("third"), RankMove::Up).expect("no refusal");
-        let order: Vec<String> = {
+        let order = || -> Vec<String> {
             let mut rows: Vec<(i64, String)> = ws
                 .tasks_for_project("proj")
                 .into_iter()
@@ -1039,10 +1114,19 @@ mod tests {
             rows.sort();
             rows.into_iter().map(|(_, id)| id).collect()
         };
+
+        ws.rank_task("proj", &TaskId::from("third"), RankMove::Up).expect("no refusal");
         assert_eq!(
-            order,
+            order(),
             vec!["first", "third", "second"],
             "up moves the row one place toward the front, past its neighbour",
+        );
+
+        ws.rank_task("proj", &TaskId::from("third"), RankMove::Down).expect("no refusal");
+        assert_eq!(
+            order(),
+            vec!["first", "second", "third"],
+            "down moves it one place back, to where it started",
         );
 
         ws.rank_task("proj", &TaskId::from("third"), RankMove::Top).expect("no refusal");
@@ -1052,6 +1136,46 @@ mod tests {
             .min_by_key(|t| t.rank.unwrap_or(i64::MAX))
             .expect("a row");
         assert_eq!(top.id, TaskId::from("third"), "top puts it above everything");
+    }
+
+    /// A drag's drop position is a rank: the row sits directly above the row
+    /// it was dropped on, and a drop below everything is the end of the lane.
+    #[test]
+    fn a_drop_position_ranks_the_row_where_it_landed() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-drop");
+        for (id, rank) in [("first", 0), ("second", 1), ("third", 2)] {
+            ws.push_task(Task { rank: Some(rank), ..sample_task(id, "proj") });
+        }
+
+        let order = || -> Vec<String> {
+            let mut rows: Vec<(i64, String)> = ws
+                .tasks_for_project("proj")
+                .into_iter()
+                .map(|t| (t.rank.unwrap_or(i64::MAX), t.id.as_str().to_owned()))
+                .collect();
+            rows.sort();
+            rows.into_iter().map(|(_, id)| id).collect()
+        };
+
+        // Dragged DOWN past its neighbours: the row it lands above is found
+        // in the queue the drag leaves, so "first" sits directly above
+        // "third" rather than at the end behind it.
+        ws.rank_task("proj", &TaskId::from("first"), RankMove::Before(Some("third".to_owned())))
+            .expect("no refusal");
+        assert_eq!(
+            order(),
+            vec!["second", "first", "third"],
+            "the drop lands directly above the row it was dropped on",
+        );
+
+        ws.rank_task("proj", &TaskId::from("second"), RankMove::Before(None)).expect("no refusal");
+        assert_eq!(
+            order(),
+            vec!["first", "third", "second"],
+            "and a drop below every card is the end of the queue",
+        );
     }
 
     #[test]
