@@ -1306,6 +1306,22 @@ export class Chat {
       // held under the name its row already had, and the copy the page carried
       // is the same turn rather than another row to keep beside it.
       const inPage = new Set(drawn.flatMap((turn) => [turn.key, ...(turn.also ?? [])]));
+      // **A newest page that shares no frame with what was held is a
+      // different reach of the conversation**, matched by the merge's own
+      // frame carries - a repeated row, a live row's copy, a row the fold cut
+      // at a mid-turn prompt. The turns in between are in no page, and
+      // `older()` walks from the OLDEST held - so keeping the stale tail
+      // above the new page stranded them mid-column for good (rule 25's
+      // rows). The page's own cursor is the walk-back, so the held turns go
+      // with this merge and a reader scrolling up loads the history again
+      // from the transcript.
+      const reachesHeld =
+        direction === 'older' ||
+        healed.turns.some((turn) =>
+          turn.messages.some((message) =>
+            pageRows.some((row) => carries(messagesOf(row), message)),
+          ),
+        );
       // A row being written is not the page's to drop either way: `live` is a
       // turn the frames built, and `running` is the newest row of a seat the
       // core says has a turn in flight.
@@ -1336,10 +1352,12 @@ export class Chat {
         // send the walk to the top of the conversation and fetch every page
         // between a second time. Only a page asked for BY cursor moves the
         // walk, and the first page establishes it.
-        cursor: direction === 'older' || !held.loaded ? cursor : held.cursor,
+        cursor: direction === 'older' || !held.loaded || !reachesHeld ? cursor : held.cursor,
         prepends: held.prepends + (direction === 'older' ? 1 : 0),
         turns:
-          direction === 'older' ? [...drawn, ...rest, ...loose] : [...rest, ...drawn, ...loose],
+          direction === 'older'
+            ? [...drawn, ...rest, ...loose]
+            : [...(reachesHeld ? rest : []), ...drawn, ...loose],
       });
     });
   }

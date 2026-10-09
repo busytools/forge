@@ -313,6 +313,31 @@ describe('the conversation the chat draws', () => {
   });
 
   /**
+   * A return after more than one page of away turns drops the stale tail
+   * rather than stranding the gap: the held turns and the new page share
+   * nothing, the turns in between are in no page, and older() walks from the
+   * OLDEST held - so the middle was unreachable for good (rule 25's rows).
+   * The page's own cursor is the walk-back, so scrolling up loads the
+   * history again from the transcript.
+   */
+  it("drops the stale tail when the return's page does not reach it", () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'kept tail')], 'tail-cursor'));
+
+    chat.leaving();
+    chat.showing();
+    server.send(page([turn('t2', 'a new turn')], 'newest-cursor'));
+
+    const held = get(chat.value);
+    expect(words(chat), 'the unreachable tail is gone').not.toContain('kept tail');
+    expect(words(chat), 'and the newest page draws').toContain('a new turn');
+    expect(held.cursor, "the walk-back is the page's own cursor").toBe('newest-cursor');
+    stop();
+  });
+
+  /**
    * The core's own line, which no transcript holds: the CLI never wrote a row
    * for it, so this store is the only place it can be drawn from.
    */
