@@ -427,6 +427,34 @@ mod tests {
         assert!(!row(&rows, "new").marks.no_movement, "a fresh touch is movement");
     }
 
+    /// A row can be Pending and still not ready. The wait outlives the status
+    /// a mover left on it - a `tasks__update` to `pending` does not clear
+    /// `waiting_on` - and `claim_task` refuses exactly that row, so a mark
+    /// that read the status alone would say ready where the claim says no.
+    #[test]
+    fn a_pending_row_holding_a_wait_is_not_ready() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let mut held = task("t-held", TaskStatus::Pending);
+        held.waiting_on = Some(Waiting {
+            kind: Some(WaitingKind::Dependency),
+            detail: None,
+            on: None,
+            verification: false,
+        });
+        ws.seed_test_task(held);
+        ws.seed_test_task(task("t-plain", TaskStatus::Pending));
+
+        let rows = ws.board_rows(PROJECT, epoch(10), WINDOW);
+        assert!(
+            !row(&rows, "t-held").marks.ready,
+            "a wait the status does not show still blocks a claim",
+        );
+        // The control: the mark can say ready, so the assertion above is
+        // reading the conjunct rather than a mark that never fires.
+        assert!(row(&rows, "t-plain").marks.ready, "the plain row is the one a seeker can take");
+    }
+
     #[test]
     fn a_waiting_row_past_the_window_carries_waiting_too_long() {
         let dir = tempdir().expect("tempdir");
