@@ -150,10 +150,11 @@ describe('the salvage copies', () => {
     // pages carry different numbers of tokens. A count that moves means the
     // sweep's reach moved - a page gone, or a page that stopped declaring a
     // palette - and both are the drift this test exists for.
-    // 157 before the board page landed, which declares the same 14-token
-    // set every page does: the count moving is the sweep's reach moving,
-    // which is exactly what this assertion is for.
-    expect(compared, 'the sweep no longer reaches the same tokens').toBe(171);
+    // 157 before the board page landed, and 171 while the board drew its rows
+    // as a list. The lanes board waits its strip on `--sel`, which the page
+    // now declares, so the page is one token richer: the count moving is the
+    // sweep's reach moving, which is exactly what this assertion is for.
+    expect(compared, 'the sweep no longer reaches the same tokens').toBe(172);
   });
 
   /**

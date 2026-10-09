@@ -1,11 +1,11 @@
 # Board
 
 One project's task board, opened as a takeover at
-`/board/{org}/{project}`: the rows ranked as the lead would dispatch them,
-the ones waiting on the reader, and the controls that move them. The fleet
-stays the glance; this is the world. Nothing of any other project appears
-here. The drawing it is held against is [web-board.html](./web-board.html),
-beside this page.
+`/board/{org}/{project}`: a slim bar, the rows waiting on the reader, the
+project's cards in lanes by state, and the line that cuts a new row. The
+fleet stays the glance; this is the world. Nothing of any other project
+appears here. The drawing it is held against is
+[web-board.html](./web-board.html), beside this page.
 
 It is reached from two doors: the project's row on the [home](./home.md),
 and the tasks strip in a session's chat, which carries `open board` first in
@@ -14,36 +14,43 @@ they came from, and a deep link with nothing to go back to lands on the
 home.
 
 The page draws from the same `home` snapshot the fleet does - a project's
-rows ride in that project's entry - so a board open beside the fleet updates
-from the same stream, and the 30-second chase sweep's announcement moves the
-ages and marks here without a reader doing anything.
+rows ride in that project's entry - so the board is live off the same
+subscription: a seat that claims a row, a row that is cut, a move made in
+another view all arrive as an update, and the page re-reads without the
+reader doing anything.
 
 ## What it draws
 
 | Region | Shows | Read from |
 |---|---|---|
-| Top bar | the project's name, `back`, `done` | the route and the snapshot |
-| Seats | one chip per seat this project holds, linking to its session page | `agents` filtered to the project |
+| Top bar | `back`, the project's name with its own read (`N waiting on you`, `N rows`, `N running`), `done` | the route and the snapshot |
+| Seats | one chip per seat this project holds, linking to its session page; a card dropped on one assigns it | `agents` filtered to the project |
 | Waiting on you | the rows whose wait is a decision: the verify gate (`approve`, a words box, `send back`) or a worker's question (an answer box) | `waiting_on` with `kind: decision` |
-| Rows | the ranked tree, two levels deep: an epic, then its children | `projects[].rows`, ranked by `rank` then creation |
+| Lanes | every card, in its state's lane | `projects[].rows` |
 | Create | a subject box, an epic picker and `+ add`, which files the row at the queue's end | `task_create` |
 
-**Every control is one command on the socket, carrying this project on it.**
-The page holds no state of its own beyond what is typed: `task_rank` moves a
-row, `task_assign` changes its owner, `task_verdict` approves or sends back a
-verify row, `task_answer` answers a question, `task_create` files a row. A
-refused edit says so on the service line rather than silently reverting, and
-every one of them stamps the change as the user's.
+## The lanes
 
-## A row
+Six lanes, always drawn in this order, because a missing lane would read as
+a missing state: **In progress**, **Waiting**, **Ready** (pending),
+**Completed**, **Failed**, **Canceled**. A lane is a name, its count and a
+rule, with its cards under it - no box around the column - and the lanes wrap
+to a second row rather than scroll sideways.
 
-A row is one grid, left to right: the status mark, the subject, the owner,
-the worked time against the estimate, the chips, the links, and the controls.
-A row in progress displays its `active_form` where it has one, because that
-is what the reader wants to know - subjects are what a row is, active forms
-are what it is doing. A completed row's subject is struck through. A child
-sits indented under its epic, and a parent carries a `done/total` rollup of
-its children beside its own chips.
+### A card
+
+Three lines, top to bottom:
+
+- the mark, then the subject. A row in progress displays its `active_form`
+  where it has one, with the subject under it, because that is what the
+  reader wants to know - subjects are what a row is, active forms are what it
+  is doing. A completed row's subject is struck through.
+- the owner (their initial in a disc, linking to their session page, or
+  `unclaimed`), the epic it belongs under where it has one, its links, and
+  its chips - with a `done/total` rollup beside them on a parent.
+- worked time against the estimate with the measure under it, and how long
+  since the row last moved (`wrote 12s ago`, breathing while the row is
+  running and recently wrote).
 
 The mark carries shape as well as colour, so the board reads without colour:
 
@@ -74,16 +81,37 @@ The chips are the server's derived marks, named in words:
 The links come off the row's own list: a URL follows in a new tab under its
 label, and a path or a branch draws as text rather than a dead anchor.
 
+## Moving a card
+
+The drag is the board's interaction, and what the card lands on decides the
+command: another lane is a move (`task_move`), a position inside its own lane
+is a re-rank by drop position (`task_rank`), and a seat chip is an assignment
+(`task_assign`). A press that never passes six pixels is a click, not a drag.
+A dropped card lands where it was put at once and the wire's own snapshot
+reconciles it a moment later; it animates into place unless the reader has
+asked for reduced motion, and the card under the pointer tilts and lifts.
+
+The keyboard has the same power without a row of buttons: the arrow keys on
+a focused card re-order it within its lane, and the owner picker on the card
+is a control like any other.
+
+**Every control is one command on the socket, carrying this project on it.**
+`task_move` moves a row between lanes, `task_rank` re-orders it,
+`task_assign` changes its owner, `task_verdict` approves or sends back a
+verify row, `task_answer` answers a question, `task_create` files a row. A
+refused edit says so on the service line rather than silently reverting, and
+every one of them stamps the change as the user's.
+
 ## The states the page can be in
 
 - **A board**, the ordinary case.
-- **Waiting on the reader**: the section draws only when at least one row's
+- **Waiting on the reader**: the strip draws only when at least one row's
   wait is a decision. Its absence is not a state - an empty frame above the
-  rows would read as a board with nothing for the reader, which is a
-  different claim from the section not being there.
-- **Empty**: a project with no live rows draws one line naming the two moves
-  it has - cut an epic in the create line, or ask the lead - rather than a
-  bare list.
+  cards would read as a board with nothing for the reader, which is a
+  different claim from the strip not being there.
+- **Empty**: a project with no live rows draws one line naming its two moves
+  - cut a row in the create line, or tell the lead what is next - with the
+  six lanes still drawn under it.
 - **Before the first frame**: a route can be addressed before the snapshot
   lands, and a project the snapshot does not carry reads as an empty board
   under its name. The page arrives with the connection rather than drawing a
@@ -93,9 +121,8 @@ label, and a path or a branch draws as text rather than a dead anchor.
 
 ## The two widths
 
-Checked at **1600** and at **430**, against the drawing beside it. The
-board's own collapse is at 900: the row keeps three columns - mark, subject,
-controls - and the owner, the worked time, the chips and the links drop to
-lines under the subject. Every control a finger reaches takes a 44px target
-under `@media (pointer: coarse)`, and nothing overflows horizontally at
-either width.
+Checked at **1600** and at **430**, against the drawing beside it. The lanes
+are a grid of `minmax(260px, 1fr)` columns, so a wide window fits them side
+by side, a phone stacks them, and neither scrolls sideways. Every control a
+finger reaches takes a 44px target under `@media (pointer: coarse)`, and the
+drag is a pointer gesture, so it is the same one under a finger.
