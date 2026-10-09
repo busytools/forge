@@ -7,6 +7,7 @@ import type {
   AgentRow,
   BoardRow,
   DictateModel,
+  FleetRow,
   HomeWire,
   Lifecycle,
   ProjectWire,
@@ -69,7 +70,6 @@ import {
   artifactLabel,
   availableVersion,
   chipFor,
-  countsOf,
   elapsedLabel,
   fleetRows,
   gateLine,
@@ -79,11 +79,10 @@ import {
   homeView,
   markOf,
   modelState,
+  projectRows,
   refusal,
-  waitingOn,
   whenOf,
-  type HomeView,
-  type OrgSection,
+  type ProjectRows,
   type Row,
   type RowState,
 } from './view';
@@ -116,8 +115,8 @@ describe('the row marks', () => {
     // Nothing the sheet styles is unreachable, and nothing drawn is unstyled.
     // Read from the sheet rather than a list here, which could only ever fail
     // on a rename inside this table - the inverse of what it is for.
-    // `unopenable` is not a state: it says whether the row is a link, and
-    // Row.test.ts pins which rows draw it.
+    // `unopenable` is not a state: it says whether a row is a link, and the
+    // rail draws it.
     const sheet = readFileSync(new URL('../assets/web.css', import.meta.url), 'utf8');
     const styled = new Set([...sheet.matchAll(/\.row\.([a-z-]+)/g)].map((match) => match[1]));
     styled.delete('unopenable');
@@ -143,7 +142,22 @@ const FLEET: HomeWire = {
     agent('Busytools', 'notes', 'lead', 'Sleeping'),
     agent('Personal', 'dotfiles', 'lead', 'Idle'),
   ],
+  // The glance, one row per project: the fleet row names only its PROJECT,
+  // and the org it draws comes from the projects list beside it.
+  fleet: [fleetRow('forge', 2), fleetRow('notes', 1), fleetRow('dotfiles', 1)],
 };
+
+/** One fleet row's counts, whose project the fixture's orgs resolve. */
+function fleetRow(project: string, live: number): FleetRow {
+  return {
+    project,
+    live_workers: live,
+    slots: 2,
+    queue: 0,
+    waiting_on_user: 0,
+    misses: [],
+  };
+}
 
 /** One board row for a task, with no derived facts - what a test overrides. */
 function boardRow(task: Task): BoardRow {
@@ -254,18 +268,21 @@ function first<T>(items: T[], what: string): T {
   return head;
 }
 
-/** The org of that name, which the fixtures below all have. */
-function orgNamed(view: HomeView, name: string): OrgSection {
-  const org = view.orgs.find((section) => section.name === name);
-  if (org === undefined) throw new Error(`${name} is not in this view`);
-  return org;
+/**
+ * A project's own rows, from the wire: the lead, and its workers under it.
+ *
+ * The home's page draws the FLEET (one row per project), and these are what
+ * its board and session pages read a project's seats from - so the fixtures
+ * below reach them through the same function those pages do rather than
+ * through a view shape no production page holds.
+ */
+function rowsOf(wire: HomeWire, at = 0): ProjectRows {
+  return projectRows(wire, first(wire.projects.slice(at), 'project'));
 }
 
-/** The first row of the first project, which every fixture here draws. */
-function leadOf(view: HomeView): Row {
-  const entry = first(view.orgs, 'org').projects[0];
-  if (entry === undefined) throw new Error('the first org carries no project');
-  return entry.lead;
+/** The first project's lead row, which every fixture here draws. */
+function leadOf(wire: HomeWire): Row {
+  return rowsOf(wire).lead;
 }
 
 const PROJECT = first(homeWire.projects, 'project');
@@ -290,27 +307,24 @@ const LEAD_ROW: Row = {
 describe('the fleet the snapshot describes', () => {
   /**
    * One fixture is one project with one agent, so a second org, a second
-   * project in an org and any worker row are unreachable. Three separate
-   * readings go wrong on a real fleet and none of them on the fixture: an
-   * org's live count, the name a worker row carries, and the header's two
-   * numbers swapped.
+   * project in an org and any worker row are unreachable. Two readings go
+   * wrong on a real fleet and none of them on the fixture: the name a worker
+   * row carries, and the header's two numbers swapped.
    */
-  it('puts each project under its own org and counts what is live', () => {
-    const view = homeView(FLEET, '');
-    expect(view.orgs.map((org) => org.name)).toEqual(['Busytools', 'Personal']);
-    expect(countsOf(orgNamed(view, 'Busytools'))).toBe('2 live');
-    expect(countsOf(orgNamed(view, 'Personal'))).toBe('1 live');
-    expect(orgNamed(view, 'Busytools').projects.map((entry) => entry.lead.name)).toEqual([
-      'forge',
-      'notes',
+  it('reads every project of every org, and each one its own row', () => {
+    const fleet = fleetRows(FLEET);
+    expect(fleet.map((row) => `${row.org}/${row.name}`)).toEqual([
+      'Busytools/forge',
+      'Busytools/notes',
+      'Personal/dotfiles',
     ]);
   });
 
   it('names a worker row for the worker and only the lead for its project', () => {
-    const forge = homeView(FLEET, '').orgs[0]?.projects[0];
-    expect(forge?.lead.name).toBe('forge');
-    expect(forge?.workers.map((worker) => worker.name)).toEqual(['w1']);
-    expect(forge?.workers[0]?.slot.label).toBe('w1');
+    const forge = rowsOf(FLEET);
+    expect(forge.lead.name).toBe('forge');
+    expect(forge.workers.map((worker) => worker.name)).toEqual(['w1']);
+    expect(forge.workers[0]?.slot.label).toBe('w1');
   });
 
   it('counts agents and projects as themselves, not one as the other', () => {
@@ -422,7 +436,7 @@ describe('the fleet the snapshot describes', () => {
       ],
     };
 
-    const entry = first(first(homeView(wire, '').orgs, 'org').projects, 'project');
+    const entry = rowsOf(wire);
     expect(entry.lead.place, "the lead's own tree is the read").toEqual({
       branch: 'main',
       files: '3 files',
@@ -439,46 +453,26 @@ describe('the fleet the snapshot describes', () => {
 
     // A project nobody has started has no seat to read, so its row keeps the
     // project's own read: the cell is filled for a project that has never run.
-    const dormant = first(
-      first(homeView({ ...wire, agents: [] }, '').orgs, 'org').projects,
-      'project',
-    );
+    const dormant = rowsOf({ ...wire, agents: [] });
     expect(dormant.lead.place, "a dormant project's row lost the project's own read").toEqual({
       branch: 'main',
       files: '3 files',
     });
   });
-
-  it('says what it counts for every shape of org', () => {
-    const busytools = (wire: HomeWire) => orgNamed(homeView(wire, ''), 'Busytools');
-    // Every agent of one project gone, which leaves that project dormant and
-    // its sibling live. Dropping only the lead would not: a worker row still
-    // means somebody started it.
-    const withoutForge: HomeWire = {
-      ...FLEET,
-      agents: FLEET.agents.filter((row) => row.slot.project !== 'forge'),
-    };
-
-    expect(countsOf(busytools({ ...FLEET, agents: [] })), 'nothing live').toBe('2 asleep');
-    expect(countsOf(busytools(FLEET)), 'nothing asleep').toBe('2 live');
-    expect(countsOf(busytools(withoutForge)), 'both').toBe('1 live \u{b7} 1 asleep');
-  });
 });
 
 describe('a row over the fleet', () => {
-  it('groups a project under its org and names the lead row for the project', () => {
+  it('names the lead row for the project', () => {
     const view = homeView(homeWire, '127.0.0.1:8790');
-    const org = orgNamed(view, 'TestOrg');
-    expect(org.projects).toHaveLength(1);
+    expect(view.fleet).toHaveLength(1);
     // The lead's label is its identity, not what the row is called here.
-    expect(leadOf(view).name).toBe('proj');
-    expect(leadOf(view).slot.label).toBe('lead');
-    expect(countsOf(org)).toBe('1 live');
+    expect(leadOf(homeWire).name).toBe('proj');
+    expect(leadOf(homeWire).slot.label).toBe('lead');
   });
 
   it('reads the fixture the server pinned, with only the ask promoted', () => {
     const view = homeView(homeWire, 'ws://127.0.0.1:8790/socket');
-    const lead = view.orgs[0]?.projects[0]?.lead;
+    const lead = rowsOf(homeWire).lead;
     // The fixture's lead holds a permission prompt beside an Idle lifecycle -
     // a pairing this fixture was hand-made with - and the ask is what the row
     // reads (#1885).
@@ -516,7 +510,7 @@ describe('a row over the fleet', () => {
       projects: [{ ...PROJECT, project: { ...PROJECT.project, sessions } }],
     });
 
-    const lead = leadOf(homeView(withSessions([]), ''));
+    const lead = leadOf(withSessions([]));
     expect(lead.state).toEqual({ kind: 'never-started' });
     expect(whenOf(lead, Date.now())).toBe('never');
 
@@ -524,8 +518,8 @@ describe('a row over the fleet', () => {
     // restart leaves every project in that case, so reading the lifecycle
     // alone would call the whole fleet new.
     expect(
-      homeView(withSessions([{ last_activity: { secs_since_epoch: 0, nanos_since_epoch: 0 } }]), '')
-        .orgs[0]?.projects[0]?.lead.state,
+      rowsOf(withSessions([{ last_activity: { secs_since_epoch: 0, nanos_since_epoch: 0 } }])).lead
+        .state,
     ).toEqual({ kind: 'lifecycle', lifecycle: 'Sleeping' });
   });
 
@@ -536,18 +530,18 @@ describe('a row over the fleet', () => {
       ...homeWire,
       agents: [{ ...AGENT, pending: null, has_background_work }],
     });
-    expect(homeView(wire(true), '').orgs[0]?.projects[0]?.lead.state).toEqual({
+    expect(rowsOf(wire(true)).lead.state).toEqual({
       kind: 'lifecycle',
       lifecycle: 'Running',
     });
-    expect(homeView(wire(false), '').orgs[0]?.projects[0]?.lead.state).toEqual({
+    expect(rowsOf(wire(false)).lead.state).toEqual({
       kind: 'lifecycle',
       lifecycle: 'Idle',
     });
   });
 
   it('draws an empty fleet as the empty state rather than a broken page', () => {
-    expect(homeView({ ...homeWire, projects: [], agents: [] }, '').orgs).toEqual([]);
+    expect(fleetRows({ ...homeWire, projects: [], agents: [], fleet: [] })).toEqual([]);
   });
 
   it('names the two refusals, and neither when a spawn would run', () => {
@@ -583,8 +577,7 @@ describe('the cells the reshape made drawable', () => {
    */
   it('draws the branch and the count, and nothing for a count of zero', () => {
     const place = (changed: number | null) =>
-      leadOf(homeView(withAgentRow({ work: { branch: 'main', changed, gate: 'in_repo' } }), ''))
-        .place;
+      leadOf(withAgentRow({ work: { branch: 'main', changed, gate: 'in_repo' } })).place;
     expect(place(3)).toEqual({ branch: 'main', files: '3 files' });
     expect(place(1)).toEqual({ branch: 'main', files: '1 file' });
     expect(place(0)).toEqual({ branch: 'main', files: null });
@@ -599,7 +592,7 @@ describe('the cells the reshape made drawable', () => {
    */
   it('shows the task furthest from done, not the first held', () => {
     const held = leadOf(
-      homeView(withRow({ tasks: [task('completed', 'shipped'), task('in_progress', 'now')] }), ''),
+      withRow({ tasks: [task('completed', 'shipped'), task('in_progress', 'now')] }),
     );
     expect(held.task?.subject).toBe('now');
     expect(held.task?.chip).toBe('in progress');
@@ -622,10 +615,10 @@ describe('the cells the reshape made drawable', () => {
       unseen: [slot],
     };
 
-    expect(leadOf(homeView(marked, '')).state).toEqual({ kind: 'unseen' });
+    expect(leadOf(marked).state).toEqual({ kind: 'unseen' });
     // The same seat with nothing unseen is idle, so the mark is the list
     // rather than the lifecycle.
-    expect(leadOf(homeView({ ...marked, unseen: [] }, '')).state).toEqual({
+    expect(leadOf({ ...marked, unseen: [] }).state).toEqual({
       kind: 'lifecycle',
       lifecycle: 'Idle',
     });
@@ -638,7 +631,7 @@ describe('the cells the reshape made drawable', () => {
    */
   it('marks a seat whose newest turn failed, over every other promotion', () => {
     const at = { secs_since_epoch: 1_800_000_000, nanos_since_epoch: 0 };
-    const failed = leadOf(homeView(withAgentRow({ failed_turn: at }), ''));
+    const failed = leadOf(withAgentRow({ failed_turn: at }));
 
     expect(failed.state).toEqual({ kind: 'failed-turn' });
     expect(failed.failedTurn).toEqual(at);
@@ -652,7 +645,7 @@ describe('the cells the reshape made drawable', () => {
       agents: [{ ...AGENT, failed_turn: at, has_background_work: true }],
       unseen: [slot],
     };
-    expect(leadOf(homeView(busy, '')).state).toEqual({ kind: 'failed-turn' });
+    expect(leadOf(busy).state).toEqual({ kind: 'failed-turn' });
   });
 
   /**
@@ -660,9 +653,7 @@ describe('the cells the reshape made drawable', () => {
    * `where` cell that reads as "no branch".
    */
   it('says why a row has no branch to show', () => {
-    const row = leadOf(
-      homeView(withAgentRow({ work: { branch: null, changed: null, gate: 'gone' } }), ''),
-    );
+    const row = leadOf(withAgentRow({ work: { branch: null, changed: null, gate: 'gone' } }));
     expect(gateLine('gone')).toBe('its working directory is not there');
     // The gate line is what the row's `what` cell falls back to, so a row
     // with no pending, no task and no refusal still says something.
@@ -887,16 +878,13 @@ describe('the band', () => {
 });
 
 describe('what a row says', () => {
-  it('names the two asks differently', () => {
-    expect(waitingOn('question')).toBe('asked you a question');
-    expect(waitingOn('permission')).toBe('a permission prompt is waiting');
-  });
-
   it('reads a task status as a chip', () => {
     expect(chipFor('in_progress')).toBe('in progress');
     expect(chipFor('completed')).toBe('done');
     expect(chipFor('pending')).toBe('pending');
-    expect(chipFor('blocked')).toBe('blocked');
+    // The status a wait is spelled with now, which the fallback words for the
+    // strip: the vocabulary moved to `waiting` when it left `blocked` behind.
+    expect(chipFor('waiting')).toBe('waiting');
   });
 
   /**
@@ -910,7 +898,7 @@ describe('what a row says', () => {
    */
   it('narrows a lifecycle it does not know as the snapshot is read', () => {
     const unknown = { ...FLEET, agents: [{ ...FLEET_AGENT, lifecycle: 'Resting' as never }] };
-    const lead = homeView(homeFrom(unknown), '').orgs[0]?.projects[0]?.lead;
+    const lead = rowsOf(homeFrom(unknown)).lead;
     expect(lead?.state).toEqual({ kind: 'lifecycle', lifecycle: 'Idle' });
   });
 
@@ -930,7 +918,7 @@ describe('what a row says', () => {
 
   it('narrows a pending kind it does not know', () => {
     const unknown = { ...FLEET, agents: [{ ...FLEET_AGENT, pending: 'elicit' as never }] };
-    expect(homeView(homeFrom(unknown), '').orgs[0]?.projects[0]?.lead.pending).toBe('permission');
+    expect(rowsOf(homeFrom(unknown)).lead.pending).toBe('permission');
   });
 
   /**
