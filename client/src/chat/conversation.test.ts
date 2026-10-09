@@ -3077,6 +3077,40 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
     stop();
   });
 
+  /**
+   * A reconnect that takes the queue with it must not leave a held row standing
+   * empty: clearing the hold bookkeeping without the row strands it, no drain
+   * can fill it, and the page that later carries the prompt draws it again.
+   */
+  it('releases a held row when a reconnect takes the queue that held it', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'kept')], null));
+
+    server.update({ chat_appended: { key: LEAD, msg: forgedUnder('the words', 'p1') } });
+    server.update({ prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'the words' } });
+    expect(get(chat.value).turns.at(-1)?.held, 'precondition: the row is held').toBe(true);
+
+    // The process is gone, and its queue with it.
+    server.update({ connected: { key: LEAD, session_id: 's-2', cwd: '/tmp' } });
+
+    expect(
+      get(chat.value).turns.some((row) => row.held === true),
+      'no row is left held',
+    ).toBe(false);
+
+    // And a page carrying the same prompt draws it once, not beside a blank row.
+    server.send(
+      page([turn('t1', 'kept'), { key: null, messages: [forgedUnder('the words', 'p1')] }], null),
+    );
+    const rows = get(chat.value).turns.filter((row) =>
+      JSON.stringify(row.messages).includes('the words'),
+    );
+    expect(rows, 'the words draw in one row').toHaveLength(1);
+    stop();
+  });
+
   it('pairs the drained row with the page copy carried by its attachment', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);

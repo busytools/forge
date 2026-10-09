@@ -1615,6 +1615,11 @@ export class Chat {
     // coming for anything it held, so the waits go rather than standing
     // forever. A fresh connect is the same fact from the other side.
     if (variant === 'connected') {
+      // A process that is gone takes its queue with it - and a row the hold
+      // already emptied is drawn bare rather than left standing empty: cleared
+      // bookkeeping alone strands it, no drain fills it, and the page that
+      // later carries the prompt draws it a second time beside the blank row.
+      this.releaseHeld();
       this.waiting.clear();
       this.drained.clear();
       return;
@@ -1850,6 +1855,18 @@ export class Chat {
     this.waiting.delete(uuid);
     this.drained.delete(uuid);
     if (held !== undefined) this.append(held);
+  }
+
+  /**
+   * Draw every held row bare, its queue forgotten.
+   *
+   * A hold whose bookkeeping is being cleared - a reconnect, a failed
+   * connection - would otherwise leave an emptied row that no drain fills and
+   * no page reconciles. The words come back the way a settled ask's do.
+   */
+  private releaseHeld(): void {
+    for (const uuid of [...this.drained.keys()]) this.release(uuid);
+    for (const uuid of [...this.waiting.keys()]) this.release(uuid);
   }
 
   /**
