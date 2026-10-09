@@ -933,6 +933,33 @@ describe('what a row says', () => {
     expect(homeView(homeFrom(unknown), '').orgs[0]?.projects[0]?.lead.pending).toBe('permission');
   });
 
+  /**
+   * The name a project's rows crossed under one protocol back. A v7 forge
+   * sends `tasks` where this client reads `rows`, and the read is where that
+   * is absorbed: without it a client newer than its server throws on
+   * `undefined.map` while drawing, which is the shape a same-version skew
+   * takes - and one nothing refuses, because the versions match.
+   */
+  it('reads a project rows sent under their older name', () => {
+    const first = homeWire.projects[0];
+    if (first === undefined) throw new Error('the fixture holds no project');
+    const stepBack = {
+      ...homeWire,
+      projects: [{ ...first, rows: undefined, tasks: first.rows }],
+    } as unknown as HomeWire;
+    expect(homeFrom(stepBack).projects[0]?.rows.length, 'the rows did not cross').toBe(
+      first.rows.length,
+    );
+
+    // And a server that sends neither name leaves an empty board rather than
+    // failing the whole read.
+    const neither = {
+      ...homeWire,
+      projects: [{ ...first, rows: undefined, tasks: undefined }],
+    } as unknown as HomeWire;
+    expect(homeFrom(neither).projects[0]?.rows).toEqual([]);
+  });
+
   it('narrows an account state it does not know', () => {
     const unknown: HomeWire = {
       ...homeWire,

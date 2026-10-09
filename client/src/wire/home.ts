@@ -393,25 +393,33 @@ export function homeFrom(data: HomeWire): HomeWire {
           ? null
           : { ...agent.work, gate: narrow(agent.work.gate, GATES, 'in_repo') },
     })),
-    projects: data.projects.map((row) => ({
-      ...row,
-      work: { ...row.work, gate: narrow(row.work.gate, GATES, 'in_repo') },
-      rows: row.rows.map((entry) => ({
-        ...entry,
-        task: {
-          ...entry.task,
-          status: narrow(entry.task.status, TASK_STATUSES, 'pending'),
-          // The link kinds and the verify flag are unions of literals, so
-          // they are narrowed here like every other union that enters.
-          verify:
-            entry.task.verify === null ? null : narrow(entry.task.verify, VERIFY_VALUES, 'none'),
-          links: entry.task.links.map((link) => ({
-            ...link,
-            kind: narrow(link.kind, LINK_KINDS, 'other'),
-          })),
-        },
-      })),
-    })),
+    projects: data.projects.map((row) => {
+      // **The one step back.** A forge at protocol 7 sends the same rows under
+      // `tasks`; the name moved with the board, so a client newer than its
+      // server reads the old one rather than drawing nothing. The cast is this
+      // boundary's own - the payload is typed as today's shape, and the fields
+      // a move left behind are what is being read.
+      const legacy = row as { rows?: BoardRow[]; tasks?: BoardRow[] };
+      return {
+        ...row,
+        work: { ...row.work, gate: narrow(row.work.gate, GATES, 'in_repo') },
+        rows: (legacy.rows ?? legacy.tasks ?? []).map((entry) => ({
+          ...entry,
+          task: {
+            ...entry.task,
+            status: narrow(entry.task.status, TASK_STATUSES, 'pending'),
+            // The link kinds and the verify flag are unions of literals, so
+            // they are narrowed here like every other union that enters.
+            verify:
+              entry.task.verify === null ? null : narrow(entry.task.verify, VERIFY_VALUES, 'none'),
+            links: entry.task.links.map((link) => ({
+              ...link,
+              kind: narrow(link.kind, LINK_KINDS, 'other'),
+            })),
+          },
+        })),
+      };
+    }),
     // The misses are the one member here that is a union of shapes rather
     // than a union of literals, so they are narrowed by `missFrom` rather
     // than by `narrow` - and a shape this client is older than survives as

@@ -857,6 +857,23 @@ fn frames_record() -> Value {
             }),
         }),
     );
+    // **The home snapshot's own shape, which nothing sampled before v8.** The
+    // board renamed a project's `tasks` to `rows` and every census line stayed
+    // put: the record pinned the frames and not this payload, so the field a
+    // v7 client reads as `undefined` was invisible in the diff a bump is read
+    // from. Read as JSON rather than built, because the fixture is the
+    // server's own committed snapshot - the same bytes its wire test
+    // round-trips.
+    payload_sampled.insert(
+        "SnapshotHome".to_owned(),
+        shape_of(&ServerMessage::Snapshot {
+            subject: Subject::Home,
+            data: serde_json::from_str::<Value>(include_str!(
+                "../../forge-server/tests/wire_fixtures/home.json"
+            ))
+            .expect("the home fixture parses"),
+        }),
+    );
 
     json!({
         "server_message": named(SERVER_MESSAGE_VARIANTS),

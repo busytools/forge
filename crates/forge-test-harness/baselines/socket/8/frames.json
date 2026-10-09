@@ -144,6 +144,12 @@
     "SpawnWorker": "spawn_worker",
     "StartDefault": "start_default",
     "SubmitReview": "submit_review",
+    "TaskAnswer": "task_answer",
+    "TaskAssign": "task_assign",
+    "TaskCreate": "task_create",
+    "TaskMove": "task_move",
+    "TaskRank": "task_rank",
+    "TaskVerdict": "task_verdict",
     "ToggleMcpServer": "toggle_mcp_server",
     "UpsertReviewThread": "upsert_review_thread"
   },
@@ -484,6 +490,195 @@
       ],
       "/turns[]/messages[]": [
         "type"
+      ]
+    },
+    "SnapshotHome": {
+      "": [
+        "data",
+        "kind",
+        "subject"
+      ],
+      "/data": [
+        "accounts",
+        "agents",
+        "cli_version",
+        "connectors",
+        "dictate",
+        "fatal_error",
+        "fleet",
+        "forge_version",
+        "forge_version_short",
+        "plugins",
+        "projects",
+        "service_status",
+        "unseen",
+        "workers"
+      ],
+      "/data/accounts": [
+        "all_loaded",
+        "gateway",
+        "loading",
+        "orgs",
+        "usage"
+      ],
+      "/data/accounts/gateway": [
+        "bind_error",
+        "port",
+        "ready"
+      ],
+      "/data/accounts/loading[]": [
+        "auth",
+        "display_name",
+        "last_error",
+        "retry_after",
+        "state"
+      ],
+      "/data/accounts/orgs[]": [
+        "accounts",
+        "fallback_accounts",
+        "org",
+        "rows"
+      ],
+      "/data/accounts/orgs[]/rows[]": [
+        "budget",
+        "display_name",
+        "fallback",
+        "loading",
+        "provider",
+        "unusable"
+      ],
+      "/data/accounts/orgs[]/rows[]/budget": [
+        "unknown"
+      ],
+      "/data/accounts/orgs[]/rows[]/budget/unknown": [
+        "spend_billed"
+      ],
+      "/data/accounts/usage[]": [
+        "display_name",
+        "snapshot"
+      ],
+      "/data/agents[]": [
+        "failed_turn",
+        "has_background_work",
+        "label",
+        "last_activity",
+        "lifecycle",
+        "pending",
+        "pending_depth",
+        "reason",
+        "slot",
+        "work"
+      ],
+      "/data/agents[]/slot": [
+        "label",
+        "org",
+        "project"
+      ],
+      "/data/agents[]/work": [
+        "branch",
+        "changed",
+        "gate"
+      ],
+      "/data/cli_version": [
+        "installed",
+        "latest"
+      ],
+      "/data/connectors": [
+        "gotify",
+        "slack"
+      ],
+      "/data/connectors/gotify": [
+        "connected"
+      ],
+      "/data/connectors/slack": [
+        "connected_workspaces",
+        "load_failed"
+      ],
+      "/data/dictate": [
+        "device",
+        "enabled",
+        "models_dir",
+        "snapshot"
+      ],
+      "/data/dictate/snapshot": [
+        "failure",
+        "models"
+      ],
+      "/data/dictate/snapshot/models[]": [
+        "file",
+        "role",
+        "state"
+      ],
+      "/data/fleet[]": [
+        "live_workers",
+        "misses",
+        "project",
+        "queue",
+        "slots",
+        "waiting_on_user"
+      ],
+      "/data/fleet[]/misses[]": [
+        "unaccounted_worker"
+      ],
+      "/data/plugins": [
+        "update_records"
+      ],
+      "/data/projects[]": [
+        "chip",
+        "connectors",
+        "crons",
+        "project",
+        "rows",
+        "work",
+        "would_bind"
+      ],
+      "/data/projects[]/connectors": [
+        "gotify",
+        "slack"
+      ],
+      "/data/projects[]/project": [
+        "accounts",
+        "display_path",
+        "fallback_accounts",
+        "has_model",
+        "key",
+        "name",
+        "org",
+        "path",
+        "sessions"
+      ],
+      "/data/projects[]/work": [
+        "branch",
+        "changed",
+        "gate"
+      ],
+      "/data/workers[]": [
+        "project",
+        "workers"
+      ],
+      "/data/workers[]/workers[]": [
+        "charter",
+        "is_git_repo_at_spawn",
+        "label",
+        "needs_tag",
+        "session_id",
+        "slot",
+        "spawned_at",
+        "spawned_by"
+      ],
+      "/data/workers[]/workers[]/slot": [
+        "label",
+        "org",
+        "project"
+      ],
+      "/data/workers[]/workers[]/spawned_at": [
+        "nanos_since_epoch",
+        "secs_since_epoch"
+      ],
+      "/data/workers[]/workers[]/spawned_by": [
+        "label",
+        "org",
+        "project"
       ]
     }
   },
