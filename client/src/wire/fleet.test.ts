@@ -4,7 +4,14 @@ import { describe, expect, it } from 'vitest';
 
 import type { SessionUpdate } from '../protocol';
 import type { SessionSlot } from './types';
-import { coversHome, fleetNews, REDRAWS, serviceReport } from './fleet';
+import {
+  BOARD_REFUSAL_PREFIX,
+  coversHome,
+  fleetNews,
+  isBoardRefusal,
+  REDRAWS,
+  serviceReport,
+} from './fleet';
 
 /**
  * The variant names the server's own `fleet_news` puts in one of its arms,
@@ -393,6 +400,41 @@ describe('what one update asks of the fleet', () => {
     expect(serviceReport({ service_status: { severity: 'warning' } })).toBeNull();
     expect(serviceReport({ tasks_changed: { key: LEAD, tasks: [] } })).toBeNull();
     expect(serviceReport('accounts_changed')).toBeNull();
+  });
+
+  /**
+   * **The board's own reports, told from everyone else's.** The board page
+   * draws the core's service line only when a board edit earned it, and what
+   * tells the two apart is the words `board_edit_refused` writes - so the
+   * format is read out of the Rust rather than trusted: a reworded refusal
+   * would otherwise be a page that quietly stopped saying why.
+   */
+  it('knows a board refusal by the words the core writes it with', () => {
+    const source = readFileSync(
+      new URL('../../../crates/forge-workspace/src/workspace.rs', import.meta.url),
+      'utf8',
+    );
+    const start = source.indexOf('fn board_edit_refused');
+    if (start < 0) {
+      throw new Error(
+        'the workspace no longer holds `board_edit_refused`, so this mirror is unanchored',
+      );
+    }
+    const body = source.slice(start, source.indexOf('\n    }\n', start));
+    const literal = /message: format!\("([^"]*)"/.exec(body)?.[1];
+    expect(literal, 'the refusal message is no longer a format literal this reads').toBeDefined();
+    expect(
+      literal?.startsWith(BOARD_REFUSAL_PREFIX),
+      `the core's refusal no longer opens with "${BOARD_REFUSAL_PREFIX}" - the board would draw none`,
+    ).toBe(true);
+
+    // And the filter itself: any other producer's report is not the board's.
+    expect(isBoardRefusal({ severity: 'warning', message: 'The board refused a move: nope' })).toBe(
+      true,
+    );
+    expect(isBoardRefusal({ severity: 'error', message: 'could not spawn a worker for x' })).toBe(
+      false,
+    );
   });
 
   /**

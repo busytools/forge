@@ -421,6 +421,29 @@ describe("the board's controls", () => {
   });
 
   /**
+   * And ONLY that edit's words. The service line carries every producer's
+   * report, so a page that drew the last one would put a worker's failed spawn
+   * above the lanes, where it reads as something about the board.
+   */
+  it("draws none of another producer's report", () => {
+    app = mount(Board, {
+      target: document.body,
+      props: {
+        wire: wireWith([row(task('t1', 'a row', 'pending'))]),
+        org: 'TestOrg',
+        project: 'proj',
+        onact: () => {},
+        notice: {
+          severity: 'error' as const,
+          message: 'could not spawn a worker: the directory is gone',
+        },
+      },
+    });
+    flushSync();
+    expect(document.querySelector('.b-said'), 'a foreign report drew on the board').toBeNull();
+  });
+
+  /**
    * A project the fleet does not carry draws as unknown: no lanes to move a
    * card between and no create line, because a row filed here would name a
    * project this forge does not hold. The route is addressable, so the page

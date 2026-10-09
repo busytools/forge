@@ -176,6 +176,23 @@ export function serviceReport(update: SessionUpdate): ServiceReport | null {
   return { severity: report?.severity === 'error' ? 'error' : 'warning', message };
 }
 
+/**
+ * The words every board refusal opens with.
+ *
+ * It is the contract between the core's service line and the board page: the
+ * refusal a board edit earns is written by `board_edit_refused` in the
+ * workspace, and the board draws only reports that are its own - the service
+ * line carries every producer's, and a failed worker spawn is not news about
+ * the board. `fleet.test.ts` reads the format out of the Rust source, so
+ * rewording it is a red build rather than a page that stops saying why.
+ */
+export const BOARD_REFUSAL_PREFIX = 'The board refused';
+
+/** Whether a service report is one a board edit earned. */
+export function isBoardRefusal(report: ServiceReport): boolean {
+  return report.message.startsWith(BOARD_REFUSAL_PREFIX);
+}
+
 /** Classify one update for the fleet region. */
 export function fleetNews(update: SessionUpdate): FleetNews {
   if (typeof update === 'string') {

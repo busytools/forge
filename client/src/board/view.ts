@@ -52,6 +52,13 @@ export interface PendingMove {
   to: TaskStatus;
   /** The row it should sit above in the target lane, or nothing for the end. */
   before: string | null;
+  /**
+   * Whether the drop asked for a POSITION. A re-order inside a lane does; a
+   * drop onto another lane asks only for the state - `task_move` carries no
+   * position and the core keeps the row's rank, so demanding the place there
+   * would call a move that landed a failure.
+   */
+  ranked: boolean;
   /** When the edit went, in epoch millis: the page's own bound on waiting. */
   at: number;
 }
@@ -95,14 +102,19 @@ export function applyMoves(lanes: LaneView[], moves: Record<string, PendingMove>
 /**
  * Whether the wire's own answer has the moved row where the drop put it.
  *
- * **The state alone is not enough.** A re-order inside a lane keeps the row's
- * status, so a status-only test called every re-order landed on the next tick
- * and the card snapped back to the order the server still held; the PLACE is
- * what the drop asked for, so the place is what confirms it. A row the wire
- * does not carry at all is not landed either - the core may have archived it.
+ * **What the drop ASKED FOR is what confirms it.** A re-order inside a lane
+ * keeps the row's status, so a status-only test called every re-order landed
+ * on the next tick and the card snapped back to the order the server still
+ * held - the place is what that drop asked for. A drop onto another lane asks
+ * for the state alone (`task_move` carries no position, and the core keeps the
+ * row's rank), so the place is NOT demanded there: demanding it would call a
+ * move that landed a failure and draw a refusal the core never made. A row the
+ * wire does not carry at all is not landed either - the core may have archived
+ * it.
  */
 export function landed(rows: BoardRow[], id: string, want: PendingMove): boolean {
   if (!rows.some((entry) => entry.task.id === id && entry.task.status === want.to)) return false;
+  if (!want.ranked) return true;
   const lane = rows
     .filter((entry) => entry.task.status === want.to)
     .sort((a, b) => {

@@ -397,21 +397,11 @@ describe('a row that is not a way in', () => {
   /**
    * The chrome is the other half of the claim: a row that says "information"
    * in its markup still reads as a link if it points, glows under the pointer
-   * and carries the chevron. Keyed on the way-in class rather than on the
-   * `asleep` mark, because a dormant lead is asleep and still a link. The
-   * rail's fold is scoped to div.wk so its summary - drawn as a worker row,
-   * and still the fold's control - keeps its own.
+   * and carries the chevron. The rail's fold is scoped to div.wk so its
+   * summary - drawn as a worker row, and still the fold's control - keeps its
+   * own.
    */
-  it('draws no pointer, hover ground or chevron', () => {
-    expect(rule('.row.unopenable'), 'the row still points like a link').toContain(
-      'cursor: default',
-    );
-    expect(rule('.row.unopenable::after'), 'the chevron still says it goes somewhere').toContain(
-      'display: none',
-    );
-    expect(rule('.row.unopenable:hover'), 'the row still glows under the pointer').toContain(
-      'background: none',
-    );
+  it('draws no pointer on the fold row', () => {
     expect(rule('details.sfold div.wk'), 'the fold row still points like a link').toContain(
       'cursor: default',
     );

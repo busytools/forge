@@ -238,12 +238,16 @@ describe("one project's board", () => {
       lanes.find((lane) => lane.key === key)?.cards.map((card) => card.id);
 
     // A move to another lane lands at once.
-    const movedUp = applyMoves(view.lanes, { b: { to: 'in_progress', before: null, at: 1 } });
+    const movedUp = applyMoves(view.lanes, {
+      b: { to: 'in_progress', before: null, ranked: false, at: 1 },
+    });
     expect(ids(movedUp, 'in_progress')).toEqual(['b']);
     expect(ids(movedUp, 'pending')).toEqual(['a']);
 
     // A drop above the first card places it there.
-    const ranked = applyMoves(view.lanes, { b: { to: 'pending', before: 'a', at: 1 } });
+    const ranked = applyMoves(view.lanes, {
+      b: { to: 'pending', before: 'a', ranked: true, at: 1 },
+    });
     expect(ids(ranked, 'pending')).toEqual(['b', 'a']);
   });
 
@@ -258,7 +262,7 @@ describe("one project's board", () => {
       row(task('a', 'first', 'pending', { rank: 1 })),
       row(task('b', 'second', 'pending', { rank: 2 })),
     ];
-    const pending = { to: 'pending' as const, before: 'a', at: 0 };
+    const pending = { to: 'pending' as const, before: 'a', ranked: true, at: 0 };
 
     // The row is still where it was: the drop is not landed.
     expect(landed(rows, 'b', pending), 'the old order read as landed').toBe(false);
@@ -274,14 +278,22 @@ describe("one project's board", () => {
     expect(landed(swapped, 'b', pending), 'the re-order the wire holds').toBe(true);
     // And the end-of-lane drop answers the other way: last is not above a.
     expect(
-      landed(swapped, 'b', { to: 'pending', before: null, at: 0 }),
+      landed(swapped, 'b', { to: 'pending', before: null, ranked: true, at: 0 }),
       'a drop at the end read as landed while the row leads the lane',
     ).toBe(false);
 
-    // A cross-lane move is confirmed by the row arriving in that lane.
-    const moved = [...rows, row(task('b', 'second', 'in_progress'))];
-    expect(landed(moved, 'b', { to: 'in_progress', before: null, at: 0 })).toBe(true);
-    expect(landed(rows, 'b', { to: 'in_progress', before: null, at: 0 })).toBe(false);
+    // A drop onto ANOTHER lane asks for the state alone: `task_move` carries
+    // no position and the core keeps the row's rank, so the place must not be
+    // demanded - a move that landed would read as a failure the core never
+    // made.
+    const moved = [...rows, row(task('b', 'second', 'in_progress', { rank: 9 }))];
+    expect(
+      landed(moved, 'b', { to: 'in_progress', before: 'a', ranked: false, at: 0 }),
+      'a move the wire landed read as a failure because its rank moved',
+    ).toBe(true);
+    expect(landed(rows, 'b', { to: 'in_progress', before: null, ranked: false, at: 0 })).toBe(
+      false,
+    );
   });
 
   it('words durations the way the board does', () => {

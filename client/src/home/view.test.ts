@@ -115,11 +115,8 @@ describe('the row marks', () => {
     // Nothing the sheet styles is unreachable, and nothing drawn is unstyled.
     // Read from the sheet rather than a list here, which could only ever fail
     // on a rename inside this table - the inverse of what it is for.
-    // `unopenable` is not a state: it says whether a row is a link, and the
-    // rail draws it.
     const sheet = readFileSync(new URL('../assets/web.css', import.meta.url), 'utf8');
     const styled = new Set([...sheet.matchAll(/\.row\.([a-z-]+)/g)].map((match) => match[1]));
-    styled.delete('unopenable');
     const drawn = new Set(MARKS.map(([, klass]) => klass));
     expect([...styled].sort(), 'the sheet styles a row state nothing draws').toEqual(
       [...drawn].sort(),
@@ -922,25 +919,73 @@ describe('what a row says', () => {
   });
 
   /**
-   * The name a project's rows crossed under one protocol back. A v7 forge
-   * sends `tasks` where this client reads `rows`, and the read is where that
-   * is absorbed: without it a client newer than its server throws on
-   * `undefined.map` while drawing, which is the shape a same-version skew
-   * takes - and one nothing refuses, because the versions match.
+   * The one step back, which is a SHAPE and not only a name.
+   *
+   * A v7 forge sent each of a project's entries as the TASK alone, flat, under
+   * `tasks` - no `worked_secs`, no marks, an `artifact` rather than `links`,
+   * and an `estimate` that is its words. An entry like that is not a row, so a
+   * read that only renamed the key takes `entry.task.status` off `undefined`
+   * and THROWS while drawing: nothing renders and the skew notice is the only
+   * thing on the page. What that server never stated reads as the neutral
+   * value instead.
    */
-  it('reads a project rows sent under their older name', () => {
+  it('reads a project whose rows crossed as flat v7 tasks', () => {
     const first = homeWire.projects[0];
     if (first === undefined) throw new Error('the fixture holds no project');
     const stepBack = {
       ...homeWire,
-      projects: [{ ...first, rows: undefined, tasks: first.rows }],
+      projects: [
+        {
+          ...first,
+          rows: undefined,
+          // Shaped by the v7 server's own wire type (`ProjectWire.tasks` was
+          // `Vec<Task>`), not by wrapping a v8 row under the old key.
+          tasks: [
+            {
+              id: 'v7-1',
+              project_name: 'proj',
+              subject: 'a row from a v7 server',
+              active_form: null,
+              detail: null,
+              status: 'in_progress',
+              owner: null,
+              parent: null,
+              artifact: 'https://example.test/pull/7',
+              estimate: '1d',
+              created_at: { secs_since_epoch: 1_700_000_000, nanos_since_epoch: 0 },
+              updated_at: { secs_since_epoch: 1_700_000_000, nanos_since_epoch: 0 },
+            },
+          ],
+        },
+      ],
     } as unknown as HomeWire;
-    expect(homeFrom(stepBack).projects[0]?.rows.length, 'the rows did not cross').toBe(
-      first.rows.length,
-    );
 
-    // And a server that sends neither name leaves an empty board rather than
-    // failing the whole read.
+    const rows = homeFrom(stepBack).projects[0]?.rows ?? [];
+    expect(rows, 'the flat task did not read as a row').toHaveLength(1);
+    const task = rows[0]?.task;
+    expect(task?.subject, 'the task itself was lost').toBe('a row from a v7 server');
+    expect(task?.status, 'the status did not come off the entry').toBe('in_progress');
+    // The fields v7 never sent read as what this client draws for nothing,
+    // rather than as `undefined` reaching the board's arithmetic.
+    expect(rows[0]?.worked_secs).toBe(0);
+    expect(rows[0]?.marks.overdue).toBe(false);
+    expect(rows[0]?.rollup).toBeNull();
+    expect(task?.rank).toBeNull();
+    expect(task?.waiting_on).toBeNull();
+    expect(task?.attempt).toBe(0);
+    // `artifact` is `links` now: it crosses as one rather than being dropped.
+    expect(
+      task?.links.map((link) => link.target),
+      'the v7 artifact did not cross',
+    ).toEqual(['https://example.test/pull/7']);
+    // And the estimate keeps its words with no seconds to be measured against,
+    // which the board reads as no measure rather than as a NaN ratio.
+    expect(task?.estimate).toEqual({ words: '1d', secs: 0 });
+  });
+
+  it('reads a project a server sends no rows for as an empty board', () => {
+    const first = homeWire.projects[0];
+    if (first === undefined) throw new Error('the fixture holds no project');
     const neither = {
       ...homeWire,
       projects: [{ ...first, rows: undefined, tasks: undefined }],

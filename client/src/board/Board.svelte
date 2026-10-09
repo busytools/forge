@@ -1,6 +1,6 @@
 <script lang="ts">
   import { hrefForSlot } from '../routes';
-  import type { ServiceReport } from '../wire/fleet';
+  import { isBoardRefusal, type ServiceReport } from '../wire/fleet';
   import type { HomeWire, TaskStatus } from '../wire/home';
   import { TASK_STATUSES } from '../wire/home';
   import Picker from './Picker.svelte';
@@ -81,8 +81,13 @@
     }
   }
 
-  /** What the page says above the lanes: the local loss, or the core's words. */
-  const line = $derived(lost ?? notice);
+  /**
+   * What the page says above the lanes: the local loss, or the core's own
+   * words for a board edit it refused. **Only that edit's** - the service
+   * line carries every producer's report, and one about a worker's spawn is
+   * not news about this board.
+   */
+  const line = $derived(lost ?? (notice !== null && isBoardRefusal(notice) ? notice : null));
 
   /** Close the takeover: back the way the reader came, or home from a deep link. */
   function close(): void {
@@ -113,7 +118,7 @@
     event.preventDefault();
     const box = boardEl?.querySelector(`.b-card[data-id="${row.id}"]`)?.getBoundingClientRect();
     if (act({ task_move: { project, id: row.id, to } })) {
-      moved[row.id] = { to, before: null, at: Date.now() };
+      moved[row.id] = { to, before: null, ranked: false, at: Date.now() };
       if (box !== undefined) settle(row.id, box);
     }
   }
@@ -332,14 +337,20 @@
       } else if (dropLane !== null && card !== undefined && card.status !== dropLane) {
         // The card lands where it was dropped right away; the wire catches
         // up. Only when the edit went: a move the socket never took must not
-        // leave the card where the core will never put it.
+        // leave the card where the core will never put it. `ranked: false` -
+        // a drop onto another lane asks for the state, not the position.
         if (act({ task_move: { project, id: dragging.id, to: dropLane } })) {
-          moved[dragging.id] = { to: dropLane, before: dropBefore, at: Date.now() };
+          moved[dragging.id] = {
+            to: dropLane,
+            before: dropBefore,
+            ranked: false,
+            at: Date.now(),
+          };
           if (box !== undefined) settle(dragging.id, box);
         }
       } else if (dropLane !== null) {
         if (act({ task_rank: { project, id: dragging.id, to: { before: dropBefore } } })) {
-          moved[dragging.id] = { to: dropLane, before: dropBefore, at: Date.now() };
+          moved[dragging.id] = { to: dropLane, before: dropBefore, ranked: true, at: Date.now() };
           if (box !== undefined) settle(dragging.id, box);
         }
       }

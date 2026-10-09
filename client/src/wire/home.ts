@@ -355,6 +355,109 @@ export const TASK_STATUSES: TaskStatus[] = [
   'canceled',
 ];
 
+/** The marks a row carries when nobody stated any, which is a v7 server's row. */
+const NO_MARKS: Marks = {
+  ready: false,
+  in_review: false,
+  overdue: false,
+  no_movement: false,
+  waiting_too_long: false,
+  stale: false,
+  to_close: false,
+};
+
+/**
+ * One entry of a project's `rows` (v8) or `tasks` (v7), as a board row.
+ *
+ * **The step back is a SHAPE, not only a name.** A v7 server sent the TASK
+ * itself, flat: no `worked_secs`, no marks, an `estimate` that is its words
+ * alone. A fallback that only renamed the key would read `entry.task.status`
+ * off such an entry, and a page that throws while drawing draws nothing at
+ * all - which is the failure the protocol bump exists to turn into a notice.
+ * So a flat entry is wrapped as the row this client reads, with the neutral
+ * value for everything that server never stated.
+ */
+function rowFrom(entry: unknown): BoardRow {
+  const raw = (entry ?? {}) as Record<string, unknown>;
+  const flat = raw['task'] === undefined || raw['task'] === null;
+  const task = (flat ? raw : (raw['task'] as Record<string, unknown>)) ?? {};
+  return {
+    task: {
+      // Spread first, so a field this client is newer than the sender about
+      // keeps whatever was sent and is only defaulted where it is absent.
+      ...(task as unknown as Task),
+      // The unions of literals every read narrows, the link kinds included.
+      // The casts are this boundary's own: an entry off a v7 server is a shape
+      // this client has no type for, which is the whole reason for the branch.
+      status: narrow(task['status'] as string, TASK_STATUSES, 'pending'),
+      verify:
+        task['verify'] === null || task['verify'] === undefined
+          ? null
+          : narrow(task['verify'] as string, VERIFY_VALUES, 'none'),
+      estimate: estimateFrom(task['estimate']),
+      links: linksFrom(task),
+      active_form: (task['active_form'] ?? null) as string | null,
+      detail: (task['detail'] ?? null) as string | null,
+      owner: (task['owner'] ?? null) as SessionSlot | null,
+      parent: (task['parent'] ?? null) as string | null,
+      waiting_on: (task['waiting_on'] ?? null) as WaitingWire | null,
+      rank: (task['rank'] ?? null) as number | null,
+      attempt: (task['attempt'] ?? 0) as number,
+      archived_at: (task['archived_at'] ?? null) as WireTime | null,
+    },
+    worked_secs: (raw['worked_secs'] as number | undefined) ?? 0,
+    // A v7 entry carries none of the three below: it is a task, and the
+    // worked time, the ages and the marks are what the board derives.
+    updated_secs_ago: (raw['updated_secs_ago'] as number | undefined) ?? 0,
+    marks: (raw['marks'] as Marks | undefined) ?? NO_MARKS,
+    rollup: (raw['rollup'] as [number, number] | null | undefined) ?? null,
+    parent_subject: (raw['parent_subject'] as string | null | undefined) ?? null,
+  };
+}
+
+/**
+ * The references a row carries, and the one a v7 server sent instead.
+ *
+ * A v8 row carries `links`; a v7 task carried the single `artifact` that field
+ * replaced, so it crosses as one link rather than being dropped - a page
+ * reading a v7 row draws what that server said, not less. Its kind is
+ * `other`, because the classification that names one is the CORE's
+ * (`LinkKind::for_target`) and this side cannot reproduce it.
+ */
+function linksFrom(task: Record<string, unknown>): TaskLinkWire[] {
+  const links = ((task['links'] as unknown[] | undefined) ?? []).map((link) => ({
+    ...(link as TaskLinkWire),
+    kind: narrow((link as TaskLinkWire).kind, LINK_KINDS, 'other'),
+  }));
+  const artifact = task['artifact'];
+  if (links.length === 0 && typeof artifact === 'string' && artifact !== '') {
+    links.push({
+      kind: 'other',
+      label: null,
+      target: artifact,
+      state: null,
+      // Unread on this side; a v7 task never carried one.
+      added_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+    });
+  }
+  return links;
+}
+
+/**
+ * The estimate as this client reads it. A v7 server sent its words alone, and
+ * the seconds it implied are not knowable from that: a row from one is
+ * unmeasured rather than measured wrongly, which is what `secs: 0` draws -
+ * the board's own rule reads a non-positive estimate as no measure at all.
+ */
+function estimateFrom(raw: unknown): Task['estimate'] {
+  if (typeof raw === 'string') return { words: raw, secs: 0 };
+  const held = raw as { words?: unknown; secs?: unknown } | null | undefined;
+  if (held === null || held === undefined) return null;
+  return typeof held.words === 'string' && typeof held.secs === 'number'
+    ? { words: held.words, secs: held.secs }
+    : null;
+}
+
 /**
  * The snapshot as the types above describe it, with a value outside the
  * shipped set turned into a known one.
@@ -394,30 +497,16 @@ export function homeFrom(data: HomeWire): HomeWire {
           : { ...agent.work, gate: narrow(agent.work.gate, GATES, 'in_repo') },
     })),
     projects: data.projects.map((row) => {
-      // **The one step back.** A forge at protocol 7 sends the same rows under
-      // `tasks`; the name moved with the board, so a client newer than its
-      // server reads the old one rather than drawing nothing. The cast is this
-      // boundary's own - the payload is typed as today's shape, and the fields
-      // a move left behind are what is being read.
-      const legacy = row as { rows?: BoardRow[]; tasks?: BoardRow[] };
+      // **The one step back.** A forge at protocol 7 sent this project's rows
+      // under `tasks`, so a client newer than its server reads the old key
+      // rather than drawing nothing. The cast is this boundary's own - the
+      // payload is typed as today's shape, and the field a move left behind is
+      // what is being read.
+      const legacy = row as { rows?: unknown[]; tasks?: unknown[] };
       return {
         ...row,
         work: { ...row.work, gate: narrow(row.work.gate, GATES, 'in_repo') },
-        rows: (legacy.rows ?? legacy.tasks ?? []).map((entry) => ({
-          ...entry,
-          task: {
-            ...entry.task,
-            status: narrow(entry.task.status, TASK_STATUSES, 'pending'),
-            // The link kinds and the verify flag are unions of literals, so
-            // they are narrowed here like every other union that enters.
-            verify:
-              entry.task.verify === null ? null : narrow(entry.task.verify, VERIFY_VALUES, 'none'),
-            links: entry.task.links.map((link) => ({
-              ...link,
-              kind: narrow(link.kind, LINK_KINDS, 'other'),
-            })),
-          },
-        })),
+        rows: (legacy.rows ?? legacy.tasks ?? []).map(rowFrom),
       };
     }),
     // The misses are the one member here that is a union of shapes rather
