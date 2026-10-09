@@ -186,17 +186,30 @@ fn target_of(args: &Value) -> Result<String, String> {
     let Some(target) = args.get("target").and_then(Value::as_str) else {
         return Err("this call needs a `target`: a snapshot ref or a selector".to_owned());
     };
-    // A bare `e` is not a ref: the engine's refs carry a number, and an empty
-    // tail would turn the letter into one.
-    let selector = if target.len() > 1
-        && target.starts_with('e')
-        && target[1..].chars().all(|c| c.is_ascii_digit())
-    {
+    let selector = if is_ref(target) {
         format!("aria-ref={target}")
     } else {
         target.to_owned()
     };
     Ok(format!("page.locator({})", js_string(&selector)))
+}
+
+/// Whether a target is one of the driver's snapshot refs: `e7` while the page
+/// is on its first document, `f2e7` once a navigation has relettered them with
+/// the frame's sequence. The engine's refs carry a number, and so does the
+/// frame sequence ahead of the `e`.
+fn is_ref(target: &str) -> bool {
+    let tail = match target.strip_prefix('f') {
+        Some(rest) => match rest.find('e') {
+            Some(at) if at > 0 && rest[..at].bytes().all(|b| b.is_ascii_digit()) => &rest[at..],
+            _ => return false,
+        },
+        None => target,
+    };
+    match tail.strip_prefix('e') {
+        Some(number) => !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()),
+        None => false,
+    }
 }
 
 /// One JavaScript string literal, escaped.
@@ -303,10 +316,10 @@ mod tests {
         );
     }
 
-    /// A selector the caller wrote is passed as a selector; only a bare
-    /// snapshot ref takes the ref engine.
+    /// A selector the caller wrote is passed as a selector; only a snapshot
+    /// ref takes the ref engine.
     #[test]
-    fn only_a_bare_ref_takes_the_ref_engine() {
+    fn only_a_snapshot_ref_takes_the_ref_engine() {
         let Routed::Snippet(code) =
             route("browser_click", &json!({ "target": "#submit", "force": true })).expect("routes")
         else {
@@ -315,15 +328,61 @@ mod tests {
         assert!(code.contains("page.locator(\"#submit\")"), "{code}");
         assert!(!code.contains("aria-ref"), "{code}");
 
-        // **A bare `e` is not a ref**: the engine's refs carry a number, and
-        // an empty tail would turn the letter into one.
-        let Routed::Snippet(bare) =
-            route("browser_click", &json!({ "target": "e", "force": true })).expect("routes")
+        // **Ref-shaped is not a ref**: the engine's refs carry a number after
+        // the `e`, and the frame sequence ahead of it carries one too.
+        for not_a_ref in ["e", "f1", "fe12", "f1e7x"] {
+            let Routed::Snippet(bare) =
+                route("browser_click", &json!({ "target": not_a_ref, "force": true }))
+                    .expect("routes")
+            else {
+                panic!("a forced click is a snippet");
+            };
+            assert!(
+                bare.contains(&format!("page.locator(\"{not_a_ref}\")")),
+                "{not_a_ref} is a selector the caller wrote: {bare}",
+            );
+            assert!(
+                !bare.contains("aria-ref"),
+                "{not_a_ref} must not reach the ref engine: {bare}",
+            );
+        }
+    }
+
+    /// **A navigation re-letters the driver's refs**: the second document's
+    /// snapshot spells the same element `f1e7`, so that spelling has to reach
+    /// the ref engine too - `targetLocators` in the vendored driver takes a
+    /// target as a ref on `/^(f\d+)?e\d+$/` and otherwise as a selector.
+    #[test]
+    fn a_relettered_ref_still_takes_the_ref_engine() {
+        let Routed::Snippet(code) =
+            route("browser_click", &json!({ "target": "f1e7", "force": true })).expect("routes")
         else {
             panic!("a forced click is a snippet");
         };
-        assert!(bare.contains("page.locator(\"e\")"), "{bare}");
-        assert!(!bare.contains("aria-ref"), "{bare}");
+        assert!(
+            code.contains("aria-ref=f1e7"),
+            "a relettered ref takes the ref engine: {code}",
+        );
+
+        let Routed::Snippet(capture) =
+            route("browser_click_and_capture", &json!({ "target": "f2e3" })).expect("routes")
+        else {
+            panic!("click_and_capture is a snippet");
+        };
+        assert!(
+            capture.contains("aria-ref=f2e3"),
+            "a relettered ref reaches the engine here too: {capture}",
+        );
+
+        let Routed::Snippet(scoped) =
+            route("browser_form_state", &json!({ "target": "f1e7" })).expect("routes")
+        else {
+            panic!("form_state is a snippet");
+        };
+        assert!(
+            scoped.contains("aria-ref=f1e7"),
+            "and a form scoped to a relettered ref reads that element: {scoped}",
+        );
     }
 
     /// The two beyond-upstream tools are snippets, and each carries what it
