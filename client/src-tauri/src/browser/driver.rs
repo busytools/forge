@@ -39,17 +39,19 @@ const START_TIMEOUT: Duration = Duration::from_secs(15);
 /// server's ask budget: `ASK_TIMEOUT` (200 s) is derived from the DESKTOP's
 /// launch, handshake, hint mask and call bounds (15+15+15+150 = 195, the
 /// hint mask included since it rides a driver start), and the phone's cold
-/// figures join it - 40 s to accept a node's FIRST dial (its boot is real
-/// work: measured 8 s warm, 39 s on a loaded emulator) + 10 s to hand shake
-/// + the driver's own 150 s call = 200 s, **exactly the bound** (no hint
-/// mask on the phone; its WebView presents the real UA). That is
-/// only the accept-onward segment, though: the call also carries an
-/// unbounded pre-accept RPC segment (the engine generation read, the ensure
-/// spin, the asset unpack, the UI-thread origin latch), so the whole chain
-/// can MEET or exceed the 200 s ask rather than sit inside it. A node that
-/// was ALREADY up redials every second, so a later call waits only 6 s - a
-/// dead in-app node fails in seconds with the reason instead of paying the
-/// cold window per call.
+/// FLOOR is what joins it - 40 s to accept a node's FIRST dial (its boot is
+/// real work: measured 8 s warm, 39 s on a loaded emulator) + 10 s to hand
+/// shake + the driver's own 150 s call = 200 s (no hint mask on the phone;
+/// its WebView presents the real UA). The phone's accept-onward path also
+/// carries the tab pin and the viewport seed, each bounded by that same
+/// 150 s call, so its cold worst case sits ABOVE the ask rather than at
+/// it - the bound is a wedge-breaker and the named failure plus a retry is
+/// the answer. The call also carries an unbounded pre-accept RPC segment
+/// (the engine generation read, the ensure spin, the asset unpack, the
+/// UI-thread origin latch), so the whole chain can MEET or exceed the 200 s
+/// ask rather than sit inside it. A node that was ALREADY up redials every
+/// second, so a later call waits only 6 s - a dead in-app node fails in
+/// seconds with the reason instead of paying the cold window per call.
 #[cfg(target_os = "android")]
 const IN_APP_COLD_ACCEPT_TIMEOUT: Duration = Duration::from_secs(40);
 #[cfg(target_os = "android")]

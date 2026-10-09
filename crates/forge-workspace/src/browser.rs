@@ -32,10 +32,15 @@ const HOST_GONE: &str = "the browser-capable client went away before answering";
 // hint mask, call) = 195 s, 5 s inside this bound; an Android client's
 // in-app driver boots, so its cold figures are wider - 40 s accept (a node
 // boot measured at 39 s on a loaded emulator) + 10 s handshake + 150 s call
-// = 200 s, exactly this bound. That is only the accept-onward segment: the
-// call also carries an unbounded pre-accept RPC segment (the engine
-// generation read, the ensure spin, the asset unpack, the UI-thread origin
-// latch), so the phone's whole cold chain can MEET or exceed this bound.
+// = 200 s, the FLOOR of its path rather than its whole: the same segment
+// also carries the tab pin and the viewport seed (the client's
+// `pin_browser_tab` and `seed_viewport`), each bounded by that same call,
+// so the phone's cold path can step past this bound, and the named failure
+// and a retry is the answer rather than a bigger ceiling. That is only the
+// accept-onward segment besides: the call also carries an unbounded
+// pre-accept RPC segment (the engine generation read, the ensure spin, the
+// asset unpack, the UI-thread origin latch), so the phone's whole cold
+// chain can MEET or exceed this bound.
 const ASK_TIMEOUT: Duration = Duration::from_secs(15 + 15 + 150 + 20);
 
 /// One ask, on its way to the registered host.
@@ -552,12 +557,14 @@ mod tests {
     /// it.** The desktop client's own bounds are a launch (15 s), a driver
     /// handshake (15 s), the driver's client-hint mask (15 s) and one tool
     /// call (150 s) - 195 s, 5 s inside; an Android client's in-app driver
-    /// BOOTS, so its cold figures are wider - 40 s to accept the node's
-    /// first dial, 10 s to hand shake, and the same 150 s call (200 s in
-    /// all, exactly this bound, and no hint mask there). That segment
-    /// carries no slack on the phone; the call's unbounded pre-accept RPC
-    /// segment (the generation read, the ensure spin, the unpack) can push
-    /// the whole chain past it. A bound under either sum would fail
+    /// BOOTS, so its cold floor is wider - 40 s to accept the node's first
+    /// dial, 10 s to hand shake, and the same 150 s call (200 s, and no
+    /// hint mask there). The phone's path also carries the tab pin and the
+    /// viewport seed, each up to a call's bound, so its real worst case
+    /// sits ABOVE this bound - the named failure and a retry is the
+    /// answer - and the call's unbounded pre-accept RPC segment (the
+    /// generation read, the ensure spin, the unpack) can push either chain
+    /// past it besides. A bound under the floor sums would fail
     /// slow-but-fine calls, which is the one change someone would plausibly
     /// make here.
     #[test]
@@ -569,8 +576,9 @@ mod tests {
         );
         assert!(
             ASK_TIMEOUT >= Duration::from_secs(40 + 10 + 150),
-            "and the Android client's cold figures - 40 s accept, 10 s handshake, 150 s call, \
-             both constants mirroring driver.rs - must clear too: {ASK_TIMEOUT:?}",
+            "and the Android client's cold FLOOR - 40 s accept, 10 s handshake, 150 s call, the \
+             constants mirroring driver.rs, with the tab pin and the viewport seed above it - \
+             must clear too: {ASK_TIMEOUT:?}",
         );
     }
 
