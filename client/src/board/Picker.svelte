@@ -98,23 +98,24 @@
     >
   </button>
   {#if open}
-    <ul class="b-menu" role="listbox" aria-label={label}>
+    <!-- A listbox's children have to BE its options: a `li` between them is
+         a node the role does not allow, which axe reads as a broken menu.
+         So the options are the buttons themselves, directly. -->
+    <div class="b-menu" role="listbox" aria-label={label}>
       {#each options as option, i (option.value)}
-        <li>
-          <button
-            type="button"
-            role="option"
-            aria-selected={option.value === value}
-            class="b-item"
-            class:on={option.value === value}
-            class:hot={i === active}
-            onclick={() => pick(option)}
-            onmousemove={() => (active = i)}
-          >
-            {option.label}
-          </button>
-        </li>
+        <button
+          type="button"
+          role="option"
+          aria-selected={option.value === value}
+          class="b-item"
+          class:on={option.value === value}
+          class:hot={i === active}
+          onclick={() => pick(option)}
+          onmousemove={() => (active = i)}
+        >
+          {option.label}
+        </button>
       {/each}
-    </ul>
+    </div>
   {/if}
 </div>

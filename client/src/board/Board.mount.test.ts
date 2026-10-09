@@ -3,6 +3,7 @@ import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { homeWire } from '../dev/fixture.data';
+import { violationsOf } from '../testing/axe';
 import type { BoardRow, HomeWire, Marks, Task, TaskStatus } from '../wire/home';
 import Board from './Board.svelte';
 
@@ -445,6 +446,23 @@ describe("the board's controls", () => {
       'an unknown project offered a create line',
     ).toBeNull();
     expect(document.querySelector('.b-lanes'), 'an unknown project drew lanes').toBeNull();
+  });
+
+  /**
+   * The picker's OPEN menu, which no server render reaches: the board draws
+   * it closed, so its listbox, its options and the button's expanded state
+   * would go unguarded by the page's own axe pass - and a menu is exactly
+   * where a role or a name goes missing unnoticed.
+   */
+  it('draws the open owner picker with no violations', async () => {
+    summon(wireWith([row(task('t1', 'a row', 'pending'))]));
+    const pick = document.querySelector<HTMLElement>('button[aria-label="the seat holding a row"]');
+    if (pick === null) throw new Error('the owner picker is not on the page');
+    pick.click();
+    flushSync();
+    expect(document.querySelector('.b-menu'), 'the menu did not open').not.toBeNull();
+
+    expect(await violationsOf(document.body.innerHTML)).toEqual([]);
   });
 
   /**

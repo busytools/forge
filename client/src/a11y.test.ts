@@ -1,5 +1,3 @@
-import axe from 'axe-core';
-import { JSDOM } from 'jsdom';
 import { render } from 'svelte/server';
 import { describe, expect, it } from 'vitest';
 
@@ -36,6 +34,7 @@ import Palette from './session/Palette.svelte';
 import Session from './session/Session.svelte';
 import { PROTOCOL_VERSION } from './protocol';
 import type { Connection } from './socket';
+import { violationsOf } from './testing/axe';
 import { updateState } from './update/state';
 import { DEFAULT_SETTINGS } from './wire/types';
 
@@ -84,35 +83,6 @@ function browserIdle(): Connection {
     onBrowserRole: () => () => {},
     takeBrowserRole: () => {},
   } as unknown as Connection;
-}
-
-type AxeWindow = Window & typeof globalThis & { axe: typeof axe };
-
-/**
- * What axe finds wrong with a rendered page.
- *
- * **jsdom performs no layout**, so `color-contrast` comes back INCOMPLETE
- * rather than passing or failing. That is why contrast stays a rule in the
- * standard and this function only ever reports violations: a clean result
- * here is not a claim about contrast.
- */
-export async function violationsOf(html: string): Promise<axe.Result[]> {
-  // The shell carries what `index.html` carries: a language and a title.
-  // Without the title axe reports `document-title` on every page, which is a
-  // finding about this harness rather than about the page.
-  //
-  // `runScripts` is required for `window.eval` to run inside the document
-  // rather than in the outer context, which is what lets axe see the DOM.
-  const dom = new JSDOM(
-    `<!doctype html><html lang="en"><head><title>forge</title></head><body>${html}</body></html>`,
-    { runScripts: 'dangerously' },
-  );
-  // One cast, and this is its reason: the object is jsdom's window, whose
-  // type cannot carry the `axe` global that the eval below injects into it.
-  const window = dom.window as unknown as AxeWindow;
-  window.eval(axe.source);
-  const results = await window.axe.run(window.document);
-  return results.violations;
 }
 
 /** Every violation id, which is what a failure should name. */

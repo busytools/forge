@@ -87,6 +87,41 @@ function pointer(type: string, pointerType: string): PointerEvent {
 }
 
 describe("the tasks row's interaction state machine", () => {
+  /**
+   * The door this segment is the way into the board by: the strip lists the
+   * seat's rows, and the whole project's board hangs off it. The href is the
+   * page's to build (the router's own encoder), so what is pinned here is
+   * that the list carries it, first, and that the door closes what it opened.
+   */
+  it('carries the way into the board, and closes the list when it is taken', () => {
+    tasks.sync(TASKS);
+    app = mount(TasksSegment, {
+      target: document.body,
+      props: { href: '/board/TestOrg/proj' },
+    });
+    flushSync();
+    toggle()?.click();
+    flushSync();
+
+    const door = document.querySelector<HTMLAnchorElement>('.sg-list .sg-open');
+    if (door === null) throw new Error('the strip draws no way into the board');
+    expect(door.getAttribute('href'), 'the door leads somewhere else').toBe('/board/TestOrg/proj');
+    // First in the list, so a reader looking for the board meets it before
+    // the rows that are about this seat.
+    expect(list()?.firstElementChild, "the door is not the list's first child").toBe(door);
+
+    door.click();
+    flushSync();
+    expect(list(), 'the door left the list open over the page it opened').toBeNull();
+  });
+
+  it('draws no door for a seat with no board to open', () => {
+    draw();
+    toggle()?.click();
+    flushSync();
+    expect(document.querySelector('.sg-open'), 'a door drew with no href to lead to').toBeNull();
+  });
+
   it('counts the finished tasks on the toggle', () => {
     draw();
     // One of the four is completed, so a count read off the wrong side
