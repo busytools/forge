@@ -2,6 +2,7 @@
   import { untrack, type Snippet } from 'svelte';
   import { SvelteMap } from 'svelte/reactivity';
   import { VList, type VListHandle } from 'virtua/svelte';
+  import { prune, remember, ROW_ESTIMATE, sizeOf } from './row-sizes';
 
   import Icon from '../components/Icon.svelte';
   import { subjectKey } from '../protocol';
@@ -312,6 +313,8 @@
   let timer: ReturnType<typeof setTimeout> | null = null;
 
   const shift = $derived(outstanding > 0 || settling);
+  // The measured heights belong to the turns this conversation holds.
+  $effect(() => prune(held.turns.map((turn) => turn.key)));
 
   /** Whether the events arriving are the reader's own, made moments ago. */
   function readerMoved(): boolean {
@@ -338,6 +341,19 @@
    * enough, a page that shrank - and a reader parked at what is now the very
    * end is at the end, whether or not anything scrolled to say so.
    */
+  /**
+   * Record what a turn's row measures, so the send's own remove-and-re-add
+   * cannot flash it at the estimator's median (#1890). The virtualiser drops
+   * a removed last item's size, and the queue hold removes exactly that row.
+   */
+  function measureTurn(node: HTMLElement, key: string): () => void {
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) remember(key, entry.contentRect.height);
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }
+
   function scrollViewport(node: HTMLElement): () => void {
     viewport = node;
     // A token armed against a previous viewport must not eat this one's first event.
@@ -1158,6 +1174,7 @@
     class="conv"
     data={held.turns}
     getKey={(turn: HeldTurn) => turn.key}
+    itemSize={(index: number) => sizeOf(held.turns[index]?.key) ?? ROW_ESTIMATE}
     itemProps={({ item }: { item: HeldTurn }) =>
       item.key === arriving ? { class: 'arriving' } : undefined}
     {shift}
@@ -1166,7 +1183,7 @@
     bind:this={list}
   >
     {#snippet children(turn: HeldTurn)}
-      <div class="turn">
+      <div class="turn" {@attach (node: HTMLElement) => measureTurn(node, turn.key)}>
         <Turn
           {turn}
           {slot}

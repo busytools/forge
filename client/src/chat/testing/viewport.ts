@@ -36,5 +36,10 @@ export function clearObservers(): void {
 
 /** A size change, as the browser would deliver one. */
 export function resized(): void {
-  for (const callback of watching) callback();
+  // The entry list is empty: jsdom does no layout, so no row has a size to
+  // report - and an observer that reads its entries must not be handed
+  // nothing at all.
+  for (const callback of watching) {
+    (callback as (entries: ResizeObserverEntry[]) => void)([]);
+  }
 }
