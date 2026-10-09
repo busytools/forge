@@ -955,13 +955,29 @@ describe('what a row says', () => {
               created_at: { secs_since_epoch: 1_700_000_000, nanos_since_epoch: 0 },
               updated_at: { secs_since_epoch: 1_700_000_000, nanos_since_epoch: 0 },
             },
+            {
+              id: 'v7-2',
+              project_name: 'proj',
+              subject: 'a blocked row from a v7 server',
+              active_form: null,
+              detail: null,
+              // v7's own spelling for a wait, which the core's migration of
+              // the same value lands on `waiting`.
+              status: 'blocked',
+              owner: null,
+              parent: null,
+              artifact: 'docs/plan.md',
+              estimate: null,
+              created_at: { secs_since_epoch: 1_700_000_000, nanos_since_epoch: 0 },
+              updated_at: { secs_since_epoch: 1_700_000_000, nanos_since_epoch: 0 },
+            },
           ],
         },
       ],
     } as unknown as HomeWire;
 
     const rows = homeFrom(stepBack).projects[0]?.rows ?? [];
-    expect(rows, 'the flat task did not read as a row').toHaveLength(1);
+    expect(rows, 'the flat task did not read as a row').toHaveLength(2);
     const task = rows[0]?.task;
     expect(task?.subject, 'the task itself was lost').toBe('a row from a v7 server');
     expect(task?.status, 'the status did not come off the entry').toBe('in_progress');
@@ -973,14 +989,22 @@ describe('what a row says', () => {
     expect(task?.rank).toBeNull();
     expect(task?.waiting_on).toBeNull();
     expect(task?.attempt).toBe(0);
-    // `artifact` is `links` now: it crosses as one rather than being dropped.
+    // `artifact` is `links` now, with the CORE's own classification of a bare
+    // target: a pull-request url is a `pr` and anything else a `path`, both of
+    // which the strip and the home row draw - `other` is filtered out of both.
     expect(
-      task?.links.map((link) => link.target),
-      'the v7 artifact did not cross',
-    ).toEqual(['https://example.test/pull/7']);
+      rows.map((entry) => entry.task.links.map((link) => link.kind)),
+      'the v7 artifacts did not cross as their own kinds',
+    ).toEqual([['pr'], ['path']]);
+    expect(rows[0]?.task.links[0]?.target).toBe('https://example.test/pull/7');
     // And the estimate keeps its words with no seconds to be measured against,
     // which the board reads as no measure rather than as a NaN ratio.
     expect(task?.estimate).toEqual({ words: '1d', secs: 0 });
+
+    // **`blocked` is a WAIT, not a fresh row.** Narrowed as an unknown it
+    // falls to `pending` and is drawn in the Ready lane as a row a lead would
+    // dispatch.
+    expect(rows[1]?.task.status, 'a v7 blocked row read as ready').toBe('waiting');
   });
 
   it('reads a project a server sends no rows for as an empty board', () => {

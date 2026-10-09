@@ -389,7 +389,13 @@ function rowFrom(entry: unknown): BoardRow {
       // The unions of literals every read narrows, the link kinds included.
       // The casts are this boundary's own: an entry off a v7 server is a shape
       // this client has no type for, which is the whole reason for the branch.
-      status: narrow(task['status'] as string, TASK_STATUSES, 'pending'),
+      //
+      // **`blocked` is v7's spelling for a wait.** Narrowed as an unknown it
+      // would fall to `pending` and be drawn in the Ready lane as a row a lead
+      // dispatches, where the core's own migration of the same value lands on
+      // `waiting` with its reason unstated - the board must not read one row
+      // two ways depending on which half stepped back.
+      status: narrow(statusFrom(task['status']), TASK_STATUSES, 'pending'),
       verify:
         task['verify'] === null || task['verify'] === undefined
           ? null
@@ -416,23 +422,36 @@ function rowFrom(entry: unknown): BoardRow {
 }
 
 /**
+ * The status a task entry carries, with v7's own spelling for a wait read as
+ * the state this client draws.
+ */
+function statusFrom(raw: unknown): string {
+  const spelled = typeof raw === 'string' ? raw : '';
+  return spelled === 'blocked' ? 'waiting' : spelled;
+}
+
+/**
  * The references a row carries, and the one a v7 server sent instead.
  *
  * A v8 row carries `links`; a v7 task carried the single `artifact` that field
- * replaced, so it crosses as one link rather than being dropped - a page
- * reading a v7 row draws what that server said, not less. Its kind is
- * `other`, because the classification that names one is the CORE's
- * (`LinkKind::for_target`) and this side cannot reproduce it.
+ * replaced, so it crosses as one link - with the CORE's own classification of
+ * a bare target (`LinkKind::for_target`, which its migration of a v7 artifact
+ * applies too), because `other` is the one kind both readers drop: the strip's
+ * meta and the home row's cell filter it out, so a v7 row would draw no
+ * artifact anywhere but the board card.
  */
 function linksFrom(task: Record<string, unknown>): TaskLinkWire[] {
-  const links = ((task['links'] as unknown[] | undefined) ?? []).map((link) => ({
-    ...(link as TaskLinkWire),
-    kind: narrow((link as TaskLinkWire).kind, LINK_KINDS, 'other'),
-  }));
+  const held = Array.isArray(task['links']) ? task['links'] : [];
+  const links = held
+    .filter((link): link is Record<string, unknown> => typeof link === 'object' && link !== null)
+    .map((link) => {
+      const spelled = link as unknown as TaskLinkWire;
+      return { ...spelled, kind: narrow(spelled.kind, LINK_KINDS, 'other') };
+    });
   const artifact = task['artifact'];
   if (links.length === 0 && typeof artifact === 'string' && artifact !== '') {
     links.push({
-      kind: 'other',
+      kind: artifact.includes('/pull/') ? 'pr' : 'path',
       label: null,
       target: artifact,
       state: null,
@@ -444,10 +463,12 @@ function linksFrom(task: Record<string, unknown>): TaskLinkWire[] {
 }
 
 /**
- * The estimate as this client reads it. A v7 server sent its words alone, and
- * the seconds it implied are not knowable from that: a row from one is
- * unmeasured rather than measured wrongly, which is what `secs: 0` draws -
- * the board's own rule reads a non-positive estimate as no measure at all.
+ * The estimate as this client reads it. **A v7 server sent its words alone**,
+ * and this side draws them with `secs: 0` - which the board's own rule reads
+ * as no measure - rather than parsing them back: the grammar is the core's
+ * (`Estimate::parse`, which its migration applies to these same words), and a
+ * second copy of it here would drift from the first, silently, the first time
+ * one of them learned a spelling the other did not.
  */
 function estimateFrom(raw: unknown): Task['estimate'] {
   if (typeof raw === 'string') return { words: raw, secs: 0 };
