@@ -574,7 +574,13 @@ export class Chat {
    */
   private inFlight: 'newest' | 'older' | null = null;
 
-  /** Whether the seat's page is on screen, which gates the draw, not the fold. */
+  /**
+   * Whether the seat's page was last announced as on screen.
+   *
+   * Read only by `showing()`'s own idempotence guard; the DRAW gate is the
+   * column's (a left seat's value lands in `kept`, not on the screen). The
+   * fold never consulted it (Ved, 2026-10-09).
+   */
   private shown = true;
 
   /**
@@ -696,6 +702,18 @@ export class Chat {
   private walkTo: string | null = null;
   /** The cursor the in-flight ask went out with, so a page that repeats it stops the walk. */
   private askedBefore: string | null = null;
+  /**
+   * The held tail's turn keys when the walk started: the marks a walk page
+   * inserts ABOVE.
+   *
+   * A walk page is the middle of the conversation - newer than the tail it
+   * walks toward, older than the page it walks from - so the plain older
+   * landing (which prepends above everything held) would strand it out of
+   * order. The keys split the held turns into "below this page" (the tail)
+   * and "above it" (the fills so far and the newest page), and the walk's
+   * page lands between them.
+   */
+  private walkBelow: Set<string> | null = null;
 
   constructor(connection: Connection, slot: SessionSlot) {
     this.connection = connection;
@@ -804,13 +822,17 @@ export class Chat {
   }
 
   /**
-   * Listen to the seat and ask for its newest page.
+   * Subscribe to the seat, listen to it, and ask for its newest page.
    *
-   * **It listens rather than subscribes.** The session page already holds the
-   * seat's subscription, and a second one would be a second full encode of
-   * the session per reconnect without a second listener's worth of news: the
-   * frames this needs - the turn's messages, and the update that says it
-   * settled - arrive on the connection either way.
+   * **The subscription lives with the conversation, not with the page**
+   * (Ved, 2026-10-09): the server sends a seat's bulk conversation only to a
+   * subscriber of that seat, so a subscription given back on leave would
+   * make "every frame folds for every seat" untrue for exactly the frames
+   * that matter. A kept conversation keeps receiving; the DRAW is what
+   * waits. It costs what the ruling accepts: the server holds every visited
+   * seat, and a shown seat pays two windowed encodes per reconnect (the
+   * page's subscription and this one) - both bounded by the subscribe
+   * window, not the transcript.
    *
    * **And a subscription is not what fills the list.** The snapshot carries
    * the newest turns rather than the whole conversation; the page draws a
@@ -819,6 +841,7 @@ export class Chat {
    */
   start(): () => void {
     if (this.running !== null) return this.running;
+    void this.connection.subscribe({ session: this.slot });
     // Where the seat already is, for a seat a visit has answered before: a
     // return subscribes nothing, so nothing else would say.
     this.heard(this.heldRunning());
@@ -873,6 +896,7 @@ export class Chat {
       stopMessages();
       stopStatus();
       stopRefusals();
+      this.connection.unsubscribe({ session: this.slot });
       this.clearRetry();
       this.running = null;
     };
@@ -1114,7 +1138,11 @@ export class Chat {
      * and TypeScript does not widen a captured `let` after the call - the
      * reads below would be narrowed to `never`.
      */
-    const walk: { key: string | null; reached: Set<string> | null } = { key: null, reached: null };
+    const walk: { key: string | null; below: Set<string> | null; reached: Set<string> | null } = {
+      key: null,
+      below: null,
+      reached: null,
+    };
     this.fold((held) => {
       const healed = this.healedOf(held, fromPage);
       const known = new Map(healed.turns.map((turn) => [turn.key, turn]));
@@ -1353,8 +1381,18 @@ export class Chat {
       // - and the tail keeps drawing throughout rather than waiting on a
       // scroll. The stop is a page reaching that turn, the history's end, or
       // a cursor that repeats.
+      //
+      // **Only a turn a page can carry is a target.** A `forge_notice` line
+      // is written here and nowhere else - no read restores it - so a tail of
+      // nothing but notices has nothing to walk for, and targeting one would
+      // fetch the whole history one page per landing for a turn no page will
+      // ever carry. The walk's own reach is the transcript-carried turns.
       if (direction === 'newest' && !reachesHeld) {
-        walk.key = rest.length > 0 ? (rest[rest.length - 1]?.key ?? null) : null;
+        const carriable = rest.filter((turn) =>
+          turn.messages.some((message) => !isForgeNotice(message)),
+        );
+        walk.key = carriable.length > 0 ? (carriable[carriable.length - 1]?.key ?? null) : null;
+        walk.below = walk.key === null ? null : new Set(rest.map((turn) => turn.key));
       }
       walk.reached = inPage;
       // A turn being written that no row of this page accounts for is kept - a
@@ -1384,7 +1422,23 @@ export class Chat {
         cursor: direction === 'older' || !held.loaded || !reachesHeld ? cursor : held.cursor,
         prepends: held.prepends + (direction === 'older' ? 1 : 0),
         turns:
-          direction === 'older' ? [...drawn, ...rest, ...loose] : [...rest, ...drawn, ...loose],
+          direction === 'older'
+            ? this.walkTo !== null && this.walkBelow !== null
+              ? [
+                  // **A walk page lands in the middle, not at the front.**
+                  // The plain older landing prepends above everything held,
+                  // which is true for a scroll (its page is older than all of
+                  // it) and false for a walk (its page is newer than the held
+                  // tail it walks toward). The tail's keys split the held
+                  // turns, and the page lands between them - so the recovered
+                  // stretch draws where it happened, not above the history.
+                  ...rest.filter((turn) => this.walkBelow?.has(turn.key) === true),
+                  ...drawn,
+                  ...rest.filter((turn) => this.walkBelow?.has(turn.key) !== true),
+                  ...loose,
+                ]
+              : [...drawn, ...rest, ...loose]
+            : [...rest, ...drawn, ...loose],
       });
     });
     // The walk's own step, after the fold: the held tail is never dropped,
@@ -1394,13 +1448,16 @@ export class Chat {
     // cursor that did not move.
     if (walk.key !== null) {
       this.walkTo = walk.key;
+      this.walkBelow = walk.below;
     }
     if (this.walkTo !== null) {
       const target = this.walkTo;
       if (walk.reached !== null && walk.reached.has(target)) {
         this.walkTo = null;
+        this.walkBelow = null;
       } else if (cursor === null || cursor === askedBefore) {
         this.walkTo = null;
+        this.walkBelow = null;
       } else {
         this.older();
       }
@@ -1436,6 +1493,7 @@ export class Chat {
     this.ridden.clear();
     // A walk was walking toward a turn of the conversation that is gone.
     this.walkTo = null;
+    this.walkBelow = null;
     this.askedBefore = null;
     // A return's want is about a conversation that is gone.
     this.returnWanted = false;
@@ -1605,7 +1663,21 @@ export class Chat {
     // A turn that has settled is the server's fold's to draw, and the frames
     // that drew it were only ever a stand-in for it.
     if (variant === 'turn_complete' || variant === 'turn_cancelled' || variant === 'turn_error') {
-      this.heard(false);
+      // **The record is the truth for a COMPLETION, not this frame.** The
+      // CLI ends a turn per delivered prompt, so a mid-turn message turns
+      // one outward turn into several CLI turns - and each completion fires
+      // here while the seat is still running. `heard(false)` on its own
+      // killed the live row (its clock, its thinking count) until a
+      // remount; the store's record says whether the seat has a turn in
+      // flight. A genuine end still settles at once: the refresh below
+      // draws the page that carries its result. **An error or a cancel is
+      // an end in itself** - the core says so on this frame - so it takes
+      // the bar down directly.
+      if (variant === 'turn_complete') {
+        this.heard(this.heldRunning());
+      } else {
+        this.heard(false);
+      }
       this.refresh();
       // The plan-limit next steps ride the turn's own failure (#1638), where
       // the core's class is known: the terminal's words and its numbered

@@ -479,6 +479,88 @@ describe('the conversation the chat draws', () => {
   });
 
   /**
+   * The walk fills the gap IN PLACE. A walk page is the middle of the
+   * conversation - newer than the tail it walks toward, older than the page
+   * it walks from - so the plain older landing (which prepends above
+   * everything held) drew the recovered stretch at the top of the column.
+   */
+  it('draws the walked gap between the tail and the newest page', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'one'), turn('t2', 'two')], 'c-tail'));
+
+    server.reach('connecting');
+    server.reach('open');
+    // The newest page, cut at the window's floor: the walk starts toward t2.
+    server.send(page([turn('t5', 'five')], 'floor'));
+    // The walk's pages, from the page's cursor down - the last one reaches
+    // the target and stops the walk.
+    server.send(page([turn('t4', 'four')], 'floor-2'));
+    const beforeReach = server.more().length;
+    server.send(page([turn('t2', 'two'), turn('t3', 'three')], 'c-tail'));
+
+    const keys = get(chat.value).turns.map((row) => row.key);
+    expect(keys, 'the recovered stretch draws where it happened').toEqual([
+      't1',
+      't2',
+      't3',
+      't4',
+      't5',
+    ]);
+    expect(server.more().length, 'and a page reaching the target stops the walk').toBe(beforeReach);
+    stop();
+  });
+
+  /**
+   * The walk stops where the history ends: a page with no cursor above it
+   * cannot be walked past, and asking again would fetch the same answer.
+   */
+  it('stops the walk where the history ends', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'one')], 'c-tail'));
+
+    server.reach('connecting');
+    server.reach('open');
+    server.send(page([turn('t4', 'four')], 'floor'));
+    const beforeEnd = server.more().length;
+    server.send(page([turn('t2', 'two'), turn('t3', 'three')], null));
+
+    const keys = get(chat.value).turns.map((row) => row.key);
+    expect(keys, 'everything walked still draws').toEqual(['t1', 't2', 't3', 't4']);
+    expect(server.more().length, 'and no further ask follows the end').toBe(beforeEnd);
+    stop();
+  });
+
+  /**
+   * A tail no page can carry walks nothing: a `forge_notice` row is written
+   * on this page and nowhere else, so targeting one would fetch the whole
+   * history one page per landing for a turn no transcript holds.
+   */
+  it('walks nothing for a tail that is only notices', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.update({
+      chat_appended: {
+        key: LEAD,
+        msg: { type: 'system', subtype: 'forge_notice', severity: 'warning', text: 'a notice' },
+      },
+    });
+
+    const asked = server.more().length;
+    server.send(page([turn('t2', 'a new turn')], 'floor'));
+    expect(
+      server.more().length,
+      'a notice-only tail has nothing in the transcript to walk for',
+    ).toBe(asked);
+    expect(words(chat), 'and the notice still draws').toContain('a notice');
+    stop();
+  });
+
+  /**
    * A return whose ask was swallowed by one in flight fires when that ask
    * settles: the stale page is not the read a return needs, and the want
    * has to outlive it.

@@ -487,14 +487,13 @@
       fresh = true;
     }
     working = entry.chat;
-    // **The shown seat folds and notifies; the seat left does neither.** A
-    // frame arrives for every visited seat through the home feed, so a kept
-    // conversation left subscribed would grow for every seat ever visited -
-    // and every return would re-mount all of it. Held back, the return's own
-    // reads (the re-subscribe's snapshot and the newest page `showing` asks
-    // for) put the seat current again. Written to the seat's own entry rather
-    // than straight to `held`: a conversation kept for a seat the reader has
-    // left must not draw.
+    // **Every seat folds; only the shown one draws.** The conversation folds
+    // every frame it receives wherever the seat is (and holds the seat's own
+    // subscription - Ved, 2026-10-09), so the state never falls behind;
+    // whether the seat is on screen decides only which value this column
+    // renders. Written to the seat's own entry rather than straight to
+    // `held`: a conversation kept for a seat the reader has left must not
+    // draw.
     entry.chat.showing();
     const unsubscribe = entry.chat.value.subscribe((value) => {
       kept.set(which, value);

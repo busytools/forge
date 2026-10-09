@@ -748,13 +748,33 @@ fn stamp_answered_from_result(app: &mut App, tool_use_id: &str, result: &Value) 
                 .collect(),
             _ => Vec::new(),
         };
-        let picked: Vec<String> = values.iter().filter(|v| labels.contains(v)).cloned().collect();
+        // A multi-select answer arrives JOINED ("Dev client, App") while a
+        // single pick arrives alone, so each value is read as its parts
+        // against the labels - a joined string tested whole matched no label
+        // and stamped the reader's picks as if they had been typed. Mirrors
+        // the client's parse (`questionCard`).
+        let parts = |value: &str| -> Vec<String> {
+            value
+                .split(", ")
+                .map(str::trim)
+                .filter(|part| !part.is_empty())
+                .map(str::to_owned)
+                .collect()
+        };
+        let picked: Vec<String> = values
+            .iter()
+            .filter(|v| !v.is_empty())
+            .flat_map(|v| parts(v))
+            .filter(|part| labels.contains(part))
+            .collect();
         let typed = annotations
             .and_then(|a| a.get(text))
             .and_then(|a| a.get("notes"))
             .and_then(Value::as_str)
             .map(str::to_owned)
-            .or_else(|| values.iter().find(|v| !labels.contains(v)).cloned())
+            .or_else(|| {
+                values.iter().find(|v| parts(v).iter().all(|part| !labels.contains(part))).cloned()
+            })
             .filter(|t| !t.is_empty());
         if picked.is_empty() && typed.is_none() {
             continue;
@@ -5810,5 +5830,104 @@ mod forged_user_frame_tests {
             "the answer another view gave stamps this view's card",
         );
         assert!(!tc.hidden, "and the card un-hides so it renders");
+    }
+
+    /// A joined multi-select answer counts as its picks, and a result frame
+    /// arriving twice stamps one card.
+    ///
+    /// The wire joins a multi-select answer into ONE string ("Dev client,
+    /// App"); tested whole it matched no label, and the card drew the picks
+    /// as if they had been typed. And the same result can arrive twice - the
+    /// live frame and a replay - so the stamp is idempotent per question.
+    #[test]
+    fn a_joined_multi_select_answer_stamps_its_picks_once() {
+        use crate::app::{ChatMessage, MessageBlock, MessageRole, ToolCallInfo};
+        use forge_primitives::messages::UserEnvelope;
+        use forge_primitives::{ContentBlock, Message};
+        use serde_json::{Value, json};
+
+        let mut app = App::test_default();
+        let tc = ToolCallInfo {
+            id: "tu-q-3".to_owned(),
+            title: "AskUserQuestion".to_owned(),
+            sdk_tool_name: "AskUserQuestion".to_owned(),
+            raw_input: None,
+            raw_input_bytes: 0,
+            output_metadata: None,
+            task_metadata: None,
+            status: crate::agent::model::ToolCallStatus::InProgress,
+            content: Vec::new(),
+            hidden: true,
+            terminal_output: None,
+            monitor_output_tail: Vec::default(),
+            monitor_status: None,
+            render_epoch: 0,
+            layout_epoch: 0,
+            last_measured_width: 0,
+            last_measured_height: 0,
+            last_measured_layout_epoch: 0,
+            last_measured_layout_generation: 0,
+            last_measured_tools_collapsed: false,
+            collapsed_override: None,
+            last_measured_y_in_msg: 0,
+            answered_questions: Vec::new(),
+        };
+        app.push_message_tracked(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(tc))],
+        ));
+        let mi = app.messages().expect("active session").len() - 1;
+        app.index_tool_call("tu-q-3".to_owned(), mi, 0);
+
+        let result = json!({
+            "questions": [{
+                "question": "Which windows?",
+                "header": "Windows",
+                "multiSelect": true,
+                "options": [
+                    {"label": "Dev client", "description": ""},
+                    {"label": "App", "description": ""},
+                    {"label": "TUI", "description": ""}
+                ]
+            }],
+            "answers": {"Which windows?": "Dev client, App"}
+        });
+        let frame = || Message::User {
+            message: UserEnvelope {
+                role: "user".to_owned(),
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "tu-q-3".to_owned(),
+                    content: Value::String("Your questions have been answered".to_owned()),
+                    is_error: false,
+                    extras: serde_json::Map::new(),
+                }],
+                extras: serde_json::Map::new(),
+            },
+            session_id: String::new(),
+            parent_tool_use_id: None,
+            uuid: None,
+            tool_use_result: Some(result.clone()),
+            timestamp: None,
+            synthetic: false,
+            extras: serde_json::Map::new(),
+        };
+
+        handle_user(&mut app, frame());
+        handle_user(&mut app, frame());
+
+        let (mi, bi) = app.lookup_tool_call("tu-q-3").expect("indexed");
+        let MessageBlock::ToolCall(tc) = &app.messages().expect("active session")[mi].blocks[bi]
+        else {
+            panic!("expected ToolCall block");
+        };
+        assert_eq!(
+            tc.answered_questions,
+            vec![crate::app::AnsweredQuestion {
+                question: "Which windows?".to_owned(),
+                picked_labels: vec!["Dev client".to_owned(), "App".to_owned()],
+                typed_note: None,
+            }],
+            "the joined answer reads as its picks, and a repeat frame adds nothing",
+        );
     }
 }
