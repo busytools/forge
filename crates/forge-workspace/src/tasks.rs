@@ -259,6 +259,22 @@ impl Workspace {
     /// attempt ticks, and the claim is refused - by name - for a row a
     /// live seat holds, a row that is waiting, or a caller already
     /// working another row.
+    /// The user moves a row's state directly - the drag across the board.
+    /// Any wait the row was holding drops with the move, and the verify
+    /// gate holds for the user's own drag too: a drag into `completed` on a
+    /// verify=user row lands in waiting for a look, not done.
+    pub(crate) fn user_move_task(
+        &self,
+        project_name: &str,
+        id: &TaskId,
+        to: TaskStatus,
+    ) -> Result<Option<Task>, MoveError> {
+        self.update_task(project_name, id, By::User, |task| {
+            task.waiting_on = None;
+            task.status = to;
+        })
+    }
+
     /// The user's approval of a row waiting on their look: the wait
     /// clears, the verify gate is satisfied, and the row completes - a
     /// root closing its tree like any completion.
@@ -345,13 +361,25 @@ impl Workspace {
                 .collect();
             queue.sort_by_key(|i| (tasks[*i].rank.unwrap_or(i64::MAX), tasks[*i].created_at));
             let position = queue.iter().position(|i| *i == index)?;
-            let target = match to {
-                RankMove::Top => 0,
-                RankMove::Up => position.saturating_sub(1),
-                RankMove::Down => (position + 1).min(queue.len() - 1),
-            };
-            let moved = queue.remove(position);
-            queue.insert(target, moved);
+            if let RankMove::Before(before) = &to {
+                // The row to sit above is found in the queue the removal
+                // leaves, so a drag downwards and one upwards land alike.
+                let moved = queue.remove(position);
+                let target = before
+                    .as_deref()
+                    .and_then(|id| queue.iter().position(|i| tasks[*i].id.as_str() == id))
+                    .unwrap_or(queue.len());
+                queue.insert(target, moved);
+            } else {
+                let target = match to {
+                    RankMove::Top => 0,
+                    RankMove::Up => position.saturating_sub(1),
+                    RankMove::Down => (position + 1).min(queue.len() - 1),
+                    RankMove::Before(_) => 0,
+                };
+                let moved = queue.remove(position);
+                queue.insert(target, moved);
+            }
             for (rank, i) in queue.iter().enumerate() {
                 tasks[*i].rank = Some(i64::try_from(rank).unwrap_or(i64::MAX));
             }
@@ -959,6 +987,56 @@ mod tests {
         let last = history.last().expect("a last transition");
         assert_eq!((last.from, last.to), (Some(TaskStatus::Waiting), TaskStatus::Completed));
         assert_eq!(last.by, By::User, "the verdict is stamped as the user's own move");
+    }
+
+    /// The user drags a row across the board: the state moves, the wait the
+    /// row was holding drops, and the move is stamped as the user's own.
+    #[test]
+    fn a_user_move_moves_the_row_and_clears_its_wait() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        install_db(&ws, dir.path());
+        let mut waiting = sample_task("t-1", "forge");
+        waiting.status = TaskStatus::Waiting;
+        waiting.waiting_on = Some(Waiting {
+            kind: Some(WaitingKind::Dependency),
+            detail: None,
+            on: None,
+            verification: false,
+        });
+        ws.push_task(waiting);
+
+        let moved = ws
+            .user_move_task("forge", &TaskId::from("t-1"), TaskStatus::InProgress)
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(moved.status, TaskStatus::InProgress, "the drag moved the state");
+        assert_eq!(moved.waiting_on, None, "and dropped the wait it was holding");
+        let history = history_of(&ws, "forge");
+        let last = history.last().expect("a last transition");
+        assert_eq!((last.from, last.to), (Some(TaskStatus::Waiting), TaskStatus::InProgress));
+        assert_eq!(last.by, By::User, "the drag is the user's own move");
+    }
+
+    /// The gate holds for the user's own drag too: completing a verify=user
+    /// row lands it in waiting for a look rather than done.
+    #[test]
+    fn a_user_move_still_takes_the_verify_gate() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        let mut row = sample_task("t-1", "forge");
+        row.verify = Some(Verify::User);
+        ws.push_task(row);
+
+        let landed = ws
+            .user_move_task("forge", &TaskId::from("t-1"), TaskStatus::Completed)
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(landed.status, TaskStatus::Waiting, "the gate lands it in waiting");
+        assert!(
+            landed.waiting_on.as_ref().is_some_and(|wait| wait.verification),
+            "as a verification wait"
+        );
     }
 
     #[test]

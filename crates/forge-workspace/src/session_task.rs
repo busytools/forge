@@ -1588,7 +1588,8 @@ pub(crate) fn execute_command_via_handle(
         | Command::TaskAnswer { .. }
         | Command::TaskRank { .. }
         | Command::TaskAssign { .. }
-        | Command::TaskCreate { .. }) => {
+        | Command::TaskCreate { .. }
+        | Command::TaskMove { .. }) => {
             tracing::warn!(
                 target: "forge_workspace::session_task",
                 slot = %key.display(),

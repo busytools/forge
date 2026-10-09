@@ -345,7 +345,8 @@ const VERIFY_VALUES: ('user' | 'none')[] = ['user', 'none'];
 const PENDING: PendingKind[] = ['question', 'permission'];
 const LOADING: LoadingState[] = ['loading', 'ready', 'bailed'];
 const GATES: Gate[] = ['in_repo', 'not_a_repository', 'gone', 'scanner_failed'];
-const TASK_STATUSES: TaskStatus[] = [
+/** Every status the wire carries, for narrowing and for the board's lanes. */
+export const TASK_STATUSES: TaskStatus[] = [
   'pending',
   'in_progress',
   'waiting',
