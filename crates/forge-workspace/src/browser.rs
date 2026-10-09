@@ -28,7 +28,8 @@ const HOST_GONE: &str = "the browser-capable client went away before answering";
 /// answer. A late answer costs nothing: the ask keeps its entry registered,
 /// and the reply's send drops it (`.ok()`) once this waiter is gone.
 // The client's worst honest ACCEPT-ONWARD path: accept + handshake + one
-// driver call, plus slack. The desktop is 15+15+150; an Android client's
+// driver call, plus slack. The desktop is 15+15+15+150 (launch, handshake,
+// hint mask, call) = 195 s, 5 s inside this bound; an Android client's
 // in-app driver boots, so its cold figures are wider - 40 s accept (a node
 // boot measured at 39 s on a loaded emulator) + 10 s handshake + 150 s call
 // = 200 s, exactly this bound. That is only the accept-onward segment: the
@@ -549,19 +550,22 @@ mod tests {
 
     /// **The bound clears the accept-onward segment of every layer below
     /// it.** The desktop client's own bounds are a launch (15 s), a driver
-    /// handshake (15 s) and one tool call (150 s); an Android client's
-    /// in-app driver BOOTS, so its cold figures are wider - 40 s to accept
-    /// the node's first dial, 10 s to hand shake, and the same 150 s call
-    /// (200 s in all, exactly this bound). That segment carries no slack;
-    /// the call's unbounded pre-accept RPC segment (the generation read,
-    /// the ensure spin, the unpack) can push the whole chain past it. A
-    /// bound under either sum would fail slow-but-fine calls, which is the
-    /// one change someone would plausibly make here.
+    /// handshake (15 s), the driver's client-hint mask (15 s) and one tool
+    /// call (150 s) - 195 s, 5 s inside; an Android client's in-app driver
+    /// BOOTS, so its cold figures are wider - 40 s to accept the node's
+    /// first dial, 10 s to hand shake, and the same 150 s call (200 s in
+    /// all, exactly this bound, and no hint mask there). That segment
+    /// carries no slack on the phone; the call's unbounded pre-accept RPC
+    /// segment (the generation read, the ensure spin, the unpack) can push
+    /// the whole chain past it. A bound under either sum would fail
+    /// slow-but-fine calls, which is the one change someone would plausibly
+    /// make here.
     #[test]
     fn the_ask_bound_clears_the_client_layers_below_it() {
         assert!(
-            ASK_TIMEOUT >= Duration::from_secs(15 + 15 + 150),
-            "the ask's bound must clear the desktop client's launch, handshake and call bounds: {ASK_TIMEOUT:?}",
+            ASK_TIMEOUT >= Duration::from_secs(15 + 15 + 15 + 150),
+            "the ask's bound must clear the desktop client's launch, handshake, hint mask and call \
+             bounds: {ASK_TIMEOUT:?}",
         );
         assert!(
             ASK_TIMEOUT >= Duration::from_secs(40 + 10 + 150),
