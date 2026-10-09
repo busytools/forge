@@ -361,6 +361,33 @@ describe('the conversation the chat draws', () => {
   });
 
   /**
+   * A held return-want dies with the socket. The reconnect answers with an
+   * ask of its own, so a want that outlived the drop fires a second ask at
+   * the same core for the same page.
+   */
+  it('drops a held return-want when the socket goes', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    chat.refresh();
+    chat.leaving();
+    chat.showing();
+    // The socket drops before the in-flight ask settles: the want goes with
+    // it, and the reconnect's own read is the ask a return gets.
+    server.reach('closed');
+    const asked = server.more().length;
+    server.reach('open');
+    server.send(page([turn('t1', 'first')], null));
+
+    expect(server.more().length, 'the reconnect asked once, and the want did not ask again').toBe(
+      asked + 1,
+    );
+    stop();
+  });
+
+  /**
    * A turn no page can put back survives the reach arm. A `forge_notice` line
    * lives in this conversation alone - the CLI wrote no row for it - so the
    * newest page a reconnect asks for carries no copy, and dropped with the
