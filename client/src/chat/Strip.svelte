@@ -30,8 +30,19 @@
    * the very stretch a reader is watching the clock through.
    */
   let now = $state(Date.now());
+  /**
+   * The running fact as a value, so the timer does not restart per frame.
+   *
+   * **Reading `held.running` in the effect below restarts the timer on every
+   * frame**: `held` is a fresh object each time a frame lands, so the tracked
+   * dependency changes, the cleanup clears the interval before it can fire,
+   * and the clock freezes while frames stream - then jumps when they pause
+   * (Ved, 2026-10-09: "it stops and then it just jumps to a bigger value").
+   * A boolean changes only when the state flips.
+   */
+  const running = $derived(held.running);
   $effect(() => {
-    if (!held.running) return;
+    if (!running) return;
     const id = setInterval(() => {
       now = Date.now();
     }, 1000);

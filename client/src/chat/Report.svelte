@@ -35,10 +35,12 @@
    * call that walks a turn past a minute.
    */
   let now = $state(Date.now());
+  /** The running fact as a value, so the timer below does not restart per frame (see `Strip.svelte`). */
+  const running = $derived(held.running);
   $effect(() => {
     // Only while the body is on screen: a closed row carries no clock, and a
     // tick that kept recomputing the facts for one would be work nobody sees.
-    if (!opened || !held.running) return;
+    if (!opened || !running) return;
     const id = setInterval(() => {
       now = Date.now();
     }, 1000);
