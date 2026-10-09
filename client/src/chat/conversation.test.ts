@@ -2723,4 +2723,29 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
     expect(words(chat), 'the row draws on the return').toContain('held words');
     stop();
   });
+
+  /**
+   * Another client's queued prompt stays to one row across a return: the
+   * pile's card carries the words, and the hold has to be armed BEFORE the
+   * return's page lands - dropped while away, the page's copy drew beside
+   * the card, which is the duplicate the hold exists to prevent.
+   */
+  it("keeps another client's queued prompt to one row across a return", () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    chat.leaving();
+    server.update({ prompt_queued: { key: LEAD, uuid: 'p1', source: 'peer', text: 'peer words' } });
+    chat.showing();
+    server.send(
+      page([turn('t1', 'first'), { key: 't2', messages: [forgedUnder('peer words', 'p1')] }], null),
+    );
+    expect(words(chat), 'the card is the only thing drawing it').not.toContain('peer words');
+
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } });
+    expect(words(chat).split('peer words').length - 1, 'then one row, once').toBe(1);
+    stop();
+  });
 });
