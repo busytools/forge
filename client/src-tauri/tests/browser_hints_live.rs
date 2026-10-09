@@ -555,6 +555,14 @@ fn capture_logs_into() -> Arc<Mutex<Vec<String>>> {
 /// logs them under `browser_hint_mask_failure`. This stages exactly what a
 /// listener's catch would record, through the host's own snippet door, and
 /// watches it arrive in the host's own log; a later call must not repeat it.
+///
+/// **What it proves, and what it does not**: the channel - accumulate on the
+/// context, take, log once - runs end to end here, and the staging refuses
+/// to run unless the install really happened (so a stood-down mask fails
+/// with that reason, not with a confusing one). The mask's own catch that
+/// RECORDS a failure is pinned by the snippet's string assertion instead: a
+/// listener's real failure (a target gone the moment it attached) cannot be
+/// staged deterministically, and a test that races for it would flake.
 #[tokio::test]
 #[ignore = "drives the vendored stack; needs `just vendor-browser-stack`"]
 async fn the_hint_masks_failures_reach_the_clients_log() {
@@ -584,8 +592,10 @@ async fn the_hint_masks_failures_reach_the_clients_log() {
         &seat(),
         "browser_run_code_unsafe",
         json!({
-            "code": "async (page) => { page.context().__forgeHintFailures.push('staged: a page \
-                     would not mask'); return 'staged'; }",
+            "code": "async (page) => { const store = page.context(); if \
+                     (!Array.isArray(store.__forgeHintFailures)) throw new Error('the hint mask \
+                     did not install'); store.__forgeHintFailures.push('staged: a page would not \
+                     mask'); return 'staged'; }",
         }),
     )
     .await
