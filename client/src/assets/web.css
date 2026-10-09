@@ -1376,9 +1376,14 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
 /* A task nothing has started: the ring's own shape, hollow and still. */
 .sg-list .sg-it .hollow { width: 9px; height: 9px; flex: none; border-radius: 50%;
   border: 1px solid var(--dim); }
+/* A row that is waiting on something, in the board's own vocabulary: the
+   warning square, at the strip's own size. */
+.sg-list .sg-it .wait { width: 9px; height: 9px; flex: none; border-radius: 2px;
+  border: 1.5px solid var(--warn); }
 .sg-list .sg-it .ic { flex: none; }
 .sg-list .sg-it .ic.ok { color: var(--ok); }
 .sg-list .sg-it .ic.bad { color: var(--bad); }
+.sg-list .sg-it .ic.off { color: var(--dim); }
 .sg-list .sg-it .nm { color: var(--accent); font-weight: 600; font-size: var(--fs-data); flex: none; }
 /* A row that LEADS with its name: the accent name takes what is left and
    elides, so a long key gives way instead of pushing the right figure out. */

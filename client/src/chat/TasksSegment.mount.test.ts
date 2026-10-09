@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs';
+
 import { flushSync, mount, unmount } from 'svelte';
 import { get } from 'svelte/store';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -230,6 +232,21 @@ describe("the tasks row's interaction state machine", () => {
     ).toBe(true);
     expect(rows()[0]?.querySelector('.n')?.textContent?.trim()).toBe('lead');
     expect(rows()[1]?.querySelector('.wait'), 'waiting wears the bars').not.toBeNull();
+    // **A mark's class is a claim until the sheet draws it.** The wait span
+    // existed with no rule at all, so it drew nothing while the row above it
+    // drew a ring - and "the span is present" passes on a blank page. The
+    // sheet is read for the rule, the way the density and salvage checks read
+    // it, because jsdom applies no layout and would report every mark 0x0.
+    // From the suite's own root, which the runner sets to the client: jsdom
+    // rewrites `import.meta.url` to a non-file URL.
+    const sheet = readFileSync('src/assets/web.css', 'utf8');
+    for (const [selector, what] of [
+      ['.sg-list .sg-it .ring', 'in progress'],
+      ['.sg-list .sg-it .wait', 'waiting'],
+      ['.sg-list .sg-it .hollow', 'pending'],
+    ] as const) {
+      expect(sheet, `${what}'s mark has no rule in the sheet`).toContain(selector);
+    }
     expect(rows()[2]?.querySelector('.ic.ok'), 'completed wears the check').not.toBeNull();
     expect(rows()[2]?.classList.contains('settled'), 'and reads as settled').toBe(true);
     expect(rows()[3]?.querySelector('.hollow'), 'pending wears the hollow dot').not.toBeNull();
