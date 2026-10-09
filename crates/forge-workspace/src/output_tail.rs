@@ -1,22 +1,24 @@
-//! The watched command's own output: the tail of the file a Monitor
-//! streams it to.
+//! A command's own output: the tail of the file the CLI streams it to.
 //!
-//! The CLI's local-bash Monitor flavour writes the command's stdout to a
-//! file on disk and names it in `task_notification.output_file` rather
-//! than sending it over the wire (confirmed in
+//! The CLI's local-bash tasks write the command's stdout to a file on disk
+//! and name it in `task_notification.output_file` rather than sending it over
+//! the wire (confirmed in
 //! `~/Projects/forge/.claude/skills/claude-cli-upgrade/reference-captures/monitor.jsonl`),
-//! so the tail is a file read either view performs.
+//! so the tail is a file read. The readers are the session task - which
+//! resolves the path from its own conversation and answers a view's
+//! `ReadCallOutput` with the result - and the views that hold a path already
+//! (the terminal and the web pages tail a Monitor's file on their own tick).
 
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::Path;
 
-/// Largest slice of the file read at a time. Monitor output files grow
-/// without bound (cargo build, npm install) and this runs inline on a
-/// view's own tick, so the read seeks to within this window of the end
-/// rather than reading the whole file each time. 64 KiB comfortably holds
-/// the last few lines at any realistic line length.
+/// Largest slice of the file read at a time. Output files grow without bound
+/// (cargo build, npm install) and this runs inline on a view's own tick, so
+/// the read seeks to within this window of the end rather than reading the
+/// whole file each time. 64 KiB comfortably holds the last few lines at any
+/// realistic line length.
 pub const TAIL_WINDOW_BYTES: u64 = 64 * 1024;
 
 /// Read the last `max_lines` lines of `path` into a `Vec` ordered
@@ -44,9 +46,13 @@ pub fn read_output_file_tail(path: &Path, max_lines: usize) -> Option<Vec<String
     let mut file = match File::open(path) {
         Ok(f) => f,
         Err(err) => {
-            tracing::warn!(
-                event_name = "monitor_output_file_open_failed",
-                message = "could not open Monitor output_file; tail unavailable",
+            // A file that will not open is the session's own condition, and
+            // a view is answered for it by name (`FileGone`): it is not
+            // forge's health, so it stays out of WARN's signal - the level a
+            // reader acts on (rule 20).
+            tracing::debug!(
+                event_name = "output_tail_open_failed",
+                message = "could not open an output file; tail unavailable",
                 outcome = "failure",
                 path = %path.display(),
                 error_kind = ?err.kind(),
@@ -84,8 +90,8 @@ pub fn read_output_file_tail(path: &Path, max_lines: usize) -> Option<Vec<String
                 // read, while a failed read may well come right at the
                 // next one.
                 tracing::debug!(
-                    event_name = "monitor_output_file_line_unreadable",
-                    message = "Monitor output_file holds a line that could not be read; skipping it",
+                    event_name = "output_tail_line_unreadable",
+                    message = "an output file holds a line that could not be read; skipping it",
                     outcome = "skipped",
                     path = %path.display(),
                     error_kind = ?err.kind(),

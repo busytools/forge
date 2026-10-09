@@ -411,6 +411,7 @@ export const REPLACES: readonly string[] = [
  */
 export const IGNORED: readonly string[] = [
   'accounts_changed',
+  'call_output',
   'catalog_loaded',
   'cli_version_changed',
   'cron_prompt_appended',

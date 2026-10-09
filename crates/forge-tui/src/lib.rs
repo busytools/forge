@@ -29,16 +29,16 @@ pub enum DiagnosticsPreset {
 impl DiagnosticsPreset {
     /// A preset replaces the default directives rather than adding to them,
     /// so a target that only the defaults name lands nowhere under one. The
-    /// presets that carry a session's own records carry `forge_server` and
-    /// dictation's two crates too, which is where the demoted ones live; the
-    /// rest of the gap is #1911.
+    /// presets that carry a session's own records carry `forge_server`, the
+    /// tail read's home and dictation's two crates too, which is where the
+    /// demoted ones live; the rest of the gap is #1911.
     pub fn filter_directives(&self) -> &'static str {
         match self {
             Self::Runtime => {
-                "info,bridge.lifecycle=debug,bridge.protocol=debug,app.session=debug,forge_server=debug,app.tool=debug,app.command=debug,app.permission=debug,app.network=debug,app.update=debug,forge_workspace::dictate=debug,forge_dictate=debug"
+                "info,bridge.lifecycle=debug,bridge.protocol=debug,app.session=debug,forge_server=debug,forge_workspace::output_tail=debug,app.tool=debug,app.command=debug,app.permission=debug,app.network=debug,app.update=debug,forge_workspace::dictate=debug,forge_dictate=debug"
             }
             Self::Session => {
-                "info,bridge.lifecycle=debug,bridge.protocol=debug,app.session=debug,forge_server=debug,app.permission=debug,app.command=debug,forge_workspace::dictate=debug,forge_dictate=debug"
+                "info,bridge.lifecycle=debug,bridge.protocol=debug,app.session=debug,forge_server=debug,forge_workspace::output_tail=debug,app.permission=debug,app.command=debug,forge_workspace::dictate=debug,forge_dictate=debug"
             }
             Self::Render => {
                 "info,app.render=trace,app.cache=debug,app.input=debug,app.paste=debug,app.perf=info"
@@ -47,7 +47,7 @@ impl DiagnosticsPreset {
                 "info,bridge.lifecycle=debug,bridge.protocol=debug,bridge.sdk=debug,bridge.permission=debug,bridge.mcp=debug"
             }
             Self::Full => {
-                "info,app.render=trace,app.perf=info,bridge.lifecycle=debug,bridge.protocol=debug,bridge.sdk=debug,bridge.permission=debug,bridge.mcp=debug,app.session=debug,forge_server=debug,app.tool=debug,app.command=debug,app.permission=debug,app.network=debug,app.update=debug,app.cache=debug,app.input=debug,app.paste=debug,app.config=debug,app.auth=debug,forge_workspace::dictate=debug,forge_dictate=debug"
+                "info,app.render=trace,app.perf=info,bridge.lifecycle=debug,bridge.protocol=debug,bridge.sdk=debug,bridge.permission=debug,bridge.mcp=debug,app.session=debug,forge_server=debug,forge_workspace::output_tail=debug,app.tool=debug,app.command=debug,app.permission=debug,app.network=debug,app.update=debug,app.cache=debug,app.input=debug,app.paste=debug,app.config=debug,app.auth=debug,forge_workspace::dictate=debug,forge_dictate=debug"
             }
         }
     }

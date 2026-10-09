@@ -10,6 +10,7 @@ import type { Connection, ConnectionStatus } from '../socket';
 import type { SessionSlot } from '../wire/types';
 import { Chat, type PageTurn } from './conversation';
 import { echoes } from './echoes.svelte';
+import { outputs } from './outputs.svelte';
 import { refused } from '../refusals';
 
 // Every record the class publishes is frozen, so an in-place edit where a
@@ -2801,6 +2802,46 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
     );
 
     expect(words(chat), 'the row draws on the return').toContain('held words');
+    stop();
+  });
+});
+
+describe('the answer a call-output read leaves behind', () => {
+  afterEach(() => {
+    outputs.clear(subjectKey({ session: LEAD }));
+  });
+
+  /**
+   * The answer is kept where the row that asked reads it - by the call's own
+   * id - and a swap takes the OUTGOING occupant's answers with it: they are
+   * about calls the new occupant never made.
+   */
+  it('keeps the answer for its call, and drops it with the occupant', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+
+    server.update({ call_output: { key: LEAD, call_id: 'tu-1', output: { lines: ['one'] } } });
+    expect(outputs.of('tu-1'), 'the answer is readable by the id it was asked with').toEqual({
+      kind: 'lines',
+      lines: ['one'],
+    });
+
+    server.update({ session_replaced: { key: LEAD } });
+    expect(outputs.of('tu-1'), "the going occupant's answers go with it").toBeUndefined();
+    stop();
+  });
+
+  it('draws an answer it cannot name rather than reading it as nothing', () => {
+    // Rule 25 at the seam: a shape this build does not know is kept as
+    // `unknown` and drawn plainly, so a future answer cannot reach the row
+    // as a blank.
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+
+    server.update({ call_output: { key: LEAD, call_id: 'tu-2', output: { novel: true } } });
+    expect(outputs.of('tu-2')).toEqual({ kind: 'unknown' });
     stop();
   });
 });

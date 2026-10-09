@@ -87,7 +87,7 @@ variants, 47 of them struct variants; the two unit variants,
 `dictate_catalogue_check` and `dictate_bench_stop`, cross as the name
 alone. An update is the same shape one level in,
 `{"kind": "update", "update": {"chat_appended": {"key": ..., "msg": ...}}}`,
-and 72 of `SessionUpdate`'s 76 variants are struct variants too. The other
+and 73 of `SessionUpdate`'s 77 variants are struct variants too. The other
 four are why the payload is not one shape: they are unit variants and cross
 as the name alone - `"catalog_loaded"`, `"cli_version_changed"`,
 `"dictate_availability"` and `"accounts_changed"`.
@@ -533,12 +533,13 @@ than facts about a session.
   highlighting - and the heavier reads a review surface may want beyond
   those two layers, like a per-commit history or a diff against an
   arbitrary base.
-- **A monitor's output tail.** A `MonitorRecord` carries the path the
-  watched command writes to, and that path is on the server's machine: the
-  live tail is not reachable over this socket. It is a deliberate gap
-  rather than an oversight, and a small one - the finished output lands in
-  the conversation like any other tool result, which the transcript does
-  carry. A client that wants the running tail has to be on the machine.
+- **A monitor's tail as it runs.** `read_call_output` answers a call's own
+  output - the newest lines of the file the task wrote to, or a named
+  reason there is none - and a Monitor's file is the same read, so the
+  finished tail is reachable. The file is named only by the frame that
+  ENDS the task, though, so a command still running answers no-path: what
+  this carries is the tail of work that has ended. Filed as its own piece
+  of work.
 - **The extensions surface.** Only the update records cross, above.
   Installing, updating, rolling back and repairing a plugin are the
   `claude plugin` CLI, and the page that drives them reads its inventory

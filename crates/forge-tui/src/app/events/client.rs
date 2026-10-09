@@ -722,6 +722,10 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         // the pushed list is a no-op here - a known gap in this view, not a
         // drop at the core.
         | SessionUpdate::SubagentCardsChanged { .. }
+        // The terminal asks for no call's output and draws none: it holds the
+        // path on its own monitor rows and reads the file there, so the frame
+        // exists for the views that hold no path. Nothing to redraw here.
+        | SessionUpdate::CallOutput { .. }
         | SessionUpdate::FileIndexChanged { .. } => {}
         SessionUpdate::DictateStarted { key, floor_db, generation, .. } => {
             app.dictate_take_pending = false;

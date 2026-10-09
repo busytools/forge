@@ -124,12 +124,15 @@ pub enum Message {
 
     /// Incremental lifecycle update for any long-running tool task
     /// (backgrounded `Bash`, `Monitor`, sub-agent `Task`). Subtype
-    /// `"task_updated"`. Wire captures (`backgrounded_bash_lifecycle.jsonl`,
-    /// `monitor_persistent_stream.jsonl`) show the CLI emits this
-    /// instead of `task_notification` for the local-bash flavour:
-    /// it carries a `patch` object with status / end_time deltas.
-    /// Without a typed variant, the reducer can't transition a
-    /// backgrounded Bash from `running` to `completed`.
+    /// `"task_updated"`; it carries a `patch` object with status /
+    /// end_time deltas. Without a typed variant, the reducer can't
+    /// transition a backgrounded Bash from `running` to `completed`.
+    ///
+    /// **It rides alongside `task_notification`, not instead of it.** The
+    /// wire baseline (`baselines/sdk/2.1.280/backgrounded_bash_lifecycle.jsonl`
+    /// in forge-test-harness) carries `task_started`, this and the ending
+    /// `task_notification` together for one local-bash command, and it is
+    /// that ending frame which names the output file.
     TaskUpdated {
         /// Stable identifier for this task instance - same id surface
         /// as `task_started` / `task_progress` / `task_notification`.
@@ -175,23 +178,28 @@ pub enum Message {
         extras: Extras,
     },
 
-    /// Terminal notification when a sub-agent `Task` completes,
-    /// fails, or is stopped. Subtype `"task_notification"`. v0.1.64
-    /// `TaskNotificationMessage`.
+    /// Terminal notification when a task completes, fails, or is stopped:
+    /// a sub-agent `Task`, a backgrounded `Bash` or a `Monitor`. Subtype
+    /// `"task_notification"`. v0.1.64 `TaskNotificationMessage`.
     ///
-    /// Despite the generic-sounding name, captures confirm this
-    /// variant only fires for the `Task` sub-agent tool - backgrounded
-    /// `Bash` and `Monitor` use the `task_started` / `task_updated`
-    /// pair (see [`Self::TaskStarted`], [`Self::TaskProgress`]) and
-    /// Monitor stream events arrive as `Result` frames with
-    /// `origin: {kind: "task-notification"}` rather than as system
-    /// notifications.
+    /// **Every task flavour fires it, not only the sub-agent tool.** The
+    /// wire baselines record it ending a backgrounded command
+    /// (`baselines/sdk/2.1.280/backgrounded_bash_lifecycle.jsonl` in
+    /// forge-test-harness), carrying the `output_file` its output went to;
+    /// `monitor.jsonl` under the claude-cli-upgrade skill records the same
+    /// for a Monitor. The `task_started` / `task_updated` pair (see
+    /// [`Self::TaskStarted`], [`Self::TaskUpdated`]) rides alongside while
+    /// the task runs rather than instead of this. Monitor stream events
+    /// also arrive as `Result` frames with
+    /// `origin: {kind: "task-notification"}`.
     TaskNotification {
         /// Stable identifier for this task instance.
         task_id: String,
         /// How the task ended.
         status: TaskNotificationStatus,
-        /// Path on disk where the task wrote its result transcript.
+        /// Path on disk the task's output went to: its result transcript for
+        /// a sub-agent, the command's own stream for a backgrounded task.
+        /// Empty when the frame carries none - a path is never assumed.
         output_file: String,
         /// Short natural-language summary of the outcome.
         summary: String,

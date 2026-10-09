@@ -13,6 +13,7 @@ const edited = (): ToolLeaf => ({
   title: '/x/a.css',
   command: null,
   status: 'completed',
+  backgrounded: false,
   note: null,
   body: [
     {
@@ -54,6 +55,7 @@ const refusedBash = (): ToolLeaf => ({
   title: 'run the gate against the wrong tree',
   command: 'just check --nope',
   status: 'failed',
+  backgrounded: false,
   note: null,
   body: [{ kind: 'error', message: 'Command failed with exit code 2', detail: '' }],
   mutation: null,
@@ -161,6 +163,7 @@ describe("the lines a call's row draws", () => {
       title: 'Grep render_group_summary',
       command: null,
       status: 'completed',
+      backgrounded: false,
       note: null,
       body: [
         {

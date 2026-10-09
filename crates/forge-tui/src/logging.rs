@@ -95,9 +95,11 @@ impl LoggingRuntime {
 /// session's own tool failures and a git probe missing
 /// `refs/remotes/origin/HEAD`, which are real and are not forge's
 /// problems. At `debug` they stay readable without raising a warning
-/// that says forge is unwell. `forge_server` is there for the same
-/// reason: a line in a Monitor's output file that cannot be decoded is the
-/// watched command's own output rather than a problem with forge.
+/// that says forge is unwell. `forge_workspace::output_tail` is there for
+/// the same reason: a line in a command's output file that cannot be
+/// decoded is the watched command's own output rather than a problem with
+/// forge. (`forge_server` too: its session reads are one session's own
+/// work.)
 /// `tui_markdown`
 /// is pinned to `error` because it emits per-frame WARN events for
 /// every HTML element and unknown-language code block it encounters
@@ -126,6 +128,7 @@ const DEFAULT_LOG_DIRECTIVES: &str = "info,\
     bridge.lifecycle=debug,\
     agent.env_git=debug,\
     forge_server=debug,\
+    forge_workspace::output_tail=debug,\
     forge_workspace::work=debug,\
     forge_workspace::browser=debug,\
     forge_workspace::dictate=debug,\
@@ -437,11 +440,11 @@ mod tests {
         // miss entirely, which is the state the levels moved away from.
         assert!(DEFAULT_LOG_DIRECTIVES.contains("app.tool=debug"));
         assert!(DEFAULT_LOG_DIRECTIVES.contains("agent.env_git=debug"));
-        // `forge_server` carries the Monitor tail read's unreadable-line
-        // record, demoted there for the same reason: a line the watched
-        // command wrote that cannot be decoded is that command's own
-        // output. Without the directive the record never lands at all.
-        assert!(DEFAULT_LOG_DIRECTIVES.contains("forge_server=debug"));
+        // `forge_workspace::output_tail` carries the tail read's
+        // unreadable-line record, demoted there for the same reason: a line
+        // the watched command wrote that cannot be decoded is that command's
+        // own output. Without the directive the record never lands at all.
+        assert!(DEFAULT_LOG_DIRECTIVES.contains("forge_workspace::output_tail=debug"));
         // The seat's working-tree watch says why it holds nothing and why it
         // stops, both at `debug` because neither is forge's health. They are
         // the only record of a seat whose tree is silently not being read, so
@@ -524,12 +527,12 @@ mod tests {
         std::fs::write(&path, b"one\ntwo\n\xff\xfe not utf-8\n").expect("write the probe file");
 
         let caught = emitted_under_defaults(|| {
-            let _ = forge_server::monitor::read_output_file_tail(&path, 12);
+            let _ = forge_server::output_tail::read_output_file_tail(&path, 12);
         });
         let _ = std::fs::remove_file(&path);
 
         assert!(
-            caught.contains("monitor_output_file_line_unreadable"),
+            caught.contains("output_tail_line_unreadable"),
             "the demoted record must land under the default directives: {caught}",
         );
     }
@@ -547,8 +550,14 @@ mod tests {
         for preset in carrying {
             let directives = preset.filter_directives();
             // Every crate whose demoted records this preset would otherwise
-            // drop: `forge_server`'s monitor tail, and dictation's two.
-            for target in ["forge_server", "forge_workspace::dictate", "forge_dictate"] {
+            // drop: the tail read's home, the server's own session reads,
+            // and dictation's two.
+            for target in [
+                "forge_server",
+                "forge_workspace::output_tail",
+                "forge_workspace::dictate",
+                "forge_dictate",
+            ] {
                 assert!(
                     directives.contains(&format!("{target}=debug")),
                     "{preset:?} carries a session's own records, so it must carry {target}, \

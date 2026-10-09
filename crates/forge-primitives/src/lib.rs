@@ -49,6 +49,7 @@
 pub mod account;
 pub mod background;
 pub mod browser;
+pub mod call_output;
 pub mod client;
 pub mod cloud;
 pub mod command;
@@ -85,6 +86,7 @@ pub mod turn_error;
 pub mod usage;
 pub mod workers;
 
+pub use call_output::CallOutput;
 pub use client::ClientConfig;
 pub use command::AgentCommand;
 pub use content::ContentBlock;
