@@ -100,7 +100,7 @@ impl Driver {
         }
         std::fs::create_dir_all(output_dir)
             .map_err(|why| format!("the browser output directory cannot be made: {why}"))?;
-        let mask = write_mask(output_dir)?;
+        let mask = write_mask(output_dir);
 
         tauri_plugin_log::log::info!("starting the driver against {cdp_endpoint}");
         let transport =
@@ -117,7 +117,7 @@ impl Driver {
                 // `--output-dir` is where upstream's own screenshot default
                 // lands: the client runs from a directory nobody chose, and a
                 // file dropped there is one nobody finds.
-                for arg in driver_args(cli, cdp_endpoint, output_dir, &mask) {
+                for arg in driver_args(cli, cdp_endpoint, output_dir, mask.as_deref()) {
                     cmd.arg(arg);
                 }
                 cmd.current_dir(output_dir);
@@ -592,22 +592,41 @@ fn mask_path(output_dir: &Path) -> PathBuf {
     output_dir.join("browser-mask.js")
 }
 
-/// Write the mask script and answer its path. Rewritten on every driver
-/// start, so a running browser from an older client cannot hand the driver a
-/// stale mask.
-fn write_mask(output_dir: &Path) -> Result<PathBuf, String> {
+/// Write the mask script and answer its path, or `None` where it could not
+/// be written.
+///
+/// **Whole or not at all**: two profiles' drivers can start at once and both
+/// write this one file, and a reader that caught a half-written script would
+/// load half a mask - so the file is written to a temp name unique to this
+/// process and renamed into place. Rewritten on every driver start, so a
+/// running browser from an older client cannot hand the driver a stale mask.
+///
+/// **A write that fails is not a refusal.** The engine's own launch carries
+/// the mask that matters; the script is the fallback, so a start without it
+/// warns by name and goes on, exactly as a launch whose version could not be
+/// read does.
+fn write_mask(output_dir: &Path) -> Option<PathBuf> {
     let path = mask_path(output_dir);
-    std::fs::write(&path, MASK_SCRIPT).map_err(|why| {
-        format!("the browser mask script could not be written to {}: {why}", path.display())
-    })?;
-    Ok(path)
+    let temp = output_dir.join(format!("browser-mask.js.{}.tmp", std::process::id()));
+    match std::fs::write(&temp, MASK_SCRIPT).and_then(|()| std::fs::rename(&temp, &path)) {
+        Ok(()) => Some(path),
+        Err(why) => {
+            let _ = std::fs::remove_file(&temp);
+            tauri_plugin_log::log::warn!(
+                "the page-visible mask is not loaded this run (event_name browser_mask_script): \
+                 the script could not be written to {}: {why}",
+                path.display()
+            );
+            None
+        }
+    }
 }
 
 /// The command line one driver start runs: the vendored CLI, the browser's
 /// own endpoint, and the mask - **an option the pinned driver already has**
-/// (`--init-script`), so nothing vendored is patched.
-fn driver_args(cli: &Path, endpoint: &str, output_dir: &Path, mask: &Path) -> Vec<String> {
-    vec![
+/// (`--init-script`), so nothing vendored is patched. No mask, no argument.
+fn driver_args(cli: &Path, endpoint: &str, output_dir: &Path, mask: Option<&Path>) -> Vec<String> {
+    let mut args = vec![
         cli.display().to_string(),
         "--cdp-endpoint".to_owned(),
         endpoint.to_owned(),
@@ -615,9 +634,12 @@ fn driver_args(cli: &Path, endpoint: &str, output_dir: &Path, mask: &Path) -> Ve
         "--allow-unrestricted-file-access".to_owned(),
         "--output-dir".to_owned(),
         output_dir.display().to_string(),
-        "--init-script".to_owned(),
-        mask.display().to_string(),
-    ]
+    ];
+    if let Some(mask) = mask {
+        args.push("--init-script".to_owned());
+        args.push(mask.display().to_string());
+    }
+    args
 }
 
 /// The CLI inside the vendored package, run by the vendored node.
@@ -811,7 +833,7 @@ mod tests {
             Path::new("/stack/driver.js"),
             "http://127.0.0.1:9333",
             Path::new("/out"),
-            Path::new("/out/browser-mask.js"),
+            Some(Path::new("/out/browser-mask.js")),
         );
         assert_eq!(args.first().map(String::as_str), Some("/stack/driver.js"), "{args:?}");
         let after =
@@ -824,6 +846,17 @@ mod tests {
         );
         assert!(args.contains(&"--no-webmcp".to_owned()), "{args:?}");
         assert!(args.contains(&"--allow-unrestricted-file-access".to_owned()), "{args:?}");
+
+        let unmasked = driver_args(
+            Path::new("/stack/driver.js"),
+            "http://127.0.0.1:9333",
+            Path::new("/out"),
+            None,
+        );
+        assert!(
+            !unmasked.contains(&"--init-script".to_owned()),
+            "a start whose script could not be written goes on without the flag: {unmasked:?}",
+        );
     }
 
     /// The script written for the driver masks the three tells a page can
@@ -835,6 +868,15 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temp dir");
         let path = write_mask(dir.path()).expect("the mask writes");
         assert_eq!(path, dir.path().join("browser-mask.js"));
+        let left: Vec<_> = std::fs::read_dir(dir.path())
+            .expect("the dir lists")
+            .map(|entry| entry.expect("an entry").file_name())
+            .collect();
+        assert_eq!(
+            left,
+            [std::ffi::OsString::from("browser-mask.js")],
+            "the write lands whole under its own name, with no temp left behind",
+        );
         let written = std::fs::read_to_string(&path).expect("the mask reads back");
         assert!(
             written.contains("if (navigator.webdriver)"),
