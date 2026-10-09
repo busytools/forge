@@ -161,7 +161,7 @@ impl Tool for AskNoul {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "state": { "description": "The material to judge: a string, a JSON object, or an array. Give it the full context the judgment needs - what the user asked for, the current state, and any policy or facts that bear on the answer; prefer named JSON fields when the context has more than one part. The state carries what the decision needs - evidence, excerpts, the exact facts - and the model reads it verbatim; pass the context, not a pointer to it. The whole request - state, instructions and the question together - must fit the live ~32k-token context; keep the state well inside it." },
+                "state": { "description": "The material to judge: a string, a JSON object, or an array. Give it the full context the judgment needs - what the user asked for, the current state, and any policy or facts that bear on the answer; prefer named JSON fields when the context has more than one part. The state carries what the decision needs - evidence, excerpts, the exact facts, the exact numbers, the governing rules, precedents with how they turned out, the constraints, and whether the action is reversible - and the model reads it verbatim; pass the context, not a pointer to it. A thin state gets a thin answer; the model sees only what you put there. The whole request - state, instructions and the question together - must fit the live ~32k-token context; keep the state well inside it." },
                 "instructions": { "type": ["string", "object", "array", "null"], "description": "The yes/no question itself." },
                 "criteria": {
                     "type": "object",
@@ -210,7 +210,8 @@ impl Tool for AskChoice {
          writes prose. `instructions` and criteria values may be any JSON - the question in \
          one field, referenced data in others, named with backticks. \
          When to reach for it: routing and picking between enumerated \
-         alternatives, or as a second opinion when you are leaning toward one option and want \
+         alternatives; before interrupting the user with a choice this session could decide \
+         itself; or as a second opinion when you are leaning toward one option and want \
          the alternatives weighed. Beyond those moments, reach for a decision when the outcome \
          matters to the user and is not obvious, and skip it when both outcomes would lead you \
          to the same action; a routing call with several plausible owners and no evidence \
@@ -235,7 +236,7 @@ impl Tool for AskChoice {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "state": { "description": "The material to judge: a string, a JSON object, or an array. Give it the full context the judgment needs - what the user asked for, the current state, and any policy or facts that bear on the answer; prefer named JSON fields when the context has more than one part. The state carries what the decision needs - evidence, excerpts, the exact facts - and the model reads it verbatim; pass the context, not a pointer to it. The whole request - state, instructions and the question together - must fit the live ~32k-token context; keep the state well inside it." },
+                "state": { "description": "The material to judge: a string, a JSON object, or an array. Give it the full context the judgment needs - what the user asked for, the current state, and any policy or facts that bear on the answer; prefer named JSON fields when the context has more than one part. The state carries what the decision needs - evidence, excerpts, the exact facts, the exact numbers, the governing rules, precedents with how they turned out, the constraints, and whether the action is reversible - and the model reads it verbatim; pass the context, not a pointer to it. A thin state gets a thin answer; the model sees only what you put there. The whole request - state, instructions and the question together - must fit the live ~32k-token context; keep the state well inside it." },
                 "instructions": { "type": ["string", "object", "array", "null"], "description": "The question the options answer." },
                 "criteria": {
                     "type": "object",
@@ -282,7 +283,8 @@ impl Tool for AskScore {
          `instructions` and criteria values may be any JSON - the question in one field, \
          referenced data in others, named with backticks. \
          When to reach for it: \
-         severity, quality, priority, or risk judgments where the levels are meaningful to you. \
+         severity, quality, priority, or risk judgments where the levels are meaningful to \
+         you, or before interrupting the user with one this session could decide itself. \
          Beyond those moments, score a judgment when it matters to the user and is not obvious, \
          and skip it when the position would not change what you do. \
          Define `criteria` as an ordered list of level descriptions, lowest first (two to ten \
@@ -303,7 +305,7 @@ impl Tool for AskScore {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "state": { "description": "The material to judge: a string, a JSON object, or an array. Give it the full context the judgment needs - what the user asked for, the current state, and any policy or facts that bear on the answer; prefer named JSON fields when the context has more than one part. The state carries what the decision needs - evidence, excerpts, the exact facts - and the model reads it verbatim; pass the context, not a pointer to it. The whole request - state, instructions and the question together - must fit the live ~32k-token context; keep the state well inside it." },
+                "state": { "description": "The material to judge: a string, a JSON object, or an array. Give it the full context the judgment needs - what the user asked for, the current state, and any policy or facts that bear on the answer; prefer named JSON fields when the context has more than one part. The state carries what the decision needs - evidence, excerpts, the exact facts, the exact numbers, the governing rules, precedents with how they turned out, the constraints, and whether the action is reversible - and the model reads it verbatim; pass the context, not a pointer to it. A thin state gets a thin answer; the model sees only what you put there. The whole request - state, instructions and the question together - must fit the live ~32k-token context; keep the state well inside it." },
                 "instructions": { "type": ["string", "object", "array", "null"], "description": "The rubric question itself." },
                 "criteria": {
                     "type": "array",
@@ -378,6 +380,9 @@ mod tests {
                 .expect("the state description is a string");
             for clause in [
                 "The state carries what the decision needs",
+                "the exact numbers, the governing rules, precedents with how they turned out, \
+                 the constraints, and whether the action is reversible",
+                "A thin state gets a thin answer",
                 "pass the context, not a pointer to it",
                 "must fit the live ~32k-token context; keep the state well inside it",
             ] {
@@ -401,6 +406,38 @@ mod tests {
             ),
             "the routing moment's evidence test is pinned: {}",
             choice.description()
+        );
+    }
+
+    /// Every tool names the moment before a decision goes to the user, so a
+    /// rewording that drops it fails instead of shipping. The three are one
+    /// cue: noul's predates the others; all three are pinned together.
+    #[test]
+    fn the_tool_texts_name_their_escalate_moments() {
+        let noul = AskNoul { facade: MockSystemOneFacade::new().into_arc() };
+        let choice = AskChoice { facade: MockSystemOneFacade::new().into_arc() };
+        let score = AskScore { facade: MockSystemOneFacade::new().into_arc() };
+        assert!(
+            noul.description().contains(
+                "before interrupting the user with a question this session could probably \
+                 decide itself"
+            ),
+            "noul's escalate moment is pinned: {}",
+            noul.description()
+        );
+        assert!(
+            choice.description().contains(
+                "before interrupting the user with a choice this session could decide itself"
+            ),
+            "choice's escalate moment is pinned: {}",
+            choice.description()
+        );
+        assert!(
+            score
+                .description()
+                .contains("before interrupting the user with one this session could decide itself"),
+            "score's escalate moment is pinned: {}",
+            score.description()
         );
     }
 

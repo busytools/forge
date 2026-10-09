@@ -7125,6 +7125,13 @@ mod lead_charter_tests {
             ),
             "the routing cue and its guard are pinned",
         );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains(
+                "if your tools include `systemone__ask_choice`, `ask_score` or `ask_noul`, put \
+                 a decision this session could make to the model rather than the user"
+            ),
+            "the escalation cue and its guard are pinned",
+        );
     }
 
     /// The charter is shipped text every lead reads, so a blocked CLI tool
