@@ -459,3 +459,68 @@ async fn the_high_entropy_hints_match_a_chrome_build() {
     );
     assert_eq!(subject_read["brands"], control_read["brands"], "the brands stay real");
 }
+
+/// **The headed skip, pinned without a window.** The hint mask keeps off a
+/// headed launch by the one fact such a launch leaves - the profile's
+/// `windowed` marker - and its absence is the headless signal; a gate that
+/// ignored the marker (or read the wrong profile's) would install the mask
+/// on a person's window. Writing the marker by hand puts the code in exactly
+/// the state a headed launch leaves, so the skip itself is asserted on a
+/// page the driver really drives: the five stay the override's blanks,
+/// while the launch's own UA mask is untouched.
+#[tokio::test]
+#[ignore = "drives the vendored stack; needs `just vendor-browser-stack`"]
+async fn the_hint_mask_keeps_off_a_windowed_launch() {
+    capture_logs();
+    let stack = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("browser-stack");
+    assert!(
+        stack.join("node/bin/node").is_file(),
+        "the vendored stack is not there - run `just vendor-browser-stack`",
+    );
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let paths = StackPaths {
+        stack,
+        user_data: dir.path().join("user-data"),
+        output: dir.path().join("output"),
+        profiles: dir.path().join("profiles"),
+    };
+    let (origin, _headers) = hints_origin().await;
+
+    let host = BrowserHost::new(paths.clone());
+    let active = host.start().await.expect("the browser comes up");
+    let browser = Launched::new(active.pid, active.port, paths.user_data.clone());
+
+    // Written AFTER the launch - a launch forgets whatever marker it finds,
+    // and a headed relaunch writes it exactly at this point, with the
+    // browser answering.
+    std::fs::write(paths.user_data.join("windowed"), b"").expect("the marker");
+
+    host.call(&seat(), "browser_navigate", json!({ "url": origin }))
+        .await
+        .unwrap_or_else(|why| panic!("the page: {why}"));
+    let read = read_of(
+        &host
+            .call(&seat(), "browser_evaluate", json!({ "function": READ_HINTS }))
+            .await
+            .unwrap_or_else(|why| panic!("the read: {why}")),
+        "the windowed launch",
+    );
+    browser.reap();
+
+    let ua = read["user_agent"].as_str().unwrap_or_default();
+    assert!(
+        ua.contains("Chrome/") && !ua.contains("HeadlessChrome"),
+        "the launch's own UA mask still applies: {ua}",
+    );
+    assert_eq!(
+        five(&read),
+        json!({
+            "architecture": "",
+            "bitness": "",
+            "platformVersion": "",
+            "uaFullVersion": "",
+            "fullVersionList": [],
+        }),
+        "a windowed launch is left to report its own hints - the mask must stand down: {read}",
+    );
+}
