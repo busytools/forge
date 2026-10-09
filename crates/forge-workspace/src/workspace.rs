@@ -12558,10 +12558,12 @@ mod worker_activity_tests {
             "the model's own output opens a turn",
         );
 
-        // A report ABOUT the turn says nothing about whether one is open, so it
-        // must leave the mirror where it stands.
+        // A report ABOUT the turn is not a liveness signal, and
+        // `session_state_changed` is the subtype to pin: it is the one the fold
+        // already parses, so an arm reading it as "running" would otherwise
+        // survive every test there is.
         let report = forge_primitives::Message::System {
-            subtype: "init".to_owned(),
+            subtype: "session_state_changed".to_owned(),
             session_id: None,
             data: serde_json::Value::Null,
         };

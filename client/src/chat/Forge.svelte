@@ -28,8 +28,11 @@
   {:else if piece.kind === 'quote'}
     <!-- A quote is prose wherever it comes from - a spawn's charter and kick,
          a Slack message, a review's prompt, a summary - so it renders as
-         markdown, which is how a charter's headings and lists were written. -->
-    <div class="fam-quote"><Prose text={piece.text} /></div>
+         markdown, which is how a charter's headings and lists were written.
+         `preserveLines`, because most of them are the reader's own words and
+         their line breaks are theirs: the terminal's own split for that path,
+         where a person's newlines survive and generated prose joins back. -->
+    <div class="fam-quote"><Prose text={piece.text} preserveLines /></div>
   {:else if piece.kind === 'tag'}
     <div class="fam-tag">{piece.text}</div>
   {:else if piece.kind === 'warnline'}

@@ -223,13 +223,12 @@ async function crossed(): Promise<void> {
  * turns.
  *
  * **`crossed` is a race under load**: ten 5ms turns is about 50ms of wall
- * clock whatever else the machine is doing, and the full gate runs this suite
- * beside the Rust ones - so a removal crossing a real socket can land after it
- * and the assertion fails on a page that was merely slow (measured twice in
- * one day, both times green on the standalone re-run). Waiting on the
- * condition removes the race and keeps the assertion's own message for the
- * case where the page genuinely never arrives; the deadline only stops a
- * broken page from hanging the suite.
+ * clock whatever else the machine is doing - so with the machine busy a
+ * removal crossing a real socket can land after it and the assertion fails on
+ * a page that was merely slow (measured twice in one day, both times green on
+ * the standalone re-run). Waiting on the condition removes the race and keeps
+ * the assertion's own message for the case where the page genuinely never
+ * arrives; the deadline only stops a broken page from hanging the suite.
  */
 async function landed(path: string): Promise<void> {
   const deadline = Date.now() + 2_000;

@@ -4341,6 +4341,38 @@ provider = "anthropic"
         );
     }
 
+    /// **The whole chain, not just its two ends.**
+    ///
+    /// `liveness_of` and `note_liveness` are each pinned, but nothing pinned the
+    /// FOLD that joins them - so an edit that called `liveness_of` and dropped
+    /// its answer would leave every test green while the header went back to
+    /// reading idle through a turn's opening, which is the 41-second window the
+    /// mirror exists to close. This drives a real frame through the real fold.
+    #[test]
+    fn a_thinking_frame_on_the_wire_opens_the_turn() {
+        let mut domain = empty_domain();
+        assert!(!domain.turn_in_flight(), "precondition: nothing is running");
+
+        apply_event_to_domain(
+            &mut domain,
+            &AgentEvent::SdkMessage {
+                session_id: "s".to_owned(),
+                msg: forge_primitives::Message::ThinkingTokens {
+                    estimated_tokens: 40,
+                    estimated_tokens_delta: 40,
+                    uuid: "tokens-1".to_owned(),
+                    session_id: "s".to_owned(),
+                    extras: serde_json::Map::new(),
+                },
+            },
+        );
+
+        assert!(
+            domain.turn_in_flight(),
+            "the frame did not reach the liveness mirror, so the header reads idle",
+        );
+    }
+
     /// `apply_event_to_domain` on `AgentEvent::ConnectionFailed`
     /// clears the runtime/turn mirrors: the subprocess is gone, so the
     /// in-flight guards must not read a stale "turn in flight".
