@@ -541,12 +541,12 @@ pub fn tab_call_refusal(tool: &str, args: &Value, listed: &str, ui_origin: &str)
 /// where the engine already reports the truth. Every patch is wrapped, and a
 /// page that froze one of these objects is not a reason to break the page.
 const MASK_SCRIPT: &str = r#"(() => {
-  // navigator.webdriver: a true is masked; the engine's own false is left
-  // untouched, native getter and all.
+  // navigator.webdriver: a true is masked to the false a real browser
+  // reports; the engine's own false is left untouched, native getter and all.
   try {
     if (navigator.webdriver) {
       Object.defineProperty(Object.getPrototypeOf(navigator), 'webdriver', {
-        get: () => undefined,
+        get: () => false,
         configurable: true,
       });
     }
@@ -881,6 +881,10 @@ mod tests {
         assert!(
             written.contains("if (navigator.webdriver)"),
             "the webdriver tell, masked only when it reads true: {written}",
+        );
+        assert!(
+            written.contains("get: () => false"),
+            "a masked webdriver reads the false a real browser reports, not undefined: {written}",
         );
         assert!(
             written.contains("if (!window.chrome)"),
