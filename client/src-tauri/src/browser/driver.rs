@@ -592,14 +592,21 @@ fn mask_path(output_dir: &Path) -> PathBuf {
     output_dir.join("browser-mask.js")
 }
 
+/// The number behind one temp file's own name. The pid alone does not
+/// separate two writers in one client process - every profile shares the
+/// output directory and a start can land mid-thread - so this counts too.
+static MASK_TICKET: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Write the mask script and answer its path, or `None` where it could not
 /// be written.
 ///
 /// **Whole or not at all**: two profiles' drivers can start at once and both
 /// write this one file, and a reader that caught a half-written script would
-/// load half a mask - so the file is written to a temp name unique to this
-/// process and renamed into place. Rewritten on every driver start, so a
-/// running browser from an older client cannot hand the driver a stale mask.
+/// load half a mask - so each call writes to a temp name of its own (pid and
+/// a ticket, unique per write whatever the threads) and renames it into
+/// place, where the last complete file wins. Rewritten on every driver start,
+/// so a running browser from an older client cannot hand the driver a stale
+/// mask.
 ///
 /// **A write that fails is not a refusal.** The engine's own launch carries
 /// the mask that matters; the script is the fallback, so a start without it
@@ -607,7 +614,8 @@ fn mask_path(output_dir: &Path) -> PathBuf {
 /// read does.
 fn write_mask(output_dir: &Path) -> Option<PathBuf> {
     let path = mask_path(output_dir);
-    let temp = output_dir.join(format!("browser-mask.js.{}.tmp", std::process::id()));
+    let ticket = MASK_TICKET.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let temp = output_dir.join(format!("browser-mask.js.{}.{ticket}.tmp", std::process::id()));
     match std::fs::write(&temp, MASK_SCRIPT).and_then(|()| std::fs::rename(&temp, &path)) {
         Ok(()) => Some(path),
         Err(why) => {
