@@ -1714,6 +1714,7 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
         // with them: the row reads its failure from the lifecycle.
         domain.runtime_state = None;
         domain.turn_pending = false;
+        domain.turn_open = false;
         domain.pending_cancel = false;
         domain.failed_turn_at = None;
         domain.auto_continue = None;
@@ -1839,6 +1840,7 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
         domain.session_id = Some(SessionId::new(session_id.clone()));
         domain.runtime_state = None;
         domain.turn_pending = false;
+        domain.turn_open = false;
         // The failure mark named the last occupant's turn, and so did any
         // interrupt it was holding.
         domain.pending_cancel = false;
@@ -1938,6 +1940,16 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
             forge_agent::translate::state_parsing::parse_runtime_session_state(data.get("state"))
     {
         domain.runtime_state = Some(state);
+    }
+    // Mirror the frames' own claim about the turn, which is the one signal
+    // that covers a turn's OPENING: `turn_pending` is spent by the previous
+    // Result and `session_state_changed` no longer arrives, so thinking and
+    // prose alone left the header reading idle while the model worked
+    // (`DomainSession::turn_open` carries the measured window).
+    if let AgentEvent::SdkMessage { msg, .. } = event
+        && let Some(said) = crate::domain_session::liveness_of(msg)
+    {
+        domain.note_liveness(said);
     }
     // The two catalogues the composer's autocomplete reads, as the CLI
     // last advertised them. Held on the session so a view arriving after

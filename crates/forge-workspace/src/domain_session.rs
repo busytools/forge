@@ -124,6 +124,31 @@ impl PendingInteractions {
     }
 }
 
+/// What one frame says about whether a turn is open, when it says anything.
+///
+/// Derived from the message in [`liveness_of`], and folded in by
+/// [`DomainSession::note_liveness`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TurnLiveness {
+    /// The model produced output, so a turn is running.
+    Working,
+    /// The turn's own `Result`, or the transport's `Error`: it is over.
+    Ended,
+}
+
+/// What one message says about a turn's liveness, or `None` where it says
+/// nothing.
+pub fn liveness_of(msg: &forge_primitives::Message) -> Option<TurnLiveness> {
+    match msg {
+        forge_primitives::Message::Assistant { .. }
+        | forge_primitives::Message::ThinkingTokens { .. } => Some(TurnLiveness::Working),
+        forge_primitives::Message::Result { .. } | forge_primitives::Message::Error { .. } => {
+            Some(TurnLiveness::Ended)
+        }
+        _ => None,
+    }
+}
+
 pub struct DomainSession {
     pub key: SessionSlot,
     /// Claude-issued session UUID. `None` until the first `Connected`
@@ -164,6 +189,18 @@ pub struct DomainSession {
     /// Turn committed at `Command::Prompt` routing, ahead of the
     /// wire-lagged `runtime_state`; the guards OR it in.
     pub turn_pending: bool,
+    /// Frame-derived liveness: the model's own output proves a turn is
+    /// running, and a `Result`/`Error` ends it.
+    ///
+    /// The two mirrors above miss a turn's opening. `turn_pending` covers
+    /// only a routed `Command::Prompt`, and one `Result` clears it; and
+    /// `runtime_state` no longer arrives ("may never arrive", above). So a
+    /// turn whose opening is thinking and prose reads NOT in flight on the
+    /// wire until its first tool call, and a client drawing from the header
+    /// shows no running row for that stretch - measured at 41 seconds on a
+    /// resumed worker (2026-10-09), where the terminal showed it running and
+    /// the client did not.
+    pub turn_open: bool,
     /// Whether the reader asked to stop the in-flight turn. Stamped
     /// where `Command::Cancel` routes and spent when that turn's
     /// `Result` lands: a cancelled turn ends with the same failed
@@ -489,6 +526,7 @@ impl DomainSession {
             spawn_wrote_row: false,
             runtime_state: None,
             turn_pending: false,
+            turn_open: false,
             pending_cancel: false,
             failed_turn_at: None,
             last_api_retry: None,
@@ -535,10 +573,22 @@ impl DomainSession {
     /// activity derivation so the two cannot drift apart.
     pub fn turn_in_flight(&self) -> bool {
         self.turn_pending
+            || self.turn_open
             || matches!(
                 self.runtime_state,
                 Some(RuntimeSessionState::Running | RuntimeSessionState::RequiresAction)
             )
+    }
+
+    /// Fold one frame's own claim about the turn into the liveness mirror.
+    ///
+    /// The model's output is the proof a turn is running and its Result is the
+    /// proof it ended - which is what the terminal derives from the same
+    /// frames. Nothing else is read: a `system` report, a task fact or a hook
+    /// line says nothing about whether a turn is open, so it leaves the mirror
+    /// where it stands.
+    pub fn note_liveness(&mut self, said: TurnLiveness) {
+        self.turn_open = said == TurnLiveness::Working;
     }
 }
 
