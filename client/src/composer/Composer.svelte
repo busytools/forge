@@ -109,6 +109,16 @@
   let clock = $state(Date.now());
   /** The field, so focus can go back to it when the box returns. */
   let field = $state<HTMLElement | null>(null);
+  /** The mic, wherever the row gate has put it, so a started take can keep the caret on it. */
+  let micEl = $state<HTMLElement | null>(null);
+  /**
+   * Whether the reader's last act was on the mic.
+   *
+   * Read once, when a take starts: the button is destroyed and rebuilt as the
+   * gate moves it between rows, so "what had focus" cannot be asked of the DOM
+   * after the fact - the element that had it is gone.
+   */
+  let fromMic = false;
   /** Whether the dictation panel is showing, which the mic opens. */
   let panel = $state(false);
   /**
@@ -937,8 +947,25 @@
       return;
     }
     heldAt = 0;
+    fromMic = true;
     micTake();
   }
+
+  /**
+   * **A started take keeps the caret on the mic** (Ved, 2026-10-09).
+   *
+   * The row gate moves the mic from the field's line down to the bottom row the
+   * moment a take exists, which destroys and rebuilds the button - so a reader
+   * who pressed it from the keyboard loses the caret to the body, and the
+   * phone's press-again to finish lands a row below where the finger left it.
+   * If the mic is what they were on, it stays what they are on.
+   */
+  $effect(() => {
+    if (composer.take === null) return;
+    if (!untrack(() => fromMic)) return;
+    fromMic = false;
+    micEl?.focus();
+  });
 
   function micHoldStart(event: PointerEvent): void {
     // Primary button only: a right-click hold is not a hold.
@@ -1105,6 +1132,7 @@
           <button
             class="mic"
             type="button"
+            bind:this={micEl}
             title="press to dictate, hold or Shift+Enter for settings"
             aria-label={take === null && composer.take === null ? 'dictate' : 'stop dictating'}
             aria-expanded={panel}

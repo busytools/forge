@@ -996,6 +996,33 @@ describe('the box', () => {
     ).not.toBeNull();
   });
 
+  /**
+   * **The mic keeps the caret when a started take moves it.**
+   *
+   * The gate destroys and rebuilds the button as it changes rows, so a reader
+   * who pressed the mic from the keyboard would lose the caret to the body -
+   * Enter could no longer finish the take - and the phone's press-again would
+   * land a row below where the finger left it, on the field.
+   */
+  it('keeps the caret on the mic when a started take moves it to the bottom row', () => {
+    const harness = open({ dictation: true });
+    const resting = document.querySelector('.line .mic');
+    expect(resting, 'precondition: the mic rests on the field line').not.toBeNull();
+
+    (resting as HTMLElement).focus();
+    (resting as HTMLElement).click();
+    harness.page.record = record({
+      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+    });
+    flushSync();
+
+    expect(
+      document.querySelector('.foot .mic'),
+      'precondition: the take moved the mic to the bottom row',
+    ).not.toBeNull();
+    expect(document.activeElement?.className, 'the caret fell off the mic').toContain('mic');
+  });
+
   it('gives a draft the second row, so its controls keep off the field', () => {
     open({ dictation: true, record: record({ header: { turn_in_flight: true } }) });
     type('a draft');
