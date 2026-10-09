@@ -58,6 +58,10 @@ pub(super) struct DriverStart<'a> {
     /// launch presents the browser's own UA and hints.
     #[cfg(desktop)]
     pub windowed: bool,
+    /// Which profile this driver serves - `shared`, or a named profile - so a
+    /// warn about its hint mask says WHICH browser stayed unmasked.
+    #[cfg(desktop)]
+    pub profile_label: &'a str,
     /// The browser's own identity - the `/devtools/browser/<uuid>` its port
     /// file names on the desktop - which a relaunch changes even when it
     /// lands on the same port. The phone's is `webview-<generation>`: the
@@ -92,11 +96,13 @@ impl DriverStart<'_> {
             // real already; its capture would also open a window at the
             // person, which is the one thing the mask must never do.
             if !self.windowed {
-                driver.install_hint_mask(self.output).await;
+                driver.install_hint_mask(self.output, self.profile_label).await;
             } else {
                 tauri_plugin_log::log::info!(
                     "the client-hint mask keeps off the headed launch (event_name \
-                     browser_hint_mask): the browser presents its own user agent and hints"
+                     browser_hint_mask, profile {}): the browser presents its own user agent and \
+                     hints",
+                    self.profile_label
                 );
             }
             Ok(driver)

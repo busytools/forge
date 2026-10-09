@@ -431,7 +431,7 @@ async fn the_high_entropy_hints_match_a_chrome_build() {
         Driver::start(&node, &cli, &format!("http://127.0.0.1:{subject_port}"), &output)
             .await
             .unwrap_or_else(|why| panic!("the chrome subject driver: {why}"));
-    subject_driver.install_hint_mask(&output).await;
+    subject_driver.install_hint_mask(&output, "chrome-subject").await;
     subject_driver
         .call("browser_navigate", json!({ "url": origin }))
         .await

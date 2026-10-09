@@ -332,17 +332,19 @@ impl Driver {
     /// **Only where the launch's override is**: the headed launch presents
     /// the browser's own UA and hints, and the caller keeps this off it (the
     /// capture's scratch document would otherwise open a window at it).
-    pub async fn install_hint_mask(&self, output_dir: &Path) {
+    pub async fn install_hint_mask(&self, output_dir: &Path, profile: &str) {
         match tokio::time::timeout(HINT_MASK_TIMEOUT, self.rebuild_client_hints(output_dir)).await {
             Ok(Ok(note)) => tauri_plugin_log::log::info!(
-                "the client-hint mask settled (event_name browser_hint_mask): {note}"
+                "the client-hint mask settled (event_name browser_hint_mask, profile {profile}): \
+                 {note}"
             ),
             Ok(Err(why)) => tauri_plugin_log::log::warn!(
-                "the client-hint mask is not installed this run (event_name browser_hint_mask): \
-                 {why}"
+                "the client-hint mask is not installed this run (event_name browser_hint_mask, \
+                 profile {profile}): {why}"
             ),
             Err(_) => tauri_plugin_log::log::warn!(
-                "the client-hint mask did not settle within {} s (event_name browser_hint_mask)",
+                "the client-hint mask did not settle within {} s (event_name browser_hint_mask, \
+                 profile {profile})",
                 HINT_MASK_TIMEOUT.as_secs()
             ),
         }
