@@ -7,9 +7,10 @@
 //! chase and the view surface all read THIS answer, so a mark cannot
 //! disagree between two surfaces.
 
+use std::collections::HashMap;
 use std::time::SystemTime;
 
-use forge_primitives::tasks::{LinkKind, Task, TaskStatus, TaskTransition, WaitingKind};
+use forge_primitives::tasks::{LinkKind, Task, TaskId, TaskStatus, TaskTransition, WaitingKind};
 
 use crate::workspace::Workspace;
 
@@ -89,13 +90,12 @@ pub struct FleetRow {
 }
 
 /// The sum of a row's in_progress intervals, from its transitions.
-fn worked_secs(
-    task_id: &forge_primitives::tasks::TaskId,
-    history: &[TaskTransition],
-    now: SystemTime,
-) -> u64 {
-    let mut mine: Vec<&TaskTransition> = history.iter().filter(|t| t.task_id == *task_id).collect();
-    mine.sort_by_key(|t| t.at);
+///
+/// `mine` is that one row's transitions, in time order. They are grouped and
+/// sorted once for the whole board rather than filtered per row: the log is
+/// read on every home read and every task write, and scanning it once per row
+/// makes each of those O(rows x history).
+fn worked_secs(mine: &[&TaskTransition], now: SystemTime) -> u64 {
     let mut total = 0u64;
     let mut working_since: Option<SystemTime> = None;
     for transition in mine {
@@ -140,10 +140,19 @@ impl Workspace {
                 None => Vec::new(),
             }
         };
+        // Every row's own transitions, in time order, from ONE walk of the
+        // log: the read below is per row, and the log grows without bound.
+        let mut by_task: HashMap<&TaskId, Vec<&TaskTransition>> = HashMap::new();
+        for transition in &history {
+            by_task.entry(&transition.task_id).or_default().push(transition);
+        }
+        for mine in by_task.values_mut() {
+            mine.sort_by_key(|t| t.at);
+        }
         tasks
             .iter()
             .map(|task| {
-                let worked = worked_secs(&task.id, &history, now);
+                let worked = worked_secs(by_task.get(&task.id).map_or(&[][..], Vec::as_slice), now);
                 let updated_secs_ago = secs_ago(task.updated_at, now);
                 let children: Vec<&Task> =
                     tasks.iter().filter(|c| c.parent.as_ref() == Some(&task.id)).collect();
@@ -371,6 +380,21 @@ mod tests {
             .expect("history");
         }
 
+        // A second row, whose own intervals sit between the first's: the
+        // transitions are grouped once for the whole board, so a grouping that
+        // mixed two rows' logs would show up here and nowhere else.
+        let mut other = task("t-2", TaskStatus::InProgress);
+        other.updated_at = epoch(40);
+        ws.seed_test_task(other);
+        {
+            let db = ws.db.lock();
+            crate::store::task_history::append(
+                db.as_ref().expect("db"),
+                &[transition("t-2", TaskStatus::Pending, TaskStatus::InProgress, 35)],
+            )
+            .expect("history");
+        }
+
         let rows = ws.board_rows(PROJECT, epoch(45), WINDOW);
         assert_eq!(
             row(&rows, "t-1").worked_secs,
@@ -378,6 +402,11 @@ mod tests {
             "10s in the first interval and 15s into the second; the wait is not worked time",
         );
         assert!(!row(&rows, "t-1").marks.overdue, "25s of a 60s estimate is not overdue");
+        assert_eq!(
+            row(&rows, "t-2").worked_secs,
+            10,
+            "the second row is measured from its own transitions, not its neighbour's",
+        );
     }
 
     /// A fresh update does not clear an overrun: the clock is worked
