@@ -22,6 +22,9 @@ use rmcp::service::RunningService;
 use rmcp::transport::{ConfigureCommandExt as _, TokioChildProcess};
 use serde_json::Value;
 
+use super::chromium;
+use super::custom;
+
 /// The longest one tool call is given before the driver is presumed mute.
 const CALL_TIMEOUT: Duration = Duration::from_secs(150);
 
@@ -311,6 +314,89 @@ impl Driver {
         }
     }
 
+    /// Install the per-page client-hint mask, best-effort.
+    ///
+    /// **Why this exists**: under the launch's UA override Chromium blanks
+    /// the high-entropy client hints (measured: `architecture`, `bitness`,
+    /// `platformVersion`, `uaFullVersion` empty, `fullVersionList` `[]`, in
+    /// the page and in the headers) - a more specific tell than the headless
+    /// UA brand the launch already masks. A per-page CDP
+    /// `Emulation.setUserAgentOverride` carrying the metadata the same
+    /// browser reports WITHOUT the override fills them, so the launch's pair
+    /// and the page script stay exactly as they are.
+    ///
+    /// **A failure is not a refusal**: the launch's own mask carries the UA,
+    /// so a driver that cannot rebuild the hints drives on, warning by name.
+    /// **Only where the launch's override is**: the headed launch presents
+    /// the browser's own UA and hints, and the caller keeps this off it (the
+    /// capture's scratch document would otherwise open a window at it).
+    pub(super) async fn install_hint_mask(&self, output_dir: &Path) {
+        match tokio::time::timeout(HINT_MASK_TIMEOUT, self.rebuild_client_hints(output_dir)).await {
+            Ok(Ok(note)) => tauri_plugin_log::log::info!(
+                "the client-hint mask settled (event_name browser_hint_mask): {note}"
+            ),
+            Ok(Err(why)) => tauri_plugin_log::log::warn!(
+                "the client-hint mask is not installed this run (event_name browser_hint_mask): \
+                 {why}"
+            ),
+            Err(_) => tauri_plugin_log::log::warn!(
+                "the client-hint mask did not settle within {} s (event_name browser_hint_mask)",
+                HINT_MASK_TIMEOUT.as_secs()
+            ),
+        }
+    }
+
+    /// The mask itself: read the page's own facts, rebuild what the override
+    /// blanks, then mask every page through the driver's own CDP session.
+    async fn rebuild_client_hints(&self, output_dir: &Path) -> Result<String, String> {
+        let hints = write_hints_page(output_dir);
+        let parts = self
+            .call_raw(
+                "browser_run_code_unsafe",
+                serde_json::json!({ "code": hint_capture_snippet(hints.as_deref()) }),
+            )
+            .await?;
+        let capture: chromium::HintCapture =
+            serde_json::from_value(hints_payload(&text_of(&parts))?)
+                .map_err(|why| format!("the hint capture answered an unreadable shape: {why}"))?;
+        if capture.brands.is_empty() {
+            return Err(
+                "no secure document reported client-hint brands to rebuild from (the capture \
+                 page could not be read, and the driver's page reads no hints itself)"
+                    .to_owned(),
+            );
+        }
+        if !capture.blanked {
+            // **The browser reports its own hints** - an unmasked or headed
+            // launch - and rebuilding over them would replace real values
+            // with derived ones.
+            return Ok(
+                "the browser reports its own high-entropy hints; nothing to rebuild".to_owned()
+            );
+        }
+        let platform_version = chromium::platform_version().await?;
+        let architecture =
+            chromium::client_hint_architecture(std::env::consts::ARCH).ok_or_else(|| {
+                format!("no measured architecture name for {}", std::env::consts::ARCH)
+            })?;
+        let bitness = (std::mem::size_of::<usize>() * 8).to_string();
+        let metadata =
+            chromium::user_agent_metadata(&capture, &platform_version, architecture, &bitness)
+                .ok_or_else(|| {
+                    "the page's user agent carries no version, so the rebuild would be a half-claim"
+                        .to_owned()
+                })?;
+        let parts = self
+            .call_raw(
+                "browser_run_code_unsafe",
+                serde_json::json!({
+                    "code": hint_mask_snippet(&capture.user_agent, &metadata),
+                }),
+            )
+            .await?;
+        Ok(text_of(&parts))
+    }
+
     /// Whether the child is still there to answer.
     pub fn is_running(&self) -> bool {
         !self.client.is_transport_closed()
@@ -531,6 +617,170 @@ pub fn tab_call_refusal(tool: &str, args: &Value, listed: &str, ui_origin: &str)
     None
 }
 
+/// The marker the hint capture answers behind. The driver renders a snippet's
+/// return into prose of its own, so the payload is found by a name of ours
+/// rather than by the driver's formatting.
+const HINTS_MARKER: &str = "FORGE-HINTS ";
+
+/// The page the hint capture reads when the launch's own page cannot serve.
+///
+/// **`navigator.userAgentData` is undefined on `about:blank`** (measured), so
+/// the real values have to come from a document with a real origin - and this
+/// one is the client's own: `file://` exposes the real low-entropy hints
+/// under the mask (measured), needs no network and no third party.
+const HINTS_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>forge client hints \
+                           probe</title>\n";
+
+/// Where the capture page is written, beside the mask script: named so a
+/// reader finding it in the output directory knows it is forge's own.
+fn hints_path(output_dir: &Path) -> PathBuf {
+    output_dir.join("browser-hints.html")
+}
+
+/// The `file://` URL for a path, with the characters a URL parser would
+/// otherwise read as structure - `%` itself, the `#` fragment and the `?`
+/// query - percent-encoded, and the space as well: the app's own data
+/// directory carries one (`Application Support`), and a misparsed URL here
+/// would stand the mask down silently.
+fn file_url(path: &Path) -> String {
+    let mut url = String::from("file://");
+    for ch in path.display().to_string().chars() {
+        match ch {
+            '%' => url.push_str("%25"),
+            ' ' => url.push_str("%20"),
+            '#' => url.push_str("%23"),
+            '?' => url.push_str("%3f"),
+            other => url.push(other),
+        }
+    }
+    url
+}
+
+/// The snippet that reads the browser's client-hint facts.
+///
+/// The driven page is read exactly as it is: a real page reports the
+/// low-entropy hints for real, and **the page is never navigated** - the
+/// launch's own page is `about:blank`, where the hints do not exist at all,
+/// and both driving it to the capture file and back would lose a session's
+/// page state and disturb the driver's own ref spelling (measured: the
+/// snapshot refs' `f<seq>` prefix counts the frame's navigations, so an
+/// extra one hands the session different refs). A page that reads no brands
+/// instead reads the capture file through a scratch context of the same
+/// browser - a document with a real origin that touches nothing the session
+/// holds, and `file://` exposes the real low-entropy hints under the mask
+/// (measured). The client-hint values are the browser's, not the page's, so
+/// a scratch document reports the same ones.
+fn hint_capture_snippet(hints_page: Option<&Path>) -> String {
+    let scratch = match hints_page {
+        Some(page) => format!(
+            "if (!seen.brands) {{\
+             const scratch_context = await page.context().browser().newContext();\
+             try {{\
+             const fresh = await scratch_context.newPage();\
+             await fresh.goto({});\
+             seen = await fresh.evaluate(read);\
+             }} finally {{\
+             await scratch_context.close();\
+             }}\
+             }}",
+            custom::js_string(&file_url(page)),
+        ),
+        None => String::new(),
+    };
+    format!(
+        "async (page) => {{\
+         const read = () => {{\
+         const ua_data = navigator.userAgentData;\
+         const out = {{ user_agent: navigator.userAgent, brands: ua_data ? ua_data.brands : null, \
+         platform: ua_data ? ua_data.platform : null, mobile: ua_data ? ua_data.mobile : null, \
+         blanked: false }};\
+         if (!ua_data) return Promise.resolve(out);\
+         return ua_data.getHighEntropyValues(['architecture', 'bitness', 'platformVersion', \
+         'uaFullVersion', 'fullVersionList']).then((high) => {{\
+         out.blanked = !high.architecture && !high.bitness && !high.platformVersion && \
+         !high.uaFullVersion && high.fullVersionList.length === 0;\
+         return out;\
+         }}).catch(() => out);\
+         }};\
+         let seen = await page.evaluate(read);\
+         {scratch}\
+         return '{HINTS_MARKER}' + JSON.stringify(seen);\
+         }}",
+    )
+}
+
+/// The snippet that masks every page the driver drives with the rebuilt
+/// metadata, through a per-page CDP `Emulation.setUserAgentOverride`.
+///
+/// **The override belongs to the session that set it** (measured: a detached
+/// session's override is gone, and a new page inherits nothing), so the
+/// snippet keeps one session per page in a map the context's `page` listener
+/// feeds - every page the driver opens later is masked the moment it exists -
+/// and never detaches one.
+fn hint_mask_snippet(user_agent: &str, metadata: &serde_json::Value) -> String {
+    format!(
+        "async (page) => {{\
+         if (globalThis.__forgeClientHints) return 'the client hints are already masked';\
+         const user_agent = {ua};\
+         const metadata = JSON.parse({metadata});\
+         const held = new Map();\
+         const mask = async (target) => {{\
+         try {{\
+         if (held.has(target)) return;\
+         const cdp = await target.context().newCDPSession(target);\
+         await cdp.send('Emulation.setUserAgentOverride', {{ userAgent: user_agent, \
+         userAgentMetadata: metadata }});\
+         held.set(target, cdp);\
+         target.on('close', () => {{ held.delete(target); }});\
+         }} catch (why) {{}}\
+         }};\
+         globalThis.__forgeClientHints = mask;\
+         page.context().on('page', (target) => {{ mask(target); }});\
+         for (const target of page.context().pages()) {{ await mask(target); }}\
+         return 'the client hints are masked on ' + held.size + ' page(s)';\
+         }}",
+        ua = custom::js_string(user_agent),
+        metadata = custom::js_string(&metadata.to_string()),
+    )
+}
+
+/// The payload a capture answered with, out of the driver's own prose.
+///
+/// The driver renders a returned string JSON-encoded (quotes and escapes) on
+/// its own line; a driver that ever renders it raw is read raw.
+pub fn hints_payload(text: &str) -> Result<serde_json::Value, String> {
+    let line = text
+        .lines()
+        .find(|line| line.contains(HINTS_MARKER))
+        .ok_or_else(|| format!("the hint capture answered without its payload: {text:?}"))?;
+    let line = line.trim();
+    let rendered = serde_json::from_str::<String>(line).unwrap_or_else(|_| line.to_owned());
+    let at = rendered
+        .find(HINTS_MARKER)
+        .ok_or_else(|| format!("the hint capture answered without its payload: {text:?}"))?;
+    let payload = &rendered[at + HINTS_MARKER.len()..];
+    serde_json::from_str(payload)
+        .map_err(|why| format!("the hint capture answered unreadably ({why}): {payload}"))
+}
+
+/// The text one answer carries, which is every part that is not an image.
+fn text_of(parts: &[ReplyPart]) -> String {
+    parts
+        .iter()
+        .map(|part| match part {
+            ReplyPart::Text { text } => text.clone(),
+            ReplyPart::Image { .. } => "[an image]".to_owned(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// How long the whole client-hint mask - the capture, the rebuild, the
+/// install - is given before it is given up on for this driver. A local
+/// document and two snippet calls, so the bound is generous rather than
+/// tight; a wedge here must not park the call that started the driver.
+const HINT_MASK_TIMEOUT: Duration = Duration::from_secs(15);
+
 /// The mask script the driver loads as its initialization script: what a
 /// page can read in JavaScript about being driven.
 ///
@@ -595,18 +845,29 @@ fn mask_path(output_dir: &Path) -> PathBuf {
 /// The number behind one temp file's own name. The pid alone does not
 /// separate two writers in one client process - every profile shares the
 /// output directory and a start can land mid-thread - so this counts too.
-static MASK_TICKET: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static WRITE_TICKET: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Write one file whole: a temp name of its own (pid and a ticket, unique per
+/// write whatever the threads), renamed into place, so a reader never catches
+/// half of it and the last complete file wins.
+fn write_whole(path: &Path, body: &str) -> std::io::Result<()> {
+    let name = path
+        .file_name()
+        .map_or_else(|| "forge-file".to_owned(), |name| name.to_string_lossy().into_owned());
+    let ticket = WRITE_TICKET.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let temp = path.with_file_name(format!("{name}.{}.{ticket}.tmp", std::process::id()));
+    match std::fs::write(&temp, body).and_then(|()| std::fs::rename(&temp, path)) {
+        Ok(()) => Ok(()),
+        Err(why) => {
+            let _ = std::fs::remove_file(&temp);
+            Err(why)
+        }
+    }
+}
 
 /// Write the mask script and answer its path, or `None` where it could not
-/// be written.
-///
-/// **Whole or not at all**: two profiles' drivers can start at once and both
-/// write this one file, and a reader that caught a half-written script would
-/// load half a mask - so each call writes to a temp name of its own (pid and
-/// a ticket, unique per write whatever the threads) and renames it into
-/// place, where the last complete file wins. Rewritten on every driver start,
-/// so a running browser from an older client cannot hand the driver a stale
-/// mask.
+/// be written. Rewritten on every driver start, so a running browser from an
+/// older client cannot hand the driver a stale mask.
 ///
 /// **A write that fails is not a refusal.** The engine's own launch carries
 /// the mask that matters; the script is the fallback, so a start without it
@@ -614,15 +875,29 @@ static MASK_TICKET: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 /// read does.
 fn write_mask(output_dir: &Path) -> Option<PathBuf> {
     let path = mask_path(output_dir);
-    let ticket = MASK_TICKET.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let temp = output_dir.join(format!("browser-mask.js.{}.{ticket}.tmp", std::process::id()));
-    match std::fs::write(&temp, MASK_SCRIPT).and_then(|()| std::fs::rename(&temp, &path)) {
+    match write_whole(&path, MASK_SCRIPT) {
         Ok(()) => Some(path),
         Err(why) => {
-            let _ = std::fs::remove_file(&temp);
             tauri_plugin_log::log::warn!(
                 "the page-visible mask is not loaded this run (event_name browser_mask_script): \
                  the script could not be written to {}: {why}",
+                path.display()
+            );
+            None
+        }
+    }
+}
+
+/// Write the client-hint capture page and answer its path, or `None` where it
+/// could not be written: the capture then has no document to hop to, and the
+/// hint mask stands down with its own warn rather than a failure.
+fn write_hints_page(output_dir: &Path) -> Option<PathBuf> {
+    let path = hints_path(output_dir);
+    match write_whole(&path, HINTS_PAGE) {
+        Ok(()) => Some(path),
+        Err(why) => {
+            tauri_plugin_log::log::warn!(
+                "the client-hint capture page could not be written to {}: {why}",
                 path.display()
             );
             None
@@ -912,6 +1187,134 @@ mod tests {
         assert!(
             written.contains("navigator.userAgent.includes('HeadlessChrome')"),
             "the user agent tell, scrubbed only where the brand is there: {written}",
+        );
+    }
+
+    /// The capture reads the driven page as it is and answers behind a marker
+    /// of ours, and a page that reads no brands is read through a scratch
+    /// context instead. **The driven page is never navigated**: a navigation
+    /// there would disturb the session's page and shift the driver's own
+    /// snapshot refs (measured: the `f<seq>` prefix counts the frame's
+    /// navigations).
+    #[test]
+    fn the_capture_snippet_reads_without_navigating_the_driven_page() {
+        let with_file = hint_capture_snippet(Some(Path::new("/out/browser-hints.html")));
+        assert!(with_file.contains(HINTS_MARKER), "{with_file}");
+        assert!(with_file.contains("getHighEntropyValues"), "{with_file}");
+        assert!(with_file.contains("JSON.stringify"), "{with_file}");
+        assert!(
+            !with_file.contains("page.goto("),
+            "the driven page is never navigated: {with_file}",
+        );
+        assert!(
+            with_file.contains("newContext()") && with_file.contains("scratch_context.close()"),
+            "a page with no brands is read through a scratch context, closed after: {with_file}",
+        );
+        assert!(
+            with_file.contains("await fresh.goto(\"file:///out/browser-hints.html\")"),
+            "the scratch reads the capture file as a file URL: {with_file}",
+        );
+
+        let without_file = hint_capture_snippet(None);
+        assert!(
+            !without_file.contains("newContext"),
+            "no capture file, no scratch: {without_file}"
+        );
+        assert!(!without_file.contains(".goto("), "{without_file}");
+        assert!(without_file.contains(HINTS_MARKER), "the answer still happens: {without_file}");
+    }
+
+    /// **The mask snippet never detaches**: a detached session's override is
+    /// gone (measured), so one session per page is held for the page's life,
+    /// and the context's `page` listener masks every page the driver opens
+    /// later. The metadata and the UA ride whole, as JS literals.
+    #[test]
+    fn the_mask_snippet_holds_its_sessions_and_follows_new_pages() {
+        let metadata = serde_json::json!({ "fullVersion": "155.0.0.0" });
+        let snippet = hint_mask_snippet("Mozilla/5.0 \" quoted Chrome/155.0.0.0", &metadata);
+        assert!(snippet.contains("Emulation.setUserAgentOverride"), "{snippet}");
+        assert!(snippet.contains("userAgentMetadata"), "{snippet}");
+        assert!(snippet.contains("newCDPSession"), "{snippet}");
+        assert!(
+            snippet.contains("context().on('page', (target) => { mask(target); })"),
+            "a page the driver opens later is masked the moment it exists: {snippet}",
+        );
+        assert!(
+            snippet.contains("held.set(target, cdp)"),
+            "the session is KEPT - the override lives only while its session does: {snippet}",
+        );
+        assert!(
+            !snippet.contains("detach"),
+            "detaching clears the override (measured); the mask must never detach: {snippet}",
+        );
+        assert!(
+            snippet.contains(r#"\" quoted"#),
+            "the UA is a JS string literal, its escapes carried: {snippet}",
+        );
+        assert!(snippet.contains("155.0.0.0"), "the metadata rides in the snippet: {snippet}");
+    }
+
+    /// The capture's payload is read out of the driver's own prose, in both
+    /// renderings: the returned string JSON-encoded with its escapes, or raw.
+    /// A payload the driver never rendered is an error naming what came back.
+    #[test]
+    fn the_hints_payload_is_read_out_of_the_drivers_prose() {
+        let payload =
+            r#"{"user_agent":"x","brands":[],"platform":"macOS","mobile":false,"blanked":true}"#;
+        let encoded = serde_json::to_string(&format!("{HINTS_MARKER}{payload}")).expect("encodes");
+        let prose = format!("### Result\n{encoded}\n### Ran Playwright code\nawait page...");
+        let read = hints_payload(&prose).expect("the encoded answer reads");
+        assert_eq!(read["platform"], serde_json::json!("macOS"));
+
+        let raw = format!("### Result\n{HINTS_MARKER}{payload}\n### Page\n- Page URL: about:blank");
+        let read = hints_payload(&raw).expect("a raw answer reads too");
+        assert_eq!(read["blanked"], serde_json::json!(true));
+
+        let refused = hints_payload("### Result\n\"no marker here\"").expect_err("no marker");
+        assert!(refused.contains("without its payload"), "{refused}");
+    }
+
+    /// The capture page is written whole under its own name, with no temp
+    /// left behind, and a write that cannot land answers `None` rather than a
+    /// refusal - the mask then stands down with its own warn.
+    #[test]
+    fn the_capture_page_is_written_whole_under_its_own_name() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let path = write_hints_page(dir.path()).expect("the page writes");
+        assert_eq!(path, dir.path().join("browser-hints.html"));
+        let left: Vec<_> = std::fs::read_dir(dir.path())
+            .expect("the dir lists")
+            .map(|entry| entry.expect("an entry").file_name())
+            .collect();
+        assert_eq!(left, [std::ffi::OsString::from("browser-hints.html")], "no temp left behind");
+        let written = std::fs::read_to_string(&path).expect("the page reads back");
+        assert!(
+            written.contains("<title>forge client hints probe</title>"),
+            "the capture page is what lands: {written}",
+        );
+
+        let missing = dir.path().join("no-such-directory");
+        assert_eq!(write_hints_page(&missing), None, "a page that cannot be written is no refusal");
+    }
+
+    /// The capture path becomes a `file://` URL with the characters a URL
+    /// parser would read as structure encoded - the app's own data directory
+    /// carries a space (`Application Support`), and a misparsed URL stands
+    /// the mask down silently.
+    #[test]
+    fn a_capture_path_becomes_a_file_url() {
+        assert_eq!(
+            file_url(Path::new("/out/browser-hints.html")),
+            "file:///out/browser-hints.html"
+        );
+        assert_eq!(
+            file_url(Path::new("/Users/x/Library/Application Support/app/browser-hints.html")),
+            "file:///Users/x/Library/Application%20Support/app/browser-hints.html",
+        );
+        assert_eq!(
+            file_url(Path::new("/a%23b#c?d")),
+            "file:///a%2523b%23c%3fd",
+            "a percent, a fragment and a query are all the path's own characters",
         );
     }
 }

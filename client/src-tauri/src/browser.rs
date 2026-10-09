@@ -270,6 +270,10 @@ impl BrowserHost {
                         endpoint: &endpoint,
                         identity: &active.path,
                         output: &paths.output,
+                        // The launch's own fact, read where it is written: a
+                        // headed launch marks the profile, and the hint mask
+                        // keeps off it.
+                        windowed: chromium::launched_windowed(&paths.user_data),
                     };
                     let outcome = shared.call(&start, tool, args).await;
                     self.forget_a_dead_browser(
@@ -292,6 +296,7 @@ impl BrowserHost {
                         endpoint: &endpoint,
                         identity: &active.path,
                         output: &paths.output,
+                        windowed: chromium::launched_windowed(&named.dir),
                     };
                     let outcome = named.profile.call(&start, tool, args).await;
                     self.forget_a_dead_browser(

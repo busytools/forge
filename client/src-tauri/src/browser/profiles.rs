@@ -53,6 +53,11 @@ pub(super) struct DriverStart<'a> {
     /// open.
     #[cfg(desktop)]
     pub endpoint: &'a str,
+    /// Whether the launch this driver attaches to is the HEADED one: the hint
+    /// mask only applies where the launch's UA override does, and a headed
+    /// launch presents the browser's own UA and hints.
+    #[cfg(desktop)]
+    pub windowed: bool,
     /// The browser's own identity - the `/devtools/browser/<uuid>` its port
     /// file names on the desktop - which a relaunch changes even when it
     /// lands on the same port. The phone's is `webview-<generation>`: the
@@ -81,7 +86,20 @@ impl DriverStart<'_> {
     async fn start(&self) -> Result<Driver, String> {
         #[cfg(desktop)]
         {
-            Driver::start(self.node, self.cli, self.endpoint, self.output).await
+            let driver = Driver::start(self.node, self.cli, self.endpoint, self.output).await?;
+            // **The hint mask only where the launch's UA override is.** A
+            // headed launch presents the browser's own UA and its hints are
+            // real already; its capture would also open a window at the
+            // person, which is the one thing the mask must never do.
+            if !self.windowed {
+                driver.install_hint_mask(self.output).await;
+            } else {
+                tauri_plugin_log::log::info!(
+                    "the client-hint mask keeps off the headed launch (event_name \
+                     browser_hint_mask): the browser presents its own user agent and hints"
+                );
+            }
+            Ok(driver)
         }
         #[cfg(target_os = "android")]
         {

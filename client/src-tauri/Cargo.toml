@@ -47,3 +47,6 @@ serde = { version = "1", features = ["derive"] }
 tempfile = "3"
 # `start_paused`, for the launch lock's wait path under a clock the test drives.
 tokio = { version = "1", features = ["test-util"] }
+# The live tests print the host's own tracing: the `log` facade the host
+# writes through, uninitialised in a test run otherwise.
+log = "0.4"
