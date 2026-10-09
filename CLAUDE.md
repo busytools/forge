@@ -827,10 +827,10 @@ inspected.
     Android) - so one command decides both stacks and its
     verdict line names the first failing step. **The shell under
     `client/src-tauri/` is its own workspace root**, so the workspace's
-    cargo steps do not reach it; `just check`'s `client-android-warnings`
-    reaches it, CI mirrors that step as its own `client-android` job, and
-    the Unicode punctuation gate and the client's Prettier step reach it
-    too. `just client-tauri-check` builds it in the shipping configuration
+    cargo steps and CI's cargo jobs do not reach it; `just check`'s
+    `client-android-warnings` reaches it, and the Unicode punctuation gate
+    and the client's Prettier step reach it too.
+    `just client-tauri-check` builds it in the shipping configuration
     and `just client-tauri-bundle` adds the bundles. **Denied as errors**, the
     analogue of the denied Rust lints: `any`, non-null assertion,
     `@ts-ignore`, `innerHTML`, `eval` and floating promises. **A waiver

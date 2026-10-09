@@ -91,13 +91,12 @@ here too, so the client is not a second command to remember and a failure
 on either side lands on the same verdict line.
 
 The shell under `client/src-tauri/` is its own workspace root, so the
-workspace's cargo steps do not reach it. `just check` reaches it through
-`client-android-warnings` alone - the crate compiled for
-`aarch64-linux-android` with warnings denied, which is what catches
-desktop-only code going dead on Android, and CI mirrors that step as its
-own `client-android` job - and the Unicode punctuation gate and the
-client's Prettier step reach it too. Everything else about the shell needs
-`just client-tauri-check` (the shipping configuration) or
+workspace's cargo steps and CI's cargo jobs do not reach it. `just check`
+reaches it through `client-android-warnings` alone - the crate compiled
+for `aarch64-linux-android` with warnings denied, which is what catches
+desktop-only code going dead on Android - and the Unicode punctuation gate
+and the client's Prettier step reach it too. Everything else about the
+shell needs `just client-tauri-check` (the shipping configuration) or
 `just client-tauri-bundle` (plus the bundles), and the first is the one to
 run before handing over a change there.
 
