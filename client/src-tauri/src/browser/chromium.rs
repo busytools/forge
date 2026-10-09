@@ -121,7 +121,13 @@ const VERSION_TIMEOUT: Duration = Duration::from_secs(5);
 /// part that moves across browser updates. A version that cannot be read
 /// leaves the UA unmasked and says so; it is not a reason to refuse the
 /// launch.
-async fn masked_user_agent(binary: &Path) -> Result<String, String> {
+pub async fn masked_user_agent(binary: &Path) -> Result<String, String> {
+    let said = version_said(binary).await?;
+    reduced_user_agent(&said).ok_or_else(|| format!("the version line did not name one: {said:?}"))
+}
+
+/// What one `--version` run printed.
+async fn version_said(binary: &Path) -> Result<String, String> {
     let answer = tokio::time::timeout(
         VERSION_TIMEOUT,
         tokio::process::Command::new(binary).arg("--version").output(),
@@ -129,12 +135,21 @@ async fn masked_user_agent(binary: &Path) -> Result<String, String> {
     .await
     .map_err(|_| format!("--version did not answer within {} s", VERSION_TIMEOUT.as_secs()))?
     .map_err(|why| format!("--version could not be run: {why}"))?;
-    let said = String::from_utf8_lossy(&answer.stdout);
-    reduced_user_agent(&said).ok_or_else(|| format!("the version line did not name one: {said:?}"))
+    Ok(String::from_utf8_lossy(&answer.stdout).into_owned())
 }
 
-/// The reduced user agent for a browser's `--version` line (`Brave Browser
-/// 155.1.97.56`, `Google Chrome 155.0.1234.56`).
+/// The version token of a `--version` line (`Brave Browser 155.1.97.56`,
+/// `Google Chrome 155.0.1234.56`), or `None` for a line naming none.
+fn version_line(said: &str) -> Option<&str> {
+    let named = said.lines().next()?.split_whitespace().last()?;
+    let major = named.split('.').next()?;
+    if !named.contains('.') || major.is_empty() || !major.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    Some(named)
+}
+
+/// The reduced user agent for a browser's `--version` line.
 ///
 /// The platform and the version's tail are Chromium's frozen ones - a real
 /// macOS build reports `Macintosh; Intel Mac OS X 10_15_7` and
@@ -146,12 +161,8 @@ async fn masked_user_agent(binary: &Path) -> Result<String, String> {
 /// different dotted number would build a well-formed but wrong UA without
 /// saying so** - the price of not spelling the string out here, paid only if
 /// a browser ever prints something other than `<name> <version>`.
-fn reduced_user_agent(version: &str) -> Option<String> {
-    let named = version.lines().next()?.split_whitespace().last()?;
-    let major = named.split('.').next()?;
-    if !named.contains('.') || major.is_empty() || !major.chars().all(|c| c.is_ascii_digit()) {
-        return None;
-    }
+fn reduced_user_agent(said: &str) -> Option<String> {
+    let major = version_line(said)?.split('.').next()?;
     Some(format!(
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) \
          Chrome/{major}.0.0.0 Safari/537.36"
@@ -181,6 +192,12 @@ pub struct HintCapture {
     /// verdict, and the fields beside it carry nothing usable.
     #[serde(default)]
     pub error: Option<String>,
+    /// The version the ATTACHED browser reports for itself, read from the
+    /// driver's own browser object (`153.0.8010.12`) - not from any page,
+    /// and not the machine's binary, which a hand-built launch need not be.
+    /// It is what every Chromium build but Brave reports in its hints.
+    #[serde(default)]
+    pub browser_version: String,
 }
 
 /// One client-hint brand, as the page lists it.
@@ -200,39 +217,60 @@ fn user_agent_version(user_agent: &str) -> Option<&str> {
     (!version.is_empty()).then_some(version)
 }
 
+/// The machine's own half of the rebuild: facts about the OS that no page can
+/// observe.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HintMachine {
+    /// The macOS product version (`26.5.2`), the client hints'
+    /// `platformVersion`.
+    pub platform_version: String,
+    /// Chromium's own architecture name (`arm`, `x86`).
+    pub architecture: &'static str,
+    /// The client's own pointer width, which its browser shares.
+    pub bitness: String,
+}
+
 /// The client-hint metadata the launch's UA override blanks, rebuilt from the
-/// page's own values plus the machine's.
+/// capture's values plus the machine's.
 ///
-/// **The version comes from the string the page reads**, which is the masked
-/// reduced UA: a real build reports `Chrome/<major>.0.0.0` there while its
-/// client hints freeze the same way (measured: Brave 155 headless reads
-/// `155.0.0.0` for both). Each brand's full version is its own major with
-/// that frozen tail, grease brands included - exactly the list the same
-/// browser reports without the override.
+/// **The version is the browser's own, and which one that is depends on the
+/// browser** (measured): Brave freezes the version it reports everywhere, so
+/// its hints read the frozen `<major>.0.0.0` its UA string carries
+/// (155.1.97.56 presents and reads `155.0.0.0`); Chrome and other Chromium
+/// builds freeze only the string and report the true build version in their
+/// hints (Chrome for Testing 153 reads `153.0.8010.12` beside a `153.0.0.0`
+/// string), so they take the version the attached browser reports for
+/// itself. Each real brand carries the browser's own version; the grease
+/// entry - the one brand whose major is not the browser's - always carries
+/// its own fake major with the frozen `.0.0.0` tail.
 ///
 /// `None` for a capture that cannot support a truthful rebuild: an unmasked
 /// launch reads the five for real, and rebuilding over them would replace
 /// the browser's own values with derived ones; a capture with no brands read
-/// no document; a UA string naming no version is a half-claim.
+/// no document; a version that is missing, or a UA string naming none on the
+/// arm that needs it, is a half-claim.
 pub fn user_agent_metadata(
     capture: &HintCapture,
-    platform_version: &str,
-    architecture: &str,
-    bitness: &str,
+    machine: &HintMachine,
 ) -> Option<serde_json::Value> {
     if !capture.blanked || capture.brands.is_empty() {
         return None;
     }
-    let version = user_agent_version(&capture.user_agent)?;
-    let tail = version.split_once('.').map_or("0.0.0", |(_, tail)| tail);
+    let version = if capture.brands.iter().any(|brand| brand.brand == "Brave") {
+        user_agent_version(&capture.user_agent)?
+    } else {
+        let reported = capture.browser_version.trim();
+        (!reported.is_empty()).then_some(reported)?
+    };
+    let browser_major = version.split('.').next()?;
     let full_version_list: Vec<serde_json::Value> = capture
         .brands
         .iter()
         .map(|brand| {
-            serde_json::json!({
-                "brand": brand.brand,
-                "version": format!("{}.{}", brand.version, tail),
-            })
+            let greasey = brand.version != browser_major;
+            let full =
+                if greasey { format!("{}.0.0.0", brand.version) } else { version.to_owned() };
+            serde_json::json!({ "brand": brand.brand, "version": full })
         })
         .collect();
     Some(serde_json::json!({
@@ -240,11 +278,11 @@ pub fn user_agent_metadata(
         "fullVersionList": full_version_list,
         "fullVersion": version,
         "platform": capture.platform,
-        "platformVersion": platform_version,
-        "architecture": architecture,
+        "platformVersion": machine.platform_version,
+        "architecture": machine.architecture,
         "model": "",
         "mobile": capture.mobile,
-        "bitness": bitness,
+        "bitness": machine.bitness,
         "wow64": false,
     }))
 }
@@ -1577,17 +1615,31 @@ mod tests {
         assert_eq!(user_agent_version("Chrome/"), None, "an empty token is no version");
     }
 
-    /// **The rebuild is the exact list the same browser reports without the
-    /// override** (measured: Brave 155.1.97.56 headless on macOS 26.5.2
-    /// arm64): every brand at its own major with the frozen tail, the
-    /// fullVersion the string carries, and the machine's own platform
-    /// version, architecture and bitness.
+    /// The machine facts the tests rebuild with.
+    fn machine() -> HintMachine {
+        HintMachine {
+            platform_version: "26.5.2".to_owned(),
+            architecture: "arm",
+            bitness: "64".to_owned(),
+        }
+    }
+
+    /// The masked reduced UA the launch presents, which the capture reads.
+    const MASKED_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
+                             AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36";
+
+    /// **The rebuild is the exact list the browser reports without the
+    /// override, on both arms** (measured): Brave 155.1.97.56 headless reads
+    /// the frozen `155.0.0.0` everywhere, string and hints alike, while
+    /// Chrome for Testing 153 freezes only the string and reads its true
+    /// build version `153.0.8010.12` - so the version comes from the string
+    /// for Brave and from the version the attached browser reports for
+    /// itself everywhere else. The grease entry carries its own fake major
+    /// with the frozen tail on both.
     #[test]
     fn the_rebuilt_metadata_is_what_the_browser_reports() {
-        let capture = HintCapture {
-            user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 \
-                         (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36"
-                .to_owned(),
+        let brave = HintCapture {
+            user_agent: MASKED_UA.to_owned(),
             brands: vec![
                 HintBrand { brand: "Brave".to_owned(), version: "155".to_owned() },
                 HintBrand { brand: "Chromium".to_owned(), version: "155".to_owned() },
@@ -1597,9 +1649,11 @@ mod tests {
             mobile: false,
             blanked: true,
             error: None,
+            // What Brave's browser object reports; the Brave arm never reads
+            // it, its version being the string's frozen one.
+            browser_version: "155.0.8059.40".to_owned(),
         };
-        let metadata =
-            user_agent_metadata(&capture, "26.5.2", "arm", "64").expect("the capture rebuilds");
+        let metadata = user_agent_metadata(&brave, &machine()).expect("the capture rebuilds");
         assert_eq!(
             metadata,
             serde_json::json!({
@@ -1622,24 +1676,69 @@ mod tests {
                 "bitness": "64",
                 "wow64": false,
             }),
-            "the metadata the page reads must be the browser's own, grease brand included",
+            "Brave's hints read the frozen version its string carries: {metadata}",
+        );
+
+        // The Chrome arm: the string is frozen the same way, but the hints
+        // read the version the browser reports for itself.
+        let chrome = HintCapture {
+            user_agent: MASKED_UA.to_owned(),
+            brands: vec![
+                HintBrand { brand: "Chromium".to_owned(), version: "153".to_owned() },
+                HintBrand { brand: "Not_A Brand".to_owned(), version: "8".to_owned() },
+            ],
+            browser_version: "153.0.8010.12".to_owned(),
+            ..brave.clone()
+        };
+        let metadata = user_agent_metadata(&chrome, &machine()).expect("the capture rebuilds");
+        assert_eq!(
+            metadata["fullVersion"],
+            serde_json::json!("153.0.8010.12"),
+            "a non-Brave build reports its true build version: {metadata}",
+        );
+        assert_eq!(
+            metadata["fullVersionList"],
+            serde_json::json!([
+                { "brand": "Chromium", "version": "153.0.8010.12" },
+                { "brand": "Not_A Brand", "version": "8.0.0.0" },
+            ]),
+            "the real brand carries the build version, the grease entry its own frozen major: \
+             {metadata}",
         );
 
         // **A capture that cannot support a truthful rebuild answers None**
         // rather than a half-claim: a browser already reading the five for
         // real (an unmasked launch - derived values must not replace them),
-        // no brands, or a string naming no version.
-        let real = HintCapture { blanked: false, ..capture.clone() };
+        // no brands, a string naming no version on the arm that needs it, or
+        // a non-Brave browser that reported no version of its own.
+        let real = HintCapture { blanked: false, ..brave.clone() };
         assert_eq!(
-            user_agent_metadata(&real, "26.5.2", "arm", "64"),
+            user_agent_metadata(&real, &machine()),
             None,
             "a browser reporting its own high-entropy hints is left exactly as it is",
         );
-        let brandless = HintCapture { brands: Vec::new(), ..capture.clone() };
-        assert_eq!(user_agent_metadata(&brandless, "26.5.2", "arm", "64"), None);
-        let versionless =
-            HintCapture { user_agent: "no version in here".to_owned(), ..capture.clone() };
-        assert_eq!(user_agent_metadata(&versionless, "26.5.2", "arm", "64"), None);
+        let brandless = HintCapture { brands: Vec::new(), ..brave.clone() };
+        assert_eq!(user_agent_metadata(&brandless, &machine()), None);
+        let versionless = HintCapture { user_agent: "no version in here".to_owned(), ..brave };
+        assert_eq!(user_agent_metadata(&versionless, &machine()), None);
+        let unreported = HintCapture { browser_version: String::new(), ..chrome };
+        assert_eq!(
+            user_agent_metadata(&unreported, &machine()),
+            None,
+            "a non-Brave browser reporting no version is a half-claim",
+        );
+    }
+
+    /// The `--version` line's token, which both the reduced UA and the full
+    /// build version are read out of.
+    #[test]
+    fn a_version_line_is_read_by_shape() {
+        assert_eq!(version_line("Brave Browser 155.1.97.56\n"), Some("155.1.97.56"));
+        assert_eq!(version_line("Google Chrome 155.0.1234.56\n"), Some("155.0.1234.56"));
+
+        for gibberish in ["", "\n", "not a version\n", "Brave Browser x.y.z\n", "155\n"] {
+            assert_eq!(version_line(gibberish), None, "{gibberish:?} names no version");
+        }
     }
 
     /// The architecture mapping: the names Chromium reports, and `None` for

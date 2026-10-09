@@ -335,3 +335,127 @@ async fn the_high_entropy_hints_match_the_unmasked_browser() {
     // And the page opened later reads the same real five.
     assert_eq!(five(&fresh_read), five(&control_read), "a page opened later is masked too");
 }
+
+/// The newest Chrome for Testing binary in the playwright cache, when one is
+/// there: the stand-in for the Chrome arm on a machine whose own browser is
+/// Brave.
+fn chrome_for_testing() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    let cache = PathBuf::from(home).join("Library/Caches/ms-playwright");
+    let mut found: Vec<(u64, PathBuf)> = Vec::new();
+    for entry in std::fs::read_dir(cache).ok()?.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(age) = name.strip_prefix("chromium-").and_then(|n| n.parse::<u64>().ok()) else {
+            continue;
+        };
+        let binary = entry.path().join(
+            "chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/\
+             Google Chrome for Testing",
+        );
+        if binary.is_file() {
+            found.push((age, binary));
+        }
+    }
+    found.sort();
+    found.pop().map(|(_, binary)| binary)
+}
+
+/// **The Chrome arm, re-measured live.** The derivation that keeps Brave's
+/// frozen version would be wrong for every other Chromium build, so this
+/// drives the same masked-versus-unmasked pair against a Chrome for Testing
+/// binary: its string is frozen to `153.0.0.0` while its hints read the true
+/// build `153.0.8010.12`, and the rebuild must reproduce exactly that. The
+/// branded Google Chrome build stays unmeasured - no Chrome is installed on
+/// this machine.
+#[tokio::test]
+#[ignore = "drives a Chrome for Testing build from the playwright cache"]
+async fn the_high_entropy_hints_match_a_chrome_build() {
+    capture_logs();
+    let stack = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("browser-stack");
+    assert!(
+        stack.join("node/bin/node").is_file(),
+        "the vendored stack is not there - run `just vendor-browser-stack`",
+    );
+    let node = forge_client::browser::driver::node_path(&stack);
+    let cli = forge_client::browser::driver::cli_path(&stack);
+    let chrome = chrome_for_testing().unwrap_or_else(|| {
+        panic!(
+            "no Chrome for Testing build in the playwright cache - install one there \
+             (~/Library/Caches/ms-playwright/chromium-*/...) or run this where one is"
+        )
+    });
+
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let output = dir.path().join("output");
+    let (origin, _headers) = hints_origin().await;
+
+    // The control: the same Chrome build, unmasked.
+    let control_profile = dir.path().join("chrome-control");
+    let (control_port, control_pid) = hand_launch(
+        &chrome,
+        &control_profile,
+        chromium::launch_args(&control_profile, false, None, None),
+    )
+    .await;
+    let control = Launched::new(Some(control_pid), control_port, control_profile.clone());
+    let control_driver =
+        Driver::start(&node, &cli, &format!("http://127.0.0.1:{control_port}"), &output)
+            .await
+            .unwrap_or_else(|why| panic!("the chrome control driver: {why}"));
+    control_driver
+        .call("browser_navigate", json!({ "url": origin }))
+        .await
+        .unwrap_or_else(|why| panic!("the chrome control page: {why}"));
+    let control_read = read_of(
+        &control_driver
+            .call("browser_evaluate", json!({ "function": READ_HINTS }))
+            .await
+            .unwrap_or_else(|why| panic!("the chrome control read: {why}")),
+        "the chrome control",
+    );
+
+    // The subject: the same Chrome build under the launch's mask, with the
+    // hint mask installed the way a driver start installs it.
+    let subject_profile = dir.path().join("chrome-subject");
+    let ua = chromium::masked_user_agent(&chrome)
+        .await
+        .unwrap_or_else(|why| panic!("the chrome UA would not build: {why}"));
+    let (subject_port, subject_pid) = hand_launch(
+        &chrome,
+        &subject_profile,
+        chromium::launch_args(&subject_profile, false, None, Some(&ua)),
+    )
+    .await;
+    let subject = Launched::new(Some(subject_pid), subject_port, subject_profile.clone());
+    let subject_driver =
+        Driver::start(&node, &cli, &format!("http://127.0.0.1:{subject_port}"), &output)
+            .await
+            .unwrap_or_else(|why| panic!("the chrome subject driver: {why}"));
+    subject_driver.install_hint_mask(&output).await;
+    subject_driver
+        .call("browser_navigate", json!({ "url": origin }))
+        .await
+        .unwrap_or_else(|why| panic!("the chrome subject page: {why}"));
+    let subject_read = read_of(
+        &subject_driver
+            .call("browser_evaluate", json!({ "function": READ_HINTS }))
+            .await
+            .unwrap_or_else(|why| panic!("the chrome subject read: {why}")),
+        "the chrome subject",
+    );
+
+    subject.reap();
+    control.reap();
+
+    assert_eq!(
+        five(&subject_read),
+        five(&control_read),
+        "the masked Chrome build must read exactly what the same build reads unmasked",
+    );
+    let ua_read = subject_read["user_agent"].as_str().unwrap_or_default();
+    assert!(
+        ua_read.contains("Chrome/") && !ua_read.contains("HeadlessChrome"),
+        "the launch's masked UA string stays: {ua_read}",
+    );
+    assert_eq!(subject_read["brands"], control_read["brands"], "the brands stay real");
+}

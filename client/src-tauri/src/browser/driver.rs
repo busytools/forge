@@ -330,7 +330,7 @@ impl Driver {
     /// **Only where the launch's override is**: the headed launch presents
     /// the browser's own UA and hints, and the caller keeps this off it (the
     /// capture's scratch document would otherwise open a window at it).
-    pub(super) async fn install_hint_mask(&self, output_dir: &Path) {
+    pub async fn install_hint_mask(&self, output_dir: &Path) {
         match tokio::time::timeout(HINT_MASK_TIMEOUT, self.rebuild_client_hints(output_dir)).await {
             Ok(Ok(note)) => tauri_plugin_log::log::info!(
                 "the client-hint mask settled (event_name browser_hint_mask): {note}"
@@ -367,18 +367,17 @@ impl Driver {
             HintVerdict::StandDown(note) => return Ok(note),
             HintVerdict::Rebuild => {}
         }
-        let platform_version = chromium::platform_version().await?;
-        let architecture =
-            chromium::client_hint_architecture(std::env::consts::ARCH).ok_or_else(|| {
-                format!("no measured architecture name for {}", std::env::consts::ARCH)
-            })?;
-        let bitness = (std::mem::size_of::<usize>() * 8).to_string();
-        let metadata =
-            chromium::user_agent_metadata(&capture, &platform_version, architecture, &bitness)
-                .ok_or_else(|| {
-                    "the page's user agent carries no version, so the rebuild would be a half-claim"
-                        .to_owned()
-                })?;
+        let machine = chromium::HintMachine {
+            platform_version: chromium::platform_version().await?,
+            architecture: chromium::client_hint_architecture(std::env::consts::ARCH).ok_or_else(
+                || format!("no measured architecture name for {}", std::env::consts::ARCH),
+            )?,
+            bitness: (std::mem::size_of::<usize>() * 8).to_string(),
+        };
+        let metadata = chromium::user_agent_metadata(&capture, &machine).ok_or_else(|| {
+            "the page's user agent carries no version, so the rebuild would be a half-claim"
+                .to_owned()
+        })?;
         let parts = self
             .call_raw(
                 "browser_run_code_unsafe",
@@ -707,6 +706,7 @@ fn hint_capture_snippet(hints_page: &Path) -> String {
          }} finally {{\
          await scratch_context.close();\
          }}\
+         seen.browser_version = page.context().browser().version();\
          return '{HINTS_MARKER}' + JSON.stringify(seen);\
          }}",
         custom::js_string(&file_url(hints_page)),
@@ -1265,6 +1265,11 @@ mod tests {
                 ),
             "every failed read answers an error, not a blanked verdict: {snippet}",
         );
+        assert!(
+            snippet.contains("seen.browser_version = page.context().browser().version();"),
+            "the version comes from the browser actually attached, not the machine's binary: \
+             {snippet}",
+        );
     }
 
     /// The capture's verdict: a failed read warns by name, an unmasked
@@ -1284,6 +1289,7 @@ mod tests {
             mobile: false,
             blanked,
             error: error.map(str::to_owned),
+            browser_version: "155.0.8059.40".to_owned(),
         };
 
         let HintVerdict::Unreadable(why) = hint_verdict(&capture(Some("the read threw"), true))
