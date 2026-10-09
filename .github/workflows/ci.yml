@@ -145,7 +145,10 @@ jobs:
   # The client is not a cargo workspace member, so no other job here reaches
   # it: without this the client's steps run only when a person types them,
   # and a gate that does not run reports what a gate that passes does. The
-  # steps are `just check`'s client recipes, in its order, plus the build.
+  # steps are `just check`'s client recipes, in its order, plus the build -
+  # the frontend ones: `just check` also carries the shell's android
+  # warnings step, which this job cannot run (its vendoring refuses
+  # non-macOS hosts; the CI side is issue #1959).
   client:
     name: client format, lint, build, typecheck and tests
     runs-on: ubuntu-latest

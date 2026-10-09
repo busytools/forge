@@ -17,7 +17,9 @@ tests, the client's Prettier check, ESLint, `svelte-check` and
 warnings check (`client-android-warnings`),
 clippy with warnings denied, `cargo nextest run --workspace --all-features`,
 `cargo test --doc --workspace --all-features`, and `cargo doc`. CI's set
-minus its `cargo check --release` and feature-configs jobs. Green before
+minus its `cargo check --release` and feature-configs jobs, and plus the
+android warnings check CI cannot run yet (`client-android-warnings`; its
+vendoring refuses non-macOS hosts - #1959). Green before
 you open a pull request.
 
 A fresh worktree has no `client/node_modules`, so the first `just check`

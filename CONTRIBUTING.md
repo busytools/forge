@@ -31,7 +31,10 @@ flag covers the build each step drives, and rustdoc compiles a doctest on
 its own, so it does not deny warnings inside one. This is CI's set minus
 the jobs a checkout cannot carry - CI runs `cargo check --release`, the
 feature-configs builds and the image workflow, which builds and exercises
-the web image on the commits that touch it - and the piecewise client gates
+the web image on the commits that touch it - and plus the android warnings
+check CI cannot run yet (`client-android-warnings`; the vendoring its build
+needs refuses non-macOS hosts, so the CI side is #1959). The piecewise
+client gates
 are `just client-tauri-check`, `just client-android-check` and `just
 web-image-check`. Get it green before you
 open a pull request.
