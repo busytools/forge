@@ -296,8 +296,10 @@ client-test:
 client-tauri-check:
     npm --prefix client run tauri -- build --no-bundle --ci -- --locked
     # The shell's own Rust tests: the shell crate is its own workspace root,
-    # so `just check`'s cargo steps never reach them, and without this line
-    # they run in NO gate at all.
+    # so the workspace's cargo steps never reach them. `just check` reaches
+    # the crate only through `client-android-warnings` (one target, warnings
+    # denied), so without this line the tests - and the macOS build beside
+    # them - run in no gate of their own.
     cargo nextest run --manifest-path client/src-tauri/Cargo.toml
 
 # Build the shell's bundles: `forge.app` and the dmg, under
@@ -358,7 +360,14 @@ vendor-browser-stack-android:
 # reached a review exactly that way). Cheap enough to gate: measured about
 # a second warm and 14 s into a fresh target dir, so `just check` runs it
 # beside the other client steps and CI runs it as its own job.
-client-android-warnings:
+#
+# **The vendored stack is a prerequisite** (as it is for
+# `client-android-check`): the shell crate's build script resolves the
+# android config's `browser-stack` resource glob, and a checkout without
+# the vendoring fails the build with "glob pattern ... did not match any
+# files" - on a fresh clone and on a fresh CI runner alike. The vendoring
+# is idempotent, so a machine that has it pays nothing here.
+client-android-warnings: vendor-browser-stack
     #!/usr/bin/env bash
     set -euo pipefail
     rustup target add aarch64-linux-android
