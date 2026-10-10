@@ -429,13 +429,15 @@ export class Frames {
     for (const message of messages) this.add(message);
   }
 
-  /** Take one more frame into the index, for a list that has grown. */
+  /**
+   * Take one more frame into the index, for a list that has grown.
+   *
+   * Both faces, id and words - an id-bearing frame still answers an id-less
+   * copy's words question.
+   */
   add(message: unknown): void {
     const id = uuidOf(message);
-    if (id !== null) {
-      this.ids.add(id);
-      return;
-    }
+    if (id !== null) this.ids.add(id);
     const words = wordsOf(message);
     if (words.length > 0) this.said.add(JSON.stringify(words));
   }

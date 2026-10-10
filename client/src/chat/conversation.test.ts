@@ -3351,13 +3351,13 @@ describe('the frame index', () => {
   });
 
   it('finds a frame by its id, and only by it', () => {
-    const index = new Frames([said('one')]);
+    const index = new Frames([minted('one')]);
 
-    expect(index.carries(said('one')), 'the same id under another object').toBe(true);
+    expect(index.carries(minted('one')), 'the same id under another object').toBe(true);
     // **Only by it**: a frame with a different id saying the same words is a
     // different frame, which is what keeps a repeat from taking an
     // id-bearing row.
-    const same = said('one') as { uuid: string };
+    const same = minted('one') as { uuid: string };
     expect(index.carries({ ...same, uuid: 'a-other' }), 'a different id').toBe(false);
   });
 
@@ -3366,6 +3366,23 @@ describe('the frame index', () => {
 
     expect(index.carries(unnamed('delivered')), 'the same words, no id on either').toBe(true);
     expect(index.carries(unnamed('something else')), 'the words it does not say').toBe(false);
+  });
+
+  it('finds an id-less frame by the words of one that carries an id', () => {
+    // The pair a return meets: the page's copy carries the id the CLI minted,
+    // and the delivery row arrives with the same words and none - the words
+    // arm is the only thing that can pair them.
+    const built = new Frames([minted('delivered')]);
+    expect(built.carries(unnamed('delivered')), 'an id-less copy against a held minted frame').toBe(
+      true,
+    );
+
+    const grown = new Frames([]);
+    grown.add(minted('delivered'));
+    expect(
+      grown.carries(unnamed('delivered')),
+      'the copy against a frame the index grew with',
+    ).toBe(true);
   });
 
   it('narrows the words arm away when asked not to match prose', () => {
