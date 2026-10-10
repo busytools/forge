@@ -31,6 +31,7 @@ use tauri::Manager as _;
 
 pub mod asks;
 pub mod browser;
+pub mod records;
 pub mod socket;
 
 /// The app, as a library: the Android target links it as a native library, and
