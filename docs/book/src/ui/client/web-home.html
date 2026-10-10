@@ -491,7 +491,11 @@
        of the project's seat marks, in the same vocabulary a seat row uses. */
     .fleet { list-style: none; margin: 8px 0 0; padding: 0; }
     .fleet-row { display: grid;
-      grid-template-columns: 22px minmax(0, 14rem) minmax(0, 1fr) auto auto auto;
+      /* One track per cell (mark, name, tree, age, seats, counts, misses, the
+         way in): a track short and the trailing cells wrap onto an implicit
+         row, where the misses stack one word per line and the link draws over
+         them. */
+      grid-template-columns: 22px minmax(0, 14rem) minmax(0, 1fr) auto auto auto auto auto;
       align-items: center; gap: 14px;
       border: 1px solid var(--line); border-radius: var(--r);
       background: var(--s1); padding: 13px 16px; margin-bottom: 10px; }
