@@ -23,7 +23,7 @@ nothing to draw, and the client never falls back to bundled data.
 | Stopped | the core's last fatal, above everything else: `forge stopped:` and the terminal's own words | `fatal_error` |
 | Header | the brand mark, `forge`, the forge build serving the socket, the socket protocol, the claude version, the CLI's update notice, this app's own update line (or, in a browser, the build and the latest published), and the fleet totals | `ClientSettings.mark` from the greeting; `forge_version_short`; `PROTOCOL_VERSION`; `cli_version`; the shell's update check, or the served `latest.json`; `agents` and `projects` counted |
 | Band | four cards: the gateway listener, the client's own address, dictation, and the account pool | `accounts.gateway`, the connection the client made, `dictate.snapshot`, `accounts.loading` |
-| Fleet row | one per project: the strongest seat mark, the project, its branch and changed-file count, when it last moved (the newest write among its seats and the sessions its catalog remembers, `now`/`3h`/`2d`, or `never` for a project with neither a seat nor a session behind it), its seats, `live of cap slots · queue · on you`, the named misses, and the way into its board | `fleet` for the counts and the misses; `projects` for the tree; `agents` and `projects[].sessions` for the seats and the age |
+| Fleet row | one per project: the strongest seat mark, the project, its branch and changed-file count, when it last moved (the newest write among its seats and the sessions its catalog remembers, `now`/`3h`/`2d`, or `never` for a project with neither a seat nor a session behind it), its seats, `live of cap slots · queue · on you`, the named misses, and the ways in - the row itself, each seat, and the board | `fleet` for the counts and the misses; `projects` for the tree; `agents` and `projects[].sessions` for the seats and the age |
 
 Every cell of a fleet row is the server's own read. The mark is the
 strongest of the project's seat states, drawn with the same shapes a seat
@@ -31,7 +31,10 @@ row uses; the counts are the server's (`slots` is the project's resolved
 worker cap); and a miss is named rather than implied - a queue stalling with
 a free slot, a worker holding no row, or a project that cannot start, which
 is the refusal the row drew before the fleet. The whole row opens the
-project's [board](./board.md).
+project's lead in chat - the name's link stretches over the row's area,
+while a seat chip opens its own seat and `open board` opens the
+[board](./board.md). A project with no live seat is started by that same
+click, as a sleeping seat is from the terminal's rail.
 
 **The dictation card is the way into the [models page](./dictate-models.md).**
 The band's cards are facts about this forge, and that one opens `/models`,

@@ -132,8 +132,38 @@ describe('the home page as it draws', () => {
   it('draws every project the snapshot holds as its own fleet row', () => {
     const body = draw();
     expect(body).toContain('class="fleet-row"');
-    expect(body).toContain('fleet-name">proj');
-    expect(body, 'and the row is the way into the board').toContain('href="/board/TestOrg/proj"');
+    expect(body).toContain('>proj</a>');
+    expect(body, 'and the board keeps its own control').toContain('href="/board/TestOrg/proj"');
+  });
+
+  /**
+   * **The row is the way into the lead's chat** - the way-in the per-seat
+   * rows gave before the fleet replaced them: the name's link stretches
+   * over the whole row (the sheet draws that), and a seat chip is its own
+   * link to its own seat.
+   */
+  it('leads the row into the lead, and a chip into its seat', () => {
+    // Two seats, because with one the chip's target and the row's are the
+    // same string - a chip wired to the row's href would pass everything.
+    const [first] = homeWire.agents;
+    if (first === undefined) throw new Error('the fixture holds no agent');
+    const wire: HomeWire = {
+      ...homeWire,
+      agents: [
+        ...homeWire.agents,
+        { ...first, slot: { org: 'TestOrg', project: 'proj', label: 'w1' } },
+      ],
+    };
+    const body = draw({ wire });
+    expect(body, 'the row opens the lead').toMatch(
+      /class="fleet-name fleet-go" href="\/session\/TestOrg\/proj\/lead"/,
+    );
+    expect(body, 'the lead chip opens the lead').toMatch(
+      /class="fleet-seat" href="\/session\/TestOrg\/proj\/lead"/,
+    );
+    expect(body, 'a worker chip opens its own seat').toMatch(
+      /class="fleet-seat" href="\/session\/TestOrg\/proj\/w1"/,
+    );
   });
 
   /**
