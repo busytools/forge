@@ -82,6 +82,7 @@ import {
   projectRows,
   refusal,
   whenOf,
+  ageOf,
   type ProjectRows,
   type Row,
   type RowState,
@@ -209,6 +210,14 @@ function project(
   };
 }
 
+/**
+ * One project row whose catalog remembers a session: the age a seatless
+ * project keeps, once no live seat is left to read.
+ */
+function withSessions(row: ProjectWire, at: WireTime): ProjectWire {
+  return { ...row, project: { ...row.project, sessions: [{ last_activity: at }] } };
+}
+
 /** One task, held by a project's lead. */
 function task(status: TaskStatus, subject: string): Task {
   return {
@@ -315,6 +324,78 @@ describe('the fleet the snapshot describes', () => {
       'Busytools/notes',
       'Personal/dotfiles',
     ]);
+  });
+
+  /**
+   * **The fleet row's age is the project's own**: the newest write among the
+   * seats it holds, or nothing at all when none of them has written. It is
+   * the cell the home drew before the fleet - "3h" at a glance - and the one
+   * a reader uses to see a project gone quiet.
+   */
+  it('carries the newest write a project has, and words the two that are not ages', () => {
+    const at = (secs: number) => ({ secs_since_epoch: secs, nanos_since_epoch: 0 });
+    const wire: HomeWire = {
+      ...FLEET,
+      agents: [
+        { ...agent('Busytools', 'forge', 'lead', 'Idle'), last_activity: at(1_000) },
+        { ...agent('Busytools', 'forge', 'w1', 'Idle'), last_activity: at(3_000) },
+        // Never written: not a zero, an absence.
+        agent('Busytools', 'notes', 'lead', 'Sleeping'),
+        { ...agent('Personal', 'dotfiles', 'lead', 'Idle'), last_activity: at(2_000) },
+      ],
+      // A project with no seat left holds its age in its own catalog: a seat
+      // exists only while a session does, so the seats alone would word
+      // `never` over a project that wrote ten minutes ago - which every
+      // non-`auto_start` project is, after a restart.
+      projects: [
+        project('Busytools', 'forge'),
+        withSessions(project('Busytools', 'notes'), at(2_500)),
+        withSessions(project('Personal', 'dotfiles'), at(2_000)),
+      ],
+    };
+
+    const rows = fleetRows(wire);
+    const row = (name: string) => rows.find((entry) => entry.name === name);
+    expect(
+      row('forge')?.lastActivity?.secs_since_epoch,
+      'the newest seat write is the project to know about',
+    ).toBe(3_000);
+    expect(row('dotfiles')?.lastActivity?.secs_since_epoch).toBe(2_000);
+    expect(
+      row('notes')?.lastActivity?.secs_since_epoch,
+      'a seatless project lost the age its own sessions remember',
+    ).toBe(2_500);
+
+    // And the words the row draws from it, against the page's clock: the
+    // elapsed age, `now` for a live seat with nothing written yet, and
+    // `never` only for a project with neither a seat nor a session behind it.
+    expect(ageOf(first(rows, 'fleet row'), 3_600_000), 'ten minutes back').toBe('10m');
+    expect(ageOf(row('notes') ?? first(rows, 'fleet row'), 3_600_000), 'ten minutes back').toBe(
+      '18m',
+    );
+    const seatless = first(
+      fleetRows({
+        ...wire,
+        agents: [],
+        projects: [
+          project('Busytools', 'forge'),
+          project('Busytools', 'notes'),
+          project('Personal', 'dotfiles'),
+        ],
+      }),
+      'fleet row',
+    );
+    expect(ageOf(seatless, 3_600_000), 'nothing has ever run there').toBe('never');
+    // A live seat that has not written yet is `now`, not an absence.
+    expect(
+      ageOf(
+        {
+          lastActivity: null,
+          seats: [{ label: 'lead', state: { kind: 'lifecycle', lifecycle: 'Idle' } }],
+        },
+        0,
+      ),
+    ).toBe('now');
   });
 
   it('names a worker row for the worker and only the lead for its project', () => {

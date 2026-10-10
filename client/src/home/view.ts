@@ -142,6 +142,14 @@ export interface FleetViewRow {
   place: { branch: string | null; files: string | null };
   gate: string | null;
   seats: { label: string; state: RowState }[];
+  /**
+   * When the project last moved: the newest `last_activity` across its seats
+   * and the sessions its catalog remembers, or null when nothing has ever
+   * written. It is the cell the row drew before the fleet - "3h" at a glance
+   * - so a reader can see a project that has gone quiet without opening its
+   * board.
+   */
+  lastActivity: WireTime | null;
   live: number;
   slots: number | null;
   queue: number;
@@ -179,13 +187,34 @@ export function fleetRows(wire: HomeWire): FleetViewRow[] {
         keyOf(entry.project.org, entry.project.name) ===
         keyOf(orgOf(wire, row.project), row.project),
     );
-    const seats = wire.agents
-      .filter(
-        (agent) =>
-          agent.slot.project === row.project &&
-          (project === undefined || agent.slot.org === project.project.org),
-      )
-      .map((agent) => ({ label: agent.label, state: stateOf(agent, wire.unseen) }));
+    const agents = wire.agents.filter(
+      (agent) =>
+        agent.slot.project === row.project &&
+        (project === undefined || agent.slot.org === project.project.org),
+    );
+    const seats = agents.map((agent) => ({
+      label: agent.label,
+      state: stateOf(agent, wire.unseen),
+    }));
+    // The newest write the project has: a live seat's, or a session the
+    // catalog still remembers once no seat is left. **The catalog half is not
+    // a nicety** - a seat exists only while a project holds a live session,
+    // so a closed project is seatless, and reading the seats alone would word
+    // `never` over a project that wrote ten minutes ago. Every project is in
+    // that state after a forge restart, because only `auto_start` ones come
+    // back on their own.
+    const lastActivity = [
+      ...agents.map((agent) => agent.last_activity),
+      ...(project?.project.sessions.map((session) => session.last_activity) ?? []),
+    ].reduce<WireTime | null>(
+      (newest, at) =>
+        at === null
+          ? newest
+          : newest === null || at.secs_since_epoch > newest.secs_since_epoch
+            ? at
+            : newest,
+      null,
+    );
     const strongest = seats.reduce<RowState>(
       (best, seat) =>
         MARK_ORDER.indexOf(markOf(seat.state).class) < MARK_ORDER.indexOf(markOf(best).class)
@@ -205,6 +234,7 @@ export function fleetRows(wire: HomeWire): FleetViewRow[] {
       place: project === undefined ? { branch: null, files: null } : placeOf(project.work),
       gate: project === undefined ? null : gateLine(project.work.gate),
       seats,
+      lastActivity,
       live: row.live_workers,
       slots: row.slots,
       queue: row.queue,
@@ -435,6 +465,21 @@ export function whenOf(row: Row, now: number): string {
   if (row.state.kind === 'never-started') return 'never';
   if (row.lastActivity === null) return 'now';
   return elapsedLabel(row.lastActivity, now);
+}
+
+/**
+ * The same cell for a fleet row, which reads its witnesses rather than a
+ * state: a project holds no seats the moment its sessions close, and its
+ * strongest state is then the reducer's `never-started` seed - so the state
+ * would word `never` over a project that wrote ten minutes ago, which is
+ * every project but the `auto_start` ones after a restart.
+ *
+ * `never` is the row with neither a seat nor a session behind it; `now` is a
+ * live seat that has not written yet.
+ */
+export function ageOf(row: Pick<FleetViewRow, 'lastActivity' | 'seats'>, now: number): string {
+  if (row.lastActivity !== null) return elapsedLabel(row.lastActivity, now);
+  return row.seats.length > 0 ? 'now' : 'never';
 }
 
 /** The band's four cards, each quiet until its own state says otherwise. */

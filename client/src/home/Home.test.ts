@@ -137,6 +137,36 @@ describe('the home page as it draws', () => {
   });
 
   /**
+   * **The age is the row's own cell.** The reshape dropped the per-row age
+   * the home used to draw, and it is the cell a reader uses to see a project
+   * gone quiet without opening its board - so the fleet row draws when the
+   * project last moved, from the newest write among its seats.
+   */
+  it('draws when the project last moved', () => {
+    const idle = { ...homeWire, agents: homeWire.agents.map((row) => ({ ...row, pending: null })) };
+    // An epoch-second stamp: however far back the clock's year is read from,
+    // the words are days rather than minutes or hours.
+    const body = draw({
+      wire: {
+        ...idle,
+        agents: idle.agents.map((row) => ({
+          ...row,
+          last_activity: { secs_since_epoch: 1_000, nanos_since_epoch: 0 },
+        })),
+      },
+    });
+    expect(body, 'the fleet row drew no age').toContain('class="fleet-when"');
+    expect(body, "the age is not the row's own words").toMatch(/fleet-when[^>]*>\d+d</);
+
+    // A live seat with nothing written yet reads `now`; `never` is for a
+    // project with neither a seat nor a session behind it (the view test
+    // holds that half, where the catalog can be built by hand).
+    expect(draw({ wire: idle }), 'a seat with no write drew no age').toMatch(
+      /fleet-when[^>]*>now</,
+    );
+  });
+
+  /**
    * The way into the models page, which the view test cannot see: it asserts
    * the field, not that a component draws what the field says. The card is
    * the whole target, and the chevron is drawn at rest - an affordance only
