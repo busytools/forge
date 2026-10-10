@@ -301,7 +301,22 @@ export type ServerMessage =
    * the paging contract is built on it and a page that split one would leave
    * a client stitching half a turn to the other half.
    */
-  | { kind: 'page'; conversation: SessionSlot; turns: unknown[]; cursor: string | null }
+  /**
+   * A page of turns.
+   *
+   * `reconciled` is the desktop's own mark: the Rust half sends the
+   * newest window after a parked spell, and the mark is what tells it from
+   * an answer to an ask (a park can kill the ask while its "in flight"
+   * bookkeeping survives, and an unmarked page would then be spliced as an
+   * older one). The web build never sees it.
+   */
+  | {
+      kind: 'page';
+      conversation: SessionSlot;
+      turns: unknown[];
+      cursor: string | null;
+      reconciled?: boolean;
+    }
   /**
    * The inputs forge can record from, in answer to `devices`.
    *

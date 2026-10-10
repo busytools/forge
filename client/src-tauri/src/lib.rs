@@ -29,7 +29,136 @@ fn updater(app: &tauri::AppHandle) -> Result<tauri_plugin_updater::Updater, Stri
 // every target, the phone included.
 use tauri::Manager as _;
 
+pub mod asks;
+pub mod bridge;
 pub mod browser;
+pub mod records;
+pub mod socket;
+
+/// The webview's commands: the page reaches the socket and the records
+/// through these, and hears their moves as `client://*` events. Thin by
+/// design - the logic is `bridge.rs`'s, and its tests are there.
+mod commands {
+    use std::sync::Arc;
+
+    use serde_json::Value;
+    use tauri::Emitter as _;
+    use tauri::Manager as _;
+
+    use crate::bridge::{Bridge, ClientEvent};
+
+    /// Push the bridge's events to the page under their own names.
+    pub fn pump(app: tauri::AppHandle, mut rx: tokio::sync::mpsc::UnboundedReceiver<ClientEvent>) {
+        tauri::async_runtime::spawn(async move {
+            while let Some(event) = rx.recv().await {
+                let _ = match event {
+                    ClientEvent::Connection => app.emit("client://connection", ()),
+                    ClientEvent::Inbound(message) => app.emit("client://inbound", message),
+                    ClientEvent::Refused { key, why } => {
+                        app.emit("client://refused", serde_json::json!({ "key": key, "why": why }))
+                    }
+                    ClientEvent::Role { hosting } => app.emit("client://role", hosting),
+                    ClientEvent::Asks { inflight } => app.emit("client://asks", inflight),
+                };
+            }
+        });
+    }
+
+    /// Build the bridge over whatever browser host this target has, manage
+    /// it, and start its pump. Both arms call this; a target with no host
+    /// yet still gets a bridge, and it answers asks with that reason.
+    pub fn init(app: &tauri::AppHandle) {
+        let host = app
+            .try_state::<Arc<crate::browser::BrowserHost>>()
+            .map(|state| Arc::clone(state.inner()));
+        let (events, rx) = tokio::sync::mpsc::unbounded_channel();
+        let bridge = Bridge::new(host, events);
+        app.manage(Arc::clone(&bridge));
+        pump(app.clone(), rx);
+    }
+
+    /// Dial the server. **`async`, though the body is sync**: a sync command
+    /// runs on the main thread, where no tokio reactor is running and the
+    /// tasks the connection spawns would panic at birth. Under `async` the
+    /// body runs on the runtime instead.
+    #[tauri::command(async)]
+    pub fn client_connect(bridge: tauri::State<'_, Arc<Bridge>>, url: String) {
+        bridge.connect(url);
+    }
+
+    #[tauri::command]
+    pub fn client_state(bridge: tauri::State<'_, Arc<Bridge>>) -> Value {
+        bridge.state()
+    }
+
+    #[tauri::command]
+    pub fn client_subscribe(
+        bridge: tauri::State<'_, Arc<Bridge>>,
+        what: Value,
+        answering: bool,
+        browser: bool,
+    ) {
+        bridge.subscribe(what, answering, browser);
+    }
+
+    #[tauri::command]
+    pub fn client_unsubscribe(bridge: tauri::State<'_, Arc<Bridge>>, what: Value) {
+        bridge.unsubscribe(&what);
+    }
+
+    #[tauri::command]
+    pub fn client_refresh(bridge: tauri::State<'_, Arc<Bridge>>, what: Value) {
+        bridge.refresh(&what);
+    }
+
+    /// Older turns of a conversation; false means no socket is open and no
+    /// page is coming. The default width is the page's own `MORE_TURNS`.
+    #[tauri::command]
+    pub fn client_more(
+        bridge: tauri::State<'_, Arc<Bridge>>,
+        conversation: Value,
+        before: Option<String>,
+        turns: Option<u64>,
+    ) -> bool {
+        bridge.more(&conversation, before, turns.unwrap_or(20))
+    }
+
+    #[tauri::command]
+    pub async fn client_dispatch(
+        bridge: tauri::State<'_, Arc<Bridge>>,
+        command: Value,
+        reply: bool,
+    ) -> Result<Option<Value>, String> {
+        let bridge = Arc::clone(bridge.inner());
+        bridge.dispatch(command, reply).await
+    }
+
+    #[tauri::command]
+    pub fn client_frame(bridge: tauri::State<'_, Arc<Bridge>>, bytes: Vec<u8>) -> bool {
+        bridge.frame(bytes)
+    }
+
+    #[tauri::command]
+    pub fn client_devices(bridge: tauri::State<'_, Arc<Bridge>>) -> bool {
+        bridge.devices()
+    }
+
+    #[tauri::command]
+    pub fn client_take_role(bridge: tauri::State<'_, Arc<Bridge>>) {
+        bridge.take_role();
+    }
+
+    #[tauri::command]
+    pub fn client_heartbeat(bridge: tauri::State<'_, Arc<Bridge>>) {
+        bridge.heartbeat();
+    }
+
+    /// End the connection for good; no retry follows.
+    #[tauri::command]
+    pub fn client_close(bridge: tauri::State<'_, Arc<Bridge>>) {
+        bridge.close();
+    }
+}
 
 /// The app, as a library: the Android target links it as a native library, and
 /// the desktop binary in `main.rs` runs the same builder.
@@ -62,7 +191,19 @@ pub fn run() {
             browser::browser_used,
             check_update,
             install_update,
-            restart_app
+            restart_app,
+            commands::client_connect,
+            commands::client_state,
+            commands::client_subscribe,
+            commands::client_unsubscribe,
+            commands::client_refresh,
+            commands::client_more,
+            commands::client_dispatch,
+            commands::client_frame,
+            commands::client_devices,
+            commands::client_take_role,
+            commands::client_heartbeat,
+            commands::client_close
         ],
     );
     // iOS lands here too, and it registers nothing: no host exists there to
@@ -79,10 +220,8 @@ pub fn run() {
     // engine, in-app libnode for the driver), so its command set is the
     // desktop's, served by `browser::android`'s engine bridge.
     #[cfg(target_os = "android")]
-    let builder = builder
-        .plugin(android::init())
-        .plugin(browser::android::init())
-        .invoke_handler(tauri::generate_handler![
+    let builder = builder.plugin(android::init()).plugin(browser::android::init()).invoke_handler(
+        tauri::generate_handler![
             browser::browser_call,
             browser::browser_profile_close,
             browser::browser_profiles,
@@ -91,8 +230,21 @@ pub fn run() {
             browser::browser_hide,
             browser::browser_used,
             check_update,
-            install_update
-        ]);
+            install_update,
+            commands::client_connect,
+            commands::client_state,
+            commands::client_subscribe,
+            commands::client_unsubscribe,
+            commands::client_refresh,
+            commands::client_more,
+            commands::client_dispatch,
+            commands::client_frame,
+            commands::client_devices,
+            commands::client_take_role,
+            commands::client_heartbeat,
+            commands::client_close
+        ],
+    );
 
     let run = builder
         .setup(|app| {
@@ -139,6 +291,11 @@ pub fn run() {
                 });
                 app.manage(host);
             }
+            // The bridge, over whatever host this target has: the desktop's
+            // managed just above, the phone's in its own plugin's setup. It
+            // is what the page's commands reach, and its events are the
+            // only way the socket and the records reach the page.
+            commands::init(app.handle());
             Ok(())
         })
         .build(context);
