@@ -13,7 +13,14 @@
 import type { Connection } from '../socket';
 import type { DictateWire, Lifecycle } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
-import { askFrom, composerFrom, type Ask, type ComposerState, type Notice } from './wire';
+import {
+  NO_COMPOSER,
+  askFrom,
+  composerFrom,
+  type Ask,
+  type ComposerState,
+  type Notice,
+} from './wire';
 
 /**
  * The seat behind this page, as the composer needs it.
@@ -158,21 +165,20 @@ export function dictationOffered(dictate: DictateWire): boolean {
   return dictate.enabled && models.length > 0 && models.every((model) => model.state === 'ready');
 }
 
-/** The composer's own state, read off the record the page handed it. */
 /**
  * An empty record for a seat whose own read has not landed yet.
  *
  * The page draws the composer as soon as a seat is shown rather than after its
  * first read: the absent box was a read round-trip long, measured at 128 ms on
  * a cold open (2026-10-09). Nothing here is a claim about the seat - the
- * composer narrows an absent state to the idle box and every list is empty.
- * It fills in when the seat's own record lands, which is where the turn's own
+ * composer narrows `NO_COMPOSER` to the idle box and every list is empty. It
+ * fills in when the seat's own record lands, which is where the turn's own
  * state comes from.
  */
 export function emptyComposer(slot: SessionSlot): ComposerRecord {
   return {
     slot,
-    composer: undefined,
+    composer: NO_COMPOSER,
     pending_asks: [],
     header: { turn_in_flight: false },
     slash_commands: undefined,
@@ -181,6 +187,7 @@ export function emptyComposer(slot: SessionSlot): ComposerRecord {
   };
 }
 
+/** The composer's own state, read off the record the page handed it. */
 export function composerState(record: ComposerRecord): ComposerState {
   return composerFrom(record.composer);
 }
