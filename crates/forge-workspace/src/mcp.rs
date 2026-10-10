@@ -445,9 +445,10 @@ mod tests {
     fn the_task_instructions_carry_the_attention_rule() {
         assert!(
             TASK_BOARD_INSTRUCTIONS.contains(
-                "only a hold the user explicitly asked for, or something still ambiguous"
+                "only a hold the user explicitly asked for, or something still ambiguous after \
+                 the decision model, peers and your own review"
             ),
-            "the parking test rides the kind: decision clause",
+            "the parking test rides the kind: decision clause, channels and bar together",
         );
     }
 

@@ -7193,8 +7193,11 @@ mod lead_charter_tests {
             "the two-shape rule's opening is pinned",
         );
         assert!(
-            DEFAULT_LEAD_CHARTER.contains("something still genuinely ambiguous"),
-            "shape (b) is pinned",
+            DEFAULT_LEAD_CHARTER.contains(
+                "the decision model, peer opinions and your own review already spent - something \
+                 still genuinely ambiguous"
+            ),
+            "shape (b)'s channels and its bar are pinned together",
         );
         assert!(
             DEFAULT_LEAD_CHARTER.contains("A spec that exists is followed without check-ins"),
