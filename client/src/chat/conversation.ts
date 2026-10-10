@@ -386,7 +386,15 @@ function sameWords(one: string[], other: string[]): boolean {
 }
 
 /**
- * Whether a copy already carries a frame.
+ * A list of frames, indexed so a copy can be asked what it already carries.
+ *
+ * **The scans were the cost.** Asking whether a list holds a frame meant
+ * walking it, and the merge asks once per frame in the other list - so a
+ * repeated row's reconcile was O(frames squared) and the walk's check was
+ * O(frames x rows x frames). Measured 2026-10-09: 127-260 ms of main thread
+ * on a return. Indexing each list once makes every question a lookup, and the
+ * frame's own extraction - the id, the words - happens once per frame rather
+ * than once per comparison.
  *
  * The frame's own id where it has one. **A frame with no id is found by what
  * it says**, so an absent id read as "not carried" adds the same row a second
@@ -396,18 +404,52 @@ function sameWords(one: string[], other: string[]): boolean {
  * A frame with neither an id nor words - a tool result, a thought - is never
  * found this way, which repeats it rather than dropping it.
  *
- * `prose` narrows the arm at one of the four call sites, which says why there:
- * an id is unique and needs no guard, while the words are what a delivery row
- * shares with the page's copy of it - and what a turn an id-bearing frame
- * opened must NOT be matched by.
+ * `prose` narrows the words arm at the one call site that says why: an id is
+ * unique and needs no guard, while the words are what a delivery row shares
+ * with the page's copy of it - and what a turn an id-bearing frame opened
+ * must NOT be matched by.
+ *
+ * **`add` is what keeps a grown list honest.** Rows grow after an index is
+ * built - the queued-prompt join pushes into a row's frames while asking the
+ * same list what it carries - and an index that only read its constructor
+ * would answer for a list that no longer exists.
  */
-function carries(messages: unknown[], message: unknown, prose = true): boolean {
-  const id = uuidOf(message);
-  if (id !== null) return messages.some((held) => uuidOf(held) === id);
-  if (!prose) return false;
-  const words = wordsOf(message);
-  if (words.length === 0) return false;
-  return messages.some((held) => sameWords(words, wordsOf(held)));
+export class Frames {
+  private readonly ids = new Set<string>();
+  /**
+   * The word lists, keyed by their JSON.
+   *
+   * **Not a joined string**: `["a\u0000b"]` and `["a","b"]` would key alike,
+   * and a frame found by words it does not carry is a frame dropped from the
+   * page that carried it.
+   */
+  private readonly said = new Set<string>();
+
+  constructor(messages: unknown[]) {
+    for (const message of messages) this.add(message);
+  }
+
+  /**
+   * Take one more frame into the index, for a list that has grown.
+   *
+   * Both faces, id and words - an id-bearing frame still answers an id-less
+   * copy's words question.
+   */
+  add(message: unknown): void {
+    const id = uuidOf(message);
+    if (id !== null) this.ids.add(id);
+    const words = wordsOf(message);
+    if (words.length > 0) this.said.add(JSON.stringify(words));
+  }
+
+  /** Whether the list this indexes holds `message`. */
+  carries(message: unknown, prose = true): boolean {
+    const id = uuidOf(message);
+    if (id !== null) return this.ids.has(id);
+    if (!prose) return false;
+    const words = wordsOf(message);
+    return words.length > 0 && this.said.has(JSON.stringify(words));
+  }
 }
 
 /**
@@ -1130,9 +1172,9 @@ export class Chat {
    * Answers the record it was handed when the page carries none of them, so a
    * page that heals nothing leaves every row the object it was.
    */
-  private healedOf(held: Conversation, fromPage: unknown[]): Conversation {
+  private healedOf(held: Conversation, fromPage: Frames): Conversation {
     if (this.ridden.size === 0) return held;
-    const carried = new Set([...this.ridden].filter((message) => carries(fromPage, message)));
+    const carried = new Set([...this.ridden].filter((message) => fromPage.carries(message)));
     if (carried.size === 0) return held;
     const turns = held.turns.map((turn) => {
       const kept = turn.messages.filter((message) => !carried.has(message));
@@ -1158,7 +1200,9 @@ export class Chat {
     this.askedBefore = null;
     this.clearRetry();
     const pageRows = pageTurns(rows);
-    const fromPage = pageRows.flatMap((row) => messagesOf(row));
+    // The page's frames, indexed once for everything below that asks what the
+    // page carries: the heal, the ride, and the walk's own check.
+    const fromPage = new Frames(pageRows.flatMap((row) => messagesOf(row)));
     /**
      * What this landing found, read after the fold for the walk's own step.
      *
@@ -1216,8 +1260,10 @@ export class Chat {
           // what each is missing, and the held object is kept only where the
           // page says nothing new: a row the reader is looking at is not drawn
           // again by an answer that says nothing.
-          const missed = repeated.messages.filter((message) => !carries(row.messages, message));
-          const adds = row.messages.filter((message) => !carries(repeated.messages, message));
+          const held = new Frames(repeated.messages);
+          const page = new Frames(row.messages);
+          const missed = repeated.messages.filter((message) => !page.carries(message));
+          const adds = row.messages.filter((message) => !held.carries(message));
           const messages =
             adds.length === 0
               ? repeated.messages
@@ -1237,18 +1283,24 @@ export class Chat {
         const above = named[named.length - 1];
         if (above !== undefined && queuedPrompt(row)) {
           const messages = [...(copies[copies.length - 1] ?? [])];
+          // **The row grows below, so its index grows with it.** A frame the
+          // loop itself appends is one the next asks have to find - an index
+          // that only read its constructor would answer for the row as it
+          // was, and the same prompt would land a second time.
+          const carried = new Frames(messages);
           // The prompt the row already grew with is the SAME words under the
           // carrier a page holds them in, and the two carriers mint different
           // ids - so a copy is paired with the frame it is, and no other frame
           // answers for it twice.
           for (const message of messagesOf(row)) {
-            if (carries(messages, message)) continue;
+            if (carried.carries(message)) continue;
             const paired = pairedWith(messages, message, answered);
             if (paired === null) {
               // An unmatched copy lands here, at the END of the row, so where
               // its live echo never arrived it can sit below frames the row
               // already held (#1584).
               messages.push(message);
+              carried.add(message);
               answered.add(message);
             } else {
               answered.add(paired);
@@ -1311,7 +1363,7 @@ export class Chat {
       // be the turn still arriving - and matching it replaces the live row
       // with an older one that merely says the same words, which drops the row
       // the reader just received.
-      const shares = (messages: unknown[], turn: Turn, unsettled: boolean): boolean => {
+      const shares = (held: Frames, turn: Turn, unsettled: boolean): boolean => {
         // **The words arm is for the turn a frame with no id OPENED**, and for
         // nothing else. A turn an id-bearing frame opened is reconciled by ids,
         // and a words-only match hands it a row that is not its own: a repeat
@@ -1322,7 +1374,7 @@ export class Chat {
         // page carries its own copy: `healedOf` took it back out before this
         // match runs, which is what keeps the parked copy from tying a live
         // row to a page row that ran before it.
-        return turn.messages.some((message) => carries(messages, message, words));
+        return turn.messages.some((message) => held.carries(message, words));
       };
       const replaced = new Set<Turn>();
       const drawn = named.map((row, index) => {
@@ -1332,12 +1384,15 @@ export class Chat {
         // row taken before that reconciliation reads as not carrying what the
         // page plainly carries.
         const copy = copies[index] ?? [];
+        // This row's frames, indexed once for both asks below: the live-turn
+        // match, which runs per turn held, and the growth, which runs once.
+        const carried = new Frames(copy);
         // One row per live turn: a turn this page already drew is not the
         // exchange a later row of the same page is an account of. It is this
         // that keeps two rows from landing under one key, which the virtualised
         // list throws on.
         const live = healed.turns.find(
-          (turn) => turn.live && !replaced.has(turn) && shares(copy, turn, !settledRow(index)),
+          (turn) => turn.live && !replaced.has(turn) && shares(carried, turn, !settledRow(index)),
         );
         if (live === undefined) return row;
         // The page is the account of the turn it copies, so the live turn is
@@ -1361,7 +1416,7 @@ export class Chat {
         // did (the CLI never echoes a prompt) and the frames the page was read
         // too early to have - so the frames still to come join it rather than
         // opening a second row.
-        const grown = live.messages.filter((message) => !carries(copy, message));
+        const grown = live.messages.filter((message) => !carried.carries(message));
         return { key: name, messages: [...copy, ...grown], live: true, also };
       });
       // Frames that waited for a turn, against this page: one the page already
@@ -1370,7 +1425,7 @@ export class Chat {
       // which is the exchange that was being written when they arrived. An
       // older page takes none of them: they are newer than everything in it.
       if (direction === 'newest' && this.unturned.length > 0) {
-        const riding = this.unturned.filter((message) => !carries(fromPage, message));
+        const riding = this.unturned.filter((message) => !fromPage.carries(message));
         const newest = drawn[drawn.length - 1];
         if (newest === undefined) {
           // Nothing on this page to ride; the next turn that opens takes them.
@@ -1398,11 +1453,7 @@ export class Chat {
       // from the transcript.
       const reachesHeld =
         direction === 'older' ||
-        healed.turns.some((turn) =>
-          turn.messages.some((message) =>
-            pageRows.some((row) => carries(messagesOf(row), message)),
-          ),
-        );
+        healed.turns.some((turn) => turn.messages.some((message) => fromPage.carries(message)));
       // A row being written is not the page's to drop either way: `live` is a
       // turn the frames built, and `running` is the newest row of a seat the
       // core says has a turn in flight.

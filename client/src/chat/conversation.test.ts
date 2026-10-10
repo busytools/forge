@@ -8,7 +8,7 @@ import { MORE_TURNS, subjectKey } from '../protocol';
 import type { ClientMessage, ServerMessage, SessionUpdate } from '../protocol';
 import type { Connection, ConnectionStatus } from '../socket';
 import type { SessionSlot } from '../wire/types';
-import { Chat, type PageTurn } from './conversation';
+import { Chat, Frames, type PageTurn } from './conversation';
 import { echoes } from './echoes.svelte';
 import { outputs } from './outputs.svelte';
 import { refused } from '../refusals';
@@ -2696,6 +2696,34 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
     expect(words(chat).split('raced words').length - 1, 'once').toBe(1);
   });
 
+  /**
+   * **The joined row's index grows with the row.** The loop appends frames to
+   * a queued row as it runs, and the frame it just appended is one the next
+   * copy has to be found in - an index that only read the row as it stood
+   * would hand the same copy a second landing.
+   */
+  it('lands one copy of a frame the joined row grew with', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    // The fold cut this row at a mid-turn prompt, and the same frame rides it
+    // twice: the second is found in the list the first grew.
+    const copy = {
+      type: 'user',
+      uuid: 'q-g1',
+      timestamp: '2026-10-01T10:00:02Z',
+      message: {
+        role: 'user',
+        content: [{ type: 'queued_command', prompt: 'grown words', commandMode: 'prompt' }],
+      },
+    };
+    server.send(page([turn('t1', 'first'), { key: 't2', messages: [copy, copy] }], null));
+
+    expect(words(chat).split('grown words').length - 1, 'the copy landed twice').toBe(1);
+  });
+
   it('holds the row a page carries while the prompt still waits', () => {
     // The transport keeps the forged turn it was sent, so a read taken while
     // the prompt waits hands the words back as conversation - and a reader
@@ -3294,5 +3322,90 @@ describe('the answer a call-output read leaves behind', () => {
     server.update({ call_output: { key: LEAD, call_id: 'tu-2', output: { novel: true } } });
     expect(outputs.of('tu-2')).toEqual({ kind: 'unknown' });
     stop();
+  });
+});
+
+/**
+ * The index the merge asks instead of scanning, and the four arms of the
+ * question it answers.
+ *
+ * **Same answers as the scan it replaced, by construction**: an id-bearing
+ * frame is matched only by id, an id-less one by the words it says, `prose:
+ * false` narrows the words arm away, and a frame with neither an id nor words
+ * is never found - which repeats it rather than dropping it.
+ */
+describe('the frame index', () => {
+  /** A frame that says `text`, a person's own words, and carries no id. */
+  const unnamed = (text: string): unknown => ({
+    type: 'user',
+    message: {
+      role: 'user',
+      content: [{ type: 'text', text }],
+    },
+  });
+
+  /** A frame that carries neither an id nor words to say. */
+  const blank = (): unknown => ({
+    type: 'assistant',
+    message: { id: 'm-quiet', role: 'assistant', model: 'claude-opus-5', content: [] },
+  });
+
+  it('finds a frame by its id, and only by it', () => {
+    const index = new Frames([minted('one')]);
+
+    expect(index.carries(minted('one')), 'the same id under another object').toBe(true);
+    // **Only by it**: a frame with a different id saying the same words is a
+    // different frame, which is what keeps a repeat from taking an
+    // id-bearing row.
+    const same = minted('one') as { uuid: string };
+    expect(index.carries({ ...same, uuid: 'a-other' }), 'a different id').toBe(false);
+  });
+
+  it('finds a frame with no id by the words it says', () => {
+    const index = new Frames([unnamed('delivered')]);
+
+    expect(index.carries(unnamed('delivered')), 'the same words, no id on either').toBe(true);
+    expect(index.carries(unnamed('something else')), 'the words it does not say').toBe(false);
+  });
+
+  it('finds an id-less frame by the words of one that carries an id', () => {
+    // The pair a return meets: the page's copy carries the id the CLI minted,
+    // and the delivery row arrives with the same words and none - the words
+    // arm is the only thing that can pair them.
+    const built = new Frames([minted('delivered')]);
+    expect(built.carries(unnamed('delivered')), 'an id-less copy against a held minted frame').toBe(
+      true,
+    );
+
+    const grown = new Frames([]);
+    grown.add(minted('delivered'));
+    expect(
+      grown.carries(unnamed('delivered')),
+      'the copy against a frame the index grew with',
+    ).toBe(true);
+  });
+
+  it('narrows the words arm away when asked not to match prose', () => {
+    const index = new Frames([unnamed('delivered')]);
+
+    expect(index.carries(unnamed('delivered'), false), 'the words arm under prose: false').toBe(
+      false,
+    );
+  });
+
+  it('never finds a frame with neither an id nor words', () => {
+    const index = new Frames([blank()]);
+
+    expect(index.carries(blank()), 'a tool result or a thought, repeated rather than found').toBe(
+      false,
+    );
+  });
+
+  it('answers for a frame the index was grown with', () => {
+    const index = new Frames([]);
+    expect(index.carries(said('late')), 'precondition: not carried yet').toBe(false);
+
+    index.add(said('late'));
+    expect(index.carries(said('late')), 'the frame added after the index was built').toBe(true);
   });
 });
