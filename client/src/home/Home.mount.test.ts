@@ -20,9 +20,9 @@ afterEach(async () => {
   vi.useRealTimers();
 });
 
-/** The fleet row's age cell, and the harness's count of frames that landed. */
+/** The fleet row's age cell, and the header's build line every frame restamps. */
 const age = (): string => document.querySelector('.fleet-when')?.textContent ?? '';
-const frames = (): number => Number(document.querySelector('.frames-count')?.textContent ?? '0');
+const drew = (): string => document.querySelector('.versions')?.textContent ?? '';
 
 describe("the home's clock", () => {
   it('keeps the ages moving while frames land faster than its half-minute tick', () => {
@@ -52,7 +52,7 @@ describe("the home's clock", () => {
       flushSync();
     }
 
-    expect(frames(), 'no frame landed, so this test proves nothing').toBeGreaterThanOrEqual(3);
+    expect(drew(), 'no frame reached the page, so this test proves nothing').toContain('frame-4');
     expect(age(), 'the ages froze while the frames landed').toBe('1m');
   });
 });

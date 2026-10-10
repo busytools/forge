@@ -13,23 +13,23 @@
    * freeze while the fleet keeps moving. The swap is a fresh object every
    * `everyMs`, which is what a changed read looks like to the effect.
    *
-   * The count is drawn for the test: an assertion that the ages moved would
-   * otherwise pass with no frame landing at all.
+   * Every frame restamps the build the header draws, so a test can prove the
+   * frame was DELIVERED - a count of the interval's own fires cannot tell a
+   * page that received the wire from one that never re-read it.
    */
   let { initial, everyMs }: { initial: HomeWire; everyMs: number } = $props();
 
   // svelte-ignore state_referenced_locally
   let wire = $state(initial);
-  let frames = $state(0);
+  let frames = 0;
 
   onMount(() => {
     const id = setInterval(() => {
       frames += 1;
-      wire = { ...wire };
+      wire = { ...wire, forge_version_short: `frame-${frames}` };
     }, everyMs);
     return () => clearInterval(id);
   });
 </script>
 
 <Home {wire} />
-<span class="frames-count" style="display: none">{frames}</span>
