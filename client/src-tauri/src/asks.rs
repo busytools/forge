@@ -22,10 +22,19 @@ use crate::browser::driver::ReplyPart;
 use crate::browser::profiles::Seat;
 use crate::socket::Socket;
 
-/// Answer one `browser_ask` frame: parse it, run the tool on the host, and
-/// send the answer. Runs on its own task, so a slow call never holds the
-/// socket's reading.
+/// Answer one `browser_ask` frame on a task of its own, so a slow call never
+/// holds the socket's reading.
 pub fn answer(frame: &Value, socket: &Socket, host: &Arc<BrowserHost>) {
+    let (frame, socket, host) = (frame.clone(), socket.clone(), Arc::clone(host));
+    tokio::spawn(async move {
+        run(&frame, &socket, &host).await;
+    });
+}
+
+/// The ask path itself: parse the frame, run the tool, answer. On whatever
+/// task the caller has - the app half awaits this inside its own counting, so
+/// it calls here rather than through `answer`.
+pub async fn run(frame: &Value, socket: &Socket, host: &Arc<BrowserHost>) {
     let Some(id) = frame.get("id").and_then(Value::as_u64) else { return };
     let seat: Result<Seat, _> =
         serde_json::from_value(frame.get("seat").cloned().unwrap_or(Value::Null));
@@ -35,22 +44,18 @@ pub fn answer(frame: &Value, socket: &Socket, host: &Arc<BrowserHost>) {
     };
     let tool = frame.get("tool").and_then(Value::as_str).unwrap_or_default().to_owned();
     let args = frame.get("args").cloned().unwrap_or(Value::Null);
-    let socket = socket.clone();
-    let host = Arc::clone(host);
-    tokio::spawn(async move {
-        match host.call(&seat, &tool, args).await {
-            Ok(parts) => {
-                let (declared, images) = declare(&parts);
-                socket.answer(id, Value::Array(declared), None);
-                // The frames follow the answer that declared them, in the
-                // order the parts are listed - what the server reads.
-                for bytes in images {
-                    socket.send_binary(bytes);
-                }
+    match host.call(&seat, &tool, args).await {
+        Ok(parts) => {
+            let (declared, images) = declare(&parts);
+            socket.answer(id, Value::Array(declared), None);
+            // The frames follow the answer that declared them, in the order
+            // the parts are listed - what the server reads.
+            for bytes in images {
+                socket.send_binary(bytes);
             }
-            Err(why) => socket.answer(id, json!([]), Some(why)),
         }
-    });
+        Err(why) => socket.answer(id, json!([]), Some(why)),
+    }
 }
 
 /// The parts as the answer frame carries them, and the images' bytes to

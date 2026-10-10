@@ -156,6 +156,14 @@ impl Records {
         self.seats.get(key)
     }
 
+    /// Let a subject go: the last page reader has left, and nothing here is
+    /// left to answer. The wire subscription is the caller's own to give
+    /// back, and a later subscribe reads afresh.
+    pub fn release(&mut self, key: &str) {
+        self.subjects.remove(key);
+        self.seats.remove(key);
+    }
+
     /// Fold one `update` frame's variant into its seat's record (or mark the
     /// home for a re-read). Returns the subjects a reader must be told about.
     pub fn apply(&mut self, update: &Value) -> Changed {
