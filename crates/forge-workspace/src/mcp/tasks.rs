@@ -614,9 +614,11 @@ impl Tool for Wait {
     fn description(&self) -> &'static str {
         "Put one of YOUR rows into waiting and state what it waits on. `kind` is decision \
          (which routes to the user), dependency (another task: put its id in `on`), or resource \
-         (an account, a CI run, a machine). `detail` is the words. The row must be yours. \
-         Refused for a row you do not hold, or one that is not there. Returns the record in \
-         waiting."
+         (an account, a CI run, a machine). Route a decision to the user only when the user \
+         explicitly asked for a hold, or something is still genuinely ambiguous after the \
+         decision model, peer opinions and the team's own review. `detail` is the words. The \
+         row must be yours. Refused for a row you do not hold, or one that is not there. \
+         Returns the record in waiting."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -1009,6 +1011,23 @@ mod tests {
             "or that this run could not read its stored tasks",
         ] {
             assert!(desc.contains(clause), "the list description owes {clause:?}: {desc}");
+        }
+    }
+
+    /// The description is the site a caller reads at the moment it picks
+    /// `kind`, and `decision` is the one kind that parks a row on the user.
+    /// Pinned so the parking test cannot drop out of the text that hands
+    /// the caller that choice.
+    #[test]
+    fn the_wait_description_carries_the_attention_rule() {
+        let desc =
+            Wait { facade: MockTasksFacade::new().into_arc(), slot: lead_slot() }.description();
+        for clause in [
+            "Route a decision to the user only when the user explicitly asked for a hold",
+            "something is still genuinely ambiguous after the decision model, peer opinions and \
+             the team's own review",
+        ] {
+            assert!(desc.contains(clause), "the wait description owes {clause:?}: {desc}");
         }
     }
 
