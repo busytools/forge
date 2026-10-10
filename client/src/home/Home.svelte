@@ -5,7 +5,7 @@
   import { CLIENT_VERSION, PROTOCOL_VERSION } from '../protocol';
   import { install, restart, updateState } from '../update/state';
   import type { HomeWire } from '../wire/home';
-  import { fleetRows, homeView, markOf, whenOf } from './view';
+  import { ageOf, fleetRows, homeView, markOf } from './view';
 
   /**
    * The home: every project, its agents, their states, and what needs you.
@@ -28,16 +28,17 @@
   // One clock for the page: every row's age reads against the same now,
   // so two rows a second apart cannot draw the same age differently.
   //
-  // Re-read with every snapshot AND on a tick. A snapshot alone is not
-  // enough: age is the one cell that is a function of time rather than of
-  // data, and a re-read needs an update the fleet may never send, so a page
-  // opened at nine on a quiet forge would still say "3h" at three.
+  // The tick is the clock's only writer. Age is a function of time rather
+  // than of data, so a quiet forge needs it - a page opened at nine would
+  // otherwise still say "3h" at three - and a snapshot must not refresh it:
+  // reading `wire` in the effect below re-arms the timer on every frame,
+  // and a fleet writing faster than the tick would then freeze the clock
+  // instead of moving it.
   let now = $state(Date.now());
   /** The ready fact as a value, so the timer below does not restart on every update that rewrites `wire`. */
   const ready = $derived(wire !== null);
   $effect(() => {
     if (!ready) return;
-    now = Date.now();
     const tick = setInterval(() => {
       now = Date.now();
     }, 30_000);
@@ -142,7 +143,7 @@
               {#if row.place.files}<span class="files">{row.place.files}</span>{/if}
             {/if}
           </span>
-          <span class="fleet-when" title="when the project last moved">{whenOf(row, now)}</span>
+          <span class="fleet-when" title="when the project last moved">{ageOf(row, now)}</span>
           <span class="fleet-seats">
             {#each row.seats as seat (seat.label)}
               <span class="fleet-seat"
