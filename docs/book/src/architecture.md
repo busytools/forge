@@ -326,16 +326,22 @@ surface.
 The client under `client/` is a Svelte app that connects to a running
 forge and draws it. It is gated like the Rust side rather than beside
 it: `just check` runs Prettier, ESLint on typescript-eslint's
-type-checked configs, `svelte-check`, `tsc --noEmit` and then vitest,
+type-checked configs, `svelte-check`, `tsc --noEmit`, then vitest, then
+the shell crate's android warnings check (`client-android-warnings`: the
+crate compiled for `aarch64-linux-android` with warnings denied, which is
+what catches desktop-only code going dead on Android),
 so one command decides both stacks and its verdict line names the first
 failing step whichever side it is on.
 
 The shell under `client/src-tauri/` is its own workspace root, so
-`just check`'s fmt, clippy and nextest never reach it, and neither do CI's
-cargo jobs; the Unicode punctuation gate, which CI runs too, and the
-client's Prettier step do. `just client-tauri-check` builds it in the
-shipping configuration and `just client-tauri-bundle` adds the bundles,
-and the first is the one to run before handing over a change there.
+`just check`'s workspace-side steps and CI's cargo jobs never reach it;
+`client-android-warnings` is the one step of `just check` that does, and
+neither the macOS build nor the shell's tests are in the gate at all. The
+Unicode punctuation gate, which CI runs too, and the client's Prettier
+step do.
+`just client-tauri-check` builds it in the shipping configuration and
+`just client-tauri-bundle` adds the bundles, and the first is the one to
+run before handing over a change there.
 
 The rules a gate cannot see are the same shape as the ones above. The
 denied constructs are `any`, non-null assertion, `@ts-ignore`,

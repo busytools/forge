@@ -53,6 +53,15 @@ pub(super) struct DriverStart<'a> {
     /// open.
     #[cfg(desktop)]
     pub endpoint: &'a str,
+    /// Whether the launch this driver attaches to is the HEADED one: the hint
+    /// mask only applies where the launch's UA override does, and a headed
+    /// launch presents the browser's own UA and hints.
+    #[cfg(desktop)]
+    pub windowed: bool,
+    /// Which profile this driver serves - `shared`, or a named profile - so a
+    /// warn about its hint mask says WHICH browser stayed unmasked.
+    #[cfg(desktop)]
+    pub profile_label: &'a str,
     /// The browser's own identity - the `/devtools/browser/<uuid>` its port
     /// file names on the desktop - which a relaunch changes even when it
     /// lands on the same port. The phone's is `webview-<generation>`: the
@@ -81,7 +90,22 @@ impl DriverStart<'_> {
     async fn start(&self) -> Result<Driver, String> {
         #[cfg(desktop)]
         {
-            Driver::start(self.node, self.cli, self.endpoint, self.output).await
+            let driver = Driver::start(self.node, self.cli, self.endpoint, self.output).await?;
+            // **The hint mask only where the launch's UA override is.** A
+            // headed launch presents the browser's own UA and its hints are
+            // real already; its capture would also open a window at the
+            // person, which is the one thing the mask must never do.
+            if !self.windowed {
+                driver.install_hint_mask(self.output, self.profile_label).await;
+            } else {
+                tauri_plugin_log::log::info!(
+                    "the client-hint mask keeps off the headed launch (event_name \
+                     browser_hint_mask, profile {}): the browser presents its own user agent and \
+                     hints",
+                    self.profile_label
+                );
+            }
+            Ok(driver)
         }
         #[cfg(target_os = "android")]
         {
@@ -123,6 +147,12 @@ impl Profile {
 
     /// One call through this profile's driver, rebuilt when it is not there,
     /// when it died, or when the browser it was built against moved.
+    ///
+    /// **The call that returns is also the hint mask's chance to report**: a
+    /// page that failed to mask after the install has no return of its own,
+    /// so its failure waits on the context object and is taken here, after
+    /// the routed call, and logged. Best-effort by design - a failure check
+    /// must not fail the call it rides behind.
     pub(super) async fn call(
         &self,
         start: &DriverStart<'_>,
@@ -131,7 +161,10 @@ impl Profile {
     ) -> Result<Vec<ReplyPart>, String> {
         let mut held = self.held.lock().await;
         let driver = live_driver(&mut held, start).await?;
-        routed_call(&driver, tool, &args).await
+        let outcome = routed_call(&driver, tool, &args).await;
+        #[cfg(desktop)]
+        driver.flush_hint_failures(start.profile_label).await;
+        outcome
     }
 
     /// Forget the driver, so the next call builds a fresh one. Called when a

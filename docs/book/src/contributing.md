@@ -13,19 +13,25 @@ just check
 
 `cargo fmt --check`, the Unicode punctuation gate, the release scripts'
 tests, the client's Prettier check, ESLint, `svelte-check` and
-`tsc --noEmit` and then its vitest run,
+`tsc --noEmit` and then its vitest run, the shell crate's android
+warnings check (`client-android-warnings`),
 clippy with warnings denied, `cargo nextest run --workspace --all-features`,
 `cargo test --doc --workspace --all-features`, and `cargo doc`. CI's set
-minus its `cargo check --release` and feature-configs jobs. Green before
+minus its `cargo check --release` and feature-configs jobs, and plus the
+android warnings check CI cannot run yet (`client-android-warnings`; its
+vendoring refuses non-macOS hosts - #1959). Green before
 you open a pull request.
 
 A fresh worktree has no `client/node_modules`, so the first `just check`
 there stops at the Prettier step with exit 127. `npm --prefix client ci`
 first, and the whole run goes through.
 
-The shell under `client/src-tauri/` is its own workspace root, so
-`just check`'s Rust steps and CI's cargo jobs do not reach it; the Unicode
-punctuation gate, which CI runs too, and the client's Prettier step do.
+The shell under `client/src-tauri/` is its own workspace root, so the
+workspace's cargo steps and CI's cargo jobs do not reach it. `just check`
+reaches it through `client-android-warnings` (the crate compiled for
+`aarch64-linux-android` with warnings denied, which is what catches
+desktop-only code going dead on Android); the Unicode punctuation gate and
+the client's Prettier step reach it too.
 `just client-tauri-check` builds the shipping configuration and `just
 client-tauri-bundle` adds the bundles. `just client-android-check`
 compiles the Kotlin half and runs its unit tests, because nothing else

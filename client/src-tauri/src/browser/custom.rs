@@ -200,7 +200,7 @@ fn target_of(args: &Value) -> Result<String, String> {
 }
 
 /// One JavaScript string literal, escaped.
-fn js_string(text: &str) -> String {
+pub(super) fn js_string(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 2);
     out.push('"');
     for ch in text.chars() {

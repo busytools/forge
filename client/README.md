@@ -32,8 +32,10 @@ bundle built.
 
 `src-tauri/` is a Tauri 2 app that wraps the built bundle. The crate is
 its own cargo workspace root, so the repo's cargo gates and CI's cargo jobs
-do not reach it; the Unicode punctuation gate and the client's Prettier
-step do.
+do not reach it, apart from `just check`'s android warnings step
+(`client-android-warnings`, the crate compiled for `aarch64-linux-android`
+with warnings denied); the Unicode punctuation gate and the client's
+Prettier step do.
 
 ```sh
 npm run tauri dev     # dev server plus the app window
