@@ -5,7 +5,7 @@
   import { CLIENT_VERSION, PROTOCOL_VERSION } from '../protocol';
   import { install, restart, updateState } from '../update/state';
   import type { HomeWire } from '../wire/home';
-  import { fleetRows, homeView, markOf } from './view';
+  import { fleetRows, homeView, markOf, whenOf } from './view';
 
   /**
    * The home: every project, its agents, their states, and what needs you.
@@ -25,6 +25,24 @@
   // misses are the server's own; the mark is the strongest of the
   // project's seat marks, in the same vocabulary a seat row draws.
   const fleet = $derived(fleetRows(wire));
+  // One clock for the page: every row's age reads against the same now,
+  // so two rows a second apart cannot draw the same age differently.
+  //
+  // Re-read with every snapshot AND on a tick. A snapshot alone is not
+  // enough: age is the one cell that is a function of time rather than of
+  // data, and a re-read needs an update the fleet may never send, so a page
+  // opened at nine on a quiet forge would still say "3h" at three.
+  let now = $state(Date.now());
+  /** The ready fact as a value, so the timer below does not restart on every update that rewrites `wire`. */
+  const ready = $derived(wire !== null);
+  $effect(() => {
+    if (!ready) return;
+    now = Date.now();
+    const tick = setInterval(() => {
+      now = Date.now();
+    }, 30_000);
+    return () => clearInterval(tick);
+  });
 </script>
 
 <!-- A landmark, so every part of the page sits inside one. The sheet's
@@ -124,6 +142,7 @@
               {#if row.place.files}<span class="files">{row.place.files}</span>{/if}
             {/if}
           </span>
+          <span class="fleet-when" title="when the project last moved">{whenOf(row, now)}</span>
           <span class="fleet-seats">
             {#each row.seats as seat (seat.label)}
               <span class="fleet-seat"

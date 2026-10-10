@@ -142,6 +142,13 @@ export interface FleetViewRow {
   place: { branch: string | null; files: string | null };
   gate: string | null;
   seats: { label: string; state: RowState }[];
+  /**
+   * When the project last moved: the newest `last_activity` across its seats,
+   * or null when none of them has ever written. It is the cell the row drew
+   * before the fleet - "3h" at a glance - so a reader can see a project that
+   * has gone quiet without opening its board.
+   */
+  lastActivity: WireTime | null;
   live: number;
   slots: number | null;
   queue: number;
@@ -179,13 +186,26 @@ export function fleetRows(wire: HomeWire): FleetViewRow[] {
         keyOf(entry.project.org, entry.project.name) ===
         keyOf(orgOf(wire, row.project), row.project),
     );
-    const seats = wire.agents
-      .filter(
-        (agent) =>
-          agent.slot.project === row.project &&
-          (project === undefined || agent.slot.org === project.project.org),
-      )
-      .map((agent) => ({ label: agent.label, state: stateOf(agent, wire.unseen) }));
+    const agents = wire.agents.filter(
+      (agent) =>
+        agent.slot.project === row.project &&
+        (project === undefined || agent.slot.org === project.project.org),
+    );
+    const seats = agents.map((agent) => ({
+      label: agent.label,
+      state: stateOf(agent, wire.unseen),
+    }));
+    // The newest the project has been written to, of the seats it holds: a
+    // project's own quiet is what its busiest seat last said.
+    const lastActivity = agents.reduce<WireTime | null>(
+      (newest, agent) =>
+        agent.last_activity === null
+          ? newest
+          : newest === null || agent.last_activity.secs_since_epoch > newest.secs_since_epoch
+            ? agent.last_activity
+            : newest,
+      null,
+    );
     const strongest = seats.reduce<RowState>(
       (best, seat) =>
         MARK_ORDER.indexOf(markOf(seat.state).class) < MARK_ORDER.indexOf(markOf(best).class)
@@ -205,6 +225,7 @@ export function fleetRows(wire: HomeWire): FleetViewRow[] {
       place: project === undefined ? { branch: null, files: null } : placeOf(project.work),
       gate: project === undefined ? null : gateLine(project.work.gate),
       seats,
+      lastActivity,
       live: row.live_workers,
       slots: row.slots,
       queue: row.queue,
@@ -430,8 +451,12 @@ export function elapsedLabel(at: WireTime, now: number): string {
  * How long ago the session last wrote. A project nothing has run in is
  * `never`; a live session with no transcript yet has only just started,
  * which is `now` rather than an absence.
+ *
+ * It takes the two fields rather than a whole row, because the fleet row
+ * draws the same cell: those fields are what the words need, and a richer
+ * shape was only ever how the cell found them.
  */
-export function whenOf(row: Row, now: number): string {
+export function whenOf(row: Pick<Row, 'state' | 'lastActivity'>, now: number): string {
   if (row.state.kind === 'never-started') return 'never';
   if (row.lastActivity === null) return 'now';
   return elapsedLabel(row.lastActivity, now);

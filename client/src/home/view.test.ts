@@ -317,6 +317,42 @@ describe('the fleet the snapshot describes', () => {
     ]);
   });
 
+  /**
+   * **The fleet row's age is the project's own**: the newest write among the
+   * seats it holds, or nothing at all when none of them has written. It is
+   * the cell the home drew before the fleet - "3h" at a glance - and the one
+   * a reader uses to see a project gone quiet.
+   */
+  it('carries the newest activity of the seats a fleet row holds', () => {
+    const at = (secs: number) => ({ secs_since_epoch: secs, nanos_since_epoch: 0 });
+    const wire: HomeWire = {
+      ...FLEET,
+      agents: [
+        { ...agent('Busytools', 'forge', 'lead', 'Idle'), last_activity: at(1_000) },
+        { ...agent('Busytools', 'forge', 'w1', 'Idle'), last_activity: at(3_000) },
+        // Never written: not a zero, an absence.
+        agent('Busytools', 'notes', 'lead', 'Sleeping'),
+        { ...agent('Personal', 'dotfiles', 'lead', 'Idle'), last_activity: at(2_000) },
+      ],
+    };
+
+    const rows = fleetRows(wire);
+    const row = (name: string) => rows.find((entry) => entry.name === name);
+    expect(
+      row('forge')?.lastActivity?.secs_since_epoch,
+      'the newest seat write is the project to know about',
+    ).toBe(3_000);
+    expect(row('dotfiles')?.lastActivity?.secs_since_epoch).toBe(2_000);
+    expect(row('notes')?.lastActivity, 'a seat with no write drew an age').toBeNull();
+
+    // And the words the row draws from it: the elapsed age against the page's
+    // clock, and the state that is not an age - a project nothing has ever
+    // run in.
+    expect(whenOf(first(rows, 'fleet row'), 3_600_000), 'ten minutes back').toBe('10m');
+    const never = first(fleetRows({ ...wire, agents: [] }), 'fleet row');
+    expect(whenOf(never, 3_600_000), 'nothing has ever run there').toBe('never');
+  });
+
   it('names a worker row for the worker and only the lead for its project', () => {
     const forge = rowsOf(FLEET);
     expect(forge.lead.name).toBe('forge');
