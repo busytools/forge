@@ -30,6 +30,7 @@ fn updater(app: &tauri::AppHandle) -> Result<tauri_plugin_updater::Updater, Stri
 use tauri::Manager as _;
 
 pub mod browser;
+pub mod socket;
 
 /// The app, as a library: the Android target links it as a native library, and
 /// the desktop binary in `main.rs` runs the same builder.
@@ -79,10 +80,8 @@ pub fn run() {
     // engine, in-app libnode for the driver), so its command set is the
     // desktop's, served by `browser::android`'s engine bridge.
     #[cfg(target_os = "android")]
-    let builder = builder
-        .plugin(android::init())
-        .plugin(browser::android::init())
-        .invoke_handler(tauri::generate_handler![
+    let builder = builder.plugin(android::init()).plugin(browser::android::init()).invoke_handler(
+        tauri::generate_handler![
             browser::browser_call,
             browser::browser_profile_close,
             browser::browser_profiles,
@@ -92,7 +91,8 @@ pub fn run() {
             browser::browser_used,
             check_update,
             install_update
-        ]);
+        ],
+    );
 
     let run = builder
         .setup(|app| {

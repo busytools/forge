@@ -29,7 +29,11 @@ tauri-plugin-log = "2"
 # the driver needs, so the host speaks MCP rather than reimplementing it.
 rmcp = { version = "=3.5.0", features = ["client", "transport-child-process"] }
 serde = { version = "1", features = ["derive"] }
-tokio = { version = "1", features = ["process", "rt-multi-thread", "macros", "time"] }
+tokio = { version = "1", features = ["process", "rt-multi-thread", "macros", "time", "net", "sync"] }
+# The client's socket: a plain ws to loopback, so no TLS features and its own
+# pin rather than the workspace's (this crate is its own workspace root).
+tokio-tungstenite = "0.30"
+futures-util = "0.3"
 # The launch lock: flock, the same idiom the workspace's single-instance
 # guard uses.
 rustix = { version = "1", features = ["fs"] }
