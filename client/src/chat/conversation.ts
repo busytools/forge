@@ -25,7 +25,7 @@ import { writable, type Readable } from 'svelte/store';
 
 import { MORE_TURNS, slotOf, subjectKey } from '../protocol';
 import type { ServerMessage, SessionUpdate } from '../protocol';
-import { whenPainted } from '../paint';
+import { cannotPaint } from '../paint';
 import { inFlightOf } from '../session/apply';
 import { watchSession } from '../session/live';
 import type { Connection } from '../socket';
@@ -755,15 +755,22 @@ export class Chat {
    * the draw.
    */
   private soon(): void {
+    // **Hidden is asked FIRST, ahead of the in-flight guard.** A frame armed
+    // on a page that has gone hidden never fires - and a display going off
+    // mid-turn is how a page usually gets there, so one is armed at the
+    // instant it happens. Waiting would swallow this fold and every fold
+    // after it, so the write goes out now; `flush` cancels the frame and its
+    // deadline in the same breath.
+    if (cannotPaint()) {
+      this.flush();
+      return;
+    }
     if (this.queued !== null) return;
     if (this.readers === 0) {
       this.flush();
       return;
     }
-    // A hidden page has no frame to wait for, so `whenPainted` flushes at
-    // once and answers `null`: nothing to cancel, and no deadline owed.
-    this.queued = whenPainted(() => this.flush());
-    if (this.queued === null) return;
+    this.queued = requestAnimationFrame(() => this.flush());
     this.watchdog = setTimeout(() => this.flush(), PAINT_WATCHDOG_MS);
   }
 

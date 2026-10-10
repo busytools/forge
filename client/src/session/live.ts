@@ -28,7 +28,7 @@ import { writable, type Readable, type Writable } from 'svelte/store';
 
 import { canHost } from '../browser/host';
 import { cronNames } from '../chat/cron-names.svelte';
-import { whenPainted } from '../paint';
+import { cannotPaint } from '../paint';
 import { slotOf, subjectKey, type Subject } from '../protocol';
 import type { Connection, ConnectionStatus } from '../socket';
 import type { Store } from '../stores';
@@ -414,15 +414,22 @@ function createSeat(connection: Connection, subject: Subject, answering: boolean
    * redraw.
    */
   function soon(): void {
+    // **Hidden is asked FIRST, ahead of the in-flight guard.** A frame armed
+    // on a page that has gone hidden never fires - and a display going off
+    // mid-turn is how a page usually gets there, so one is armed at the
+    // instant it happens. Waiting would swallow this fold and every fold
+    // after it, so the write goes out now; `flush` cancels the frame and its
+    // deadline in the same breath.
+    if (cannotPaint()) {
+      flush();
+      return;
+    }
     if (queued !== null) return;
     if (!shown) {
       flush();
       return;
     }
-    // A hidden page has no frame to wait for, so `whenPainted` flushes at
-    // once and answers `null`: nothing to cancel, and no deadline owed.
-    queued = whenPainted(flush);
-    if (queued === null) return;
+    queued = requestAnimationFrame(flush);
     watchdog = setTimeout(flush, PAINT_WATCHDOG_MS);
   }
 

@@ -1,5 +1,5 @@
 /**
- * When a store's write waits for a painted frame, and when it does not.
+ * Whether a store's write has a paint to wait for.
  *
  * **A page that cannot paint has no paint to wait for.** Waiting for a frame
  * is what turns a burst of updates into one draw of the latest, and that is
@@ -14,15 +14,12 @@
  */
 
 /**
- * Run `flush` on the next painted frame, or at once when the page is hidden.
+ * Whether the page cannot paint right now.
  *
- * Answers the frame the flush is owed on, or `null` when it has already run -
- * so a caller arms its own deadline only when one is owed.
+ * **A page that is not there cannot paint either.** The stores are driven
+ * headless as well - the conversation by its own tests, with no document at
+ * all - so the question is only asked where there is a page to ask.
  */
-export function whenPainted(flush: () => void): number | null {
-  if (document.hidden) {
-    flush();
-    return null;
-  }
-  return requestAnimationFrame(flush);
+export function cannotPaint(): boolean {
+  return typeof document !== 'undefined' && document.hidden;
 }

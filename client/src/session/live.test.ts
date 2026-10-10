@@ -208,6 +208,9 @@ let server: Awaited<ReturnType<typeof stubServer>> | null = null;
 let connection: Connection | null = null;
 
 afterEach(async () => {
+  // The clock goes back to real FIRST: a case that froze it would otherwise
+  // run the teardown below - a socket close, an unmount - on fake time.
+  vi.useRealTimers();
   if (app !== null) await unmount(app);
   app = null;
   connection?.close();
@@ -215,9 +218,7 @@ afterEach(async () => {
   await server?.close();
   server = null;
   document.body.innerHTML = '';
-  // A case that hid the page or froze its clock must not leave either in
-  // place for the cases after it.
-  vi.useRealTimers();
+  // And a case that hid the page must not leave it hidden for the next one.
   delete (document as { hidden?: boolean }).hidden;
 });
 
@@ -613,7 +614,7 @@ describe('the session page over a socket', () => {
     // The page stops painting, the way a hidden one does, and the two things
     // the publish's gate is made of go with it: no frame, and no deadline.
     hidePage();
-    vi.useFakeTimers({ toFake: ['requestAnimationFrame', 'setTimeout'] });
+    vi.useFakeTimers({ toFake: ['requestAnimationFrame', 'setTimeout', 'clearTimeout'] });
 
     server.push({
       kind: 'update',
@@ -624,7 +625,11 @@ describe('the session page over a socket', () => {
     for (let i = 0; i < 10; i += 1) await new Promise((resolve) => setImmediate(resolve));
     flushSync();
 
-    expect(drawn(), 'the frame never reached the column').toContain('arrived while hidden');
+    expect(
+      drawn(),
+      'the frame never reached the column: the gate never flushed, or the frame did not ' +
+        'arrive within the turns this waits',
+    ).toContain('arrived while hidden');
   });
 
   /* The queue-above-strip order is pinned where the column itself draws it:
@@ -1556,19 +1561,60 @@ describe('the record a page holds over an update stream', () => {
    * a reader has to be able to draw when it is, so the write goes out at once
    * rather than waiting on a frame the hidden page will not produce.
    */
-  it('publishes a record frame while the page is hidden', () => {
+  it('publishes a record frame while the page is hidden', async () => {
     const connection = drivable();
     const page = watch(connection);
     page.land(snapshotOf(LEAD));
     const published = page.publishes();
 
     hidePage();
-    vi.useFakeTimers({ toFake: ['requestAnimationFrame', 'setTimeout'] });
+    vi.useFakeTimers({ toFake: ['requestAnimationFrame', 'setTimeout', 'clearTimeout'] });
     connection.land(
       updateOf({ chat_appended: { key: LEAD, msg: say('arrived while hidden'), origin: null } }),
     );
 
     expect(page.publishes(), 'the frame waited for a paint that cannot come').toBe(published + 1);
+
+    // **And no deadline was armed behind it.** A write that went out AND left
+    // a watchdog running would publish a second time, outside the window the
+    // line above reads - twice the store's own quarter-second, which is past
+    // any deadline it could have set.
+    await vi.advanceTimersByTimeAsync(600);
+    expect(page.publishes(), 'the hidden write left a deadline running').toBe(published + 1);
+    page.stop();
+  });
+
+  /**
+   * **A frame armed when the page goes hidden does not swallow the ones after
+   * it.** That is the common way into the state - a display going off while a
+   * turn streams leaves a frame in flight - and an armed frame never fires
+   * there, so a gate that answered "one is already pending" would stall this
+   * fold and every fold after it. The write goes out instead, taking the
+   * frame and its deadline with it.
+   */
+  it('publishes when the page goes hidden with a frame already pending', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD));
+    const published = page.publishes();
+
+    // The clock is frozen before the first frame, so the frame it arms is
+    // still pending when the page goes hidden.
+    vi.useFakeTimers({ toFake: ['requestAnimationFrame', 'setTimeout', 'clearTimeout'] });
+    connection.land(
+      updateOf({ chat_appended: { key: LEAD, msg: say('armed while visible'), origin: null } }),
+    );
+    expect(page.publishes(), 'precondition: the visible frame waited for a paint').toBe(published);
+
+    hidePage();
+    connection.land(
+      updateOf({ chat_appended: { key: LEAD, msg: say('arrived while hidden'), origin: null } }),
+    );
+
+    expect(
+      page.publishes(),
+      'the frame pending when the page went hidden swallowed the fold after it',
+    ).toBe(published + 1);
     page.stop();
   });
 
