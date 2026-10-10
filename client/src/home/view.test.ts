@@ -391,7 +391,13 @@ describe('the fleet the snapshot describes', () => {
       ageOf(
         {
           lastActivity: null,
-          seats: [{ label: 'lead', state: { kind: 'lifecycle', lifecycle: 'Idle' } }],
+          seats: [
+            {
+              label: 'lead',
+              state: { kind: 'lifecycle', lifecycle: 'Idle' },
+              href: '/session/TestOrg/proj/lead',
+            },
+          ],
         },
         0,
       ),
