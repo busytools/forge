@@ -7210,9 +7210,9 @@ mod lead_charter_tests {
         assert!(
             DEFAULT_LEAD_CHARTER.contains(
                 "A long-lived worker is a standing commitment of the user's attention rather \
-                 than a step of work"
+                 than a step of work, so raise it with the user rather than deciding it yourself"
             ),
-            "the long-lived-worker line is blessed by the rule, not left against it",
+            "the long-lived-worker clause is pinned whole, its call included",
         );
     }
 
