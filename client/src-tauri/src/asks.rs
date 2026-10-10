@@ -51,11 +51,27 @@ pub async fn run(frame: &Value, socket: &Socket, host: &Arc<BrowserHost>) {
             // The frames follow the answer that declared them, in the order
             // the parts are listed - what the server reads.
             for bytes in images {
-                socket.send_binary(bytes);
+                socket.send_image(image_frame(id, &bytes));
             }
         }
         Err(why) => socket.answer(id, json!([]), Some(why)),
     }
+}
+
+/// The wire's own image-frame tag, `socket.ts`'s `BROWSER_IMAGE_TAG`.
+const IMAGE_TAG: u8 = 1;
+
+/// **An image frame carries a header**: the kind tag, then the answer's id
+/// big-endian, then the bytes - which is what pairs a picture with the answer
+/// that declared it, so two asks in flight cannot be handed each other's. A
+/// frame without it reads at the server as an unknown kind and fails every
+/// image-waiting ask on the connection, so this is the shape or nothing.
+fn image_frame(id: u64, bytes: &[u8]) -> Vec<u8> {
+    let mut frame = Vec::with_capacity(9 + bytes.len());
+    frame.push(IMAGE_TAG);
+    frame.extend_from_slice(&id.to_be_bytes());
+    frame.extend_from_slice(bytes);
+    frame
 }
 
 /// The parts as the answer frame carries them, and the images' bytes to
@@ -103,6 +119,20 @@ mod tests {
         assert_eq!(declared[1], json!({ "type": "image", "mime_type": "image/png" }));
         assert_eq!(declared[2], json!({ "type": "text", "text": "done" }));
         assert_eq!(images, vec![b"hi".to_vec()], "the image's bytes are behind its declaration");
+    }
+
+    /// **The frame's header is the wire's own** - the tag, then the answer's
+    /// id big-endian, then the bytes (`socket.ts`'s `imageFrame`, which the
+    /// server decodes at exactly this width). Without it the server reads
+    /// the picture's first byte as a kind tag and fails every
+    /// image-waiting ask on the connection.
+    #[test]
+    fn an_image_frame_carries_the_tag_and_the_answers_id() {
+        assert_eq!(
+            image_frame(7, b"hi"),
+            vec![1, 0, 0, 0, 0, 0, 0, 0, 7, b'h', b'i'],
+            "one tag byte, eight id bytes big-endian, then the picture"
+        );
     }
 
     /// **An ask reaches the host and its failure is the answer.** With a host

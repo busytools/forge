@@ -70,13 +70,16 @@ impl SocketEvent {
 }
 
 /// One subscription this side believes the server holds, in first-asked
-/// order, with the declaration it was asked with. A later subscribe for the
-/// same subject raises the declaration but keeps the place in line.
+/// order, with the declaration it was asked with and **how many open ones it
+/// stands for**. The server counts subscriptions, so the count is carried
+/// too: a reconnect re-asks it once per open one, and a single unsubscribe
+/// decrements rather than dropping the entry a second caller still needs.
 struct Held {
     key: String,
     what: Value,
     answering: bool,
     browser: bool,
+    count: usize,
 }
 
 impl Held {
@@ -95,9 +98,9 @@ impl Held {
 }
 
 /// The held list as one place: a fresh subject appends, a repeat raises its
-/// flags in place, an unsubscribe drops its entry. Both the connected loop
-/// and the disconnected wait fold through here, so their bookkeeping cannot
-/// drift.
+/// flags in place and adds to its count, an unsubscribe takes one off. Both
+/// the connected loop and the disconnected wait fold through here, so their
+/// bookkeeping cannot drift.
 fn hold(held: &mut Vec<Held>, what: Value, answering: bool, browser: bool) -> Option<String> {
     let key = subject_key(&what);
     if key.is_empty() {
@@ -107,16 +110,28 @@ fn hold(held: &mut Vec<Held>, what: Value, answering: bool, browser: bool) -> Op
         Some(h) => {
             h.answering |= answering;
             h.browser |= browser;
+            h.count += 1;
         }
-        None => held.push(Held { key: key.clone(), what, answering, browser }),
+        None => held.push(Held { key: key.clone(), what, answering, browser, count: 1 }),
     }
     Some(key)
 }
 
+/// One subscription given back: the count comes off, and the entry - with
+/// the key still outstanding for a refusal - goes only with the last one.
 fn unhold(held: &mut Vec<Held>, awaiting: &mut Vec<String>, what: &Value) {
     let key = subject_key(what);
-    held.retain(|h| h.key != key);
-    awaiting.retain(|k| k != &key);
+    let gone = match held.iter_mut().find(|h| h.key == key) {
+        Some(h) => {
+            h.count = h.count.saturating_sub(1);
+            h.count == 0
+        }
+        None => true,
+    };
+    if gone {
+        held.retain(|h| h.key != key);
+        awaiting.retain(|k| k != &key);
+    }
 }
 
 enum Outbound {
@@ -125,6 +140,10 @@ enum Outbound {
         answering: bool,
         browser: bool,
     },
+    /// A browser answer's image, header included: a frame that cannot go
+    /// ends the connection (the answer is already out and its images never
+    /// all arriving would leave the ask hanging).
+    Image(Vec<u8>),
     Unsubscribe {
         what: Value,
     },
@@ -233,6 +252,16 @@ impl Socket {
         let _ = self.tx.send(Outbound::Binary(bytes));
     }
 
+    /// One browser answer's image, as the wire carries it: the caller hands
+    /// the bytes with the answer's own header already on them
+    /// (`asks::image_frame`). **A frame that cannot be sent ends the
+    /// connection** - the answer is already out, so its images never all
+    /// arriving is an ask left hanging, and the drop fails it instead (the
+    /// webview's own `socket.ts` closes for the same reason).
+    pub fn send_image(&self, bytes: Vec<u8>) {
+        let _ = self.tx.send(Outbound::Image(bytes));
+    }
+
     /// End the connection for good: no retry follows.
     pub fn close(&self) {
         let _ = self.tx.send(Outbound::Close);
@@ -266,9 +295,11 @@ fn apply_offline(next: Outbound, held: &mut Vec<Held>, awaiting: &mut Vec<String
     match next {
         Outbound::Close => true,
         Outbound::Subscribe { what, answering, browser } => {
-            if let Some(key) = hold(held, what, answering, browser) {
-                awaiting.push(key);
-            }
+            // The key is NOT queued here: nothing is outstanding until the
+            // frame really goes, which is the reconnect's own re-ask. Queuing
+            // it here as well would push it twice, and the extra entry would
+            // let one refusal pop the key belonging to the next ask.
+            hold(held, what, answering, browser);
             false
         }
         Outbound::Unsubscribe { what } => {
@@ -283,7 +314,8 @@ fn apply_offline(next: Outbound, held: &mut Vec<Held>, awaiting: &mut Vec<String
         | Outbound::Devices
         | Outbound::Answer { .. }
         | Outbound::TakeRole
-        | Outbound::Binary(_) => false,
+        | Outbound::Binary(_)
+        | Outbound::Image(_) => false,
     }
 }
 
@@ -297,45 +329,60 @@ async fn run(
     // The subscribes sent over the wire and not yet answered, oldest first -
     // what a refusal from the core is attributed to.
     let mut awaiting: Vec<String> = Vec::new();
+    // **The cadence is `socket.ts`'s exactly**: the first dial goes at once,
+    // a retry waits the current delay and only then doubles, and an open
+    // resets it (its `scheduleRetry` schedules at the delay and doubles
+    // after).
     let mut wait = RETRY_MS;
+    let mut first = true;
     say(&events, SocketEvent::Status(Status::Connecting));
 
     loop {
         // **The disconnected wait.** Outbound messages are still taken, so a
         // subscribe made while the socket is down is held locally and the
         // reconnect re-asks it; a close ends the task.
-        let deadline = tokio::time::Instant::now() + Duration::from_millis(wait);
-        let stopped = loop {
-            tokio::select! {
-                () = tokio::time::sleep_until(deadline) => break false,
-                next = outbound.recv() => {
-                    let Some(next) = next else { return };
-                    if apply_offline(next, &mut held, &mut awaiting) {
-                        break true;
+        if !first {
+            let deadline = tokio::time::Instant::now() + Duration::from_millis(wait);
+            let stopped = loop {
+                tokio::select! {
+                    () = tokio::time::sleep_until(deadline) => break false,
+                    next = outbound.recv() => {
+                        let Some(next) = next else { return };
+                        if apply_offline(next, &mut held, &mut awaiting) {
+                            break true;
+                        }
                     }
                 }
+            };
+            if stopped {
+                say(&events, SocketEvent::Status(Status::Closed));
+                return;
             }
-        };
-        if stopped {
-            say(&events, SocketEvent::Status(Status::Closed));
-            return;
+            wait = wait.saturating_mul(2).min(MAX_RETRY_MS);
         }
+        first = false;
 
         let ws = match tokio_tungstenite::connect_async(&url).await {
             Ok((ws, _)) => ws,
-            Err(_) => {
-                wait = wait.saturating_mul(2).min(MAX_RETRY_MS);
+            Err(why) => {
+                // A dial that did not land says so: the alternatives are a
+                // silent retry loop (the door blames the server at the far
+                // end) or, worse, a reason nobody can read.
+                tauri_plugin_log::log::debug!("the socket dial failed: {why}");
                 continue;
             }
         };
         say(&events, SocketEvent::Status(Status::Open));
         wait = RETRY_MS;
         let (mut writer, mut reader) = ws.split();
-        // **The declaration is re-asked, once per held subscription**, with
-        // the flags it carried: this is how the role survives a drop.
+        // **The declaration is re-asked, once per OPEN subscription** - the
+        // server counts, so a subject two callers hold is asked for twice -
+        // with the flags it carried: this is how the role survives a drop.
         for h in &held {
-            if writer.send(h.subscribe_frame()).await.is_err() {
-                break;
+            for _ in 0..h.count {
+                if writer.send(h.subscribe_frame()).await.is_err() {
+                    break;
+                }
             }
             awaiting.push(h.key.clone());
         }
@@ -427,15 +474,29 @@ async fn run(
                         Outbound::Binary(bytes) => {
                             let _ = writer.send(Message::Binary(bytes.into())).await;
                         }
+                        Outbound::Image(bytes) => {
+                            if let Err(why) = writer.send(Message::Binary(bytes.into())).await {
+                                tauri_plugin_log::log::warn!(
+                                    "an image frame could not be sent; ending the connection: {why}"
+                                );
+                                break;
+                            }
+                        }
                     }
                 }
             }
         }
         // **The connection left: whatever it was holding answers now**, the
         // role goes back, and the asks a drop killed are forgotten so a later
-        // refusal finds its own.
+        // refusal finds its own. A close this side asked for says so, the way
+        // `socket.ts` tells its own close from a drop.
+        let why = if closing {
+            "the connection was closed"
+        } else {
+            "the socket dropped before answering"
+        };
         for (_, tx) in pending.drain() {
-            let _ = tx.send(Err("the socket dropped before answering".to_owned()));
+            let _ = tx.send(Err(why.to_owned()));
         }
         awaiting.clear();
         say(&events, SocketEvent::Role { hosting: false });
@@ -444,7 +505,6 @@ async fn run(
             return;
         }
         say(&events, SocketEvent::Status(Status::Connecting));
-        wait = wait.saturating_mul(2).min(MAX_RETRY_MS);
     }
 }
 
@@ -463,15 +523,34 @@ fn receive(
 ) {
     match value.get("kind").and_then(Value::as_str) {
         Some("reply") => {
-            if let Some(id) = value.get("reply_to").and_then(Value::as_u64)
-                && let Some(tx) = pending.remove(&id)
-            {
-                let _ = tx.send(Ok(value.get("body").cloned().unwrap_or(Value::Null)));
+            let id = value.get("reply_to").and_then(Value::as_u64);
+            let body = value.get("body").cloned().unwrap_or(Value::Null);
+            match id.and_then(|id| pending.remove(&id)) {
+                Some(tx) => {
+                    let _ = tx.send(Ok(body));
+                }
+                // A reply nothing is waiting on is a fact about the two
+                // sides' reply spaces, and a silent drop is a command whose
+                // failure nobody can read (`socket.ts` reports the same).
+                None => tauri_plugin_log::log::debug!(
+                    "a reply arrived for id {id:?}, which nothing is waiting on"
+                ),
             }
         }
         Some("browser_role") => {
             let hosting = value.get("hosting").and_then(Value::as_bool).unwrap_or(false);
             say(events, SocketEvent::Role { hosting });
+        }
+        Some("snapshot") => {
+            // **A snapshot answers its subscription**, so its key comes off
+            // the outstanding list: without this a refusal pops the OLDEST
+            // key ever queued - one already answered - and lands on the
+            // wrong store while the refused one reads as loading forever.
+            if let Some(subject) = value.get("subject") {
+                let key = subject_key(subject);
+                awaiting.retain(|k| k != &key);
+            }
+            say(events, SocketEvent::Message(value.clone()));
         }
         Some("error") => {
             if value.get("what").and_then(Value::as_str) == Some("subscribe")
@@ -798,5 +877,64 @@ pub(crate) mod tests {
         // The first frame the fresh connection hears is the surviving ask.
         let again = stub.heard_until(|v| v["kind"] == "subscribe").await;
         assert_eq!(again["what"], json!("usage"));
+    }
+
+    /// **A snapshot answers its subscription**, so a refusal that follows
+    /// pops the NEXT key and not one already answered (`socket.test.ts`
+    /// pins the same three cases).
+    #[tokio::test]
+    async fn a_snapshot_takes_its_key_off_the_outstanding_list() {
+        let mut stub = stub().await;
+        let (socket, mut rx) = connected(&stub).await;
+        socket.subscribe(json!("home"), true, false);
+        let _ = stub.heard_until(|v| v["kind"] == "subscribe" && v["what"] == json!("home")).await;
+        stub.say
+            .send(json!({ "kind": "snapshot", "subject": "home", "data": {} }))
+            .expect("the stub answers");
+        // The answer really landed before the second ask goes out.
+        let _ = event_of(&mut rx, "message").await;
+        socket.subscribe(
+            json!({ "session": { "org": "a", "project": "b", "label": "lead" } }),
+            true,
+            false,
+        );
+        let _ = stub.heard_until(|v| v["kind"] == "subscribe").await;
+        stub.say
+            .send(json!({ "kind": "error", "what": "subscribe", "why": "no session there" }))
+            .expect("the stub refuses");
+        let refused = event_of(&mut rx, "refused").await;
+        let SocketEvent::Refused { key, .. } = refused else { unreachable!("filtered") };
+        assert_eq!(
+            key, "session:a\u{0}b\u{0}lead",
+            "the refusal lands on the ask that is really outstanding, not the answered one"
+        );
+    }
+
+    /// A subject two callers hold is asked for twice on a reconnect, and one
+    /// unsubscribe does not drop the entry the other caller still needs.
+    #[tokio::test]
+    async fn a_subject_two_callers_hold_is_asked_for_twice() {
+        let mut stub = stub().await;
+        let (socket, _rx) = connected(&stub).await;
+        socket.subscribe(json!("home"), true, false);
+        socket.subscribe(json!("home"), true, false);
+        // Both went out, in order.
+        let _ = stub.heard_until(|v| v["kind"] == "subscribe").await;
+        let _ = stub.heard_until(|v| v["kind"] == "subscribe").await;
+        // One caller leaves: the entry survives with a count of one.
+        socket.unsubscribe(json!("home"));
+        let _ = stub.heard_until(|v| v["kind"] == "unsubscribe").await;
+        stub.kill.send(()).expect("the stub drops its connections");
+        let re_asked = stub.heard_until(|v| v["kind"] == "subscribe").await;
+        assert_eq!(re_asked["what"], json!("home"), "the survivor is re-asked");
+        // The second caller leaves: now the entry goes with it, and the next
+        // reconnect asks for nothing.
+        socket.unsubscribe(json!("home"));
+        let _ = stub.heard_until(|v| v["kind"] == "unsubscribe").await;
+        stub.kill.send(()).expect("the stub drops its connections");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), stub.heard.recv()).await.is_err(),
+            "the last unsubscribe dropped the entry, so nothing is re-asked"
+        );
     }
 }

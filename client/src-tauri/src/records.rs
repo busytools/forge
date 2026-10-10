@@ -1,12 +1,12 @@
-//! The seat records and the conversation hold, owned by this process.
+//! The seat records, as the catch-up a returning page is handed.
 //!
-//! **Rust holds what the page used to fold.** `client/src/session/apply.ts`
-//! and the structural half of `client/src/chat/conversation.ts` live here
-//! now, so a frame lands on a record whether or not a webview is awake to
-//! read it - the point of the whole move (a parked page consumed nothing and
-//! every ask died behind it; the 2026-10-10 catch). The page still draws:
-//! it reads a record on a coalesced notice and re-folds it with
-//! `chat/units.ts`, which stays TS by decision.
+//! **Rust keeps a copy of what the page folds.** The page is still told
+//! every frame as it arrives - the bridge forwards the stream, and
+//! `client/src/session/apply.ts`'s fold still runs there - so what is HERE
+//! is the one thing a parked page cannot rebuild for itself: the record as
+//! of the moment it looked away, folded the same way the page's own fold
+//! would have folded it. A heartbeat that finds the page was away hands it
+//! back (see `bridge.rs`'s reconcile).
 //!
 //! **The record's shape is the server's own snapshot** (`transport/wire.rs`'
 //! `SessionWire`), held as JSON. Two consequences keep this port small and
@@ -18,15 +18,19 @@
 //!   narrows it the same way it narrows a snapshot, so there is one narrowing
 //!   in the system, on the read.
 //! - Where the TS handler FOLDS - the asks queue, the prompt pile, the turn
-//!   append, the in-flight header, the take - this folds exactly, because
-//!   those are state rather than a view's shape. One clause cannot be exact:
-//!   the turn append asks the chat fold whether a frame draws, and the fold
-//!   stays TS by decision, so `opens_a_turn` tests the cases the fold's own
-//!   comment names and says so.
+//!   append, the in-flight header - this folds too, because those are state
+//!   rather than a view's shape. One clause cannot be exact: the turn append
+//!   asks the chat fold whether a frame draws, and the fold stays TS by
+//!   decision, so `opens_a_turn` tests the cases the fold's own comments
+//!   name and says so.
+//!
+//! **A take is not here, deliberately**: it belongs to the connection that
+//! started it (the wire's own composer says "no take and no notice"), so the
+//! page's own fold is the only place one lives and the `dictate_*` frames
+//! touch no record.
 //!
 //! Every field name below was taken off `apply.ts` (which itself took them
-//! off the Rust side), and the handlers file a change only when the value
-//! really moved - a re-delivered frame must not read as news.
+//! off the Rust side).
 
 use std::collections::HashMap;
 
@@ -44,12 +48,6 @@ const MODES: [&str; 6] = ["default", "acceptEdits", "plan", "dontAsk", "auto", "
 /// `EffortLevel`, as the core's own enum serialises.
 const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 
-/// The meter's own constants, mirrored from `composer/meter.ts` and
-/// `wire/limits.ts` (themselves mirrors of the server's).
-const METER_CEILING_DB: f64 = 0.0;
-const FALLBACK_FLOOR_DB: f64 = -50.0;
-const METER_CELLS: usize = 120;
-
 /// The updates that replace the seat's whole record rather than patching it:
 /// a new occupant under the slot, or the first connect. Answering them is a
 /// fresh read, which the app half performs (a subscribe's own snapshot).
@@ -63,32 +61,16 @@ pub enum Held {
     Refused(String),
 }
 
-/// What changed when a frame was applied: the seats whose readers must be
-/// told, the seats whose record must be asked for again, and whether the
-/// whole fleet moved (the home re-reads on its own schedule for that).
-#[derive(Default)]
-pub struct Changed {
-    /// Records that moved: a reader re-reads and redraws.
-    pub seats: Vec<String>,
-    /// Seats a REPLACES frame took a new occupant for: the app half asks the
-    /// core for the record again, and the snapshot replaces it whole.
-    pub refresh: Vec<String>,
-    /// The fleet moved: a held home re-reads.
-    pub home: bool,
-}
-
-impl Changed {
-    pub fn any(&self) -> bool {
-        self.home || !self.seats.is_empty() || !self.refresh.is_empty()
-    }
-}
-
 /// Every subject this client holds: seats, the home, usage, the models page.
+///
+/// **The fold is for the reconcile, and nothing else rides on it.** The page
+/// is told about every frame as it arrives (the bridge forwards the stream),
+/// so a record here is not a notice - it is what a parked page is handed
+/// when it comes back. That is why nothing on this side re-reads the home or
+/// replays a pile: the page's own stores and folds do that off the frames,
+/// and the one caller of this fold is the catch-up.
 pub struct Records {
     subjects: HashMap<String, Held>,
-    /// The seat slots by subject key, so an update's own `key` finds its way
-    /// without re-parsing the JSON.
-    seats: HashMap<String, Value>,
 }
 
 impl Default for Records {
@@ -99,45 +81,26 @@ impl Default for Records {
 
 impl Records {
     pub fn new() -> Self {
-        Self { subjects: HashMap::new(), seats: HashMap::new() }
+        Self { subjects: HashMap::new() }
     }
 
     /// A snapshot for a subject: the read's own answer, and the point the
     /// updates patch from.
-    pub fn snapshot(&mut self, subject: &Value, data: Value) -> Changed {
+    pub fn snapshot(&mut self, subject: &Value, data: Value) {
         let key = subject_key(subject);
         if key.is_empty() {
-            return Changed::default();
+            return;
         }
-        if let Some(slot) = subject.get("session") {
-            self.seats.insert(key.clone(), slot.clone());
-        }
-        let home = key == "home";
-        self.subjects.insert(key.clone(), Held::Ready(data));
-        let mut changed = Changed::default();
-        if home {
-            changed.home = true;
-        } else {
-            changed.seats.push(key);
-        }
-        changed
+        self.subjects.insert(key, Held::Ready(data));
     }
 
     /// A subscribe the core refused: the subject answers "refused" so a page
     /// draws the reason rather than an empty seat.
-    pub fn refuse(&mut self, key: &str, why: &str) -> Changed {
+    pub fn refuse(&mut self, key: &str, why: &str) {
         if key.is_empty() {
-            return Changed::default();
+            return;
         }
-        let home = key == "home";
         self.subjects.insert(key.to_owned(), Held::Refused(why.to_owned()));
-        let mut changed = Changed::default();
-        if home {
-            changed.home = true;
-        } else {
-            changed.seats.push(key.to_owned());
-        }
-        changed
     }
 
     /// The record a reader wants, or the refusal's words, or None for a
@@ -150,43 +113,29 @@ impl Records {
         })
     }
 
-    /// Which seat a subject key names, for a subscriber that must carry the
-    /// slot back to the socket.
-    pub fn slot_of(&self, key: &str) -> Option<&Value> {
-        self.seats.get(key)
-    }
-
     /// Let a subject go: the last page reader has left, and nothing here is
     /// left to answer. The wire subscription is the caller's own to give
     /// back, and a later subscribe reads afresh.
     pub fn release(&mut self, key: &str) {
         self.subjects.remove(key);
-        self.seats.remove(key);
     }
 
-    /// Fold one `update` frame's variant into its seat's record (or mark the
-    /// home for a re-read). Returns the subjects a reader must be told about.
-    pub fn apply(&mut self, update: &Value) -> Changed {
+    /// Fold one `update` frame's variant into its seat's record. Answers the
+    /// seats a REPLACES frame took a new occupant for: those are asked for
+    /// again, because what such a frame carries is not a record.
+    pub fn apply(&mut self, update: &Value) -> Vec<String> {
         let Some((name, payload)) = variant_of(update) else {
-            return Changed::default();
+            return Vec::new();
         };
-        let mut changed = Changed::default();
-        // The home's own policy, ported: the server sends more than a fleet
-        // region draws, and a keyless update belongs to no seat - so a
-        // home-relevant update re-reads the home rather than patching a row
-        // (`wire/fleet.ts`'s `coversHome`; the core folds a fleet row and a
-        // page reads the fold).
-        if self.subjects.contains_key("home") && covers_home(update) {
-            changed.home = true;
-        }
-        // A seat is addressed by its slot; a keyless update belongs to the
-        // home alone, and a seat this client never subscribed to is not this
+        // A seat is addressed by its slot; a keyless update belongs to no
+        // record this fold keeps (the page's own home fold reads the frames
+        // directly), and a seat this client never subscribed to is not this
         // client's to keep.
         let Some(key) = seat_key_of(update) else {
-            return changed;
+            return Vec::new();
         };
         let Some(Held::Ready(record)) = self.subjects.get_mut(&key) else {
-            return changed;
+            return Vec::new();
         };
         if REPLACES.contains(&name) {
             // **A new occupant under the slot, or the first connect.** What
@@ -197,11 +146,10 @@ impl Records {
             // against a stale answer has no work here: a read and the frames
             // share this connection's own order, so the answer can never be
             // older than what is already held.
-            changed.refresh.push(key);
-        } else if seat_update(record, name, payload) {
-            changed.seats.push(key);
+            return vec![key];
         }
-        changed
+        seat_update(record, name, payload);
+        Vec::new()
     }
 
     /// The socket is gone: a take goes with it.
@@ -211,26 +159,22 @@ impl Records {
     /// `status` arm (`session/live.ts`, #1880). Everything else stands where
     /// it was: the reconnect re-asks every held subscription and the answers
     /// replace the records whole.
-    pub fn dropped(&mut self) -> Changed {
-        let mut changed = Changed::default();
-        for (key, held) in &mut self.subjects {
+    pub fn dropped(&mut self) {
+        for held in self.subjects.values_mut() {
             let Held::Ready(record) = held else { continue };
             let Some(composer) = record.get_mut("composer").and_then(Value::as_object_mut) else {
                 continue;
             };
             if composer.get("take").is_some_and(|take| !take.is_null()) {
                 composer.insert("take".to_owned(), Value::Null);
-                changed.seats.push(key.clone());
             }
         }
-        changed
     }
+}
 
-    /// The subject a held seat key names, for the app half's own re-read
-    /// (`refresh`).
-    pub fn subject_of(&self, key: &str) -> Option<Value> {
-        self.seats.get(key).map(|slot| json!({ "session": slot }))
-    }
+/// The variant's own name, for a caller that routes on it.
+pub(crate) fn variant_name(update: &Value) -> Option<&str> {
+    variant_of(update).map(|(name, _)| name)
 }
 
 /// A unit variant's payload, so `variant_of` hands one shape for both.
@@ -262,71 +206,6 @@ fn seat_key_of(update: &Value) -> Option<String> {
     Some(format!("session:{org}\u{0}{project}\u{0}{label}"))
 }
 
-/// Whether this update asks the home for a re-read: the fleet's own news, or
-/// a keyless update, which belongs to no seat and is the home's alone. A port
-/// of `wire/fleet.ts`'s `coversHome` - the server sends more than a fleet
-/// region draws, and the keyless arm is why a page does not keep the service
-/// status or the plugin records it read once at subscribe.
-fn covers_home(update: &Value) -> bool {
-    fleet_news(update) || seat_key_of(update).is_none()
-}
-
-/// The variants that redraw a row or a card, none of which carries a payload
-/// the fleet reads. A port of `wire/fleet.ts`'s `REDRAWS`, which
-/// `fleet.test.ts` holds equal, variant for variant, to the server's own
-/// `fleet_news` arm (`crates/forge-server/src/live.rs`).
-const REDRAWS: &[&str] = &[
-    "catalog_loaded",
-    "cli_version_changed",
-    "accounts_changed",
-    "dictate_availability",
-    "connection_failed",
-    "releasing",
-    "auth_required",
-    "turn_error",
-    "turn_cancelled",
-    "permission_request",
-    "question_request",
-    "pending_interaction_resolved",
-    "prompt_lifecycle",
-    "slack_post_pending",
-    "slack_draft_resolved",
-    "browser_hand_off_pending",
-    "browser_hand_off_resolved",
-    "worker_status_changed",
-    "tasks_changed",
-    "cron_schedules_changed",
-    "connector_subscriptions_changed",
-];
-
-/// Whether an update is the fleet's own news. A port of `wire/fleet.ts`'s
-/// `fleetNews`, collapsed to the one bit the home's re-read needs - it reads
-/// the whole answer back either way, so which kind of news it was buys
-/// nothing.
-fn fleet_news(update: &Value) -> bool {
-    let Some((name, payload)) = variant_of(update) else { return false };
-    if name == "chat_appended" {
-        // The bulk of the stream, and the one arm that has to look inside the
-        // CLI's own frame rather than at a variant name: a turn's own words
-        // are most of it and no row shows one.
-        let Some(msg) = payload.get("msg") else { return false };
-        return match msg.get("type").and_then(Value::as_str) {
-            // A turn that finished well arms the row's completion, and a
-            // failure or a cancellation arms its mark: all three redraw.
-            Some("result") => true,
-            // `state` sits on the frame itself; both of its outcomes redraw.
-            Some("system") => matches!(
-                msg.get("subtype").and_then(Value::as_str),
-                Some("background_tasks_changed" | "session_state_changed")
-            ),
-            _ => false,
-        };
-    }
-    // The occupant arms announce a new row under a slot; a keyless occupant
-    // update is covers_home's own arm.
-    REDRAWS.contains(&name) || matches!(name, "spawning" | "connected" | "session_replaced")
-}
-
 /// A subject as the TS side keys it, mirroring `protocol.ts`'s `subjectKey`.
 pub fn subject_key(subject: &Value) -> String {
     if let Some(s) = subject.as_str() {
@@ -353,24 +232,13 @@ fn seat_update(record: &mut Value, name: &str, payload: &Value) -> bool {
     let Some(record) = record.as_object_mut() else { return false };
     match name {
         "connection_failed" => {
-            let empty =
-                record.get("queue").and_then(Value::as_array).is_none_or(|rows| rows.is_empty());
-            if empty {
+            // The CLI the rows were written to is gone, so the pile goes. The
+            // ending a foot draws is this view's own observation and is NOT
+            // written here: the page holds that line from the same frame.
+            if queue_of(record).is_empty() {
                 return false;
             }
-            let last = record
-                .get("queue")
-                .and_then(Value::as_array)
-                .and_then(|rows| rows.last())
-                .and_then(|row| row.get("text"))
-                .cloned();
-            record.insert("queue".to_owned(), json!([]));
-            if let Some(text) = last {
-                record.insert(
-                    "queue_ended".to_owned(),
-                    json!({ "text": text, "state": "discarded" }),
-                );
-            }
+            set_queue(record, Vec::new());
             true
         }
         "chat_appended" => {
@@ -481,20 +349,16 @@ fn seat_update(record: &mut Value, name: &str, payload: &Value) -> bool {
             ) else {
                 return false;
             };
-            let queue = array(record.get("queue"));
+            let mut queue = queue_of(record);
             if queue.iter().any(|row| row.get("uuid").and_then(Value::as_str) == Some(uuid)) {
                 return false;
             }
-            let mut queue = queue;
             queue.push(json!({
                 "uuid": uuid,
                 "source": payload.get("source").and_then(Value::as_str).unwrap_or("forge"),
                 "text": words,
             }));
-            // A new row is the next thing to look at, so the last ending goes
-            // with it rather than standing beside a queue that has moved on.
-            record.insert("queue_ended".to_owned(), Value::Null);
-            record.insert("queue".to_owned(), Value::Array(queue));
+            set_queue(record, queue);
             true
         }
         "prompt_lifecycle" => {
@@ -510,25 +374,17 @@ fn seat_update(record: &mut Value, name: &str, payload: &Value) -> bool {
             if !SETTLED_STATES.contains(&state) {
                 return false;
             }
-            let queue = array(record.get("queue"));
-            let Some(leaving) =
-                queue.iter().find(|row| row.get("uuid").and_then(Value::as_str) == Some(uuid))
-            else {
+            let queue = queue_of(record);
+            if !queue.iter().any(|row| row.get("uuid").and_then(Value::as_str) == Some(uuid)) {
                 return false;
-            };
-            let leaving = leaving.get("text").cloned();
+            }
             let remaining: Vec<Value> = queue
                 .into_iter()
                 .filter(|row| row.get("uuid").and_then(Value::as_str) != Some(uuid))
                 .collect();
-            record.insert("queue".to_owned(), Value::Array(remaining));
-            // Two states leave with a word rather than silently.
-            if state == "discarded" || state == "refused" {
-                record.insert(
-                    "queue_ended".to_owned(),
-                    json!({ "text": leaving.unwrap_or(Value::Null), "state": state }),
-                );
-            }
+            // The ending two states leave with is the page's own line from
+            // this same frame; a read carries what waits, never what left.
+            set_queue(record, remaining);
             true
         }
         "prompt_cancel_resolved" => {
@@ -536,7 +392,7 @@ fn seat_update(record: &mut Value, name: &str, payload: &Value) -> bool {
             if payload.get("cancelled") != Some(&Value::Bool(true)) {
                 return false;
             }
-            let queue = array(record.get("queue"));
+            let queue = queue_of(record);
             let remaining: Vec<Value> = queue
                 .iter()
                 .filter(|row| row.get("uuid").and_then(Value::as_str) != Some(uuid))
@@ -545,7 +401,7 @@ fn seat_update(record: &mut Value, name: &str, payload: &Value) -> bool {
             if remaining.len() == queue.len() {
                 return false;
             }
-            record.insert("queue".to_owned(), Value::Array(remaining));
+            set_queue(record, remaining);
             true
         }
         "pending_interaction_resolved" => {
@@ -600,85 +456,12 @@ fn seat_update(record: &mut Value, name: &str, payload: &Value) -> bool {
             );
             true
         }
-        "dictate_started" => {
-            let Some(floor) = payload.get("floor_db").and_then(Value::as_f64) else {
-                return false;
-            };
-            let Some(composer) = record.get_mut("composer").and_then(Value::as_object_mut) else {
-                return false;
-            };
-            // A new take supersedes what the seat was doing, its notice
-            // included: the words it left are already in the box.
-            composer.insert("take".to_owned(), new_take(floor, payload.get("generation")));
-            composer.insert("notice".to_owned(), Value::Null);
-            true
-        }
-        "dictate_level" => {
-            let Some(peak) = payload.get("peak_db").and_then(Value::as_f64) else { return false };
-            let Some(take) = held_take_mut(record) else { return false };
-            let floor = take.get("floor_db").and_then(Value::as_f64).unwrap_or(FALLBACK_FLOOR_DB);
-            let fraction = fraction_of(peak, floor);
-            let mut levels = array(take.get("levels"));
-            if levels.len() >= METER_CELLS {
-                levels.remove(0);
-            }
-            levels.push(json!(fraction));
-            take.insert("levels".to_owned(), Value::Array(levels));
-            take.insert("peak_db".to_owned(), json!(peak));
-            stamp_elapsed(take);
-            true
-        }
-        "dictate_transcribing" => {
-            let Some(take) = held_take_mut(record) else { return false };
-            take.insert("phase".to_owned(), json!("transcribing"));
-            stamp_elapsed(take);
-            true
-        }
-        "dictate_progress" => {
-            let Some(take) = held_take_mut(record) else { return false };
-            if !of_this_take(take, payload) {
-                return false;
-            }
-            // Either half is enough: a report naming neither says nothing.
-            if payload.get("done").is_none() && payload.get("total").is_none() {
-                return false;
-            }
-            take.insert(
-                "progress".to_owned(),
-                json!([
-                    payload.get("done").cloned().unwrap_or(Value::Null),
-                    payload.get("total").cloned().unwrap_or(Value::Null)
-                ]),
-            );
-            stamp_elapsed(take);
-            true
-        }
-        "dictate_ended" => {
-            let outcome = outcome_of(payload.get("outcome"));
-            let refused = outcome.get("refused").is_some();
-            let take = held_take(record);
-            // A refusal resolves no take - it answers a start that never ran.
-            if refused && take.is_some() {
-                return false;
-            }
-            // A tail from a take that is gone is not this one.
-            if !refused {
-                match &take {
-                    Some(take) if of_this_take(take, payload) => {}
-                    _ => return false,
-                }
-            }
-            let floor = take
-                .and_then(|take| take.get("floor_db").and_then(Value::as_f64))
-                .unwrap_or(FALLBACK_FLOOR_DB);
-            let notice = notice_of(&outcome, floor);
-            let Some(composer) = record.get_mut("composer").and_then(Value::as_object_mut) else {
-                return false;
-            };
-            composer.insert("take".to_owned(), Value::Null);
-            composer.insert("notice".to_owned(), notice.unwrap_or(Value::Null));
-            true
-        }
+        // **A take is never folded here.** It belongs to the connection that
+        // started it - the wire's own composer says so ("no take and no
+        // notice") - so a record has no place for one and the page's own
+        // fold, off the forwarded frames, is the only place one lives. The
+        // `dictate_*` variants therefore touch nothing on this side.
+        //
         // The turn's own end, for whichever of the three ways the core says
         // it. All three settle the turn; only `turn_error` reaches the wire
         // today.
@@ -699,6 +482,27 @@ fn set(record: &mut Map<String, Value>, field: &str, value: impl Into<Value>) ->
 
 fn array(value: Option<&Value>) -> Vec<Value> {
     value.and_then(Value::as_array).cloned().unwrap_or_default()
+}
+
+/// The pile as the record's own shape carries it: `state.queue`, oldest
+/// first. **The read path for a page re-read is that field alone**, so the
+/// fold writes here and never at the record's top level, where nothing looks
+/// (the wire nests it under `state`, and `sessionFrom` reads only there).
+fn queue_of(record: &Map<String, Value>) -> Vec<Value> {
+    record
+        .get("state")
+        .and_then(Value::as_object)
+        .and_then(|state| state.get("queue"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn set_queue(record: &mut Map<String, Value>, rows: Vec<Value>) {
+    let state = record.entry("state".to_owned()).or_insert_with(|| json!({}));
+    if let Some(state) = state.as_object_mut() {
+        state.insert("queue".to_owned(), Value::Array(rows));
+    }
 }
 
 /// A finite number, or null for anything else - the update carries both
@@ -751,13 +555,15 @@ fn is_system(message: &Value) -> bool {
 /// what a person said, and only where the frame draws.
 ///
 /// **The draw test is an approximation of the chat fold, which stays TS by
-/// decision** - `apply.ts` asks `fold([message]).length > 0`, and the fold's
-/// own comments name the cases where a person's frame draws nothing: a call's
-/// result arrives in a user frame and draws nothing on its own (which is what
-/// holds a call and the frames that update it in one turn), and a dispatched
-/// agent's frames are not this conversation at all (`units.ts`'s
-/// `isDispatched` - the wire spells no dispatch as null). Those two are what
-/// this tests; every other user frame carries words or a picture.
+/// decision** - `apply.ts` asks `fold([message]).length > 0` - and it carries
+/// the cases the fold's own comments name: a call's result arrives in a user
+/// frame and draws nothing on its own (which is what holds a call and the
+/// frames that update it in one turn), the launch terminal's local-command
+/// family is a decided ignore that draws nothing at all, a dispatched agent's
+/// frames are not this conversation (`units.ts`'s `isDispatched` - the wire
+/// spells no dispatch as null), and a frame whose content is not an array of
+/// blocks has none to read. Everything else a person's frame carries - words,
+/// a picture, a notice the harness sends, a frame a later CLI adds - draws.
 fn opens_a_turn(message: &Value) -> bool {
     if message.get("type").and_then(Value::as_str) != Some("user") {
         return false;
@@ -770,13 +576,31 @@ fn opens_a_turn(message: &Value) -> bool {
         return false;
     }
     match message.get("message").and_then(|msg| msg.get("content")) {
-        // A bare content string is words, which draw.
-        Some(Value::String(_)) => true,
-        Some(Value::Array(blocks)) => blocks
-            .iter()
-            .any(|block| !matches!(block.get("type").and_then(Value::as_str), Some("tool_result"))),
+        Some(Value::Array(blocks)) => blocks.iter().any(draws),
         _ => false,
     }
+}
+
+/// Whether one content block draws anything in the chat fold: the two arms
+/// above, at the block's own grain.
+fn draws(block: &Value) -> bool {
+    match block.get("type").and_then(Value::as_str) {
+        Some("tool_result") => false,
+        Some("text") => {
+            block.get("text").and_then(Value::as_str).is_none_or(|text| !is_local_command(text))
+        }
+        _ => true,
+    }
+}
+
+/// The launch terminal's local-command family, which the chat filters as a
+/// decided ignore (`units.ts`'s `isLocalCommand`, the same four heads).
+fn is_local_command(text: &str) -> bool {
+    let held = text.trim_start();
+    held.starts_with("<local-command-caveat>")
+        || held.starts_with("<local-command-stdout>")
+        || held.starts_with("<command-name>")
+        || held.starts_with("<command-message>")
 }
 
 /// What a frame says about the header: the turn, the mode and the model.
@@ -954,141 +778,14 @@ fn clear_ask(record: &mut Map<String, Value>, id: Option<&Value>, prefix: &str) 
     true
 }
 
-/// A take as it begins, as this side's own state holds it.
-fn new_take(floor_db: f64, generation: Option<&Value>) -> Value {
-    let mut take = json!({
-        "phase": "recording",
-        "levels": [],
-        "peak_db": floor_db,
-        "progress": [0, null],
-        "floor_db": floor_db,
-        // The wire carries no duration: this is the same reading the server
-        // computes, from this side's clock.
-        "elapsed_ms": 0,
-        "started_ms": now_ms(),
-    });
-    // This side's own bookkeeping, so a report for a superseded take is
-    // dropped rather than drawn over the live one. The wire never sends it,
-    // and a payload naming none leaves the key off - the shape of the TS
-    // side's `undefined`.
-    if let Some(generation) = generation
-        && let Some(take) = take.as_object_mut()
-    {
-        take.insert("generation".to_owned(), generation.clone());
-    }
-    take
-}
-
-/// The take the composer holds, if any.
-fn held_take(record: &Map<String, Value>) -> Option<&Map<String, Value>> {
-    record.get("composer")?.get("take")?.as_object()
-}
-
-fn held_take_mut(record: &mut Map<String, Value>) -> Option<&mut Map<String, Value>> {
-    record.get_mut("composer")?.get_mut("take")?.as_object_mut()
-}
-
-/// Keep the elapsed reading in step with the take's own clock.
-fn stamp_elapsed(take: &mut Map<String, Value>) {
-    if let Some(started) = take.get("started_ms").and_then(Value::as_u64) {
-        take.insert("elapsed_ms".to_owned(), json!(now_ms().saturating_sub(started)));
-    }
-}
-
-/// Whether a report about a take is about THIS take: a take with no
-/// generation checks nothing - only one take per seat is live at a time.
-fn of_this_take(take: &Map<String, Value>, payload: &Value) -> bool {
-    match take.get("generation") {
-        None => true,
-        Some(held) => Some(held) == payload.get("generation"),
-    }
-}
-
-/// One reading, as a fraction of the take's own range - `composer/meter.ts`'s
-/// `fractionOf`, mirrored.
-fn fraction_of(peak_db: f64, floor_db: f64) -> f64 {
-    let span = (METER_CEILING_DB - floor_db).max(1.0);
-    ((peak_db - floor_db) / span).clamp(0.0, 1.0)
-}
-
-/// A finished take's outcome, keyed: `DictateOutcome` is externally tagged,
-/// so a unit variant crosses as its name alone.
-fn outcome_of(value: Option<&Value>) -> Map<String, Value> {
-    match value {
-        Some(Value::String(name)) => {
-            let mut map = Map::new();
-            map.insert(name.clone(), Value::Null);
-            map
-        }
-        Some(Value::Object(map)) => map.clone(),
-        _ => Map::new(),
-    }
-}
-
-/// The notice a finished take leaves, worded as the server's own
-/// `composer.rs` words it - a reader who dictates in any view reads the same
-/// lines.
-fn notice_of(outcome: &Map<String, Value>, floor_db: f64) -> Option<Value> {
-    if let Some(landed) = outcome.get("landed") {
-        return Some(json!({
-            "kind": "landed",
-            "text": landed.get("text").and_then(Value::as_str).unwrap_or(""),
-            "truncated": landed.get("truncated") == Some(&Value::Bool(true)),
-        }));
-    }
-    if outcome.contains_key("empty") {
-        return Some(json!({
-            "kind": "line", "tone": "q",
-            "text": "that was all filler \u{b7} nothing to insert",
-        }));
-    }
-    if let Some(silent) = outcome.get("no_audio") {
-        let peak = silent.get("peak_db").and_then(Value::as_f64);
-        return Some(match peak {
-            None => json!({
-                "kind": "line", "tone": "bad",
-                "text": "no signal from the microphone at all \u{b7} check permission or mute",
-            }),
-            Some(peak) => {
-                let seconds = silent.get("seconds").and_then(Value::as_f64).unwrap_or(0.0);
-                json!({
-                    "kind": "line", "tone": "q",
-                    "text": format!(
-                        "nothing above {} dBFS in {}s \u{b7} loudest was {:.1} \u{b7} try again",
-                        floor_db.round(), seconds, peak,
-                    ),
-                })
-            }
-        });
-    }
-    if let Some(refused) = outcome.get("refused") {
-        return Some(json!({
-            "kind": "line", "tone": "bad",
-            "text": refused.get("message").and_then(Value::as_str).unwrap_or(""),
-        }));
-    }
-    if outcome.contains_key("failed") {
-        return Some(json!({
-            "kind": "line", "tone": "q",
-            "text": "dictation failed \u{b7} try again; restart forge if it repeats",
-        }));
-    }
-    None
-}
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
-/// Ask the core for a subject afresh: the read a REPLACES update and a home
-/// re-read both need. The subscription is given up and taken again, which is
-/// what makes the core answer with a snapshot rather than a delta.
-pub fn refresh(socket: &Socket, subject: &Value) {
+/// Ask the core for a subject afresh: the read a REPLACES update needs. The
+/// subscription is given up and taken again, which is what makes the core
+/// answer with a snapshot rather than a delta. **The declaration is the
+/// caller's**: a refresh with flags of its own would escalate a seat watched
+/// without them, and the core parks turns on whatever answered.
+pub fn refresh(socket: &Socket, subject: &Value, answering: bool, browser: bool) {
     socket.unsubscribe(subject.clone());
-    socket.subscribe(subject.clone(), true, true);
+    socket.subscribe(subject.clone(), answering, browser);
 }
 
 #[cfg(test)]
@@ -1103,9 +800,8 @@ mod tests {
         json!({
             "header": { "turn_in_flight": false, "context": { "percent": 0.1, "max_tokens": 1000 } },
             "conversation": { "turns": [], "compaction_count": 0 },
-            "composer": { "take": null, "notice": null, "compacting": false },
-            "queue": [],
-            "queue_ended": null,
+            "composer": { "compacting": false },
+            "state": { "queue": [] },
             "pending_asks": [],
         })
     }
@@ -1114,6 +810,14 @@ mod tests {
         let mut records = Records::new();
         records.snapshot(&seat(), record());
         records
+    }
+
+    fn key() -> &'static str {
+        "session:Busytools\u{0}forge\u{0}lead"
+    }
+
+    fn held(records: &Records) -> Value {
+        records.read(key()).expect("held").expect("ready").clone()
     }
 
     fn update(payload: Value) -> Value {
@@ -1136,27 +840,12 @@ mod tests {
     #[test]
     fn a_snapshot_reads_back_and_an_update_patches_it() {
         let mut records = open();
-        let changed =
-            records.apply(&seated("context_usage_snapshot", json!({ "percentage": 0.42 })));
-        assert_eq!(changed.seats.len(), 1);
-        let held =
-            records.read("session:Busytools\u{0}forge\u{0}lead").expect("held").expect("ready");
+        records.apply(&seated("context_usage_snapshot", json!({ "percentage": 0.42 })));
         assert_eq!(
-            held["header"]["context"]["percent"],
+            held(&records)["header"]["context"]["percent"],
             json!(0.42),
             "the update's name is read into the record's"
         );
-    }
-
-    /// A re-delivered frame is not news: the same value twice files one
-    /// change.
-    #[test]
-    fn an_update_that_changes_nothing_is_not_a_change() {
-        let mut records = open();
-        let first = records.apply(&seated("dispatches_changed", json!({ "has_dispatches": true })));
-        assert_eq!(first.seats.len(), 1);
-        let again = records.apply(&seated("dispatches_changed", json!({ "has_dispatches": true })));
-        assert!(again.seats.is_empty(), "the same flag twice is one change");
     }
 
     /// A person's words open a turn; a tool result and a sub-agent's frame
@@ -1173,16 +862,22 @@ mod tests {
             "message": { "content": [{ "type": "text", "text": "a sub-agent's own words" }] },
         });
         records.apply(&update(json!({ "msg": dispatched, "key": seat()["session"] })));
+        // The launch terminal's typing is a decided ignore: a frame whose
+        // only block is a local command draws nothing and opens no turn.
+        let local = json!({
+            "type": "user",
+            "message": { "content": [{ "type": "text", "text": "<command-name>/clear</command-name>" }] },
+        });
+        records.apply(&update(json!({ "msg": local, "key": seat()["session"] })));
         // The next person's words are a turn of their own.
         records.apply(&update(json!({ "msg": words("and again"), "key": seat()["session"] })));
-        let held =
-            records.read("session:Busytools\u{0}forge\u{0}lead").expect("held").expect("ready");
-        let turns = held["conversation"]["turns"].as_array().expect("turns");
+        let seen = held(&records);
+        let turns = seen["conversation"]["turns"].as_array().expect("turns");
         assert_eq!(turns.len(), 2, "two turns: the words opened two, nothing else split the first");
         assert_eq!(
             turns[0]["messages"].as_array().expect("messages").len(),
-            3,
-            "the result and the sub-agent's frame joined"
+            4,
+            "the result, the sub-agent's frame and the local command joined"
         );
     }
 
@@ -1194,13 +889,9 @@ mod tests {
         records.apply(&update(
             json!({ "msg": { "type": "system", "subtype": "init" }, "key": seat()["session"] }),
         ));
-        let held =
-            records.read("session:Busytools\u{0}forge\u{0}lead").expect("held").expect("ready");
-        assert_eq!(held["header"]["turn_in_flight"], json!(true), "init opens a turn");
+        assert_eq!(held(&records)["header"]["turn_in_flight"], json!(true), "init opens a turn");
         records.apply(&seated("turn_complete", json!({})));
-        let held =
-            records.read("session:Busytools\u{0}forge\u{0}lead").expect("held").expect("ready");
-        assert_eq!(held["header"]["turn_in_flight"], json!(false));
+        assert_eq!(held(&records)["header"]["turn_in_flight"], json!(false));
     }
 
     /// A draft leads the queue and a question waits behind it - the ordering
@@ -1212,9 +903,8 @@ mod tests {
         records.apply(&seated("question_request", json!({ "request": question })));
         let draft = json!({ "id": "d1", "channel": "#x", "text": "hey" });
         records.apply(&seated("slack_post_pending", json!({ "draft": draft })));
-        let held =
-            records.read("session:Busytools\u{0}forge\u{0}lead").expect("held").expect("ready");
-        let asks = held["pending_asks"].as_array().expect("asks");
+        let seen = held(&records);
+        let asks = seen["pending_asks"].as_array().expect("asks");
         assert_eq!(asks[0]["kind"], json!("slack_draft"), "the draft leads");
         assert_eq!(asks[1]["kind"], json!("question"));
     }
@@ -1228,73 +918,53 @@ mod tests {
         let question = json!({ "tool_call": { "tool_call_id": "t1" }, "question_index": 1 });
         records.apply(&seated("question_request", json!({ "request": question })));
         // The previous round's resolution lands late: same call, round 0.
-        let stale = records.apply(&seated(
+        records.apply(&seated(
             "pending_interaction_resolved",
             json!({ "tool_id": "t1", "question_index": 0 }),
         ));
-        assert!(stale.seats.is_empty(), "round 0 is not round 1");
-        let held =
-            records.read("session:Busytools\u{0}forge\u{0}lead").expect("held").expect("ready");
-        assert_eq!(held["pending_asks"].as_array().expect("asks").len(), 1);
+        assert_eq!(
+            held(&records)["pending_asks"].as_array().expect("asks").len(),
+            1,
+            "round 0 is not round 1"
+        );
         // The resolution of the round it does name clears it.
-        let named = records.apply(&seated(
+        records.apply(&seated(
             "pending_interaction_resolved",
             json!({ "tool_id": "t1", "question_index": 1 }),
         ));
-        assert_eq!(named.seats.len(), 1, "round 1's own resolution");
-        let held =
-            records.read("session:Busytools\u{0}forge\u{0}lead").expect("held").expect("ready");
-        assert!(held["pending_asks"].as_array().expect("asks").is_empty());
+        assert!(held(&records)["pending_asks"].as_array().expect("asks").is_empty());
     }
 
-    /// The prompt pile: words in, a settled state out, and the ending only
-    /// for the states that leave with a word.
+    /// The prompt pile folds where the page reads it: `state.queue`, never
+    /// the record's top level, and a state this build does not know leaves
+    /// the row standing rather than dropping it on a parse miss.
     #[test]
-    fn a_queued_prompt_leaves_with_a_word_only_when_it_was_not_taken() {
+    fn a_queued_prompt_folds_into_the_state_the_page_reads() {
         let mut records = open();
         records.apply(&seated(
             "prompt_queued",
             json!({ "uuid": "u1", "text": "do it", "source": "forge" }),
         ));
+        let seen = held(&records);
+        assert_eq!(
+            seen["state"]["queue"].as_array().expect("queue").len(),
+            1,
+            "the pile is folded where the read path looks"
+        );
+        assert!(seen["queue"].is_null(), "and nothing is written where nothing reads");
         records.apply(&seated("prompt_lifecycle", json!({ "uuid": "u1", "state": "discarded" })));
-        let held =
-            records.read("session:Busytools\u{0}forge\u{0}lead").expect("held").expect("ready");
-        assert_eq!(held["queue"].as_array().expect("queue").len(), 0);
-        assert_eq!(held["queue_ended"]["state"], json!("discarded"));
-        // A state a later CLI adds leaves the row standing rather than
-        // dropping it on a parse miss.
+        assert_eq!(held(&records)["state"]["queue"].as_array().expect("queue").len(), 0);
         records.apply(&seated(
             "prompt_queued",
             json!({ "uuid": "u2", "text": "later", "source": "forge" }),
         ));
-        let unknown = records
+        records
             .apply(&seated("prompt_lifecycle", json!({ "uuid": "u2", "state": "something_new" })));
-        assert!(unknown.seats.is_empty());
-        let held =
-            records.read("session:Busytools\u{0}forge\u{0}lead").expect("held").expect("ready");
-        assert_eq!(held["queue"].as_array().expect("queue").len(), 1);
-    }
-
-    /// A take's ending is the server's own words, and a refusal resolves no
-    /// take that is drawn.
-    #[test]
-    fn a_refusal_does_not_clear_a_live_take() {
-        let mut records = open();
-        records.apply(&seated("dictate_started", json!({ "floor_db": -50.0, "generation": 1 })));
-        let refused = records.apply(&seated(
-            "dictate_ended",
-            json!({ "outcome": { "refused": { "message": "already dictating" } }, "generation": 1 }),
-        ));
-        assert!(refused.seats.is_empty(), "a refusal leaves the drawn take alone");
-        let held =
-            records.read("session:Busytools\u{0}forge\u{0}lead").expect("held").expect("ready");
-        assert!(held["composer"]["take"].is_object());
-        // A real ending clears it and leaves the notice.
-        records.apply(&seated("dictate_ended", json!({ "outcome": "empty", "generation": 1 })));
-        let held =
-            records.read("session:Busytools\u{0}forge\u{0}lead").expect("held").expect("ready");
-        assert!(held["composer"]["take"].is_null());
-        assert_eq!(held["composer"]["notice"]["kind"], json!("line"));
+        assert_eq!(
+            held(&records)["state"]["queue"].as_array().expect("queue").len(),
+            1,
+            "a word the CLI adds later leaves the row standing"
+        );
     }
 
     /// A REPLACES update is a fresh read, not a patch: the caller is told to
@@ -1303,65 +973,8 @@ mod tests {
     #[test]
     fn a_replaces_update_asks_for_a_read_and_keeps_the_record_readable() {
         let mut records = open();
-        let changed = records.apply(&seated("session_replaced", json!({})));
-        assert_eq!(changed.refresh.len(), 1, "the seat is re-read");
-        assert!(changed.seats.is_empty(), "nothing was patched");
-        let held =
-            records.read("session:Busytools\u{0}forge\u{0}lead").expect("held").expect("ready");
-        assert!(held.is_object(), "the record stands until the snapshot lands");
-    }
-
-    /// The home's own routing: the fleet's news re-reads it, and a person's
-    /// own words do not - the bulk of the stream must not cost a read.
-    #[test]
-    fn a_fleet_news_update_marks_a_held_home_and_words_do_not() {
-        let mut records = open();
-        records.snapshot(&json!("home"), json!({ "projects": [] }));
-        let quiet = records
-            .apply(&json!({ "chat_appended": { "msg": words("hi"), "key": seat()["session"] } }));
-        assert!(!quiet.home, "a turn's words are not fleet news");
-        let news = records.apply(&seated("turn_error", json!({})));
-        assert!(news.home, "a failing turn moves the rows");
-        let keyless = records.apply(&json!({ "connection_failed": { "reason": "rate limited" } }));
-        assert!(keyless.home, "a keyless update is the home's alone");
-        assert!(keyless.seats.is_empty(), "and no seat's");
-    }
-
-    /// A dropped socket takes a live recording with it - the core drops a
-    /// take whose reader went away, and no frame says so (#1880).
-    #[test]
-    fn a_dropped_socket_takes_a_live_recording_with_it() {
-        let mut records = open();
-        records.apply(&seated("dictate_started", json!({ "floor_db": -50.0, "generation": 1 })));
-        let changed = records.dropped();
-        assert_eq!(changed.seats.len(), 1);
-        let held =
-            records.read("session:Busytools\u{0}forge\u{0}lead").expect("held").expect("ready");
-        assert!(held["composer"]["take"].is_null(), "the take went with the socket");
-        assert!(records.dropped().seats.is_empty(), "and a second drop is not news");
-    }
-
-    /// A reading lands as a fraction of the take's own range, the newest kept
-    /// - and a report naming half of the progress still lands.
-    #[test]
-    fn a_level_lands_as_a_fraction_and_half_a_progress_still_lands() {
-        let mut records = open();
-        records.apply(&seated("dictate_started", json!({ "floor_db": -50.0, "generation": 7 })));
-        records.apply(&seated("dictate_level", json!({ "peak_db": -25.0, "generation": 7 })));
-        let held =
-            records.read("session:Busytools\u{0}forge\u{0}lead").expect("held").expect("ready");
-        let take = &held["composer"]["take"];
-        assert_eq!(take["levels"], json!([0.5]), "half of a 50 dB range");
-        assert_eq!(take["peak_db"], json!(-25.0));
-        // A report for a superseded take is dropped - the generation lives on
-        // the reports that name it (`apply.ts` checks it on progress and on
-        // the ending, not on a level).
-        let stale =
-            records.apply(&seated("dictate_progress", json!({ "done": 1, "generation": 8 })));
-        assert!(stale.seats.is_empty(), "generation 8 is not the live take");
-        records.apply(&seated("dictate_progress", json!({ "done": 3, "generation": 7 })));
-        let held =
-            records.read("session:Busytools\u{0}forge\u{0}lead").expect("held").expect("ready");
-        assert_eq!(held["composer"]["take"]["progress"], json!([3, null]));
+        let refresh = records.apply(&seated("session_replaced", json!({})));
+        assert_eq!(refresh, vec![key().to_owned()], "the seat is re-read");
+        assert!(held(&records).is_object(), "the record stands until the snapshot lands");
     }
 }

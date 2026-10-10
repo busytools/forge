@@ -25,6 +25,12 @@
 //!   cargo nextest run --manifest-path client/src-tauri/Cargo.toml \
 //!     --run-ignored ignored-only --test bridge_live --no-capture
 //! ```
+//!
+//! **A rerun needs a fresh conversation.** The scratch session keeps its
+//! history, and a repeat prompt is answered from it - the model skips the
+//! tool, the ring stays empty, and the stack looks broken. Wipe the stack's
+//! store (`find <stack>/home -depth -delete`, then recreate it) and reboot
+//! before a rerun.
 
 mod support;
 
@@ -131,7 +137,11 @@ async fn a_seats_browser_ask_is_answered_while_the_page_is_away() {
     // a snapshot, its conversation as the newest page - until the page's own
     // title rides in on the turn.
     let mut saw: Vec<usize> = Vec::new();
-    let mut collected = String::new();
+    // The catch-up's own record, held apart from the frames around it: the
+    // proof has to be IN the record the return is handed, not in any text a
+    // frame happened to carry (the prompt echoes `browser_navigate`, and a
+    // passthrough of the prompt would prove nothing).
+    let mut caught: Option<Value> = None;
     let mut reconciled = 0_usize;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(360);
     while tokio::time::Instant::now() < deadline {
@@ -145,41 +155,46 @@ async fn a_seats_browser_ask_is_answered_while_the_page_is_away() {
                         && message["data"]["conversation"].is_object()
                     {
                         reconciled += 1;
+                        caught = Some(message["data"].clone());
                     }
-                    collected.push_str(&message.to_string());
                 }
                 ClientEvent::Asks { inflight } => saw.push(inflight),
                 _ => {}
             }
         }
-        if collected.contains(&secret) {
+        if caught.as_ref().is_some_and(|data| data.to_string().contains(&secret)) {
             break;
         }
     }
     let elapsed = away_began.elapsed();
+    let caught = caught.unwrap_or(Value::Null);
 
     eprintln!(
-        "page-away for {:.1}s: {} catch-up snapshots, ring saw {:?}, turn text collected: {} bytes",
+        "page-away for {:.1}s: {} catch-up snapshots, ring saw {:?}, the last record {} bytes",
         elapsed.as_secs_f64(),
         reconciled,
         saw,
-        collected.len(),
+        caught.to_string().len(),
     );
 
-    assert!(
-        saw.contains(&1) && saw.contains(&0),
-        "an ask ran and was answered while the page was away: {saw:?}",
-    );
+    // A full cycle, in order: an ask went in flight and came back out, with
+    // the page away the whole time.
+    let cycle = saw
+        .iter()
+        .position(|inflight| *inflight > 0)
+        .is_some_and(|began| saw[began..].contains(&0));
+    assert!(cycle, "an ask ran and was answered while the page was away: {saw:?}");
     assert!(reconciled > 0, "the catch-up handed the record over after the away window");
     assert!(
-        collected.contains("browser_navigate"),
-        "the turn's frames survived the away window: {}",
-        &collected[collected.len().saturating_sub(2_000)..],
+        caught.to_string().contains("tool_result"),
+        "the turn really called a tool (a result rides its call's frame): {}",
+        &caught.to_string()[..caught.to_string().len().min(2_000)],
     );
     assert!(
-        collected.contains(&secret),
-        "the ask was answered by the real browser (the served page's secret is in the turn): {}",
-        &collected[collected.len().saturating_sub(2_000)..],
+        caught.to_string().contains(&secret),
+        "the ask was answered by the real browser - the served page's secret is in the \
+         record the return was handed: {}",
+        &caught.to_string()[..caught.to_string().len().min(2_000)],
     );
 
     bridge.close();

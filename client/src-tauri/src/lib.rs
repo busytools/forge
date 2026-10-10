@@ -77,7 +77,11 @@ mod commands {
         pump(app.clone(), rx);
     }
 
-    #[tauri::command]
+    /// Dial the server. **`async`, though the body is sync**: a sync command
+    /// runs on the main thread, where no tokio reactor is running and the
+    /// tasks the connection spawns would panic at birth. Under `async` the
+    /// body runs on the runtime instead.
+    #[tauri::command(async)]
     pub fn client_connect(bridge: tauri::State<'_, Arc<Bridge>>, url: String) {
         bridge.connect(url);
     }

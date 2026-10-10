@@ -28,7 +28,7 @@
 //! its conversation makes - the answer that seat's `more` would have carried
 //! - so the catch-up is complete rather than merely live again.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -37,7 +37,7 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
 use crate::browser::BrowserHost;
-use crate::records::{self, Changed, Records};
+use crate::records::{self, Records};
 use crate::socket::{Socket, SocketEvent, Status};
 
 /// How long a page's heartbeat stays fresh. Past it the webview is presumed
@@ -45,6 +45,14 @@ use crate::socket::{Socket, SocketEvent, Status};
 /// and raw frames are counted rather than emitted. Bounds the backlog a park
 /// can leave in flight, and is what the next heartbeat's reconcile answers.
 const FRESH_MS: u64 = 15_000;
+
+/// How many frames a parked spell may hold for the page. Only frames the
+/// records do NOT rebuild are kept (the chat's own bulk is, in the record's
+/// conversation), and those are human-paced - a seat swap, a dock's ending,
+/// a dictation's close - so the ring is reached only by a park of hours. On
+/// the pathological overflow the OLDEST go, loudly: the newest are the ones
+/// whose effects a page would still be meeting.
+const PARKED_RING: usize = 1024;
 
 /// One fact for the page, as the app half emits it.
 ///
@@ -84,9 +92,17 @@ struct State {
     greeting: Option<Value>,
     role: bool,
     /// When the page last heartbeated, and how many frames went unforwarded
-    /// while it was presumed parked.
+    /// while it was presumed parked. **The suppressed frames the records do
+    /// not rebuild are HELD, not dropped** (rule 25): the ring carries them
+    /// across the spell and the reconcile flushes it first, so a released
+    /// seat, a dock's ending or a dictation's close still reaches the page.
     last_beat: Option<Instant>,
     suppressed: u64,
+    parked: VecDeque<Value>,
+    /// Seats a REPLACES frame has asked a fresh read for and no snapshot has
+    /// answered yet: a second frame while one is out coalesces into it
+    /// rather than asking again.
+    refreshing: HashSet<String>,
 }
 
 /// The app half, as the Tauri layer drives it.
@@ -112,6 +128,8 @@ impl Bridge {
                 role: false,
                 last_beat: None,
                 suppressed: 0,
+                parked: VecDeque::new(),
+                refreshing: HashSet::new(),
             }),
             host,
             events,
@@ -133,21 +151,28 @@ impl Bridge {
     pub fn connect(self: &Arc<Self>, url: String) {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let socket = Socket::open(url, tx);
-        let wanted: Vec<(Value, bool, bool)> = {
+        let wanted: Vec<(Value, bool, bool, usize)> = {
             let mut state = self.lock();
             state.socket = Some(socket.clone());
             state.status = "connecting";
             state.greeting = None;
             state.last_beat = Some(Instant::now());
             state.suppressed = 0;
+            state.parked.clear();
+            state.refreshing.clear();
             state
                 .held
                 .values()
-                .map(|watch| (watch.what.clone(), watch.answering, watch.browser))
+                .map(|watch| (watch.what.clone(), watch.answering, watch.browser, watch.readers))
                 .collect()
         };
-        for (what, answering, browser) in wanted {
-            socket.subscribe(what, answering, browser);
+        for (what, answering, browser, readers) in wanted {
+            // Once per OPEN subscription: the server counts, and the new
+            // socket starts at zero - a subject two page readers hold has to
+            // be asked for twice, or the first unsubscribe silences it.
+            for _ in 0..readers {
+                socket.subscribe(what.clone(), answering, browser);
+            }
         }
         self.emit(ClientEvent::Connection);
         let bridge = Arc::clone(self);
@@ -208,11 +233,19 @@ impl Bridge {
     }
 
     /// Ask again for a subject the page already holds: the core answers with
-    /// a snapshot, which replaces the record whole.
+    /// a snapshot, which replaces the record whole. **The declaration is the
+    /// held one**: a refresh with flags of its own would escalate a seat
+    /// watched without them, and the core parks turns on whatever answered.
     pub fn refresh(&self, what: &Value) {
         let state = self.lock();
+        let key = records::subject_key(what);
+        let (answering, browser) = state
+            .held
+            .get(&key)
+            .map(|watch| (watch.answering, watch.browser))
+            .unwrap_or((false, false));
         if let Some(socket) = &state.socket {
-            records::refresh(socket, what);
+            records::refresh(socket, what, answering, browser);
         }
     }
 
@@ -288,41 +321,61 @@ impl Bridge {
 
     /// The page's pulse, and where a parked spell is answered. One heartbeat
     /// older than `FRESH_MS` past its predecessor means the page did not run
-    /// for that long; the frames counted meanwhile are what the reconcile
-    /// catches it up on.
+    /// for that long - **whatever was counted**. A spell with no frames at
+    /// all still needs its reconcile (the webview may have dropped clauses
+    /// this side cannot see), and a copy of the records is cheap.
     pub fn heartbeat(&self) {
-        let behind = {
+        let stale = {
             let mut state = self.lock();
             let stale =
                 state.last_beat.is_some_and(|at| at.elapsed() >= Duration::from_millis(FRESH_MS));
             state.last_beat = Some(Instant::now());
-            if stale { std::mem::take(&mut state.suppressed) } else { 0 }
+            state.suppressed = 0;
+            stale
         };
-        if behind > 0 {
+        if stale {
             self.reconcile();
         }
     }
 
-    /// The page is behind: hand it the records the frames would have built,
-    /// in the shapes it already reads them in.
+    /// The page is behind: hand it what the park would have handed it.
     ///
-    /// A record IS what the core's snapshot carries, so a held record goes
-    /// back out as the snapshot message the page's store would have held -
-    /// and a seat's conversation, which the page folds from frames rather
-    /// than from its store, goes out as the newest page its `more` with no
-    /// `before` would have carried. Nothing new crosses: both are the
-    /// message kinds the page already handles, so the catch-up rides the
-    /// page's own ingest paths.
+    /// **The stream-only frames go first, as themselves**, in the order they
+    /// were held: a released seat, a dock's ending, a dictation's close are
+    /// frames the records do not rebuild, and a reconcile without them would
+    /// be the drop rule 25 forbids.
+    ///
+    /// Then the records, in the shapes the page already reads them: a seat's
+    /// record IS what the core's snapshot carries, so it goes back out as
+    /// that snapshot - its conversation riding the newest page its `more`
+    /// with no `before` would have carried, marked so the page can tell it
+    /// from an older-page answer. A subject that is not a seat is ASKED FOR
+    /// ANEW instead: its record folds nothing on this side (the page's own
+    /// home fold reads the frames), so a copy of it here would be stale,
+    /// while a re-subscribe answers with the truth.
     fn reconcile(&self) {
+        let mut flush = Vec::new();
+        {
+            let mut state = self.lock();
+            flush.extend(state.parked.drain(..));
+        }
+        for message in flush {
+            self.emit(ClientEvent::Inbound(message));
+        }
         let state = self.lock();
         for (key, watch) in &state.held {
+            let Some(session) = watch.what.get("session") else {
+                if let Some(socket) = &state.socket {
+                    records::refresh(socket, &watch.what, watch.answering, watch.browser);
+                }
+                continue;
+            };
             let Some(Ok(record)) = state.records.read(key) else { continue };
             self.emit(ClientEvent::Inbound(json!({
                 "kind": "snapshot",
                 "subject": watch.what,
                 "data": record,
             })));
-            let Some(session) = watch.what.get("session") else { continue };
             let Some(turns) = record.get("conversation").and_then(|c| c.get("turns")) else {
                 continue;
             };
@@ -333,6 +386,11 @@ impl Bridge {
                 // with no `before` would have carried.
                 "cursor": null,
                 "turns": turns,
+                // **Told apart from an answer**: a page read while an older
+                // ask is "in flight" would be spliced as an older page and
+                // scramble the order, so the page is marked as the catch-up
+                // it is.
+                "reconciled": true,
             })));
         }
     }
@@ -356,7 +414,7 @@ impl Bridge {
     }
 
     fn status_moved(&self, status: Status) {
-        let changed = {
+        {
             let mut state = self.lock();
             state.status = match status {
                 Status::Connecting => "connecting",
@@ -369,15 +427,16 @@ impl Bridge {
                 // heartbeat carries the proof rather than the promise.
                 state.last_beat = Some(Instant::now());
                 state.suppressed = 0;
-                Changed::default()
+                state.parked.clear();
+                state.refreshing.clear();
             } else {
-                // The take goes with the socket; everything else stands until
-                // the reconnect's snapshots replace it.
-                state.records.dropped()
+                // A take is the page's own and its own status arm clears it
+                // (#1880); everything else stands until the reconnect's
+                // snapshots replace it.
+                state.records.dropped();
             }
-        };
+        }
         self.emit(ClientEvent::Connection);
-        self.acted(changed);
     }
 
     fn message(self: &Arc<Self>, message: Value) {
@@ -391,15 +450,18 @@ impl Bridge {
             "snapshot" => {
                 let Some(subject) = message.get("subject") else { return };
                 let data = message.get("data").cloned().unwrap_or(Value::Null);
-                let changed = self.lock().records.snapshot(subject, data);
+                let key = records::subject_key(subject);
+                let mut state = self.lock();
+                state.refreshing.remove(&key);
+                state.records.snapshot(subject, data);
+                drop(state);
                 self.forward(&message);
-                self.acted(changed);
             }
             "update" => {
                 let Some(update) = message.get("update") else { return };
-                let changed = self.lock().records.apply(update);
+                let refresh = self.lock().records.apply(update);
                 self.forward(&message);
-                self.acted(changed);
+                self.acted(refresh);
             }
             "browser_ask" => self.answer_ask(&message),
             // Consumed here alone, each provably unusable by the page: a
@@ -413,12 +475,27 @@ impl Bridge {
     }
 
     /// Hand the page one frame, unless it is presumed parked.
+    ///
+    /// A parked spell's frames are not lost wholesale: the ones the records
+    /// rebuild (a seat's chat, in the record's conversation) are only
+    /// counted, and every other frame is HELD in the ring for the reconcile
+    /// to flush - a released seat, a dock's ending, a dictation's close, an
+    /// error, a devices answer are frames no record carries.
     fn forward(&self, message: &Value) {
         let mut state = self.lock();
         let fresh =
             state.last_beat.is_some_and(|at| at.elapsed() < Duration::from_millis(FRESH_MS));
         if !fresh {
             state.suppressed += 1;
+            if !rebuilt_by_records(message) {
+                if state.parked.len() >= PARKED_RING {
+                    state.parked.pop_front();
+                    tauri_plugin_log::log::warn!(
+                        "a parked page's frame ring overflowed; the oldest went"
+                    );
+                }
+                state.parked.push_back(message.clone());
+            }
             return;
         }
         drop(state);
@@ -449,18 +526,22 @@ impl Bridge {
     /// Do what a record fold asked of this half: re-read what a REPLACES frame
     /// took a new occupant for. The page is told nothing here - the frames
     /// are its notices, exactly as they were when it held the socket.
-    fn acted(&self, changed: Changed) {
-        if changed.refresh.is_empty() {
+    fn acted(&self, refresh: Vec<String>) {
+        if refresh.is_empty() {
             return;
         }
-        let state = self.lock();
-        for key in &changed.refresh {
-            let (Some(subject), Some(socket)) =
-                (state.records.subject_of(key), state.socket.as_ref())
-            else {
+        let mut state = self.lock();
+        for key in refresh {
+            // A read already out for this seat answers everything a second
+            // ask would (the page's own store coalesces the same way).
+            if !state.refreshing.insert(key.clone()) {
                 continue;
-            };
-            records::refresh(socket, &subject);
+            }
+            let Some(watch) = state.held.get(&key) else { continue };
+            let (what, answering, browser) = (watch.what.clone(), watch.answering, watch.browser);
+            if let Some(socket) = &state.socket {
+                records::refresh(socket, &what, answering, browser);
+            }
         }
     }
 
@@ -472,6 +553,17 @@ impl Bridge {
             socket.close();
         }
     }
+}
+
+/// Whether the records rebuild this frame for a returning page: the chat's
+/// own bulk, which the record's conversation carries. **One case wide on
+/// purpose** - everything else, a kind neither side knows included, is held
+/// across a park rather than dropped.
+fn rebuilt_by_records(message: &Value) -> bool {
+    message.get("kind").and_then(Value::as_str) == Some("update")
+        && message
+            .get("update")
+            .is_some_and(|update| records::variant_name(update) == Some("chat_appended"))
 }
 
 #[cfg(test)]
@@ -587,30 +679,64 @@ mod tests {
         sent(&bridge, context_usage(0.5));
         assert_eq!(bridge.lock().suppressed, 1, "the frame was counted, not forwarded");
         assert!(rx.try_recv().is_err(), "nothing was emitted while the page was away");
-        // The page comes back: the heartbeat answers with the catch-up.
+        // The page comes back: the heartbeat hands the park's stream-only
+        // frames over first, then the records.
         bridge.heartbeat();
-        let ClientEvent::Inbound(caught) = event(&mut rx, is_inbound()).await else {
-            unreachable!("filtered to inbound");
-        };
-        assert_eq!(caught["kind"], "snapshot");
+        let caught = event(&mut rx, is_inbound_kind("snapshot")).await;
+        let ClientEvent::Inbound(caught) = caught else { unreachable!("filtered to inbound") };
         assert_eq!(caught["subject"], seat(), "the record goes back under its own subject");
         assert_eq!(
             caught["data"]["header"]["context"]["percent"],
             json!(0.5),
             "the record folded the frame the page missed"
         );
-        let ClientEvent::Inbound(page) = event(&mut rx, is_inbound()).await else {
+        let ClientEvent::Inbound(page) = event(&mut rx, is_inbound_kind("page")).await else {
             unreachable!("filtered to inbound");
         };
-        assert_eq!(page["kind"], "page");
         assert_eq!(
             page["cursor"],
             json!(null),
             "the newest window, as `more` with no before answers"
         );
+        assert_eq!(page["reconciled"], json!(true), "and it says which kind of page it is");
         assert_eq!(page["turns"][0]["key"], json!("t1"));
         assert_eq!(page["conversation"], seat()["session"]);
         assert_eq!(bridge.lock().suppressed, 0, "the spell is spent");
+    }
+
+    /// **The stream-only set crosses a park.** A released seat and a dock's
+    /// ending are frames no record rebuilds, so the park holds them and the
+    /// reconcile flushes them first; the chat's own bulk is rebuilt from the
+    /// record and is NOT replayed, because a record behind it already
+    /// carries it.
+    #[tokio::test]
+    async fn a_parked_spell_holds_the_frames_no_record_rebuilds() {
+        let (bridge, mut rx) = bridge();
+        let server = stub().await;
+        bridge.connect(server.url.clone());
+        bridge.subscribe(seat(), true, true);
+        sent(&bridge, snapshot(json!({ "conversation": { "turns": [] } })));
+        event(&mut rx, is_inbound()).await;
+        park(&bridge);
+        let releasing = json!({
+            "kind": "update",
+            "update": { "releasing": { "key": seat()["session"] } },
+        });
+        let chat = json!({
+            "kind": "update",
+            "update": { "chat_appended": { "msg": { "type": "user" }, "key": seat()["session"] } },
+        });
+        sent(&bridge, releasing.clone());
+        sent(&bridge, chat);
+        assert_eq!(bridge.lock().parked.len(), 1, "the chat is rebuilt; only the release is held");
+        bridge.heartbeat();
+        let ClientEvent::Inbound(first) = event(&mut rx, is_inbound()).await else {
+            unreachable!("filtered to inbound");
+        };
+        assert_eq!(
+            first["update"], releasing["update"],
+            "the held frame goes out first, as itself"
+        );
     }
 
     /// A second reader is a second wire frame, and the record lives until the
@@ -632,19 +758,30 @@ mod tests {
         park(&bridge);
         sent(&bridge, context_usage(0.2));
         bridge.heartbeat();
-        let ClientEvent::Inbound(caught) = event(&mut rx, is_inbound()).await else {
+        let ClientEvent::Inbound(caught) = event(&mut rx, is_inbound_kind("snapshot")).await else {
             unreachable!("filtered to inbound");
         };
         assert_eq!(caught["kind"], "snapshot", "a reader is still there, so the record is");
-        // The last reader lets go: the record goes with it.
+        // The last reader lets go: the record goes with it, and the
+        // reconcile hands back no copy for a seat this client no longer
+        // holds (the parked frame still replays as itself; no store holds it).
         bridge.unsubscribe(&seat());
+        assert!(
+            bridge.lock().records.read("session:Busytools\u{0}forge\u{0}lead").is_none(),
+            "the last reader released the record"
+        );
         park(&bridge);
         sent(&bridge, context_usage(0.3));
         bridge.heartbeat();
-        assert!(
-            tokio::time::timeout(Duration::from_millis(200), rx.recv()).await.is_err(),
-            "the last reader released the record, so the reconcile has nothing to hand back"
-        );
+        while let Ok(event) = rx.try_recv() {
+            if let ClientEvent::Inbound(message) = event {
+                assert_ne!(
+                    message["kind"],
+                    json!("snapshot"),
+                    "no record copy comes back for a released seat"
+                );
+            }
+        }
     }
 
     /// A refused subscribe reaches the page with the core's own words, under

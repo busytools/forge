@@ -1024,11 +1024,27 @@ export class Chat {
 
   private receive(message: ServerMessage): void {
     switch (message.kind) {
-      case 'page':
-        if (sameSlot(message.conversation, this.slot)) {
-          this.takePage(message.turns, message.cursor, this.inFlight ?? 'newest');
+      case 'page': {
+        if (!sameSlot(message.conversation, this.slot)) return;
+        // **A page the client's own half reconciled is the catch-up after a
+        // park, not an answer.** It is always the newest window, and nothing
+        // is waiting on it - while an older ask that died with the park
+        // would otherwise have this spliced as an older page and the order
+        // scrambled (the ask's side of the connection was gone; only this
+        // mark can tell the two apart).
+        const reconciled = message.reconciled === true;
+        if (reconciled) {
+          this.abandoned = 0;
+          this.inFlight = null;
+          this.askedBefore = null;
         }
+        this.takePage(
+          message.turns,
+          message.cursor,
+          reconciled ? 'newest' : (this.inFlight ?? 'newest'),
+        );
         return;
+      }
       case 'error':
         // A refusal names what failed rather than which subject, and the
         // socket hands a listener EVERY message it receives - so a page that
