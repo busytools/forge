@@ -354,6 +354,11 @@ describe('the chat column as it draws', () => {
     expect(drawn(), 'the column kept drawing the conversation of the seat it left').not.toContain(
       'the lead said this',
     );
+    // And the new seat's own state is what draws, not a blank column: an empty
+    // column would satisfy the line above as readily as the right one.
+    expect(drawn(), 'the column drew nothing at all for the seat it moved to').toContain(
+      'Reading the conversation',
+    );
   });
 
   it('says it is still reading rather than saying the seat is empty', () => {

@@ -120,8 +120,6 @@ interface Seat {
   frames: number;
   /** The frame count the ask in flight was issued at. */
   askedAt: number;
-  stopMessages: (() => void) | null;
-  stopStatus: (() => void) | null;
   /** Hold the seat's subscription open, answering the release: see `hold`. */
   hold: () => () => void;
   /**
@@ -172,13 +170,17 @@ const PAINT_WATCHDOG_MS = 250;
  * stopped.
  *
  * **The subscribe happens with the first holder**, not at this call: a caller
- * that takes the store and never subscribes opens nothing, and a seat whose
- * page is the only holder is subscribed by that page's own first read.
+ * that takes the store and never subscribes opens nothing of its own, and a
+ * seat whose page is the only holder is subscribed by that page's own first
+ * read. The second opener is the role: a page that can answer raises a seat
+ * held as an observer, and that raise is a subscribe whether or not any page
+ * has subscribed the store yet.
  *
- * **A seat the server refused is let go with its last reader**: a refusal is
- * an answer rather than a subscription ("a refused subscribe leaves nothing to
- * hear"), so holding one holds nothing, and a seat that starts later would
- * never be reached again.
+ * **A seat the server refused gives its subscription back, and stays.** A
+ * refusal is an answer rather than a subscription ("a refused subscribe
+ * leaves nothing to hear"), so the record is cleared and the next visit opens
+ * the seat afresh - while the seat itself is kept, because a conversation
+ * holding it must go on holding whatever the next visit finds.
  */
 export function watchSession(
   connection: Connection,
@@ -350,8 +352,6 @@ function createSeat(connection: Connection, subject: Subject, answering: boolean
     replaceWanted: true,
     frames: 0,
     askedAt: 0,
-    stopMessages: null,
-    stopStatus: null,
     hold,
     open,
   };
@@ -507,9 +507,12 @@ function createSeat(connection: Connection, subject: Subject, answering: boolean
    * outlives any one subscription (a page's hold goes, a conversation's
    * stays), and a listener that came and went with it would drop the frames
    * that crossed in the gap.
+   *
+   * Nothing unregisters them: a seat lives on its connection, so its
+   * listeners go with the socket they were taken on.
    */
   function watch(): void {
-    seat.stopMessages = connection.onMessage((message) => {
+    connection.onMessage((message) => {
       if (message.kind === 'error') {
         // **An error names the operation it is about, never a subject**, and
         // this client holds every seat it has visited, so the subject is not
@@ -614,7 +617,7 @@ function createSeat(connection: Connection, subject: Subject, answering: boolean
     // answer that died. The seat keeps this listener, so a drop while nobody is
     // showing the seat still leaves the reconnect's snapshot answered as the
     // whole record it is.
-    seat.stopStatus = connection.onStatus((next: ConnectionStatus) => {
+    connection.onStatus((next: ConnectionStatus) => {
       if (next !== 'open') {
         // The ask in flight went with the drop, and the record this seat holds
         // is from before it: the answer the reconnect brings is the whole

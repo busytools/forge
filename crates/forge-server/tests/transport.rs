@@ -303,10 +303,15 @@ async fn showing_a_seat_that_spent_a_mark_re_sends_the_home_the_connection_holds
     .await;
     let (subject, ..) = snapshot_answering(&mut socket).await;
     assert_eq!(subject, Subject::Session(lead_seat()), "the seat's own read is answered first");
-    let (subject, ..) = snapshot_answering(&mut socket).await;
+    // Read as an absence, for the reason the failure-mark case gives: the
+    // re-send not coming is what this catches, and it should say so itself.
+    let resent = match next_server_within(&mut socket, 700).await {
+        Some(ServerMessage::Snapshot { subject, .. }) => Some(subject),
+        _ => None,
+    };
     assert_eq!(
-        subject,
-        Subject::Home,
+        resent,
+        Some(Subject::Home),
         "and the attach re-sends the home, because showing the seat spent its marks",
     );
 }
@@ -343,10 +348,15 @@ async fn showing_a_seat_that_spent_a_failure_mark_re_sends_the_home() {
     .await;
     let (subject, ..) = snapshot_answering(&mut socket).await;
     assert_eq!(subject, Subject::Session(lead_seat()), "the seat's own read is answered first");
-    let (subject, ..) = snapshot_answering(&mut socket).await;
+    // Read as an absence: the failure this catches is the re-send NOT coming,
+    // and the generic wait's own panic would name the wait instead of it.
+    let resent = match next_server_within(&mut socket, 700).await {
+        Some(ServerMessage::Snapshot { subject, .. }) => Some(subject),
+        _ => None,
+    };
     assert_eq!(
-        subject,
-        Subject::Home,
+        resent,
+        Some(Subject::Home),
         "the attach re-sends the home, because showing the seat spent its failure mark",
     );
 }

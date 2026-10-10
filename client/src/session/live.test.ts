@@ -953,8 +953,12 @@ beforeEach(stubFrames);
 // A test that fails part-way through a fake-timer case would otherwise leave
 // every later case in this file on fake time - the twin carries the same
 // guard for the same reason (`chat/conversation.test.ts`).
+//
+// The spies are restored here for the same reason: a stubbed `window.open`
+// left behind by a red case would be in place for every case after it.
 afterEach(() => {
   vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 /**
@@ -1489,7 +1493,6 @@ describe('the record a page holds over an update stream', () => {
 
     expect(connection.subscribes(), 'the escalation opened nothing').toBe(1);
     expect(windowed, 'the escalation called the DOM global').not.toHaveBeenCalled();
-    windowed.mockRestore();
   });
 
   /**
@@ -1572,12 +1575,14 @@ describe('the seat the client holds between visits', () => {
   });
 
   /**
-   * **A refusal is the one thing not worth holding.** The server watches
-   * nothing for a seat it refused - "a refused subscribe leaves nothing to
-   * hear" - so a cached refusal is a client holding a subscription that does
-   * not exist, and a seat that starts later would never be reached again.
+   * **A refusal gives its subscription back, and the next visit opens the
+   * seat afresh.** The server watches nothing for a seat it refused - "a
+   * refused subscribe leaves nothing to hear" - so the record is cleared and
+   * the return subscribes again, which is what a seat that starts later
+   * needs. The seat itself is kept; what it does not keep is a subscription
+   * that was never granted.
    */
-  it('does not hold a seat the server refused', () => {
+  it('opens a refused seat afresh on the next visit', () => {
     const connection = drivable(true);
     const first = watch(connection);
     expect(first.read().refused, 'precondition: the server refused the seat').toBe(NO_SESSION);
