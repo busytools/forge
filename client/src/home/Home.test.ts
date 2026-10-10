@@ -144,7 +144,8 @@ describe('the home page as it draws', () => {
    */
   it('draws when the project last moved', () => {
     const idle = { ...homeWire, agents: homeWire.agents.map((row) => ({ ...row, pending: null })) };
-    // A day and a half back, so the words are days whatever the clock says.
+    // An epoch-second stamp: however far back the clock's year is read from,
+    // the words are days rather than minutes or hours.
     const body = draw({
       wire: {
         ...idle,
@@ -157,10 +158,12 @@ describe('the home page as it draws', () => {
     expect(body, 'the fleet row drew no age').toContain('class="fleet-when"');
     expect(body, "the age is not the row's own words").toMatch(/fleet-when[^>]*>\d+d</);
 
-    // And a seat that has never written is no age at all: the words the cell
-    // has always drawn for that state.
-    expect(draw({ wire: idle }), 'a seat with no write drew an age').toContain('fleet-when');
-    expect(draw({ wire: idle })).toMatch(/fleet-when[^>]*>now</);
+    // A live seat with nothing written yet reads `now`; `never` is for a
+    // project with neither a seat nor a session behind it (the view test
+    // holds that half, where the catalog can be built by hand).
+    expect(draw({ wire: idle }), 'a seat with no write drew no age').toMatch(
+      /fleet-when[^>]*>now</,
+    );
   });
 
   /**
