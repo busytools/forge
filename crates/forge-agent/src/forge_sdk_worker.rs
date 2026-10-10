@@ -154,6 +154,14 @@ rather than once - a disclosure you made earlier does not carry \
 forward, and silence is indistinguishable from the review having \
 happened.\n\
 \n\
+Work parks on the user only in two shapes: the user explicitly asked for \
+a hold, before or after the task, or - with the decision model, peer \
+opinions and the team's own review already spent - something is still \
+genuinely ambiguous. A spec that exists is followed without check-ins \
+unless something serious changes it, and new work falling out of an \
+existing task goes the same way: specced or decided, never quietly \
+parked.\n\
+\n\
 Before you report work as done, reviewed, or verified - to a lead, a PR \
 body, or the user - name the evidence (the command and its output, the \
 diff you read, the test that ran). When the `systemone__*` tools are in \
@@ -3255,6 +3263,42 @@ mod tests {
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
                 .contains("with no client connected a call fails by name"),
             "the no-client failure is pinned",
+        );
+    }
+
+    /// The attention rule reaches every session, lead and worker alike.
+    /// Pinned in both halves, because a softened first half ("ask when
+    /// unsure") or a dropped second half (the spec is followed; new work
+    /// is specced or decided) both read as the opposite of the rule.
+    #[test]
+    fn the_conduct_block_carries_the_attention_rule() {
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("Work parks on the user only in two shapes"),
+            "the two-shape rule's opening is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("the user explicitly asked for a hold, before or after the task"),
+            "shape (a), the explicit hold, is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "the decision model, peer opinions and the team's own review already spent"
+            ),
+            "shape (b)'s internal channels are pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("A spec that exists is followed without check-ins"),
+            "the spec half is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "new work falling out of an existing task goes the same way: specced or decided, \
+                 never quietly parked"
+            ),
+            "the new-work half is pinned",
         );
     }
 

@@ -7179,6 +7179,43 @@ mod lead_charter_tests {
         );
     }
 
+    /// The attention rule is the lead's posture toward the user, and both
+    /// halves read as the opposite of themselves when softened: the two
+    /// shapes become "ask when unsure", and the spec half becomes a
+    /// check-in. Pinned so a later edit cannot unship either silently.
+    #[test]
+    fn lead_charter_carries_the_attention_rule() {
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains(
+                "Nothing waits on the user except a hold the user \
+                 explicitly asked for"
+            ),
+            "the two-shape rule's opening is pinned",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains(
+                "the decision model, peer opinions and your own review already spent - something \
+                 still genuinely ambiguous"
+            ),
+            "shape (b)'s channels and its bar are pinned together",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains("A spec that exists is followed without check-ins"),
+            "the spec half is pinned",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains("never parked on the user"),
+            "the new-work half is pinned",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains(
+                "A long-lived worker is a standing commitment of the user's attention rather \
+                 than a step of work, so raise it with the user rather than deciding it yourself"
+            ),
+            "the long-lived-worker clause is pinned whole, its call included",
+        );
+    }
+
     /// The charter is the only shipped text telling a lead how to maintain
     /// the task list, and the only task surface forge ships is `tasks__*`
     /// over forge's own store. Guidance written against the CLI's tools

@@ -362,7 +362,9 @@ tasks__claim by `id`, or by `epic` to pull that epic's top ready row; one \
 row in progress per worker. Keep your row true: tasks__update on every \
 state change - the update is also your alive signal - and attach the PR \
 the moment it exists. If you cannot proceed, tasks__wait: `kind` is \
-decision (a question for the user), dependency (another task - put its id \
+decision (a question for the user - only a hold the user explicitly asked \
+for, or something still ambiguous after the decision model, peers and your \
+own review), dependency (another task - put its id \
 in `on`) or resource (an account, a CI run, a machine); then move to your \
 next held row instead of sitting still. File what you find mid-flight at \
 once with tasks__create, under your epic, owned or unowned; nothing is \
@@ -432,6 +434,21 @@ mod tests {
         assert_eq!(
             result["instructions"], TASK_BOARD_INSTRUCTIONS,
             "the built server's initialize carries the board's contract",
+        );
+    }
+
+    /// The board contract is where a session first learns that
+    /// `kind: decision` routes to the user, so the test for parking there
+    /// rides the same line: without it the contract teaches the route and
+    /// leaves out when taking it is right.
+    #[test]
+    fn the_task_instructions_carry_the_attention_rule() {
+        assert!(
+            TASK_BOARD_INSTRUCTIONS.contains(
+                "only a hold the user explicitly asked for, or something still ambiguous after \
+                 the decision model, peers and your own review"
+            ),
+            "the parking test rides the kind: decision clause, channels and bar together",
         );
     }
 
