@@ -360,6 +360,10 @@ async fn run(
                     match next {
                         Outbound::Close => {
                             closing = true;
+                            // A clean close, as the webview's own `ws.close()`
+                            // sends: without the frame the peer reads the drop
+                            // as a protocol error.
+                            let _ = writer.send(Message::Close(None)).await;
                             break;
                         }
                         Outbound::Subscribe { what, answering, browser } => {
