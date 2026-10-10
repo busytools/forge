@@ -14,13 +14,14 @@
  * slot the update carries, so a store's contents are this seat's and nothing
  * else's.
  *
- * **The subscription follows the page, and the RECORD stays.** A page
- * leaving gives its subscription back - a held subscription reads as a
- * showing seat to the server, and showing spends the marks a seat earns -
- * while the record it held stays for the return to draw. The return's
- * subscribe answers with the whole record, the same one a reconnect gets, so
- * the burst is paid on return rather than on every navigation, and a seat
- * nobody is looking at marks like one nobody has looked at.
+ * **The subscription follows its HOLDERS, and the RECORD stays.** One page
+ * opens the seat's subscription - its own answer is the whole record - and
+ * every holder after it rides that one: a page drawing the seat, and the
+ * conversation folding it. A page leaving gives its own hold back; the
+ * subscription goes with the last of them, because a held subscription reads
+ * as a showing seat to the server and showing spends the marks a seat earns.
+ * The record stays either way, so a return draws what it holds, and while the
+ * conversation holds the seat a return asks for nothing at all.
  */
 
 import { writable, type Readable, type Writable } from 'svelte/store';
@@ -123,6 +124,14 @@ interface Seat {
   stopStatus: (() => void) | null;
   /** Hold the seat's subscription open, answering the release: see `hold`. */
   hold: () => () => void;
+  /**
+   * Open the seat's subscription: see `open`.
+   *
+   * **On the seat rather than a closure the caller could reach**, because the
+   * role escalation happens outside this factory - and a bare `open()` out
+   * there is the DOM global, which is a blank tab rather than a subscribe.
+   */
+  open: () => void;
 }
 
 /**
@@ -154,16 +163,17 @@ const PAINT_WATCHDOG_MS = 250;
 /**
  * Watch one seat.
  *
- * **The seat's record is the client's; its subscription follows the page.**
- * The first page to show a seat subscribes it - the subscription's own answer
- * is what fills its history - and every page after that is handed what the
- * seat holds. The last reader leaving gives the subscription back; a return
- * subscribes it again, and the record it held draws until that answer lands.
+ * **The seat's record is the client's; its subscription follows its holders.**
+ * The first page to show a seat opens its subscription - that answer is what
+ * fills its history - and every holder after that, a page or a conversation,
+ * rides the one subscription and is handed what the seat holds. The
+ * subscription goes with the last holder, and a return while any holder
+ * remains asks for nothing: the record it held draws, and the frames never
+ * stopped.
  *
- * **The subscribe happens at this call**, not when the returned store gets its
- * first subscriber. Taking the store and never subscribing to it therefore
- * leaves a subscription standing, and a refusal is what releases the seat
- * outright.
+ * **The subscribe happens with the first holder**, not at this call: a caller
+ * that takes the store and never subscribes opens nothing, and a seat whose
+ * page is the only holder is subscribed by that page's own first read.
  *
  * **A seat the server refused is let go with its last reader**: a refusal is
  * an answer rather than a subscription ("a refused subscribe leaves nothing to
@@ -205,7 +215,7 @@ export function watchSession(
   let seat = visited.get(key);
 
   if (seat === undefined) {
-    seat = createSeat(connection, subject, answering, () => visited.delete(key));
+    seat = createSeat(connection, subject, answering);
     visited.set(key, seat);
   } else if (answering && !seat.answering) {
     // **The role only ever rises, and a page that can answer has to say so.**
@@ -215,7 +225,7 @@ export function watchSession(
     // observer is re-asked under that role, which is one subscribe: what a
     // page mounting with a dock would have sent for itself.
     seat.answering = true;
-    open();
+    seat.open();
   }
 
   return { subscribe: seat.view.subscribe, hold: seat.hold };
@@ -231,12 +241,7 @@ function seats(connection: Connection): Map<string, Seat> {
 }
 
 /** One seat, opened: subscribed, listened to, and holding the record an update is applied to. */
-function createSeat(
-  connection: Connection,
-  subject: Subject,
-  answering: boolean,
-  forget: () => void,
-): Seat {
+function createSeat(connection: Connection, subject: Subject, answering: boolean): Seat {
   const key = subjectKey(subject);
 
   /**
@@ -269,13 +274,22 @@ function createSeat(
     // No frame paints for a page that has gone, so a record still waiting for
     // one is written now: it is what a return draws.
     if (queued !== null) flush();
-    // **A refused seat is let go outright, whatever else holds it.** A
-    // refusal is an answer rather than a subscription ("a refused subscribe
-    // leaves nothing to hear"), so holding one holds nothing - and a seat
-    // that starts later must be asked for afresh rather than keep drawing the
-    // refusal for as long as a conversation keeps the entry.
+    // **A refused seat gives its subscription back, and stays.** A refusal is
+    // an answer rather than a subscription ("a refused subscribe leaves
+    // nothing to hear"), so nothing is left to draw and the next visit opens
+    // the seat afresh - but the seat itself is kept, because a conversation
+    // holding it must go on holding whatever the next visit finds. Forgetting
+    // it here would leave that conversation's hold on a seat nothing owns, and
+    // the next visit's page would give the subscription back with the
+    // conversation still folding it.
     if (seat.held?.state().kind === 'refused') {
-      release();
+      if (seat.opened > 0) {
+        for (let left = seat.opened; left > 0; left -= 1) connection.unsubscribe(subject);
+        seat.opened = 0;
+      }
+      seat.held = null;
+      publish(null, null);
+      give_back();
       return;
     }
     give_back();
@@ -298,9 +312,7 @@ function createSeat(
   function give_back(): void {
     if (seat.holders > 0) seat.holders -= 1;
     if (seat.holders > 0) return;
-    if (seat.held?.state().kind === 'refused') {
-      release();
-    } else if (seat.opened > 0) {
+    if (seat.opened > 0) {
       for (let left = seat.opened; left > 0; left -= 1) connection.unsubscribe(subject);
       seat.opened = 0;
     }
@@ -341,6 +353,7 @@ function createSeat(
     stopMessages: null,
     stopStatus: null,
     hold,
+    open,
   };
 
   /**
@@ -449,12 +462,13 @@ function createSeat(
    * second would queue behind the first - so a replacement wanted now is
    * recorded and asked for when the answer lands.
    *
-   * **A seat with no page subscribes nothing back, it only leaks.** The ask
-   * is an unsubscribe-then-subscribe pair, and the subscribe re-attaches a
-   * seat no page is showing: the server reads it as shown (spending the
-   * marks every other reader would get) with no counter here owning it. The
-   * away refresh therefore does not go out; the return's own subscribe
-   * answers with the whole record, which covers everything it was for.
+   * **A seat with no subscription asks nothing, because there is nothing to
+   * ask on.** The ask is an unsubscribe-then-subscribe pair, so a seat whose
+   * last holder let it go would have this re-attach it: the server reads it as
+   * shown, spending the marks every reader would get, with no holder here
+   * owning it. A held seat asks whether or not a page is drawing it - the
+   * frames never stopped for it, and the return no longer re-reads, so this is
+   * the only ask a seat away from the reader has.
    */
   function reread(): void {
     if (seat.asking || seat.opened === 0) return;
@@ -616,25 +630,6 @@ function createSeat(
         }
       }
     });
-  }
-
-  /**
-   * Let the seat go, with everything it holds.
-   *
-   * The one path a seat is not kept through, and the reason is that there is
-   * nothing behind it to keep: the server watches nothing for a seat it
-   * refused.
-   */
-  function release(): void {
-    seat.stopMessages?.();
-    seat.stopStatus?.();
-    seat.stopMessages = null;
-    seat.stopStatus = null;
-    for (let left = seat.opened; left > 0; left -= 1) connection.unsubscribe(subject);
-    seat.opened = 0;
-    seat.held = null;
-    seat.wire = null;
-    forget();
   }
 
   watch();

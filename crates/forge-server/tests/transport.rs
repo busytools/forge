@@ -311,6 +311,46 @@ async fn showing_a_seat_that_spent_a_mark_re_sends_the_home_the_connection_holds
     );
 }
 
+/// **The failure half of the same gate.** A seat whose newest turn failed
+/// carries a mark until it is shown, and the attach that spends it owes the
+/// connection holding the home a fresh one - so the read the gate is decided
+/// by has to carry the failure, not just the diamond.
+#[tokio::test]
+async fn showing_a_seat_that_spent_a_failure_mark_re_sends_the_home() {
+    let (url, fleet) = a_server().await;
+    // The core's own record, seeded by hand: the fold that sets it runs in the
+    // session task, which a fixture does not start.
+    let domain = fleet.workspace().register_domain_session(lead_seat(), None);
+    domain.lock().failed_turn_at = Some(std::time::SystemTime::now());
+
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: false },
+    )
+    .await;
+    let (subject, ..) = snapshot_answering(&mut socket).await;
+    assert_eq!(subject, Subject::Home, "precondition: the connection holds the home");
+
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            browser: false,
+        },
+    )
+    .await;
+    let (subject, ..) = snapshot_answering(&mut socket).await;
+    assert_eq!(subject, Subject::Session(lead_seat()), "the seat's own read is answered first");
+    let (subject, ..) = snapshot_answering(&mut socket).await;
+    assert_eq!(
+        subject,
+        Subject::Home,
+        "the attach re-sends the home, because showing the seat spent its failure mark",
+    );
+}
+
 /// **An attach with nothing to spend leaves the home alone.**
 ///
 /// The re-send is owed exactly when showing the seat cleared a diamond or a
@@ -3723,7 +3763,10 @@ async fn a_thinking_turn_reaches_a_client_watching_its_seat_frame_for_frame() {
                 SessionUpdate::TurnCancelled { .. } => break,
                 _ => {}
             },
-            other => panic!("a seat's subscription carries updates, got {other:?}"),
+            other => panic!(
+                "a seat's subscription carries updates, got {other:?} - a snapshot here is an \
+                 attach re-sending the home it should only re-send for a mark it spent",
+            ),
         }
     }
     // What the sent sequence is owed as: every frame as itself, and each run

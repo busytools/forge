@@ -551,11 +551,16 @@ describe('the session page over a socket', () => {
     });
     await until(() => drawn().includes('the lead said this'));
 
+    const before = seatSubscribesOf(LEAD);
     server?.drop();
     // The reconnect re-asks what the connection holds: one ask per seat, and
-    // the seat is held once however many readers share it.
-    await until(() => seatSubscribesOf(LEAD) === 2);
-    expect(seatSubscribesOf(LEAD), 'the reconnect did not re-ask the seat').toBe(2);
+    // the seat is held once however many readers share it. **Waited past the
+    // count the drop found, never on a number**: a fixed count is satisfied
+    // before the drop even happens once the seat is subscribed twice, which is
+    // the state this change removes - the assertion would then be reading the
+    // pre-drop count and claiming a reconnect that never had to happen.
+    await until(() => seatSubscribesOf(LEAD) > before);
+    expect(seatSubscribesOf(LEAD), 'the reconnect did not re-ask the seat').toBe(before + 1);
     await until(() => drawn().includes('the lead said this'));
     expect(drawn(), 'the reconnect left the column without its conversation').toContain(
       'the lead said this',
@@ -1011,19 +1016,22 @@ interface Driveable extends Omit<Connection, 'status'> {
   subscribes(): number;
   /** How many subscriptions were given back. */
   unsubscribes(): number;
+  /** The seat's session appears, so a later read answers with a record. */
+  ready(): void;
   status(): ConnectionStatus;
 }
 
 /** A seat the server holds no session for, worded as it words the refusal. */
 const NO_SESSION = 'forge holds no session for this seat';
 
-function drivable(refused = false): Driveable {
+function drivable(refusedAtFirst = false): Driveable {
   const listeners = new Set<(message: ServerMessage) => void>();
   const watchers = new Set<(status: ConnectionStatus) => void>();
   const snapshot = new Map<string, unknown>();
   let reads = 0;
   let subscribed = 0;
   let unsubscribed = 0;
+  let refused = refusedAtFirst;
 
   const seatState = (): StoreState =>
     refused ? { kind: 'refused', why: NO_SESSION } : { kind: 'ready' };
@@ -1098,6 +1106,9 @@ function drivable(refused = false): Driveable {
     reads: () => reads,
     subscribes: () => subscribed,
     unsubscribes: () => unsubscribed,
+    ready: () => {
+      refused = false;
+    },
   };
 }
 
@@ -1423,6 +1434,62 @@ describe('the record a page holds over an update stream', () => {
     expect(back.read().wire, 'the held record draws until the answer lands').not.toBeNull();
     back.stop();
     expect(connection.unsubscribes(), 'the second leave gives it back too').toBe(2);
+  });
+
+  /**
+   * **A refused seat a conversation holds keeps that hold.** The refusal gives
+   * the subscription back and clears the record, but the seat itself stays -
+   * and this is why: forgotten, the next visit builds a seat only the page
+   * holds, and that page's leave takes the subscription away with the
+   * conversation still folding it.
+   */
+  it('keeps a refused seat for the holder that outlives the page', () => {
+    const connection = drivable(true);
+    const conversation = watchSession(connection, LEAD, false).hold();
+
+    // A page meets the refusal and leaves: the subscription goes back, and the
+    // seat stays, because the conversation's hold is on it.
+    const first = watch(connection);
+    first.land(snapshotOf(LEAD));
+    first.stop();
+    expect(connection.unsubscribes(), 'the refused visit gave its subscription back').toBe(1);
+
+    // The seat starts, a page visits it and leaves again. The conversation is
+    // still holding it, so its subscription stays where it is.
+    connection.ready();
+    const second = watch(connection);
+    second.land(snapshotOf(LEAD));
+    const before = connection.unsubscribes();
+    second.stop();
+    expect(
+      connection.unsubscribes(),
+      'the page took the seat away from the conversation still holding it',
+    ).toBe(before);
+
+    conversation();
+  });
+
+  /**
+   * **The escalation opens the seat's subscription, never a tab.** The arm
+   * that raises the role lives outside the seat's own factory, where a bare
+   * `open()` is the DOM global: the role would rise with nothing subscribed,
+   * and every gate would stay green - `open()` with no arguments is valid
+   * TypeScript, and a page that does subscribe opens the seat one step later
+   * anyway.
+   *
+   * The case that catches it is the one the seat's own doc names: a caller
+   * that takes the store and never subscribes, so the escalation is the only
+   * opener there is.
+   */
+  it('opens the seat itself when the answering role arrives', () => {
+    const windowed = vi.spyOn(window, 'open').mockImplementation(() => null);
+    const connection = drivable();
+    watchSession(connection, LEAD, false);
+    watchSession(connection, LEAD, true);
+
+    expect(connection.subscribes(), 'the escalation opened nothing').toBe(1);
+    expect(windowed, 'the escalation called the DOM global').not.toHaveBeenCalled();
+    windowed.mockRestore();
   });
 
   /**
