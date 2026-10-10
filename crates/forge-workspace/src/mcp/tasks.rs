@@ -633,7 +633,13 @@ impl Tool for Wait {
                 },
                 "detail": {
                     "type": "string",
-                    "description": "The words: what exactly is being waited for.",
+                    "description": "The words: what exactly is being waited for. For a decision: \
+                                    why it needs the user specifically, what is already decided, \
+                                    what is open, what their answer changes, and the links to \
+                                    read - a bare question with no why is its own failure, and \
+                                    the flag exists to make the return cheap. A wait is a flag, \
+                                    not a stop: carry on with your next held row and let the \
+                                    answer resume this one, unless the user asked for a stop.",
                 },
                 "on": {
                     "type": "string",
@@ -1017,17 +1023,31 @@ mod tests {
     /// The description is the site a caller reads at the moment it picks
     /// `kind`, and `decision` is the one kind that parks a row on the user.
     /// Pinned so the parking test cannot drop out of the text that hands
-    /// the caller that choice.
+    /// the caller that choice, and so the flag's context bar cannot drop
+    /// out of the line the caller writes it on.
     #[test]
     fn the_wait_description_carries_the_attention_rule() {
-        let desc =
-            Wait { facade: MockTasksFacade::new().into_arc(), slot: lead_slot() }.description();
+        let wait = Wait { facade: MockTasksFacade::new().into_arc(), slot: lead_slot() };
+        let desc = wait.description();
         for clause in [
             "Route a decision to the user only when the user explicitly asked for a hold",
             "something is still genuinely ambiguous after the decision model, peer opinions and \
              the team's own review",
         ] {
             assert!(desc.contains(clause), "the wait description owes {clause:?}: {desc}");
+        }
+        let detail = wait.input_schema()["properties"]["detail"]["description"]
+            .as_str()
+            .expect("the detail property carries a description")
+            .to_owned();
+        for clause in [
+            "why it needs the user specifically, what is already decided, what is open, what \
+             their answer changes, and the links to read",
+            "a bare question with no why is its own failure",
+            "A wait is a flag, not a stop",
+            "unless the user asked for a stop",
+        ] {
+            assert!(detail.contains(clause), "the detail line owes {clause:?}: {detail}");
         }
     }
 
