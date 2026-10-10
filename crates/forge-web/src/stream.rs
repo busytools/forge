@@ -54,7 +54,9 @@ struct Held {
 impl Held {
     /// Take the seat up for this connection.
     fn new(state: Arc<WebState>, slot: SessionSlot) -> Self {
-        Live::lock(&state.live).attach(&slot);
+        // No failure instant: what the attach answers is whether a socket's
+        // home refresh is owed, and this view renders its own page.
+        Live::lock(&state.live).attach(&slot, None);
         Self { state, slot }
     }
 }

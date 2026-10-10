@@ -723,17 +723,26 @@ async fn handle_client(
                         Subject::Session(slot) => Some(slot.clone()),
                         _ => None,
                     };
-                    if let Some(slot) = &seat {
-                        Live::lock(&state.live).attach(slot);
-                    }
+                    // **The attach answers whether a mark was actually
+                    // spent.** Showing a seat spends the diamond and the
+                    // failure mark the home carries for it, so a connection
+                    // that already holds the home is owed a fresh one exactly
+                    // then - a re-encode with nothing to carry is 448 KB and
+                    // 113-263 ms of server time for a home the client already
+                    // holds (measured 2026-10-09).
+                    let spent = match &seat {
+                        Some(slot) => {
+                            let failed = state.surface.failed_turn(slot);
+                            Live::lock(&state.live).attach(slot, failed)
+                        }
+                        None => false,
+                    };
                     watched.push(what.clone());
                     send(socket, ServerMessage::Snapshot { subject: what, data }).await?;
-                    // Showing a seat spends the marks the home carries for it
-                    // - the diamond and the failure mark - so a connection
-                    // that already holds the home gets a fresh one as part of
-                    // the attach, rather than keeping a spent mark until the
-                    // next unrelated redraw, which can be half a minute away.
+                    // Rather than keeping a spent mark until the next unrelated
+                    // redraw, which can be half a minute away.
                     if let Some(slot) = &seat
+                        && spent
                         && watched.iter().any(|held| matches!(held, Subject::Home))
                     {
                         // A refresh that could not be encoded is not worth

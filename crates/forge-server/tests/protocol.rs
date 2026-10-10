@@ -105,8 +105,11 @@ fn of_kind<'a>(transcript: &'a [Value], kind: &str) -> Vec<&'a Value> {
 }
 
 /// The walk the plan asks for: subscribe to the home and to a seat, and hear
-/// a snapshot for each - the seat's attach re-sending the home, because
-/// showing a seat spends the marks its rows carry.
+/// a snapshot for each.
+///
+/// **The seat's attach re-sends the home only when it spent a mark**, and this
+/// fleet carries none - so the walk sees the two reads and no third. Both
+/// halves of that are pinned where the marks are, in `transport.rs`.
 #[tokio::test]
 async fn the_protocol_client_walks_the_whole_protocol() {
     let (url, _fleet) = a_server().await;
@@ -115,10 +118,10 @@ async fn the_protocol_client_walks_the_whole_protocol() {
     let snapshots = of_kind(&transcript, "snapshot");
     assert_eq!(
         snapshots.len(),
-        3,
-        "one snapshot per subscribe, and the home the attach re-sends: {transcript:?}",
+        2,
+        "one snapshot per subscribe, and no home for an attach that spent nothing: {transcript:?}",
     );
-    // The order is the contract: what was asked for, then the refreshed home.
+    // The order is the contract: what was asked for, then the seat's own read.
     assert_eq!(
         snapshots[0]["subject"],
         Value::String("home".to_owned()),
@@ -127,11 +130,6 @@ async fn the_protocol_client_walks_the_whole_protocol() {
     assert!(
         snapshots[1]["subject"].get("session").is_some(),
         "then the seat's own read: {transcript:?}",
-    );
-    assert_eq!(
-        snapshots[2]["subject"],
-        Value::String("home".to_owned()),
-        "and the attach re-sends the home: {transcript:?}",
     );
 }
 
