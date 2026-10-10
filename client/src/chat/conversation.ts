@@ -1451,9 +1451,7 @@ export class Chat {
       // from the transcript.
       const reachesHeld =
         direction === 'older' ||
-        healed.turns.some((turn) =>
-          turn.messages.some((message) => fromPage.carries(message)),
-        );
+        healed.turns.some((turn) => turn.messages.some((message) => fromPage.carries(message)));
       // A row being written is not the page's to drop either way: `live` is a
       // turn the frames built, and `running` is the newest row of a seat the
       // core says has a turn in flight.

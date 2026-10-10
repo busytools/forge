@@ -3379,10 +3379,9 @@ describe('the frame index', () => {
   it('never finds a frame with neither an id nor words', () => {
     const index = new Frames([blank()]);
 
-    expect(
-      index.carries(blank()),
-      'a tool result or a thought, repeated rather than found',
-    ).toBe(false);
+    expect(index.carries(blank()), 'a tool result or a thought, repeated rather than found').toBe(
+      false,
+    );
   });
 
   it('answers for a frame the index was grown with', () => {
