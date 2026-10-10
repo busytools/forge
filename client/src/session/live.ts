@@ -28,6 +28,7 @@ import { writable, type Readable, type Writable } from 'svelte/store';
 
 import { canHost } from '../browser/host';
 import { cronNames } from '../chat/cron-names.svelte';
+import { whenPainted } from '../paint';
 import { slotOf, subjectKey, type Subject } from '../protocol';
 import type { Connection, ConnectionStatus } from '../socket';
 import type { Store } from '../stores';
@@ -418,7 +419,10 @@ function createSeat(connection: Connection, subject: Subject, answering: boolean
       flush();
       return;
     }
-    queued = requestAnimationFrame(flush);
+    // A hidden page has no frame to wait for, so `whenPainted` flushes at
+    // once and answers `null`: nothing to cancel, and no deadline owed.
+    queued = whenPainted(flush);
+    if (queued === null) return;
     watchdog = setTimeout(flush, PAINT_WATCHDOG_MS);
   }
 

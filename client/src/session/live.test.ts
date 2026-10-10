@@ -150,6 +150,10 @@ async function stubServer(
     drop() {
       for (const socket of sockets) socket.terminate();
     },
+    /** Push one frame the way the server would: an update on the seat. */
+    push(message: ServerMessage) {
+      for (const socket of sockets) socket.send(JSON.stringify(message));
+    },
     async close() {
       for (const socket of sockets) socket.terminate();
       await new Promise((resolve) => server.close(resolve));
@@ -211,7 +215,16 @@ afterEach(async () => {
   await server?.close();
   server = null;
   document.body.innerHTML = '';
+  // A case that hid the page or froze its clock must not leave either in
+  // place for the cases after it.
+  vi.useRealTimers();
+  delete (document as { hidden?: boolean }).hidden;
 });
+
+/** Make the page hidden, as a covered window or a background tab is. */
+function hidePage(): void {
+  Object.defineProperty(document, 'hidden', { configurable: true, value: true });
+}
 
 /** Mount the page against a socket answering with `session`. */
 async function open(
@@ -571,6 +584,47 @@ describe('the session page over a socket', () => {
     expect(drawn(), 'the switch after a reconnect kept the seat it left').not.toContain(
       'the lead said this',
     );
+  });
+
+  /**
+   * **A frame that arrives while the page cannot paint still reaches the
+   * column.** The publish waits for a painted frame, which is what turns a
+   * burst into one draw of the latest - and a hidden page produces none at
+   * all: WebKit stops producing frames entirely when its window is not
+   * visible, measured with an offscreen WKWebView reporting `hidden` with its
+   * frame counter at 0. Waiting there is waiting for something the page
+   * cannot produce, so the write goes out at once and the reader meets a
+   * current column the moment it paints again.
+   */
+  it('draws a frame that arrives while the page is hidden', async () => {
+    server = await stubServer(sessionFixture, {
+      [subjectKey({ session: LEAD })]: [{ key: 'lead-t1', messages: [say('the lead said this')] }],
+    });
+    connection = connect(server.url);
+    app = mount(Router, {
+      target: document.body,
+      props: { ...routerProps(), route: { name: 'session', slot: LEAD } },
+    });
+    await until(() => drawn().includes('the lead said this'));
+    expect(drawn(), 'precondition: the seat drew before the page was hidden').toContain(
+      'the lead said this',
+    );
+
+    // The page stops painting, the way a hidden one does, and the two things
+    // the publish's gate is made of go with it: no frame, and no deadline.
+    hidePage();
+    vi.useFakeTimers({ toFake: ['requestAnimationFrame', 'setTimeout'] });
+
+    server.push({
+      kind: 'update',
+      update: { chat_appended: { key: LEAD, msg: say('arrived while hidden') } },
+    });
+    // The frame rides the socket, so the event loop gets turns rather than
+    // one: a single check-phase callback can run before the read lands.
+    for (let i = 0; i < 10; i += 1) await new Promise((resolve) => setImmediate(resolve));
+    flushSync();
+
+    expect(drawn(), 'the frame never reached the column').toContain('arrived while hidden');
   });
 
   /* The queue-above-strip order is pinned where the column itself draws it:
@@ -959,6 +1013,7 @@ beforeEach(stubFrames);
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
+  delete (document as { hidden?: boolean }).hidden;
 });
 
 /**
@@ -1493,6 +1548,28 @@ describe('the record a page holds over an update stream', () => {
 
     expect(connection.subscribes(), 'the escalation opened nothing').toBe(1);
     expect(windowed, 'the escalation called the DOM global').not.toHaveBeenCalled();
+  });
+
+  /**
+   * **The seat's own record publishes while the page cannot paint.** The same
+   * gate, the other store: a frame the page is not there to paint is a frame
+   * a reader has to be able to draw when it is, so the write goes out at once
+   * rather than waiting on a frame the hidden page will not produce.
+   */
+  it('publishes a record frame while the page is hidden', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD));
+    const published = page.publishes();
+
+    hidePage();
+    vi.useFakeTimers({ toFake: ['requestAnimationFrame', 'setTimeout'] });
+    connection.land(
+      updateOf({ chat_appended: { key: LEAD, msg: say('arrived while hidden'), origin: null } }),
+    );
+
+    expect(page.publishes(), 'the frame waited for a paint that cannot come').toBe(published + 1);
+    page.stop();
   });
 
   /**

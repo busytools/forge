@@ -25,6 +25,7 @@ import { writable, type Readable } from 'svelte/store';
 
 import { MORE_TURNS, slotOf, subjectKey } from '../protocol';
 import type { ServerMessage, SessionUpdate } from '../protocol';
+import { whenPainted } from '../paint';
 import { inFlightOf } from '../session/apply';
 import { watchSession } from '../session/live';
 import type { Connection } from '../socket';
@@ -759,7 +760,10 @@ export class Chat {
       this.flush();
       return;
     }
-    this.queued = requestAnimationFrame(() => this.flush());
+    // A hidden page has no frame to wait for, so `whenPainted` flushes at
+    // once and answers `null`: nothing to cancel, and no deadline owed.
+    this.queued = whenPainted(() => this.flush());
+    if (this.queued === null) return;
     this.watchdog = setTimeout(() => this.flush(), PAINT_WATCHDOG_MS);
   }
 
