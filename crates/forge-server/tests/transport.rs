@@ -261,7 +261,114 @@ async fn a_subscribe_is_answered_with_that_subjects_snapshot() {
 /// re-sent as part of the attach. Without it the row keeps a spent mark
 /// until the next unrelated redraw, which can be half a minute away.
 #[tokio::test]
-async fn showing_a_seat_re_sends_the_home_the_connection_holds() {
+async fn showing_a_seat_that_spent_a_mark_re_sends_the_home_the_connection_holds() {
+    let (url, fleet) = a_server().await;
+    // A mark is drawn on a row, so the seat has to have one: the home lists a
+    // project's agents, and a seat nothing has started is not among them.
+    fleet.install_agent("TestOrg", "proj", "lead");
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: false },
+    )
+    .await;
+    let (subject, ..) = snapshot_answering(&mut socket).await;
+    assert_eq!(subject, Subject::Home, "precondition: the connection holds the home");
+
+    // A completion on the seat while nothing is showing it: the diamond the
+    // home's row carries, which this attach is what spends. Polled until the
+    // home itself carries it, because the fold is the transport's own task and
+    // a snapshot taken straight after an emit can lag it by a hop.
+    fleet.emit(SessionUpdate::ChatAppended {
+        key: lead_seat(),
+        msg: a_finished_turn(),
+        origin: None,
+    });
+    assert!(
+        snapshot_until(&mut socket, Subject::Home, |data| {
+            data.get("unseen").and_then(|held| held.as_array()).is_some_and(|held| !held.is_empty())
+        })
+        .await,
+        "precondition: the completion armed the seat's diamond",
+    );
+
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            browser: false,
+        },
+    )
+    .await;
+    let (subject, ..) = snapshot_answering(&mut socket).await;
+    assert_eq!(subject, Subject::Session(lead_seat()), "the seat's own read is answered first");
+    // Read as an absence, for the reason the failure-mark case gives: the
+    // re-send not coming is what this catches, and it should say so itself.
+    let resent = match next_server_within(&mut socket, 700).await {
+        Some(ServerMessage::Snapshot { subject, .. }) => Some(subject),
+        _ => None,
+    };
+    assert_eq!(
+        resent,
+        Some(Subject::Home),
+        "and the attach re-sends the home, because showing the seat spent its marks",
+    );
+}
+
+/// **The failure half of the same gate.** A seat whose newest turn failed
+/// carries a mark until it is shown, and the attach that spends it owes the
+/// connection holding the home a fresh one - so the read the gate is decided
+/// by has to carry the failure, not just the diamond.
+#[tokio::test]
+async fn showing_a_seat_that_spent_a_failure_mark_re_sends_the_home() {
+    let (url, fleet) = a_server().await;
+    // The core's own record, seeded by hand: the fold that sets it runs in the
+    // session task, which a fixture does not start.
+    let domain = fleet.workspace().register_domain_session(lead_seat(), None);
+    domain.lock().failed_turn_at = Some(std::time::SystemTime::now());
+
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: false },
+    )
+    .await;
+    let (subject, ..) = snapshot_answering(&mut socket).await;
+    assert_eq!(subject, Subject::Home, "precondition: the connection holds the home");
+
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            browser: false,
+        },
+    )
+    .await;
+    let (subject, ..) = snapshot_answering(&mut socket).await;
+    assert_eq!(subject, Subject::Session(lead_seat()), "the seat's own read is answered first");
+    // Read as an absence: the failure this catches is the re-send NOT coming,
+    // and the generic wait's own panic would name the wait instead of it.
+    let resent = match next_server_within(&mut socket, 700).await {
+        Some(ServerMessage::Snapshot { subject, .. }) => Some(subject),
+        _ => None,
+    };
+    assert_eq!(
+        resent,
+        Some(Subject::Home),
+        "the attach re-sends the home, because showing the seat spent its failure mark",
+    );
+}
+
+/// **An attach with nothing to spend leaves the home alone.**
+///
+/// The re-send is owed exactly when showing the seat cleared a diamond or a
+/// failure mark. With neither, it is 448 KB and 113-263 ms of server time to
+/// hand a connection the home it already holds - measured 2026-10-09, and the
+/// ordinary case for a seat whose completions the reader has already seen.
+#[tokio::test]
+async fn showing_a_seat_with_nothing_to_spend_leaves_the_home_alone() {
     let (url, _fleet) = a_server().await;
     let mut socket = connect(&url).await;
     send(
@@ -283,11 +390,9 @@ async fn showing_a_seat_re_sends_the_home_the_connection_holds() {
     .await;
     let (subject, ..) = snapshot_answering(&mut socket).await;
     assert_eq!(subject, Subject::Session(lead_seat()), "the seat's own read is answered first");
-    let (subject, ..) = snapshot_answering(&mut socket).await;
-    assert_eq!(
-        subject,
-        Subject::Home,
-        "and the attach re-sends the home, because showing the seat spent its marks",
+    assert!(
+        next_server_within(&mut socket, 700).await.is_none(),
+        "the home was re-sent for an attach that spent nothing",
     );
 }
 
@@ -3606,13 +3711,10 @@ async fn a_thinking_turn_reaches_a_client_watching_its_seat_frame_for_frame() {
         },
     )
     .await;
-    snapshot_answering(&mut watched).await;
-    // The attach answers with the home too - showing the seat spends the
-    // marks the home's rows carry - and the re-send is part of the
-    // subscribe's own answer, consumed here so the turn's frames below are
+    // The attach's own read, and nothing else: the seat carries no mark for
+    // showing it to spend, so no home follows. The turn's frames below are
     // read against a clean stream.
-    let (subject, ..) = snapshot_answering(&mut watched).await;
-    assert_eq!(subject, Subject::Home, "the attach's home re-send");
+    snapshot_answering(&mut watched).await;
 
     // The control: a connection that watches the home and no seat. The
     // fleet's classification is what keeps the conversation off this
@@ -3671,7 +3773,10 @@ async fn a_thinking_turn_reaches_a_client_watching_its_seat_frame_for_frame() {
                 SessionUpdate::TurnCancelled { .. } => break,
                 _ => {}
             },
-            other => panic!("a seat's subscription carries updates, got {other:?}"),
+            other => panic!(
+                "a seat's subscription carries updates, got {other:?} - a snapshot here is an \
+                 attach re-sending the home it should only re-send for a mark it spent",
+            ),
         }
     }
     // What the sent sequence is owed as: every frame as itself, and each run

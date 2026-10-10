@@ -26,6 +26,7 @@ import { writable, type Readable } from 'svelte/store';
 import { MORE_TURNS, slotOf, subjectKey } from '../protocol';
 import type { ServerMessage, SessionUpdate } from '../protocol';
 import { inFlightOf } from '../session/apply';
+import { watchSession } from '../session/live';
 import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
 import { echoes } from './echoes.svelte';
@@ -835,17 +836,20 @@ export class Chat {
   }
 
   /**
-   * Subscribe to the seat, listen to it, and ask for its newest page.
+   * Hold the seat, listen to it, and ask for its newest page.
    *
-   * **The subscription lives with the conversation, not with the page**
-   * (Ved, 2026-10-09): the server sends a seat's bulk conversation only to a
-   * subscriber of that seat, so a subscription given back on leave would
-   * make "every frame folds for every seat" untrue for exactly the frames
-   * that matter. A kept conversation keeps receiving; the DRAW is what
-   * waits. It costs what the ruling accepts: the server holds every visited
-   * seat, and a shown seat pays two windowed encodes per reconnect (the
-   * page's subscription and this one) - both bounded by the subscribe
-   * window, not the transcript.
+   * **The hold lives with the conversation, not with the page** (Ved,
+   * 2026-10-09): the server sends a seat's frames to a subscriber of that
+   * seat, so a subscription given back on leave would make "every frame folds
+   * for every seat" untrue for exactly the frames that matter. A kept
+   * conversation keeps receiving; the DRAW is what waits.
+   *
+   * **It is a HOLD on the seat's one subscription, not a subscribe of its
+   * own.** The page opens that subscription and holds it too, and two
+   * subscribes are two whole records encoded and sent to a client that keeps
+   * one copy - 6.5 MB twice on a large seat, measured 2026-10-09. The
+   * subscription goes with the last holder, so a page leaving a seat this
+   * conversation still folds sends nothing at all.
    *
    * **And a subscription is not what fills the list.** The snapshot carries
    * the newest turns rather than the whole conversation; the page draws a
@@ -854,7 +858,7 @@ export class Chat {
    */
   start(): () => void {
     if (this.running !== null) return this.running;
-    void this.connection.subscribe({ session: this.slot });
+    const release = watchSession(this.connection, this.slot, false).hold();
     // Where the seat already is, for a seat a visit has answered before: a
     // return subscribes nothing, so nothing else would say.
     this.heard(this.heldRunning());
@@ -909,7 +913,7 @@ export class Chat {
       stopMessages();
       stopStatus();
       stopRefusals();
-      this.connection.unsubscribe({ session: this.slot });
+      release();
       this.clearRetry();
       this.running = null;
     };

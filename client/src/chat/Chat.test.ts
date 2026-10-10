@@ -321,6 +321,46 @@ describe('the chat column as it draws', () => {
     expect(drawn()).toContain('no history');
   });
 
+  /**
+   * **A switch leaves the old seat's conversation behind.** The column is the
+   * page's one window on a conversation, and a switch that kept drawing the
+   * seat it left says the reader is somewhere they are not - reported live
+   * 2026-10-10, on both the desktop app and the browser.
+   */
+  it('draws the seat it was switched to, not the one it left', () => {
+    const say = (text: string): unknown => ({
+      type: 'assistant',
+      message: {
+        id: `m-${text}`,
+        role: 'assistant',
+        model: 'claude-opus-5',
+        content: [{ type: 'text', text }],
+      },
+    });
+    const server = stub();
+    const column = mount(SeatSwitch, {
+      target: document.body,
+      props: { connection: server.connection, first: LEAD, second: { ...LEAD, label: 'w1' } },
+    }) as unknown as { flip: () => void };
+    app = column;
+    flushSync();
+
+    server.answer([{ key: 't1', messages: [say('the lead said this')] }]);
+    expect(drawn(), 'precondition: the first seat drew').toContain('the lead said this');
+
+    column.flip();
+    flushSync();
+
+    expect(drawn(), 'the column kept drawing the conversation of the seat it left').not.toContain(
+      'the lead said this',
+    );
+    // And the new seat's own state is what draws, not a blank column: an empty
+    // column would satisfy the line above as readily as the right one.
+    expect(drawn(), 'the column drew nothing at all for the seat it moved to').toContain(
+      'Reading the conversation',
+    );
+  });
+
   it('says it is still reading rather than saying the seat is empty', () => {
     const server = stub();
     draw({}, server);

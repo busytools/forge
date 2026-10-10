@@ -59,14 +59,25 @@ impl LiveState {
     /// connection is watching it fail), or it has been shown since the
     /// failure landed.
     pub fn failed_mark(&self, slot: &SessionSlot, at: SystemTime) -> Option<SystemTime> {
-        if self.attached.contains_key(slot) {
-            return None;
-        }
-        match self.seen_failed.get(slot) {
-            Some(shown) if shown >= &at => None,
-            _ => Some(at),
-        }
+        mark_showing(&self.attached, &self.seen_failed, slot, at).then_some(at)
     }
+}
+
+/// Whether a failure at `at` is still the reader's to see.
+///
+/// One predicate for its two readers - the home's rows, and the attach that
+/// spends the mark - so the test the home draws by and the test that decides
+/// whether a refresh is owed cannot drift apart.
+fn mark_showing(
+    attached: &HashMap<SessionSlot, usize>,
+    seen_failed: &HashMap<SessionSlot, SystemTime>,
+    slot: &SessionSlot,
+    at: SystemTime,
+) -> bool {
+    if attached.contains_key(slot) {
+        return false;
+    }
+    !matches!(seen_failed.get(slot), Some(shown) if shown >= &at)
 }
 
 impl Live {
@@ -97,10 +108,20 @@ impl Live {
     /// A page is open on `slot`, which is a connection showing it, so a mark
     /// armed before the page opened goes with it. Counted, because two tabs
     /// on one seat are one seat still being shown.
-    pub fn attach(&mut self, slot: &SessionSlot) {
+    ///
+    /// **Answers whether a mark was actually spent** - the diamond this view
+    /// was carrying, or a failure at `failed_at` still showing for it. A
+    /// connection that holds the home is owed a fresh one exactly then: a
+    /// re-encode with nothing to carry is 448 KB and 113-263 ms of server
+    /// time for a home the client already has (measured 2026-10-09).
+    pub fn attach(&mut self, slot: &SessionSlot, failed_at: Option<SystemTime>) -> bool {
+        let spent = self.unseen.is_unseen(slot)
+            || failed_at
+                .is_some_and(|at| mark_showing(&self.attached, &self.seen_failed, slot, at));
         *self.attached.entry(slot.clone()).or_default() += 1;
         self.unseen.clear(slot);
         self.seen_failed.insert(slot.clone(), SystemTime::now());
+        spent
     }
 
     /// One page on `slot` has gone. The seat is let go with the last of them.
@@ -333,7 +354,7 @@ mod tests {
             "a failure nobody has shown marks",
         );
 
-        live.attach(&slot);
+        live.attach(&slot, None);
         assert_eq!(
             live.snapshot().failed_mark(&slot, first),
             None,
@@ -357,7 +378,7 @@ mod tests {
             "a failure after the showing is news again",
         );
 
-        live.attach(&slot);
+        live.attach(&slot, None);
         std::thread::sleep(std::time::Duration::from_millis(2));
         let third = std::time::SystemTime::now();
         assert_eq!(
@@ -371,6 +392,45 @@ mod tests {
             None,
             "and leaving does not resurrect it",
         );
+    }
+
+    /// **An attach answers whether it spent anything**, which is what a home
+    /// refresh after it is owed for: the diamond it was carrying, or a failure
+    /// mark still showing. Nothing spent means the home the client holds is
+    /// the home it would be sent - and re-encoding it anyway is 448 KB and
+    /// 113-263 ms of server time for no change (measured 2026-10-09).
+    #[test]
+    fn an_attach_answers_whether_a_mark_was_spent() {
+        let slot = SessionSlot::lead("Org", "forge");
+        let mut live = Live::new();
+
+        let first = live.attach(&slot, None);
+        assert!(!first, "a seat carrying no marks spends nothing");
+        let second = live.attach(&slot, None);
+        assert!(!second, "and a second page on it spends nothing either");
+        live.detach(&slot);
+        live.detach(&slot);
+
+        // The diamond: a completion on a seat nobody is showing arms it.
+        live.apply(&appended(&slot, result_message("success", false)));
+        assert!(
+            live.attach(&slot, None),
+            "a completion nobody has shown is spent by showing the seat",
+        );
+
+        // A failure mark: a failure instant after the last time the seat was
+        // shown. The stamps come from the clock, so each instant is given a
+        // gap to sit strictly after the one before it.
+        live.detach(&slot);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let failed = std::time::SystemTime::now();
+        assert!(
+            live.attach(&slot, Some(failed)),
+            "a failure nobody has shown is spent by showing the seat",
+        );
+        live.detach(&slot);
+        let again = live.attach(&slot, Some(failed));
+        assert!(!again, "a failure already shown is not spent twice");
     }
 
     fn session_state(state: &str) -> Message {
@@ -487,7 +547,7 @@ mod tests {
     fn an_attached_seat_earns_no_diamond_and_still_settles() {
         let slot = SessionSlot::lead("Org", "forge");
         let mut live = Live::new();
-        live.attach(&slot);
+        live.attach(&slot, None);
 
         assert!(
             live.apply(&appended(&slot, result_message("success", false))).fleet,
@@ -504,7 +564,7 @@ mod tests {
     fn a_seat_arms_again_once_its_page_closes() {
         let slot = SessionSlot::lead("Org", "forge");
         let mut live = Live::new();
-        live.attach(&slot);
+        live.attach(&slot, None);
         live.detach(&slot);
 
         assert!(
@@ -524,8 +584,8 @@ mod tests {
     fn two_pages_on_one_seat_hold_it_until_both_close() {
         let slot = SessionSlot::lead("Org", "forge");
         let mut live = Live::new();
-        live.attach(&slot);
-        live.attach(&slot);
+        live.attach(&slot, None);
+        live.attach(&slot, None);
         live.detach(&slot);
 
         live.apply(&appended(&slot, result_message("success", false)));
@@ -551,7 +611,7 @@ mod tests {
         live.apply(&appended(&slot, result_message("success", false)));
         assert!(live.snapshot().unseen.is_unseen(&slot), "precondition: the turn armed it");
 
-        live.attach(&slot);
+        live.attach(&slot, None);
         assert!(
             !live.snapshot().unseen.is_unseen(&slot),
             "the page opening is the reader being shown the seat",
@@ -564,7 +624,7 @@ mod tests {
     fn a_closed_page_leaves_no_entry_behind() {
         let slot = SessionSlot::lead("Org", "forge");
         let mut live = Live::new();
-        live.attach(&slot);
+        live.attach(&slot, None);
         assert_eq!(live.attached.len(), 1, "precondition: the seat is held");
 
         live.detach(&slot);
