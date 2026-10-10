@@ -7204,6 +7204,13 @@ mod lead_charter_tests {
             DEFAULT_LEAD_CHARTER.contains("never parked on the user"),
             "the new-work half is pinned",
         );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains(
+                "A long-lived worker is a standing commitment of the user's attention rather \
+                 than a step of work"
+            ),
+            "the long-lived-worker line is blessed by the rule, not left against it",
+        );
     }
 
     /// The charter is the only shipped text telling a lead how to maintain
