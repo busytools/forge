@@ -19,7 +19,7 @@
  * and a value rather than a bare type, so the census can assert membership in it
  * rather than a box's word for itself.
  */
-export const EDITORS = ['composer', 'dock', 'connect', 'palette', 'nowhere'] as const;
+export const EDITORS = ['composer', 'dock', 'connect', 'palette', 'board', 'nowhere'] as const;
 
 export type Editor = (typeof EDITORS)[number];
 
@@ -34,6 +34,12 @@ export type Where = {
   /** Whether each route's box is on screen at all. */
   composerPresent?: boolean;
   connectPresent?: boolean;
+  /**
+   * The board takeover's own boxes - the send-back words, the answer, the
+   * create line. A page of its own, like connect: it holds the keyboard
+   * while it is up, and its boxes are not routed anywhere else.
+   */
+  boardPresent?: boolean;
   /** The palette's search box, which is on screen only while it is open. */
   palettePresent?: boolean;
   /**
@@ -61,6 +67,8 @@ export function focusOf(where: Where): Editor {
       return 'dock';
     case 'connect':
       return where.connectPresent === false ? fallback(where) : 'connect';
+    case 'board':
+      return where.boardPresent === false ? fallback(where) : 'board';
     case 'composer':
       return where.composerPresent === false ? 'nowhere' : 'composer';
     case 'palette':

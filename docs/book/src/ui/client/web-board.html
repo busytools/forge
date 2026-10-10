@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>forge &middot; board</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cg fill='none' stroke='%23f47600' stroke-width='2.4'%3E%3Crect x='3.2' y='3.2' width='17.6' height='17.6' rx='4'/%3E%3Cpath d='M13.6 3.2V20.8'/%3E%3C/g%3E%3Cpath fill='%23f47600' d='M4.4 6.4a2 2 0 0 1 2-2h4v15.2h-4a2 2 0 0 1-2-2Z'/%3E%3C/svg%3E">
+<style>
+  /* The same token set the client ships (theme.ts), so the drawing is held
+     against the real page rather than against a lookalike. */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130; --line:#222a3c;
+    --text:#c9d1d9; --muted:#8f98a8; --dim:#788294;
+    --accent:#f47600; --ok:#82c76b; --bad:#e0683e; --warn:#c9a13b;
+    --blue:#61a0e0; --hot:#ffb058; --sel:#20140a;
+    --ui: "Fira Code", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "Fira Code", ui-monospace, Menlo, monospace;
+    --r: 10px;
+  }
+  html, body { height: 100%; }
+  body {
+    background:
+      radial-gradient(1100px 520px at 8% -12%, rgba(244,118,0,.07), transparent 60%),
+      radial-gradient(900px 460px at 96% 108%, rgba(91,156,248,.05), transparent 62%),
+      var(--bg);
+    color: var(--text);
+    font-family: var(--ui);
+    font-size: 15.5px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  /* The board is the one full-width page: no measure cap. */
+  .wrap { max-width: none; margin: 0 auto; padding: 30px 40px 64px; }
+
+  /* The takeover's slim bar: back and done return the reader where they
+     were, the project's name carries its own read, and the seats sit at the
+     end - a card dropped on one is assigned to it. */
+  .b-top { display: flex; align-items: center; gap: 8px; margin-bottom: 18px; }
+  .b-back, .b-done { font-family: var(--mono); font-size: 12.5px; color: var(--muted);
+    background: transparent; border: 0; border-radius: 999px; padding: 7px 12px; cursor: pointer; }
+  .b-back:hover, .b-done:hover { background: var(--s2); color: var(--text); }
+  .b-id { margin-left: 8px; display: flex; align-items: baseline; gap: 12px; }
+  .b-nm { font-size: 19px; font-weight: 600; letter-spacing: -.01em; color: var(--text); }
+  .b-read { font-size: 12.5px; color: var(--dim); }
+  .b-read b { font-weight: 560; color: var(--hot); }
+  .b-spacer { flex: 1; }
+  .b-seat { font-family: var(--mono); font-size: 12.5px; color: var(--blue);
+    text-decoration: none; background: var(--s2); border-radius: 999px; padding: 4px 11px; }
+  .b-seat:hover { background: var(--s3); }
+  .b-seat.drop { background: var(--accent); color: var(--bg); }
+
+  /* the strip: the one warm surface */
+  .b-you { position: relative; background: var(--sel); border-radius: var(--r);
+    padding: 18px 22px 16px; margin-bottom: 26px; overflow: hidden; }
+  .b-you::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 2px;
+    background: var(--accent); opacity: .8; }
+  .b-you h2 { display: flex; align-items: center; gap: 8px; margin: 0 0 7px;
+    font-family: var(--mono); font-size: 12.5px; font-weight: 500;
+    letter-spacing: .05em; color: var(--hot); }
+  .b-n { background: rgba(244,118,0,.16); color: var(--hot); border-radius: 999px; padding: 1px 8px; }
+  .b-asks { display: flex; gap: 24px; flex-wrap: wrap; }
+  .b-ask { flex: 1; min-width: 320px; }
+  .b-q { font-weight: 500; }
+  .b-why { display: flex; gap: 10px; font-family: var(--mono); font-size: 12.5px;
+    color: var(--dim); margin-top: 2px; }
+  .b-detail { font-size: 12.5px; color: var(--muted); margin-top: 4px; }
+  .b-do { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 9px; }
+  .b-btn { border: 0; cursor: pointer; font: inherit; border-radius: 10px; font-size: 13px; }
+  .b-ok { background: var(--ok); color: var(--bg); font-weight: 640; padding: 8px 15px; }
+  .b-no { background: transparent; color: var(--bad); padding: 8px 15px;
+    box-shadow: inset 0 0 0 1px rgba(224,104,62,.45); }
+  .b-plain { background: var(--s3); color: var(--text); font-weight: 560; padding: 8px 15px; }
+  .b-add { background: var(--accent); color: var(--bg); font-weight: 640;
+    border-radius: 999px; padding: 9px 16px; }
+  .b-in { background: var(--bg); border: 0; box-shadow: inset 0 0 0 1px var(--line);
+    border-radius: 10px; color: var(--text); font: inherit; font-size: 13px;
+    padding: 8px 11px; min-width: 220px; }
+  .b-in::placeholder { color: var(--dim); }
+
+  /* lanes: a name, a count and a rule - no boxes around the column. Every
+     state keeps its lane, and lanes that do not fit wrap to a second row:
+     the sheet never scrolls sideways, and a missing lane would read as a
+     missing state. */
+  .b-lanes { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 18px; align-items: start; }
+  .b-lane { transition: background .16s ease; }
+  .b-lane.drop { background: rgba(255, 255, 255, .025); border-radius: 14px; }
+  .b-lane.drop .b-cap .b-lane-nm { color: var(--text); }
+  .b-cap { display: flex; align-items: center; gap: 8px; padding: 0 2px 10px; }
+  .b-lane-nm { font-size: 12.5px; font-weight: 600; color: var(--muted); letter-spacing: .01em; }
+  .b-count { font-family: var(--mono); font-size: 12.5px; color: var(--dim); }
+  .b-rule { flex: 1; height: 1px; background: var(--line); }
+
+  /* cards: three lines, the surface step is the elevation, no border */
+  .b-card { background: var(--s2); border-radius: 13px; padding: 15px 16px 14px; cursor: grab; }
+  .b-card + .b-card { margin-top: 10px; }
+  .b-card:hover { background: var(--s3); }
+  .b-card.dragging { opacity: .45; }
+  .b-ghost { position: fixed; z-index: 40; max-width: 260px; pointer-events: none;
+    background: var(--s3); color: var(--text); border-radius: 11px; padding: 9px 12px;
+    font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    border: 1px solid var(--line); transform: rotate(1.2deg);
+    box-shadow: 0 26px 52px -24px rgba(0, 0, 0, .9); }
+
+  .b-row1 { display: flex; align-items: flex-start; gap: 9px; }
+  .b-sub { flex: 1; min-width: 0; font-size: 14.5px; font-weight: 500; line-height: 1.35; color: var(--text); }
+  .b-line { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .b-sub.settled { color: var(--dim); text-decoration: line-through; font-weight: 400; }
+  .b-sub2 { display: block; color: var(--dim); font-size: 13px; font-weight: 400; margin-top: 2px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .b-meta { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; margin-top: 10px;
+    font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+  .b-owner { display: inline-flex; align-items: center; gap: 6px; }
+  .b-ava { width: 18px; height: 18px; border-radius: 50%; background: var(--s3); color: var(--muted);
+    display: inline-flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 600; }
+  .b-epic { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .b-meta a { color: var(--blue); text-decoration: none; }
+  .b-link { color: var(--muted); }
+  .b-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-left: auto; }
+  .b-chip { font-size: 13px; border-radius: 999px; padding: 3px 10px;
+    background: var(--s3); color: var(--muted); white-space: nowrap; }
+  .b-chip.warn { background: rgba(201,161,59,.14); color: var(--warn); }
+  .b-chip.bad { background: rgba(224,104,62,.14); color: var(--bad); }
+  .b-chip.blue { background: rgba(97,160,224,.12); color: var(--blue); }
+  .b-chip.dim { background: var(--s3); color: var(--dim); }
+
+  /* the last line: the measure under the time, how long since the row moved,
+     and the owner picker at the end */
+  .b-last { display: flex; align-items: center; gap: 12px; margin-top: 13px; flex-wrap: wrap; }
+  .b-prog { display: flex; flex-direction: column; gap: 4px; min-width: 90px; flex: 1; }
+  .b-time { color: var(--dim); font-size: 13px; white-space: nowrap; font-family: var(--mono); }
+  .b-bar { height: 2px; border-radius: 99px; background: var(--s3); overflow: hidden; }
+  .b-fill { display: block; height: 100%; border-radius: 99px; background: var(--muted); }
+  .b-prog.over .b-time { color: var(--warn); }
+  .b-prog.over .b-fill { background: var(--warn); }
+  .b-wrote { color: var(--dim); font-size: 12.5px; font-family: var(--mono); white-space: nowrap; }
+  .b-wrote.live { color: var(--ok); display: inline-flex; align-items: center; gap: 5px; }
+  .b-wrote.live::before { content: ""; width: 6px; height: 6px; border-radius: 50%;
+    background: var(--ok); animation: b-breath 2.4s ease-in-out infinite; }
+  @keyframes b-breath { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
+  .b-acts { display: flex; gap: 6px; align-items: center; margin-left: auto; }
+  .b-pick { display: inline-flex; align-items: center; gap: 5px; background: transparent; border: 0;
+    color: var(--dim); font-family: var(--mono); font-size: 12.5px; padding: 5px 7px;
+    border-radius: 8px; cursor: pointer; }
+  .b-pick:hover { background: var(--s3); color: var(--text); }
+
+  /* marks: shape first, colour second */
+  .b-mark { width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--dim);
+    flex: none; margin-top: 3px; }
+  .b-mark.b-run { background: var(--accent); border-color: var(--accent); }
+  .b-mark.b-wait { border-radius: 3px; border: 2.5px solid var(--warn); margin-top: 2px; }
+  .b-mark.b-done { background: var(--ok); border-color: var(--ok); }
+  .b-mark.b-fail { background: var(--bad); border-color: var(--bad); }
+  .b-mark.b-cancel { height: 2px; border: 0; border-radius: 2px; background: var(--dim); margin-top: 6px; }
+
+  .b-create { display: flex; gap: 9px; align-items: center; flex-wrap: wrap; margin-top: 22px; }
+  .b-empty { color: var(--muted); font-size: 13px; margin: 4px 0 16px; }
+  .note { color: var(--dim); font-size: 12.5px; font-family: var(--mono); margin-top: 22px; }
+</style>
+</head>
+<body>
+<div class="wrap board">
+
+  <div class="b-top">
+    <button class="b-back">&larr; back</button>
+    <span class="b-id">
+      <span class="b-nm">task-board</span>
+      <span class="b-read"><b>2 waiting on you</b> &middot; 7 rows &middot; 2 running</span>
+    </span>
+    <span class="b-spacer"></span>
+    <a class="b-seat" href="./web-session.html">task-board</a>
+    <a class="b-seat" href="./web-session.html">fleet</a>
+    <a class="b-seat drop" href="./web-session.html">forge</a>
+    <button class="b-done">done</button>
+  </div>
+
+  <section class="b-you" aria-label="waiting on you">
+    <h2>waiting on you <span class="b-n">2</span></h2>
+    <div class="b-asks">
+      <div class="b-ask">
+        <div class="b-q">a project's board opens as a takeover</div>
+        <div class="b-why"><span>fleet</span><span>40m</span></div>
+        <div class="b-detail">your look: the lanes read right at both widths</div>
+        <div class="b-do">
+          <button class="b-btn b-ok">approve</button>
+          <input class="b-in" placeholder="what to change (sent back with it)">
+          <button class="b-btn b-no">send back</button>
+        </div>
+      </div>
+      <div class="b-ask">
+        <div class="b-q">the rail's defects</div>
+        <div class="b-why"><span>steward</span><span>2h</span></div>
+        <div class="b-detail">the sliver: reproduce first, or draw none?</div>
+        <div class="b-do">
+          <input class="b-in" placeholder="your answer">
+          <button class="b-btn b-plain">answer</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="b-lanes">
+    <section class="b-lane" data-state="in_progress">
+      <div class="b-cap"><span class="b-lane-nm">In progress</span><span class="b-count">2</span><span class="b-rule"></span></div>
+      <article class="b-card">
+        <div class="b-row1">
+          <span class="b-mark b-run"></span>
+          <span class="b-sub">
+            <span class="b-line">marking a moving row</span>
+            <span class="b-sub2">the moving surface</span>
+          </span>
+        </div>
+        <div class="b-meta">
+          <span class="b-owner"><span class="b-ava">F</span>forge</span>
+          <span class="b-epic">the board walk</span>
+          <a href="#">spec</a><a href="#">#1886</a>
+          <span class="b-chips"><span class="b-chip dim">attempt 1</span></span>
+        </div>
+        <div class="b-last">
+          <span class="b-prog">
+            <span class="b-time">worked 6h / 2d</span>
+            <span class="b-bar"><span class="b-fill" style="width:12%"></span></span>
+          </span>
+          <span class="b-wrote live">wrote 12s ago</span>
+          <span class="b-acts"><button class="b-pick">forge &#9662;</button></span>
+        </div>
+      </article>
+      <article class="b-card">
+        <div class="b-row1">
+          <span class="b-mark b-run"></span>
+          <span class="b-sub">
+            <span class="b-line">eliding the long project names</span>
+          </span>
+        </div>
+        <div class="b-meta">
+          <span class="b-owner"><span class="b-ava">S</span>steward</span>
+          <span class="b-chips"></span>
+        </div>
+        <div class="b-last">
+          <span class="b-prog">
+            <span class="b-time">worked 2h / 1d</span>
+            <span class="b-bar"><span class="b-fill" style="width:8%"></span></span>
+          </span>
+          <span class="b-wrote">wrote 4m ago</span>
+          <span class="b-acts"><button class="b-pick">steward &#9662;</button></span>
+        </div>
+      </article>
+    </section>
+
+    <section class="b-lane" data-state="waiting">
+      <div class="b-cap"><span class="b-lane-nm">Waiting</span><span class="b-count">1</span><span class="b-rule"></span></div>
+      <article class="b-card">
+        <div class="b-row1">
+          <span class="b-mark b-wait"></span>
+          <span class="b-sub">
+            <span class="b-line">the fleet row: every cell from the server's own read</span>
+          </span>
+        </div>
+        <div class="b-meta">
+          <span class="b-owner"><span class="b-ava">F</span>fleet</span>
+          <span class="b-chips">
+            <span class="b-chip warn">waiting on you</span>
+            <span class="b-chip bad">overdue</span>
+          </span>
+        </div>
+        <div class="b-last">
+          <span class="b-prog">
+            <span class="b-time">worked 1d 2h / 1d</span>
+            <span class="b-bar"><span class="b-fill" style="width:100%"></span></span>
+          </span>
+          <span class="b-wrote">wrote 22m ago</span>
+          <span class="b-acts"><button class="b-pick">fleet &#9662;</button></span>
+        </div>
+      </article>
+    </section>
+
+    <section class="b-lane" data-state="pending">
+      <div class="b-cap"><span class="b-lane-nm">Ready</span><span class="b-count">1</span><span class="b-rule"></span></div>
+      <article class="b-card">
+        <div class="b-row1">
+          <span class="b-mark"></span>
+          <span class="b-sub">
+            <span class="b-line">book pages for the new surface</span>
+          </span>
+        </div>
+        <div class="b-meta">
+          <span class="b-meta"><span class="b-muted">unclaimed</span></span>
+          <span class="b-chips"><span class="b-chip dim">no movement 5h</span></span>
+        </div>
+        <div class="b-last">
+          <span class="b-prog"><span class="b-time">worked 0s</span></span>
+          <span class="b-wrote">wrote 5h ago</span>
+          <span class="b-acts"><button class="b-pick">unclaimed &#9662;</button></span>
+        </div>
+      </article>
+    </section>
+
+    <section class="b-lane" data-state="completed">
+      <div class="b-cap"><span class="b-lane-nm">Completed</span><span class="b-count">1</span><span class="b-rule"></span></div>
+      <article class="b-card">
+        <div class="b-row1">
+          <span class="b-mark b-done"></span>
+          <span class="b-sub settled">
+            <span class="b-line">release 1.1.2</span>
+          </span>
+        </div>
+        <div class="b-meta">
+          <span class="b-owner"><span class="b-ava">F</span>forge</span>
+          <span class="b-chips">
+            <span class="b-chip">5/5 done</span>
+            <span class="b-chip blue">to close</span>
+          </span>
+        </div>
+        <div class="b-last">
+          <span class="b-prog">
+            <span class="b-time">worked 1d 1h / 1d</span>
+            <span class="b-bar"><span class="b-fill" style="width:100%"></span></span>
+          </span>
+          <span class="b-wrote">wrote 3d ago</span>
+          <span class="b-acts"><button class="b-pick">forge &#9662;</button></span>
+        </div>
+      </article>
+    </section>
+
+    <section class="b-lane" data-state="failed">
+      <div class="b-cap"><span class="b-lane-nm">Failed</span><span class="b-count">1</span><span class="b-rule"></span></div>
+      <article class="b-card">
+        <div class="b-row1">
+          <span class="b-mark b-fail"></span>
+          <span class="b-sub">
+            <span class="b-line">the spike that ended in error</span>
+          </span>
+        </div>
+        <div class="b-meta">
+          <span class="b-owner"><span class="b-ava">P</span>probe</span>
+          <a href="#">#1839</a>
+          <span class="b-chips"><span class="b-chip bad">owner gone</span></span>
+        </div>
+        <div class="b-last">
+          <span class="b-prog">
+            <span class="b-time">worked 1d 2h / 2d</span>
+            <span class="b-bar"><span class="b-fill" style="width:75%"></span></span>
+          </span>
+          <span class="b-wrote">wrote 1d ago</span>
+          <span class="b-acts"><button class="b-pick">probe &#9662;</button></span>
+        </div>
+      </article>
+    </section>
+
+    <section class="b-lane" data-state="canceled">
+      <div class="b-cap"><span class="b-lane-nm">Canceled</span><span class="b-count">0</span><span class="b-rule"></span></div>
+    </section>
+  </div>
+
+  <div class="b-create">
+    <input class="b-in" placeholder="a new row">
+    <button class="b-pick">no epic &#9662;</button>
+    <button class="b-btn b-add">+ add</button>
+  </div>
+
+  <p class="note">
+    one project only: nothing of any other project appears here. a drag moves a card
+    between lanes, re-orders it inside one, or drops it on a seat; the arrows on a
+    focused card are the keyboard's half. every cell is the server's own read, and
+    every move hands the socket one command with this project on it.
+  </p>
+</div>
+</body>
+</html>

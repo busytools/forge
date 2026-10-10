@@ -485,12 +485,112 @@
     </div>
   </section>
 
+  <style>
+    /* The fleet, as the client draws it: one row per project and nothing
+       mixed. Every cell is the server's own read; the mark is the strongest
+       of the project's seat marks, in the same vocabulary a seat row uses. */
+    .fleet { list-style: none; margin: 8px 0 0; padding: 0; }
+    .fleet-row { display: grid;
+      grid-template-columns: 22px minmax(0, 14rem) minmax(0, 1fr) auto auto auto;
+      align-items: center; gap: 14px;
+      border: 1px solid var(--line); border-radius: var(--r);
+      background: var(--s1); padding: 13px 16px; margin-bottom: 10px; }
+    .fleet-name { font-weight: 500; }
+    .fleet-where { color: var(--muted); font-size: 12.5px; font-family: var(--mono); }
+    .fleet-where .files { color: var(--text); }
+    .fleet-seats { display: flex; gap: 12px; flex-wrap: wrap; }
+    .fleet-seat { display: inline-flex; align-items: center; gap: 7px;
+      color: var(--dim); font-size: 12.5px; font-family: var(--mono); }
+    .fleet-counts { color: var(--muted); font-size: 12.5px; font-family: var(--mono);
+      white-space: nowrap; }
+    .fleet-you { color: #ffb058; }
+    .fleet-misses { display: flex; gap: 8px; flex-wrap: wrap; }
+    .fleet-miss { font-family: var(--mono); font-size: 12.5px;
+      border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; color: var(--muted); }
+    .fleet-miss.stalled { border-color: rgba(201,161,59,.5); color: var(--warn); }
+    .fleet-miss.no-row { border-color: rgba(224,104,62,.5); color: var(--bad); }
+    .fleet-open { color: var(--blue); text-decoration: none; font-family: var(--mono);
+      font-size: 12.5px; border: 1px solid var(--line); border-radius: 6px;
+      padding: 6px 10px; white-space: nowrap; }
+    /* The marks the fleet borrows from the sheet's vocabulary. */
+    .fleet .dot { width: 11px; height: 11px; border-radius: 50%; flex: 0 0 11px; }
+    .fleet .dot.live { background: var(--ok); }
+    .fleet .dot.off { background: var(--dim); }
+    .fleet .dot.warn { background: var(--warn); }
+    .fleet .dot.bad { background: var(--bad); }
+  </style>
+
+  <ul class="fleet">
+    <li class="fleet-row">
+      <span class="dot live"></span>
+      <span class="fleet-name">forge</span>
+      <span class="fleet-where">main &middot; <span class="files">1 file</span></span>
+      <span class="fleet-seats">
+        <span class="fleet-seat"><span class="dot live"></span>forge-l</span>
+        <span class="fleet-seat"><span class="dot live"></span>em-dash-sweep</span>
+        <span class="fleet-seat"><span class="dot live"></span>steward</span>
+      </span>
+      <span class="fleet-counts">3 of 4 slots &middot; queue 1 &middot;
+        <span class="fleet-you">on you 2</span></span>
+      <span class="fleet-misses"><span class="fleet-miss stalled">queue is stalling</span></span>
+      <a class="fleet-open" href="./web-board.html">open board &rarr;</a>
+    </li>
+    <li class="fleet-row">
+      <span class="dot live"></span>
+      <span class="fleet-name">hub-modules</span>
+      <span class="fleet-where">main</span>
+      <span class="fleet-seats">
+        <span class="fleet-seat"><span class="dot live"></span>hub-modules-l</span>
+        <span class="fleet-seat"><span class="dot live"></span>steward</span>
+      </span>
+      <span class="fleet-counts">2 of 2 slots &middot; queue 0</span>
+      <span class="fleet-misses"></span>
+      <a class="fleet-open" href="./web-board.html">open board &rarr;</a>
+    </li>
+    <li class="fleet-row">
+      <span class="dot live"></span>
+      <span class="fleet-name">granite-backend</span>
+      <span class="fleet-where">main</span>
+      <span class="fleet-seats">
+        <span class="fleet-seat"><span class="dot live"></span>granite-backend-l</span>
+        <span class="fleet-seat"><span class="dot live"></span>referral-signature-fix</span>
+      </span>
+      <span class="fleet-counts">1 of 2 slots &middot; queue 2</span>
+      <span class="fleet-misses">
+        <span class="fleet-miss stalled">queue is stalling</span>
+        <span class="fleet-miss no-row">probe holds no row</span>
+      </span>
+      <a class="fleet-open" href="./web-board.html">open board &rarr;</a>
+    </li>
+    <li class="fleet-row">
+      <span class="dot off"></span>
+      <span class="fleet-name">dotfiles</span>
+      <span class="fleet-where">main</span>
+      <span class="fleet-seats">
+        <span class="fleet-seat"><span class="dot off"></span>dotfiles-l</span>
+      </span>
+      <span class="fleet-counts">0 of 2 slots &middot; queue 0</span>
+      <span class="fleet-misses"></span>
+      <a class="fleet-open" href="./web-board.html">open board &rarr;</a>
+    </li>
+    <li class="fleet-row">
+      <span class="dot off"></span>
+      <span class="fleet-name">space-acres</span>
+      <span class="fleet-where"></span>
+      <span class="fleet-seats"></span>
+      <span class="fleet-counts">0 of 2 slots &middot; queue 0 &middot; never started</span>
+      <span class="fleet-misses"></span>
+      <a class="fleet-open" href="./web-board.html">open board &rarr;</a>
+    </li>
+  </ul>
+
   <div class="demo-panel" data-mock-ignore>
-    <h3>states reference &middot; the home's whole vocabulary, none of it live</h3>
+    <h3>states reference &middot; the vocabulary the fleet's marks draw, none of it live</h3>
     <p class="lede">
-      Every state the home can render, on the components it renders them on.
-      This is what an implementation has to cover; the live page below shows
-      only the states that are true right now.
+      Every seat state the fleet's rows can carry - the mark is the strongest
+      of a project's seats, drawn from this same set - and the same shapes the
+      rail's rows use. This is what an implementation has to cover; the live
+      page below shows only the states that are true right now.
     </p>
 
     <div class="cat">
@@ -874,272 +974,6 @@
     </div>
   </div>
 
-  <section class="org">
-    <h2>Busytools <span class="rule"></span>
-      <span class="counts">3 live &middot; 2 asleep</span>
-    </h2>
-    <ul class="list">
-      <li class="node">
-        <div class="row running">
-          <span class="dot live"></span>
-          <span class="name">forge</span>
-          <span class="where">main &middot; <span class="files">1 file</span></span>
-          <span class="what"></span>
-          <span class="when">now</span>
-        </div>
-      </li>
-      <li class="node">
-        <div class="row running">
-          <span class="dot live"></span>
-          <span class="name">hub-modules</span>
-          <span class="where">main</span>
-          <span class="what"></span>
-          <span class="when">now</span>
-        </div>
-        <ul class="children">
-          <li class="node">
-            <div class="row running">
-              <span class="dot live"></span>
-              <span class="name">em-dash-sweep</span>
-              <span class="where">worktree-em-dash-sweep</span>
-              <span class="what">
-                <span class="txt">Sweep the memory corpus for banned dashes and curly quotes</span>
-                <span class="st">in progress</span>
-              </span>
-              <span class="when">now</span>
-            </div>
-          </li>
-          <li class="node">
-            <div class="row idle">
-              <span class="dot live"></span>
-              <span class="name">steward</span>
-              <span class="where">tamilmv-header-blankq</span>
-              <span class="what">
-                <span class="txt">Refresh the steward charter row from the corrected file</span>
-                <span class="st">in progress</span>
-              </span>
-              <span class="when">now</span>
-            </div>
-          </li>
-        </ul>
-      </li>
-      <li class="node">
-        <div class="row idle">
-          <span class="dot live"></span>
-          <span class="name">busymail</span>
-          <span class="where">main</span>
-          <span class="what"></span>
-          <span class="when">now</span>
-        </div>
-      </li>
-      <li class="node">
-        <div class="row asleep">
-          <span class="dot off"></span>
-          <span class="name">busyblocks</span>
-          <span class="where"></span>
-          <span class="what"></span>
-          <span class="when">8h</span>
-        </div>
-      </li>
-      <li class="node">
-        <div class="row asleep">
-          <span class="dot off"></span>
-          <span class="name">trader-cc</span>
-          <span class="where"></span>
-          <span class="what"></span>
-          <span class="when">17h</span>
-        </div>
-      </li>
-    </ul>
-  </section>
-
-  <section class="org">
-    <h2>Personal <span class="rule"></span>
-      <span class="counts">2 live &middot; 3 asleep</span>
-    </h2>
-    <ul class="list">
-      <li class="node">
-        <div class="row idle">
-          <span class="dot live"></span>
-          <span class="name">companies</span>
-          <span class="where">main</span>
-          <span class="what"></span>
-          <span class="when">17m</span>
-        </div>
-        <ul class="children">
-          <li class="node">
-            <div class="row idle">
-              <span class="dot live"></span>
-              <span class="name">inbox-triage</span>
-              <span class="where">worktree-inbox-triage</span>
-              <span class="what"></span>
-              <span class="when">now</span>
-            </div>
-          </li>
-          <li class="node">
-            <div class="row idle">
-              <span class="dot live"></span>
-              <span class="name">job-hunt</span>
-              <span class="where">worktree-job-hunt</span>
-              <span class="what"></span>
-              <span class="when">now</span>
-            </div>
-          </li>
-          <li class="node">
-            <div class="row idle">
-              <span class="dot live"></span>
-              <span class="name">steward</span>
-              <span class="where">worktree-steward</span>
-              <span class="what"></span>
-              <span class="when">now</span>
-            </div>
-          </li>
-        </ul>
-      </li>
-      <li class="node">
-        <div class="row idle">
-          <span class="dot live"></span>
-          <span class="name">playground</span>
-          <span class="where">main</span>
-          <span class="what"></span>
-          <span class="when">21m</span>
-        </div>
-        <ul class="children">
-          <li class="node">
-            <div class="row idle">
-              <span class="dot live"></span>
-              <span class="name">gpt-tutor</span>
-              <span class="where">worktree-gpt-tutor &middot; <span class="files">1 file</span></span>
-              <span class="what"></span>
-              <span class="when">now</span>
-            </div>
-          </li>
-          <li class="node">
-            <div class="row idle">
-              <span class="dot live"></span>
-              <span class="name">harness-tutor</span>
-              <span class="where">worktree-harness-tutor &middot; <span class="files">4 files</span></span>
-              <span class="what"></span>
-              <span class="when">now</span>
-            </div>
-          </li>
-        </ul>
-      </li>
-      <li class="node">
-        <div class="row asleep">
-          <span class="dot off"></span>
-          <span class="name">dotfiles</span>
-          <span class="where"></span>
-          <span class="what"></span>
-          <span class="when">6h</span>
-        </div>
-      </li>
-      <li class="node">
-        <div class="row never">
-          <span class="dot off"></span>
-          <span class="name">fitness</span>
-          <span class="where"></span>
-          <span class="what"></span>
-          <span class="when">never</span>
-        </div>
-      </li>
-      <li class="node">
-        <div class="row asleep">
-          <span class="dot off"></span>
-          <span class="name">pure-black-github-intellij</span>
-          <span class="where"></span>
-          <span class="what"></span>
-          <span class="when">10d</span>
-        </div>
-      </li>
-    </ul>
-  </section>
-
-  <section class="org">
-    <h2>Granite <span class="rule"></span>
-      <span class="counts">2 live</span>
-    </h2>
-    <ul class="list">
-      <li class="node">
-        <div class="row running">
-          <span class="dot live"></span>
-          <span class="name">granite-backend</span>
-          <span class="where">main</span>
-          <span class="what"></span>
-          <span class="when">now</span>
-        </div>
-        <ul class="children">
-          <li class="node">
-            <div class="row idle">
-              <span class="dot live"></span>
-              <span class="name">referral-signature-fix</span>
-              <span class="where">fix/referral-stacks-signature</span>
-              <span class="what">
-                <span class="txt">#148 in review, round 2</span>
-                <span class="st">in progress</span>
-                <a href="#">PR 148</a>
-              </span>
-              <span class="when">now</span>
-            </div>
-          </li>
-        </ul>
-      </li>
-      <li class="node">
-        <div class="row idle">
-          <span class="dot live"></span>
-          <span class="name">core-v1</span>
-          <span class="where">master</span>
-          <span class="what"></span>
-          <span class="when">21m</span>
-        </div>
-      </li>
-    </ul>
-  </section>
-
-  <section class="org">
-    <h2>Subspace <span class="rule"></span>
-      <span class="counts">4 asleep</span>
-    </h2>
-    <ul class="list">
-      <li class="node">
-        <div class="row asleep">
-          <span class="dot off"></span>
-          <span class="name">subspace</span>
-          <span class="where"></span>
-          <span class="what"></span>
-          <span class="when">2d</span>
-        </div>
-      </li>
-      <li class="node">
-        <div class="row asleep">
-          <span class="dot off"></span>
-          <span class="name">subspace-chain-pulse</span>
-          <span class="where"></span>
-          <span class="what"></span>
-          <span class="when">9d</span>
-        </div>
-      </li>
-      <li class="node">
-        <div class="row asleep">
-          <span class="dot off"></span>
-          <span class="name">infra</span>
-          <span class="where"></span>
-          <span class="what"></span>
-          <span class="when">9d</span>
-        </div>
-      </li>
-      <li class="node">
-        <div class="row never">
-          <span class="dot off"></span>
-          <span class="name">space-acres</span>
-          <span class="where"></span>
-          <span class="what"></span>
-          <span class="when">never</span>
-        </div>
-      </li>
-    </ul>
-  </section>
-
-</main>
+  </main>
 </body>
 </html>

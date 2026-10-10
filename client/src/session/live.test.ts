@@ -257,7 +257,7 @@ describe('the session page over a socket', () => {
     const props = {
       settings: DEFAULT_SETTINGS,
       address: server.url,
-      home: { wire: homeWire, refused: null },
+      home: { wire: homeWire, refused: null, report: null },
       failure: null,
       connected: true,
       connection,
@@ -346,7 +346,7 @@ describe('the session page over a socket', () => {
         route: { name: 'session', slot: LEAD },
         settings: DEFAULT_SETTINGS,
         address: '',
-        home: { wire: homeWire, refused: null },
+        home: { wire: homeWire, refused: null, report: null },
         failure: null,
         connected: true,
         connection,

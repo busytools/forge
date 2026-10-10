@@ -501,6 +501,49 @@ pub enum Command {
         project_name: Option<String>,
         launch_settings: SessionLaunchSettings,
     },
+    /// The user's verdict on a row waiting on their look. App-level (no
+    /// session route): the board is the user's, and the row names its
+    /// own project. `approve` completes it (past the verify gate - this
+    /// IS the verification); a send-back returns it to its owner with
+    /// `words` appended to the detail and one message into that session.
+    TaskVerdict {
+        project: String,
+        id: String,
+        approve: bool,
+        words: Option<String>,
+    },
+    /// The user answers a row waiting on a question: the words go into
+    /// the detail, the row resumes in progress, and its owner hears once.
+    TaskAnswer {
+        project: String,
+        id: String,
+        words: String,
+    },
+    /// The user moves a row in its queue.
+    TaskRank {
+        project: String,
+        id: String,
+        to: RankMove,
+    },
+    /// The user gives a row an owner (a label in the project) or takes
+    /// it back.
+    TaskAssign {
+        project: String,
+        id: String,
+        owner: Option<String>,
+    },
+    /// The user cuts a row from the board.
+    TaskCreate {
+        project: String,
+        subject: String,
+        parent: Option<String>,
+    },
+    /// The user moves a row's state directly - the drag across the board.
+    TaskMove {
+        project: String,
+        id: String,
+        to: forge_primitives::tasks::TaskStatus,
+    },
     /// Cross-project delivery (#114 v1). Dispatched by the
     /// `mcp__forge__agents__send_message` tool impl via
     /// `WorkspaceFacade::deliver_peer_prompt`. Routed to
@@ -800,7 +843,13 @@ impl Command {
             | Self::UpsertReviewThread { .. }
             | Self::RespondSlackPost { .. }
             | Self::RespondBrowserHandOff { .. }
-            | Self::SubmitReview { .. } => None,
+            | Self::SubmitReview { .. }
+            | Self::TaskVerdict { .. }
+            | Self::TaskAnswer { .. }
+            | Self::TaskRank { .. }
+            | Self::TaskAssign { .. }
+            | Self::TaskCreate { .. }
+            | Self::TaskMove { .. } => None,
         }
     }
 }
@@ -1014,6 +1063,40 @@ impl std::fmt::Debug for Command {
                 .field("branch", branch)
                 .field("thread_ids", thread_ids)
                 .finish_non_exhaustive(),
+            Self::TaskVerdict { project, id, approve, .. } => f
+                .debug_struct("TaskVerdict")
+                .field("project", project)
+                .field("id", id)
+                .field("approve", approve)
+                .finish_non_exhaustive(),
+            Self::TaskAnswer { project, id, .. } => f
+                .debug_struct("TaskAnswer")
+                .field("project", project)
+                .field("id", id)
+                .finish_non_exhaustive(),
+            Self::TaskRank { project, id, to } => f
+                .debug_struct("TaskRank")
+                .field("project", project)
+                .field("id", id)
+                .field("to", to)
+                .finish_non_exhaustive(),
+            Self::TaskAssign { project, id, owner } => f
+                .debug_struct("TaskAssign")
+                .field("project", project)
+                .field("id", id)
+                .field("owner", owner)
+                .finish_non_exhaustive(),
+            Self::TaskCreate { project, subject, .. } => f
+                .debug_struct("TaskCreate")
+                .field("project", project)
+                .field("subject", subject)
+                .finish_non_exhaustive(),
+            Self::TaskMove { project, id, to } => f
+                .debug_struct("TaskMove")
+                .field("project", project)
+                .field("id", id)
+                .field("to", to)
+                .finish_non_exhaustive(),
         }
     }
 }
@@ -1124,6 +1207,21 @@ pub enum PromptSource {
     /// forge's own machinery: a worker kick, an auto-continue, a replayed
     /// parked delivery whose kind is no longer known.
     Forge,
+}
+
+/// Where the user moved a row in its queue.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RankMove {
+    /// Above everything ranked.
+    Top,
+    /// One place toward the front.
+    Up,
+    /// One place toward the back.
+    Down,
+    /// Where a drag landed: the row this one should sit above in the queue,
+    /// or nothing for the end of it.
+    Before(Option<String>),
 }
 
 /// One prompt waiting in the CLI's queue, as a view reads it.
@@ -2869,5 +2967,35 @@ mod workers_command_tests {
             session_choice: SessionChoice::Fresh,
         };
         assert_eq!(r.tag, "forge:worker:reviewer");
+    }
+
+    /// The board's edits are the user's own: no session routes them, so a
+    /// command with no key must reach the app-level path rather than be
+    /// dropped as unroutable.
+    #[test]
+    fn the_board_commands_are_app_level() {
+        for command in [
+            Command::TaskVerdict {
+                project: "p".to_owned(),
+                id: "t".to_owned(),
+                approve: true,
+                words: None,
+            },
+            Command::TaskAnswer {
+                project: "p".to_owned(),
+                id: "t".to_owned(),
+                words: "w".to_owned(),
+            },
+            Command::TaskRank { project: "p".to_owned(), id: "t".to_owned(), to: RankMove::Top },
+            Command::TaskAssign { project: "p".to_owned(), id: "t".to_owned(), owner: None },
+            Command::TaskCreate { project: "p".to_owned(), subject: "s".to_owned(), parent: None },
+            Command::TaskMove {
+                project: "p".to_owned(),
+                id: "t".to_owned(),
+                to: forge_primitives::tasks::TaskStatus::InProgress,
+            },
+        ] {
+            assert!(command.key().is_none(), "app-level: {command:?}");
+        }
     }
 }

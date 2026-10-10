@@ -67,8 +67,10 @@
 mod account_cache;
 mod account_loader;
 pub mod bench;
+pub mod board;
 pub mod browser;
 pub mod catalogue;
+pub mod chase;
 mod config;
 pub mod conversation_turns;
 pub mod conversation_window;
@@ -79,6 +81,7 @@ mod error;
 pub mod file_index;
 mod gotify;
 pub mod install;
+pub mod issues;
 pub mod launch_settings;
 pub(crate) mod mcp;
 pub mod output_tail;

@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs';
+
 import { flushSync, mount, unmount } from 'svelte';
 import { get } from 'svelte/store';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -45,11 +47,11 @@ const TASKS: TaskStripRow[] = [
   },
   {
     id: 't2',
-    status: 'blocked',
+    status: 'waiting',
     display: 'Port the cmdline rule',
     subject: 'Port the cmdline rule',
     owner: 'builder',
-    meta: 'blocked on a design call',
+    meta: 'waiting \u{b7} on a design call',
   },
   {
     id: 't3',
@@ -85,6 +87,41 @@ function pointer(type: string, pointerType: string): PointerEvent {
 }
 
 describe("the tasks row's interaction state machine", () => {
+  /**
+   * The door this segment is the way into the board by: the strip lists the
+   * seat's rows, and the whole project's board hangs off it. The href is the
+   * page's to build (the router's own encoder), so what is pinned here is
+   * that the list carries it, first, and that the door closes what it opened.
+   */
+  it('carries the way into the board, and closes the list when it is taken', () => {
+    tasks.sync(TASKS);
+    app = mount(TasksSegment, {
+      target: document.body,
+      props: { href: '/board/TestOrg/proj' },
+    });
+    flushSync();
+    toggle()?.click();
+    flushSync();
+
+    const door = document.querySelector<HTMLAnchorElement>('.sg-list .sg-open');
+    if (door === null) throw new Error('the strip draws no way into the board');
+    expect(door.getAttribute('href'), 'the door leads somewhere else').toBe('/board/TestOrg/proj');
+    // First in the list, so a reader looking for the board meets it before
+    // the rows that are about this seat.
+    expect(list()?.firstElementChild, "the door is not the list's first child").toBe(door);
+
+    door.click();
+    flushSync();
+    expect(list(), 'the door left the list open over the page it opened').toBeNull();
+  });
+
+  it('draws no door for a seat with no board to open', () => {
+    draw();
+    toggle()?.click();
+    flushSync();
+    expect(document.querySelector('.sg-open'), 'a door drew with no href to lead to').toBeNull();
+  });
+
   it('counts the finished tasks on the toggle', () => {
     draw();
     // One of the four is completed, so a count read off the wrong side
@@ -229,7 +266,22 @@ describe("the tasks row's interaction state machine", () => {
       'and takes the row, so a long subject elides instead of pushing the owner out',
     ).toBe(true);
     expect(rows()[0]?.querySelector('.n')?.textContent?.trim()).toBe('lead');
-    expect(rows()[1]?.querySelector('.ic.bad'), 'blocked wears the cross').not.toBeNull();
+    expect(rows()[1]?.querySelector('.wait'), 'waiting wears the bars').not.toBeNull();
+    // **A mark's class is a claim until the sheet draws it.** The wait span
+    // existed with no rule at all, so it drew nothing while the row above it
+    // drew a ring - and "the span is present" passes on a blank page. The
+    // sheet is read for the rule, the way the density and salvage checks read
+    // it, because jsdom applies no layout and would report every mark 0x0.
+    // From the suite's own root, which the runner sets to the client: jsdom
+    // rewrites `import.meta.url` to a non-file URL.
+    const sheet = readFileSync('src/assets/web.css', 'utf8');
+    for (const [selector, what] of [
+      ['.sg-list .sg-it .ring', 'in progress'],
+      ['.sg-list .sg-it .wait', 'waiting'],
+      ['.sg-list .sg-it .hollow', 'pending'],
+    ] as const) {
+      expect(sheet, `${what}'s mark has no rule in the sheet`).toContain(selector);
+    }
     expect(rows()[2]?.querySelector('.ic.ok'), 'completed wears the check').not.toBeNull();
     expect(rows()[2]?.classList.contains('settled'), 'and reads as settled').toBe(true);
     expect(rows()[3]?.querySelector('.hollow'), 'pending wears the hollow dot').not.toBeNull();

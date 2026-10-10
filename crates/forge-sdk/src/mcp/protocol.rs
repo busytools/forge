@@ -73,6 +73,11 @@ pub enum JsonRpcResult {
         /// Server metadata.
         #[serde(rename = "serverInfo")]
         server_info: ServerInfo,
+        /// How to use this server, delivered to the client once at session
+        /// start. Omitted when the server has none, so a client old enough
+        /// not to know the field sees exactly the old shape.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        instructions: Option<String>,
     },
     /// Response to `tools/list`.
     ToolsList {
@@ -207,6 +212,7 @@ mod tests_mcp_protocol {
                 protocol_version: "2024-11-05".into(),
                 capabilities: json!({"tools": {}}),
                 server_info: ServerInfo { name: "probe".into(), version: "0.0.1".into() },
+                instructions: None,
             },
         );
         let raw = serde_json::to_value(&resp).expect("ser");

@@ -7186,7 +7186,16 @@ mod lead_charter_tests {
     /// session is denied.
     #[test]
     fn lead_charter_maintains_the_task_list_through_forge_s_own_tools() {
-        for tool in ["tasks__create", "tasks__update", "tasks__delete"] {
+        // The whole family the board is worked through: the lead cuts and
+        // dispatches, workers claim and wait, and the list is read.
+        for tool in [
+            "tasks__create",
+            "tasks__update",
+            "tasks__delete",
+            "tasks__claim",
+            "tasks__wait",
+            "tasks__list",
+        ] {
             assert!(
                 DEFAULT_LEAD_CHARTER.contains(tool),
                 "the charter maintains the list through {tool}: {DEFAULT_LEAD_CHARTER}",

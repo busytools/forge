@@ -2,7 +2,7 @@
  * The home's snapshot, as `crates/forge-server/src/transport/wire.rs` writes
  * it, typed against the server's own fixture beside this file.
  *
- * The fixture's `tasks` and `crons` arrays are empty, so those two element
+ * The fixture's `rows` and `crons` arrays are empty, so those two element
  * shapes come from the Rust that emits them rather than from the fixture:
  * the fixture pins what it carries, and the source pins the rest.
  */
@@ -49,7 +49,31 @@ export interface WorkState {
 }
 
 /** A task's status. */
-export type TaskStatus = 'pending' | 'in_progress' | 'blocked' | 'completed';
+export type TaskStatus =
+  'pending' | 'in_progress' | 'waiting' | 'completed' | 'failed' | 'canceled';
+
+/** Why a row cannot proceed, when it is waiting. */
+export interface WaitingWire {
+  /** `null` only for a row migrated from the old `blocked` spelling. */
+  kind: 'decision' | 'dependency' | 'resource' | null;
+  detail: string | null;
+  /** The task it waits on, for a dependency. */
+  on: string | null;
+  /** The verify gate: the board's action is approve / send back. */
+  verification: boolean;
+}
+
+/** What a link points at. Generic to any VCS. */
+export type LinkKind = 'spec' | 'plan' | 'issue' | 'pr' | 'branch' | 'path' | 'other';
+
+/** One reference a row carries. */
+export interface TaskLinkWire {
+  kind: LinkKind;
+  label: string | null;
+  target: string;
+  state: string | null;
+  added_at: WireTime;
+}
 
 /**
  * One task. `description` and `last_fired`-style fields carry
@@ -65,10 +89,92 @@ export interface Task {
   status: TaskStatus;
   owner: SessionSlot | null;
   parent: string | null;
-  artifact: string | null;
-  estimate: string | null;
+  waiting_on: WaitingWire | null;
+  estimate: { words: string; secs: number } | null;
+  rank: number | null;
+  verify: 'user' | 'none' | null;
+  links: TaskLinkWire[];
+  attempt: number;
+  archived_at: WireTime | null;
   created_at: WireTime;
   updated_at: WireTime;
+}
+
+/**
+ * What the board derives on one row, one boolean per fact. Computed on
+ * the server from the history and session liveness - the client draws
+ * them, never re-derives them.
+ */
+export interface Marks {
+  /** Pending with nothing waiting on it. */
+  ready: boolean;
+  /** Has a pull-request link not known to be merged. */
+  in_review: boolean;
+  /** Its worked time is past its estimate. */
+  overdue: boolean;
+  /** No touch for longer than the window. */
+  no_movement: boolean;
+  /** Waiting for longer than the window. */
+  waiting_too_long: boolean;
+  /** Its owner has no session behind it. */
+  stale: boolean;
+  /** Every child terminal, its retro run - an epic the lead may close. */
+  to_close: boolean;
+}
+
+/** One board row: the record plus what the board derived. */
+export interface BoardRow {
+  task: Task;
+  worked_secs: number;
+  updated_secs_ago: number;
+  marks: Marks;
+  /** A parent's children: how many are completed, of how many. */
+  rollup: [number, number] | null;
+  /** A child's parent subject. */
+  parent_subject: string | null;
+}
+
+/**
+ * One named miss on a fleet row, narrowed once where it enters: the wire
+ * sends `"stalled_queue"` or `{"unaccounted_worker": "label"}`, and a
+ * shape this client is older than reads as `unknown` rather than being
+ * dropped - a miss nobody can see is the failure this board exists to
+ * end.
+ */
+export type MissRow =
+  | { kind: 'stalled'; label: string }
+  | { kind: 'no-row'; label: string }
+  | { kind: 'unknown'; label: string };
+
+/** Narrow one raw miss value from the wire. */
+export function missFrom(value: unknown): MissRow {
+  if (value === 'stalled_queue') {
+    return { kind: 'stalled', label: 'queue is stalling' };
+  }
+  if (typeof value === 'object' && value !== null && 'unaccounted_worker' in value) {
+    const label = (value as { unaccounted_worker?: unknown }).unaccounted_worker;
+    if (typeof label === 'string') {
+      return { kind: 'no-row', label: `${label} holds no row` };
+    }
+  }
+  return { kind: 'unknown', label: 'a miss this client does not know' };
+}
+
+/**
+ * One project as the fleet page draws it: the counts and the named
+ * misses. A project's own rows ride its [`ProjectWire.rows`]; this is
+ * the glance.
+ */
+export interface FleetRow {
+  project: string;
+  live_workers: number;
+  /** The project's worker cap, resolved (override or default). */
+  slots: number | null;
+  /** Ready unowned rows. */
+  queue: number;
+  /** Rows waiting on the user's decision. */
+  waiting_on_user: number;
+  misses: MissRow[];
 }
 
 /** One of a project's schedules. */
@@ -146,7 +252,8 @@ export interface ProjectWire {
   project: ProjectView;
   /** The branch and count for the project's own tree. */
   work: WorkState;
-  tasks: Task[];
+  /** The project's live rows, with the board's own facts on each. */
+  rows: BoardRow[];
   crons: CronEntry[];
   /**
    * This project's connector subscriptions, one list per connector.
@@ -199,6 +306,8 @@ export interface DictateWire {
 export interface HomeWire {
   projects: ProjectWire[];
   agents: AgentRow[];
+  /** One row per project for the fleet page: the counts and the misses. */
+  fleet: FleetRow[];
   /**
    * The seats whose last turn finished while no client was showing them.
    * Nothing in the records can reconstruct this, so it is the one thing a
@@ -231,10 +340,144 @@ const LIFECYCLES: Lifecycle[] = [
   'LoggedOut',
 ];
 
+const LINK_KINDS: LinkKind[] = ['spec', 'plan', 'issue', 'pr', 'branch', 'path', 'other'];
+const VERIFY_VALUES: ('user' | 'none')[] = ['user', 'none'];
 const PENDING: PendingKind[] = ['question', 'permission'];
 const LOADING: LoadingState[] = ['loading', 'ready', 'bailed'];
 const GATES: Gate[] = ['in_repo', 'not_a_repository', 'gone', 'scanner_failed'];
-const TASK_STATUSES: TaskStatus[] = ['pending', 'in_progress', 'blocked', 'completed'];
+/** Every status the wire carries, for narrowing and for the board's lanes. */
+export const TASK_STATUSES: TaskStatus[] = [
+  'pending',
+  'in_progress',
+  'waiting',
+  'completed',
+  'failed',
+  'canceled',
+];
+
+/** The marks a row carries when nobody stated any, which is a v7 server's row. */
+const NO_MARKS: Marks = {
+  ready: false,
+  in_review: false,
+  overdue: false,
+  no_movement: false,
+  waiting_too_long: false,
+  stale: false,
+  to_close: false,
+};
+
+/**
+ * One entry of a project's `rows` (v8) or `tasks` (v7), as a board row.
+ *
+ * **The step back is a SHAPE, not only a name.** A v7 server sent the TASK
+ * itself, flat: no `worked_secs`, no marks, an `estimate` that is its words
+ * alone. A fallback that only renamed the key would read `entry.task.status`
+ * off such an entry, and a page that throws while drawing draws nothing at
+ * all - which is the failure the protocol bump exists to turn into a notice.
+ * So a flat entry is wrapped as the row this client reads, with the neutral
+ * value for everything that server never stated.
+ */
+function rowFrom(entry: unknown): BoardRow {
+  const raw = (entry ?? {}) as Record<string, unknown>;
+  const flat = raw['task'] === undefined || raw['task'] === null;
+  const task = (flat ? raw : (raw['task'] as Record<string, unknown>)) ?? {};
+  return {
+    task: {
+      // Spread first, so a field this client is newer than the sender about
+      // keeps whatever was sent and is only defaulted where it is absent.
+      ...(task as unknown as Task),
+      // The unions of literals every read narrows, the link kinds included.
+      // The casts are this boundary's own: an entry off a v7 server is a shape
+      // this client has no type for, which is the whole reason for the branch.
+      //
+      // **`blocked` is v7's spelling for a wait.** Narrowed as an unknown it
+      // would fall to `pending` and be drawn in the Ready lane as a row a lead
+      // dispatches, where the core's own migration of the same value lands on
+      // `waiting` with its reason unstated - the board must not read one row
+      // two ways depending on which half stepped back.
+      status: narrow(statusFrom(task['status']), TASK_STATUSES, 'pending'),
+      verify:
+        task['verify'] === null || task['verify'] === undefined
+          ? null
+          : narrow(task['verify'] as string, VERIFY_VALUES, 'none'),
+      estimate: estimateFrom(task['estimate']),
+      links: linksFrom(task),
+      active_form: (task['active_form'] ?? null) as string | null,
+      detail: (task['detail'] ?? null) as string | null,
+      owner: (task['owner'] ?? null) as SessionSlot | null,
+      parent: (task['parent'] ?? null) as string | null,
+      waiting_on: (task['waiting_on'] ?? null) as WaitingWire | null,
+      rank: (task['rank'] ?? null) as number | null,
+      attempt: (task['attempt'] ?? 0) as number,
+      archived_at: (task['archived_at'] ?? null) as WireTime | null,
+    },
+    worked_secs: (raw['worked_secs'] as number | undefined) ?? 0,
+    // A v7 entry carries none of the three below: it is a task, and the
+    // worked time, the ages and the marks are what the board derives.
+    updated_secs_ago: (raw['updated_secs_ago'] as number | undefined) ?? 0,
+    marks: (raw['marks'] as Marks | undefined) ?? NO_MARKS,
+    rollup: (raw['rollup'] as [number, number] | null | undefined) ?? null,
+    parent_subject: (raw['parent_subject'] as string | null | undefined) ?? null,
+  };
+}
+
+/**
+ * The status a task entry carries, with v7's own spelling for a wait read as
+ * the state this client draws.
+ */
+function statusFrom(raw: unknown): string {
+  const spelled = typeof raw === 'string' ? raw : '';
+  return spelled === 'blocked' ? 'waiting' : spelled;
+}
+
+/**
+ * The references a row carries, and the one a v7 server sent instead.
+ *
+ * A v8 row carries `links`; a v7 task carried the single `artifact` that field
+ * replaced, so it crosses as one link - with the CORE's own classification of
+ * a bare target (`LinkKind::for_target`, which its migration of a v7 artifact
+ * applies too), because `other` is the one kind both readers drop: the strip's
+ * meta and the home row's cell filter it out, so a v7 row would draw no
+ * artifact anywhere but the board card.
+ */
+function linksFrom(task: Record<string, unknown>): TaskLinkWire[] {
+  const held = Array.isArray(task['links']) ? task['links'] : [];
+  const links = held
+    .filter((link): link is Record<string, unknown> => typeof link === 'object' && link !== null)
+    .map((link) => {
+      const spelled = link as unknown as TaskLinkWire;
+      return { ...spelled, kind: narrow(spelled.kind, LINK_KINDS, 'other') };
+    });
+  const artifact = task['artifact'];
+  if (links.length === 0 && typeof artifact === 'string' && artifact !== '') {
+    links.push({
+      kind: artifact.includes('/pull/') ? 'pr' : 'path',
+      label: null,
+      target: artifact,
+      state: null,
+      // Unread on this side; a v7 task never carried one.
+      added_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+    });
+  }
+  return links;
+}
+
+/**
+ * The estimate as this client reads it. **A v7 server sent its words alone**,
+ * and this side draws them with `secs: 0` - which the board's own rule reads
+ * as no measure - rather than parsing them back: the grammar is the core's
+ * (`Estimate::parse`, which its migration applies to these same words), and a
+ * second copy of it here would drift from the first, silently, the first time
+ * one of them learned a spelling the other did not.
+ */
+function estimateFrom(raw: unknown): Task['estimate'] {
+  if (typeof raw === 'string') return { words: raw, secs: 0 };
+  const held = raw as { words?: unknown; secs?: unknown } | null | undefined;
+  if (held === null || held === undefined) return null;
+  return typeof held.words === 'string' && typeof held.secs === 'number'
+    ? { words: held.words, secs: held.secs }
+    : null;
+}
 
 /**
  * The snapshot as the types above describe it, with a value outside the
@@ -274,13 +517,28 @@ export function homeFrom(data: HomeWire): HomeWire {
           ? null
           : { ...agent.work, gate: narrow(agent.work.gate, GATES, 'in_repo') },
     })),
-    projects: data.projects.map((row) => ({
+    projects: data.projects.map((row) => {
+      // **The one step back.** A forge at protocol 7 sent this project's rows
+      // under `tasks`, so a client newer than its server reads the old key
+      // rather than drawing nothing. The cast is this boundary's own - the
+      // payload is typed as today's shape, and the field a move left behind is
+      // what is being read.
+      const legacy = row as { rows?: unknown[]; tasks?: unknown[] };
+      return {
+        ...row,
+        work: { ...row.work, gate: narrow(row.work.gate, GATES, 'in_repo') },
+        rows: (legacy.rows ?? legacy.tasks ?? []).map(rowFrom),
+      };
+    }),
+    // The misses are the one member here that is a union of shapes rather
+    // than a union of literals, so they are narrowed by `missFrom` rather
+    // than by `narrow` - and a shape this client is older than survives as
+    // `unknown` rather than vanishing.
+    // A server older than the board sends no `fleet`; an empty list draws
+    // no rows rather than failing the whole read.
+    fleet: (data.fleet ?? []).map((row) => ({
       ...row,
-      work: { ...row.work, gate: narrow(row.work.gate, GATES, 'in_repo') },
-      tasks: row.tasks.map((task) => ({
-        ...task,
-        status: narrow(task.status, TASK_STATUSES, 'pending'),
-      })),
+      misses: (row.misses as unknown[]).map(missFrom),
     })),
     accounts: {
       ...data.accounts,

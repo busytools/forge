@@ -10,6 +10,7 @@ use forge_agent::AgentHandle;
 use forge_agent::client::SessionLaunchSettings;
 use forge_agent::env::cli_version::CliVersionInfo;
 use forge_primitives::cloud::service_status::ServiceIssue;
+use forge_primitives::tasks::TaskId;
 use forge_primitives::{AvailableAgent, AvailableCommand, Message, SDKSessionInfo};
 
 use crate::mcp::peers::types::{MessageId, WrappedKind, WrappedPrompt};
@@ -433,6 +434,10 @@ pub struct Workspace {
     /// `usage_poller_started`). Started once at boot from the binary.
     /// `pub(crate)` so the impl block in [`crate::crons`] can reach it.
     pub(crate) cron_scheduler_started: std::sync::atomic::AtomicBool,
+    /// Guards against double-spawning the chase sweep (mirrors
+    /// `cron_scheduler_started`). Started once at boot from the binary.
+    /// `pub(crate)` so the impl block in [`crate::chase`] can reach it.
+    pub(crate) chase_sweep_started: std::sync::atomic::AtomicBool,
     /// Guards against double-spawning the auto-continue sweep (mirrors
     /// `cron_scheduler_started`). Started once at boot from the binary.
     auto_continue_sweep_started: std::sync::atomic::AtomicBool,
@@ -1624,6 +1629,7 @@ impl Workspace {
             review_activity: Mutex::new(HashMap::new()),
             usage_poller_started: std::sync::atomic::AtomicBool::new(false),
             cron_scheduler_started: std::sync::atomic::AtomicBool::new(false),
+            chase_sweep_started: std::sync::atomic::AtomicBool::new(false),
             auto_continue_sweep_started: std::sync::atomic::AtomicBool::new(false),
             kick_dispatcher_tx,
             kick_dispatcher_rx_slot: Mutex::new(Some(kick_dispatcher_rx)),
@@ -4920,6 +4926,219 @@ impl Workspace {
                         ));
                     }
                 }
+                // The board's edits are the user's own moves: stamped
+                // `By::User` in the history, and no session routes them -
+                // the board is the user's surface, and each carries its
+                // project.
+                Command::TaskVerdict { project, id, approve, words } => {
+                    let id = TaskId::from(id.as_str());
+                    let moved = if approve {
+                        self.approve_task(&project, &id)
+                    } else {
+                        self.send_back_task(&project, &id, words.as_deref().unwrap_or(""))
+                    };
+                    match moved {
+                        Ok(Some(task)) => {
+                            // A send-back is news its owner wants: one
+                            // message, down the same ladder the chase
+                            // uses - a live owner hears it, a sleeping one
+                            // reads the row.
+                            if !approve
+                                && let Some(owner) = &task.owner
+                                && self.seat_is_live(owner)
+                            {
+                                let text = format!(
+                                    "task board: \"{}\" came back from the user's look - the \
+                                     words are in its detail; resume it.",
+                                    task.subject,
+                                );
+                                let _ = self.dispatch_workspace_prompt_from(
+                                    owner,
+                                    text,
+                                    PromptSource::Forge,
+                                );
+                            }
+                        }
+                        Ok(None) => {
+                            tracing::debug!(
+                                target: "forge_workspace",
+                                project = %project,
+                                id = %id.as_str(),
+                                "a user verdict named a row that is not there",
+                            );
+                            self.board_edit_refused(
+                                "a verdict",
+                                "the row it named is no longer there",
+                            );
+                        }
+                        Err(refused) => {
+                            tracing::debug!(
+                                target: "forge_workspace",
+                                project = %project,
+                                id = %id.as_str(),
+                                refusal = %refused,
+                                "a user verdict was refused",
+                            );
+                            self.board_edit_refused("a verdict", &refused.to_string());
+                        }
+                    }
+                }
+                Command::TaskAnswer { project, id, words } => {
+                    let id = TaskId::from(id.as_str());
+                    match self.answer_task(&project, &id, &words) {
+                        Ok(Some(task)) => {
+                            if let Some(owner) = &task.owner
+                                && self.seat_is_live(owner)
+                            {
+                                let text = format!(
+                                    "task board: the user answered \"{}\" - the words are in its \
+                                     detail; resume it.",
+                                    task.subject,
+                                );
+                                let _ = self.dispatch_workspace_prompt_from(
+                                    owner,
+                                    text,
+                                    PromptSource::Forge,
+                                );
+                            }
+                        }
+                        Ok(None) => {
+                            tracing::debug!(
+                                target: "forge_workspace",
+                                project = %project,
+                                id = %id.as_str(),
+                                "a user answer named a row that is not there",
+                            );
+                            self.board_edit_refused(
+                                "an answer",
+                                "the row it named is no longer there",
+                            );
+                        }
+                        Err(refused) => {
+                            tracing::debug!(
+                                target: "forge_workspace",
+                                project = %project,
+                                id = %id.as_str(),
+                                refusal = %refused,
+                                "a user answer was refused",
+                            );
+                            self.board_edit_refused("an answer", &refused.to_string());
+                        }
+                    }
+                }
+                Command::TaskRank { project, id, to } => {
+                    match self.rank_task(&project, &TaskId::from(id.as_str()), to) {
+                        Ok(Some(_)) => {}
+                        Ok(None) => {
+                            tracing::debug!(
+                                target: "forge_workspace::tasks",
+                                project = %project,
+                                id = %id.as_str(),
+                                "a board re-order named a row that is not there",
+                            );
+                            self.board_edit_refused(
+                                "a re-order",
+                                "the row it named is no longer there",
+                            );
+                        }
+                        Err(refused) => {
+                            tracing::debug!(
+                                target: "forge_workspace::tasks",
+                                project = %project,
+                                id = %id.as_str(),
+                                refusal = %refused,
+                                "a board re-order was refused",
+                            );
+                            self.board_edit_refused("a re-order", &refused.to_string());
+                        }
+                    }
+                }
+                Command::TaskMove { project, id, to } => {
+                    match self.user_move_task(&project, &TaskId::from(id.as_str()), to) {
+                        Ok(Some(_)) => {}
+                        Ok(None) => {
+                            tracing::debug!(
+                                target: "forge_workspace::tasks",
+                                project = %project,
+                                id = %id.as_str(),
+                                "a board move named a row that is not there",
+                            );
+                            self.board_edit_refused(
+                                "a move",
+                                "the row it named is no longer there",
+                            );
+                        }
+                        Err(refused) => {
+                            tracing::debug!(
+                                target: "forge_workspace::tasks",
+                                project = %project,
+                                id = %id.as_str(),
+                                refusal = %refused,
+                                "a board move was refused",
+                            );
+                            self.board_edit_refused("a move", &refused.to_string());
+                        }
+                    }
+                }
+                Command::TaskAssign { project, id, owner } => {
+                    // A project this forge does not carry has no seat to name
+                    // and no row to hold: an assignment to it is refused
+                    // rather than written against an invented empty-org slot.
+                    if let Some(row) = self.config.projects.iter().find(|p| p.name == project) {
+                        let owner_slot =
+                            owner.map(|label| SessionSlot::new(&row.org, &project, label.clone()));
+                        match self.assign_task(&project, &TaskId::from(id.as_str()), owner_slot) {
+                            Ok(Some(_)) => {}
+                            Ok(None) => {
+                                tracing::debug!(
+                                    target: "forge_workspace::tasks",
+                                    project = %project,
+                                    id = %id.as_str(),
+                                    "a board assignment named a row that is not there",
+                                );
+                                self.board_edit_refused(
+                                    "an assignment",
+                                    "the row it named is no longer there",
+                                );
+                            }
+                            Err(refused) => {
+                                tracing::debug!(
+                                    target: "forge_workspace::tasks",
+                                    project = %project,
+                                    id = %id.as_str(),
+                                    refusal = %refused,
+                                    "a board assignment was refused",
+                                );
+                                self.board_edit_refused("an assignment", &refused.to_string());
+                            }
+                        }
+                    } else {
+                        self.board_edit_refused("an assignment", "no project carries that name");
+                    }
+                }
+                Command::TaskCreate { project, subject, parent } => {
+                    let now = std::time::SystemTime::now();
+                    let task = forge_primitives::tasks::Task {
+                        id: TaskId::from(uuid::Uuid::new_v4().to_string()),
+                        project_name: project.clone(),
+                        subject,
+                        active_form: None,
+                        detail: None,
+                        status: forge_primitives::tasks::TaskStatus::Pending,
+                        owner: None,
+                        parent: parent.map(|id| TaskId::from(id.as_str())),
+                        waiting_on: None,
+                        estimate: None,
+                        rank: None,
+                        verify: None,
+                        links: Vec::new(),
+                        attempt: 0,
+                        archived_at: None,
+                        created_at: now,
+                        updated_at: now,
+                    };
+                    self.push_task(task);
+                }
                 other => {
                     tracing::warn!(
                         target: "forge_workspace",
@@ -4930,6 +5149,16 @@ impl Workspace {
             }
             Ok(())
         }
+    }
+
+    /// Say on the service line why a board edit did not land: a refusal a
+    /// reader cannot see is indistinguishable from a press that did
+    /// nothing.
+    fn board_edit_refused(&self, what: &str, why: &str) {
+        let _ = self.update_tx.send(SessionUpdate::ServiceStatus {
+            severity: forge_primitives::cloud::service_status::ServiceSeverity::Warning,
+            message: format!("The board refused {what}: {why}"),
+        });
     }
 
     /// Re-spawn this project's persisted workers on lead reconnect,
@@ -7706,6 +7935,7 @@ mod account_stamp_tests {
             model: None,
             env: HashMap::new(),
             max_workers: None,
+            issues: true,
             permission_mode,
         }
     }
@@ -8340,6 +8570,137 @@ mod tests {
         let (to_host, _asks) = tokio::sync::mpsc::unbounded_channel();
         let (notices, _notice_rx) = tokio::sync::mpsc::unbounded_channel();
         assert!(first.register(1, to_host, notices), "no connection has taken the role at boot");
+    }
+
+    /// The board's edits reach the store through the command bus, and a
+    /// refusal says so on the service line - a press that did nothing and
+    /// a press the core refused must not read the same.
+    #[tokio::test]
+    async fn a_board_verdict_dispatches_and_a_refusal_says_so() {
+        use forge_primitives::tasks::{By, Task, TaskId, TaskStatus};
+        let dir = tempdir().expect("tempdir");
+        let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-board-dispatch");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let sample = |id: &str| Task {
+            id: TaskId::from(id),
+            project_name: "proj".to_owned(),
+            subject: format!("subject {id}"),
+            active_form: None,
+            detail: None,
+            status: TaskStatus::Pending,
+            owner: None,
+            // A child, so the approval completes it on the live board -
+            // a root would close and archive, which is a different test.
+            parent: Some(TaskId::from("epic")),
+            waiting_on: None,
+            estimate: None,
+            rank: None,
+            verify: Some(forge_primitives::tasks::Verify::User),
+            links: Vec::new(),
+            attempt: 0,
+            archived_at: None,
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+            updated_at: std::time::SystemTime::UNIX_EPOCH,
+        };
+        ws.push_task(sample("t-1"));
+        ws.update_task("proj", &TaskId::from("t-1"), By::System, |task| {
+            task.status = TaskStatus::Completed;
+        })
+        .expect("no refusal")
+        .expect("the row is there");
+
+        ws.dispatch(Command::TaskVerdict {
+            project: "proj".to_owned(),
+            id: "t-1".to_owned(),
+            approve: true,
+            words: None,
+        })
+        .expect("app-level commands are accepted");
+        let stored = ws.tasks_for_project("proj");
+        assert_eq!(stored[0].status, TaskStatus::Completed, "the verdict landed");
+
+        // The same verdict again names a row no longer waiting: the refusal
+        // reaches the service line rather than only the log.
+        ws.dispatch(Command::TaskVerdict {
+            project: "proj".to_owned(),
+            id: "t-1".to_owned(),
+            approve: true,
+            words: None,
+        })
+        .expect("accepted");
+        let mut refused = false;
+        while let Ok(update) = rx.try_recv() {
+            if let crate::protocol::SessionUpdate::ServiceStatus { message, .. } = update
+                && message.contains("refused a verdict")
+            {
+                refused = true;
+            }
+        }
+        assert!(refused, "a refused edit is said on the service line");
+    }
+
+    /// The rest of the board's edits say so too, the not-found case included:
+    /// a rank or an assignment naming a row that has gone, and an assignment
+    /// naming a project this forge does not carry, are presses whose silence
+    /// would read as success.
+    #[tokio::test]
+    async fn a_board_edit_that_does_not_land_says_so() {
+        use forge_primitives::tasks::TaskStatus;
+        let dir = tempdir().expect("tempdir");
+        let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-board-misses");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+
+        for (command, named) in [
+            (
+                Command::TaskRank {
+                    project: "proj".to_owned(),
+                    id: "gone".to_owned(),
+                    to: crate::protocol::RankMove::Top,
+                },
+                "refused a re-order",
+            ),
+            (
+                Command::TaskAssign {
+                    project: "proj".to_owned(),
+                    id: "gone".to_owned(),
+                    owner: Some("lead".to_owned()),
+                },
+                "refused an assignment",
+            ),
+            (
+                Command::TaskMove {
+                    project: "proj".to_owned(),
+                    id: "gone".to_owned(),
+                    to: TaskStatus::InProgress,
+                },
+                "refused a move",
+            ),
+            (
+                Command::TaskAssign {
+                    project: "no-such-project".to_owned(),
+                    id: "gone".to_owned(),
+                    owner: None,
+                },
+                "refused an assignment",
+            ),
+        ] {
+            ws.dispatch(command).expect("app-level commands are accepted");
+            let mut said = false;
+            while let Ok(update) = rx.try_recv() {
+                if let crate::protocol::SessionUpdate::ServiceStatus { message, .. } = update
+                    && message.contains(named)
+                {
+                    said = true;
+                }
+            }
+            assert!(said, "{named} was not said on the service line");
+        }
     }
 
     fn usage_workspace() -> (tempfile::TempDir, Arc<Workspace>) {

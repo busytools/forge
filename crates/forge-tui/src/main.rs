@@ -138,6 +138,11 @@ fn run() -> anyhow::Result<()> {
         // crons as they come due, advancing/removing each.
         workspace.start_cron_scheduler();
 
+        // Start the chase sweep: every ~30s the board's misses are derived
+        // and the crossings delivered - the pass that makes the task list
+        // drive instead of report.
+        workspace.start_chase_sweep();
+
         // Start the auto-continue sweep: a failed turn nobody has looked at
         // gets one prompt of forge's own once its delay has run out.
         workspace.start_auto_continue_sweep();

@@ -5,7 +5,9 @@ import { describe, expect, it } from 'vitest';
 import { homeWire } from '../dev/fixture.data';
 import type {
   AgentRow,
+  BoardRow,
   DictateModel,
+  FleetRow,
   HomeWire,
   Lifecycle,
   ProjectWire,
@@ -14,7 +16,7 @@ import type {
   WireTime,
   WorkState,
 } from '../wire/home';
-import { homeFrom } from '../wire/home';
+import { homeFrom, missFrom } from '../wire/home';
 
 describe('an agent row from a server that names no failure', () => {
   /**
@@ -68,8 +70,8 @@ import {
   artifactLabel,
   availableVersion,
   chipFor,
-  countsOf,
   elapsedLabel,
+  fleetRows,
   gateLine,
   failureFile,
   failureKind,
@@ -77,11 +79,10 @@ import {
   homeView,
   markOf,
   modelState,
+  projectRows,
   refusal,
-  waitingOn,
   whenOf,
-  type HomeView,
-  type OrgSection,
+  type ProjectRows,
   type Row,
   type RowState,
 } from './view';
@@ -114,11 +115,8 @@ describe('the row marks', () => {
     // Nothing the sheet styles is unreachable, and nothing drawn is unstyled.
     // Read from the sheet rather than a list here, which could only ever fail
     // on a rename inside this table - the inverse of what it is for.
-    // `unopenable` is not a state: it says whether the row is a link, and
-    // Row.test.ts pins which rows draw it.
     const sheet = readFileSync(new URL('../assets/web.css', import.meta.url), 'utf8');
     const styled = new Set([...sheet.matchAll(/\.row\.([a-z-]+)/g)].map((match) => match[1]));
-    styled.delete('unopenable');
     const drawn = new Set(MARKS.map(([, klass]) => klass));
     expect([...styled].sort(), 'the sheet styles a row state nothing draws').toEqual(
       [...drawn].sort(),
@@ -141,10 +139,54 @@ const FLEET: HomeWire = {
     agent('Busytools', 'notes', 'lead', 'Sleeping'),
     agent('Personal', 'dotfiles', 'lead', 'Idle'),
   ],
+  // The glance, one row per project: the fleet row names only its PROJECT,
+  // and the org it draws comes from the projects list beside it.
+  fleet: [fleetRow('forge', 2), fleetRow('notes', 1), fleetRow('dotfiles', 1)],
 };
 
-/** One project row: the project, and the per-row reads the home draws it from. */
-function project(org: string, name: string, over: Partial<ProjectWire> = {}): ProjectWire {
+/** One fleet row's counts, whose project the fixture's orgs resolve. */
+function fleetRow(project: string, live: number): FleetRow {
+  return {
+    project,
+    live_workers: live,
+    slots: 2,
+    queue: 0,
+    waiting_on_user: 0,
+    misses: [],
+  };
+}
+
+/** One board row for a task, with no derived facts - what a test overrides. */
+function boardRow(task: Task): BoardRow {
+  return {
+    task,
+    worked_secs: 0,
+    updated_secs_ago: 0,
+    marks: {
+      ready: false,
+      in_review: false,
+      overdue: false,
+      no_movement: false,
+      waiting_too_long: false,
+      stale: false,
+      to_close: false,
+    },
+    rollup: null,
+    parent_subject: null,
+  };
+}
+
+/**
+ * One project row: the project, and the per-row reads the home draws it
+ * from. A test still passes `tasks` (the records it reasons about); the
+ * helper wraps them as board rows, which is the wire's own shape.
+ */
+function project(
+  org: string,
+  name: string,
+  over: Partial<ProjectWire> & { tasks?: Task[] } = {},
+): ProjectWire {
+  const { tasks = [], ...rest } = over;
   return {
     project: {
       key: `${org}-${name}`,
@@ -158,12 +200,12 @@ function project(org: string, name: string, over: Partial<ProjectWire> = {}): Pr
       sessions: [],
     },
     work: { branch: null, changed: null, gate: 'in_repo' },
-    tasks: [],
+    rows: tasks.map(boardRow),
     crons: [],
     connectors: { gotify: [], slack: [] },
     would_bind: true,
     chip: null,
-    ...over,
+    ...rest,
   };
 }
 
@@ -178,8 +220,13 @@ function task(status: TaskStatus, subject: string): Task {
     status,
     owner: { org: 'TestOrg', project: 'proj', label: 'lead' },
     parent: null,
-    artifact: null,
+    waiting_on: null,
     estimate: null,
+    rank: null,
+    verify: null,
+    links: [],
+    attempt: 0,
+    archived_at: null,
     created_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
     updated_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
   };
@@ -218,18 +265,21 @@ function first<T>(items: T[], what: string): T {
   return head;
 }
 
-/** The org of that name, which the fixtures below all have. */
-function orgNamed(view: HomeView, name: string): OrgSection {
-  const org = view.orgs.find((section) => section.name === name);
-  if (org === undefined) throw new Error(`${name} is not in this view`);
-  return org;
+/**
+ * A project's own rows, from the wire: the lead, and its workers under it.
+ *
+ * The home's page draws the FLEET (one row per project), and these are what
+ * its board and session pages read a project's seats from - so the fixtures
+ * below reach them through the same function those pages do rather than
+ * through a view shape no production page holds.
+ */
+function rowsOf(wire: HomeWire, at = 0): ProjectRows {
+  return projectRows(wire, first(wire.projects.slice(at), 'project'));
 }
 
-/** The first row of the first project, which every fixture here draws. */
-function leadOf(view: HomeView): Row {
-  const entry = first(view.orgs, 'org').projects[0];
-  if (entry === undefined) throw new Error('the first org carries no project');
-  return entry.lead;
+/** The first project's lead row, which every fixture here draws. */
+function leadOf(wire: HomeWire): Row {
+  return rowsOf(wire).lead;
 }
 
 const PROJECT = first(homeWire.projects, 'project');
@@ -254,27 +304,24 @@ const LEAD_ROW: Row = {
 describe('the fleet the snapshot describes', () => {
   /**
    * One fixture is one project with one agent, so a second org, a second
-   * project in an org and any worker row are unreachable. Three separate
-   * readings go wrong on a real fleet and none of them on the fixture: an
-   * org's live count, the name a worker row carries, and the header's two
-   * numbers swapped.
+   * project in an org and any worker row are unreachable. Two readings go
+   * wrong on a real fleet and none of them on the fixture: the name a worker
+   * row carries, and the header's two numbers swapped.
    */
-  it('puts each project under its own org and counts what is live', () => {
-    const view = homeView(FLEET, '');
-    expect(view.orgs.map((org) => org.name)).toEqual(['Busytools', 'Personal']);
-    expect(countsOf(orgNamed(view, 'Busytools'))).toBe('2 live');
-    expect(countsOf(orgNamed(view, 'Personal'))).toBe('1 live');
-    expect(orgNamed(view, 'Busytools').projects.map((entry) => entry.lead.name)).toEqual([
-      'forge',
-      'notes',
+  it('reads every project of every org, and each one its own row', () => {
+    const fleet = fleetRows(FLEET);
+    expect(fleet.map((row) => `${row.org}/${row.name}`)).toEqual([
+      'Busytools/forge',
+      'Busytools/notes',
+      'Personal/dotfiles',
     ]);
   });
 
   it('names a worker row for the worker and only the lead for its project', () => {
-    const forge = homeView(FLEET, '').orgs[0]?.projects[0];
-    expect(forge?.lead.name).toBe('forge');
-    expect(forge?.workers.map((worker) => worker.name)).toEqual(['w1']);
-    expect(forge?.workers[0]?.slot.label).toBe('w1');
+    const forge = rowsOf(FLEET);
+    expect(forge.lead.name).toBe('forge');
+    expect(forge.workers.map((worker) => worker.name)).toEqual(['w1']);
+    expect(forge.workers[0]?.slot.label).toBe('w1');
   });
 
   it('counts agents and projects as themselves, not one as the other', () => {
@@ -289,6 +336,52 @@ describe('the fleet the snapshot describes', () => {
    * screen instead would count a subset, and the header draws one number for
    * the whole fleet.
    */
+  /**
+   * The fleet's misses are named, one per shape the wire sends: a stalled
+   * queue, a worker holding no row, and a shape this client is older than -
+   * which reads as `unknown` rather than vanishing, because a miss nobody
+   * can see is the failure this board exists to end.
+   */
+  it('names each fleet miss', () => {
+    const wire: HomeWire = {
+      ...homeWire,
+      fleet: [
+        {
+          project: 'proj',
+          live_workers: 1,
+          slots: 2,
+          queue: 3,
+          waiting_on_user: 1,
+          misses: [
+            { kind: 'stalled', label: 'queue is stalling' },
+            { kind: 'no-row', label: 'w1 holds no row' },
+            { kind: 'unknown', label: 'a miss this client does not know' },
+          ],
+        },
+      ],
+    };
+    const rows = fleetRows(wire);
+    expect(rows).toHaveLength(1);
+    // The named spots come first, then the project's own refusal - the
+    // fixture declares no model, so the row says a spawn here would be
+    // refused rather than dropping what the row drew before the fleet.
+    expect(rows[0]?.misses.map((miss) => miss.kind)).toEqual([
+      'stalled',
+      'no-row',
+      'unknown',
+      'unknown',
+    ]);
+    expect(rows[0]?.misses[3]?.label).toContain('no model declared');
+    expect(rows[0]?.onYou).toBe(1);
+    // And the raw wire's own shapes narrow to those names.
+    expect(missFrom('stalled_queue')).toEqual({ kind: 'stalled', label: 'queue is stalling' });
+    expect(missFrom({ unaccounted_worker: 'w1' })).toEqual({
+      kind: 'no-row',
+      label: 'w1 holds no row',
+    });
+    expect(missFrom(7).kind).toBe('unknown');
+  });
+
   it('totals the tasks across every project, not the ones a row happens to show', () => {
     const wire: HomeWire = {
       ...homeWire,
@@ -340,7 +433,7 @@ describe('the fleet the snapshot describes', () => {
       ],
     };
 
-    const entry = first(first(homeView(wire, '').orgs, 'org').projects, 'project');
+    const entry = rowsOf(wire);
     expect(entry.lead.place, "the lead's own tree is the read").toEqual({
       branch: 'main',
       files: '3 files',
@@ -357,46 +450,26 @@ describe('the fleet the snapshot describes', () => {
 
     // A project nobody has started has no seat to read, so its row keeps the
     // project's own read: the cell is filled for a project that has never run.
-    const dormant = first(
-      first(homeView({ ...wire, agents: [] }, '').orgs, 'org').projects,
-      'project',
-    );
+    const dormant = rowsOf({ ...wire, agents: [] });
     expect(dormant.lead.place, "a dormant project's row lost the project's own read").toEqual({
       branch: 'main',
       files: '3 files',
     });
   });
-
-  it('says what it counts for every shape of org', () => {
-    const busytools = (wire: HomeWire) => orgNamed(homeView(wire, ''), 'Busytools');
-    // Every agent of one project gone, which leaves that project dormant and
-    // its sibling live. Dropping only the lead would not: a worker row still
-    // means somebody started it.
-    const withoutForge: HomeWire = {
-      ...FLEET,
-      agents: FLEET.agents.filter((row) => row.slot.project !== 'forge'),
-    };
-
-    expect(countsOf(busytools({ ...FLEET, agents: [] })), 'nothing live').toBe('2 asleep');
-    expect(countsOf(busytools(FLEET)), 'nothing asleep').toBe('2 live');
-    expect(countsOf(busytools(withoutForge)), 'both').toBe('1 live \u{b7} 1 asleep');
-  });
 });
 
 describe('a row over the fleet', () => {
-  it('groups a project under its org and names the lead row for the project', () => {
+  it('names the lead row for the project', () => {
     const view = homeView(homeWire, '127.0.0.1:8790');
-    const org = orgNamed(view, 'TestOrg');
-    expect(org.projects).toHaveLength(1);
+    expect(view.fleet).toHaveLength(1);
     // The lead's label is its identity, not what the row is called here.
-    expect(leadOf(view).name).toBe('proj');
-    expect(leadOf(view).slot.label).toBe('lead');
-    expect(countsOf(org)).toBe('1 live');
+    expect(leadOf(homeWire).name).toBe('proj');
+    expect(leadOf(homeWire).slot.label).toBe('lead');
   });
 
   it('reads the fixture the server pinned, with only the ask promoted', () => {
     const view = homeView(homeWire, 'ws://127.0.0.1:8790/socket');
-    const lead = view.orgs[0]?.projects[0]?.lead;
+    const lead = rowsOf(homeWire).lead;
     // The fixture's lead holds a permission prompt beside an Idle lifecycle -
     // a pairing this fixture was hand-made with - and the ask is what the row
     // reads (#1885).
@@ -434,7 +507,7 @@ describe('a row over the fleet', () => {
       projects: [{ ...PROJECT, project: { ...PROJECT.project, sessions } }],
     });
 
-    const lead = leadOf(homeView(withSessions([]), ''));
+    const lead = leadOf(withSessions([]));
     expect(lead.state).toEqual({ kind: 'never-started' });
     expect(whenOf(lead, Date.now())).toBe('never');
 
@@ -442,8 +515,8 @@ describe('a row over the fleet', () => {
     // restart leaves every project in that case, so reading the lifecycle
     // alone would call the whole fleet new.
     expect(
-      homeView(withSessions([{ last_activity: { secs_since_epoch: 0, nanos_since_epoch: 0 } }]), '')
-        .orgs[0]?.projects[0]?.lead.state,
+      rowsOf(withSessions([{ last_activity: { secs_since_epoch: 0, nanos_since_epoch: 0 } }])).lead
+        .state,
     ).toEqual({ kind: 'lifecycle', lifecycle: 'Sleeping' });
   });
 
@@ -454,18 +527,18 @@ describe('a row over the fleet', () => {
       ...homeWire,
       agents: [{ ...AGENT, pending: null, has_background_work }],
     });
-    expect(homeView(wire(true), '').orgs[0]?.projects[0]?.lead.state).toEqual({
+    expect(rowsOf(wire(true)).lead.state).toEqual({
       kind: 'lifecycle',
       lifecycle: 'Running',
     });
-    expect(homeView(wire(false), '').orgs[0]?.projects[0]?.lead.state).toEqual({
+    expect(rowsOf(wire(false)).lead.state).toEqual({
       kind: 'lifecycle',
       lifecycle: 'Idle',
     });
   });
 
   it('draws an empty fleet as the empty state rather than a broken page', () => {
-    expect(homeView({ ...homeWire, projects: [], agents: [] }, '').orgs).toEqual([]);
+    expect(fleetRows({ ...homeWire, projects: [], agents: [], fleet: [] })).toEqual([]);
   });
 
   it('names the two refusals, and neither when a spawn would run', () => {
@@ -477,10 +550,12 @@ describe('a row over the fleet', () => {
 
 describe('the cells the reshape made drawable', () => {
   /** One project of the fixture fleet, with its row's reads varied. */
-  const withRow = (over: Partial<ProjectWire>): HomeWire => ({
-    ...homeWire,
-    projects: [{ ...PROJECT, ...over }],
-  });
+  const withRow = (over: Partial<ProjectWire> & { tasks?: Task[] }): HomeWire => {
+    // A test reasons about task records; the wire carries board rows.
+    const { tasks = [], ...rest } = over;
+    const base = tasks.length > 0 ? { ...PROJECT, rows: tasks.map(boardRow) } : PROJECT;
+    return { ...homeWire, projects: [{ ...base, ...rest }] };
+  };
 
   /**
    * The fixture's one agent, with ITS row's reads varied. The tree a row
@@ -499,8 +574,7 @@ describe('the cells the reshape made drawable', () => {
    */
   it('draws the branch and the count, and nothing for a count of zero', () => {
     const place = (changed: number | null) =>
-      leadOf(homeView(withAgentRow({ work: { branch: 'main', changed, gate: 'in_repo' } }), ''))
-        .place;
+      leadOf(withAgentRow({ work: { branch: 'main', changed, gate: 'in_repo' } })).place;
     expect(place(3)).toEqual({ branch: 'main', files: '3 files' });
     expect(place(1)).toEqual({ branch: 'main', files: '1 file' });
     expect(place(0)).toEqual({ branch: 'main', files: null });
@@ -515,7 +589,7 @@ describe('the cells the reshape made drawable', () => {
    */
   it('shows the task furthest from done, not the first held', () => {
     const held = leadOf(
-      homeView(withRow({ tasks: [task('completed', 'shipped'), task('in_progress', 'now')] }), ''),
+      withRow({ tasks: [task('completed', 'shipped'), task('in_progress', 'now')] }),
     );
     expect(held.task?.subject).toBe('now');
     expect(held.task?.chip).toBe('in progress');
@@ -538,10 +612,10 @@ describe('the cells the reshape made drawable', () => {
       unseen: [slot],
     };
 
-    expect(leadOf(homeView(marked, '')).state).toEqual({ kind: 'unseen' });
+    expect(leadOf(marked).state).toEqual({ kind: 'unseen' });
     // The same seat with nothing unseen is idle, so the mark is the list
     // rather than the lifecycle.
-    expect(leadOf(homeView({ ...marked, unseen: [] }, '')).state).toEqual({
+    expect(leadOf({ ...marked, unseen: [] }).state).toEqual({
       kind: 'lifecycle',
       lifecycle: 'Idle',
     });
@@ -554,7 +628,7 @@ describe('the cells the reshape made drawable', () => {
    */
   it('marks a seat whose newest turn failed, over every other promotion', () => {
     const at = { secs_since_epoch: 1_800_000_000, nanos_since_epoch: 0 };
-    const failed = leadOf(homeView(withAgentRow({ failed_turn: at }), ''));
+    const failed = leadOf(withAgentRow({ failed_turn: at }));
 
     expect(failed.state).toEqual({ kind: 'failed-turn' });
     expect(failed.failedTurn).toEqual(at);
@@ -568,7 +642,7 @@ describe('the cells the reshape made drawable', () => {
       agents: [{ ...AGENT, failed_turn: at, has_background_work: true }],
       unseen: [slot],
     };
-    expect(leadOf(homeView(busy, '')).state).toEqual({ kind: 'failed-turn' });
+    expect(leadOf(busy).state).toEqual({ kind: 'failed-turn' });
   });
 
   /**
@@ -576,9 +650,7 @@ describe('the cells the reshape made drawable', () => {
    * `where` cell that reads as "no branch".
    */
   it('says why a row has no branch to show', () => {
-    const row = leadOf(
-      homeView(withAgentRow({ work: { branch: null, changed: null, gate: 'gone' } }), ''),
-    );
+    const row = leadOf(withAgentRow({ work: { branch: null, changed: null, gate: 'gone' } }));
     expect(gateLine('gone')).toBe('its working directory is not there');
     // The gate line is what the row's `what` cell falls back to, so a row
     // with no pending, no task and no refusal still says something.
@@ -803,16 +875,13 @@ describe('the band', () => {
 });
 
 describe('what a row says', () => {
-  it('names the two asks differently', () => {
-    expect(waitingOn('question')).toBe('asked you a question');
-    expect(waitingOn('permission')).toBe('a permission prompt is waiting');
-  });
-
   it('reads a task status as a chip', () => {
     expect(chipFor('in_progress')).toBe('in progress');
     expect(chipFor('completed')).toBe('done');
     expect(chipFor('pending')).toBe('pending');
-    expect(chipFor('blocked')).toBe('blocked');
+    // The status a wait is spelled with now, which the fallback words for the
+    // strip: the vocabulary moved to `waiting` when it left `blocked` behind.
+    expect(chipFor('waiting')).toBe('waiting');
   });
 
   /**
@@ -826,7 +895,7 @@ describe('what a row says', () => {
    */
   it('narrows a lifecycle it does not know as the snapshot is read', () => {
     const unknown = { ...FLEET, agents: [{ ...FLEET_AGENT, lifecycle: 'Resting' as never }] };
-    const lead = homeView(homeFrom(unknown), '').orgs[0]?.projects[0]?.lead;
+    const lead = rowsOf(homeFrom(unknown)).lead;
     expect(lead?.state).toEqual({ kind: 'lifecycle', lifecycle: 'Idle' });
   });
 
@@ -846,7 +915,142 @@ describe('what a row says', () => {
 
   it('narrows a pending kind it does not know', () => {
     const unknown = { ...FLEET, agents: [{ ...FLEET_AGENT, pending: 'elicit' as never }] };
-    expect(homeView(homeFrom(unknown), '').orgs[0]?.projects[0]?.lead.pending).toBe('permission');
+    expect(rowsOf(homeFrom(unknown)).lead.pending).toBe('permission');
+  });
+
+  /**
+   * The one step back, which is a SHAPE and not only a name.
+   *
+   * A v7 forge sent each of a project's entries as the TASK alone, flat, under
+   * `tasks` - no `worked_secs`, no marks, an `artifact` rather than `links`,
+   * and an `estimate` that is its words. An entry like that is not a row, so a
+   * read that only renamed the key takes `entry.task.status` off `undefined`
+   * and THROWS while drawing: nothing renders and the skew notice is the only
+   * thing on the page. What that server never stated reads as the neutral
+   * value instead.
+   */
+  it('reads a project whose rows crossed as flat v7 tasks', () => {
+    const first = homeWire.projects[0];
+    if (first === undefined) throw new Error('the fixture holds no project');
+    const stepBack = {
+      ...homeWire,
+      projects: [
+        {
+          ...first,
+          rows: undefined,
+          // Shaped by the v7 server's own wire type (`ProjectWire.tasks` was
+          // `Vec<Task>`), not by wrapping a v8 row under the old key.
+          tasks: [
+            {
+              id: 'v7-1',
+              project_name: 'proj',
+              subject: 'a row from a v7 server',
+              active_form: null,
+              detail: null,
+              status: 'in_progress',
+              owner: null,
+              parent: null,
+              artifact: 'https://example.test/pull/7',
+              estimate: '1d',
+              created_at: { secs_since_epoch: 1_700_000_000, nanos_since_epoch: 0 },
+              updated_at: { secs_since_epoch: 1_700_000_000, nanos_since_epoch: 0 },
+            },
+            {
+              id: 'v7-2',
+              project_name: 'proj',
+              subject: 'a blocked row from a v7 server',
+              active_form: null,
+              detail: null,
+              // v7's own spelling for a wait, which the core's migration of
+              // the same value lands on `waiting`.
+              status: 'blocked',
+              owner: null,
+              parent: null,
+              artifact: 'docs/plan.md',
+              estimate: null,
+              created_at: { secs_since_epoch: 1_700_000_000, nanos_since_epoch: 0 },
+              updated_at: { secs_since_epoch: 1_700_000_000, nanos_since_epoch: 0 },
+            },
+          ],
+        },
+      ],
+    } as unknown as HomeWire;
+
+    const rows = homeFrom(stepBack).projects[0]?.rows ?? [];
+    expect(rows, 'the flat task did not read as a row').toHaveLength(2);
+    const task = rows[0]?.task;
+    expect(task?.subject, 'the task itself was lost').toBe('a row from a v7 server');
+    expect(task?.status, 'the status did not come off the entry').toBe('in_progress');
+    // The fields v7 never sent read as what this client draws for nothing,
+    // rather than as `undefined` reaching the board's arithmetic.
+    expect(rows[0]?.worked_secs).toBe(0);
+    expect(rows[0]?.marks.overdue).toBe(false);
+    expect(rows[0]?.rollup).toBeNull();
+    expect(task?.rank).toBeNull();
+    expect(task?.waiting_on).toBeNull();
+    expect(task?.attempt).toBe(0);
+    // `artifact` is `links` now, with the CORE's own classification of a bare
+    // target: a pull-request url is a `pr` and anything else a `path`, both of
+    // which the strip and the home row draw - `other` is filtered out of both.
+    expect(
+      rows.map((entry) => entry.task.links.map((link) => link.kind)),
+      'the v7 artifacts did not cross as their own kinds',
+    ).toEqual([['pr'], ['path']]);
+    expect(rows[0]?.task.links[0]?.target).toBe('https://example.test/pull/7');
+    // And the estimate keeps its words with no seconds to be measured against,
+    // which the board reads as no measure rather than as a NaN ratio.
+    expect(task?.estimate).toEqual({ words: '1d', secs: 0 });
+
+    // **`blocked` is a WAIT, not a fresh row.** Narrowed as an unknown it
+    // falls to `pending` and is drawn in the Ready lane as a row a lead would
+    // dispatch.
+    expect(rows[1]?.task.status, 'a v7 blocked row read as ready').toBe('waiting');
+  });
+
+  /**
+   * **The links reader is total.** A payload carrying `links` as anything but
+   * an array of objects - `{}`, a string, `[null]` - is a shape this client
+   * has no type for, and throwing inside the read is the one outcome the step
+   * back exists to prevent: the whole page draws nothing. Nothing shipped
+   * sends one; the point is that nothing draws nothing either.
+   */
+  it('reads a row whose links are not an array of objects', () => {
+    const first = homeWire.projects[0];
+    if (first === undefined) throw new Error('the fixture holds no project');
+    const base = {
+      id: 'odd',
+      project_name: 'proj',
+      subject: 'a row with odd links',
+      active_form: null,
+      detail: null,
+      status: 'pending',
+      owner: null,
+      parent: null,
+      estimate: null,
+      created_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+      updated_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+    };
+
+    for (const links of [{}, 'x', [null], [42]]) {
+      const odd = {
+        ...homeWire,
+        projects: [{ ...first, rows: [{ task: { ...base, links }, worked_secs: 0 }] }],
+      } as unknown as HomeWire;
+      expect(
+        homeFrom(odd).projects[0]?.rows[0]?.task.links,
+        `a row with links = ${JSON.stringify(links)} read as something else`,
+      ).toEqual([]);
+    }
+  });
+
+  it('reads a project a server sends no rows for as an empty board', () => {
+    const first = homeWire.projects[0];
+    if (first === undefined) throw new Error('the fixture holds no project');
+    const neither = {
+      ...homeWire,
+      projects: [{ ...first, rows: undefined, tasks: undefined }],
+    } as unknown as HomeWire;
+    expect(homeFrom(neither).projects[0]?.rows).toEqual([]);
   });
 
   it('narrows an account state it does not know', () => {

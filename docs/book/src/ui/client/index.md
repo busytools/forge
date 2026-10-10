@@ -16,6 +16,7 @@ place.
 |---|---|---|
 | Connect | [connect.md](./connect.md) | `web-connect.html` |
 | Home | [home.md](./home.md) | `web-home.html` |
+| Board | [board.md](./board.md) | `web-board.html` |
 | Dictation models | [dictate-models.md](./dictate-models.md) | `web-dictate-models.html` |
 | The queue pile | (session page pending) | `web-queue.html` |
 

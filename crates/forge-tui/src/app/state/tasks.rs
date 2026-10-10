@@ -57,8 +57,17 @@ fn build_task_row(task: &Task, all: &[Task]) -> TaskRow {
         display,
         status: task.status,
         owner_label: task.owner.as_ref().map(|owner| owner.label().to_owned()),
-        artifact: task.artifact.clone(),
-        estimate: task.estimate.clone(),
+        artifact: task
+            .links
+            .iter()
+            .find(|l| {
+                matches!(
+                    l.kind,
+                    forge_primitives::tasks::LinkKind::Pr | forge_primitives::tasks::LinkKind::Path
+                )
+            })
+            .map(|l| l.label.clone().unwrap_or_else(|| l.target.clone())),
+        estimate: task.estimate.as_ref().map(|e| e.words.clone()),
         rollup,
         breadcrumb,
     }
@@ -109,9 +118,11 @@ impl App {
 fn status_rank(status: TaskStatus) -> u8 {
     match status {
         TaskStatus::InProgress => 0,
-        TaskStatus::Blocked => 1,
+        TaskStatus::Waiting => 1,
         TaskStatus::Pending => 2,
         TaskStatus::Completed => 3,
+        TaskStatus::Failed => 4,
+        TaskStatus::Canceled => 5,
     }
 }
 
@@ -139,8 +150,13 @@ pub(crate) mod tests {
             status: TaskStatus::Pending,
             owner: owner.map(|label| SessionSlot::worker("TestOrg", PROJECT, label)),
             parent: None,
-            artifact: None,
+            waiting_on: None,
             estimate: None,
+            rank: None,
+            verify: None,
+            links: Vec::new(),
+            attempt: 0,
+            archived_at: None,
             created_at: std::time::SystemTime::UNIX_EPOCH,
             updated_at: std::time::SystemTime::UNIX_EPOCH,
         }
@@ -438,7 +454,7 @@ pub(crate) mod tests {
                 ..owned_task("t-pending", "pending", Some(WORKER))
             },
             Task {
-                status: TaskStatus::Blocked,
+                status: TaskStatus::Waiting,
                 ..owned_task("t-blocked", "blocked", Some(WORKER))
             },
             Task {

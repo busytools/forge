@@ -10,7 +10,9 @@
 use std::sync::{Arc, Weak};
 use std::time::SystemTime;
 
-use forge_primitives::tasks::{Task, TaskId, TaskStatus};
+use forge_primitives::tasks::{
+    By, Estimate, LinkKind, Task, TaskId, TaskLink, TaskStatus, WaitingKind,
+};
 
 use crate::SessionSlot;
 use crate::mcp::caller_context::caller_context;
@@ -22,6 +24,34 @@ pub(crate) enum TasksError {
     /// The caller couldn't be mapped to a project (transient race, or the
     /// session ended). Shouldn't happen for a live session.
     UnknownCallerProject,
+    /// The estimate words do not parse as a duration; named rather than
+    /// stored so a caller hears it instead of losing the value.
+    BadEstimate(String),
+    /// The core refused the move (open children on a close).
+    Refused(String),
+}
+
+/// One link as a caller states it: the kind is derived from the target's
+/// shape when it is not given.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub(crate) struct TaskLinkDraft {
+    #[serde(default)]
+    pub kind: Option<LinkKind>,
+    #[serde(default)]
+    pub label: Option<String>,
+    pub target: String,
+}
+
+impl TaskLinkDraft {
+    fn to_link(&self, at: SystemTime) -> TaskLink {
+        TaskLink {
+            kind: self.kind.unwrap_or_else(|| LinkKind::for_target(&self.target)),
+            label: self.label.clone(),
+            target: self.target.clone(),
+            state: None,
+            added_at: at,
+        }
+    }
 }
 
 /// A task as `tasks__create` states it: the fields the caller supplies,
@@ -42,9 +72,16 @@ pub(crate) struct TaskDraft {
     #[serde(default)]
     pub parent: Option<String>,
     #[serde(default)]
-    pub artifact: Option<String>,
-    #[serde(default)]
     pub estimate: Option<String>,
+    /// Queue order; lower reads first.
+    #[serde(default)]
+    pub rank: Option<i64>,
+    /// Whether completion waits on the user; the epic's default applies
+    /// when unset.
+    #[serde(default)]
+    pub verify: Option<forge_primitives::tasks::Verify>,
+    #[serde(default)]
+    pub links: Vec<TaskLinkDraft>,
 }
 
 /// The tree a `tasks__delete` removed: the named task as it stood, and how
@@ -71,15 +108,33 @@ pub(crate) struct TaskPatch {
     #[serde(default)]
     pub parent: Option<String>,
     #[serde(default)]
-    pub artifact: Option<String>,
-    #[serde(default)]
     pub estimate: Option<String>,
+    #[serde(default)]
+    pub rank: Option<i64>,
+    #[serde(default)]
+    pub verify: Option<forge_primitives::tasks::Verify>,
+    /// Links to attach; a target already present on the row is left as it
+    /// is, so the same PR linked twice stays one link.
+    #[serde(default)]
+    pub links_add: Vec<TaskLinkDraft>,
+    /// Links to take off, by exact target.
+    #[serde(default)]
+    pub links_remove: Vec<String>,
 }
 
 impl TaskPatch {
     /// Apply the stated fields to `task`. `org` and `project` name the
-    /// caller's project, which is where an owner label is resolved.
-    fn apply(&self, task: &mut Task, org: &str, project: &str) {
+    /// caller's project, which is where an owner label is resolved;
+    /// `estimate` arrives pre-parsed so an unparseable one is refused
+    /// before any field moves.
+    fn apply(
+        &self,
+        task: &mut Task,
+        org: &str,
+        project: &str,
+        estimate: Option<Estimate>,
+        at: SystemTime,
+    ) {
         if let Some(subject) = &self.subject {
             task.subject.clone_from(subject);
         }
@@ -98,13 +153,42 @@ impl TaskPatch {
         if let Some(parent) = &self.parent {
             task.parent = Some(TaskId::from(parent.as_str()));
         }
-        if let Some(artifact) = &self.artifact {
-            task.artifact = Some(artifact.clone());
+        if let Some(rank) = self.rank {
+            task.rank = Some(rank);
         }
-        if let Some(estimate) = &self.estimate {
-            task.estimate = Some(estimate.clone());
+        if let Some(verify) = self.verify {
+            task.verify = Some(verify);
+        }
+        for draft in &self.links_add {
+            if !task.links.iter().any(|l| l.target == draft.target) {
+                task.links.push(draft.to_link(at));
+            }
+        }
+        task.links.retain(|l| !self.links_remove.contains(&l.target));
+        if let Some(estimate) = estimate {
+            task.estimate = Some(estimate);
         }
     }
+}
+
+/// The list's narrowing, one definition for the real path and the mock:
+/// `owner` by label, `parent` by id, `status` by state, `ready` by the
+/// board's own mark.
+fn narrow_rows(
+    rows: Vec<crate::board::BoardRow>,
+    owner: Option<&str>,
+    parent: Option<&TaskId>,
+    status: Option<TaskStatus>,
+    ready: Option<bool>,
+) -> Vec<crate::board::BoardRow> {
+    rows.into_iter()
+        .filter(|row| {
+            owner.is_none_or(|label| row.task.owner.as_ref().is_some_and(|o| o.label() == label))
+        })
+        .filter(|row| parent.is_none_or(|id| row.task.parent.as_ref() == Some(id)))
+        .filter(|row| status.is_none_or(|wanted| row.task.status == wanted))
+        .filter(|row| ready.is_none_or(|wanted| row.marks.ready == wanted))
+        .collect()
 }
 
 /// The task tools' view of the workspace. Sync - task-list mutations are
@@ -114,14 +198,16 @@ pub(crate) trait TasksFacade: Send + Sync {
     /// record, with its id and timestamps stamped.
     fn create_task(&self, caller: &SessionSlot, draft: TaskDraft) -> Result<Task, TasksError>;
 
-    /// The caller's project's tasks, narrowed by `owner` (a label) and
-    /// `parent` (a task id) when supplied.
+    /// The caller's project's board rows, narrowed by `owner` (a label),
+    /// `parent` (a task id), `status` and `ready` when supplied.
     fn list_tasks(
         &self,
         caller: &SessionSlot,
         owner: Option<&str>,
         parent: Option<&TaskId>,
-    ) -> Vec<Task>;
+        status: Option<TaskStatus>,
+        ready: Option<bool>,
+    ) -> Vec<crate::board::BoardRow>;
 
     /// Apply `patch` to the task `id` in the caller's project and return
     /// the record as the write left it. `Ok(None)` if no such task is
@@ -141,6 +227,25 @@ pub(crate) trait TasksFacade: Send + Sync {
         caller: &SessionSlot,
         id: &TaskId,
     ) -> Result<Option<RemovedTaskTree>, TasksError>;
+
+    /// Claim `id`, or the first ready row of `epic` by rank, for the
+    /// caller. Backs `tasks__claim`.
+    fn claim_task(
+        &self,
+        caller: &SessionSlot,
+        id: Option<&str>,
+        epic: Option<&str>,
+    ) -> Result<Task, TasksError>;
+
+    /// Put the caller's row `id` into waiting. Backs `tasks__wait`.
+    fn wait_task(
+        &self,
+        caller: &SessionSlot,
+        id: &TaskId,
+        kind: WaitingKind,
+        detail: Option<String>,
+        on: Option<&TaskId>,
+    ) -> Result<Task, TasksError>;
 }
 
 /// Production facade over `Weak<Workspace>` (weak to avoid a cycle with
@@ -160,6 +265,13 @@ impl TasksFacade for ProdTasksFacade {
         let ws = self.workspace.upgrade().ok_or(TasksError::UnknownCallerProject)?;
         let cx = caller_context(&ws, caller).ok_or(TasksError::UnknownCallerProject)?;
         let now = SystemTime::now();
+        let estimate = match draft.estimate.as_deref() {
+            Some(words) => Some(
+                Estimate::parse(words).ok_or_else(|| TasksError::BadEstimate(words.to_owned()))?,
+            ),
+            None => None,
+        };
+        let links = draft.links.iter().map(|draft| draft.to_link(now)).collect();
         let task = Task {
             id: TaskId::from(uuid::Uuid::new_v4().to_string()),
             project_name: cx.project_name.clone(),
@@ -171,8 +283,13 @@ impl TasksFacade for ProdTasksFacade {
                 .owner
                 .map(|label| SessionSlot::new(&cx.project_org, &cx.project_name, label)),
             parent: draft.parent.as_deref().map(TaskId::from),
-            artifact: draft.artifact,
-            estimate: draft.estimate,
+            waiting_on: None,
+            estimate,
+            rank: draft.rank,
+            verify: draft.verify,
+            links,
+            attempt: 0,
+            archived_at: None,
             created_at: now,
             updated_at: now,
         };
@@ -185,16 +302,14 @@ impl TasksFacade for ProdTasksFacade {
         caller: &SessionSlot,
         owner: Option<&str>,
         parent: Option<&TaskId>,
-    ) -> Vec<Task> {
+        status: Option<TaskStatus>,
+        ready: Option<bool>,
+    ) -> Vec<crate::board::BoardRow> {
         let Some(ws) = self.workspace.upgrade() else { return Vec::new() };
         let Some(cx) = caller_context(&ws, caller) else { return Vec::new() };
-        ws.tasks_for_project(&cx.project_name)
-            .into_iter()
-            .filter(|t| {
-                owner.is_none_or(|label| t.owner.as_ref().is_some_and(|o| o.label() == label))
-            })
-            .filter(|t| parent.is_none_or(|id| t.parent.as_ref() == Some(id)))
-            .collect()
+        let rows =
+            ws.board_rows(&cx.project_name, SystemTime::now(), crate::board::DEFAULT_STALE_SECS);
+        narrow_rows(rows, owner, parent, status, ready)
     }
 
     fn update_task(
@@ -205,9 +320,17 @@ impl TasksFacade for ProdTasksFacade {
     ) -> Result<Option<Task>, TasksError> {
         let ws = self.workspace.upgrade().ok_or(TasksError::UnknownCallerProject)?;
         let cx = caller_context(&ws, caller).ok_or(TasksError::UnknownCallerProject)?;
-        Ok(ws.update_task(&cx.project_name, id, |task| {
-            patch.apply(task, &cx.project_org, &cx.project_name);
-        }))
+        let estimate = match patch.estimate.as_deref() {
+            Some(words) => Some(
+                Estimate::parse(words).ok_or_else(|| TasksError::BadEstimate(words.to_owned()))?,
+            ),
+            None => None,
+        };
+        let at = SystemTime::now();
+        ws.update_task(&cx.project_name, id, By::Seat(caller.clone()), |task| {
+            patch.apply(task, &cx.project_org, &cx.project_name, estimate, at);
+        })
+        .map_err(|refused| TasksError::Refused(format!("{refused:?}")))
     }
 
     fn delete_task(
@@ -229,11 +352,76 @@ impl TasksFacade for ProdTasksFacade {
         };
         Ok(Some(RemovedTaskTree { task, descendants_removed: removed.len() - 1 }))
     }
+
+    fn claim_task(
+        &self,
+        caller: &SessionSlot,
+        id: Option<&str>,
+        epic: Option<&str>,
+    ) -> Result<Task, TasksError> {
+        let ws = self.workspace.upgrade().ok_or(TasksError::UnknownCallerProject)?;
+        let cx = caller_context(&ws, caller).ok_or(TasksError::UnknownCallerProject)?;
+        let by_id = id.map(TaskId::from);
+        let in_epic = epic.map(TaskId::from);
+        ws.claim_task(&cx.project_name, caller, by_id.as_ref(), in_epic.as_ref())
+            .map_err(|refused| TasksError::Refused(refused.to_string()))
+    }
+
+    fn wait_task(
+        &self,
+        caller: &SessionSlot,
+        id: &TaskId,
+        kind: WaitingKind,
+        detail: Option<String>,
+        on: Option<&TaskId>,
+    ) -> Result<Task, TasksError> {
+        let ws = self.workspace.upgrade().ok_or(TasksError::UnknownCallerProject)?;
+        let cx = caller_context(&ws, caller).ok_or(TasksError::UnknownCallerProject)?;
+        ws.wait_task(&cx.project_name, id, caller, kind, detail, on)
+            .map_err(|refused| TasksError::Refused(refused.to_string()))
+    }
 }
 
 /// One recorded `create_task` call: caller, draft, the record returned.
 #[cfg(test)]
 type CreateCall = (SessionSlot, TaskDraft, Task);
+
+/// A canned record for the mock's default result.
+#[cfg(test)]
+fn mock_task(caller: &SessionSlot) -> Task {
+    let now = SystemTime::UNIX_EPOCH;
+    Task {
+        id: TaskId::from("mock-task-id"),
+        project_name: caller.project().to_owned(),
+        subject: "mock".to_owned(),
+        active_form: None,
+        detail: None,
+        status: TaskStatus::Pending,
+        owner: None,
+        parent: None,
+        waiting_on: None,
+        estimate: None,
+        rank: None,
+        verify: None,
+        links: Vec::new(),
+        attempt: 0,
+        archived_at: None,
+        created_at: now,
+        updated_at: now,
+    }
+}
+
+/// The filters one `tasks__list` call was made with.
+#[cfg(test)]
+type ListCall = (Option<String>, Option<String>, Option<TaskStatus>, Option<bool>);
+
+/// One `tasks__claim` call: the caller, the epic and the project it asked for.
+#[cfg(test)]
+type ClaimCall = (SessionSlot, Option<String>, Option<String>);
+
+/// One `tasks__wait` call: the caller, the row, the kind, the detail and the row waited on.
+#[cfg(test)]
+type WaitCall = (SessionSlot, TaskId, WaitingKind, Option<String>, Option<TaskId>);
 
 /// Records calls + returns preloaded results so the tool tests can assert
 /// the tool correctly parses args, resolves the caller, and surfaces
@@ -242,11 +430,16 @@ type CreateCall = (SessionSlot, TaskDraft, Task);
 #[derive(Default)]
 pub(crate) struct MockTasksFacade {
     pub created: parking_lot::Mutex<Vec<CreateCall>>,
-    pub tasks: parking_lot::Mutex<Vec<Task>>,
+    pub rows: parking_lot::Mutex<Vec<crate::board::BoardRow>>,
+    pub listed: parking_lot::Mutex<Vec<ListCall>>,
     pub updated: parking_lot::Mutex<Vec<(SessionSlot, TaskId, TaskPatch)>>,
     pub update_result: parking_lot::Mutex<Option<Task>>,
     pub deleted: parking_lot::Mutex<Vec<(SessionSlot, TaskId)>>,
     pub delete_result: parking_lot::Mutex<Option<RemovedTaskTree>>,
+    pub claimed: parking_lot::Mutex<Vec<ClaimCall>>,
+    pub claim_result: parking_lot::Mutex<Option<Result<Task, TasksError>>>,
+    pub waited: parking_lot::Mutex<Vec<WaitCall>>,
+    pub wait_result: parking_lot::Mutex<Option<Result<Task, TasksError>>>,
 }
 
 #[cfg(test)]
@@ -275,8 +468,13 @@ impl TasksFacade for MockTasksFacade {
                 .clone()
                 .map(|label| SessionSlot::new(caller.org(), caller.project(), label)),
             parent: draft.parent.as_deref().map(TaskId::from),
-            artifact: draft.artifact.clone(),
-            estimate: draft.estimate.clone(),
+            waiting_on: None,
+            estimate: draft.estimate.as_deref().and_then(Estimate::parse),
+            rank: draft.rank,
+            verify: draft.verify,
+            links: draft.links.iter().map(|draft| draft.to_link(now)).collect(),
+            attempt: 0,
+            archived_at: None,
             created_at: now,
             updated_at: now,
         };
@@ -284,13 +482,43 @@ impl TasksFacade for MockTasksFacade {
         Ok(task)
     }
 
+    fn claim_task(
+        &self,
+        caller: &SessionSlot,
+        id: Option<&str>,
+        epic: Option<&str>,
+    ) -> Result<Task, TasksError> {
+        self.claimed.lock().push((caller.clone(), id.map(str::to_owned), epic.map(str::to_owned)));
+        self.claim_result.lock().clone().unwrap_or_else(|| Ok(mock_task(caller)))
+    }
+
+    fn wait_task(
+        &self,
+        caller: &SessionSlot,
+        id: &TaskId,
+        kind: WaitingKind,
+        detail: Option<String>,
+        on: Option<&TaskId>,
+    ) -> Result<Task, TasksError> {
+        self.waited.lock().push((caller.clone(), id.clone(), kind, detail, on.cloned()));
+        self.wait_result.lock().clone().unwrap_or_else(|| Ok(mock_task(caller)))
+    }
+
     fn list_tasks(
         &self,
         _caller: &SessionSlot,
-        _owner: Option<&str>,
-        _parent: Option<&TaskId>,
-    ) -> Vec<Task> {
-        self.tasks.lock().clone()
+        owner: Option<&str>,
+        parent: Option<&TaskId>,
+        status: Option<TaskStatus>,
+        ready: Option<bool>,
+    ) -> Vec<crate::board::BoardRow> {
+        self.listed.lock().push((
+            owner.map(str::to_owned),
+            parent.map(|id| id.as_str().to_owned()),
+            status,
+            ready,
+        ));
+        narrow_rows(self.rows.lock().clone(), owner, parent, status, ready)
     }
 
     fn update_task(
@@ -347,8 +575,13 @@ mod prod_facade_tests {
             status: TaskStatus::Pending,
             owner: None,
             parent: None,
-            artifact: None,
+            waiting_on: None,
             estimate: None,
+            rank: None,
+            verify: None,
+            links: Vec::new(),
+            attempt: 0,
+            archived_at: None,
             created_at: SystemTime::UNIX_EPOCH,
             updated_at: SystemTime::UNIX_EPOCH,
         }
@@ -362,8 +595,10 @@ mod prod_facade_tests {
             status: None,
             owner: owner.map(str::to_owned),
             parent: parent.map(str::to_owned),
-            artifact: None,
             estimate: None,
+            rank: None,
+            verify: None,
+            links: Vec::new(),
         }
     }
 
@@ -406,18 +641,18 @@ mod prod_facade_tests {
         facade.create_task(&lead, draft("unclaimed", None, None)).expect("sibling");
 
         assert_eq!(
-            facade.list_tasks(&lead, None, None).len(),
+            facade.list_tasks(&lead, None, None, None, None).len(),
             3,
             "unfiltered is the whole project"
         );
-        let by_owner = facade.list_tasks(&lead, Some("reviewer"), None);
+        let by_owner = facade.list_tasks(&lead, Some("reviewer"), None, None, None);
         assert_eq!(by_owner.len(), 1, "owner narrows to that label");
-        assert_eq!(by_owner[0].subject, "mine");
-        let by_parent = facade.list_tasks(&lead, None, Some(&epic.id));
+        assert_eq!(by_owner[0].task.subject, "mine");
+        let by_parent = facade.list_tasks(&lead, None, Some(&epic.id), None, None);
         assert_eq!(by_parent.len(), 1, "parent narrows to that task's children");
-        assert_eq!(by_parent[0].subject, "mine");
+        assert_eq!(by_parent[0].task.subject, "mine");
         assert_eq!(
-            facade.list_tasks(&worker, Some("reviewer"), None).len(),
+            facade.list_tasks(&worker, Some("reviewer"), None, None, None).len(),
             1,
             "a worker's list is the same project's set",
         );
@@ -439,7 +674,7 @@ mod prod_facade_tests {
              at it",
         );
         assert_eq!(
-            facade.list_tasks(&lead, None, None).len(),
+            facade.list_tasks(&lead, None, None, None, None).len(),
             1,
             "the orphan is not collected under a name nothing owns",
         );
@@ -455,7 +690,11 @@ mod prod_facade_tests {
     #[test]
     fn update_returns_the_record_it_wrote() {
         let (ws, facade, lead, _worker) = fixture();
-        ws.seed_test_task(seeded_task("t-1", "before"));
+        // A child row: completing a ROOT would close and archive it, which
+        // is a different behaviour with its own test.
+        let mut seeded = seeded_task("t-1", "before");
+        seeded.parent = Some(TaskId::from("epic"));
+        ws.seed_test_task(seeded);
 
         let updated = facade
             .update_task(
@@ -518,7 +757,68 @@ mod prod_facade_tests {
         );
         assert_eq!(removed.task.subject, "c", "as it stood just before removal");
         assert_eq!(removed.descendants_removed, 2, "b and d went with it, and the count says so");
-        assert_eq!(facade.list_tasks(&lead, None, None).len(), 1, "only the sibling survives");
+        assert_eq!(
+            facade.list_tasks(&lead, None, None, None, None).len(),
+            1,
+            "only the sibling survives"
+        );
+    }
+
+    /// An estimate that is not a duration is refused with its own words,
+    /// and nothing else in the patch moves: the caller hears the mistake
+    /// instead of the value being dropped on the floor.
+    #[test]
+    fn an_unparseable_estimate_is_refused_and_moves_nothing() {
+        let (ws, facade, lead, _worker) = fixture();
+        let task = facade.create_task(&lead, draft("before", None, None)).expect("create");
+        let refused = facade.update_task(
+            &lead,
+            &task.id,
+            TaskPatch {
+                subject: Some("after".to_owned()),
+                estimate: Some("soonish".to_owned()),
+                ..TaskPatch::default()
+            },
+        );
+        assert_eq!(
+            refused,
+            Err(TasksError::BadEstimate("soonish".to_owned())),
+            "the refusal names the words it could not read",
+        );
+        assert_eq!(
+            ws.tasks_for_project("myproj")[0].subject,
+            "before",
+            "and no field moved on the refused write",
+        );
+    }
+
+    #[test]
+    fn create_refuses_an_estimate_it_cannot_parse() {
+        let (_ws, facade, lead, _worker) = fixture();
+        assert_eq!(
+            facade.create_task(
+                &lead,
+                TaskDraft { estimate: Some("tomorrow".to_owned()), ..draft("x", None, None) },
+            ),
+            Err(TasksError::BadEstimate("tomorrow".to_owned())),
+        );
+    }
+
+    /// `ready` narrows to rows something can start - the one filter that
+    /// leans on the board's derived mark rather than a stored field.
+    #[test]
+    fn ready_narrows_out_rows_something_holds() {
+        let (ws, facade, lead, _worker) = fixture();
+        let mut held = seeded_task("t-1", "held");
+        held.owner = Some(SessionSlot::lead("TestOrg", "myproj"));
+        held.status = TaskStatus::InProgress;
+        ws.seed_test_task(held);
+        ws.seed_test_task(seeded_task("t-2", "free"));
+
+        let ready = facade.list_tasks(&lead, None, None, None, Some(true));
+        assert_eq!(ready.len(), 1, "only the free row is ready: {ready:?}");
+        assert_eq!(ready[0].task.id, TaskId::from("t-2"));
+        assert!(ready[0].marks.ready, "and it carries the mark it was filtered by");
     }
 
     /// Every field `tasks__update` can state moves, not just the two the
@@ -536,11 +836,18 @@ mod prod_facade_tests {
                         subject: Some("after".to_owned()),
                         active_form: Some("doing".to_owned()),
                         detail: Some("why".to_owned()),
-                        status: Some(TaskStatus::Blocked),
+                        status: Some(TaskStatus::Waiting),
                         owner: Some("lead".to_owned()),
                         parent: Some("epic".to_owned()),
-                        artifact: Some("PR #9".to_owned()),
+                        links_add: vec![TaskLinkDraft {
+                            kind: None,
+                            label: None,
+                            target: "PR #9".to_owned(),
+                        }],
                         estimate: Some("2d".to_owned()),
+                        rank: Some(3),
+                        verify: Some(forge_primitives::tasks::Verify::User),
+                        ..TaskPatch::default()
                     },
                 )
                 .expect("update")
@@ -551,17 +858,64 @@ mod prod_facade_tests {
         assert_eq!(stored.subject, "after");
         assert_eq!(stored.active_form.as_deref(), Some("doing"));
         assert_eq!(stored.detail.as_deref(), Some("why"));
-        assert_eq!(stored.status, TaskStatus::Blocked);
+        assert_eq!(stored.status, TaskStatus::Waiting);
         assert_eq!(stored.owner.as_ref().map(SessionSlot::label), Some("lead"));
         assert_eq!(stored.parent.as_ref().map(TaskId::as_str), Some("epic"));
-        assert_eq!(stored.artifact.as_deref(), Some("PR #9"));
-        assert_eq!(stored.estimate.as_deref(), Some("2d"));
+        assert_eq!(
+            stored.links.first().map(|l| l.target.as_str()),
+            Some("PR #9"),
+            "the stated artifact lands as a link",
+        );
+        assert_eq!(
+            stored.estimate.as_ref().map(|e| e.words.as_str()),
+            Some("2d"),
+            "and the estimate keeps its words with its seconds parsed",
+        );
+        assert_eq!(stored.estimate.as_ref().map(|e| e.secs), Some(172_800));
+        assert_eq!(stored.rank, Some(3), "rank moves");
+        assert_eq!(stored.verify, Some(forge_primitives::tasks::Verify::User), "verify moves");
+
+        // The same target twice stays one link, and remove takes it off.
+        facade
+            .update_task(
+                &lead,
+                &task.id,
+                TaskPatch {
+                    links_add: vec![TaskLinkDraft {
+                        kind: None,
+                        label: None,
+                        target: "PR #9".to_owned(),
+                    }],
+                    ..TaskPatch::default()
+                },
+            )
+            .expect("update")
+            .expect("the task is there");
+        assert_eq!(
+            ws.tasks_for_project("myproj")[0].links.len(),
+            1,
+            "a re-added target stays one link",
+        );
+        facade
+            .update_task(
+                &lead,
+                &task.id,
+                TaskPatch { links_remove: vec!["PR #9".to_owned()], ..TaskPatch::default() },
+            )
+            .expect("update")
+            .expect("the task is there");
+        assert!(
+            ws.tasks_for_project("myproj")[0].links.is_empty(),
+            "remove takes it off by exact target",
+        );
     }
 
     #[test]
     fn update_moves_a_task_owned_by_another_session() {
         let (ws, facade, lead, worker) = fixture();
-        let task = facade.create_task(&worker, draft("review this", None, None)).expect("create");
+        // A child row: a completing root closes and archives (own test).
+        let task =
+            facade.create_task(&worker, draft("review this", None, Some("epic"))).expect("create");
         assert!(
             facade
                 .update_task(

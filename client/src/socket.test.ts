@@ -1134,6 +1134,12 @@ describe('the browser role', () => {
    * A handler that throws is a failed tool call with the reason named, and a
    * connection that cannot host answers the same shape: the session's turn
    * gets an answer either way rather than waiting on one that never comes.
+   *
+   * **Known flake, seen once on 2026-10-09** in a full-suite run (147 files
+   * in parallel): the first `until` ran out of `WAIT_MS` before the answer
+   * landed, green on re-run and in every quiet run. TODO: both waits here are
+   * wall-clock budgets over two whole connects, so the fix is waiting on the
+   * frame itself - a longer budget only moves the edge.
    */
   it('answers a failure rather than nothing when it cannot serve the ask', async () => {
     const { server, conn } = await connected();

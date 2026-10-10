@@ -33,7 +33,15 @@ import type { ComposerRecord } from '../composer/view';
 import { CLIENT_VERSION, PROTOCOL_VERSION } from '../protocol';
 import { hrefForSlot } from '../routes';
 import type { Connection } from '../socket';
-import type { AgentRow, CronEntry, HomeWire, Lifecycle, ProjectWire, Task } from '../wire/home';
+import type {
+  AgentRow,
+  CronEntry,
+  HomeWire,
+  Lifecycle,
+  ProjectWire,
+  Task,
+  TaskStatus,
+} from '../wire/home';
 import type { SessionSlot } from '../wire/types';
 import type {
   FileStatusWire,
@@ -1142,8 +1150,20 @@ export function taskRows(tasks: Task[], slot: SessionSlot): TaskStripRow[] {
     slot.label === 'lead'
       ? tasks.filter((task) => task.parent === null)
       : tasks.filter((task) => task.owner?.label === slot.label);
-  const rank: Record<string, number> = { in_progress: 0, blocked: 1, pending: 2, completed: 3 };
-  const ordered = [...mine].sort((a, b) => (rank[a.status] ?? 9) - (rank[b.status] ?? 9));
+  // The terminal's own order (`status_rank` in the TUI's task state): a
+  // running row, then a wait, then the queue, then what is done. Every status
+  // is named rather than defaulted, so a row cannot fall to the end because
+  // its state is one this map forgot - which is what `blocked` became when the
+  // vocabulary moved to `waiting`.
+  const rank: Record<TaskStatus, number> = {
+    in_progress: 0,
+    waiting: 1,
+    pending: 2,
+    completed: 3,
+    failed: 4,
+    canceled: 5,
+  };
+  const ordered = [...mine].sort((a, b) => rank[a.status] - rank[b.status]);
   return ordered.map((task) => ({
     id: task.id,
     status: task.status,
@@ -1165,8 +1185,10 @@ export function taskRows(tasks: Task[], slot: SessionSlot): TaskStripRow[] {
  */
 function taskMeta(task: Task): string {
   const parts = [chipFor(task.status)];
-  if (task.artifact !== null) parts.push(artifactLabel(task.artifact));
-  if (task.estimate !== null) parts.push(task.estimate);
+  // The artifact a reader knew is now the row's first PR or path link.
+  const artifact = task.links.find((link) => link.kind === 'pr' || link.kind === 'path');
+  if (artifact !== undefined) parts.push(artifactLabel(artifact.label ?? artifact.target));
+  if (task.estimate !== null) parts.push(task.estimate.words);
   return parts.join(' \u{b7} ');
 }
 

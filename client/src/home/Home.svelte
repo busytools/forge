@@ -1,11 +1,11 @@
 <script lang="ts">
   import Brand from '../components/Brand.svelte';
   import Card from '../components/Card.svelte';
-  import Row from '../components/Row.svelte';
+  import Mark from '../components/Mark.svelte';
   import { CLIENT_VERSION, PROTOCOL_VERSION } from '../protocol';
   import { install, restart, updateState } from '../update/state';
   import type { HomeWire } from '../wire/home';
-  import { countsOf, homeView } from './view';
+  import { fleetRows, homeView, markOf } from './view';
 
   /**
    * The home: every project, its agents, their states, and what needs you.
@@ -21,24 +21,10 @@
   }: { wire: HomeWire; address?: string; mark?: string | null } = $props();
 
   const view = $derived(homeView(wire, address));
-  // One clock for the page: every row's `when` reads against the same now,
-  // so two rows a second apart cannot draw the same age differently.
-  //
-  // Re-read with every snapshot AND on a tick. A snapshot alone is not
-  // enough: age is the one cell that is a function of time rather than of
-  // data, and a re-read needs an update the fleet may never send, so a page
-  // opened at nine on a quiet forge would still say "3h" at three.
-  let now = $state(Date.now());
-  /** The ready fact as a value, so the timer below does not restart on every update that rewrites `wire`. */
-  const ready = $derived(wire !== null);
-  $effect(() => {
-    if (!ready) return;
-    now = Date.now();
-    const tick = setInterval(() => {
-      now = Date.now();
-    }, 30_000);
-    return () => clearInterval(tick);
-  });
+  // The fleet: one row per project, nothing mixed. The counts and the
+  // misses are the server's own; the mark is the strongest of the
+  // project's seat marks, in the same vocabulary a seat row draws.
+  const fleet = $derived(fleetRows(wire));
 </script>
 
 <!-- A landmark, so every part of the page sits inside one. The sheet's
@@ -111,7 +97,7 @@
     {/each}
   </section>
 
-  {#if view.orgs.length === 0}
+  {#if fleet.length === 0}
     <div class="empty">
       <Brand name={mark} />
       <p class="t">No projects yet</p>
@@ -122,29 +108,44 @@
       </p>
     </div>
   {:else}
-    {#each view.orgs as org (org.name)}
-      <section class="org">
-        <h2>
-          {org.name}<span class="rule"></span>
-          <span class="counts">{countsOf(org)}</span>
-        </h2>
-        <ul class="list">
-          <!-- Org-scoped: two orgs may declare a project of the same name, and
-               a key that collided would leave one of them unrendered. -->
-          {#each org.projects as project (`${project.lead.slot.org}/${project.lead.slot.project}`)}
-            <li class="node">
-              <Row row={project.lead} {now} refused={project.refused} />
-              {#if project.workers.length > 0}
-                <ul class="children">
-                  {#each project.workers as worker (worker.slot.label)}
-                    <li class="node"><Row row={worker} {now} /></li>
-                  {/each}
-                </ul>
-              {/if}
-            </li>
-          {/each}
-        </ul>
-      </section>
-    {/each}
+    <ul class="fleet">
+      <!-- Org-scoped in the key: two orgs may declare a project of the same
+           name, and a key that collided would leave one of them unrendered. -->
+      {#each fleet as row (`${row.org}/${row.name}`)}
+        <li class="fleet-row">
+          <!-- The `.row <state>` ancestor is what the sheet keys every dot
+               shape on, so the fleet reuses the whole mark vocabulary. -->
+          <span class="row {markOf(row.state).class}"><Mark state={row.state} /></span>
+          <span class="fleet-name">{row.name}</span>
+          <span class="fleet-where">
+            {#if row.gate}{row.gate}{:else}
+              {#if row.place.branch}{row.place.branch}{/if}
+              {#if row.place.branch && row.place.files}{' \u{b7} '}{/if}
+              {#if row.place.files}<span class="files">{row.place.files}</span>{/if}
+            {/if}
+          </span>
+          <span class="fleet-seats">
+            {#each row.seats as seat (seat.label)}
+              <span class="fleet-seat"
+                ><span class="row {markOf(seat.state).class}"><Mark state={seat.state} /></span
+                >{seat.label}</span
+              >
+            {/each}
+          </span>
+          <span class="fleet-counts">
+            {row.live} of {row.slots ?? '?'} slots {'\u{b7}'} queue {row.queue}
+            {#if row.onYou > 0}
+              {'\u{b7}'} <span class="fleet-you">on you {row.onYou}</span>
+            {/if}
+          </span>
+          <span class="fleet-misses">
+            {#each row.misses as miss (miss.label)}
+              <span class="fleet-miss {miss.kind}">{miss.label}</span>
+            {/each}
+          </span>
+          <a class="fleet-open" href={row.href}>open board {'\u{2192}'}</a>
+        </li>
+      {/each}
+    </ul>
   {/if}
 </main>

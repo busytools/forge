@@ -61,7 +61,7 @@ function draw(): string {
       route: { name: 'session', slot: LEAD },
       settings: DEFAULT_SETTINGS,
       address: '127.0.0.1:8790',
-      home: { wire: homeWire, refused: null },
+      home: { wire: homeWire, refused: null, report: null },
       failure: null,
       connected: true,
       connection: untouched(),

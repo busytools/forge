@@ -1,0 +1,797 @@
+{
+  "server_message": {
+    "BrowserAsk": "browser_ask",
+    "BrowserRole": "browser_role",
+    "Devices": "devices",
+    "Error": "error",
+    "Greeting": "greeting",
+    "Page": "page",
+    "Reply": "reply",
+    "Snapshot": "snapshot",
+    "Update": "update"
+  },
+  "session_update": {
+    "AccountsChanged": "accounts_changed",
+    "AuthRequired": "auth_required",
+    "BackgroundTasksChanged": "background_tasks_changed",
+    "BrowserHandOffPending": "browser_hand_off_pending",
+    "BrowserHandOffResolved": "browser_hand_off_resolved",
+    "CallOutput": "call_output",
+    "CatalogLoaded": "catalog_loaded",
+    "ChatAppended": "chat_appended",
+    "CliVersionChanged": "cli_version_changed",
+    "Connected": "connected",
+    "ConnectionFailed": "connection_failed",
+    "ConnectorSubscriptionsChanged": "connector_subscriptions_changed",
+    "ContextUsageSnapshot": "context_usage_snapshot",
+    "CronPromptAppended": "cron_prompt_appended",
+    "CronSchedulesChanged": "cron_schedules_changed",
+    "DictateAvailability": "dictate_availability",
+    "DictateDevicePin": "dictate_device_pin",
+    "DictateEnded": "dictate_ended",
+    "DictateLevel": "dictate_level",
+    "DictateModelsChanged": "dictate_models_changed",
+    "DictateOverrides": "dictate_overrides",
+    "DictateProgress": "dictate_progress",
+    "DictateStarted": "dictate_started",
+    "DictateTranscribing": "dictate_transcribing",
+    "DispatchesChanged": "dispatches_changed",
+    "FatalError": "fatal_error",
+    "FileIndexChanged": "file_index_changed",
+    "ForgeAccountIdentity": "forge_account_identity",
+    "GotifyNotificationAppended": "gotify_notification_appended",
+    "HistoryReplayed": "history_replayed",
+    "HookObservation": "hook_observation",
+    "McpOperationError": "mcp_operation_error",
+    "McpSnapshot": "mcp_snapshot",
+    "MonitorsChanged": "monitors_changed",
+    "Notice": "notice",
+    "OauthCredentialsSnapshot": "oauth_credentials_snapshot",
+    "PeerEnvelopeAppended": "peer_envelope_appended",
+    "PendingInteractionResolved": "pending_interaction_resolved",
+    "PermissionRequest": "permission_request",
+    "PluginsCliActionFailed": "plugins_cli_action_failed",
+    "PluginsCliActionSucceeded": "plugins_cli_action_succeeded",
+    "PluginsInventoryRefreshFailed": "plugins_inventory_refresh_failed",
+    "PluginsInventoryUpdated": "plugins_inventory_updated",
+    "PluginsRollbackFailed": "plugins_rollback_failed",
+    "PluginsRollbackSucceeded": "plugins_rollback_succeeded",
+    "PluginsUpdateRunFinished": "plugins_update_run_finished",
+    "PluginsUpdateRunProgress": "plugins_update_run_progress",
+    "ProcessesChanged": "processes_changed",
+    "PromptCancelResolved": "prompt_cancel_resolved",
+    "PromptLifecycle": "prompt_lifecycle",
+    "PromptQueued": "prompt_queued",
+    "PromptQueuedWhileBusy": "prompt_queued_while_busy",
+    "QuestionRequest": "question_request",
+    "Releasing": "releasing",
+    "ReviewActivityNotice": "review_activity_notice",
+    "RuntimeReloadCompleted": "runtime_reload_completed",
+    "RuntimeReloadFailed": "runtime_reload_failed",
+    "ServiceStatus": "service_status",
+    "SessionReplaced": "session_replaced",
+    "SessionsListed": "sessions_listed",
+    "SetModeFailed": "set_mode_failed",
+    "SetModelFailed": "set_model_failed",
+    "SlackDraftResolved": "slack_draft_resolved",
+    "SlackMessageAppended": "slack_message_appended",
+    "SlackPostPending": "slack_post_pending",
+    "SlashCommandError": "slash_command_error",
+    "SlashCommandsChanged": "slash_commands_changed",
+    "Spawning": "spawning",
+    "StatusSnapshot": "status_snapshot",
+    "SubagentCardsChanged": "subagent_cards_changed",
+    "SubagentsChanged": "subagents_changed",
+    "TasksChanged": "tasks_changed",
+    "TurnCancelled": "turn_cancelled",
+    "TurnComplete": "turn_complete",
+    "TurnError": "turn_error",
+    "WorkChanged": "work_changed",
+    "WorkerStatusChanged": "worker_status_changed"
+  },
+  "subject": {
+    "DictateModels": "dictate_models",
+    "Home": "home",
+    "Session": "session",
+    "Usage": "usage"
+  },
+  "command": {
+    "Cancel": "cancel",
+    "CancelQueuedPrompt": "cancel_queued_prompt",
+    "CloseSession": "close_session",
+    "CloseWorker": "close_worker",
+    "DeliverGotifyMessage": "deliver_gotify_message",
+    "DeliverPeerPrompt": "deliver_peer_prompt",
+    "DeliverWorkerPrompt": "deliver_worker_prompt",
+    "DeliverWorkerPromptToLead": "deliver_worker_prompt_to_lead",
+    "DespawnWorker": "despawn_worker",
+    "DictateActivate": "dictate_activate",
+    "DictateBench": "dictate_bench",
+    "DictateBenchDelete": "dictate_bench_delete",
+    "DictateBenchStop": "dictate_bench_stop",
+    "DictateCatalogueCheck": "dictate_catalogue_check",
+    "DictateDeactivate": "dictate_deactivate",
+    "DictateInstall": "dictate_install",
+    "DictateReadAloudDelete": "dictate_read_aloud_delete",
+    "DictateReadAloudStart": "dictate_read_aloud_start",
+    "DictateReadAloudStop": "dictate_read_aloud_stop",
+    "DictateStart": "dictate_start",
+    "DictateStop": "dictate_stop",
+    "DictateStream": "dictate_stream",
+    "DictateUninstall": "dictate_uninstall",
+    "NewSession": "new_session",
+    "OpenUrl": "open_url",
+    "Prompt": "prompt",
+    "PromptUnder": "prompt_under",
+    "ReadCallOutput": "read_call_output",
+    "ReconnectMcpServer": "reconnect_mcp_server",
+    "RemoveReviewThread": "remove_review_thread",
+    "ReplayConversation": "replay_conversation",
+    "ResetDictateOverrides": "reset_dictate_overrides",
+    "RespondBrowserHandOff": "respond_browser_hand_off",
+    "RespondPermission": "respond_permission",
+    "RespondQuestion": "respond_question",
+    "RespondSlackPost": "respond_slack_post",
+    "ResumeSession": "resume_session",
+    "SaveReviewThreads": "save_review_threads",
+    "SetDictateDevice": "set_dictate_device",
+    "SetDictateOverride": "set_dictate_override",
+    "SetMode": "set_mode",
+    "SetModel": "set_model",
+    "SetReviewThreadStatus": "set_review_thread_status",
+    "SpawnProject": "spawn_project",
+    "SpawnSession": "spawn_session",
+    "SpawnWorker": "spawn_worker",
+    "StartDefault": "start_default",
+    "SubmitReview": "submit_review",
+    "TaskAnswer": "task_answer",
+    "TaskAssign": "task_assign",
+    "TaskCreate": "task_create",
+    "TaskMove": "task_move",
+    "TaskRank": "task_rank",
+    "TaskVerdict": "task_verdict",
+    "ToggleMcpServer": "toggle_mcp_server",
+    "UpsertReviewThread": "upsert_review_thread"
+  },
+  "client_message": {
+    "BrowserAnswer": "browser_answer",
+    "BrowserTakeRole": "browser_take_role",
+    "Command": "command",
+    "Devices": "devices",
+    "More": "more",
+    "Subscribe": "subscribe",
+    "Unsubscribe": "unsubscribe"
+  },
+  "payload_sampled": {
+    "BrowserAsk": {
+      "": [
+        "args",
+        "id",
+        "kind",
+        "seat",
+        "tool"
+      ],
+      "/args": [
+        "url"
+      ],
+      "/seat": [
+        "label",
+        "org",
+        "project"
+      ]
+    },
+    "BrowserHandOffPending": {
+      "": [
+        "kind",
+        "update"
+      ],
+      "/update": [
+        "browser_hand_off_pending"
+      ],
+      "/update/browser_hand_off_pending": [
+        "handoff",
+        "key"
+      ],
+      "/update/browser_hand_off_pending/handoff": [
+        "id",
+        "profile",
+        "reason"
+      ],
+      "/update/browser_hand_off_pending/key": [
+        "label",
+        "org",
+        "project"
+      ]
+    },
+    "BrowserRole": {
+      "": [
+        "hosting",
+        "kind"
+      ]
+    },
+    "ChatAppended": {
+      "": [
+        "kind",
+        "update"
+      ],
+      "/update": [
+        "chat_appended"
+      ],
+      "/update/chat_appended": [
+        "key",
+        "msg",
+        "origin"
+      ],
+      "/update/chat_appended/key": [
+        "label",
+        "org",
+        "project"
+      ],
+      "/update/chat_appended/msg": [
+        "hook_event",
+        "hook_id",
+        "hook_name",
+        "session_id",
+        "subtype",
+        "type",
+        "uuid"
+      ]
+    },
+    "Devices": {
+      "": [
+        "configured",
+        "devices",
+        "kind"
+      ],
+      "/devices[]": [
+        "id",
+        "is_default",
+        "name"
+      ]
+    },
+    "DictateModelsChanged": {
+      "": [
+        "kind",
+        "update"
+      ],
+      "/update": [
+        "dictate_models_changed"
+      ],
+      "/update/dictate_models_changed": [
+        "models"
+      ],
+      "/update/dictate_models_changed/models": [
+        "activate",
+        "bench",
+        "check",
+        "enabled",
+        "in_use",
+        "install",
+        "installed",
+        "models_dir",
+        "read_aloud",
+        "results",
+        "rows",
+        "updates"
+      ],
+      "/update/dictate_models_changed/models/activate": [
+        "state"
+      ],
+      "/update/dictate_models_changed/models/bench": [
+        "clip",
+        "clips",
+        "so_far",
+        "state",
+        "target",
+        "tier"
+      ],
+      "/update/dictate_models_changed/models/bench/target": [
+        "file",
+        "pinned",
+        "role"
+      ],
+      "/update/dictate_models_changed/models/check": [
+        "at",
+        "release",
+        "skipped",
+        "state"
+      ],
+      "/update/dictate_models_changed/models/in_use[]": [
+        "at",
+        "catalogue",
+        "facts",
+        "file",
+        "from",
+        "role",
+        "sha256",
+        "size",
+        "state"
+      ],
+      "/update/dictate_models_changed/models/in_use[]/catalogue": [
+        "display_name",
+        "languages",
+        "size_bytes",
+        "speed",
+        "streaming",
+        "variant"
+      ],
+      "/update/dictate_models_changed/models/in_use[]/catalogue/speed": [
+        "backend",
+        "machine",
+        "quant",
+        "xrt_wall"
+      ],
+      "/update/dictate_models_changed/models/in_use[]/facts": [
+        "license",
+        "params",
+        "quant",
+        "runtime"
+      ],
+      "/update/dictate_models_changed/models/in_use[]/from": [
+        "from"
+      ],
+      "/update/dictate_models_changed/models/install": [
+        "file",
+        "got",
+        "state",
+        "total"
+      ],
+      "/update/dictate_models_changed/models/installed[]": [
+        "at",
+        "facts",
+        "file",
+        "size",
+        "url",
+        "variant"
+      ],
+      "/update/dictate_models_changed/models/installed[]/facts": [
+        "license",
+        "params",
+        "quant",
+        "runtime"
+      ],
+      "/update/dictate_models_changed/models/read_aloud": [
+        "error",
+        "passage",
+        "recording",
+        "recordings",
+        "terms"
+      ],
+      "/update/dictate_models_changed/models/read_aloud/recordings[]": [
+        "at",
+        "bytes",
+        "duration_ms",
+        "id",
+        "sha256"
+      ],
+      "/update/dictate_models_changed/models/results[]": [
+        "at",
+        "corpus",
+        "metrics",
+        "target",
+        "tier"
+      ],
+      "/update/dictate_models_changed/models/results[]/corpus": [
+        "audio_seconds",
+        "clips",
+        "sha256"
+      ],
+      "/update/dictate_models_changed/models/results[]/metrics": [
+        "audio_seconds",
+        "clips",
+        "matched",
+        "stages_ms",
+        "term_accuracy",
+        "wall_seconds",
+        "wer",
+        "xrt_wall"
+      ],
+      "/update/dictate_models_changed/models/results[]/metrics/stages_ms": [
+        "decode_ms",
+        "encode_ms",
+        "mel_ms",
+        "model_load_ms",
+        "normalize_ms",
+        "resample_ms"
+      ],
+      "/update/dictate_models_changed/models/results[]/target": [
+        "file",
+        "pinned",
+        "role"
+      ],
+      "/update/dictate_models_changed/models/rows[]": [
+        "display_name",
+        "download",
+        "download_count",
+        "family",
+        "kind",
+        "languages",
+        "license",
+        "params",
+        "speed",
+        "streaming",
+        "url",
+        "variant",
+        "wer"
+      ],
+      "/update/dictate_models_changed/models/rows[]/download": [
+        "quant",
+        "size_bytes"
+      ],
+      "/update/dictate_models_changed/models/updates[]": [
+        "candidates",
+        "current",
+        "file",
+        "role"
+      ],
+      "/update/dictate_models_changed/models/updates[]/candidates[]": [
+        "row",
+        "verdict"
+      ],
+      "/update/dictate_models_changed/models/updates[]/candidates[]/row": [
+        "display_name",
+        "download",
+        "download_count",
+        "family",
+        "kind",
+        "languages",
+        "license",
+        "params",
+        "speed",
+        "streaming",
+        "url",
+        "variant",
+        "wer"
+      ],
+      "/update/dictate_models_changed/models/updates[]/candidates[]/row/download": [
+        "quant",
+        "size_bytes"
+      ],
+      "/update/dictate_models_changed/models/updates[]/current": [
+        "fleurs_en_wer",
+        "speed_x"
+      ]
+    },
+    "Greeting": {
+      "": [
+        "forge_version",
+        "forge_version_short",
+        "kind",
+        "settings",
+        "version"
+      ],
+      "/settings": [
+        "dictate",
+        "font",
+        "mark",
+        "theme"
+      ],
+      "/settings/dictate": [
+        "context",
+        "structure",
+        "styling"
+      ]
+    },
+    "Page": {
+      "": [
+        "conversation",
+        "cursor",
+        "kind",
+        "turns"
+      ],
+      "/conversation": [
+        "label",
+        "org",
+        "project"
+      ],
+      "/turns[]": [
+        "key",
+        "messages"
+      ],
+      "/turns[]/messages[]": [
+        "type"
+      ]
+    },
+    "SnapshotHome": {
+      "": [
+        "data",
+        "kind",
+        "subject"
+      ],
+      "/data": [
+        "accounts",
+        "agents",
+        "cli_version",
+        "connectors",
+        "dictate",
+        "fatal_error",
+        "fleet",
+        "forge_version",
+        "forge_version_short",
+        "plugins",
+        "projects",
+        "service_status",
+        "unseen",
+        "workers"
+      ],
+      "/data/accounts": [
+        "all_loaded",
+        "gateway",
+        "loading",
+        "orgs",
+        "usage"
+      ],
+      "/data/accounts/gateway": [
+        "bind_error",
+        "port",
+        "ready"
+      ],
+      "/data/accounts/loading[]": [
+        "auth",
+        "display_name",
+        "last_error",
+        "retry_after",
+        "state"
+      ],
+      "/data/accounts/orgs[]": [
+        "accounts",
+        "fallback_accounts",
+        "org",
+        "rows"
+      ],
+      "/data/accounts/orgs[]/rows[]": [
+        "budget",
+        "display_name",
+        "fallback",
+        "loading",
+        "provider",
+        "unusable"
+      ],
+      "/data/accounts/orgs[]/rows[]/budget": [
+        "unknown"
+      ],
+      "/data/accounts/orgs[]/rows[]/budget/unknown": [
+        "spend_billed"
+      ],
+      "/data/accounts/usage[]": [
+        "display_name",
+        "snapshot"
+      ],
+      "/data/agents[]": [
+        "failed_turn",
+        "has_background_work",
+        "label",
+        "last_activity",
+        "lifecycle",
+        "pending",
+        "pending_depth",
+        "reason",
+        "slot",
+        "work"
+      ],
+      "/data/agents[]/slot": [
+        "label",
+        "org",
+        "project"
+      ],
+      "/data/agents[]/work": [
+        "branch",
+        "changed",
+        "gate"
+      ],
+      "/data/cli_version": [
+        "installed",
+        "latest"
+      ],
+      "/data/connectors": [
+        "gotify",
+        "slack"
+      ],
+      "/data/connectors/gotify": [
+        "connected"
+      ],
+      "/data/connectors/slack": [
+        "connected_workspaces",
+        "load_failed"
+      ],
+      "/data/dictate": [
+        "device",
+        "enabled",
+        "models_dir",
+        "snapshot"
+      ],
+      "/data/dictate/snapshot": [
+        "failure",
+        "models"
+      ],
+      "/data/dictate/snapshot/models[]": [
+        "file",
+        "role",
+        "state"
+      ],
+      "/data/fleet[]": [
+        "live_workers",
+        "misses",
+        "project",
+        "queue",
+        "slots",
+        "waiting_on_user"
+      ],
+      "/data/fleet[]/misses[]": [
+        "unaccounted_worker"
+      ],
+      "/data/plugins": [
+        "update_records"
+      ],
+      "/data/projects[]": [
+        "chip",
+        "connectors",
+        "crons",
+        "project",
+        "rows",
+        "work",
+        "would_bind"
+      ],
+      "/data/projects[]/connectors": [
+        "gotify",
+        "slack"
+      ],
+      "/data/projects[]/project": [
+        "accounts",
+        "display_path",
+        "fallback_accounts",
+        "has_model",
+        "key",
+        "name",
+        "org",
+        "path",
+        "sessions"
+      ],
+      "/data/projects[]/work": [
+        "branch",
+        "changed",
+        "gate"
+      ],
+      "/data/workers[]": [
+        "project",
+        "workers"
+      ],
+      "/data/workers[]/workers[]": [
+        "charter",
+        "is_git_repo_at_spawn",
+        "label",
+        "needs_tag",
+        "session_id",
+        "slot",
+        "spawned_at",
+        "spawned_by"
+      ],
+      "/data/workers[]/workers[]/slot": [
+        "label",
+        "org",
+        "project"
+      ],
+      "/data/workers[]/workers[]/spawned_at": [
+        "nanos_since_epoch",
+        "secs_since_epoch"
+      ],
+      "/data/workers[]/workers[]/spawned_by": [
+        "label",
+        "org",
+        "project"
+      ]
+    }
+  },
+  "client_sampled": {
+    "BrowserAnswer": {
+      "": [
+        "error",
+        "id",
+        "kind",
+        "parts"
+      ],
+      "/parts[]": [
+        "mime_type",
+        "text",
+        "type"
+      ]
+    },
+    "Subscribe": {
+      "": [
+        "answering",
+        "browser",
+        "kind",
+        "what"
+      ]
+    }
+  },
+  "command_sampled": {
+    "DictateReadAloudStart": {
+      "": [
+        "dictate_read_aloud_start"
+      ]
+    },
+    "DictateReadAloudStop": {
+      "": [
+        "dictate_read_aloud_stop"
+      ],
+      "/dictate_read_aloud_stop": [
+        "keep"
+      ]
+    },
+    "DictateStop": {
+      "": [
+        "dictate_stop"
+      ],
+      "/dictate_stop": [
+        "key",
+        "submit"
+      ],
+      "/dictate_stop/key": [
+        "label",
+        "org",
+        "project"
+      ]
+    },
+    "DictateStream": {
+      "": [
+        "dictate_stream"
+      ],
+      "/dictate_stream": [
+        "key",
+        "options"
+      ],
+      "/dictate_stream/key": [
+        "label",
+        "org",
+        "project"
+      ],
+      "/dictate_stream/options": [
+        "context",
+        "structure",
+        "styling"
+      ]
+    }
+  },
+  "binary_frames": {
+    "header_bytes": 1,
+    "image_header_bytes": 9,
+    "max_payload_bytes": 16384,
+    "max_image_bytes": 16777216,
+    "kinds": [
+      {
+        "name": "Dictation",
+        "tag": 0
+      },
+      {
+        "name": "BrowserImage",
+        "tag": 1
+      }
+    ],
+    "fixtures": {
+      "dictation": {
+        "hex": "00000000400080002000e0ff7f00c00010",
+        "samples": [
+          0.0,
+          0.5,
+          -1.0,
+          0.25,
+          -0.25,
+          0.999969482421875,
+          -0.5,
+          0.125
+        ]
+      },
+      "browser_image": {
+        "hex": "01010203040506070889504e47",
+        "id": "72623859790382856",
+        "bytes": [
+          137,
+          80,
+          78,
+          71
+        ]
+      }
+    }
+  }
+}

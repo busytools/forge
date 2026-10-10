@@ -36,8 +36,19 @@ async fn a_server() -> (String, Fleet) {
         status: TaskStatus::InProgress,
         owner: None,
         parent: None,
-        artifact: Some("crates/forge-server".to_owned()),
-        estimate: Some("1d".to_owned()),
+        waiting_on: None,
+        estimate: Some(forge_primitives::tasks::Estimate { words: "1d".to_owned(), secs: 86_400 }),
+        rank: None,
+        verify: None,
+        links: vec![forge_primitives::tasks::TaskLink {
+            kind: forge_primitives::tasks::LinkKind::Path,
+            label: None,
+            target: "crates/forge-server".to_owned(),
+            state: None,
+            added_at: std::time::SystemTime::UNIX_EPOCH,
+        }],
+        attempt: 0,
+        archived_at: None,
         created_at: std::time::SystemTime::UNIX_EPOCH,
         updated_at: std::time::SystemTime::UNIX_EPOCH,
     });
@@ -175,9 +186,24 @@ async fn the_homes_five_reads_arrive_with_real_values() {
         row["work"],
     );
     assert!(
-        row["tasks"].as_array().is_some_and(|tasks| !tasks.is_empty()),
-        "the row's tasks are a populated list, not an empty one: {}",
-        row["tasks"],
+        row["rows"].as_array().is_some_and(|rows| !rows.is_empty()),
+        "the row's board rows are a populated list, not an empty one: {}",
+        row["rows"],
+    );
+    assert!(
+        row["rows"][0]["worked_secs"].is_u64(),
+        "and each row carries its worked time, so the client never derives it: {}",
+        row["rows"][0],
+    );
+    assert!(
+        row["rows"][0]["marks"]["ready"].is_boolean(),
+        "and its marks, one boolean per fact: {}",
+        row["rows"][0]["marks"],
+    );
+    assert!(
+        home["data"]["fleet"].as_array().is_some_and(|fleet| !fleet.is_empty()),
+        "the fleet glance crosses beside the projects: {}",
+        home["data"]["fleet"],
     );
     assert!(row["would_bind"].is_boolean(), "the row says whether a spawn would bind: {row}");
     assert!(

@@ -150,7 +150,11 @@ describe('the salvage copies', () => {
     // pages carry different numbers of tokens. A count that moves means the
     // sweep's reach moved - a page gone, or a page that stopped declaring a
     // palette - and both are the drift this test exists for.
-    expect(compared, 'the sweep no longer reaches the same tokens').toBe(157);
+    // 157 before the board page landed, and 171 while the board drew its rows
+    // as a list. The lanes board waits its strip on `--sel`, which the page
+    // now declares, so the page is one token richer: the count moving is the
+    // sweep's reach moving, which is exactly what this assertion is for.
+    expect(compared, 'the sweep no longer reaches the same tokens').toBe(172);
   });
 
   /**
@@ -221,7 +225,9 @@ describe('the salvage copies', () => {
     }
 
     expect(drifts, 'drawings name stacks the app does not ship').toEqual([]);
-    expect(compared, 'the sweep no longer reaches every stack').toBe(22);
+    // 22 before the board page landed; it states the shipped stacks in its
+    // `:root` like every drawing does.
+    expect(compared, 'the sweep no longer reaches every stack').toBe(24);
   });
 });
 
