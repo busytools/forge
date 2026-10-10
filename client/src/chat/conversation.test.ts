@@ -1183,6 +1183,55 @@ describe('the conversation the chat draws', () => {
     }
   });
 
+  /**
+   * **A frame armed when the page goes hidden does not swallow the ones after
+   * it**, which is this store's half of the gate the seat's own test pins: a
+   * display going off mid-turn leaves a frame in flight, and an armed frame
+   * never fires on a page that cannot paint. Without this, a revert of this
+   * store's order alone would leave the suite green - and this column is
+   * where the stall was seen.
+   */
+  it('draws a frame that arrives when the page is hidden with one already armed', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const frames = new Map<number, () => void>();
+    let next = 1;
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      const id = next;
+      next += 1;
+      frames.set(id, callback as () => void);
+      return id;
+    });
+    try {
+      const server = fakeConnection();
+      const chat = new Chat(server.connection, LEAD);
+      chat.start();
+      server.send(page([turn('t1', 'first')], null));
+      // A reader, so the store waits for a paint rather than publishing at
+      // once by design.
+      let drawn = '';
+      const stop = chat.value.subscribe((value) => {
+        drawn = JSON.stringify(value);
+      });
+
+      server.update({ chat_appended: { key: LEAD, msg: said('armed while visible') } });
+      expect(frames.size, 'precondition: the visible frame is armed').toBe(1);
+
+      // The page goes hidden with that frame still armed, and another frame
+      // lands: the armed one will never fire, so this one has to draw.
+      Object.defineProperty(document, 'hidden', { configurable: true, value: true });
+      server.update({ chat_appended: { key: LEAD, msg: said('arrived while hidden') } });
+
+      expect(
+        drawn,
+        'the frame pending when the page went hidden swallowed the fold after it',
+      ).toContain('arrived while hidden');
+      stop();
+    } finally {
+      raf.mockRestore();
+      delete (document as { hidden?: boolean }).hidden;
+    }
+  });
+
   it("joins a skill's body to the turn whose Skill call loaded it, not a row of its own", () => {
     // The CLI injects the body as a user frame, and it can arrive above a
     // settled turn - where it opened a second row telling the same thing the
