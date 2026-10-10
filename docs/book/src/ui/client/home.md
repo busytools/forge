@@ -160,6 +160,7 @@ it. At 430 the band becomes a two-column grid, the header wraps to two lines,
 and a fleet row's cells flow onto second lines under the project name;
 nothing overflows horizontally at either width.
 
-The sheet's own breakpoints are at 1280, 980, 760 and 560. This page's
-columns are all in the header and the band, so it has no collapse of its own
-to check at the middle two.
+The sheet's own breakpoints are at 900, 760, 700 and 560. This page's own
+collapse is the fleet row's at 900; its chrome's is at 760, where the header
+wraps and the band drops to two columns. Nothing scoped to this page sits
+below that, so the 430 check covers what the sheet changes here.
