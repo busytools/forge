@@ -1599,6 +1599,32 @@ describe('the seat the client holds between visits', () => {
   });
 
   /**
+   * **A refusal is cleared with the visit that met it, not carried.**
+   *
+   * It is an answer rather than a record, so the leave writes it away and the
+   * next visit is handed a cold load rather than the refusal it met. **Read
+   * off the return's own subscription, and off its FIRST value**: the leave's
+   * write goes to whoever comes next, and the subscriber that left is already
+   * gone by the time it lands. The seat is ready by then, so nothing re-reads
+   * over the top of it - a read of a ready store with no snapshot yet
+   * publishes nothing, which is what leaves the cleared value to be seen.
+   */
+  it('clears a refusal with the visit that met it', () => {
+    const connection = drivable(true);
+    const first = watch(connection);
+    expect(first.read().refused, 'precondition: the server refused the seat').toBe(NO_SESSION);
+    first.stop();
+    connection.ready();
+
+    const seen: (string | null)[] = [];
+    const back = watchSession(connection, LEAD, true);
+    const stop = back.subscribe((read) => seen.push(read.refused));
+
+    expect(seen[0], 'the return drew the refusal the last visit met').toBeNull();
+    stop();
+  });
+
+  /**
    * A drop and its reconnect are the seat's, not the page's: the reconnect
    * answers with a snapshot of its own, and it replaces the record rather than
    * merging into it. Left to the page, a drop nobody was showing leaves the

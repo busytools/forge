@@ -169,7 +169,7 @@ const PAINT_WATCHDOG_MS = 250;
  * remains asks for nothing: the record it held draws, and the frames never
  * stopped.
  *
- * **The subscribe happens with the first holder**, not at this call: a caller
+ * **The subscribe happens with the first reader**, not at this call: a caller
  * that takes the store and never subscribes opens nothing of its own, and a
  * seat whose page is the only holder is subscribed by that page's own first
  * read. The second opener is the role: a page that can answer raises a seat
@@ -509,7 +509,7 @@ function createSeat(connection: Connection, subject: Subject, answering: boolean
    * that crossed in the gap.
    *
    * Nothing unregisters them: a seat lives on its connection, so its
-   * listeners go with the socket they were taken on.
+   * listeners go with the connection when the client lets it go.
    */
   function watch(): void {
     connection.onMessage((message) => {
