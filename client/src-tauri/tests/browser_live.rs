@@ -221,6 +221,28 @@ async fn the_additions_drive_a_real_page() {
         .await
         .map(|parts| text_of(&parts))
         .unwrap_or_else(|why| panic!("form_state did not run: {why}"));
+
+    // **A second navigation re-letters the refs**: the same element's ref
+    // reads `f1e*` now, and a forced click driven from that spelling has to
+    // reach the same engine as the bare one.
+    host.call(&seat(), "browser_navigate", json!({ "url": page }))
+        .await
+        .unwrap_or_else(|why| panic!("the page would not navigate a second time: {why}"));
+    let relettered = host
+        .call(&seat(), "browser_snapshot", json!({}))
+        .await
+        .map(|parts| text_of(&parts))
+        .unwrap_or_else(|why| panic!("the page would not snapshot again: {why}"));
+    let relettered_button = ref_of(&relettered, "Fetch");
+    assert!(
+        relettered_button.starts_with('f'),
+        "the second navigation re-letters the refs: {relettered_button}",
+    );
+    let clicked = host
+        .call(&seat(), "browser_click", json!({ "target": relettered_button, "force": true }))
+        .await
+        .unwrap_or_else(|why| panic!("a forced click on a relettered ref did not run: {why}"));
+    assert!(text_of(&clicked).contains("clicked"), "{:?}", text_of(&clicked));
     browser.reap();
     // Escaped by the driver's own report, so the pieces are asserted.
     assert!(form.contains("email"), "the empty required input is read: {form}");
