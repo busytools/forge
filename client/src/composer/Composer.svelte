@@ -109,6 +109,16 @@
   let clock = $state(Date.now());
   /** The field, so focus can go back to it when the box returns. */
   let field = $state<HTMLElement | null>(null);
+  /** The mic, wherever the row gate has put it, so a started take can keep the caret on it. */
+  let micEl = $state<HTMLElement | null>(null);
+  /**
+   * Whether the reader's last act was on the mic.
+   *
+   * Read once, when a take starts: the button is destroyed and rebuilt as the
+   * gate moves it between rows, so "what had focus" cannot be asked of the DOM
+   * after the fact - the element that had it is gone.
+   */
+  let fromMic = false;
   /** Whether the dictation panel is showing, which the mic opens. */
   let panel = $state(false);
   /**
@@ -260,6 +270,18 @@
 
   const blocker = $derived(blocked(seat, composer, box.sent, slot.label === 'lead'));
   const filled = $derived(box.draft.trim() !== '');
+
+  /**
+   * Whether the bar draws its second row: the keys and controls under the
+   * field, rather than on it.
+   *
+   * **An empty bar is one row** (Ved, 2026-10-09): the controls ride the
+   * field's own line, so an idle seat is not two rows tall for a stop button
+   * nobody is looking at. A draft needs somewhere for the keys to live, and a
+   * recording needs its controls under the field rather than beside it - that
+   * is the three-row shape, with the take above the field.
+   */
+  const secondRow = $derived(filled || composer.take !== null);
 
   /**
    * Whether this seat has a turn to stop.
@@ -925,8 +947,25 @@
       return;
     }
     heldAt = 0;
+    fromMic = true;
     micTake();
   }
+
+  /**
+   * **A started take keeps the caret on the mic** (Ved, 2026-10-09).
+   *
+   * The row gate moves the mic from the field's line down to the bottom row the
+   * moment a take exists, which destroys and rebuilds the button - so a reader
+   * who pressed it from the keyboard loses the caret to the body, and the
+   * phone's press-again to finish lands a row below where the finger left it.
+   * If the mic is what they were on, it stays what they are on.
+   */
+  $effect(() => {
+    if (composer.take === null) return;
+    if (!untrack(() => fromMic)) return;
+    fromMic = false;
+    micEl?.focus();
+  });
 
   function micHoldStart(event: PointerEvent): void {
     // Primary button only: a right-click hold is not a hold.
@@ -1083,6 +1122,50 @@
         <span class="sub">{signInLine(composer)}</span>
       </div>
     {/if}
+    <!-- The box's controls, drawn in one of two places: on the field's own line
+         while the bar is one row, and in the foot once a draft or a recording
+         gives the bar a second. One copy, because the two are the same buttons
+         and a second rendering of them is a second thing to keep in step. -->
+    {#snippet ctls()}
+      <span class="ctls">
+        {#if dictation}
+          <button
+            class="mic"
+            type="button"
+            bind:this={micEl}
+            title="press to dictate, hold or Shift+Enter for settings"
+            aria-label={take === null && composer.take === null ? 'dictate' : 'stop dictating'}
+            aria-expanded={panel}
+            onpointerdown={micHoldStart}
+            onpointerup={micHoldEnd}
+            onpointerleave={micHoldEnd}
+            onkeydown={(event: KeyboardEvent) => {
+              // **The hold's door for a keyboard.** The press is the button's
+              // own click; the settings need one modifier shape, said in the
+              // title so it is discoverable rather than folklore.
+              if (event.key === 'Enter' && event.shiftKey) {
+                event.preventDefault();
+                panel = true;
+              }
+            }}
+            onclick={mic}
+          >
+            <Icon name="mic" />
+          </button>
+        {/if}
+        {#if running}
+          <button class="stop" type="button" title="stop" aria-label="stop" onclick={stop}>
+            <Icon name="stop" />
+          </button>
+        {/if}
+        {#if filled}
+          <button class="send" type="button" title="send" aria-label="send" onclick={send}>
+            <Icon name="send" />
+          </button>
+        {/if}
+      </span>
+    {/snippet}
+
     <div
       class="box"
       class:rec={ring === 'rec'}
@@ -1120,52 +1203,21 @@
             field = el;
           }}
         />
+        {#if !secondRow}
+          {@render ctls()}
+        {/if}
       </div>
-      {#if filled || dictation || running}
+      {#if secondRow}
         <!-- The box's own foot: the keys the field honours on the left, the
              controls on the right. The draft keeps the box's whole width, and
-             the controls follow it down to the box's bottom edge. -->
+             the controls follow it down to the box's bottom edge. An empty bar
+             draws none of it - the controls ride the field's own line. -->
         <div class="foot">
           {#if filled}
             <span class="hints"><kbd>Shift</kbd> <kbd>Enter</kbd> newline</span>
             <span class="hints"><kbd>Enter</kbd> send</span>
           {/if}
-          <span class="ctls">
-            {#if dictation}
-              <button
-                class="mic"
-                type="button"
-                title="press to dictate, hold or Shift+Enter for settings"
-                aria-label={take === null && composer.take === null ? 'dictate' : 'stop dictating'}
-                aria-expanded={panel}
-                onpointerdown={micHoldStart}
-                onpointerup={micHoldEnd}
-                onpointerleave={micHoldEnd}
-                onkeydown={(event: KeyboardEvent) => {
-                  // **The hold's door for a keyboard.** The press is the button's
-                  // own click; the settings need one modifier shape, said in the
-                  // title so it is discoverable rather than folklore.
-                  if (event.key === 'Enter' && event.shiftKey) {
-                    event.preventDefault();
-                    panel = true;
-                  }
-                }}
-                onclick={mic}
-              >
-                <Icon name="mic" />
-              </button>
-            {/if}
-            {#if running}
-              <button class="stop" type="button" title="stop" aria-label="stop" onclick={stop}>
-                <Icon name="stop" />
-              </button>
-            {/if}
-            {#if filled}
-              <button class="send" type="button" title="send" aria-label="send" onclick={send}>
-                <Icon name="send" />
-              </button>
-            {/if}
-          </span>
+          {@render ctls()}
         </div>
       {/if}
     </div>

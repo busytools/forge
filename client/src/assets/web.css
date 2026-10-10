@@ -1583,9 +1583,10 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
 .box.done { border-color: var(--ok); }
 .box.err { border-color: var(--bad); }
 .box:focus-within:not(.rec, .tr, .done, .err) { border-color: var(--accent); }
-/* The draft's own row, which is now the field alone: the controls that used to
-   hold a column of its width sit in the foot below. */
-.line { display: flex; }
+/* The draft's own row: the field, and the controls too while the bar is one
+   row. A draft long enough to need the keys takes the second row instead, and
+   the controls follow it down. */
+.line { display: flex; align-items: center; gap: 8px; }
 /* The separation the box's gap gave every row above the draft: C moved the
    field and the footer together and left only that pair tight, so this stays
    per pair rather than a gap. */
@@ -1601,21 +1602,23 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
    its own. */
 .line .txt:focus { outline: none; }
 .line .txt::placeholder { color: var(--dim); font-style: italic; }
-/* The controls sit together at the foot's right end, the keys at its left, so
-   the draft keeps the box's whole width and the controls still land under the
-   caret's last line. 24px is the floor a pointer target takes. */
-.foot .ctls { margin-left: auto; flex: none; display: flex; align-items: center;
+/* The controls sit together at the right end of whichever row holds them - the
+   field's own line while the bar is one row, the foot once a draft or a
+   recording gives it a second - so the draft keeps the box's whole width and
+   the controls still land at the caret's last line. 24px is the floor a
+   pointer target takes. */
+.ctls { margin-left: auto; flex: none; display: flex; align-items: center;
   gap: 10px; }
-.foot .mic { flex: none; width: 24px; height: 24px;
+.mic { flex: none; width: 24px; height: 24px;
   display: grid; place-items: center; color: var(--dim); background: none;
   border: 0; padding: 0; cursor: pointer; }
 /* The mic lifts to the primary on hover, matching its sibling controls (the
    send's accent), rather than the sheet's generic text lift. */
-.foot .mic:hover { color: var(--accent); }
+.mic:hover { color: var(--accent); }
 /* The mic is the phone's primary dictate control and carries the hold, so its
    width takes the same 44px floor as the dock's (the sheet's button rule gives
    the height; a finger drifting off 24px would cancel the hold). */
-@media (pointer: coarse) { .foot .mic { min-height: 44px; min-width: 44px; } .pop .hd .x { min-width: 44px; } }
+@media (pointer: coarse) { .mic { min-height: 44px; min-width: 44px; } .pop .hd .x { min-width: 44px; } }
 /* The send, at the same 24px pointer floor as the mic and centred in whatever
    box it gets, since the phone width gives every control a 44px floor and the
    icon would otherwise sit at the top of it. */
