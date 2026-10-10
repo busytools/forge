@@ -16,9 +16,10 @@
 /**
  * Whether the page cannot paint right now.
  *
- * **A page that is not there cannot paint either.** The stores are driven
- * headless as well - the conversation by its own tests, with no document at
- * all - so the question is only asked where there is a page to ask.
+ * **A page that is not there cannot paint either.** The conversation store is
+ * driven with no document at all - `chat/one-row-per-running-turn.test.ts`,
+ * which runs in the node environment - so the question is only asked where
+ * there is a page to ask.
  */
 export function cannotPaint(): boolean {
   return typeof document !== 'undefined' && document.hidden;

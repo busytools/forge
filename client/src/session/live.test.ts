@@ -614,7 +614,9 @@ describe('the session page over a socket', () => {
     // The page stops painting, the way a hidden one does, and the two things
     // the publish's gate is made of go with it: no frame, and no deadline.
     hidePage();
-    vi.useFakeTimers({ toFake: ['requestAnimationFrame', 'setTimeout', 'clearTimeout'] });
+    vi.useFakeTimers({
+      toFake: ['requestAnimationFrame', 'cancelAnimationFrame', 'setTimeout', 'clearTimeout'],
+    });
 
     server.push({
       kind: 'update',
@@ -975,8 +977,8 @@ function matchMediaTo(matches: boolean): void {
  * test's, and `paint()` is the paint.
  *
  * The stub is the whole file's, so a case anywhere in it that lands an update
- * and then reads the page needs `paint()`: the socket cases below land none
- * today and so never paint.
+ * and then reads the page needs `paint()` - and one that lands an update on a
+ * page it has hidden must not, because that write does not wait for a frame.
  */
 let frames = new Map<number, () => void>();
 let nextFrame = 1;
@@ -1568,7 +1570,9 @@ describe('the record a page holds over an update stream', () => {
     const published = page.publishes();
 
     hidePage();
-    vi.useFakeTimers({ toFake: ['requestAnimationFrame', 'setTimeout', 'clearTimeout'] });
+    vi.useFakeTimers({
+      toFake: ['requestAnimationFrame', 'cancelAnimationFrame', 'setTimeout', 'clearTimeout'],
+    });
     connection.land(
       updateOf({ chat_appended: { key: LEAD, msg: say('arrived while hidden'), origin: null } }),
     );
@@ -1592,7 +1596,7 @@ describe('the record a page holds over an update stream', () => {
    * fold and every fold after it. The write goes out instead, taking the
    * frame and its deadline with it.
    */
-  it('publishes when the page goes hidden with a frame already pending', () => {
+  it('publishes when the page goes hidden with a frame already pending', async () => {
     const connection = drivable();
     const page = watch(connection);
     page.land(snapshotOf(LEAD));
@@ -1600,7 +1604,9 @@ describe('the record a page holds over an update stream', () => {
 
     // The clock is frozen before the first frame, so the frame it arms is
     // still pending when the page goes hidden.
-    vi.useFakeTimers({ toFake: ['requestAnimationFrame', 'setTimeout', 'clearTimeout'] });
+    vi.useFakeTimers({
+      toFake: ['requestAnimationFrame', 'cancelAnimationFrame', 'setTimeout', 'clearTimeout'],
+    });
     connection.land(
       updateOf({ chat_appended: { key: LEAD, msg: say('armed while visible'), origin: null } }),
     );
@@ -1615,6 +1621,15 @@ describe('the record a page holds over an update stream', () => {
       page.publishes(),
       'the frame pending when the page went hidden swallowed the fold after it',
     ).toBe(published + 1);
+
+    // **And the armed frame went down with it.** A write that published and
+    // left the frame in flight would fire it a moment later - a second
+    // publish for the record already drawn - so the clock is advanced past
+    // the frame's own sixteen milliseconds and the count is read again.
+    await vi.advanceTimersByTimeAsync(20);
+    expect(page.publishes(), 'the frame the hidden write should have taken down fired').toBe(
+      published + 1,
+    );
     page.stop();
   });
 
