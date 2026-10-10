@@ -29,6 +29,7 @@ fn updater(app: &tauri::AppHandle) -> Result<tauri_plugin_updater::Updater, Stri
 // every target, the phone included.
 use tauri::Manager as _;
 
+pub mod asks;
 pub mod browser;
 pub mod socket;
 

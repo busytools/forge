@@ -485,7 +485,7 @@ fn receive(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use tokio::net::TcpListener;
 
@@ -493,11 +493,11 @@ mod tests {
     /// and broadcasts whatever the test pushes. `kill` drops the live
     /// connections while the listener lives on, which is what a reconnect
     /// lands on.
-    struct Stub {
-        url: String,
+    pub(crate) struct Stub {
+        pub(crate) url: String,
         heard: mpsc::UnboundedReceiver<Value>,
-        say: tokio::sync::broadcast::Sender<Value>,
-        kill: tokio::sync::broadcast::Sender<()>,
+        pub(crate) say: tokio::sync::broadcast::Sender<Value>,
+        pub(crate) kill: tokio::sync::broadcast::Sender<()>,
         /// Kept so the broadcast always has a receiver: `send` refuses when
         /// nobody is subscribed, and a test may push before the socket's own
         /// per-connection task has joined.
@@ -507,7 +507,7 @@ mod tests {
         _kill_keep: tokio::sync::broadcast::Receiver<()>,
     }
 
-    async fn stub() -> Stub {
+    pub(crate) async fn stub() -> Stub {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("a port");
         let addr = listener.local_addr().expect("the bound address");
         let (heard_tx, heard) = mpsc::unbounded_channel();
@@ -559,7 +559,7 @@ mod tests {
     }
 
     impl Stub {
-        async fn next_heard(&mut self) -> Value {
+        pub(crate) async fn next_heard(&mut self) -> Value {
             tokio::time::timeout(Duration::from_secs(2), self.heard.recv())
                 .await
                 .expect("a frame within the bound")
@@ -568,12 +568,24 @@ mod tests {
 
         /// Frames until the predicate is satisfied, so a test reads the one
         /// it cares about rather than the one that happened to arrive.
-        async fn heard_until(&mut self, mut ok: impl FnMut(&Value) -> bool) -> Value {
+        pub(crate) async fn heard_until(&mut self, mut ok: impl FnMut(&Value) -> bool) -> Value {
             loop {
                 let value = self.next_heard().await;
                 if ok(&value) {
                     return value;
                 }
+            }
+        }
+    }
+
+    /// A socket already past its open, with the event stream dropped: for
+    /// tests that only care about what the wire hears.
+    pub(crate) async fn open_connected(stub: &Stub) -> Socket {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let socket = Socket::open(stub.url.clone(), tx);
+        loop {
+            if let SocketEvent::Status(Status::Open) = next_event(&mut rx).await {
+                return socket;
             }
         }
     }

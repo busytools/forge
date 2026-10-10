@@ -34,6 +34,8 @@ tokio = { version = "1", features = ["process", "rt-multi-thread", "macros", "ti
 # pin rather than the workspace's (this crate is its own workspace root).
 tokio-tungstenite = "0.30"
 futures-util = "0.3"
+# The driver's image parts cross as base64; the wire wants the raw bytes.
+base64 = "0.22"
 # The launch lock: flock, the same idiom the workspace's single-instance
 # guard uses.
 rustix = { version = "1", features = ["fs"] }
