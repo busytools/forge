@@ -380,6 +380,12 @@ describe("one project's board", () => {
       landed(moved, 'b', { to: 'in_progress', before: 'a', ranked: false, at: 0 }),
       'a lane step the wire landed read as a failure because its rank moved',
     ).toBe(true);
+    // A row the wire carries in some OTHER status is not landed, even when
+    // the drop asked for the state alone.
+    expect(
+      landed(rows, 'b', { to: 'in_progress', before: null, ranked: false, at: 0 }),
+      'a row still in its old status read as landed',
+    ).toBe(false);
   });
 
   it('words durations the way the board does', () => {

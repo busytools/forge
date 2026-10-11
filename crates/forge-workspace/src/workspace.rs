@@ -5143,9 +5143,31 @@ impl Workspace {
                         // and the notice must name the lane the board shows.
                         Ok(Some(task)) => {
                             // A drag carries where it landed: the row keeps
-                            // the place the reader chose.
+                            // the place the reader chose. A place that does
+                            // not apply is LOGGED, not said on the board's
+                            // line - the move itself landed, and a refusal
+                            // would report the whole edit as failed.
                             if let Some(place) = place {
-                                let _ = self.rank_task(&project, &TaskId::from(id.as_str()), place);
+                                match self.rank_task(&project, &TaskId::from(id.as_str()), place) {
+                                    Ok(Some(_)) => {}
+                                    Ok(None) => {
+                                        tracing::debug!(
+                                            target: "forge_workspace::tasks",
+                                            project = %project,
+                                            id = %id.as_str(),
+                                            "a drop's place named a row that is not there; the move landed without it",
+                                        );
+                                    }
+                                    Err(refused) => {
+                                        tracing::debug!(
+                                            target: "forge_workspace::tasks",
+                                            project = %project,
+                                            id = %id.as_str(),
+                                            refusal = %refused,
+                                            "a drop's place was refused; the move landed without it",
+                                        );
+                                    }
+                                }
                             }
                             self.tell_row_owner(
                                 &task,
@@ -8878,11 +8900,12 @@ mod tests {
         .expect("accepted");
         assert_eq!(order(), vec!["c", "a", "b"], "the drop IS the priority");
 
-        // The control: a step carrying no place moves state only - the
-        // middle row here, so a default ranking it to an end would show.
+        // The control: a step carrying no place moves state only. It moves
+        // the row in the MIDDLE, so a default that ranks it to either end
+        // shows - a row already last would be blind to one.
         ws.dispatch(Command::TaskMove {
             project: "proj".to_owned(),
-            id: "b".to_owned(),
+            id: "a".to_owned(),
             to: TaskStatus::InProgress,
             place: None,
         })

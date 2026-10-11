@@ -3083,4 +3083,32 @@ mod workers_command_tests {
             assert!(command.key().is_none(), "app-level: {command:?}");
         }
     }
+
+    /// A move WITHOUT a place parses: the keyboard's lane step sends the
+    /// state alone, and the default on the field is what keeps that frame
+    /// from coming back as an unknown message. A place that IS there comes
+    /// through rather than being dropped.
+    #[test]
+    fn a_task_move_carries_an_optional_place() {
+        let bare: Command =
+            serde_json::from_str(r#"{"task_move":{"project":"p","id":"t","to":"in_progress"}}"#)
+                .expect("a place-less move");
+        match bare {
+            Command::TaskMove { place, to, .. } => {
+                assert_eq!(place, None, "an absent place is None");
+                assert_eq!(to, forge_primitives::tasks::TaskStatus::InProgress);
+            }
+            other => panic!("parsed as {other:?}"),
+        }
+        let placed: Command = serde_json::from_str(
+            r#"{"task_move":{"project":"p","id":"t","to":"waiting","place":{"before":"a"}}}"#,
+        )
+        .expect("a move with a place");
+        match placed {
+            Command::TaskMove { place, .. } => {
+                assert_eq!(place, Some(RankMove::Before(Some("a".to_owned()))));
+            }
+            other => panic!("parsed as {other:?}"),
+        }
+    }
 }
