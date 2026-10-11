@@ -444,16 +444,17 @@ describe('the rail rows are ways in', () => {
     // coarse-pointer block before this change, and a `rule()` read is
     // media-blind - slid back under a media block, every rendered assertion
     // above still passes and the dead whitespace returns on a mouse. The
-    // block's own comment is the anchor: both rules must sit above it.
-    const coarse = sheet.indexOf('A thumb, not a cursor. The by-width checks');
-    expect(coarse, 'the touch block is in the sheet').toBeGreaterThan(-1);
-    expect(
-      sheet.indexOf('.pr, .wk { position: relative; }'),
-      'the positioning slid back under the touch block',
-    ).toBeLessThan(coarse);
-    expect(
-      sheet.indexOf('.rail-go::after {'),
-      'the stretch slid back under the touch block',
-    ).toBeLessThan(coarse);
+    // 560 block's own comment is the anchor: it sits just above the
+    // coarse-pointer block the rules used to hide in, so clearing it clears
+    // both. Each index asserts it FOUND its rule first - `-1 < anchor`
+    // passes vacuously otherwise.
+    const widthBlock = sheet.indexOf('A thumb, not a cursor. The by-width checks');
+    expect(widthBlock, 'the 560 block is in the sheet').toBeGreaterThan(-1);
+    const positioned = sheet.indexOf('.pr, .wk { position: relative; }');
+    expect(positioned, 'the positioning rule is in the sheet').toBeGreaterThan(-1);
+    expect(positioned, 'the positioning slid back under the 560 block').toBeLessThan(widthBlock);
+    const stretched = sheet.indexOf('.rail-go::after {');
+    expect(stretched, 'the stretch rule is in the sheet').toBeGreaterThan(-1);
+    expect(stretched, 'the stretch slid back under the 560 block').toBeLessThan(widthBlock);
   });
 });
