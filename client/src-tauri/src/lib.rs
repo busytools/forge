@@ -184,6 +184,7 @@ pub fn run() {
         tauri::generate_handler![
             browser::browser_call,
             browser::browser_profile_close,
+            browser::browser_profile_delete,
             browser::browser_profiles,
             browser::browser_windowed,
             browser::browser_show,
@@ -224,6 +225,7 @@ pub fn run() {
         tauri::generate_handler![
             browser::browser_call,
             browser::browser_profile_close,
+            browser::browser_profile_delete,
             browser::browser_profiles,
             browser::browser_windowed,
             browser::browser_show,
