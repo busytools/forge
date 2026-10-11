@@ -8,7 +8,21 @@ description: Invoke for feature-scale web work - client, server, or both - when 
 One feature, one self-contained stack: a scratch `forge` under `/tmp`, a dev
 client pointed at it, the maintainer's verification, the usual PR + review
 loop, one post-review re-look for feature-scale work, merge, teardown. The
-live forge, the live client and `~/.claude` are never part of the loop.
+live forge, the live client and `~/.claude` are never mutated or restarted,
+at any depth.
+
+**When it fires, and whose job that is.** Any feature-scale web change -
+client, server, or both - that needs the maintainer's eyes before merge runs
+this loop; one-line fixes take the ordinary PR loop instead. Firing it is the
+LEAD's act at plan time, not the worker's discovery: the lead reads this file
+and threads its loop into the worker's charter, so the kick already names the
+stack, the verification steps and the teardown.
+
+**One landing, never a piece.** A feature is not split to land faster - the
+stack exists so it can land whole and be looked at whole. Anything
+deliberately left out, or lost on the way, is surfaced to the maintainer
+BEFORE merge rather than as a follow-up, and for feature-scale work the
+post-review re-look (step 6) is mandatory, not a courtesy.
 
 **The first users refine this.** The recipe is measured, not sacred - when a
 step costs time, breaks, or reads wrong in real use, say so to the lead; the
@@ -93,10 +107,17 @@ history is the record.
    stamp on the home (it rides the greeting too) is the invariant check, and
    the roster's org is the cross-check - together they catch a wrong-forge
    connect in one read.
-5. **The client** - judgment call per feature:
-   - Browser tab (default): the dev client from the worktree - hot reload, the
-     maintainer's own browser. Point it at the stack through its own connect
-     screen: type `127.0.0.1:8791` (a bare `host:port`; the field opens on the
+5. **The client - depth follows the change (Ved's ruling, 2026-10-10).** A
+   pure client change runs SHALLOW: the dev client from the worktree on its
+   own (`npm --prefix client run dev`, step 7), pointed at the live forge's
+   own address - no scratch forge, no `/tmp` tree, the change in front of the
+   maintainer as fast as vite starts. The cost, named: that tab is another
+   answering client on the live forge, so a turn can park on it. Anything
+   that touches server behaviour runs DEEP - the full stack - with the client
+   pointed at the stack:
+   - Browser tab (the deep default): the dev client from the worktree - hot
+     reload, the maintainer's own browser. Point it at the stack through its
+     own connect screen: type `127.0.0.1:8791` (a bare `host:port`; the field opens on the
      live forge's address, so the scratch one is a deliberate edit). The client
      keeps the last address that ANSWERED (`localStorage forge.address`,
      written only on a successful connect) and attempts it next open: stack
