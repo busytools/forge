@@ -1006,8 +1006,9 @@ inspected.
     produced the rule.
 
     **The dev stack exists so the whole cut is exercised end to end
-    before it lands** - that is what its depth is for
-    (`.claude/skills/dev-stack/`). Rule 11's same-PR book obligation
+    before it lands** - for the feature-scale web work that skill is
+    scoped to (`.claude/skills/dev-stack/`); every other cut still
+    lands whole, without a stack. Rule 11's same-PR book obligation
     rides the whole cut too: the page lands with the thing it
     describes, not with the first slice of it.
 
