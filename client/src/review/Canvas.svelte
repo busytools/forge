@@ -107,30 +107,32 @@
   const tree = $derived(treeOf(scopeFiles));
   const scoped = $derived(threadsInScope(threads, scopeCommit));
 
+  /** The socket's own state, which is when a dropped ask is worth repeating. */
+  let connState = $state<ReturnType<Connection['status']>>('connecting');
+  $effect(() => {
+    const open = connection;
+    if (open === null) return;
+    // Read once as well as subscribed: a page attaching to an already-open
+    // socket hears no transition.
+    connState = open.status();
+    return open.onStatus((next) => (connState = next));
+  });
+
   /**
-   * One commit's diff, fetched when its scope is shown. **An ask the
-   * socket did not take is asked again**: `commitDiff` answers false when
-   * no socket is open and no answer is coming, and a scope left on
-   * "Reading the commit..." for a dropped ask is a page that lies about
-   * the connection rather than one that recovers.
+   * One commit's diff, fetched when its scope is shown **and asked again on
+   * every connection that opens**. `commitDiff` answers false when no socket
+   * is open and no answer is coming, and nothing else says so - so the ask
+   * rides the scope and the connection's own transitions rather than a
+   * timer, which would keep asking a scope the server will never answer (an
+   * error reply is not a frame) and would re-ask on top of a slow scan's
+   * first answer.
    */
   $effect(() => {
     const sha = scopeCommit;
     const open = connection;
-    if (sha === null || open === null || fetched.has(sha)) return;
-    const ask = (): void => {
-      if (!fetched.has(sha)) open.commitDiff(slot, sha);
-    };
-    ask();
-    // An ask the socket did not take (it was down at the moment) would
-    // otherwise leave the scope on "Reading the commit..." for ever. Asking
-    // again is one frame and idempotent: the answer lands, and the loop
-    // stops on its next tick.
-    const timer = setInterval(() => {
-      if (fetched.has(sha)) clearInterval(timer);
-      else ask();
-    }, 1500);
-    return () => clearInterval(timer);
+    void connState;
+    if (sha === null || open === null || fetched.has(sha) || connState !== 'open') return;
+    open.commitDiff(slot, sha);
   });
 
   $effect(() => {
