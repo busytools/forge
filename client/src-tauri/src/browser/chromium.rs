@@ -917,6 +917,16 @@ pub async fn hide(profile: &Path) {
     }
 }
 
+/// [`hide`] under the launch lock a caller already holds: a delete takes the
+/// lock across its whole act, and a close that re-took it would spin the
+/// launch deadline against its own holder.
+#[cfg(desktop)]
+pub(super) async fn hide_under_lock(profile: &Path) {
+    if let Some(active) = read_active_port(profile) {
+        close_under_lock(profile, active.port).await;
+    }
+}
+
 /// Close the browser on `profile`, so a relaunch is not a second browser onto
 /// one profile.
 ///

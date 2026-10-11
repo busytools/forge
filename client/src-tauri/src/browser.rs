@@ -481,7 +481,8 @@ impl BrowserHost {
     /// lock a launch takes (nothing - this process or another - starts a
     /// browser onto a half-removed tree); both are taken in the call path's
     /// own order, so the two cannot deadlock, and an in-flight call is
-    /// WAITED for rather than refused.
+    /// WAITED for rather than refused. The close inside runs under the held
+    /// launch lock, not through `chromium::hide`, which would take it again.
     #[cfg(desktop)]
     pub async fn delete(&self, name: &str) -> Result<(), String> {
         if let Some(refusal) = profiles::name_refusal(name) {
@@ -503,7 +504,7 @@ impl BrowserHost {
             return Err(format!("the profile's directory cannot be made: {why}"));
         }
         let _launch = chromium::LaunchLock::acquire(&dir).await?;
-        chromium::hide(&dir).await;
+        chromium::hide_under_lock(&dir).await;
         self.named.lock().await.remove(name);
         match tokio::fs::remove_dir_all(&dir).await {
             Ok(()) => Ok(()),
@@ -1276,6 +1277,53 @@ mod tests {
         drop(launch);
         deleting.await.expect("the task joins").expect("the delete");
         assert!(!profile_dir.exists(), "and then the tree goes");
+    }
+
+    /// **A delete never waits on the lock it already holds.** The act takes
+    /// the launch lock across its whole self, so the close inside it runs
+    /// UNDER that guard: a second take would spin the full launch deadline
+    /// against its own holder before the kill it was going to make anyway.
+    /// The port file is a passed launch's, old enough to read as gone, so
+    /// the close takes its fast path and any wait on the clock belongs to a
+    /// re-take.
+    #[tokio::test(start_paused = true)]
+    async fn a_delete_does_not_wait_on_the_launch_lock_it_holds() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let host = Arc::new(BrowserHost::new(paths.clone()));
+        let profile_dir = paths.profiles.join("hunt");
+        std::fs::create_dir_all(&profile_dir).expect("the files");
+        // A port nobody listens on, carried by a port file old enough that
+        // the close reads it as a launch gone rather than one coming up.
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("a port")
+            .local_addr()
+            .expect("the address")
+            .port();
+        let port_file = profile_dir.join("DevToolsActivePort");
+        std::fs::write(&port_file, format!("{port}\n/devtools/browser/9d1f-77aa\n"))
+            .expect("the port file");
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&port_file)
+            .expect("the port file")
+            .set_times(std::fs::FileTimes::new().set_modified(old))
+            .expect("the age");
+
+        let began = tokio::time::Instant::now();
+        host.delete("hunt").await.expect("the delete");
+        let waited = began.elapsed();
+        assert!(
+            waited < std::time::Duration::from_secs(5),
+            "the delete waited {waited:?} on the launch lock it already holds",
+        );
+        assert!(!profile_dir.exists(), "and the tree goes");
     }
 
     /// **A session deletes only the profile it owns**, and the shared
