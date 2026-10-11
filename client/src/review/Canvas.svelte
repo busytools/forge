@@ -154,11 +154,22 @@
     file: DiffFileRecord;
   }
   let built = $state<BuiltFile[]>([]);
-  let builtLayer = $state<DiffLayerRecord | null>(null);
+  /**
+   * Which scope `built` was made for, **as a key rather than the layer
+   * object**: a commit scope's layer comes out of a `SvelteMap`, and a
+   * `===` between that value and one this file stored reactivates as a
+   * proxy-vs-raw mismatch - the guard never holds, the effect rebuilds the
+   * models on every pass, and each rebuild re-renders the mounted viewer's
+   * whole table (measured: hundreds of thousands of mutation records per
+   * two seconds in a commit scope, zero in all changes). A string compares
+   * as itself.
+   */
+  let builtKey = $state<string | null>(null);
   $effect(() => {
     const scope = scopeLayer;
     const files = scopeFiles;
-    if (scope === null || builtLayer === scope) return;
+    const key = scopeCommit ?? 'all';
+    if (scope === null || builtKey === key) return;
     void (async () => {
       const { DiffFile } = await import('@git-diff-view/core');
       const next = files.map((file) => {
@@ -174,8 +185,10 @@
         (instance as { init?: () => void }).init?.();
         return { path: file.path, diffFile: instance, file };
       });
+      // A build that lands after the scope moved on is the old scope's.
+      if ((scopeCommit ?? 'all') !== key) return;
       built = next;
-      builtLayer = scope;
+      builtKey = key;
     })();
   });
 
