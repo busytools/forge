@@ -1,0 +1,376 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>forge &middot; extensions</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  /* The same token set the client ships (theme.ts), so the drawing is held
+     against the real page rather than against a lookalike. The class names
+     are the shipped ones (`client/src/assets/web.css`, the `.extensions`
+     block), so this file and the page can be read side by side. */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130; --line:#222a3c;
+    --text:#c9d1d9; --muted:#8f98a8; --dim:#788294;
+    --accent:#f47600; --ok:#82c76b; --bad:#e0683e; --warn:#c9a13b;
+    --blue:#61a0e0; --hot:#ffb058; --sel:#20140a; --ctl:#516590;
+    --ui: "Fira Code", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "Fira Code", ui-monospace, Menlo, monospace;
+    --r: 10px;
+  }
+  html, body { height: 100%; }
+  body {
+    background:
+      radial-gradient(1100px 520px at 8% -12%, rgba(244,118,0,.07), transparent 60%),
+      radial-gradient(900px 460px at 96% 108%, rgba(91,156,248,.05), transparent 62%),
+      var(--bg);
+    color: var(--text);
+    font-family: var(--ui);
+    font-size: 15.5px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: none; margin: 0 auto; padding: 30px 40px 64px; }
+
+  /* header: the home's lockup, the page's name, the way back */
+  header.top { display: flex; align-items: center; gap: 14px; padding-bottom: 18px;
+    margin-bottom: 16px; border-bottom: 1px solid var(--line); }
+  .brand { display: flex; align-items: center; gap: 10px; }
+  .brand .mark { width: 30px; height: 30px; flex: 0 0 30px; color: var(--accent); }
+  .brand .mark svg { display: block; width: 100%; height: 100%; }
+  .brand .word { font-size: 22px; font-weight: 650; letter-spacing: -.02em; }
+  .title { display: flex; flex-direction: column; }
+  .title .t { font-size: 18px; font-weight: 650; letter-spacing: -.01em; }
+  .title .s { font-family: var(--mono); font-size: 12.5px; color: var(--dim); }
+  .back { margin-left: auto; font-family: var(--mono); font-size: 12.5px; color: var(--muted);
+    text-decoration: none; border: 1px solid var(--line); border-radius: 9px; padding: 6px 11px; }
+
+  /* the marks' legend: three shapes, said once */
+  .ext-legend { display: flex; gap: 18px; flex-wrap: wrap; font-family: var(--mono);
+    font-size: 11px; color: var(--dim); margin: -4px 0 16px; }
+  .ext-legend span { display: inline-flex; align-items: center; gap: 6px; }
+
+  .dot { width: 10px; height: 10px; flex: 0 0 10px; display: inline-block; border-radius: 50%; }
+  .dot.ok { background: var(--ok); box-shadow: 0 0 7px rgba(130,199,107,.55); }
+  .dot.warn { background: var(--warn); clip-path: polygon(50% 3%, 97% 95%, 3% 95%); }
+  .dot.failed { background: var(--bad);
+    clip-path: polygon(16% 0,50% 34%,84% 0,100% 16%,66% 50%,100% 84%,84% 100%,50% 66%,16% 100%,0 84%,34% 50%,0 16%); }
+  .ring { width: 10px; height: 10px; display: inline-block; border-radius: 50%;
+    border: 1.6px solid rgba(244,118,0,.3); border-top-color: var(--accent);
+    animation: spin 900ms linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .ext-split { display: flex; align-items: flex-start; }
+  .ext-rail { flex: 0 0 216px; padding: 2px 16px 2px 0; }
+  .ext-rail-item { display: flex; align-items: center; gap: 9px; width: 100%; text-align: left;
+    font-family: var(--mono); font-size: 14px; color: var(--muted); background: none;
+    border: 1px solid transparent; border-radius: 9px; padding: 9px 11px; margin-bottom: 2px;
+    cursor: pointer; }
+  .ext-rail-item.on { background: var(--sel); color: var(--hot); border-color: rgba(244,118,0,.25); }
+  .ext-rail-item .n { margin-left: auto; font-size: 12.5px; color: var(--dim); }
+  .ext-rail-item.on .n { color: var(--hot); }
+  .ext-rail-item .dot { width: 8px; height: 8px; flex: 0 0 8px; }
+  .ext-rule { height: 1px; background: var(--line); margin: 10px 11px; }
+
+  .ext-pane { flex: 1 1 auto; min-width: 0; padding-left: 22px; border-left: 1px solid var(--line); }
+  .ext-pane-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin: 2px 0 14px; }
+  .ext-pane-head .t { font-size: 19px; font-weight: 620; letter-spacing: -.01em; }
+  .ext-pane-head .s { font-family: var(--mono); font-size: 12.5px; color: var(--dim); }
+  .ext-pane-head .right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+  .find { display: block; width: 100%; font-family: var(--mono); font-size: 14px; color: var(--text);
+    background: var(--s1); border: 1px solid var(--line); border-radius: 9px;
+    padding: 9px 12px; margin-bottom: 12px; }
+  .find::placeholder { color: var(--dim); }
+
+  .chip { display: inline-flex; align-items: center; gap: 7px; font-family: var(--mono);
+    font-size: 12.5px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 9px;
+    color: var(--muted); background: none; white-space: nowrap; }
+  .chip.warn { color: var(--warn); border-color: rgba(201,161,59,.45); background: rgba(201,161,59,.08); }
+  .chip.dim { color: var(--dim); }
+  .chip.blue { color: var(--blue); border-color: rgba(97,160,224,.35); }
+  .chip.bad { color: var(--bad); border-color: rgba(224,104,62,.45); background: rgba(224,104,62,.08); }
+  .btn { border: 0; cursor: pointer; font: inherit; font-family: var(--mono); font-size: 13px;
+    border-radius: 10px; }
+  .btn.ok { background: var(--ok); color: var(--bg); font-weight: 640; padding: 7px 14px; }
+  .btn.ghost { background: transparent; color: var(--muted); box-shadow: inset 0 0 0 1px var(--line);
+    padding: 7px 12px; }
+
+  .ext-band { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    border: 1px solid rgba(201,161,59,.35); border-radius: var(--r);
+    background: rgba(201,161,59,.07); padding: 12px 15px; margin-bottom: 14px; }
+  .ext-band .t { font-family: var(--mono); font-size: 14px; color: var(--warn); }
+  .ext-band .pairs { font-family: var(--mono); font-size: 12.5px; color: var(--dim); }
+  .ext-band .right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+
+  .ext-group { margin-bottom: 8px; }
+  .ext-row { display: flex; align-items: center; gap: 11px; position: relative;
+    background: linear-gradient(180deg, rgba(20,25,38,.75), rgba(13,17,26,.75));
+    border: 1px solid var(--line); border-radius: var(--r); padding: 11px 13px; }
+  .ext-group .ext-row.open { border-color: rgba(244,118,0,.45);
+    border-radius: var(--r) var(--r) 0 0; margin-bottom: 0; }
+  .ext-row.flat { margin-bottom: 8px; }
+  .ext-row.avail { opacity: .66; }
+  .ext-row.avail .ext-nm { color: var(--muted); }
+  .ext-nm { font-family: var(--mono); font-size: 14px; color: var(--text);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .ext-src { font-family: var(--mono); font-size: 12.5px; color: var(--dim); white-space: nowrap; }
+  .ext-src .to { color: var(--warn); }
+  .ext-row .side { display: flex; align-items: center; gap: 8px; flex: none; margin-left: auto; }
+  .arw { width: 11px; height: 11px; flex: none; color: var(--dim); }
+  .ext-row.open .arw { transform: rotate(90deg); color: var(--accent); }
+
+  .ext-subs { padding: 4px 0 10px 24px; border-left: 2px solid var(--line);
+    border-right: 1px solid var(--line); border-bottom: 1px solid var(--line);
+    border-radius: 0 0 var(--r) var(--r);
+    background: linear-gradient(180deg, rgba(13,17,26,.55), rgba(13,17,26,.3)); }
+  .ext-subkind { display: flex; align-items: baseline; gap: 8px; font-family: var(--mono);
+    font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--dim);
+    padding: 9px 4px 4px; }
+  .ext-subwrap { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+    gap: 0 18px; }
+  .ext-sub { display: flex; align-items: center; gap: 6px; padding: 3px 4px;
+    font-family: var(--mono); font-size: 12.5px; color: var(--dim); }
+  .ext-sub .k { color: var(--text); }
+  .ext-sect { display: flex; align-items: baseline; gap: 9px; margin: 22px 0 10px;
+    font-size: 12.5px; font-weight: 600; letter-spacing: .11em; text-transform: uppercase;
+    color: var(--muted); }
+  .ext-sect .c { letter-spacing: 0; text-transform: none; font-family: var(--mono); font-size: 11px;
+    color: var(--dim); font-weight: 400; }
+  .ext-note { font-family: var(--mono); font-size: 12.5px; color: var(--dim); margin: 10px 2px 0; }
+
+  /* the phone: the rail wraps above the pane, rows keep their line and the
+     meta drops under the name */
+  .phone { max-width: 392px; margin-top: 40px; border: 1px solid var(--line);
+    border-radius: 22px; padding: 16px 14px 18px;
+    background: linear-gradient(180deg, rgba(13,17,26,.5), rgba(4,5,10,.5)); }
+  .phone .ext-split { flex-direction: column; }
+  .phone .ext-rail { flex: none; width: 100%; padding: 0 0 10px; display: flex;
+    flex-wrap: wrap; gap: 6px; }
+  .phone .ext-rail-item { width: auto; flex: 0 0 auto; margin-bottom: 0;
+    border: 1px solid var(--line); padding: 6px 11px; }
+  .phone .ext-rail-item .n { margin-left: 6px; }
+  .phone .ext-rule { display: none; }
+  .phone .ext-pane { padding-left: 0; border-left: 0; }
+  .phone .ext-row { flex-wrap: wrap; }
+  .phone .ext-row .ext-src { flex-basis: 100%; order: 3; padding-left: 22px; }
+  .phone .ext-subwrap { grid-template-columns: 1fr; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="top">
+    <span class="brand">
+      <span class="mark">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path d="M12 1.6l2.6 7.8L22.4 12l-7.8 2.6L12 22.4l-2.6-7.8L1.6 12l7.8-2.6z" />
+        </svg>
+      </span>
+      <span class="word">forge</span>
+    </span>
+    <span class="title"><span class="t">extensions</span><span class="s">everything this forge can run</span></span>
+    <a class="back" href="#">&larr; home</a>
+  </header>
+
+  <div class="ext-legend">
+    <span><span class="dot warn"></span>an update is available</span>
+    <span><span class="ring"></span>work in flight</span>
+    <span><span class="dot failed"></span>failed - the reason is on the row</span>
+    <span>no mark: installed and current</span>
+  </div>
+
+  <div class="ext-split">
+    <div class="ext-rail">
+      <button class="ext-rail-item on"><span>Installed</span><span class="dot warn"></span><span class="n">22</span></button>
+      <button class="ext-rail-item"><span>Skills</span><span class="n">98</span></button>
+      <button class="ext-rail-item"><span>Agents</span><span class="n">33</span></button>
+      <button class="ext-rail-item"><span>Commands</span><span class="n">53</span></button>
+      <button class="ext-rail-item"><span>Hooks</span><span class="n">6</span></button>
+      <button class="ext-rail-item"><span>LSP</span><span class="n">2</span></button>
+      <div class="ext-rule"></div>
+      <button class="ext-rail-item"><span>Marketplaces</span><span class="n">7</span></button>
+    </div>
+
+    <div class="ext-pane">
+      <div class="ext-pane-head">
+        <span class="t">Installed</span>
+        <span class="s">22 plugins · 98 skills · 33 agents · 53 commands</span>
+        <span class="right"><button class="btn ghost">check for updates</button></span>
+      </div>
+      <input class="find" placeholder="filter plugins and their components..." />
+
+      <div class="ext-band">
+        <span class="dot warn"></span>
+        <span class="t">3 plugins have updates</span>
+        <span class="pairs">superpowers 6.4.1 → 6.5.0 · abstract 1.9.21 → 1.9.22 · leyline 1.9.21 → 1.9.22</span>
+        <span class="right"><button class="btn ok">update all</button></span>
+      </div>
+
+      <div class="ext-group">
+        <div class="ext-row open">
+          <svg class="arw" viewBox="0 0 16 16" fill="currentColor"><path d="M6 3l6 5-6 5z" /></svg>
+          <span class="dot warn"></span>
+          <span class="ext-nm">superpowers</span>
+          <span class="ext-src">@claude-plugins-official</span>
+          <span class="ext-src">6.4.1<span class="to"> → 6.5.0</span></span>
+          <span class="ext-src">15 skills · hooks</span>
+          <span class="side"><button class="chip warn">update</button></span>
+        </div>
+        <div class="ext-subs">
+          <div class="ext-subkind">skills <span class="c">15</span></div>
+          <div class="ext-subwrap">
+            <span class="ext-sub"><span class="k">brainstorming</span></span>
+            <span class="ext-sub"><span class="k">diagnosing-superpowers</span></span>
+            <span class="ext-sub"><span class="k">dispatching-parallel-agents</span></span>
+            <span class="ext-sub"><span class="k">executing-plans</span></span>
+            <span class="ext-sub"><span class="k">finishing-a-development-branch</span></span>
+            <span class="ext-sub"><span class="k">receiving-code-review</span></span>
+            <span class="ext-sub"><span class="k">requesting-code-review</span></span>
+            <span class="ext-sub"><span class="k">subagent-driven-development</span></span>
+            <span class="ext-sub"><span class="k">systematic-debugging</span></span>
+            <span class="ext-sub"><span class="k">test-driven-development</span></span>
+            <span class="ext-sub"><span class="k">using-git-worktrees</span></span>
+            <span class="ext-sub"><span class="k">using-superpowers</span></span>
+            <span class="ext-sub"><span class="k">verification-before-completion</span></span>
+            <span class="ext-sub"><span class="k">writing-plans</span></span>
+            <span class="ext-sub"><span class="k">writing-skills</span></span>
+          </div>
+          <div class="ext-subkind">hooks <span class="c">1 set · SessionStart</span></div>
+        </div>
+      </div>
+
+      <div class="ext-group">
+        <div class="ext-row">
+          <svg class="arw" viewBox="0 0 16 16" fill="currentColor"><path d="M6 3l6 5-6 5z" /></svg>
+          <span class="dot warn"></span>
+          <span class="ext-nm">abstract</span>
+          <span class="ext-src">@claude-night-market</span>
+          <span class="ext-src">1.9.21<span class="to"> → 1.9.22</span></span>
+          <span class="ext-src">14 skills · 6 agents · 17 commands · hooks</span>
+          <span class="side"><button class="chip warn">update</button></span>
+        </div>
+      </div>
+
+      <div class="ext-group">
+        <div class="ext-row">
+          <svg class="arw" viewBox="0 0 16 16" fill="currentColor"><path d="M6 3l6 5-6 5z" /></svg>
+          <span class="dot warn"></span>
+          <span class="ext-nm">leyline</span>
+          <span class="ext-src">@claude-night-market</span>
+          <span class="ext-src">1.9.21<span class="to"> → 1.9.22</span></span>
+          <span class="ext-src">24 skills · 3 commands · hooks</span>
+          <span class="side"><span class="chip dim">auto-installed</span><button class="chip warn">update</button></span>
+        </div>
+      </div>
+
+      <div class="ext-group">
+        <div class="ext-row">
+          <svg class="arw" viewBox="0 0 16 16" fill="currentColor"><path d="M6 3l6 5-6 5z" /></svg>
+          <span class="ext-nm">pensive</span>
+          <span class="ext-src">@claude-night-market</span>
+          <span class="ext-src">1.9.21</span>
+          <span class="ext-src">15 skills · 6 agents · 14 commands · hooks</span>
+        </div>
+      </div>
+
+      <div class="ext-group">
+        <div class="ext-row">
+          <svg class="arw" viewBox="0 0 16 16" fill="currentColor"><path d="M6 3l6 5-6 5z" /></svg>
+          <span class="ext-nm">gopls-lsp</span>
+          <span class="ext-src">@claude-plugins-official</span>
+          <span class="ext-src">1.0.0</span>
+          <span class="ext-src">lsp · gopls: missing</span>
+        </div>
+      </div>
+
+      <p class="ext-note">· 17 more plugins · a row's components ride its own fold</p>
+
+      <div class="ext-sect">From the marketplaces <span class="c">6 not installed</span></div>
+      <div class="ext-row flat avail">
+        <span class="ext-nm">typescript-lsp</span>
+        <span class="ext-src">@claude-plugins-official</span>
+        <span class="ext-src">1.0.0</span>
+        <span class="ext-src">lsp server</span>
+        <span class="side"><button class="chip blue">install</button></span>
+      </div>
+      <div class="ext-row flat avail">
+        <span class="ext-nm">plugin-dev</span>
+        <span class="ext-src">@claude-plugins-official</span>
+        <span class="ext-src">1.0.0</span>
+        <span class="ext-src">skills · commands</span>
+        <span class="side"><button class="chip blue">install</button></span>
+      </div>
+      <p class="ext-note">a skill is never installed or updated alone: the press acts on its
+      plugin, and the Installed pane's fold is where a plugin's components live.</p>
+    </div>
+  </div>
+
+  <div class="phone">
+    <header class="top">
+      <span class="brand">
+        <span class="mark">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M12 1.6l2.6 7.8L22.4 12l-7.8 2.6L12 22.4l-2.6-7.8L1.6 12l7.8-2.6z" />
+          </svg>
+        </span>
+        <span class="word">forge</span>
+      </span>
+      <a class="back" href="#">&larr; home</a>
+    </header>
+    <span class="title"><span class="t">extensions</span><span class="s">everything this forge can run</span></span>
+
+    <div class="ext-split">
+      <div class="ext-rail">
+        <button class="ext-rail-item on"><span>Installed</span><span class="dot warn"></span><span class="n">22</span></button>
+        <button class="ext-rail-item"><span>Skills</span><span class="n">98</span></button>
+        <button class="ext-rail-item"><span>Agents</span><span class="n">33</span></button>
+        <button class="ext-rail-item"><span>Marketplaces</span><span class="n">7</span></button>
+      </div>
+      <div class="ext-pane">
+        <input class="find" placeholder="filter..." />
+        <div class="ext-band">
+          <span class="dot warn"></span>
+          <span class="t">3 plugins have updates</span>
+          <span class="right"><button class="btn ok">update all</button></span>
+        </div>
+        <div class="ext-group">
+          <div class="ext-row open">
+            <svg class="arw" viewBox="0 0 16 16" fill="currentColor"><path d="M6 3l6 5-6 5z" /></svg>
+            <span class="dot warn"></span>
+            <span class="ext-nm">superpowers</span>
+            <span class="side"><button class="chip warn">update</button></span>
+            <span class="ext-src">@claude-plugins-official · 6.4.1 → 6.5.0 · 15 skills</span>
+          </div>
+          <div class="ext-subs">
+            <div class="ext-subkind">skills <span class="c">15</span></div>
+            <div class="ext-subwrap">
+              <span class="ext-sub"><span class="k">brainstorming</span></span>
+              <span class="ext-sub"><span class="k">writing-plans</span></span>
+              <span class="ext-sub"><span class="k">executing-plans</span></span>
+              <span class="ext-sub"><span class="k">systematic-debugging</span></span>
+              <span class="ext-sub"><span class="k">· 11 more</span></span>
+            </div>
+            <div class="ext-subkind">hooks <span class="c">1 set</span></div>
+          </div>
+        </div>
+        <div class="ext-group">
+          <div class="ext-row">
+            <svg class="arw" viewBox="0 0 16 16" fill="currentColor"><path d="M6 3l6 5-6 5z" /></svg>
+            <span class="dot warn"></span>
+            <span class="ext-nm">abstract</span>
+            <span class="side"><button class="chip warn">update</button></span>
+            <span class="ext-src">@claude-night-market · 1.9.21 → 1.9.22</span>
+          </div>
+        </div>
+        <p class="ext-note">the rail wraps above the pane; every control keeps its 44px target.</p>
+      </div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

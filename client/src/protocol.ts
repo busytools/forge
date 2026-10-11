@@ -126,10 +126,11 @@ export function skewMessage(skew: Skew): string {
 /**
  * What a client can watch, and the address a subscription is held under.
  *
- * `dictate_models` is the models page's own read: the pins, the catalogue
- * check and the feed, which only that page draws.
+ * `dictate_models` and `extensions` are their pages' own reads: the pins
+ * and catalogue only the models page draws, and the plugin inventory only
+ * the extensions page draws.
  */
-export type Subject = 'home' | { session: SessionSlot } | 'usage' | 'dictate_models';
+export type Subject = 'home' | { session: SessionSlot } | 'usage' | 'dictate_models' | 'extensions';
 
 /**
  * A subscription's address as one string, which is what a store is keyed by.

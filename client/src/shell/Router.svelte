@@ -6,6 +6,7 @@
   import Connect from '../connect/Connect.svelte';
   import Fixture from '../dev/Fixture.svelte';
   import Board from '../board/Board.svelte';
+  import Extensions from '../extensions/Extensions.svelte';
   import Home from '../home/Home.svelte';
   import type { HomeRead } from '../home/live';
   import Models from '../models/Models.svelte';
@@ -164,6 +165,22 @@
          directly: its own state (loading, refused, the four sections) is the
          page's, and nothing outside it draws any of it. -->
     <Models {connection} mark={settings.mark} />
+  {:else}
+    <Connect {settings} initialAddress={address} launchFailure={failure} {notice} {onconnect} />
+  {/if}
+{:else if route.name === 'extensions'}
+  {#if connection !== null && home.wire !== null}
+    <!-- The page subscribes the inventory itself. The roster rides in
+         because the install scope picker targets a declared project, and a
+         path the server cannot resolve from `forge.toml` is not a target it
+         accepts. -->
+    <Extensions
+      {connection}
+      mark={settings.mark}
+      projects={home.wire.projects.map((row) => row.project)}
+    />
+  {:else if connection !== null}
+    <main class="wrap"><p class="pending">Reading the fleet...</p></main>
   {:else}
     <Connect {settings} initialAddress={address} launchFailure={failure} {notice} {onconnect} />
   {/if}
