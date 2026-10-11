@@ -992,8 +992,22 @@
     return null;
   }
 
+  /**
+   * Where the previous scroll event left the reader, so an event's own
+   * DIRECTION is readable - which is what tells the reader's return from a
+   * clamp at the foot.
+   */
+  let movedFrom = 0;
+
   /** Where the reader is, and whether they have reached the top. */
   function scrolled(offset: number): void {
+    // The event's own direction, read before any branch moves on: a scroll
+    // that came down toward the foot is the reader's return, and it arms no
+    // up-capable wheel token at all - Ved's own gesture is "scroll up and
+    // come back down" (2026-10-11). Every event updates the tracker, the
+    // pin's echo included: a pin is a write like any other move.
+    const towardFoot = offset > movedFrom;
+    movedFrom = offset;
     // **An event at the pin's own landing spot is its echo, and reading the
     // layout back for it is the per-frame cost issue #1710 measured.** A
     // write is a scroll, so every pin comes back as an event the reader did
@@ -1054,37 +1068,41 @@
     const shrank = height < shaped;
     shaped = height;
     const foot = atFoot();
-    // **A shrink is the layout's - unless the reader made the event too.** The
-    // skip below is for the clamp, and the reader's own return can carry a
-    // shrink in the same event: a row settling from the estimate to its drawn
-    // height corrects the content shorter exactly as their scroll lands, the
-    // skip swallowed the re-arm, and with nothing left to fire another event
-    // the way-back arrow stuck at the foot until pressed (Ved, 2026-10-11,
-    // "even if there is nothing to scroll"). A reader-tokened event is theirs
-    // whatever the height did; an untokened one stays the clamp's.
     const byReader = readerMoved();
-    if (!shrank || byReader) {
-      if (foot) {
+    if (foot) {
+      // **A return that lands at the foot re-arms, whatever the height did.**
+      // The shrink skip exists for a clamp, and the reader's own down-scroll
+      // can carry one in the SAME event - a row settling from the estimate to
+      // its drawn height corrects the content shorter exactly as their scroll
+      // lands - so the re-arm was swallowed and, with nothing left to fire
+      // another event, the way-back arrow stuck at the foot until pressed
+      // (Ved, 2026-10-11, "even if there is nothing to scroll"). Two things
+      // make such an event theirs: an up-capable gesture heard just before it,
+      // or the event's own direction - the offset moving TOWARD the foot,
+      // which is his gesture ("scroll up and come back down", a down-scroll
+      // that arms no token). A shrink event that moved them nowhere or away
+      // stays the clamp's, and the away-from-foot branch below is untouched.
+      if (!shrank || byReader || towardFoot) {
         working?.following(true);
         // The foot is where a following reader wants to be, so the place they
         // held on the way there is done with.
         anchor = null;
       }
-      // `placed` is where the last pin left the reader; before any pin has
-      // run it is unknown, and a reader above the foot is above it whatever
-      // that number is - so the comparison falls back to any upward move
-      // rather than never disarming, which left the way-back hidden on a
-      // column that had not pinned yet (Ved, 2026-10-03).
-      //
-      // **And an event nobody made may not switch the follow off.** A
-      // re-measure nudges the scroll by a couple of pixels with no reader
-      // behind it, so a move inside `DISARM_SLACK` counts only when the
-      // reader's own wheel, touch or key was heard just before it; their
-      // moves count at any distance.
-      else {
-        const slack = byReader ? 0 : DISARM_SLACK;
-        if (offset < (placed ?? Infinity) - slack) working?.following(false);
-      }
+    }
+    // `placed` is where the last pin left the reader; before any pin has
+    // run it is unknown, and a reader above the foot is above it whatever
+    // that number is - so the comparison falls back to any upward move
+    // rather than never disarming, which left the way-back hidden on a
+    // column that had not pinned yet (Ved, 2026-10-03).
+    //
+    // **And an event nobody made may not switch the follow off.** A
+    // re-measure nudges the scroll by a couple of pixels with no reader
+    // behind it, so a move inside `DISARM_SLACK` counts only when the
+    // reader's own wheel, touch or key was heard just before it; their
+    // moves count at any distance.
+    else if (!shrank || byReader) {
+      const slack = byReader ? 0 : DISARM_SLACK;
+      if (offset < (placed ?? Infinity) - slack) working?.following(false);
     }
     // **A reader away from the foot has a place, and this is where it is read.**
     // Their own scroll is the one moment the page is where they put it, so the

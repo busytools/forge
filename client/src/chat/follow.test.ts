@@ -539,41 +539,70 @@ describe('whether the column follows the newest end', () => {
     expect(pinned(), 'a couple of pixels is not a reader moving').toEqual([PIN]);
   });
 
-  it("re-arms at the foot on the reader's own return, even when that event carries a shrink", async () => {
-    // **The correction that swallowed the re-arm** (Ved, 2026-10-11: the
-    // way-back arrow "does not go until I go there and then press it", even
-    // with nothing to scroll). The shrink skip exists for the clamp, and the
-    // reader's return can carry a shrink in the SAME event - a row settling
-    // from the estimate to its drawn height corrects the content shorter
-    // exactly as their scroll lands - so the re-arm was skipped and, with
-    // nothing left to fire another event, nothing ever put the foot back. A
-    // reader-tokened event is theirs whatever the height did.
+  it('re-arms when a wheel was heard and the clamp lands at the foot carrying a shrink', async () => {
+    // **The tokened half.** A wheel-up is heard, then the browser clamps the
+    // reader DOWN to the foot the content has after a shrink - the event
+    // carries the shrink and the offset FELL, so the direction reads away and
+    // the token is the only thing that makes the event theirs. (The old shape
+    // this test used to dispatch read as a return; the down-scroll return has
+    // its own pin below.)
     const server = stub();
     await draw(server);
-    readerAt(0);
+    readerAt(FOOT - 100);
     await settle();
     clear();
 
     document.querySelector('.conv')?.dispatchEvent(new WheelEvent('wheel', { deltaY: -120 }));
     const shrunk = TOTAL - 120;
     setElement(shrunk, VIEWPORT);
-    list()?.scrolledTo(Math.floor(shrunk) - VIEWPORT, shrunk, VIEWPORT);
+    const foot = Math.floor(shrunk) - VIEWPORT;
+    list()?.scrolledTo(foot, shrunk, VIEWPORT);
     flushSync();
     clear();
 
     server.frame();
     await settle();
 
-    const want = { asked: Math.floor(shrunk), landed: Math.floor(shrunk) - VIEWPORT };
-    expect(pinned(), 'the return re-armed the follow over the shrink').toEqual([want]);
+    expect(pinned(), 'the tokened clamp re-armed the follow').toEqual([
+      { asked: Math.floor(shrunk), landed: foot },
+    ]);
   });
 
-  it('keeps an untokened shrink at the foot from re-arming, which is the clamp guard', async () => {
-    // **The other side of the same arm.** A clamp puts the reader at the foot
-    // with no wheel, touch or key behind it, and re-arming there would carry a
-    // reader who had scrolled away back down with whatever arrived - the
-    // mistake the shrink skip exists for. The control for the test above:
-    // same event, same foot, no token, nothing moves.
+  it('re-arms when the reader comes back DOWN to the foot in a shrinking event', async () => {
+    // **Ved's gesture verbatim** (2026-10-11): "I scroll up and come back
+    // down... the arrow does not go until I press it". A down-scroll arms no
+    // up-capable token - only wheel-up, ArrowUp, PageUp and Home do - so the
+    // return is read from the event's own direction: it moved the reader
+    // toward the foot. Without this the fix covered only the clamp shape and
+    // his own gesture still stuck the arrow.
+    const server = stub();
+    await draw(server);
+    readerAt(0);
+    await settle();
+    clear();
+
+    // The return, landing at the foot in an event that carries a shrink - a
+    // row settling to its drawn height as the scroll lands.
+    const shrunk = TOTAL - 120;
+    setElement(shrunk, VIEWPORT);
+    const foot = Math.floor(shrunk) - VIEWPORT;
+    list()?.scrolledTo(foot, shrunk, VIEWPORT);
+    flushSync();
+    clear();
+
+    server.frame();
+    await settle();
+
+    expect(pinned(), 'the down-return re-armed the follow over the shrink').toEqual([
+      { asked: Math.floor(shrunk), landed: foot },
+    ]);
+  });
+
+  it('keeps an untokened shrink away from the foot from moving the follow', async () => {
+    // **The clamp guard's other half, and the control for both tests above.**
+    // A shrink nobody made with the reader short of the foot: nothing moves
+    // either way. Re-arming there would carry a reader back down with
+    // whatever arrived, which is the mistake the shrink skip exists for.
     const server = stub();
     await draw(server);
     readerAt(0);
@@ -582,14 +611,14 @@ describe('whether the column follows the newest end', () => {
 
     const shrunk = TOTAL - 120;
     setElement(shrunk, VIEWPORT);
-    list()?.scrolledTo(Math.floor(shrunk) - VIEWPORT, shrunk, VIEWPORT);
+    list()?.scrolledTo(Math.floor(shrunk) - VIEWPORT - 40, shrunk, VIEWPORT);
     flushSync();
     clear();
 
     server.frame();
     await settle();
 
-    expect(pinned(), 'the clamp put the follow nowhere').toEqual([]);
+    expect(pinned(), 'nothing moved').toEqual([]);
   });
 
   it("disarms on the reader's own move at any distance", async () => {
