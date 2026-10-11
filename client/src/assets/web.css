@@ -1349,6 +1349,20 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
 .bz-list .bz-it .nm { color: var(--accent); font-weight: 600; font-family: var(--mono); flex: none; }
 .bz-list .bz-it .tx { color: var(--dim); font-family: var(--mono); min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* **The delete verb, worn apart from close.** Close frees the name and keeps
+   the logins; delete removes them, so it takes the sheet's destructive tone
+   (the `.dock .btn.d` idiom) and goes solid once the row is confirming
+   (`.b-mark.b-fail`'s solid mark). */
+.bz-list .bz-take.bz-del { color: var(--bad);
+  border-color: color-mix(in srgb, var(--bad) 45%, transparent); }
+.bz-list .bz-take.bz-del:hover { color: var(--bad);
+  background: color-mix(in srgb, var(--bad) 12%, transparent); }
+.bz-list .bz-take.bz-del.confirm { color: var(--bg); background: var(--bad);
+  border-color: var(--bad); font-weight: 600; }
+/* The row's own line WRAPS for a warning: it is nowrap for the owner text it
+   usually carries, and the confirm's copy is longer than that - truncated,
+   the warning loses exactly the words it exists for. */
+.bz-list .bz-it .tx.warn { color: var(--warn); white-space: normal; }
 @media (pointer: coarse) { .bz-seg .bz-tog, .bz-list .bz-it, .bz-list .bz-take { min-height: 44px; } }
 
 /* A narrow window compacts the panel: the same rows, tighter, and never

@@ -7,6 +7,7 @@ import type { SessionSlot } from '../wire/types';
 import {
   browserUsed,
   closeProfile,
+  deleteProfile,
   hideBrowser,
   listProfiles,
   profileWindowed,
@@ -18,6 +19,7 @@ afterEach(() => {
   vi.mocked(showBrowser).mockClear();
   vi.mocked(hideBrowser).mockClear();
   vi.mocked(profileWindowed).mockClear();
+  vi.mocked(deleteProfile).mockClear();
 });
 
 /**
@@ -32,6 +34,7 @@ vi.mock('../browser/host', async (importOriginal) => {
     canHost: () => true,
     listProfiles: vi.fn(() => Promise.resolve([])),
     closeProfile: vi.fn(() => Promise.resolve(undefined)),
+    deleteProfile: vi.fn(() => Promise.resolve(undefined)),
     browserUsed: vi.fn(() => Promise.resolve(false)),
     showBrowser: vi.fn(() => Promise.resolve(null)),
     hideBrowser: vi.fn(() => Promise.resolve(null)),
@@ -286,6 +289,136 @@ describe('the browser segment', () => {
     expect(shown.target.textContent, 'the row is not taken away by a close that failed').toContain(
       'hunt',
     );
+    shown.stop();
+  });
+
+  it('arms the delete in the row itself, and keep takes it back', async () => {
+    vi.mocked(listProfiles).mockResolvedValue([
+      { name: 'hunt', owner: 'Busytools/forge/lead', running: true, windowed: false },
+    ]);
+    const shown = show(false, true);
+    click(shown.target.querySelector('.bz-tog'));
+    await vi.waitFor(() => expect(shown.target.textContent).toContain('hunt'));
+
+    click(shown.target.querySelector('.bz-del'));
+    expect(shown.target.textContent, 'the warning takes the row its own text line').toContain(
+      'its logins and cookies go with it',
+    );
+    expect(
+      shown.target.querySelector('.bz-del.confirm')?.textContent?.trim(),
+      'and the confirm is the pair delete it / keep',
+    ).toBe('delete it');
+    expect(shown.target.textContent, 'with keep beside it').toContain('keep');
+    expect(shown.target.textContent, 'the row it is confirming for is still named').toContain(
+      'hunt',
+    );
+
+    const keep = [...shown.target.querySelectorAll('button')].find(
+      (button) => button.textContent?.trim() === 'keep',
+    );
+    click(keep);
+    expect(shown.target.textContent, 'keep puts the verbs back').not.toContain(
+      'its logins and cookies go with it',
+    );
+    expect(shown.target.querySelector('.bz-del.confirm'), 'and nothing is left armed').toBeNull();
+    shown.stop();
+  });
+
+  it('deletes after the confirm and says it is working while it waits', async () => {
+    vi.mocked(listProfiles).mockResolvedValue([
+      { name: 'hunt', owner: 'Busytools/forge/lead', running: true, windowed: false },
+    ]);
+    const gate: { finish?: () => void } = {};
+    vi.mocked(deleteProfile).mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          gate.finish = resolve;
+        }),
+    );
+    const shown = show(false, true);
+    click(shown.target.querySelector('.bz-tog'));
+    await vi.waitFor(() => expect(shown.target.textContent).toContain('hunt'));
+
+    click(shown.target.querySelector('.bz-del'));
+    click(shown.target.querySelector('.bz-del.confirm'));
+    expect(deleteProfile, 'the confirm is what calls the shell').toHaveBeenCalledWith('hunt');
+    expect(
+      shown.target.textContent,
+      'the row reports the work while the shell waits out whatever it waits',
+    ).toContain('deleting...');
+
+    // The delete answered: the read that lands finds the row gone.
+    vi.mocked(listProfiles).mockResolvedValue([]);
+    gate.finish?.();
+    await vi.waitFor(() => {
+      expect(shown.target.textContent, 'and the row falls away with the files').not.toContain(
+        'hunt',
+      );
+    });
+    shown.stop();
+  });
+
+  it('keeps the row and says why when the delete is refused', async () => {
+    vi.mocked(listProfiles).mockResolvedValue([
+      { name: 'hunt', owner: 'Busytools/forge/lead', running: true, windowed: false },
+    ]);
+    vi.mocked(deleteProfile).mockRejectedValueOnce('no profile named hunt on this client');
+    const shown = show(false, true);
+    click(shown.target.querySelector('.bz-tog'));
+    await vi.waitFor(() => expect(shown.target.textContent).toContain('hunt'));
+
+    click(shown.target.querySelector('.bz-del'));
+    click(shown.target.querySelector('.bz-del.confirm'));
+    await vi.waitFor(() => {
+      expect(shown.target.textContent).toContain('no profile named hunt on this client');
+    });
+    expect(shown.target.textContent, 'a refused delete leaves the row standing').toContain('hunt');
+    shown.stop();
+  });
+
+  it('lists a closed profile with no close and a way to delete it', async () => {
+    vi.mocked(listProfiles).mockResolvedValue([
+      { name: 'hunt', owner: '', running: false, windowed: false },
+    ]);
+    const shown = show(false, true, { org: 'Busytools', project: 'forge', label: 'lead' });
+    click(shown.target.querySelector('.bz-tog'));
+    await vi.waitFor(() => expect(shown.target.textContent).toContain('hunt'));
+
+    expect(shown.target.textContent, 'a closed profile says what it still holds').toContain(
+      'its logins are still here',
+    );
+    expect(
+      shown.target.querySelector('.bz-close'),
+      'nothing is open for close to close',
+    ).toBeNull();
+    expect(
+      shown.target.querySelector('.bz-del'),
+      'and the delete is the door that reaches it',
+    ).not.toBeNull();
+    shown.stop();
+  });
+
+  it('takes escape as leaving the confirm, not the panel', async () => {
+    vi.mocked(listProfiles).mockResolvedValue([
+      { name: 'hunt', owner: 'Busytools/forge/lead', running: true, windowed: false },
+    ]);
+    const shown = show(false, true);
+    click(shown.target.querySelector('.bz-tog'));
+    await vi.waitFor(() => expect(shown.target.textContent).toContain('hunt'));
+
+    click(shown.target.querySelector('.bz-del'));
+    const confirm = shown.target.querySelector('.bz-del.confirm');
+    if (!(confirm instanceof HTMLElement)) throw new Error('no confirm');
+    confirm.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    flushSync();
+
+    expect(shown.target.textContent, 'the warning goes').not.toContain(
+      'its logins and cookies go with it',
+    );
+    expect(
+      shown.target.querySelector('.bz-list'),
+      'and the list the reader was in stays open',
+    ).not.toBeNull();
     shown.stop();
   });
 

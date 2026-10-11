@@ -4,6 +4,7 @@
     browserUsed,
     canHost,
     closeProfile,
+    deleteProfile,
     hideBrowser,
     listProfiles,
     profileWindowed,
@@ -49,8 +50,22 @@
    * list can say what THIS slot holds rather than what the client holds.
    */
   const mine = $derived(slot === null ? null : `${slot.org}/${slot.project}/${slot.label}`);
-  /** The rows this slot reads: its own, or all of them where there is no slot. */
-  const shown = $derived(mine === null ? profiles : profiles.filter((row) => row.owner === mine));
+  /**
+   * The rows this slot reads: its own, or all of them where there is no slot
+   * - **and every ownerless row**, which is a closed profile the person can
+   * still delete. An entryless profile belongs to no seat, so a filter by
+   * seat alone would hide the one place its logins can be removed from.
+   */
+  const shown = $derived(
+    mine === null ? profiles : profiles.filter((row) => row.owner === mine || row.owner === ''),
+  );
+  /**
+   * The row whose delete is confirming, and the row a delete is running for:
+   * Shape A - the confirm happens in the row itself (Ved's pick, 2026-10-11).
+   * One at a time, and the confirm clears on every door that closes the list.
+   */
+  let armed = $state<string | null>(null);
+  let deleting = $state<string | null>(null);
   /** Whether the SHARED browser is up as a window: its row's button says hide
    *  where it is, and the collapsed row marks it without opening. */
   let sharedUp = $state(false);
@@ -167,11 +182,18 @@
     void readProfiles();
   }
 
+  /** Every door that closes the list takes an unconfirmed delete with it: a
+   *  confirm left armed behind a closed panel is a click waiting to happen. */
+  function shut(): void {
+    open = false;
+    armed = null;
+  }
+
   function arm(): void {
     if (leaving !== null) clearTimeout(leaving);
     leaving = setTimeout(() => {
       leaving = null;
-      open = false;
+      shut();
     }, 120);
   }
 
@@ -269,7 +291,7 @@
     const away = (event: PointerEvent): void => {
       const at = event.target;
       if (at instanceof Node && segEl !== null && segEl.contains(at)) return;
-      open = false;
+      shut();
     };
     document.addEventListener('pointerdown', away);
     return () => document.removeEventListener('pointerdown', away);
@@ -281,7 +303,7 @@
     if (open) {
       if (leaving !== null) clearTimeout(leaving);
       leaving = null;
-      open = false;
+      shut();
       return;
     }
     hold();
@@ -292,10 +314,16 @@
    * to the body, where Escape reaches nothing. */
   function esc(event: KeyboardEvent): void {
     if (event.key !== 'Escape') return;
+    // Escape inside the confirm keeps the list: the reader is backing out of
+    // the delete, not out of the panel.
+    if (armed !== null) {
+      armed = null;
+      return;
+    }
     toToggle();
     if (leaving !== null) clearTimeout(leaving);
     leaving = null;
-    open = false;
+    shut();
   }
 
   /**
@@ -338,6 +366,30 @@
       (error: unknown) => {
         // A close the shell refused leaves the profile open, and the row says
         // so rather than vanishing over a name that is still held.
+        read = 'failed';
+        why = whyText(error);
+      },
+    );
+  }
+
+  /**
+   * The person's delete, after the row's own confirmation: the browser goes,
+   * the name goes, and the files go with them.
+   *
+   * The row says it is deleting while the shell works - a delete waits out a
+   * call in flight rather than refusing - and the why line answers a
+   * refusal, the same shape close keeps.
+   */
+  function del(row: ProfileRow): void {
+    armed = null;
+    deleting = row.name;
+    void deleteProfile(row.name).then(
+      () => {
+        deleting = null;
+        void readProfiles();
+      },
+      (error: unknown) => {
+        deleting = null;
         read = 'failed';
         why = whyText(error);
       },
@@ -442,38 +494,95 @@
       </div>
 
       {#each shown as row (row.name)}
-        <div class="bz-it">
-          {#if row.running}
+        {#if armed === row.name}
+          <!-- **The confirm happens in the row itself** (Ved's pick,
+               2026-10-11): the warning takes the row's own text line and the
+               pair replaces the verbs - the action is the row's, so its
+               answer is too. -->
+          <div class="bz-it">
             <span class="ring"></span>
-          {:else}
-            <Icon name="x" class="bad" />
-          {/if}
-          <span class="nm">{row.name}</span>
-          <span class="tx">{row.owner}{row.running ? '' : ' · its driver is gone'}</span>
-          <!-- **The row's own door to its own browser**, the shared row's
-               show one level down: this profile's window over this
-               profile's browser, on this profile's page. -->
-          <button
-            type="button"
-            class="bz-take bz-show"
-            aria-label={row.windowed
-              ? `hide the ${row.name} profile's window`
-              : `show the ${row.name} profile's browser`}
-            onclick={() => (row.windowed ? lower(row.name) : show(row.name))}
-            onkeydown={esc}
-          >
-            {row.windowed ? 'hide' : 'show'}
-          </button>
-          <button
-            type="button"
-            class="bz-take bz-close"
-            aria-label="close the {row.name} profile"
-            onclick={() => close(row)}
-            onkeydown={esc}
-          >
-            close
-          </button>
-        </div>
+            <span class="nm">{row.name}</span>
+            <span class="tx warn">its logins and cookies go with it</span>
+            <button
+              type="button"
+              class="bz-take bz-del confirm"
+              aria-label="delete the {row.name} profile and its logins for good"
+              onclick={() => del(row)}
+              onkeydown={esc}
+            >
+              delete it
+            </button>
+            <button
+              type="button"
+              class="bz-take"
+              aria-label="keep the {row.name} profile"
+              onclick={() => (armed = null)}
+              onkeydown={esc}
+            >
+              keep
+            </button>
+          </div>
+        {:else if deleting === row.name}
+          <div class="bz-it">
+            <span class="ring"></span>
+            <span class="nm">{row.name}</span>
+            <span class="tx">deleting...</span>
+          </div>
+        {:else}
+          <div class="bz-it">
+            {#if row.running}
+              <span class="ring"></span>
+            {:else}
+              <Icon name="x" class="bad" />
+            {/if}
+            <span class="nm">{row.name}</span>
+            <!-- A closed profile - a directory with no entry - says so in
+                 place of the owner it has none of: its logins are here and
+                 this row is where they go. -->
+            <span class="tx">
+              {row.owner === '' ? 'closed · its logins are still here' : row.owner}
+              {row.running || row.owner === '' ? '' : ' · its driver is gone'}
+            </span>
+            <!-- **The row's own door to its own browser**, the shared row's
+                 show one level down: this profile's window over this
+                 profile's browser, on this profile's page. -->
+            <button
+              type="button"
+              class="bz-take bz-show"
+              aria-label={row.windowed
+                ? `hide the ${row.name} profile's window`
+                : `show the ${row.name} profile's browser`}
+              onclick={() => (row.windowed ? lower(row.name) : show(row.name))}
+              onkeydown={esc}
+            >
+              {row.windowed ? 'hide' : 'show'}
+            </button>
+            {#if row.owner !== ''}
+              <button
+                type="button"
+                class="bz-take bz-close"
+                aria-label="close the {row.name} profile"
+                onclick={() => close(row)}
+                onkeydown={esc}
+              >
+                close
+              </button>
+            {/if}
+            <!-- **Delete is its own verb, not a stronger close.** Close
+                 frees the name and keeps the logins; this removes them, so
+                 it is worn apart from the pair beside it and it confirms in
+                 place. -->
+            <button
+              type="button"
+              class="bz-take bz-del"
+              aria-label="delete the {row.name} profile and its logins"
+              onclick={() => (armed = row.name)}
+              onkeydown={esc}
+            >
+              delete
+            </button>
+          </div>
+        {/if}
       {/each}
       {#if read === 'loading'}
         <div class="bz-it"><span class="tx">reading the profiles…</span></div>
