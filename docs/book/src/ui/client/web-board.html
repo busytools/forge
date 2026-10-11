@@ -118,7 +118,10 @@
   .b-owner { display: inline-flex; align-items: center; gap: 6px; }
   .b-ava { width: 18px; height: 18px; border-radius: 50%; background: var(--s3); color: var(--muted);
     display: inline-flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 600; }
-  .b-epic { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* the tree reads in two marks: a parent wears the epic pill and a solid
+     left spine, a child the epic's name pill and a dimmer spine */
+  .b-card.epic { border-left: 2px solid var(--blue); }
+  .b-card.tree { border-left: 2px solid rgba(97,160,224,.35); }
   .b-meta a { color: var(--blue); text-decoration: none; }
   .b-link { color: var(--muted); }
   .b-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-left: auto; }
@@ -332,7 +335,7 @@
 
     <section class="b-lane" data-state="in_progress">
       <div class="b-cap"><span class="b-lane-nm">In progress</span><span class="b-count">2</span><span class="b-rule"></span></div>
-      <article class="b-card">
+      <article class="b-card tree">
         <div class="b-row1">
           <span class="b-mark b-run"></span>
           <span class="b-sub">
@@ -342,7 +345,7 @@
         </div>
         <div class="b-meta">
           <span class="b-owner"><span class="b-ava">F</span>forge</span>
-          <span class="b-epic">the board walk</span>
+          <span class="b-chip blue b-epic-pill">&#8627; the board walk</span>
           <a href="#">spec</a><a href="#">#1886</a>
           <span class="b-chips"><span class="b-chip dim">attempt 1</span></span>
         </div>
@@ -379,7 +382,7 @@
 
     <section class="b-lane" data-state="completed">
       <div class="b-cap"><span class="b-lane-nm">Completed</span><span class="b-count">1</span><span class="b-rule"></span></div>
-      <article class="b-card">
+      <article class="b-card epic">
         <div class="b-row1">
           <span class="b-mark b-done"><svg class="ic" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg></span>
           <span class="b-sub settled">
@@ -388,6 +391,7 @@
         </div>
         <div class="b-meta">
           <span class="b-owner"><span class="b-ava">F</span>forge</span>
+          <span class="b-chip blue b-epic-pill">&#9636; epic</span>
           <span class="b-chips">
             <span class="b-chip">5/5 done</span>
             <span class="b-chip blue">to close</span>

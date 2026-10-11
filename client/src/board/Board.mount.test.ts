@@ -640,6 +640,67 @@ describe("the board's controls", () => {
     const unowned = [...cards].find((card) => card.querySelector('.b-un') !== null);
     expect(unowned, 'the unclaimed card names its owner-less state').not.toBeUndefined();
   });
+
+  /**
+   * **The epic's doors**: a child's pill jumps to its parent, and the
+   * parent's own page lists its tasks, each a door onto its card. The
+   * epic's own pill is a label, not a control.
+   */
+  it('jumps between an epic and its tasks', async () => {
+    // jsdom performs no layout: scrollIntoView is a browser call the jump
+    // makes, so it is stubbed for the length of the case.
+    const original = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollIntoView');
+    Object.defineProperty(Element.prototype, 'scrollIntoView', {
+      value: (): void => {},
+      configurable: true,
+      writable: true,
+    });
+    summon(
+      wireWith([
+        row(task('epic', 'the epic', 'pending'), { rollup: [1, 2] }),
+        row(task('child', 'a child', 'waiting', { parent: 'epic' })),
+      ]),
+    );
+
+    // The child names its epic in a pill and jumps to it.
+    const pill = document.querySelector<HTMLElement>('button[aria-label="jump to its epic"]');
+    if (pill === null) throw new Error('the epic pill is not on the page');
+    expect(pill.textContent).toContain('the epic');
+    pill.click();
+    flushSync();
+    const epicCard = document.querySelector<HTMLElement>('.b-card[data-id="epic"]');
+    expect(document.activeElement, 'the jump lands on the epic').toBe(epicCard);
+    expect(epicCard?.classList.contains('b-flash'), 'and the card flashes').toBe(true);
+
+    // The epic's pill is a label: a span, not a button.
+    const mark = epicCard?.querySelector('.b-epic-pill');
+    expect(mark?.tagName, 'the epic pill is a label').toBe('SPAN');
+
+    // Its page lists its tasks; picking one closes the page and lands on
+    // the task's card.
+    if (epicCard === null) throw new Error('no epic card');
+    epicCard.dispatchEvent(
+      new MouseEvent('pointerdown', { bubbles: true, clientX: 10, clientY: 10, button: 0 }),
+    );
+    window.dispatchEvent(new MouseEvent('pointerup', { clientX: 10, clientY: 10 }));
+    flushSync();
+    expect(document.querySelector('.dr'), 'the press opens the page').not.toBeNull();
+    const taskRow = document.querySelector<HTMLElement>('.dr .dr-kid');
+    if (taskRow === null) throw new Error('the task is not listed on the page');
+    expect(taskRow.textContent).toContain('a child');
+    taskRow.click();
+    flushSync();
+    await vi.waitFor(() => expect(document.querySelector('.dr')).toBeNull());
+    expect(document.activeElement, 'the pick lands on the task').toBe(
+      document.querySelector('.b-card[data-id="child"]'),
+    );
+
+    if (original !== undefined) {
+      Object.defineProperty(Element.prototype, 'scrollIntoView', original);
+    } else {
+      Reflect.deleteProperty(Element.prototype, 'scrollIntoView');
+    }
+  });
 });
 
 describe("the row's own page", () => {

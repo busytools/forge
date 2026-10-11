@@ -107,6 +107,29 @@ describe("one project's board", () => {
   });
 
   /**
+   * **A parent's own tasks, for its pill**: the children in the queue's
+   * order, each labelled with its lane's word, and a child carries its
+   * parent's id so the jump has somewhere to land.
+   */
+  it("lists a parent's own tasks in the queue's order", () => {
+    const wire = wireWith([
+      row(task('epic', 'the epic', 'pending')),
+      row(task('late', 'b child', 'in_progress', { parent: 'epic', rank: 2 })),
+      row(task('early', 'a child', 'waiting', { parent: 'epic', rank: 1 })),
+      row(task('loose', 'no parent', 'pending')),
+    ]);
+    const view = boardView(wire, 'TestOrg', 'proj');
+    const cards = view.lanes.flatMap((lane) => lane.cards);
+    const epic = cards.find((card) => card.id === 'epic');
+    expect(epic?.children.map((child) => child.id)).toEqual(['early', 'late']);
+    expect(epic?.children[0]?.label).toBe('Waiting \u{b7} a child');
+    const child = cards.find((card) => card.id === 'early');
+    expect(child?.epicId).toBe('epic');
+    expect(child?.epic).toBe('the epic');
+    expect(cards.find((card) => card.id === 'loose')?.epicId).toBeNull();
+  });
+
+  /**
    * The waiting section carries the rows that wait on the READER - a
    * verification and a question alike - with the facts the action needs.
    */

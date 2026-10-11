@@ -18,12 +18,22 @@ export interface BoardCardView {
   display: string;
   /** A row's parent subject, for a child card's meta line. */
   epic: string | null;
+  /** The parent's id, so the child's pill can jump to it. */
+  epicId: string | null;
+  /**
+   * A parent's own tasks, in the queue's order, each labelled with its
+   * lane's word - the list the epic's pill opens, so the reader can jump
+   * straight to one.
+   */
+  children: { id: string; label: string }[];
   status: TaskStatus;
   owner: string | null;
   /** The owner picker's initial: `lead` is one person here, so one letter. */
   initials: string;
   /** Worked time against the estimate, in the board's words. */
   worked: string;
+  /** The measure line's own words: worked, against the estimate where it has one. */
+  time: string;
   estimate: string | null;
   /** How far worked runs against the estimate: 0-1 for the rule under it. */
   ratio: number;
@@ -233,7 +243,11 @@ function laneOf(status: TaskStatus): LaneView['key'] {
 }
 
 /** One card, resolved. */
-function cardView(row: BoardRow, epic: string | null): BoardCardView {
+function cardView(
+  row: BoardRow,
+  epic: string | null,
+  children: { id: string; label: string }[],
+): BoardCardView {
   const task = row.task;
   const estimate = task.estimate;
   const ratio =
@@ -254,12 +268,18 @@ function cardView(row: BoardRow, epic: string | null): BoardCardView {
         ? task.active_form
         : task.subject,
     epic,
+    epicId: task.parent,
+    children,
     status: task.status,
     owner: task.owner === null ? null : task.owner.label,
     initials: (task.owner === null || task.owner.label === '' ? '?' : task.owner.label)
       .slice(0, 1)
       .toUpperCase(),
     worked: fmtSecs(row.worked_secs),
+    time:
+      estimate === null
+        ? `worked ${fmtSecs(row.worked_secs)}`
+        : `worked ${fmtSecs(row.worked_secs)} / ${estimate.words}`,
     estimate: estimate === null ? null : estimate.words,
     ratio,
     tone,
@@ -318,10 +338,18 @@ export function boardView(wire: HomeWire, org: string, project: string): BoardVi
   });
   const subjectOf = (parent: string | null): string | null =>
     parent === null ? null : (ordered.find((e) => e.task.id === parent)?.task.subject ?? null);
+  const laneName = new Map(lanes.map((lane) => [lane.key, lane.name]));
+  const childrenOf = (id: string): { id: string; label: string }[] =>
+    ordered
+      .filter((e) => e.task.parent === id)
+      .map((e) => ({
+        id: e.task.id,
+        label: `${laneName.get(e.task.status) ?? e.task.status} \u{b7} ${e.task.subject}`,
+      }));
   for (const entry of ordered) {
     const target = lanes.find((lane) => lane.key === laneOf(entry.task.status));
     if (target === undefined) continue;
-    target.cards.push(cardView(entry, subjectOf(entry.task.parent)));
+    target.cards.push(cardView(entry, subjectOf(entry.task.parent), childrenOf(entry.task.id)));
   }
   for (const lane of lanes) lane.count = lane.cards.length;
   const waiting = ordered

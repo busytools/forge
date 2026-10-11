@@ -414,7 +414,12 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
   width: 18px; height: 18px; border-radius: 50%; background: var(--s3); color: var(--muted);
   display: inline-flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 600;
 }
-.b-epic { color: var(--muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* the epic's doors: the pill a child jumps from, and the pill that opens a
+   parent's own tasks. The spine carries the tree when B was picked. */
+.b-epic-pill { border: 0; font: inherit; font-size: var(--fs-data); cursor: pointer; max-width: 100%; }
+.b-card.epic { border-left: 2px solid var(--blue); }
+.b-card.tree { border-left: 2px solid rgba(97,160,224,.35); }
+.b-flash { outline: 2px solid var(--blue); outline-offset: 2px; }
 .b-meta a { color: var(--blue); text-decoration: none; }
 .b-meta a:hover { text-decoration: underline; }
 .b-link { color: var(--muted); }
@@ -498,7 +503,7 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
 
 .b-create { display: flex; gap: 9px; align-items: center; flex-wrap: wrap; margin-top: 22px; }
 @media (pointer: coarse) {
-  .b-btn, .b-pick, .b-in, .b-seat, .b-item { min-height: 44px; }
+  .b-btn, .b-pick, .b-in, .b-seat, .b-item, button.b-chip { min-height: 44px; }
 }
 
 /* ---------- the drawer: one row's own page over the board ---------- */
@@ -517,6 +522,7 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
   display: flex; align-items: flex-start; gap: 10px;
   padding: 14px 16px 12px; border-bottom: 1px solid var(--line);
 }
+.dr-head.tree { border-left: 2px solid rgba(97,160,224,.35); }
 .dr-state {
   display: inline-flex; align-items: center; gap: 5px; margin-top: 2px;
   font-family: var(--mono); font-size: 11px; color: var(--muted);
@@ -540,6 +546,17 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
 .dr-fields dd .dim { color: var(--dim); }
 .dr-fields a { color: var(--blue); text-decoration: none; }
 .dr-detail { margin-top: 12px; color: var(--muted); font-size: 12.5px; white-space: pre-wrap; }
+/* a parent's own tasks: each row a door onto its card */
+.dr-kids { display: flex; flex-direction: column; gap: 4px; }
+.dr-kid {
+  display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+  background: var(--s2); border: 0; border-radius: 8px; padding: 8px 10px;
+  color: var(--text); font: inherit; font-family: var(--mono);
+  font-size: var(--fs-label); cursor: pointer;
+}
+.dr-kid:hover { background: var(--s3); }
+.dr-kid .l { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dr-kid .go { color: var(--dim); }
 .dr h3 {
   margin: 20px 0 8px; font-size: 11px; letter-spacing: .09em;
   text-transform: uppercase; color: var(--dim); font-weight: 500;
@@ -584,7 +601,7 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
 .dr-last .dr-ses { margin: 0 0 0 10px; }
 @media (pointer: coarse) {
   .dr-x { min-width: 44px; min-height: 44px; }
-  .dr-btn, .dr-ask input { min-height: 44px; }
+  .dr-btn, .dr-ask input, .dr-kid { min-height: 44px; }
   .dr-ses { display: inline-flex; align-items: center; min-height: 44px; }
 }
 

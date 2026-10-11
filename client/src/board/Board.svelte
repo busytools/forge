@@ -214,6 +214,9 @@
    * project of the same name.
    */
   let opened = $state<string | null>(null);
+  /** The close that follows a jump: the target card takes the keyboard, so
+      the drawer does not hand it back to the one it opened from. */
+  let jumping = false;
   const openedRow = $derived(
     opened === null
       ? null
@@ -265,9 +268,10 @@
   function dropDrawer(): void {
     const id = opened;
     opened = null;
-    if (id !== null) {
+    if (id !== null && !jumping) {
       boardEl?.querySelector<HTMLElement>(`.b-card[data-id="${id}"]`)?.focus();
     }
+    jumping = false;
   }
 
   $effect(() => {
@@ -379,6 +383,19 @@
 
   /** The board element, for the drop's own animation. */
   let boardEl: HTMLElement | undefined = $state();
+
+  /**
+   * The reader's jump: a card named by a pill comes into view, takes the
+   * focus, and flashes so the eye lands with it.
+   */
+  function jumpTo(id: string): void {
+    const el = boardEl?.querySelector<HTMLElement>(`.b-card[data-id="${id}"]`);
+    if (el === undefined || el === null) return;
+    el.scrollIntoView({ behavior: 'auto', block: 'nearest', inline: 'nearest' });
+    el.focus();
+    el.classList.add('b-flash');
+    window.setTimeout(() => el.classList.remove('b-flash'), 1500);
+  }
 
   /**
    * A dropped card flies from where it was to where it landed: the element
@@ -600,6 +617,8 @@
             <article
               class="b-card"
               class:dragging={dragging?.id === row.id}
+              class:epic={row.rollup !== null}
+              class:tree={row.epic !== null}
               data-id={row.id}
               tabindex="0"
               onpointerdown={(event) => down(event, row)}
@@ -629,7 +648,21 @@
                 {:else}
                   <span class="b-un">unclaimed</span>
                 {/if}
-                {#if row.epic !== null}<span class="b-epic">{row.epic}</span>{/if}
+                {#if row.epic !== null && row.epicId !== null}
+                  <button
+                    type="button"
+                    class="b-chip blue b-epic-pill"
+                    aria-label="jump to its epic"
+                    onclick={() => {
+                      if (row.epicId !== null) jumpTo(row.epicId);
+                    }}>&#8627; {row.epic}</button
+                  >
+                {:else if row.epic !== null}
+                  <span class="b-chip blue b-epic-pill">&#8627; {row.epic}</span>
+                {/if}
+                {#if row.rollup !== null}
+                  <span class="b-chip blue b-epic-pill">&#9636; epic</span>
+                {/if}
                 {#each row.links as link (link.label)}
                   {#if link.href !== null}
                     <a href={link.href} target="_blank" rel="noreferrer">{link.label}</a>
@@ -650,10 +683,7 @@
                   class:over={row.tone === 'over'}
                   class:bad={row.tone === 'bad'}
                 >
-                  <span class="b-time"
-                    >worked {row.worked}{#if row.estimate !== null}
-                      / {row.estimate}{/if}</span
-                  >
+                  <span class="b-time">{row.time}</span>
                   {#if row.estimate !== null}
                     <span class="b-bar"><span class="b-fill" style="width:{fill(row)}"></span></span
                     >
@@ -735,6 +765,12 @@
       now={Date.now()}
       onact={act}
       onclose={closeDrawer}
+      tasks={cardOf(openedRow.task.id)?.children ?? []}
+      onjump={(id: string) => {
+        jumping = true;
+        closeDrawer();
+        jumpTo(id);
+      }}
     />
   {/if}
 </main>

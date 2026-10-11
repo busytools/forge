@@ -53,6 +53,13 @@ Three lines, top to bottom:
   since the row last moved (`wrote 12s ago`, breathing while the row is
   running and recently wrote).
 
+**The tree reads in two marks.** A parent's card wears an `epic` pill and a
+solid left spine; each child wears the epic's name in a pill with a return
+arrow and a dimmer spine, so a tree reads across lanes at a glance and the
+board still works without colour. The child's pill is a door: it brings the
+epic's own card into view and flashes it. The parent's pill is a label -
+what a parent's tasks are, and how to reach one, lives on the row's page.
+
 The mark carries shape as well as colour, so the board reads without colour:
 
 | Status | Mark | The state |
@@ -107,10 +114,11 @@ links), **Waiting on you** when the wait is a decision, carrying the waiting
 strip's own controls (`approve`, the send-back box, the answer box) - a
 dependency or resource wait draws the section without them - its
 **History** - the row's own transitions, which the core already records for
-the worked time - and the way into the owner's session. The button, the
-scrim and Escape all close it, and the card has the keyboard back when it
-goes. The board stays behind it, so a reader never loses the lane they were
-in.
+the worked time - **Its tasks** on a parent, each row a door that closes the
+page and lands on that card - and the way into the owner's session. The
+button, the scrim and Escape all close it, and the card has the keyboard
+back when it goes; a jump hands it to the card jumped to instead. The board
+stays behind it, so a reader never loses the lane they were in.
 
 **Every control is one command on the socket, carrying this project on it.**
 `task_move` moves a row between lanes and lands it at the drop's place,
