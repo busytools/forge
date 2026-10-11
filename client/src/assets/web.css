@@ -1143,7 +1143,6 @@ details.gfold[open] > summary .arw { color: var(--accent); }
    stretches over the whole row, and the close chip rides above it with a
    target of its own. */
 .pr, .wk { position: relative; }
-.rail-go { color: inherit; text-decoration: none; }
 .rail-go::after { content: ""; position: absolute; inset: 0; border-radius: 8px; }
 .rail-go:focus-visible { outline: none; }
 .rail-go:focus-visible::after { outline: 2px solid var(--blue); outline-offset: -2px; }

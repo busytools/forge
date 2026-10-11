@@ -437,5 +437,23 @@ describe('the rail rows are ways in', () => {
     );
     expect(rule('.rail-go::after'), 'the name stretches over the row').toContain('inset: 0');
     expect(rule('.pr .x, .wk .x'), 'and the chip sits above the stretch').toContain('z-index: 1');
+    expect(rule('.pr, .wk'), 'the rows are positioned at every pointer').toContain(
+      'position: relative',
+    );
+    // **Where the rules SIT is half the fix.** The stretch lived inside the
+    // coarse-pointer block before this change, and a `rule()` read is
+    // media-blind - slid back under a media block, every rendered assertion
+    // above still passes and the dead whitespace returns on a mouse. The
+    // block's own comment is the anchor: both rules must sit above it.
+    const coarse = sheet.indexOf('A thumb, not a cursor. The by-width checks');
+    expect(coarse, 'the touch block is in the sheet').toBeGreaterThan(-1);
+    expect(
+      sheet.indexOf('.pr, .wk { position: relative; }'),
+      'the positioning slid back under the touch block',
+    ).toBeLessThan(coarse);
+    expect(
+      sheet.indexOf('.rail-go::after {'),
+      'the stretch slid back under the touch block',
+    ).toBeLessThan(coarse);
   });
 });
