@@ -26,9 +26,8 @@ The session page, the chat and the composer are built; their drawings are
 here and their pages are still to land. `web-session.html` declares six
 sections and the client's plan owns four of them: the fifth is the
 composer's blocking states, and the sixth - the diff review overlay it
-named - is being built as a route of its own,
-[review.md](./review.md), whose rounds and threads have landed while its
-diff half has not.
+named - landed as a route of its own, [review.md](./review.md), which draws
+the rounds, the diff its threads are anchored to, and the writing.
 
 `web-queue.html` is the queued-prompt pile that draws above the composer:
 the variants it can be in, and the wire's own lifecycle it follows. It

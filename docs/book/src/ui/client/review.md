@@ -2,25 +2,61 @@
 
 One seat's reviews, addressed at
 `/session/{org}/{project}/{label}/review`: the loop's state, the threads
-whose code has moved out from under them, and the rounds newest first with
-each turn's own round on it. The drawing it is held against is
-[web-review.html](./web-review.html), beside this page.
+whose code has moved out from under them, the diff they are anchored to, and
+the writing - a comment on a line, a reply, a resolve, a round sealed. The
+drawing it is held against is [web-review.html](./web-review.html), beside
+this page.
 
 The route is a sub-path of the seat because the seat is what a review is
 keyed to: the record's review read is the seat's own branch, so reviewing a
 worker's work means opening that worker's seat. The page is reached by its
-URL today, and its back link names the seat it belongs to.
+URL, by the back link in its header, and by the strip's review row on the
+seat's own page.
 
-## What it draws
+## The two halves
+
+**Conversation** draws the review as it ran: the parked threads, then the
+rounds newest first.
+
+**Files changed** draws the review as it is anchored: the scope control, the
+file tree, and the diff with the threads on their lines.
 
 | Region | Shows | Read from |
 |---|---|---|
 | Header | the back link to the seat, `Review`, the branch, the round count, and the loop's state - `N replies to read`, in the warn tone while any thread waits on the reader, and `N open` | the record's `work.branch`, and the two review halves |
-| Outdated | every thread whose anchored code could not be placed, drawn against the lines captured when the comment was written | the threads half |
+| Tabs | `Conversation` and `Files changed`, with the commit count | the record's git chain |
+| Scope | the scope on screen, a stepper, the keys, and the unified/split picker | the record's git chain (the commit list) |
+| Tree | one file per row, its counts, and how many threads it carries | the scope's diff, and the threads in that scope |
+| Canvas | the scope's files as diffs, with each thread inserted under its own line and the composer under the line a comment is being written on | the scope's diff, the threads, and the server's landing per thread |
+| Outdated | every thread whose code could not be placed, drawn against the lines captured when the comment was written | the threads half |
 | Rounds | newest first: the round's number, its age, its tally by state, its summary, and each member thread | the rounds half |
+| Finish | the summary field and `finish review`, live once a comment is drafted | the page's own drafts |
 
-A round's members are the threads with any turn filed into it, so a thread
-the reviewer replied on across rounds counts under each of them.
+## A scope, and where a thread draws
+
+**A scope is All changes or one commit.** A thread is drawn only in the
+scope it was written in, because the numbering its anchor records is that
+scope's:
+
+- A commit-scoped thread sits at its recorded line. A commit's diff is
+  immutable, so that line is settled by construction - there is nothing to
+  re-resolve.
+- An all-changes thread sits where the server's landing puts it. The record
+  carries, per thread, the resolver's own answer against the content it
+  ships - placed at a line (with the line it moved from, when it moved), or
+  outdated with the resolver's reason. A thread with no landing carried -
+  a read that answered none - is parked rather than guessed onto its
+  recorded line.
+
+The keys: `[` and `]` step one scope, `a` flips between all changes and the
+commit you were on, and `j` opens the picker (arrows and Enter; Escape
+closes). They are live only while the diff half is on screen, and a keypress
+in a text field is the field's.
+
+The commit list is the record's own; a commit's diff is fetched when its
+scope is first shown, and not carried on the record - a branch can hold
+dozens of commits, and every reader of a record, the terminal included,
+would pay their content on every read for a scope only this page draws.
 
 ## A thread
 
@@ -32,13 +68,15 @@ file into rounds.
 
 The four states are the server's own: `open`, answered by nobody yet;
 `addressed`, the agent has answered and the ball is with the reader;
-`resolved`, read and accepted, drawn in full like every other thread;
-`outdated`, the anchored code moved too far to place. Two of those draw
-differently here than in the terminal, and both are the wire's limit rather
-than a choice: the terminal collapses a resolved thread to a marker and it
-says why an anchor could not be placed (gone, or matching several places),
-while a resolved thread is simply another thread on this page and the reason
-is computed by the terminal's own resolver and never crosses the wire.
+`resolved`, read and accepted; `outdated`, the anchored code moved too far
+to place. A resolved thread on the canvas collapses to its marker line; in
+the conversation it draws in full like every other thread. The set of
+threads the Outdated section lists is the page's own reading of the record:
+a thread whose landing says outdated parks, and so does one whose read
+carried no landing at all - whether the store's status agrees is not the
+test, because a store status was written by whichever view last resolved and
+cannot say where the code stands now. A thread with no rounds filed yet
+draws nothing in the conversation; it is a draft until a round seals it.
 
 The loop's `N replies to read` is derived rather than served: it counts the
 threads in `addressed` or `outdated` whose last turn is an agent's. An
@@ -53,6 +91,34 @@ change. The terminal's activity line - the `worker addressed review #N` row
 it drops into the chat - is that view's own and is not drawn here; the frame
 also carries nothing this page could not read from the record itself.
 
+## Writing
+
+The page writes through the same command surface the terminal's overlay
+writes with: a comment is an `upsert_review_thread` carrying the thread, a
+reply the same command with the reviewer's turn appended, a resolve or
+reopen a `set_review_thread_status`, and `finish review` a `submit_review`
+sealing every thread this sitting has drafted or replied on. The summary
+field is the round's own.
+
+**The anchor is captured where the lines are.** The comment is written on a
+line of the drawn diff, so the page takes that line's text, its neighbours
+within the hunk, and the crate's own hash of the line - the same capture the
+terminal's overlay takes from its own scan - and the thread carries it. The
+hash is FNV-1a over whitespace-collapsed UTF-8, and the vectors the client's
+implementation is pinned against live in the crate's resolver tests too: a
+hash the two disagree on would leave a thread written here unplaceable in
+the terminal.
+
+The hash crosses as decimal digits rather than a JSON number. JS numbers are
+doubles, exact only to 2^53, and the hash is a full u64 - so the anchor's
+serialization is the digits, and the deserializer accepts a number too,
+which is what blobs written before this held. A thread read back is echoed
+verbatim on a reply, so a round-trip cannot round the hash off.
+
+Every write re-reads the record when it lands, because nothing pushes a
+review change: the drawn round, the drawn thread and the header are always
+the store's own answer rather than the page's guess at what the write did.
+
 ## The states the page can be in
 
 - **A seat's reviews**, the ordinary case.
@@ -63,23 +129,30 @@ also carries nothing this page could not read from the record itself.
   drawn apart here - a failed threads read leaves the rounds drawn, and the
   reverse - and a half whose outcome this build cannot name draws that word
   rather than being folded into a failure it is not.
-- **Empty**: both halves read and nothing filed draws
-  `Nothing has been reviewed on this branch yet.`; threads drafted with no
-  round filed says how many are drafted.
+- **Empty**: both halves read and nothing filed draws `Nothing has been
+  reviewed on this branch yet.`; threads drafted with no round filed says how
+  many are drafted.
+- **A scope with nothing in it**: All changes on a branch with no commits of
+  its own says so; a commit that changed nothing says so; a scope whose read
+  failed says that; and an unnamed layer state draws its own word.
+- **A commit being fetched**: `Reading the commit...` until its answer
+  lands.
 
-## The seed, for now
+## The strip's row
 
-`?seed=1` files a round through the socket in a development build, so a
-scratch stack has something real to draw before the page composes its own.
-It lives under `client/src/dev/` behind the DEV guard with a dynamic import,
-the bundle guard asserts its marker is absent from the production build, and
-it deletes when the page composes and submits its own round.
+The seat's own page carries the door: the strip above its composer draws a
+review row once the record holds a review read - `N to read` while any
+thread waits on the reviewer, the thread count otherwise, and `review` on a
+branch with none - and its hover panel lists `open review`, then each thread
+by its file and line with its state and the turn a reader would be reading.
+A read that has not landed draws no row at all, which is the same
+distinction the page keeps between "nothing filed" and "not yet read".
 
 ## The two widths
 
 Checked at **1600** and at **430**. The header wraps rather than scrolling
-sideways, and the rounds and threads below it are one column at either
-width.
+sideways; the tree and the canvas stack below 980px and the page scrolls as
+one column.
 
 ## Where the surface differs from `web-session.html`
 
