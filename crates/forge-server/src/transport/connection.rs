@@ -11,8 +11,10 @@ use axum::response::Response;
 use futures_util::StreamExt;
 use tokio::sync::{mpsc, oneshot};
 
+use base64::Engine as _;
 use forge_primitives::SessionSlot;
 use forge_primitives::browser::BrowserPart;
+use forge_primitives::document::DocumentRead;
 use forge_workspace::browser::{BrowserRelay, BrowserRequest, RoleNotice};
 
 use super::PROTOCOL_VERSION;
@@ -1070,6 +1072,20 @@ async fn handle_client(
             )
             .await
         }
+        ClientMessage::DocumentRead { session, path, reviewable } => {
+            // A file off disk takes as long as it takes, so the read runs in
+            // a blocking task rather than inline - the same shape the device
+            // walk below takes. Nothing parks on the reader's pace: the
+            // answer is the read, and the review's finish is its own event.
+            let surface = Arc::clone(&state.surface);
+            let seat = session.clone();
+            let outcome = tokio::task::spawn_blocking(move || {
+                surface.read_document(&seat, &path, reviewable)
+            })
+            .await
+            .unwrap_or_else(|join| Err(join.to_string()));
+            send(socket, document_answer(&session, outcome)).await
+        }
         ClientMessage::Devices => {
             // The walk opens the microphone stack and takes as long as it
             // takes, so it runs in a blocking task rather than inline. This
@@ -1690,6 +1706,25 @@ async fn dispatch_answering(
 
 /// What a `devices` request is answered with: the walked list, or the walk's
 /// own refusal - which a client renders where the list would have been.
+/// One document read's outcome, as the asking client reads it: the answer
+/// with the document's bytes base64, or the refusal under the seat that
+/// asked - the seat is what lets a client holding several seats drain only
+/// its own.
+fn document_answer(seat: &SessionSlot, outcome: Result<DocumentRead, String>) -> ServerMessage {
+    match outcome {
+        Ok(read) => ServerMessage::DocumentRead {
+            session: seat.clone(),
+            path: read.path.to_string_lossy().into_owned(),
+            document_kind: read.kind,
+            bytes: base64::engine::general_purpose::STANDARD.encode(&read.bytes),
+            reviewable: read.reviewable,
+        },
+        Err(why) => {
+            ServerMessage::Error { what: "document_read".to_owned(), why, seat: Some(seat.clone()) }
+        }
+    }
+}
+
 fn devices_answer(outcome: Result<forge_workspace::DictateDeviceCatalog, String>) -> ServerMessage {
     match outcome {
         Ok(catalog) => ServerMessage::Devices {
@@ -2036,6 +2071,45 @@ mod tests {
         };
         assert_eq!(what, "devices", "the refusal names what was asked for");
         assert_eq!(why, "no audio host", "and carries the walk's own reason");
+    }
+
+    /// The read's two outcomes as a viewer draws them: the document with
+    /// its bytes base64 and its detected kind, or the error a route renders
+    /// where the document would have been - refused under the seat that
+    /// asked, so a client holding several seats drains only its own.
+    #[test]
+    fn a_document_answer_carries_the_bytes_and_the_kind_or_the_refusal() {
+        use forge_primitives::document::{DocumentKind, DocumentRead};
+
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        let landed = Ok(DocumentRead {
+            path: std::path::PathBuf::from("/proj/docs/readme.md"),
+            kind: DocumentKind::Markdown,
+            bytes: b"# hi\n".to_vec(),
+            reviewable: true,
+        });
+
+        let ServerMessage::DocumentRead { session, path, document_kind, bytes, reviewable } =
+            document_answer(&seat, landed)
+        else {
+            panic!("a read that landed is its own answer")
+        };
+        assert_eq!(session, seat, "the answer names the seat it was read for");
+        assert_eq!(path, "/proj/docs/readme.md", "and the resolved absolute path");
+        assert_eq!(document_kind, DocumentKind::Markdown, "and the kind the read detected");
+        assert_eq!(bytes, "IyBoaQo=", "the bytes base64: what a client decodes is the document");
+        assert!(reviewable, "and the flag the hand-off passed");
+
+        let refused = document_answer(
+            &seat,
+            Err("a PDF opens read-only; it cannot be handed reviewable".to_owned()),
+        );
+        let ServerMessage::Error { what, why, seat: named } = refused else {
+            panic!("a refused read is an error, not an empty document")
+        };
+        assert_eq!(what, "document_read", "the refusal names what was asked for");
+        assert!(why.contains("read-only"), "and carries the read's own reason: {why}");
+        assert_eq!(named, Some(seat), "under the seat that asked");
     }
 
     /// A transcript of `turns` single-frame turns, each a user row carrying

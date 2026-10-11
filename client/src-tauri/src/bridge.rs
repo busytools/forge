@@ -326,6 +326,20 @@ impl Bridge {
         true
     }
 
+    /// One document read for a viewer's route. False means no socket is
+    /// open and no answer is coming; the answer lands in the page's own
+    /// frame stream, where the route reads it.
+    pub fn read_document(&self, session: &Value, path: String, reviewable: bool) -> bool {
+        let state = self.lock();
+        if state.status != "open" {
+            return false;
+        }
+        if let Some(socket) = &state.socket {
+            socket.read_document(session.clone(), path, reviewable);
+        }
+        true
+    }
+
     /// Take the browser role from whoever holds it.
     pub fn take_role(&self) {
         let state = self.lock();

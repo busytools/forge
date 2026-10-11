@@ -33,6 +33,9 @@ anyhow = { workspace = true }
 # The socket. The pin and its other two features come from the workspace,
 # so `ws` is added here rather than the shared pin being moved.
 axum = { workspace = true, features = ["ws"] }
+# A document's bytes cross the socket base64: the wire is JSON, and a byte
+# array would serialise as a number per byte.
+base64 = { workspace = true }
 # The protocol client's own arguments. A BIN cannot see dev-dependencies, so
 # a binary crate's arguments are a real dependency or they are hand-parsed.
 clap = { workspace = true }

@@ -3,6 +3,7 @@
     "BrowserAsk": "browser_ask",
     "BrowserRole": "browser_role",
     "Devices": "devices",
+    "DocumentRead": "document_read",
     "Error": "error",
     "Greeting": "greeting",
     "Page": "page",
@@ -165,6 +166,7 @@
     "BrowserTakeRole": "browser_take_role",
     "Command": "command",
     "Devices": "devices",
+    "DocumentRead": "document_read",
     "More": "more",
     "Subscribe": "subscribe",
     "Unsubscribe": "unsubscribe"
@@ -457,6 +459,21 @@
       "/update/dictate_models_changed/models/updates[]/current": [
         "fleurs_en_wer",
         "speed_x"
+      ]
+    },
+    "DocumentRead": {
+      "": [
+        "bytes",
+        "document_kind",
+        "kind",
+        "path",
+        "reviewable",
+        "session"
+      ],
+      "/session": [
+        "label",
+        "org",
+        "project"
       ]
     },
     "Greeting": {
@@ -791,6 +808,19 @@
         "mime_type",
         "text",
         "type"
+      ]
+    },
+    "DocumentRead": {
+      "": [
+        "kind",
+        "path",
+        "reviewable",
+        "session"
+      ],
+      "/session": [
+        "label",
+        "org",
+        "project"
       ]
     },
     "Subscribe": {

@@ -171,6 +171,9 @@ pub mod env {
     pub mod cli_version {
         pub use forge_agent::env::cli_version::*;
     }
+    pub mod documents {
+        pub use forge_agent::env::documents::*;
+    }
     pub mod file_index {
         pub use forge_agent::env::file_index::*;
     }

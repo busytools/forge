@@ -72,6 +72,10 @@ struct ForgeToml {
     /// section means every name unset, which is the built-in.
     #[serde(default)]
     client: ClientConfig,
+    /// Optional `[documents]` section - the ceiling on one handed
+    /// document. Absent section keeps the 10 MiB default.
+    #[serde(default)]
+    documents: DocumentsSettings,
     /// Ghost of the renamed `[web]` section: read only so a stale
     /// forge.toml fails the load naming the rename instead of being
     /// refused as an unknown key. Not a warning like the other ghosts, and
@@ -106,6 +110,36 @@ struct ForgeToml {
     /// load; the project layer is applied at spawn. Absent -> empty.
     #[serde(default)]
     env: HashMap<String, String>,
+}
+
+/// The ceiling a handed document has to fit under when the
+/// `[documents] max_size_mib` key is absent, in MiB.
+pub const DEFAULT_DOCUMENT_MAX_MIB: u64 = 10;
+
+/// One `[documents]` table. Unknown fields are rejected so a mistyped
+/// key fails the load instead of being ignored.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DocumentsSettings {
+    /// The ceiling on one handed document, in MiB. The default is
+    /// [`DEFAULT_DOCUMENT_MAX_MIB`], and the key exists for the machine
+    /// that wants a different one.
+    #[serde(default)]
+    max_size_mib: Option<u64>,
+}
+
+impl DocumentsSettings {
+    /// The resolved ceiling in bytes. 0 and a magnitude a byte count
+    /// cannot hold are refused rather than obeyed: each would silently
+    /// mean something other than a ceiling.
+    fn resolved_max_bytes(&self, path: &Path) -> Result<u64, WorkspaceError> {
+        match self.max_size_mib {
+            None => Ok(DEFAULT_DOCUMENT_MAX_MIB * 1024 * 1024),
+            Some(mib) => mib.checked_mul(1024 * 1024).filter(|bytes| *bytes > 0).ok_or_else(|| {
+                WorkspaceError::DocumentCeilingInvalid { path: path.to_path_buf(), value: mib }
+            }),
+        }
+    }
 }
 
 /// One `[gateway]` table. Unknown fields are rejected so a mistyped
@@ -390,6 +424,10 @@ pub(crate) struct LoadedConfig {
     /// `[client]` section knobs. Absent section means every name unset,
     /// which is the built-in rather than a pin.
     pub client: ClientConfig,
+    /// The ceiling on one handed document, in bytes: `[documents]
+    /// max_size_mib` resolved, 10 MiB when the key is absent. Read by the
+    /// document read, which refuses over it.
+    pub document_max_bytes: u64,
 }
 
 /// The port the gateway's listener binds when `[gateway] port` is
@@ -494,6 +532,7 @@ impl LoadedConfig {
             gateway_rotation: forge_gateway::rotation::RotationNumbers::default(),
             server: ServerConfig::default(),
             client: ClientConfig::default(),
+            document_max_bytes: DEFAULT_DOCUMENT_MAX_MIB * 1024 * 1024,
         }
     }
 }
@@ -886,6 +925,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         None => forge_gateway::rotation::RotationNumbers::default(),
     };
     let server = resolve_server(parsed.server, gateway_port, &path)?;
+    let document_max_bytes = parsed.documents.resolved_max_bytes(&path)?;
     // A listener that never binds never hands a client its names either, so
     // a stale key there is not worth refusing the boot over - the call the
     // pre-split section made for every key at once.
@@ -914,6 +954,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         gateway_rotation,
         server,
         client,
+        document_max_bytes,
     })
 }
 
@@ -1131,6 +1172,79 @@ no_reset_cooldown_secs = 90
         assert_eq!(config.gateway_rotation.streak_count, 3);
         assert_eq!(config.gateway_rotation.streak_window, Duration::from_secs(45));
         assert_eq!(config.gateway_rotation.no_reset_cooldown, Duration::from_secs(90));
+    }
+
+    /// The document ceiling's default, stated where the key lives: an absent
+    /// `[documents]` section means 10 MiB.
+    #[test]
+    fn document_ceiling_defaults_when_the_section_is_absent() {
+        let dir = tempdir().expect("tempdir");
+        write_config(dir.path(), minimal_config());
+        let config = load_from_dir(dir.path()).expect("absent section loads");
+        assert_eq!(config.document_max_bytes, 10 * 1024 * 1024, "the 10 MiB default");
+    }
+
+    #[test]
+    fn document_ceiling_parses_from_the_section() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Stargate"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+auto_start = true
+
+[[accounts]]
+display_name = "Stargate"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+
+[documents]
+max_size_mib = 3
+"#,
+        );
+        let config = load_from_dir(dir.path()).expect("section loads");
+        assert_eq!(config.document_max_bytes, 3 * 1024 * 1024);
+    }
+
+    /// `max_size_mib = 0` is refused at load: it would refuse every document
+    /// the moment one is handed, which reads as a bug rather than a choice.
+    #[test]
+    fn document_ceiling_zero_is_refused_at_load() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Stargate"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+auto_start = true
+
+[[accounts]]
+display_name = "Stargate"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+
+[documents]
+max_size_mib = 0
+"#,
+        );
+        let err = load_from_dir(dir.path()).expect_err("0 must not load");
+        assert!(
+            err.to_string().contains("max_size_mib = 0"),
+            "the error names the unusable key, got: {err}",
+        );
     }
 
     /// On unless it is turned off, and on loopback: "on by default" must

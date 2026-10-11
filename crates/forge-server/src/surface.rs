@@ -31,6 +31,7 @@ pub use accounts::{AccountsView, GatewayView};
 pub use agents::{AgentRow, Agents, PendingKind};
 pub use dictate::DictateView;
 pub use extensions::{ExtensionsView, LspServerCheck};
+pub use forge_primitives::document::DocumentRead;
 // A view compares the values the surface hands it, so it needs their names
 // too - re-exported here rather than reached for in the crates below, which
 // a view does not name.
@@ -196,6 +197,32 @@ impl ViewSurface {
     /// lands.
     pub fn cli_version(&self) -> Option<CliVersionInfo> {
         self.workspace.cli_version()
+    }
+
+    /// One document, read out of the seat's own tree for a viewer's route.
+    ///
+    /// `path` resolves against the session's working directory and
+    /// `reviewable` is what the hand-off flagged; both go to the read in
+    /// `forge_agent::env::documents`, whose refusals are the sentences a
+    /// route draws and a refused hand-off returns. The read is blocking
+    /// (a file off disk), so a caller offloads it rather than running it in
+    /// a handler.
+    pub fn read_document(
+        &self,
+        seat: &SessionSlot,
+        path: &str,
+        reviewable: bool,
+    ) -> Result<DocumentRead, String> {
+        let Some(cwd) = self.roster().cwd_for(seat) else {
+            return Err(format!("forge holds no session for {}", seat.display()));
+        };
+        forge_workspace::env::documents::read(
+            &cwd,
+            path,
+            reviewable,
+            self.workspace.document_max_bytes(),
+        )
+        .map_err(|refusal| refusal.to_string())
     }
 
     /// The conversation the session at `slot` holds, read from its own

@@ -208,6 +208,15 @@ function isSlot(value: unknown): value is SessionSlot {
   );
 }
 
+/**
+ * What a document is, as the read detected it.
+ *
+ * `other` is kept as itself rather than bucketed - the lowercased bare
+ * extension, or empty when the name carries none - so a viewer draws the
+ * kind it was handed instead of one label for everything unknown.
+ */
+export type DocumentKind = 'markdown' | 'pdf' | 'text' | { other: string };
+
 /** One input forge can record from, as the socket names it. */
 export interface DictateDevice {
   /**
@@ -259,6 +268,15 @@ export type ClientMessage =
    * `devices` message or an `error` naming it, and those are its only two.
    */
   | { kind: 'devices' }
+  /**
+   * Ask for one document out of a seat's own tree, for a viewer's route.
+   *
+   * `path` resolves against the seat's working directory, and `reviewable`
+   * is what a hand-off flagged: it rides the read back so the route knows
+   * whether to offer comments. The answer is a `document_read` message or
+   * an `error` naming it, and those are its only two.
+   */
+  | { kind: 'document_read'; session: SessionSlot; path: string; reviewable: boolean }
   /**
    * The host's answer to one `browser_ask`.
    *
@@ -327,6 +345,24 @@ export type ServerMessage =
    * current input is wrong from its first pick onward.
    */
   | { kind: 'devices'; devices: DictateDevice[]; configured: string | null }
+  /**
+   * One document, as the read answered: the seat it was read for, the
+   * resolved absolute path, the detected kind, the bytes base64, and the
+   * flag the hand-off passed.
+   *
+   * `session` is named back so a page holding two seats routes each answer
+   * to its own viewer - the same reason a refusal names its seat. `bytes`
+   * is base64 because the wire is JSON, and `document_kind` because the
+   * envelope is already tagged on `kind`.
+   */
+  | {
+      kind: 'document_read';
+      session: SessionSlot;
+      path: string;
+      document_kind: DocumentKind;
+      bytes: string;
+      reviewable: boolean;
+    }
   /** The answer to a command that asked for one, a refusal included. */
   | { kind: 'reply'; reply_to: number; body: unknown }
   /**

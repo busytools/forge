@@ -249,6 +249,7 @@ census!(ServerMessage,
     [
         Greeting struct, Snapshot struct, Update struct, Page struct,
         Devices struct, Reply struct, BrowserRole struct, Error struct, BrowserAsk struct,
+        DocumentRead struct,
     ],
     server_message_census, SERVER_MESSAGE_VARIANTS);
 
@@ -327,6 +328,7 @@ census!(ClientMessage,
         Subscribe struct, Unsubscribe struct, Command struct, More struct, Devices struct,
         BrowserAnswer struct,
         BrowserTakeRole struct,
+        DocumentRead struct,
     ],
     client_message_census, CLIENT_MESSAGE_VARIANTS);
 
@@ -582,6 +584,13 @@ fn frames_record() -> Value {
             tool: "browser_navigate".to_owned(),
             args: json!({ "url": "https://example.com" }),
         },
+        ServerMessage::DocumentRead {
+            session: seat.clone(),
+            path: "/proj/docs/readme.md".to_owned(),
+            document_kind: forge_primitives::document::DocumentKind::Markdown,
+            bytes: "IyBoaQo=".to_owned(),
+            reviewable: true,
+        },
     ];
 
     for sample in &samples {
@@ -636,6 +645,11 @@ fn frames_record() -> Value {
             id: 1,
             parts: vec![forge_primitives::browser::BrowserPart::Text { text: "done".to_owned() }],
             error: None,
+        },
+        ClientMessage::DocumentRead {
+            session: seat.clone(),
+            path: "docs/readme.md".to_owned(),
+            reviewable: true,
         },
     ];
     for sample in &client_messages {
@@ -726,6 +740,22 @@ fn frames_record() -> Value {
     // ever.
     payload_sampled
         .insert("BrowserRole".to_owned(), shape_of(&ServerMessage::BrowserRole { hosting: true }));
+    // **The document read's answer, where a rename would leave the viewer
+    // rendering nothing.** `document_kind` is what a route branches on to
+    // pick its renderer and `bytes` is what it draws, and neither is a name
+    // the census sees - a rename inside this payload would fail nothing
+    // while the page drew a blank document. The seat crosses back because a
+    // client holding several seats routes each answer to its own viewer.
+    payload_sampled.insert(
+        "DocumentRead".to_owned(),
+        shape_of(&ServerMessage::DocumentRead {
+            session: seat.clone(),
+            path: "/proj/docs/readme.md".to_owned(),
+            document_kind: forge_primitives::document::DocumentKind::Markdown,
+            bytes: "IyBoaQo=".to_owned(),
+            reviewable: true,
+        }),
+    );
     // **The hand-off's own fields, where a rename proved invisible to the
     // census.** `context` became `profile` in v7 - the field crosses in this
     // update and in the snapshot's pending asks alike, and a one-sided rename
@@ -1146,6 +1176,18 @@ fn client_sampled() -> BTreeMap<String, BTreeMap<String, Value>> {
     sampled.insert(
         "Subscribe".to_owned(),
         sample(ClientMessage::Subscribe { what: Subject::Home, answering: false, browser: true }),
+    );
+    // A document read's ask: the page writes these fields by hand, so a
+    // rename here fails nothing until the viewer reads a document with a
+    // key nothing on the server reads - and the seat is what the path
+    // resolves against.
+    sampled.insert(
+        "DocumentRead".to_owned(),
+        sample(ClientMessage::DocumentRead {
+            session: SessionSlot::lead("TestOrg", "proj"),
+            path: "docs/readme.md".to_owned(),
+            reviewable: true,
+        }),
     );
     sampled
 }

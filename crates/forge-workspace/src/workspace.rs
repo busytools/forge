@@ -1726,6 +1726,13 @@ impl Workspace {
         self.config.client.clone()
     }
 
+    /// The ceiling on one handed document, in bytes: `[documents]
+    /// max_size_mib` over the crate's own default. Read by the document
+    /// read, which refuses a document over it.
+    pub fn document_max_bytes(&self) -> u64 {
+        self.config.document_max_bytes
+    }
+
     /// The browser relay: the one client connection that drives the browser.
     /// Read by the binary entry point, which hands it to the transport so a
     /// capable connection can take the role, and by the browser family's

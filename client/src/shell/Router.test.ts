@@ -28,6 +28,7 @@ function untouched(): Connection {
     dispatch: refuse,
     more: refuse,
     devices: refuse,
+    readDocument: refuse,
     frame: refuse,
     onBrowserAsk: refuse,
     browserRole: refuse,

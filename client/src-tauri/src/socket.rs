@@ -160,6 +160,14 @@ enum Outbound {
         turns: u64,
     },
     Devices,
+    /// One document read: the seat whose tree the path resolves against,
+    /// the path, and whether the hand-off flagged it reviewable. The answer
+    /// arrives as a plain server frame, so this half forwards and forgets.
+    DocumentRead {
+        session: Value,
+        path: String,
+        reviewable: bool,
+    },
     Dispatch {
         command: Value,
         reply: Option<u64>,
@@ -225,6 +233,15 @@ impl Socket {
     /// The dictation devices, answered by a `devices` frame.
     pub fn devices(&self) {
         let _ = self.tx.send(Outbound::Devices);
+    }
+
+    /// One document read: the seat whose tree the path resolves against,
+    /// the path, and whether the hand-off flagged it reviewable. Answered
+    /// by a `document_read` frame or an `error` naming it - the answer
+    /// carries the seat back, so a page holding two seats routes each
+    /// answer to its own viewer.
+    pub fn read_document(&self, session: Value, path: String, reviewable: bool) {
+        let _ = self.tx.send(Outbound::DocumentRead { session, path, reviewable });
     }
 
     /// Send one command. With `reply` the call awaits the core's reply
@@ -333,6 +350,7 @@ fn apply_offline(next: Outbound, held: &mut Vec<Held>, awaiting: &mut Vec<String
         }
         Outbound::More { .. }
         | Outbound::Devices
+        | Outbound::DocumentRead { .. }
         | Outbound::Answer { .. }
         | Outbound::TakeRole
         | Outbound::Binary(_)
@@ -487,6 +505,15 @@ async fn run(
                         }
                         Outbound::Devices => {
                             let _ = writer.send(Message::Text(json!({ "kind": "devices" }).to_string().into())).await;
+                        }
+                        Outbound::DocumentRead { session, path, reviewable } => {
+                            let _ = writer
+                                .send(Message::Text(
+                                    json!({ "kind": "document_read", "session": session, "path": path, "reviewable": reviewable })
+                                        .to_string()
+                                        .into(),
+                                ))
+                                .await;
                         }
                         Outbound::Dispatch { command, reply, sent, replied } => {
                             let ok = writer
@@ -808,6 +835,23 @@ pub(crate) mod tests {
         let first = stub.heard_until(|v| v["kind"] == "subscribe").await;
         assert_eq!(first["what"], json!("home"));
         assert_eq!(first["browser"], true);
+    }
+
+    /// A document read crosses as its own frame, with the seat, the path
+    /// and the reviewable flag the page asked with - the answer arrives as
+    /// a plain server frame, so this half forwards and forgets.
+    #[tokio::test]
+    async fn forwards_a_document_read_with_its_seat_and_flags() {
+        let mut stub = stub().await;
+        let (socket, _rx) = connected(&stub).await;
+        let seat = json!({ "org": "Busytools", "project": "forge", "label": "lead" });
+
+        socket.read_document(seat.clone(), "docs/readme.md".to_owned(), true);
+
+        let heard = stub.heard_until(|v| v["kind"] == "document_read").await;
+        assert_eq!(heard["session"], seat, "the seat whose tree the path resolves against");
+        assert_eq!(heard["path"], "docs/readme.md");
+        assert_eq!(heard["reviewable"], true);
     }
 
     /// The declaration rides every subscribe, and a refusal goes to the

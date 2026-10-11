@@ -6,6 +6,7 @@
 //! adding a variant is compatible and renaming one is not.
 
 use forge_primitives::browser::BrowserPart;
+use forge_primitives::document::DocumentKind;
 use forge_primitives::{ClientConfig, SessionSlot};
 use forge_workspace::DictateAxes;
 use serde::{Deserialize, Serialize};
@@ -192,6 +193,17 @@ pub enum ClientMessage {
     /// and its in-flight calls fail, so a take-over is loud on both sides
     /// rather than half-done.
     BrowserTakeRole,
+    /// One document, read out of a seat's own tree for a viewer's route.
+    ///
+    /// `path` resolves against the seat's working directory, and `reviewable`
+    /// is what the hand-off flagged: it rides the read back so the route
+    /// knows whether to offer comments. The answer is a `document_read`
+    /// message or an `error` naming it; those are its only two.
+    DocumentRead {
+        session: SessionSlot,
+        path: String,
+        reviewable: bool,
+    },
 }
 
 /// What the server sends.
@@ -283,6 +295,23 @@ pub enum ServerMessage {
         /// The arguments the CLI sent, verbatim: the driver validates them
         /// against the same schema the tool published.
         args: serde_json::Value,
+    },
+    /// One document, as the read answered: the seat it was read for, the
+    /// path it resolved to, the bytes, the detected kind, and the flag the
+    /// hand-off passed.
+    ///
+    /// `session` is named back so a client holding two seats routes each
+    /// answer to its own viewer - the same reason a refusal names its seat.
+    /// `bytes` are base64: the ceiling makes a document up to a third
+    /// larger than its file, well inside the socket's own frame bound.
+    /// `document_kind` and not `kind`: a field named `kind` collides with
+    /// the envelope's own tag.
+    DocumentRead {
+        session: SessionSlot,
+        path: String,
+        document_kind: DocumentKind,
+        bytes: String,
+        reviewable: bool,
     },
 }
 
@@ -444,6 +473,51 @@ mod tests {
         };
         assert_eq!(devices.len(), 1, "the list crosses with its rows");
         assert_eq!(configured.as_deref(), Some("a-mic"), "and so does the configured pin");
+    }
+
+    /// The document read a viewer's route makes, and the answer it gets.
+    ///
+    /// The request names the seat whose tree the path resolves against; the
+    /// answer names that seat BACK, so a client holding two seats routes
+    /// each answer to its own viewer rather than to whichever asked last.
+    #[test]
+    fn a_document_read_request_and_its_answer_round_trip_through_json() {
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        let asked = ClientMessage::DocumentRead {
+            session: seat.clone(),
+            path: "docs/readme.md".to_owned(),
+            reviewable: true,
+        };
+        let json = serde_json::to_string(&asked).expect("encode");
+        assert!(json.contains("\"kind\":\"document_read\""), "{json}");
+        let ClientMessage::DocumentRead { session, path, reviewable } =
+            serde_json::from_str(&json).expect("decode")
+        else {
+            panic!("{json} decoded into another message")
+        };
+        assert_eq!(session, seat, "the seat whose tree the path resolves against");
+        assert_eq!(path, "docs/readme.md");
+        assert!(reviewable, "the flag the hand-off passed");
+
+        let answer = ServerMessage::DocumentRead {
+            session: seat.clone(),
+            path: "/Users/me/proj/docs/readme.md".to_owned(),
+            document_kind: DocumentKind::Markdown,
+            bytes: "aGk=".to_owned(),
+            reviewable: true,
+        };
+        let json = serde_json::to_string(&answer).expect("encode");
+        assert!(json.contains("\"kind\":\"document_read\""), "{json}");
+        let ServerMessage::DocumentRead { session, path, document_kind, bytes, reviewable } =
+            serde_json::from_str(&json).expect("decode")
+        else {
+            panic!("{json} decoded into another message")
+        };
+        assert_eq!(session, seat, "the answer names its seat back");
+        assert_eq!(path, "/Users/me/proj/docs/readme.md", "the resolved absolute path");
+        assert_eq!(document_kind, DocumentKind::Markdown, "the kind the read detected");
+        assert_eq!(bytes, "aGk=", "the document's bytes, base64, as they cross");
+        assert!(reviewable);
     }
 
     #[test]
