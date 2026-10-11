@@ -525,8 +525,9 @@ impl BrowserHost {
         }
     }
 
-    /// The phone has no named profiles; the delete says so in the same
-    /// sentence its close does.
+    /// The phone runs one browser and no named profiles, so a delete refuses
+    /// by name; the close's way forward - call without the name - is no door
+    /// for a delete.
     #[cfg(target_os = "android")]
     pub async fn delete(&self, name: &str) -> Result<(), String> {
         self.paths.clone()?;
