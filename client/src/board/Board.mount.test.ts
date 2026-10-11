@@ -277,10 +277,13 @@ describe("the board's controls", () => {
       flushSync();
     };
 
-    // Onto the Waiting lane: the row moves state, and the card lands in
-    // that lane at once - before any wire snapshot could arrive.
+    // Onto the Waiting lane: the row moves state and carries its place, and
+    // the card lands in that lane at once - before any wire snapshot could
+    // arrive.
     drag(() => document.querySelector('.b-lane[data-state="waiting"]'));
-    expect(acts[0]).toEqual({ task_move: { project: 'proj', id: 't2', to: 'waiting' } });
+    expect(acts[0]).toEqual({
+      task_move: { project: 'proj', id: 't2', to: 'waiting', place: { before: null } },
+    });
     expect(
       document.querySelector('.b-lane[data-state="waiting"] .b-card[data-id="t2"]'),
       'the card is in its new lane the moment the pointer lets go',

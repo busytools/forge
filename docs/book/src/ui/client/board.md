@@ -85,11 +85,13 @@ label, and a path or a branch draws as text rather than a dead anchor.
 ## Moving a card
 
 The drag is the board's interaction, and what the card lands on decides the
-command: another lane is a move (`task_move`), a position inside its own lane
-is a re-rank by drop position (`task_rank`), and a seat chip is an assignment
-(`task_assign`). A press that never passes six pixels is a click, which opens
-the row's own page. A dropped card lands where it was put at once and the
-wire's own snapshot reconciles it a moment later; it animates into place
+command: another lane is a move carrying its place (`task_move`), a position
+inside its own lane is a re-rank by drop position (`task_rank`), and a seat
+chip is an assignment (`task_assign`). A lane's whole column takes the drop,
+an empty one included, and the place the drop chose is the priority the row
+keeps on either path. A press that never passes six pixels is a click, which
+opens the row's own page. A dropped card lands where it was put at once and
+the wire's own snapshot reconciles it a moment later; it animates into place
 unless the reader has asked for reduced motion, and the card under the
 pointer tilts and lifts.
 
@@ -111,7 +113,8 @@ goes. The board stays behind it, so a reader never loses the lane they were
 in.
 
 **Every control is one command on the socket, carrying this project on it.**
-`task_move` moves a row between lanes, `task_rank` re-orders it,
+`task_move` moves a row between lanes and lands it at the drop's place,
+`task_rank` re-orders it,
 `task_assign` changes its owner, `task_verdict` approves or sends back a
 verify row, `task_answer` answers a question, `task_create` files a row. A
 refused edit says so on the service line rather than silently reverting, and

@@ -416,13 +416,23 @@
       } else if (dropLane !== null && card !== undefined && card.status !== dropLane) {
         // The card lands where it was dropped right away; the wire catches
         // up. Only when the edit went: a move the socket never took must not
-        // leave the card where the core will never put it. `ranked: false` -
-        // a drop onto another lane asks for the state, not the position.
-        if (act({ task_move: { project, id: dragging.id, to: dropLane } })) {
+        // leave the card where the core will never put it. The drop carries
+        // its place on either path - the position the reader chose is the
+        // priority the row lands with.
+        if (
+          act({
+            task_move: {
+              project,
+              id: dragging.id,
+              to: dropLane,
+              place: { before: dropBefore },
+            },
+          })
+        ) {
           moved[dragging.id] = {
             to: dropLane,
             before: dropBefore,
-            ranked: false,
+            ranked: true,
             at: Date.now(),
           };
           if (box !== undefined) settle(dragging.id, box);

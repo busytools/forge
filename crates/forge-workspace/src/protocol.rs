@@ -576,10 +576,14 @@ pub enum Command {
         parent: Option<String>,
     },
     /// The user moves a row's state directly - the drag across the board.
+    /// `place` carries where a drop landed, so the position the user chose
+    /// is the priority the row keeps; a keyboard lane step carries none.
     TaskMove {
         project: String,
         id: String,
         to: forge_primitives::tasks::TaskStatus,
+        #[serde(default)]
+        place: Option<RankMove>,
     },
     /// Cross-project delivery (#114 v1). Dispatched by the
     /// `mcp__forge__agents__send_message` tool impl via
@@ -1134,11 +1138,12 @@ impl std::fmt::Debug for Command {
                 .field("project", project)
                 .field("subject", subject)
                 .finish_non_exhaustive(),
-            Self::TaskMove { project, id, to } => f
+            Self::TaskMove { project, id, to, place } => f
                 .debug_struct("TaskMove")
                 .field("project", project)
                 .field("id", id)
                 .field("to", to)
+                .field("place", place)
                 .finish_non_exhaustive(),
             Self::PluginInstall { plugin_id, scope, project } => f
                 .debug_struct("PluginInstall")
@@ -3072,6 +3077,7 @@ mod workers_command_tests {
                 project: "p".to_owned(),
                 id: "t".to_owned(),
                 to: forge_primitives::tasks::TaskStatus::InProgress,
+                place: None,
             },
         ] {
             assert!(command.key().is_none(), "app-level: {command:?}");
