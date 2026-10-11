@@ -2,10 +2,12 @@
   import Brand from '../components/Brand.svelte';
   import Card from '../components/Card.svelte';
   import Mark from '../components/Mark.svelte';
+  import { watchExtensions, type ExtensionsPage } from '../extensions/live';
   import { CLIENT_VERSION, PROTOCOL_VERSION } from '../protocol';
+  import type { Connection } from '../socket';
   import { install, restart, updateState } from '../update/state';
   import type { HomeWire } from '../wire/home';
-  import { ageOf, fleetRows, homeView, markOf } from './view';
+  import { ageOf, extensionsCard, fleetRows, homeView, markOf } from './view';
 
   /**
    * The home: every project, its agents, their states, and what needs you.
@@ -18,9 +20,35 @@
     wire,
     address = '',
     mark = null,
-  }: { wire: HomeWire; address?: string; mark?: string | null } = $props();
+    connection = null,
+  }: {
+    wire: HomeWire;
+    address?: string;
+    mark?: string | null;
+    /** The socket, for the extensions card's own read. Optional, because a
+     * rendered-without-a-connection home draws that card's reading state. */
+    connection?: Connection | null;
+  } = $props();
 
   const view = $derived(homeView(wire, address));
+  /**
+   * The extensions read, for the band's fifth card: the counts a reader
+   * wants there (installed, behind its marketplace) are in the `extensions`
+   * subject and nowhere on the home's own wire. The subscription is the
+   * card's and goes with the page.
+   */
+  let extensions = $state<ExtensionsPage>({ read: null, refused: null });
+  $effect(() => {
+    const open = connection;
+    if (open === null) return;
+    return watchExtensions(open).subscribe((value) => {
+      extensions = value;
+    });
+  });
+  const band = $derived([
+    ...view.band,
+    extensionsCard(extensions.read, extensions.refused !== null),
+  ]);
   // The fleet: one row per project, nothing mixed. The counts and the
   // misses are the server's own; the mark is the strongest of the
   // project's seat marks, in the same vocabulary a seat row draws.
@@ -111,7 +139,7 @@
   </header>
 
   <section class="band">
-    {#each view.band as card (card.title)}
+    {#each band as card (card.title)}
       <Card {...card} />
     {/each}
   </section>

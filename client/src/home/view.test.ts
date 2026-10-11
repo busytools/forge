@@ -66,11 +66,13 @@ describe('an agent row from a server that names no failure', () => {
     ).toBeNull();
   });
 });
+import { components, extensionsWire } from '../extensions/testing';
 import {
   artifactLabel,
   availableVersion,
   chipFor,
   elapsedLabel,
+  extensionsCard,
   fleetRows,
   gateLine,
   failureFile,
@@ -1207,5 +1209,40 @@ describe('the fatal on the wire', () => {
       homeFrom({ ...homeWire, fatal_error: 7 as unknown as string }).fatal_error,
       'a value that is not words reads as no fatal',
     ).toBeNull();
+  });
+});
+
+describe('the extensions card', () => {
+  it('opens /extensions and reads the counts off the extensions read', () => {
+    const card = extensionsCard(extensionsWire());
+    expect(card.href).toBe('/extensions');
+    expect(card.tone, 'the fixture carries stale plugins').toBe('warn');
+    expect(card.value).toBe('2 plugins');
+    expect(card.detail).toBe('2 updates waiting');
+  });
+
+  it('reads current as ready, naming the marketplaces it draws nothing of', () => {
+    const read = extensionsWire({
+      snapshot: {
+        installed: [],
+        marketplace: [],
+        marketplaces: [
+          { name: 'one', source: 'github', repo: null, install_location: null },
+          { name: 'two', source: 'github', repo: null, install_location: null },
+        ],
+        components: [components({ available_version: '6.4.1' })],
+        marketplace_health: [],
+      },
+    });
+    const card = extensionsCard(read);
+    expect(card.tone).toBe('ready');
+    expect(card.value).toBe('1 plugin');
+    expect(card.detail).toBe('2 marketplaces');
+  });
+
+  it('draws no read yet, a refused read, and an unreadable inventory as their own states', () => {
+    expect(extensionsCard(null).value, 'before the read lands').toBe('reading');
+    expect(extensionsCard(null, true).value, 'a refused subscription').toBe('unread');
+    expect(extensionsCard(extensionsWire({ snapshot: null })).tone, 'no plugins root').toBe('bad');
   });
 });

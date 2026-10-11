@@ -16,7 +16,9 @@
  */
 
 import { displayAddress } from '../connect/attempt';
+import { railCounts, stalePlugins } from '../extensions/view';
 import { hrefFor } from '../routes';
+import type { ExtensionsRead } from '../wire/extensions';
 import type {
   AgentRow,
   Gate,
@@ -580,6 +582,50 @@ export function band(wire: HomeWire, address: string): BandCard[] {
     dictation,
     accounts,
   ];
+}
+
+/**
+ * The extensions card: the fifth band card, and the second way in.
+ *
+ * It reads the `extensions` subject rather than the home snapshot, because
+ * what a reader wants here - how many plugins are installed and whether any
+ * is behind its marketplace - is in that read and nowhere on the wire the
+ * home carries. `read` is `null` until that read lands (and forever, on a
+ * page rendered without a connection), which is its own state rather than a
+ * zero.
+ */
+export function extensionsCard(read: ExtensionsRead | null, refused = false): BandCard {
+  const door = hrefFor({ name: 'extensions' });
+  if (read === null) {
+    return {
+      title: 'extensions',
+      tone: 'off',
+      value: refused ? 'unread' : 'reading',
+      detail: refused ? 'open to see why' : 'plugins · marketplaces',
+      href: door,
+    };
+  }
+  if (read.snapshot === null) {
+    return {
+      title: 'extensions',
+      tone: 'bad',
+      value: 'unread',
+      detail: 'no plugins root resolves',
+      href: door,
+    };
+  }
+  const counts = railCounts(read);
+  const stale = stalePlugins(read).length;
+  return {
+    title: 'extensions',
+    tone: stale > 0 ? 'warn' : 'ready',
+    value: `${counts.installed} plugin${counts.installed === 1 ? '' : 's'}`,
+    detail:
+      stale > 0
+        ? `${stale} update${stale === 1 ? '' : 's'} waiting`
+        : `${counts.marketplaces} marketplace${counts.marketplaces === 1 ? '' : 's'}`,
+    href: door,
+  };
 }
 
 /** The key a project and the seats that belong to it are matched by. */

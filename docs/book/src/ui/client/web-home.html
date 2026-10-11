@@ -121,7 +121,7 @@
 
   /* ---------- system band ---------- */
 
-  .band { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 22px; }
+  .band { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin-bottom: 22px; }
   .svc {
     background: linear-gradient(180deg, rgba(20,25,38,.75), rgba(13,17,26,.75));
     border: 1px solid var(--line); border-radius: var(--r);
@@ -483,6 +483,12 @@
       <div class="v">6 ready</div>
       <div class="sub">probed 08:16</div>
     </div>
+    <a class="svc warn" href="/extensions">
+      <div class="k"><span class="dot warn"></span> extensions
+        <svg class="ic arw" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg></div>
+      <div class="v">22 plugins</div>
+      <div class="sub">1 update waiting</div>
+    </a>
   </section>
 
   <style>

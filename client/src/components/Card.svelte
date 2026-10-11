@@ -15,9 +15,28 @@
   // `ready` is the quiet card and carries no modifier, which is the state a
   // plain `.svc` draws.
   const klass = $derived(tone === 'ready' ? 'svc' : `svc ${tone}`);
+
+  /**
+   * Space activates a card that is a way in, as Enter does.
+   *
+   * Only Enter is a link's own key: a browser scrolls on Space over an
+   * anchor, so a keyboard reader reaching a door in the band has one key
+   * that works and one that does not. Every door here takes both.
+   */
+  function key(event: KeyboardEvent): void {
+    if (href === null || event.key !== ' ') return;
+    event.preventDefault();
+    if (event.currentTarget instanceof HTMLElement) event.currentTarget.click();
+  }
 </script>
 
-<svelte:element this={href === null ? 'div' : 'a'} class={klass} href={href ?? undefined}>
+<svelte:element
+  this={href === null ? 'div' : 'a'}
+  class={klass}
+  href={href ?? undefined}
+  role={href === null ? undefined : 'link'}
+  onkeydown={key}
+>
   <div class="k">
     <span class="dot {dot[tone]}"></span>{title}
     {#if href !== null}<Chevron />{/if}
