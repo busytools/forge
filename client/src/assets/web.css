@@ -3046,34 +3046,43 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
    after the anchored line's). Svelte's scoped styles do not reach
    generated nodes, and one set of rules over both is the point. */
 
-.review .rv-body { display: grid; grid-template-columns: 264px minmax(0, 1fr);
-  gap: 18px; flex: 1; min-height: 0; }
-.review .rv-files { overflow-y: auto; min-height: 0; padding: 0 4px 12px;
+/* The tree holds the width its longest path needs and no more; everything
+   else is the diff's. */
+.review .rv-body { display: grid; grid-template-columns: minmax(0, 248px) minmax(0, 1fr);
+  gap: 14px; flex: 1; min-height: 0; }
+.review .rv-files { overflow-y: auto; min-height: 0; padding: 0 2px 12px;
   scrollbar-gutter: stable; }
-.review .rv-canvas { overflow-y: auto; overflow-x: hidden; min-height: 0;
-  padding: 0 4px 40px 0; scrollbar-gutter: stable; }
-.review .rv-canvas::-webkit-scrollbar,
+/* The list draws its own scroll viewport, so the scroll rules go on THAT
+   element and the wrapper only holds its states. */
+.review .rv-canvas { display: flex; flex-direction: column; min-height: 0;
+  overflow: hidden; }
+.review .rv-canvas-list { flex: 1; min-height: 0; overflow-y: auto;
+  overflow-x: hidden; padding: 0 0 40px; scrollbar-gutter: stable; }
+.review .rv-canvas-list::-webkit-scrollbar,
 .review .rv-files::-webkit-scrollbar,
 .review .rv-menu::-webkit-scrollbar { width: 8px; }
-.review .rv-canvas::-webkit-scrollbar-track,
+.review .rv-canvas-list::-webkit-scrollbar-track,
 .review .rv-files::-webkit-scrollbar-track,
 .review .rv-menu::-webkit-scrollbar-track { background: transparent; }
-.review .rv-canvas::-webkit-scrollbar-thumb,
+.review .rv-canvas-list::-webkit-scrollbar-thumb,
 .review .rv-files::-webkit-scrollbar-thumb,
 .review .rv-menu::-webkit-scrollbar-thumb { background: var(--s3); border-radius: 99px; }
-.review .rv-canvas::-webkit-scrollbar-thumb:hover,
+.review .rv-canvas-list::-webkit-scrollbar-thumb:hover,
 .review .rv-files::-webkit-scrollbar-thumb:hover,
 .review .rv-menu::-webkit-scrollbar-thumb:hover { background: var(--line); }
 
-/* The file tree. */
+/* The file tree. A directory reads as itself - the path in the page's own
+   text at a step less weight than a file's - rather than as a ghost. */
 .review .rv-dir { display: flex; align-items: baseline; gap: 6px; width: 100%; text-align: left;
-  background: none; border: 0; padding: 6px 6px 3px; cursor: pointer; font: inherit; }
-.review .rv-dirpath { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
-  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  background: none; border: 0; padding: 5px 6px 2px; cursor: pointer; font: inherit; }
+.review .rv-dirpath { font-family: var(--mono); font-size: var(--fs-label); color: var(--text);
+  font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
 .review .rv-dircount { margin-left: auto; font-family: var(--mono); font-size: var(--fs-label);
   color: var(--dim); }
 .review .rv-frow { display: grid; grid-template-columns: minmax(0, 1fr) 62px 26px; gap: 6px;
-  align-items: baseline; padding: 4px 8px 4px 22px; border-radius: 7px;
+  align-items: baseline; width: 100%; padding: 3px 8px 3px 16px; border-radius: 7px;
+  background: none; border: 0; font: inherit; text-align: left; cursor: pointer;
   text-decoration: none; color: inherit; }
 .review .rv-frow:hover { background: rgba(27,33,48,.5); }
 .review .rv-fpath { font-family: var(--mono); font-size: var(--fs-label); color: var(--text);

@@ -320,7 +320,6 @@
               onclick={() => stepScope(1)}>&#8250;</button
             >
           </span>
-          <span class="rv-keys">[ ] step &#183; a all &#183; j pick</span>
           {#if pickerOpen}
             <div class="rv-menu" role="listbox" aria-label="diff scope">
               {#each choices as choice (choice.idx)}
@@ -350,6 +349,21 @@
         </span>
       {/if}
     </nav>
+
+    {#if tab === 'files'}
+      <!-- The keys, where they act, in the reader's own line of sight: the
+           arrows are what a hand reaches for, and the brackets the scope
+           also accepts are not worth advertising beside them. -->
+      <p class="rv-hint">
+        <kbd>&#8592;</kbd><kbd>&#8594;</kbd> step commits
+        <span class="sep">&#183;</span>
+        <kbd>a</kbd> all changes
+        <span class="sep">&#183;</span>
+        <kbd>j</kbd> pick a commit
+        <span class="sep">&#183;</span>
+        click any line to comment
+      </p>
+    {/if}
 
     {#if tab === 'conversation'}
       <div class="rv-conv">
@@ -543,9 +557,11 @@
     gap: 6px;
     /* The diff half scrolls inside the page rather than the page growing:
        the tree and the canvas each keep their own scroll, the way the app's
-       own shell does. */
+       own shell does. The inset is the shell's own, so the page wastes no
+       more room at the edges than any other surface does. */
     height: 100dvh;
     overflow: hidden;
+    padding: var(--ins);
   }
   /* The rounds read as a column, centred: a measure cap that is not centred
      is a hole. */
@@ -659,10 +675,29 @@
     opacity: 0.4;
     cursor: default;
   }
-  .rv-keys {
+  .rv-hint {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 2px 2px 10px;
     font-family: var(--mono);
     font-size: var(--fs-label);
     color: var(--dim);
+  }
+  .rv-hint .sep {
+    color: var(--line);
+    margin: 0 2px;
+  }
+  .rv-hint kbd {
+    font-family: var(--mono);
+    font-size: var(--fs-label);
+    color: var(--muted);
+    background: var(--s1);
+    border: 1px solid var(--line);
+    border-bottom-width: 2px;
+    border-radius: 5px;
+    padding: 1px 6px;
+    line-height: 1.4;
   }
   /* Narrow: the scope control drops to its own line under the tabs rather
      than being clipped at the edge - it is the door to every commit, and a
@@ -675,7 +710,7 @@
       margin-left: 0;
       width: 100%;
     }
-    .rv-keys {
+    .rv-hint {
       display: none;
     }
   }

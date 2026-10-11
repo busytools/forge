@@ -16,6 +16,7 @@
   import { DiffView, DiffModeEnum } from '@git-diff-view/svelte';
   import type { ComponentProps } from 'svelte';
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
+  import { VList, type VListHandle } from 'virtua/svelte';
   import type { Connection } from '../socket';
   import type {
     DiffFileRecord,
@@ -117,7 +118,12 @@
    * The viewer's models, built per scope. The parser is heavy and only this
    * tab pays for it, so it is imported when the first scope is built.
    */
-  let built = $state<{ path: string; diffFile: DiffFile; file: DiffFileRecord }[]>([]);
+  interface BuiltFile {
+    path: string;
+    diffFile: DiffFile;
+    file: DiffFileRecord;
+  }
+  let built = $state<BuiltFile[]>([]);
   let builtLayer = $state<DiffLayerRecord | null>(null);
   $effect(() => {
     const scope = scopeLayer;
@@ -147,50 +153,145 @@
   let canvases = $state<Record<string, HTMLDivElement | void>>({});
 
   /**
-   * A real button on every line's number cell, revealed under the pointer or
-   * on focus - the composer's door, and one a keyboard and a finger both
-   * reach. Injected here because the viewer redraws its own rows; the button
+   * **The canvas is virtualised over files, and that is what makes a mode
+   * switch fluid.** Every mounted section carries a table the viewer
+   * re-renders when the mode changes, so a branch of fifty files paid fifty
+   * tables' worth of work per switch (measured: ~950ms, whichever way it
+   * went). The DOM holds the sections on screen and the rest stays data -
+   * the same bargain the chat's column strikes - and a switch now re-renders
+   * the two or three tables a reader can actually see.
+   */
+  let list: VListHandle | null = $state(null);
+  /**
+   * The last measured height of each section, by path and mode: the
+   * virtualiser drops a size when an item unmounts, and a section scrolled
+   * back into view should not arrive at the estimator's guess first.
+   */
+  const heights = new SvelteMap<string, number>();
+  const heightKey = (path: string): string => `${path}|${mode}`;
+
+  function measureFile(node: HTMLElement, path: string): () => void {
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.contentRect.height > 0) heights.set(heightKey(path), entry.contentRect.height);
+      }
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }
+
+  /** The tree's rows are the way to a file the list may not have drawn yet. */
+  function jumpTo(path: string): void {
+    const at = built.findIndex((file) => file.path === path);
+    if (at >= 0) list?.scrollToIndex(at, { align: 'start' });
+  }
+
+  /**
+   * A real button on every line's number, revealed under the pointer or on
+   * focus - the composer's door, and one a keyboard and a finger both reach.
+   *
+   * **One door per cell in split, one per row in unified, each keyed by the
+   * side it comments on**: an added or context line is the new side, a
+   * removed line the old - the terminal's own rule for the same click, and
+   * what keeps a unified context line (whose one gutter carries both
+   * numbers) from writing every comment old-side.
+   *
+   * Injected here because the viewer redraws its own rows; the button
    * carries a `data-for` key so a redraw leaves the one already there alone.
    */
-  function injectAddButtons(el: HTMLDivElement, path: string): void {
-    const spots = [
-      ['new', 'span[data-line-new-num], td[data-side="new"] span[data-line-num]'],
-      ['old', 'span[data-line-old-num], td[data-side="old"] span[data-line-num]'],
-    ] as const;
-    for (const tr of el.querySelectorAll('tr.diff-line')) {
-      for (const [side, selector] of spots) {
-        const span = tr.querySelector(selector);
-        if (span === null || !(span instanceof HTMLElement)) continue;
-        const cell = span.closest('td') ?? span.parentElement;
-        if (cell === null) continue;
-        const line = Number(
-          span.dataset['lineNewNum'] ?? span.dataset['lineOldNum'] ?? span.textContent,
-        );
-        if (!Number.isInteger(line) || line <= 0) continue;
-        const key = `${side}:${line}`;
-        if (cell.querySelector(`button.rv-add[data-for="${key}"]`) !== null) continue;
-        cell.classList.add('rv-add-host');
-        const door = document.createElement('button');
-        door.type = 'button';
-        door.className = 'rv-add';
-        door.dataset['for'] = key;
-        door.setAttribute('aria-label', `comment on line ${line}`);
-        door.addEventListener('click', () => {
-          composing = { path, side, line };
-          composeText = '';
-        });
-        cell.append(door);
+  function injectDoors(el: HTMLDivElement, path: string): void {
+    if (mode === 'split') {
+      const spots = [
+        ['new', 'td[data-side="new"] span[data-line-num], tr[data-side="new"] span[data-line-num]'],
+        ['old', 'td[data-side="old"] span[data-line-num], tr[data-side="old"] span[data-line-num]'],
+      ] as const;
+      for (const tr of el.querySelectorAll('tr.diff-line')) {
+        for (const [side, selector] of spots) {
+          const span = tr.querySelector(selector);
+          if (span === null || !(span instanceof HTMLElement)) continue;
+          const cell = span.closest('td') ?? span.parentElement;
+          if (cell === null) continue;
+          const line = lineOf(span);
+          if (line === null) continue;
+          placeDoor(cell, path, side, line);
+        }
       }
+      return;
     }
+    for (const tr of el.querySelectorAll('tr.diff-line')) {
+      const hit = rowSide(tr, null);
+      if (hit === null) continue;
+      const cell = tr.querySelector('td');
+      if (cell === null) continue;
+      placeDoor(cell, path, hit.side, hit.line);
+    }
+  }
+
+  function placeDoor(cell: HTMLElement, path: string, side: 'old' | 'new', line: number): void {
+    const key = `${side}:${line}`;
+    if (cell.querySelector(`button.rv-add[data-for="${key}"]`) !== null) return;
+    cell.classList.add('rv-add-host');
+    const door = document.createElement('button');
+    door.type = 'button';
+    door.className = 'rv-add';
+    door.dataset['for'] = key;
+    door.textContent = '+';
+    door.setAttribute('aria-label', `comment on the ${side} line ${line}`);
+    door.addEventListener('click', () => {
+      composing = { path, side, line };
+      composeText = '';
+    });
+    cell.append(door);
+  }
+
+  /** The line a number span names, whichever attribute form carries it. */
+  function lineOf(span: HTMLElement): number | null {
+    const line = Number(
+      span.dataset['lineNewNum'] ?? span.dataset['lineOldNum'] ?? span.textContent,
+    );
+    return Number.isInteger(line) && line > 0 ? line : null;
+  }
+
+  /**
+   * The side and line a line-row click means: the clicked cell's own side in
+   * split, and in unified the new number where the row has one - a removed
+   * line has only the old.
+   */
+  function rowSide(
+    row: Element,
+    target: HTMLElement | null,
+  ): { side: 'old' | 'new'; line: number } | null {
+    const numOf = (side: 'old' | 'new'): number | null => {
+      const selector =
+        mode === 'unified'
+          ? `span[data-line-${side}-num]`
+          : `td[data-side="${side}"] span[data-line-num], tr[data-side="${side}"] span[data-line-num]`;
+      const span = row.querySelector(selector);
+      return span instanceof HTMLElement ? lineOf(span) : null;
+    };
+    const at = (side: 'old' | 'new'): { side: 'old' | 'new'; line: number } | null => {
+      const line = numOf(side);
+      return line === null ? null : { side, line };
+    };
+    const clicked =
+      mode === 'split' ? target?.closest('td[data-side]')?.getAttribute('data-side') : null;
+    if (clicked === 'old') return at('old') ?? at('new');
+    return at('new') ?? at('old');
   }
 
   /**
    * The thread cards and the composer, as rows inserted after the anchored
    * line's row.
    *
-   * The viewer re-renders its own rows (a mode switch, a fold), so this runs
-   * on every mutation of a canvas and is idempotent by each row's dataset
-   * key: rows it already drew are left alone rather than rebuilt.
+   * **A reconciling pass, not a rebuild.** The viewer re-renders its own
+   * rows, so this runs on every mutation of a canvas - and the work it does
+   * must reach a quiet steady state, or its own insertions re-arm the
+   * observer and the page spins (measured: thousands of rebuilds a second
+   * when a rebuild-all compared record order against positional order). So
+   * each wanted row is checked into place: an entry already sitting after
+   * its anchor is left untouched, one whose anchor row is not drawn (a
+   * folded file, a scope mid-switch) does nothing at all, and only a real
+   * insert, move or removal mutates the DOM.
    */
   $effect(() => {
     void scopeCommit;
@@ -199,39 +300,75 @@
     void scoped;
     void composing;
     void replying;
+    void busy;
     void now;
     const observers: MutationObserver[] = [];
     const draw = (el: HTMLDivElement, path: string) => {
-      injectAddButtons(el, path);
-      const want: { key: string; line: number; build: () => HTMLTableRowElement }[] = [];
+      injectDoors(el, path);
+      armClicks(el, path);
+      const want: {
+        key: string;
+        side: 'old' | 'new';
+        line: number;
+        build: (at: HTMLTableRowElement) => HTMLTableRowElement;
+      }[] = [];
       if (!closedFiles.has(path)) {
         for (const thread of scoped) {
-          if (thread.anchor.path !== path || thread.anchor.side !== 'new') continue;
+          if (thread.anchor.path !== path) continue;
+          const side = thread.anchor.side === 'old' ? 'old' : 'new';
           const placed = canvasLine(thread);
           if (placed === null) continue;
           const key = `t:${thread.id}:${statusName(thread.status)}:${thread.comments.length}:${
             replying === thread.id ? 'open' : ''
           }`;
-          want.push({ key, line: placed.line, build: () => threadRow(thread, placed, path) });
+          want.push({
+            key,
+            side,
+            line: placed.line,
+            build: (at: HTMLTableRowElement) => threadRow(at, thread, placed, side),
+          });
         }
         if (composing !== null && composing.path === path) {
           want.push({
             key: `c:${composing.side}:${composing.line}`,
+            side: composing.side,
             line: composing.line,
-            build: () => composerRow(path),
+            build: (at: HTMLTableRowElement) => composerRow(at, path),
           });
         }
       }
-      const have = [...el.querySelectorAll('tr.rv-insert')];
-      const keys = have.map((row) => (row as HTMLElement).dataset['for'] ?? '');
-      if (keys.length === want.length && want.every((entry, i) => entry.key === keys[i])) return;
-      for (const row of have) row.remove();
+      want.sort((a, b) => a.line - b.line || a.key.localeCompare(b.key));
+      // The sheet's lint takes reactive collections for any mutable built-in,
+      // and these reads run from a timer callback, where nothing tracks them.
+      const existing = new SvelteMap<string, HTMLTableRowElement>();
+      for (const row of el.querySelectorAll('tr.rv-insert')) {
+        existing.set((row as HTMLElement).dataset['for'] ?? '', row as HTMLTableRowElement);
+      }
+      const kept = new SvelteSet<string>();
       for (const entry of want) {
-        const at = anchorRow(el, entry.line);
+        if (kept.has(entry.key)) continue;
+        const at = anchorRow(el, entry.side, entry.line);
         if (at === null) continue;
-        const row = entry.build();
+        const have = existing.get(entry.key);
+        if (have !== undefined) {
+          // Where it belongs is next after its anchor, other inserted rows
+          // between the two forgiven: two threads on one line must not
+          // reshuffle each other every pass.
+          let prev = have.previousElementSibling;
+          while (prev !== null && prev.classList.contains('rv-insert')) {
+            prev = prev.previousElementSibling;
+          }
+          if (prev !== at) at.after(have);
+          kept.add(entry.key);
+          continue;
+        }
+        const row = entry.build(at);
         row.dataset['for'] = entry.key;
         at.after(row);
+        kept.add(entry.key);
+      }
+      for (const [key, row] of existing) {
+        if (!kept.has(key)) row.remove();
       }
     };
     for (const [path, el] of Object.entries(canvases)) {
@@ -246,12 +383,41 @@
     };
   });
 
-  /** The row a line's number sits on, in whichever mode drew it. */
-  function anchorRow(el: HTMLElement, line: number): HTMLTableRowElement | null {
+  /**
+   * A click anywhere on a line row opens the composer there, the way the
+   * number's `+` does - a pointer convenience beside the button a keyboard
+   * and a finger already reach. A click that finished a text selection is a
+   * reader copying code, not a comment.
+   */
+  function armClicks(el: HTMLDivElement, path: string): void {
+    if (el.dataset['rvClicks'] === '1') return;
+    el.dataset['rvClicks'] = '1';
+    el.addEventListener('click', (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      if (target.closest('button, a, textarea, input') !== null) return;
+      const selection = window.getSelection();
+      if (selection !== null && String(selection).trim() !== '') return;
+      const row = target.closest('tr.diff-line');
+      if (row === null) return;
+      const hit = rowSide(row, target);
+      if (hit === null) return;
+      composing = { path, side: hit.side, line: hit.line };
+      composeText = '';
+    });
+  }
+
+  /** The row a line's number sits on, by the side that number belongs to. */
+  function anchorRow(
+    el: HTMLElement,
+    side: 'old' | 'new',
+    line: number,
+  ): HTMLTableRowElement | null {
     const anchor =
-      el.querySelector(`span[data-line-new-num="${line}"]`) ??
-      el.querySelector(`td[data-side="new"] span[data-line-num="${line}"]`) ??
-      el.querySelector(`tr[data-side="new"] span[data-line-num="${line}"]`);
+      mode === 'unified'
+        ? el.querySelector(`span[data-line-${side}-num="${line}"]`)
+        : (el.querySelector(`td[data-side="${side}"] span[data-line-num="${line}"]`) ??
+          el.querySelector(`tr[data-side="${side}"] span[data-line-num="${line}"]`));
     return anchor?.closest('tr') ?? null;
   }
 
@@ -269,15 +435,50 @@
     return node;
   }
 
-  /** One row spanning the table, with `body` inside its single cell. */
-  function insertRow(el: HTMLDivElement, body: HTMLElement): HTMLTableRowElement {
+  /**
+   * One inserted row, shaped after the row it lands under. **In split the
+   * card holds the half it comments on** - a right-side comment under a
+   * right-side line, a left-side one under the left - and in unified it
+   * takes the whole lane, where the line itself does.
+   *
+   * The anchor's own cells decide the geometry rather than a fixed count:
+   * a split row pads its missing half with a spanning placeholder cell, so
+   * rows in one file do not all carry the same number of cells.
+   */
+  function insertRow(
+    at: HTMLTableRowElement,
+    side: 'old' | 'new',
+    body: HTMLElement,
+  ): HTMLTableRowElement {
     const row = document.createElement('tr');
     row.className = 'rv-insert';
-    const cell = document.createElement('td');
-    cell.colSpan = el.querySelectorAll('colgroup col').length || 4;
-    cell.className = 'rv-insert-cell';
-    row.append(cell);
-    cell.append(body);
+    const cells = [...at.children].map((cell) => {
+      const el = cell as HTMLElement;
+      const own =
+        el.dataset['side'] ??
+        (el.className.includes('old') ? 'old' : el.className.includes('new') ? 'new' : null);
+      return { side: own, colspan: Number(el.getAttribute('colspan') ?? 1) };
+    });
+    const card = (colspan: number): HTMLTableCellElement => {
+      const cell = document.createElement('td');
+      cell.className = 'rv-insert-cell';
+      cell.colSpan = colspan;
+      return cell;
+    };
+    const spanOf = (which: 'old' | 'new'): number =>
+      cells.filter((cell) => cell.side === which).reduce((n, cell) => n + cell.colspan, 0);
+    // No cell names a side: unified, whose line owns the whole width.
+    if (!cells.some((cell) => cell.side !== null)) {
+      const cell = card(cells.reduce((n, held) => n + held.colspan, 0));
+      cell.append(body);
+      row.append(cell);
+      return row;
+    }
+    const mine = card(spanOf(side));
+    mine.append(body);
+    const theirs = card(spanOf(side === 'new' ? 'old' : 'new'));
+    if (side === 'new') row.append(theirs, mine);
+    else row.append(mine, theirs);
     return row;
   }
 
@@ -386,11 +587,11 @@
   }
 
   function threadRow(
+    at: HTMLTableRowElement,
     thread: ReviewThreadRecord,
     placed: { line: number; movedFrom: number | null },
-    path: string,
+    side: 'old' | 'new',
   ): HTMLTableRowElement {
-    const host = canvases[path];
     const wrap = document.createElement('div');
     wrap.className = 'rv-inline';
     if (statusName(thread.status) === 'resolved') {
@@ -403,17 +604,10 @@
     } else {
       wrap.append(threadCard(thread, placed.movedFrom));
     }
-    if (host === undefined || host === null) {
-      const row = document.createElement('tr');
-      row.className = 'rv-insert';
-      row.append(wrap);
-      return row;
-    }
-    return insertRow(host, wrap);
+    return insertRow(at, side, wrap);
   }
 
-  function composerRow(path: string): HTMLTableRowElement {
-    const host = canvases[path];
+  function composerRow(at: HTMLTableRowElement, path: string): HTMLTableRowElement {
     const wrap = document.createElement('div');
     wrap.className = 'rv-inline';
     const card = document.createElement('article');
@@ -472,13 +666,7 @@
     acts.append(comment, cancel);
     card.append(acts);
     wrap.append(card);
-    if (host === undefined || host === null) {
-      const row = document.createElement('tr');
-      row.className = 'rv-insert';
-      row.append(wrap);
-      return row;
-    }
-    return insertRow(host, wrap);
+    return insertRow(at, composing?.side ?? 'new', wrap);
   }
 </script>
 
@@ -498,7 +686,12 @@
         {@const mine = scoped.filter(
           (thread) => thread.anchor.path === file.path && canvasLine(thread) !== null,
         )}
-        <a class="rv-frow" href={'#' + file.path} class:renamed={file.oldPath !== null}>
+        <button
+          type="button"
+          class="rv-frow"
+          class:renamed={file.oldPath !== null}
+          onclick={() => jumpTo(file.path)}
+        >
           <span class="rv-fpath">{file.path.split('/').pop()}</span>
           <span class="rv-fstat">
             <span class="rv-plus">+{at.plus}</span>
@@ -507,7 +700,7 @@
           <span class="rv-fcount">
             {#if mine.length}<span class="rv-ccnum">{mine.length}</span>{/if}
           </span>
-        </a>
+        </button>
       {/each}
     {/if}
   {/each}
@@ -528,47 +721,62 @@
         ? 'This branch has no changes against its base.'
         : 'This commit changed nothing.'}
     </p>
-  {/if}
-  {#each built as file (file.path)}
-    {@const mine = scoped.filter(
-      (thread) => thread.anchor.path === file.path && canvasLine(thread) !== null,
-    )}
-    <section class="rv-file" id={file.path}>
-      <div class="rv-filehead">
-        <button
-          type="button"
-          class="rv-fold"
-          aria-expanded={!closedFiles.has(file.path)}
-          aria-label="collapse this file"
-          onclick={() => toggle(closedFiles, file.path)}
+  {:else}
+    <VList
+      class="rv-canvas-list"
+      data={built}
+      getKey={(file: BuiltFile) => file.path}
+      bind:this={list}
+    >
+      {#snippet children(file: BuiltFile)}
+        {@const mine = scoped.filter(
+          (thread) => thread.anchor.path === file.path && canvasLine(thread) !== null,
+        )}
+        <section
+          class="rv-file"
+          id={file.path}
+          style:min-height={heights.get(heightKey(file.path)) === undefined
+            ? undefined
+            : `${heights.get(heightKey(file.path))}px`}
+          {@attach (node: HTMLElement) => measureFile(node, file.path)}
         >
-          <span class="rv-arw" class:open={!closedFiles.has(file.path)}>&#9656;</span>
-        </button>
-        <span class="rv-path">
-          {#if file.file.oldPath !== null}<span class="rv-from"
-              >{file.file.oldPath} &#8594;
-            </span>{/if}{file.path}
-        </span>
-        <span class="rv-tally">
-          {#if mine.length}
-            <span class="rv-cc">{mine.length} {mine.length === 1 ? 'thread' : 'threads'}</span>
+          <div class="rv-filehead">
+            <button
+              type="button"
+              class="rv-fold"
+              aria-expanded={!closedFiles.has(file.path)}
+              aria-label="collapse this file"
+              onclick={() => toggle(closedFiles, file.path)}
+            >
+              <span class="rv-arw" class:open={!closedFiles.has(file.path)}>&#9656;</span>
+            </button>
+            <span class="rv-path">
+              {#if file.file.oldPath !== null}<span class="rv-from"
+                  >{file.file.oldPath} &#8594;
+                </span>{/if}{file.path}
+            </span>
+            <span class="rv-tally">
+              {#if mine.length}
+                <span class="rv-cc">{mine.length} {mine.length === 1 ? 'thread' : 'threads'}</span>
+              {/if}
+              {#if file.file.truncated}<span class="rv-cc">truncated</span>{/if}
+              {#if file.file.binary}<span class="rv-cc">binary</span>{/if}
+            </span>
+          </div>
+          {#if !closedFiles.has(file.path)}
+            <div class="rv-diff" data-rv-path={file.path} bind:this={canvases[file.path]}>
+              <DiffView
+                diffFile={file.diffFile}
+                diffViewMode={mode === 'unified' ? DiffModeEnum.Unified : DiffModeEnum.Split}
+                diffViewTheme="dark"
+                diffViewHighlight={true}
+                diffViewFontSize={12}
+                diffViewWrap={true}
+              />
+            </div>
           {/if}
-          {#if file.file.truncated}<span class="rv-cc">truncated</span>{/if}
-          {#if file.file.binary}<span class="rv-cc">binary</span>{/if}
-        </span>
-      </div>
-      {#if !closedFiles.has(file.path)}
-        <div class="rv-diff" data-rv-path={file.path} bind:this={canvases[file.path]}>
-          <DiffView
-            diffFile={file.diffFile}
-            diffViewMode={mode === 'unified' ? DiffModeEnum.Unified : DiffModeEnum.Split}
-            diffViewTheme="dark"
-            diffViewHighlight={true}
-            diffViewFontSize={12}
-            diffViewWrap={true}
-          />
-        </div>
-      {/if}
-    </section>
-  {/each}
+        </section>
+      {/snippet}
+    </VList>
+  {/if}
 </main>
