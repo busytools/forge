@@ -42,13 +42,18 @@
   });
 
   const record: SessionRecord | null = $derived(read.wire);
-  const reviews = $derived(record?.reviews ?? null);
+  const reviews = $derived(record === null ? null : record.reviews);
   const threads = $derived(reviews?.threads.outcome === 'read' ? reviews.threads.value : []);
   const rounds = $derived(
     reviews?.reviews.outcome === 'read' ? roundsNewestFirst(reviews.reviews.value) : [],
   );
   const loop = $derived(loopState(threads));
   const outdated = $derived(threads.filter((thread) => thread.status === 'outdated'));
+  /** Whether both reads answered, which is what an empty copy needs to be
+   *  true: a half that failed draws its own line and no "nothing filed". */
+  const bothRead = $derived(
+    reviews !== null && reviews.threads.outcome === 'read' && reviews.reviews.outcome === 'read',
+  );
 
   /** The clock the ages read against; ticking keeps a sitting page honest. */
   let now = $state(Date.now());
@@ -122,10 +127,8 @@
 
   {#if read.refused !== null}
     <p class="pending">This forge would not answer for the seat: {read.refused}</p>
-  {:else if record === null}
-    <p class="pending">Reading the seat...</p>
   {:else if reviews === null}
-    <p class="pending">This seat's read carried no reviews.</p>
+    <p class="pending">Reading the seat...</p>
   {:else}
     {#if reviews.threads.outcome === 'failed'}
       <p class="half bad">The threads could not be read: {reviews.threads.value}</p>
@@ -150,7 +153,7 @@
         {#each outdated as thread (thread.id)}
           <article class="thread parked">
             <div class="heads">
-              <span class="state outdated">outdated</span>
+              <span class="rv-state outdated">outdated</span>
               <span class="where">{thread.anchor.path} &#183; line {thread.anchor.line}</span>
             </div>
             <div class="captured">
@@ -158,7 +161,7 @@
               <pre>{thread.anchor.context.join('\n')}</pre>
             </div>
             {#each thread.comments as turn, i (i)}
-              <div class="turn" class:you={turn.author.kind === 'user'}>
+              <div class="rv-turn" class:you={turn.author.kind === 'user'}>
                 <div class="who">{authorName(turn.author)}</div>
                 <p class="words">{turn.text}</p>
               </div>
@@ -170,10 +173,10 @@
 
     <section class="group">
       <h2>Rounds <span class="n">newest first</span></h2>
-      {#if rounds.length === 0 && threads.length === 0}
-        <p class="empty">Nothing has been reviewed on this branch yet.</p>
-      {:else if rounds.length === 0}
-        <p class="empty">
+      {#if bothRead && rounds.length === 0 && threads.length === 0}
+        <p class="rv-empty">Nothing has been reviewed on this branch yet.</p>
+      {:else if bothRead && rounds.length === 0}
+        <p class="rv-empty">
           No round has been filed. {threads.length}
           {threads.length === 1 ? 'thread is' : 'threads are'} drafted on this branch.
         </p>
@@ -195,14 +198,15 @@
           </div>
           {#if round.summary !== null}<p class="summary">{round.summary}</p>{/if}
           {#each threadsInRound(threads, round.id) as thread (thread.id)}
+            {@const name = statusName(thread.status)}
             <div class="thread">
               <div class="heads">
-                <span class="state {statusName(thread.status)}">{statusName(thread.status)}</span>
+                <span class="rv-state {name}">{name}</span>
                 <span class="where">{thread.anchor.path} &#183; line {thread.anchor.line}</span>
               </div>
               {#each thread.comments as turn, i (i)}
                 {@const sealedInto = turnRound(rounds, turn)}
-                <div class="turn" class:you={turn.author.kind === 'user'}>
+                <div class="rv-turn" class:you={turn.author.kind === 'user'}>
                   <div class="who">
                     {authorName(turn.author)}
                     {#if sealedInto !== null}<span class="tag">R{sealedInto}</span>{/if}
@@ -290,7 +294,7 @@
     font-family: var(--mono);
     letter-spacing: 0;
   }
-  .empty {
+  .rv-empty {
     font-size: var(--fs-base);
     color: var(--dim);
     margin: 2px 0 8px;
@@ -366,7 +370,7 @@
     margin: 0 0 10px;
     background: var(--s1);
   }
-  .state {
+  .rv-state {
     font-family: var(--mono);
     font-size: var(--fs-label);
     color: var(--muted);
@@ -374,19 +378,19 @@
     border-radius: 99px;
     padding: 0 8px;
   }
-  .state.open {
+  .rv-state.open {
     color: var(--text);
     border-color: var(--ctl);
   }
-  .state.addressed {
+  .rv-state.addressed {
     color: var(--warn);
     border-color: rgba(201, 161, 59, 0.4);
   }
-  .state.resolved {
+  .rv-state.resolved {
     color: var(--ok);
     border-color: rgba(130, 199, 107, 0.35);
   }
-  .state.outdated {
+  .rv-state.outdated {
     color: var(--dim);
   }
   .where {
@@ -422,12 +426,12 @@
     overflow-wrap: anywhere;
   }
 
-  .turn {
+  .rv-turn {
     border-left: 1px solid var(--line);
     padding: 2px 0 2px 10px;
     margin: 7px 0;
   }
-  .turn.you {
+  .rv-turn.you {
     border-left-color: var(--accent);
   }
   .who {
@@ -437,7 +441,7 @@
     font-size: var(--fs-label);
     color: var(--dim);
   }
-  .turn.you .who {
+  .rv-turn.you .who {
     color: var(--muted);
   }
   .tag {
@@ -450,7 +454,7 @@
     overflow-wrap: anywhere;
     max-width: 72ch;
   }
-  .turn.you .words {
+  .rv-turn.you .words {
     color: var(--text);
   }
 </style>

@@ -114,6 +114,14 @@ describe("the tab's title", () => {
       titleFor({ name: 'session', slot: { org: 'Busytools', project: 'core-v1', label: 'w1' } }),
       'a worker adds its own label',
     ).toBe('core-v1 \u{b7} w1');
+    expect(
+      titleFor({ name: 'review', slot: { org: 'Busytools', project: 'core-v1', label: 'lead' } }),
+      'a review says whose it is and what it is',
+    ).toBe('core-v1 \u{b7} review');
+    expect(
+      titleFor({ name: 'review', slot: { org: 'Busytools', project: 'core-v1', label: 'w1' } }),
+      'and a worker keeps its label ahead of it',
+    ).toBe('core-v1 \u{b7} w1 \u{b7} review');
   });
 });
 

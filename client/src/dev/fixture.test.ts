@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
+import { SEED_MARKER } from './seed';
+
 const CLIENT = fileURLToPath(new URL('../..', import.meta.url));
 
 /** Every file under `dir`, at any depth. */
@@ -24,14 +26,6 @@ function filesUnder(dir: string): string[] {
  * the source would make this pass for the wrong reason.
  */
 const MARKER = 'TestOrg';
-
-/**
- * A string the dev seed's comment carries and nothing else does. The seed is
- * look scaffolding that files a round over the socket, so it ships no data -
- * but it is still a development-only path, and a static import would defeat
- * tree-shaking the same way the fixture's would.
- */
-const SEED_MARKER = 'seeded for the dev-stack look';
 
 describe('the shipped bundle', () => {
   /**

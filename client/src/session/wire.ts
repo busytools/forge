@@ -579,7 +579,9 @@ function readWireFrom<T>(value: unknown, parse: (records: unknown[]) => T[]): Re
   if (held['outcome'] === 'failed') {
     return { outcome: 'failed', value: text(held['value']) ?? 'the read failed' };
   }
-  return { outcome: 'unknown', value: held['outcome'] };
+  // An absent half is named rather than carried as `undefined`: "answered
+  // undefined" is not a thing a reader can act on.
+  return { outcome: 'unknown', value: text(held['outcome']) ?? 'absent' };
 }
 
 function reviewAuthorFrom(value: unknown): ReviewAuthorRecord {

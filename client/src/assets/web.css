@@ -3019,6 +3019,21 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
   .models .cand .col { flex-basis: 100%; }
 }
 
+/* ---------- the review page ----------
+   Scoped to `.review` for the models block's reason: `.state`, `.empty` and
+   `.turn` are short names the sheet already carries, and a bare rule here
+   would reach the surface that owns them. The page's own pieces live in its
+   component; these are the two the sheet owns because every page draws
+   them. */
+
+.review .pending { color: var(--muted); font-size: var(--fs-base); margin-top: 12vh;
+  text-align: center; }
+
+@media (pointer: coarse) {
+  /* The way back is the page's only control a finger reaches. */
+  .review .back { min-height: 44px; display: inline-flex; align-items: center; }
+}
+
 /* ---------- the chevron arrives with the pointer ----------
    Hidden at rest, so a column of rows carries no marks it does not need;
    under the pointer it shows in the muted tone - the hover colour these rows

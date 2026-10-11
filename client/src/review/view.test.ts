@@ -16,7 +16,7 @@ import {
 function thread(
   id: string,
   status: ReviewThreadRecord['status'],
-  turns: { author: 'you' | 'agent'; review_id: string | null }[],
+  turns: { author: 'you' | 'agent' | 'unknown'; review_id: string | null }[],
 ): ReviewThreadRecord {
   return {
     id,
@@ -25,7 +25,9 @@ function thread(
       author:
         turn.author === 'you'
           ? { kind: 'user' as const }
-          : { kind: 'agent' as const, label: 'impl' },
+          : turn.author === 'agent'
+            ? { kind: 'agent' as const, label: 'impl' }
+            : { kind: 'unknown' as const, raw: 'a shape this build cannot name' },
       text: `turn ${i}`,
       at: '2026-10-10T00:00:00Z',
       review_id: turn.review_id,
@@ -76,6 +78,13 @@ describe('whether a thread awaits the reviewer', () => {
       awaitsReviewer(thread('e', 'resolved', [{ author: 'agent', review_id: null }])),
       'resolved is read and done',
     ).toBe(false);
+    // An author this build cannot name is drawn, never counted: the server
+    // counts `ReviewAuthor::Agent` alone, so counting anything else here
+    // would make this page's tally disagree with every other surface's.
+    expect(
+      awaitsReviewer(thread('f', 'addressed', [{ author: 'unknown', review_id: null }])),
+      'an unnamed author is not an agent turn',
+    ).toBe(false);
   });
 });
 
@@ -89,25 +98,29 @@ describe('a round and its members', () => {
       { author: 'agent', review_id: null },
       { author: 'you', review_id: 'r2' },
     ]);
+    // One member of each state under r1, so swapping any two counter arms -
+    // or dropping one - moves the tally rather than surviving it.
     const other = thread('o', 'open', [{ author: 'you', review_id: 'r1' }]);
-    const threads = [spanning, other];
+    const done = thread('d', 'resolved', [{ author: 'you', review_id: 'r1' }]);
+    const drifted = thread('p', 'outdated', [{ author: 'you', review_id: 'r1' }]);
+    const threads = [spanning, other, done, drifted];
     const r1 = round('r1', 1);
     const r2 = round('r2', 2);
 
     expect(
       threadsInRound(threads, 'r1').map((t) => t.id),
-      'both under r1',
-    ).toEqual(['s', 'o']);
+      'every member under r1',
+    ).toEqual(['s', 'o', 'd', 'p']);
     expect(
       threadsInRound(threads, 'r2').map((t) => t.id),
       'the spanning one under r2',
     ).toEqual(['s']);
-    expect(roundTally(threads, r1), 'r1 tallies both').toEqual({
-      total: 2,
+    expect(roundTally(threads, r1), 'r1 tallies one of each state').toEqual({
+      total: 4,
       open: 1,
       addressed: 1,
-      resolved: 0,
-      outdated: 0,
+      resolved: 1,
+      outdated: 1,
       named: 0,
     });
     expect(turnRound([r1, r2], { review_id: 'r1' }), 'a sealed turn names its round').toBe(1);

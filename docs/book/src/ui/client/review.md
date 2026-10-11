@@ -16,7 +16,7 @@ URL today, and its back link names the seat it belongs to.
 | Region | Shows | Read from |
 |---|---|---|
 | Header | the back link to the seat, `Review`, the branch, the round count, and the loop's state - `N replies to read`, in the warn tone while any thread waits on the reader, and `N open` | the record's `work.branch`, and the two review halves |
-| Outdated | every thread whose anchored code could not be placed, drawn against the lines captured when the comment was written, with the reason | the threads half |
+| Outdated | every thread whose anchored code could not be placed, drawn against the lines captured when the comment was written | the threads half |
 | Rounds | newest first: the round's number, its age, its tally by state, its summary, and each member thread | the rounds half |
 
 A round's members are the threads with any turn filed into it, so a thread
@@ -32,14 +32,26 @@ file into rounds.
 
 The four states are the server's own: `open`, answered by nobody yet;
 `addressed`, the agent has answered and the ball is with the reader;
-`resolved`, collapsed in the drawing; `outdated`, the anchored code moved
-too far to place.
+`resolved`, read and accepted, drawn in full like every other thread;
+`outdated`, the anchored code moved too far to place. Two of those draw
+differently here than in the terminal, and both are the wire's limit rather
+than a choice: the terminal collapses a resolved thread to a marker and it
+says why an anchor could not be placed (gone, or matching several places),
+while a resolved thread is simply another thread on this page and the reason
+is computed by the terminal's own resolver and never crosses the wire.
 
 The loop's `N replies to read` is derived rather than served: it counts the
-threads in `addressed` or `outdated` whose last turn is the agent's. An
+threads in `addressed` or `outdated` whose last turn is an agent's. An
 `open` thread never counts, even with an agent turn last, because that state
 is only reached by a reopen or by a thread's code returning - both the
-reader handing the work back.
+reader handing the work back - and an author this build cannot name is drawn
+without being counted, so the tally agrees with every other surface's.
+
+A worker's answer reaches this page through the record: the reviews ride the
+snapshot, so a re-read is what carries it, and nothing pushes a review
+change. The terminal's activity line - the `worker addressed review #N` row
+it drops into the chat - is that view's own and is not drawn here; the frame
+also carries nothing this page could not read from the record itself.
 
 ## The states the page can be in
 

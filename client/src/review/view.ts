@@ -36,11 +36,15 @@ export function authorName(author: ReviewAuthorRecord): string {
  * reached by a reopen or by code returning, both the reviewer handing the
  * work back - and a reviewer turn after the answer puts the ball back with
  * the agent.
+ *
+ * Only an `agent` turn counts, which is what the server's own predicate
+ * counts: an author shape this build cannot name is drawn, never counted, so
+ * this page's tally cannot disagree with every other surface's.
  */
 export function awaitsReviewer(thread: ReviewThreadRecord): boolean {
   if (thread.status !== 'addressed' && thread.status !== 'outdated') return false;
   const last = thread.comments[thread.comments.length - 1];
-  return last !== undefined && last.author.kind !== 'user';
+  return last !== undefined && last.author.kind === 'agent';
 }
 
 /** The loop's state as the page header states it. */
