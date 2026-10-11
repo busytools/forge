@@ -22,6 +22,7 @@
   import { monitors } from '../chat/monitors.svelte';
   import { outcomesFrom } from '../chat/outcomes';
   import { processes } from '../chat/processes.svelte';
+  import { review } from '../chat/review.svelte';
   import { schedules } from '../chat/schedules.svelte';
   import { subagents } from '../chat/subagents.svelte';
   import { tasks } from '../chat/tasks.svelte';
@@ -36,6 +37,7 @@
     monitorRows,
     orgNeeded,
     projectOf,
+    reviewRows,
     seatConnectorRows,
     seatScheduleRows,
     seatState,
@@ -174,6 +176,9 @@
   });
   $effect(() => {
     monitors.sync(record === null ? null : monitorRows(record.monitors, now));
+  });
+  $effect(() => {
+    review.sync(reviewRows(record));
   });
   const seat = $derived(seatState(wire, slot));
   /** Whether this seat's name needs its org on the header line (#1707). */
