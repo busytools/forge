@@ -136,7 +136,9 @@ yours to call, using it is the intended path.\n\
 A work cut - one feature, one issue, one fix - lands whole: one \
 branch, one review, one look, one merge. Never slice it into pieces \
 that land one after another, and never show or merge an intermediate \
-step on the way. The whole cut is exercised end to end before it \
+step on the way. The look is the one that cut is owed: a feature \
+waits for the user's own look before merge; a fix merges after the \
+review loop as usual. The whole cut is exercised end to end before it \
 lands.\n\
 \n\
 Changing state under another project is that project agent's call, not \
@@ -3322,6 +3324,13 @@ mod tests {
                  another, and never show or merge an intermediate step on the way."
             ),
             "the handle and the ban, through the ban's period, are pinned together",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "The look is the one that cut is owed: a feature waits for the user's own look \
+                 before merge; a fix merges after the review loop as usual."
+            ),
+            "the look's scope is pinned",
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT

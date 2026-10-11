@@ -585,30 +585,31 @@ impl Tool for Spawn {
          whole cut to land. A work cut - one feature, one issue, one fix \
          - lands whole: one branch, one review, one look, one merge. \
          Never slice it into pieces that land one after another, and \
-         never show or merge an intermediate step on the way. So spawn \
-         one per distinct piece of work, and despawn once the worker has \
-         handed over what you spawned it to produce: a merged PR, or \
-         equally a written report, an answered question, a finished \
-         sweep - a worker whose output is not a PR has no merge to wait \
-         for and still needs closing. A forgotten worker keeps coming \
-         back on every restart. At most one live worker per label - \
-         if one already exists, this errors and you should message it \
-         with agents__send_message instead of spawning again. \
-         The label 'lead' is reserved (it addresses a project's own \
-         agent) and rejected here. \
-         Use agents__list to see your project's current worker pool. \
-         `mcp_families` selects which MCP families this worker gets: \
-         any of review, cron, tasks, gotify, slack and systemone (the \
-         agents__* verbs are always on and cannot be listed). Omit it, \
-         or pass an empty list, and the worker gets every family. Pass a \
-         list and it gets exactly those; each withheld family is named \
-         in the worker's own prompt so it knows what it does not have - \
-         a worker without systemone is told to route decisions to you. \
-         The choice is stored on the worker and survives restarts; \
-         revise it with agents__update. On a resume or re-spawn that \
-         states no `mcp_families`, the worker's stored selection \
-         applies; stating one then revises it. \
-         This tool errors if called from a worker session; only the \
+         never show or merge an intermediate step on the way. The look \
+         is the one that cut is owed: a feature waits for the user's own \
+         look before merge; a fix merges after the review loop as usual. \
+         So spawn one per distinct piece of work, and despawn once the \
+         worker has handed over what you spawned it to produce: a \
+         merged PR, or equally a written report, an answered question, a \
+         finished sweep - a worker whose output is not a PR has no merge \
+         to wait for and still needs closing. A forgotten worker keeps \
+         coming back on every restart. At most one live worker per \
+         label - if one already exists, this errors and you should \
+         message it with agents__send_message instead of spawning \
+         again. The label 'lead' is reserved (it addresses a project's \
+         own agent) and rejected here. Use agents__list to see your \
+         project's current worker pool. `mcp_families` selects which \
+         MCP families this worker gets: any of review, cron, tasks, \
+         gotify, slack and systemone (the agents__* verbs are always on \
+         and cannot be listed). Omit it, or pass an empty list, and the \
+         worker gets every family. Pass a list and it gets exactly \
+         those; each withheld family is named in the worker's own prompt \
+         so it knows what it does not have - a worker without systemone \
+         is told to route decisions to you. The choice is stored on the \
+         worker and survives restarts; revise it with agents__update. On \
+         a resume or re-spawn that states no `mcp_families`, the \
+         worker's stored selection applies; stating one then revises \
+         it. This tool errors if called from a worker session; only the \
          project lead may spawn."
     }
 
@@ -1193,6 +1194,14 @@ mod tests {
             ),
             "the handle and the ban, through the ban's period, are pinned together - the same \
              sentence the conduct block and the charter carry: {}",
+            tool.description()
+        );
+        assert!(
+            tool.description().contains(
+                "The look is the one that cut is owed: a feature waits for the user's own look \
+                 before merge; a fix merges after the review loop as usual."
+            ),
+            "the look's scope is pinned: {}",
             tool.description()
         );
         let schema = tool.input_schema();

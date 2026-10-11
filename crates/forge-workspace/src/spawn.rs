@@ -7151,6 +7151,13 @@ mod lead_charter_tests {
             "the handle and the ban, through the ban's period, are pinned together",
         );
         assert!(
+            DEFAULT_LEAD_CHARTER.contains(
+                "The look is the one that cut is owed: a feature waits for the user's own look \
+                 before merge; a fix merges after the review loop as usual."
+            ),
+            "the look's scope is pinned",
+        );
+        assert!(
             DEFAULT_LEAD_CHARTER.contains("never sequence a cut as \"land A, then B, then C\""),
             "the planning ban is pinned",
         );

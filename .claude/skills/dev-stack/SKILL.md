@@ -26,9 +26,11 @@ the depth, the verification steps and the teardown.
 **One landing, never a piece.** A work cut - one feature, one issue, one
 fix - lands whole: one branch, one review, one look, one merge. Never slice
 it into pieces that land one after another, and never show or merge an
-intermediate step on the way. A feature is not split to land faster - the
-stack exists so it can land whole and be looked at whole, exercised end to
-end before it lands. Anything deliberately left out, or lost on the way, is
+intermediate step on the way. The look is the one that cut is owed: a
+feature waits for the user's own look before merge; a fix merges after the
+review loop as usual. A feature is not split to land faster - the stack
+exists so it can land whole and be looked at whole, exercised end to end
+before it lands. Anything deliberately left out, or lost on the way, is
 surfaced to the maintainer BEFORE merge rather than as a follow-up, and for
 feature-scale work the post-review re-look (step 6) is mandatory, not a
 courtesy.
