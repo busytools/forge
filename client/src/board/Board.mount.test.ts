@@ -72,6 +72,7 @@ function row(task: Task, over: Partial<BoardRow> = {}): BoardRow {
     marks: marks(),
     rollup: null,
     parent_subject: null,
+    history: [],
     ...over,
   };
 }
@@ -308,7 +309,7 @@ describe("the board's controls", () => {
    * pointer and the keys have to reach alike.
    */
   it('moves a focused card between lanes with the arrows', () => {
-    summon(wireWith([row(task('t1', 'a row', 'pending'))]));
+    summon(wireWith([row(task('t1', 'a row', 'waiting'))]));
     const press = (key: string): void => {
       // Re-queried per press: the card is drawn in its new lane between them.
       const card = document.querySelector<HTMLElement>('.b-card[data-id="t1"]');
@@ -317,15 +318,17 @@ describe("the board's controls", () => {
       flushSync();
     };
 
-    // Ready's neighbour to the right is Completed, and to the left Waiting.
+    // A middle lane, so both directions have a neighbour to walk to: the
+    // drawn order is Backlog, Waiting, In progress, ... and the card's own
+    // state only moves when the wire answers.
     press('ArrowRight');
-    expect(acts[0]).toEqual({ task_move: { project: 'proj', id: 't1', to: 'completed' } });
+    expect(acts[0]).toEqual({ task_move: { project: 'proj', id: 't1', to: 'in_progress' } });
     expect(
-      document.querySelector('.b-lane[data-state="completed"] .b-card[data-id="t1"]'),
+      document.querySelector('.b-lane[data-state="in_progress"] .b-card[data-id="t1"]'),
       'the card is in the lane the key sent it to',
     ).not.toBeNull();
     press('ArrowLeft');
-    expect(acts[1]).toEqual({ task_move: { project: 'proj', id: 't1', to: 'waiting' } });
+    expect(acts[1]).toEqual({ task_move: { project: 'proj', id: 't1', to: 'pending' } });
   });
 
   /**
@@ -580,5 +583,225 @@ describe("the board's controls", () => {
     }
     const unowned = [...cards].find((card) => card.querySelector('.b-un') !== null);
     expect(unowned, 'the unclaimed card names its owner-less state').not.toBeUndefined();
+  });
+});
+
+describe("the row's own page", () => {
+  /** One row with two moves behind it, as the core records them. */
+  const withHistory = (entry: BoardRow): BoardRow => ({
+    ...entry,
+    history: [
+      {
+        task_id: entry.task.id,
+        project_name: 'proj',
+        from: null,
+        to: 'pending',
+        at: { secs_since_epoch: 1_700_000_000, nanos_since_epoch: 0 },
+        by: 'user',
+      },
+      {
+        task_id: entry.task.id,
+        project_name: 'proj',
+        from: 'pending',
+        to: 'in_progress',
+        at: { secs_since_epoch: 1_700_000_600, nanos_since_epoch: 0 },
+        by: { seat: { org: 'TestOrg', project: 'proj', label: 'lead' } },
+      },
+    ],
+  });
+
+  const press = (card: Element, to?: { x: number; y: number }): void => {
+    card.dispatchEvent(
+      new MouseEvent('pointerdown', { bubbles: true, clientX: 10, clientY: 10, button: 0 }),
+    );
+    if (to !== undefined) {
+      // jsdom performs no layout and carries no elementFromPoint, so the hit
+      // test is stubbed: the drag's point resolves to nothing, which lands
+      // the card on no lane and no seat.
+      const original = Object.getOwnPropertyDescriptor(document, 'elementFromPoint');
+      document.elementFromPoint = () => null;
+      window.dispatchEvent(new MouseEvent('pointermove', { clientX: to.x, clientY: to.y }));
+      if (original !== undefined) {
+        Object.defineProperty(document, 'elementFromPoint', original);
+      } else {
+        Reflect.deleteProperty(document, 'elementFromPoint');
+      }
+    }
+    window.dispatchEvent(new MouseEvent('pointerup', { clientX: 10, clientY: 10 }));
+    flushSync();
+  };
+
+  /**
+   * **A press that never moves is the click**, and a drag is not: the card's
+   * page opens with the row's own words and the moves the core recorded.
+   */
+  it('opens the page on a click, with the row its history, and not on a drag', async () => {
+    const held = row(
+      task('h1', 'the row to open', 'in_progress', {
+        owner: { org: 'TestOrg', project: 'proj', label: 'lead' },
+      }),
+    );
+    summon(wireWith([withHistory(held)]));
+    const card = document.querySelector('.b-card[data-id="h1"]');
+    if (card === null) throw new Error('no card');
+
+    press(card);
+    const drawer = document.querySelector('.dr');
+    expect(drawer, 'the click opens the row page').not.toBeNull();
+    expect(drawer?.textContent, "the row's own words").toContain('the row to open');
+    expect(drawer?.textContent, 'and the moves the core recorded').toContain(
+      'moved to in progress by lead',
+    );
+
+    // Escape steps back through the drawer's history entry, and a pop is a
+    // task: the close lands on it.
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    flushSync();
+    await vi.waitFor(() => expect(document.querySelector('.dr')).toBeNull());
+
+    press(card, { x: 80, y: 80 });
+    expect(document.querySelector('.dr'), 'a drag is not a click').toBeNull();
+  });
+
+  it('gives the keyboard back to the card when the page closes', async () => {
+    summon(wireWith([row(task('k1', 'keyboarded', 'pending'))]));
+    const card = document.querySelector<HTMLElement>('.b-card[data-id="k1"]');
+    if (card === null) throw new Error('no card');
+    card.focus();
+    card.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    flushSync();
+    expect(document.querySelector('.dr'), 'Enter opens the row page').not.toBeNull();
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    flushSync();
+    await vi.waitFor(() => expect(document.activeElement).toBe(card));
+  });
+
+  it('answers a decision from the row page, with the row it answers', () => {
+    summon(
+      wireWith([
+        row(
+          task('w1', 'needs you', 'waiting', {
+            waiting_on: { kind: 'decision', detail: 'the words', on: null, verification: false },
+          }),
+        ),
+      ]),
+    );
+    const card = document.querySelector('.b-card[data-id="w1"]');
+    if (card === null) throw new Error('no card');
+    press(card);
+
+    const answer = document.querySelector<HTMLInputElement>('.dr input[placeholder="your answer"]');
+    if (answer === null) throw new Error('the row page carries no answer box');
+    answer.value = 'keep the window raise';
+    answer.dispatchEvent(new Event('input'));
+    flushSync();
+    const button = [...document.querySelectorAll<HTMLButtonElement>('.dr .dr-btn')].find(
+      (candidate) => candidate.textContent?.trim() === 'answer',
+    );
+    button?.click();
+    flushSync();
+    expect(acts.at(-1)).toEqual({
+      task_answer: { project: 'proj', id: 'w1', words: 'keep the window raise' },
+    });
+  });
+
+  /**
+   * The done mark is the house's tick, not a coloured blob: the chat draws a
+   * settled turn the same way, and one glyph per meaning is the point.
+   */
+  it("draws the house's tick for a completed row", () => {
+    summon(wireWith([row(task('c1', 'shipped', 'completed'))]));
+    expect(
+      document.querySelector('.b-card .b-mark.b-done')?.innerHTML,
+      'the done mark is the check',
+    ).toContain('i-check');
+    expect(
+      document.querySelector('.b-card .b-mark.b-done')?.innerHTML,
+      'and not the fail cross',
+    ).not.toContain('i-x');
+  });
+
+  it("keeps the board reachable through Android's Back", () => {
+    summon(wireWith([row(task('b1', 'backed', 'pending'))]));
+    const card = document.querySelector('.b-card[data-id="b1"]');
+    if (card === null) throw new Error('no card');
+    press(card);
+    expect(document.querySelector('.dr'), 'the click opens the row page').not.toBeNull();
+
+    // The hardware Back is a pop: the drawer closes and consumes its entry.
+    window.dispatchEvent(new PopStateEvent('popstate'));
+    flushSync();
+    expect(document.querySelector('.dr'), 'the pop closed the row page').toBeNull();
+  });
+
+  /**
+   * **The gate is the core's rule, not the rollup.** A root whose children are
+   * all TERMINAL - one of them failed - may close (the core counts
+   * `Completed | Failed | Canceled`), where the rollup still reads not-done;
+   * and a child row is never gated at all. The drawer must offer exactly what
+   * the strip offers.
+   */
+  const gated = (open: TaskStatus): BoardRow[] => [
+    row(
+      task('e1', 'the epic', 'waiting', {
+        waiting_on: { kind: 'decision', detail: 'the words', on: null, verification: true },
+      }),
+    ),
+    row(task('c1', 'a child', open, { parent: 'e1' })),
+  ];
+
+  const approveButton = (): HTMLButtonElement | undefined =>
+    [...document.querySelectorAll<HTMLButtonElement>('.dr .dr-btn')].find(
+      (candidate) => candidate.textContent?.trim() === 'approve',
+    );
+
+  const openFirst = (): void => {
+    const card = document.querySelector('.b-card[data-id="e1"]');
+    if (card === null) throw new Error('no epic card');
+    press(card);
+  };
+
+  it('offers approve when every child is terminal, even a failed one', () => {
+    summon(wireWith(gated('failed')));
+    openFirst();
+    expect(
+      approveButton(),
+      'a failed child still closes, so the core allows it',
+    ).not.toBeUndefined();
+  });
+
+  it("holds approve with the strip's words while a child is open", () => {
+    summon(wireWith(gated('in_progress')));
+    openFirst();
+    expect(approveButton(), 'a press the core refuses must not be offered').toBeUndefined();
+    expect(
+      document.querySelector('.dr-hold')?.textContent,
+      'the hold says what is missing',
+    ).toContain('not finished');
+  });
+
+  it('faces axe with the row page open', async () => {
+    const held = row(
+      task('a1', 'axe it', 'waiting', {
+        waiting_on: { kind: 'decision', detail: 'pick one', on: null, verification: false },
+      }),
+    );
+    summon(wireWith([withHistory(held)]));
+    const card = document.querySelector('.b-card[data-id="a1"]');
+    if (card === null) throw new Error('no card');
+    press(card);
+    expect(document.querySelector('.dr'), 'the row page is open').not.toBeNull();
+    expect(await violationsOf(document.body.innerHTML)).toEqual([]);
+  });
+
+  it('opens on Space as it does on Enter', () => {
+    summon(wireWith([row(task('s1', 'spacey', 'pending'))]));
+    const card = document.querySelector<HTMLElement>('.b-card[data-id="s1"]');
+    if (card === null) throw new Error('no card');
+    card.focus();
+    card.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+    flushSync();
+    expect(document.querySelector('.dr'), 'Space opens the row page').not.toBeNull();
   });
 });

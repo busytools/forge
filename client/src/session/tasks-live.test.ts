@@ -63,6 +63,7 @@ function homeWith(status: TaskStatus): HomeWire {
             },
             rollup: null,
             parent_subject: null,
+            history: [],
           },
         ],
       },

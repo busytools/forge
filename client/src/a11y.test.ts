@@ -159,6 +159,7 @@ describe('axe over the rendered pages', () => {
               },
               rollup: null,
               parent_subject: null,
+              history: [],
             },
           ],
         },

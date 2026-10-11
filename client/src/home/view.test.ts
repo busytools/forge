@@ -174,6 +174,7 @@ function boardRow(task: Task): BoardRow {
     },
     rollup: null,
     parent_subject: null,
+    history: [],
   };
 }
 
@@ -1073,6 +1074,9 @@ describe('what a row says', () => {
     expect(rows[0]?.worked_secs).toBe(0);
     expect(rows[0]?.marks.overdue).toBe(false);
     expect(rows[0]?.rollup).toBeNull();
+    // A server (or a committed capture) that never stated the row's own
+    // transitions reads as none, so the drawer draws without the section.
+    expect(rows[0]?.history).toEqual([]);
     expect(task?.rank).toBeNull();
     expect(task?.waiting_on).toBeNull();
     expect(task?.attempt).toBe(0);

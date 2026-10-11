@@ -3,7 +3,9 @@
   import { isBoardRefusal, type ServiceReport } from '../wire/fleet';
   import type { HomeWire, TaskStatus } from '../wire/home';
   import { TASK_STATUSES } from '../wire/home';
+  import Icon from '../components/Icon.svelte';
   import Picker from './Picker.svelte';
+  import TaskDrawer from './TaskDrawer.svelte';
   import { applyMoves, boardView, landed } from './view';
   import type { BoardCardView, PendingMove } from './view';
 
@@ -106,6 +108,12 @@
   function keyMove(event: KeyboardEvent, row: BoardCardView): void {
     const target = event.target;
     if (target instanceof Element && target.closest('button, input, select, a') !== null) return;
+    // Enter (or Space) on a focused card is the click: the row's own page.
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      openDrawer(row.id);
+      return;
+    }
     if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
       event.preventDefault();
       act({ task_rank: { project, id: row.id, to: event.key === 'ArrowUp' ? 'up' : 'down' } });
@@ -198,6 +206,77 @@
   function cardOf(id: string): BoardCardView | undefined {
     return view.lanes.flatMap((lane) => lane.cards).find((row) => row.id === id);
   }
+
+  /**
+   * The row the drawer is showing, straight off the wire: the drawer reads
+   * the record itself (its fields and its own history), not the card's
+   * display words. Matched by ORG and project - two orgs may declare a
+   * project of the same name.
+   */
+  let opened = $state<string | null>(null);
+  const openedRow = $derived(
+    opened === null
+      ? null
+      : (wire.projects
+          .find((entry) => entry.project.org === org && entry.project.name === project)
+          ?.rows.find((row) => row.task.id === opened) ?? null),
+  );
+
+  /** The waiting view of the open row, where it waits: the approve gate's
+   * own instrument - `root` and `open` are the core's close rule, which the
+   * drawer must read rather than re-derive from the rollup. */
+  const openedWaiting = $derived(
+    opened === null ? null : (view.waiting.find((row) => row.id === opened) ?? null),
+  );
+
+  /** What an entry of ours holds, so a pop knows it is closing the drawer. */
+  const DRAWER_ENTRY = 'forgeBoardDrawer';
+
+  /** The state of the current entry as an object this page can read. */
+  function heldState(): Record<string, unknown> {
+    const held: unknown = history.state;
+    return typeof held === 'object' && held !== null ? (held as Record<string, unknown>) : {};
+  }
+
+  /**
+   * Open the drawer on a row. The first opening takes a history entry, so
+   * Android's Back closes what it opened; switching rows while open joins
+   * the entry rather than stacking a step per card.
+   */
+  function openDrawer(id: string): void {
+    if (opened === null) {
+      history.pushState({ ...heldState(), [DRAWER_ENTRY]: true }, '', location.href);
+    }
+    opened = id;
+  }
+
+  /** Close the drawer and hand the keyboard back to the card it opened from. */
+  function closeDrawer(): void {
+    if (heldState()[DRAWER_ENTRY] === true) {
+      // The entry is on top: stepping back through it lands on the pop that
+      // closes the drawer, so there is one close path, not two.
+      history.back();
+      return;
+    }
+    dropDrawer();
+  }
+
+  /** The close itself: no history, just the state and the keyboard. */
+  function dropDrawer(): void {
+    const id = opened;
+    opened = null;
+    if (id !== null) {
+      boardEl?.querySelector<HTMLElement>(`.b-card[data-id="${id}"]`)?.focus();
+    }
+  }
+
+  $effect(() => {
+    const restore = () => {
+      if (opened !== null) dropDrawer();
+    };
+    addEventListener('popstate', restore);
+    return () => removeEventListener('popstate', restore);
+  });
 
   /**
    * A lane's `data-state` as a status. The attribute is only ever written
@@ -326,7 +405,7 @@
     });
   }
 
-  function up(): void {
+  function up(event: PointerEvent): void {
     if (dragging !== null) {
       const card = cardOf(dragging.id);
       const box = boardEl
@@ -354,6 +433,9 @@
           if (box !== undefined) settle(dragging.id, box);
         }
       }
+    } else if (event.type === 'pointerup' && pending !== null) {
+      // A press that never became a drag is the click: the row's own page.
+      openDrawer(pending.id);
     }
     pending = null;
     dragging = null;
@@ -514,7 +596,11 @@
               onkeydown={(event) => keyMove(event, row)}
             >
               <div class="b-row1">
-                <span class="b-mark {markClass(row.status)}" aria-hidden="true"></span>
+                <span class="b-mark {markClass(row.status)}" aria-hidden="true">
+                  {#if row.status === 'completed'}<Icon
+                      name="check"
+                    />{:else if row.status === 'failed'}<Icon name="x" />{/if}
+                </span>
                 <span class="b-sub" class:settled={row.status === 'completed'} title={row.subject}>
                   <span class="b-line">{row.display}</span>
                   {#if row.display !== row.subject}<span class="b-sub2">{row.subject}</span>{/if}
@@ -629,5 +715,16 @@
     <div class="b-ghost" style="left:{dragging.x + 14}px; top:{dragging.y + 10}px">
       {dragging.subject}
     </div>
+  {/if}
+
+  {#if openedRow !== null}
+    <TaskDrawer
+      row={openedRow}
+      waiting={openedWaiting}
+      {line}
+      now={Date.now()}
+      onact={act}
+      onclose={closeDrawer}
+    />
   {/if}
 </main>

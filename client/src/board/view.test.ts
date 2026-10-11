@@ -48,6 +48,7 @@ function row(task: Task, over: Partial<BoardRow> = {}): BoardRow {
     marks: marks(),
     rollup: null,
     parent_subject: null,
+    history: [],
     ...over,
   };
 }
@@ -85,11 +86,12 @@ describe("one project's board", () => {
 
     const view = boardView(wire, 'TestOrg', 'proj');
     const lane = (key: string) => view.lanes.find((entry) => entry.key === key);
-    // Every state has its lane, in the order the states run.
+    // Every state has its lane, in the order the board draws them: the pool
+    // leads, then the lane that wants the reader, then the work.
     expect(view.lanes.map((entry) => entry.name)).toEqual([
-      'In progress',
+      'Backlog',
       'Waiting',
-      'Ready',
+      'In progress',
       'Completed',
       'Failed',
       'Canceled',

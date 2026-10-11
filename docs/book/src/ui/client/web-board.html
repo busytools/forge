@@ -149,17 +149,94 @@
   .b-pick:hover { background: var(--s3); color: var(--text); }
 
   /* marks: shape first, colour second */
-  .b-mark { width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--dim);
-    flex: none; margin-top: 3px; }
+  .b-mark { width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid var(--dim);
+    flex: none; margin-top: 4px;
+    display: inline-flex; align-items: center; justify-content: center; }
   .b-mark.b-run { background: var(--accent); border-color: var(--accent); }
-  .b-mark.b-wait { border-radius: 3px; border: 2.5px solid var(--warn); margin-top: 2px; }
-  .b-mark.b-done { background: var(--ok); border-color: var(--ok); }
-  .b-mark.b-fail { background: var(--bad); border-color: var(--bad); }
+  .b-mark.b-wait { border-radius: 3px; border: 1.8px solid var(--warn); margin-top: 3px; }
+  /* Done and failed carry the house's own glyphs - the tick and the cross the
+     chat draws a settled or a failed turn with - not a coloured blob. */
+  .b-mark.b-done { background: none; border: 0; color: var(--ok); margin-top: 0; }
+  .b-mark.b-fail { background: none; border: 0; color: var(--bad); margin-top: 0; }
+  .b-mark .ic { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2.2;
+    stroke-linecap: round; stroke-linejoin: round; }
   .b-mark.b-cancel { height: 2px; border: 0; border-radius: 2px; background: var(--dim); margin-top: 6px; }
 
   .b-create { display: flex; gap: 9px; align-items: center; flex-wrap: wrap; margin-top: 22px; }
   .b-empty { color: var(--muted); font-size: 13px; margin: 4px 0 16px; }
   .note { color: var(--dim); font-size: 12.5px; font-family: var(--mono); margin-top: 22px; }
+
+  /* ---------- the drawer: one row's own page over the board ---------- */
+
+  .dr-scrim { position: fixed; inset: 0; background: rgba(4,5,10,.55); z-index: 40; }
+  .dr {
+    position: fixed; top: 0; right: 0; bottom: 0; width: min(520px, 100%);
+    background: var(--s1); border-left: 1px solid var(--line);
+    box-shadow: -18px 0 40px rgba(0,0,0,.4); z-index: 41;
+    display: flex; flex-direction: column;
+  }
+  .dr-head {
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 14px 16px 12px; border-bottom: 1px solid var(--line);
+  }
+  .dr-state {
+    display: inline-flex; align-items: center; gap: 5px; margin-top: 2px;
+    font-family: var(--mono); font-size: 11px; color: var(--muted);
+    border: 1px solid var(--line); border-radius: 6px; padding: 1px 7px;
+  }
+  .dr-state.warn { color: var(--warn); border-color: rgba(201,161,59,.45); }
+  .dr-title .t { font-size: 15px; font-weight: 600; }
+  .dr-x {
+    margin-left: auto; background: none; border: 0; color: var(--dim);
+    font: inherit; font-size: 15px; cursor: pointer; padding: 4px 8px;
+  }
+  .dr-body { flex: 1; overflow-y: auto; padding: 14px 16px 24px; }
+  .dr-fields { display: grid; grid-template-columns: 92px 1fr; gap: 6px 12px; }
+  .dr-fields dt { color: var(--dim); font-family: var(--mono); font-size: 11.5px; }
+  .dr-fields dd { color: var(--text); font-family: var(--mono); font-size: 12px; }
+  .dr-fields dd .dim { color: var(--dim); }
+  .dr-fields a { color: var(--blue); text-decoration: none; }
+  .dr h3 {
+    margin: 20px 0 8px; font-size: 11px; letter-spacing: .09em;
+    text-transform: uppercase; color: var(--dim); font-weight: 500;
+  }
+  .dr-ask {
+    border: 1px solid rgba(201,161,59,.4); border-left: 3px solid var(--warn);
+    border-radius: 9px; background: rgba(201,161,59,.06); padding: 11px 12px;
+  }
+  .dr-ask .q { color: var(--text); font-size: 13px; }
+  .dr-ask .from { color: var(--dim); font-family: var(--mono); font-size: 11px; margin-top: 3px; }
+  .dr-ask .answer { display: flex; gap: 8px; margin-top: 10px; }
+  .dr-ask input {
+    flex: 1; min-width: 0; background: var(--s2); color: var(--text);
+    border: 1px solid var(--line); border-radius: 7px;
+    padding: 6px 9px; font-family: var(--mono); font-size: 12px;
+  }
+  .dr-btn {
+    border: 1px solid var(--line); background: var(--s2); color: var(--text);
+    border-radius: 7px; padding: 6px 12px; font: inherit; font-size: 12px; cursor: pointer;
+  }
+  .dr-btn.go { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 600; }
+  .dr-btn.no { background: transparent; color: var(--bad); box-shadow: inset 0 0 0 1px rgba(224,104,62,.45); }
+  .dr-hold { font-size: 12.5px; color: var(--warn); }
+  .dr-said { margin: 0 0 14px; padding: 9px 13px; border-radius: 10px; font-size: 14px; }
+  .dr-said.warning { background: rgba(201,161,59,.12); color: var(--warn); }
+  .dr-said.error { background: rgba(224,104,62,.12); color: var(--bad); }
+  .dr-ses {
+    display: inline-block; margin-top: 9px; color: var(--blue); text-decoration: none;
+    font-family: var(--mono); font-size: 11.5px;
+  }
+  .dr-hist .h {
+    display: grid; grid-template-columns: 74px 1fr; gap: 10px;
+    padding: 6px 0; border-bottom: 1px solid rgba(34,42,60,.6);
+    font-family: var(--mono); font-size: 11.5px;
+  }
+  .dr-hist .h:last-child { border-bottom: 0; }
+  .dr-hist .w { color: var(--dim); }
+  .dr-hist .what { color: var(--muted); }
+  .dr-hist .what b { color: var(--text); font-weight: 500; }
+  .dr-last { color: var(--muted); font-family: var(--mono); font-size: 11.5px; }
+  .dr-last .dr-ses { margin: 0 0 0 10px; }
 </style>
 </head>
 <body>
@@ -204,6 +281,54 @@
   </section>
 
   <div class="b-lanes">
+    <section class="b-lane" data-state="pending">
+      <div class="b-cap"><span class="b-lane-nm">Backlog</span><span class="b-count">1</span><span class="b-rule"></span></div>
+      <article class="b-card">
+        <div class="b-row1">
+          <span class="b-mark"></span>
+          <span class="b-sub">
+            <span class="b-line">book pages for the new surface</span>
+          </span>
+        </div>
+        <div class="b-meta">
+          <span class="b-meta"><span class="b-muted">unclaimed</span></span>
+          <span class="b-chips"><span class="b-chip dim">no movement 5h</span></span>
+        </div>
+        <div class="b-last">
+          <span class="b-prog"><span class="b-time">worked 0s</span></span>
+          <span class="b-wrote">wrote 5h ago</span>
+          <span class="b-acts"><button class="b-pick">unclaimed &#9662;</button></span>
+        </div>
+      </article>
+    </section>
+
+    <section class="b-lane" data-state="waiting">
+      <div class="b-cap"><span class="b-lane-nm">Waiting</span><span class="b-count">1</span><span class="b-rule"></span></div>
+      <article class="b-card">
+        <div class="b-row1">
+          <span class="b-mark b-wait"></span>
+          <span class="b-sub">
+            <span class="b-line">the fleet row: every cell from the server's own read</span>
+          </span>
+        </div>
+        <div class="b-meta">
+          <span class="b-owner"><span class="b-ava">F</span>fleet</span>
+          <span class="b-chips">
+            <span class="b-chip warn">waiting on you</span>
+            <span class="b-chip bad">overdue</span>
+          </span>
+        </div>
+        <div class="b-last">
+          <span class="b-prog">
+            <span class="b-time">worked 1d 2h / 1d</span>
+            <span class="b-bar"><span class="b-fill" style="width:100%"></span></span>
+          </span>
+          <span class="b-wrote">wrote 22m ago</span>
+          <span class="b-acts"><button class="b-pick">fleet &#9662;</button></span>
+        </div>
+      </article>
+    </section>
+
     <section class="b-lane" data-state="in_progress">
       <div class="b-cap"><span class="b-lane-nm">In progress</span><span class="b-count">2</span><span class="b-rule"></span></div>
       <article class="b-card">
@@ -251,59 +376,11 @@
       </article>
     </section>
 
-    <section class="b-lane" data-state="waiting">
-      <div class="b-cap"><span class="b-lane-nm">Waiting</span><span class="b-count">1</span><span class="b-rule"></span></div>
-      <article class="b-card">
-        <div class="b-row1">
-          <span class="b-mark b-wait"></span>
-          <span class="b-sub">
-            <span class="b-line">the fleet row: every cell from the server's own read</span>
-          </span>
-        </div>
-        <div class="b-meta">
-          <span class="b-owner"><span class="b-ava">F</span>fleet</span>
-          <span class="b-chips">
-            <span class="b-chip warn">waiting on you</span>
-            <span class="b-chip bad">overdue</span>
-          </span>
-        </div>
-        <div class="b-last">
-          <span class="b-prog">
-            <span class="b-time">worked 1d 2h / 1d</span>
-            <span class="b-bar"><span class="b-fill" style="width:100%"></span></span>
-          </span>
-          <span class="b-wrote">wrote 22m ago</span>
-          <span class="b-acts"><button class="b-pick">fleet &#9662;</button></span>
-        </div>
-      </article>
-    </section>
-
-    <section class="b-lane" data-state="pending">
-      <div class="b-cap"><span class="b-lane-nm">Ready</span><span class="b-count">1</span><span class="b-rule"></span></div>
-      <article class="b-card">
-        <div class="b-row1">
-          <span class="b-mark"></span>
-          <span class="b-sub">
-            <span class="b-line">book pages for the new surface</span>
-          </span>
-        </div>
-        <div class="b-meta">
-          <span class="b-meta"><span class="b-muted">unclaimed</span></span>
-          <span class="b-chips"><span class="b-chip dim">no movement 5h</span></span>
-        </div>
-        <div class="b-last">
-          <span class="b-prog"><span class="b-time">worked 0s</span></span>
-          <span class="b-wrote">wrote 5h ago</span>
-          <span class="b-acts"><button class="b-pick">unclaimed &#9662;</button></span>
-        </div>
-      </article>
-    </section>
-
     <section class="b-lane" data-state="completed">
       <div class="b-cap"><span class="b-lane-nm">Completed</span><span class="b-count">1</span><span class="b-rule"></span></div>
       <article class="b-card">
         <div class="b-row1">
-          <span class="b-mark b-done"></span>
+          <span class="b-mark b-done"><svg class="ic" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg></span>
           <span class="b-sub settled">
             <span class="b-line">release 1.1.2</span>
           </span>
@@ -330,7 +407,7 @@
       <div class="b-cap"><span class="b-lane-nm">Failed</span><span class="b-count">1</span><span class="b-rule"></span></div>
       <article class="b-card">
         <div class="b-row1">
-          <span class="b-mark b-fail"></span>
+          <span class="b-mark b-fail"><svg class="ic" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></span>
           <span class="b-sub">
             <span class="b-line">the spike that ended in error</span>
           </span>
@@ -362,11 +439,56 @@
     <button class="b-btn b-add">+ add</button>
   </div>
 
+  <!-- The row's own page, which a click opens: what the row is, what it is
+       waiting on - answerable here - and where it has been. -->
+  <div class="dr-scrim"></div>
+  <div class="dr" role="dialog" aria-label="the task">
+    <div class="dr-head">
+      <span class="dr-state warn">waiting on you</span>
+      <div class="dr-title">
+        <div class="t">a project's board opens as a takeover</div>
+      </div>
+      <button class="dr-x" aria-label="close">&#10005;</button>
+    </div>
+    <div class="dr-body">
+      <dl class="dr-fields">
+        <dt>state</dt><dd>waiting</dd>
+        <dt>owner</dt><dd>fleet</dd>
+        <dt>estimate</dt><dd>2m</dd>
+        <dt>worked</dt><dd>1m 49s <span class="dim">of 2m</span></dd>
+        <dt>created</dt><dd>10:44</dd>
+        <dt>updated</dt><dd>10:47 <span class="dim">3m ago</span></dd>
+        <dt>parent</dt><dd>the board walk</dd>
+        <dt>links</dt><dd><a href="#">#1886</a></dd>
+      </dl>
+      <h3>Waiting on you</h3>
+      <div class="dr-ask">
+        <div class="q">A decision is waiting on you.</div>
+        <div class="from">your look: the lanes read right at both widths</div>
+        <div class="answer">
+          <input placeholder="your answer"><button class="dr-btn go">answer</button>
+        </div>
+        <a class="dr-ses" href="./web-session.html">or open the session &rarr;</a>
+      </div>
+      <h3>History</h3>
+      <div class="dr-hist">
+        <div class="h"><span class="w">10:44</span><span class="what">created by <b>fleet</b></span></div>
+        <div class="h"><span class="w">10:46</span><span class="what">moved to <b>waiting</b> by fleet</span></div>
+      </div>
+      <h3>From the seat</h3>
+      <div class="dr-last">
+        <span>fleet holds this row</span>
+        <a class="dr-ses" href="./web-session.html">open the session &rarr;</a>
+      </div>
+    </div>
+  </div>
+
   <p class="note">
     one project only: nothing of any other project appears here. a drag moves a card
-    between lanes, re-orders it inside one, or drops it on a seat; the arrows on a
-    focused card are the keyboard's half. every cell is the server's own read, and
-    every move hands the socket one command with this project on it.
+    between lanes, re-orders it inside one, or drops it on a seat; a click opens the
+    card's own page, drawn over the board; the arrows on a focused card are the
+    keyboard's half. every cell is the server's own read, and every move hands the
+    socket one command with this project on it.
   </p>
 </div>
 </body>

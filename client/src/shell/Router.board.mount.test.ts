@@ -103,6 +103,7 @@ function wireWithWaiting(): typeof homeWire {
             },
             rollup: null,
             parent_subject: null,
+            history: [],
           },
         ],
       },

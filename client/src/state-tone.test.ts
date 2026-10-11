@@ -30,9 +30,9 @@
  * ground by rgba is its idiom for alpha.
  *
  * The third is that a state class is what this reads, and most of the sheet's
- * tones sit on rules no state class reaches: 71 selectors across the two
- * sheets name a tone carrying no class the vocabulary knows. The mark's BASE
- * rules are among the 71, and the default tone lives there: swapping
+ * tones sit on rules no state class reaches: selectors across the sheets name
+ * a tone carrying no class the vocabulary knows. The mark's BASE rules are
+ * among them, and the default tone lives there: swapping
  * `.kind > summary .st` to `var(--bad)` leaves the whole suite green, and
  * `.rfoot .led` sits beside `.rfoot .led.bad`, which this does cover, in the
  * same relationship this does not reach.
@@ -160,17 +160,28 @@ const PAGE = readFileSync(
   'utf8',
 );
 
+/** The board drawing carries state classes too (the board's own marks). */
+const BOARD_PAGE = readFileSync(
+  new URL('../../docs/book/src/ui/client/web-board.html', import.meta.url),
+  'utf8',
+);
+
 /**
- * Every `<style>` block in the drawing, joined rather than the first taken: a
+ * Every `<style>` block in a drawing, joined rather than the first taken: a
  * second block is where a rule escapes a read that asked for one.
  */
-const BOOK = sheetText(
-  [...PAGE.matchAll(/<style>([\s\S]*?)<\/style>/g)].map(([, css = '']) => css).join('\n'),
-);
+const sheetOf = (page: string): string =>
+  sheetText(
+    [...page.matchAll(/<style>([\s\S]*?)<\/style>/g)].map(([, css = '']) => css).join('\n'),
+  );
+
+const BOOK = sheetOf(PAGE);
+const BOARD_BOOK = sheetOf(BOARD_PAGE);
 
 const SHEETS: [string, string][] = [
   ['assets/web.css', SHEET],
-  ['the book drawing', BOOK],
+  ['the session drawing', BOOK],
+  ['the board drawing', BOARD_BOOK],
 ];
 
 describe('the sheet a state class draws in', () => {

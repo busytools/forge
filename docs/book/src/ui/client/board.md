@@ -32,10 +32,11 @@ reader doing anything.
 ## The lanes
 
 Six lanes, always drawn in this order, because a missing lane would read as
-a missing state: **In progress**, **Waiting**, **Ready** (pending),
-**Completed**, **Failed**, **Canceled**. A lane is a name, its count and a
-rule, with its cards under it - no box around the column - and the lanes wrap
-to a second row rather than scroll sideways.
+a missing state: **Backlog** (pending), **Waiting**, **In progress**,
+**Completed**, **Failed**, **Canceled**. The pool of everything not yet
+started leads, then the lane that wants the reader, then the work. A lane is
+a name, its count and a rule, with its cards under it - no box around the
+column - and the lanes wrap to a second row rather than scroll sideways.
 
 ### A card
 
@@ -59,8 +60,8 @@ The mark carries shape as well as colour, so the board reads without colour:
 | Pending | a ring | queued, not started |
 | In progress | a filled accent dot | a seat is on it |
 | Waiting | a warning square | a wait, a question or the verify gate |
-| Completed | a filled green dot | done |
-| Failed | a filled red dot | it ended in failure |
+| Completed | a tick | done |
+| Failed | a cross | it ended in failure |
 | Canceled | a dim bar | withdrawn, kept for the record |
 
 The chips are the server's derived marks, named in words:
@@ -86,14 +87,28 @@ label, and a path or a branch draws as text rather than a dead anchor.
 The drag is the board's interaction, and what the card lands on decides the
 command: another lane is a move (`task_move`), a position inside its own lane
 is a re-rank by drop position (`task_rank`), and a seat chip is an assignment
-(`task_assign`). A press that never passes six pixels is a click, not a drag.
-A dropped card lands where it was put at once and the wire's own snapshot
-reconciles it a moment later; it animates into place unless the reader has
-asked for reduced motion, and the card under the pointer tilts and lifts.
+(`task_assign`). A press that never passes six pixels is a click, which opens
+the row's own page. A dropped card lands where it was put at once and the
+wire's own snapshot reconciles it a moment later; it animates into place
+unless the reader has asked for reduced motion, and the card under the
+pointer tilts and lifts.
 
 The keyboard has the same power without a row of buttons: the arrow keys on
 a focused card re-order it within its lane, and the owner picker on the card
 is a control like any other.
+
+## The row's page
+
+A click - or Enter or Space on a focused card - opens the row over the board: its
+fields (state, owner, estimate, worked, both clocks, its parent and its
+links), **Waiting on you** when the wait is a decision, carrying the waiting
+strip's own controls (`approve`, the send-back box, the answer box) - a
+dependency or resource wait draws the section without them - its
+**History** - the row's own transitions, which the core already records for
+the worked time - and the way into the owner's session. The button, the
+scrim and Escape all close it, and the card has the keyboard back when it
+goes. The board stays behind it, so a reader never loses the lane they were
+in.
 
 **Every control is one command on the socket, carrying this project on it.**
 `task_move` moves a row between lanes, `task_rank` re-orders it,
