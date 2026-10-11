@@ -285,32 +285,44 @@ describe('the tasks card', () => {
   });
 
   it('spells its wait words the way the board spells them', () => {
-    // One wait, one reading: the chat's three chips must be the board's own
+    // One wait, one reading: the chat's chips must be the board's own
     // (client/src/board/view.ts), and this reads that arm out of its source so
-    // the two cannot drift apart again. The board's dependency arm is a
-    // template, resolved here with the same blocker the chat draws.
+    // the two cannot drift apart again. The dependency arm is a template and is
+    // read BOTH ways - with a blocker and with the board's own fallback phrase -
+    // so neither half is a value this side substituted in.
     const board = readFileSync(new URL('../board/view.ts', import.meta.url), 'utf8');
     const arm = board.slice(board.indexOf('if (task.waiting_on !== null)'));
     const labels = [
       ...arm.slice(0, arm.indexOf('if (marks.')).matchAll(/label: (?:'([^']*)'|`([^`]*)`)/g),
-    ].map((found) => (found[1] ?? found[2] ?? '').replace(/\$\{[^}]*\}/g, 't-9'));
+    ].map((found) => found[1] ?? found[2] ?? '');
     expect(labels.length, 'the board arm was found and read').toBe(4);
-    const chatWords = [
-      { id: 't-1', kind: 'decision' },
-      { id: 't-1', kind: 'dependency', on: 't-9' },
-      { id: 't-1', kind: 'resource' },
-    ].map((input) => {
+    // Labels in reading order: the verify gate, a decision, the dependency
+    // template, a resource. The verify gate is the board's own case - this tool
+    // never sends a verification wait - so the chat is held to the decision arm.
+    const template = labels[2] ?? '';
+    const withBlocker = template.replace(/\$\{[^}]*\}/g, 't-9');
+    const withoutBlocker = template.replace(/\$\{[^}]*\?\?\s*'([^']*)'\}/g, '$1');
+    expect(withoutBlocker, "the board's own fallback phrase, read rather than assumed").not.toBe(
+      template,
+    );
+    const chatWord = (input: Record<string, unknown>): string => {
       const card = forgeCardOf(
         'mcp__forge__tasks__wait',
         input,
         result(JSON.stringify({ ...RECORD, status: 'waiting' })),
       );
       return card?.chips?.[0]?.text ?? '';
-    });
+    };
+    expect(chatWord({ id: 't-1', kind: 'decision' }), "the board's decision word").toBe(labels[1]);
     expect(
-      [...chatWords].sort(),
-      'the chat draws the board words, one reading for one wait',
-    ).toEqual([...new Set(labels)].sort());
+      chatWord({ id: 't-1', kind: 'dependency', on: 't-9' }),
+      "the board's dependency word, with a blocker",
+    ).toBe(withBlocker);
+    expect(
+      chatWord({ id: 't-1', kind: 'dependency' }),
+      "the board's dependency word, with its own fallback",
+    ).toBe(withoutBlocker);
+    expect(chatWord({ id: 't-1', kind: 'resource' }), "the board's resource word").toBe(labels[3]);
   });
 
   it('names a delete by the removed subject and counts the subtasks that went', () => {
