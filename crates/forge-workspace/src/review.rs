@@ -15,6 +15,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use forge_primitives::review::is_doc_scope;
 use forge_primitives::{ReviewStatus, ReviewThread};
 
 use crate::protocol::SessionUpdate;
@@ -234,7 +235,13 @@ impl Workspace {
                 .collect();
             let dead: Vec<&String> = stored
                 .iter()
-                .filter(|branch| !repo.names.contains(*branch) && !spawning.contains(*branch))
+                // A doc scope is stored in the branch column and has no ref
+                // by construction, so absence proves nothing about it.
+                .filter(|branch| {
+                    !is_doc_scope(branch)
+                        && !repo.names.contains(*branch)
+                        && !spawning.contains(*branch)
+                })
                 .collect();
             if dead.is_empty() {
                 continue;
@@ -1015,6 +1022,38 @@ mod tests {
         for branch in ["feat/a", "feat/b", "feat/c"] {
             assert!(sweep_has_state(&ws, "recloned", branch), "{branch} kept");
         }
+    }
+
+    /// **A doc scope is not a branch, and the sweep must not read it as a
+    /// dead one.** The scope is stored in the branch column, so a document
+    /// whose threads should survive a boot is exactly the row a naive
+    /// sweep deletes: no repo has a ref named `doc:/Users/.../plan.md`.
+    #[test]
+    fn the_sweep_spares_a_doc_scope() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path().join("docproj");
+        std::fs::create_dir_all(&root).expect("mkdir");
+        sweep_init_repo(&root, "main");
+        for branch in ["feat/live", "feat/second", "feat/third"] {
+            sweep_git(&root, &["branch", branch]);
+        }
+
+        let (ws, _rx) = sweep_ws(dir.path(), "docproj", &root);
+        for branch in ["feat/live", "feat/second", "feat/third"] {
+            ws.save_review_threads("docproj", branch, &[sweep_thread("a")]);
+        }
+        let doc_scope = forge_primitives::review::doc_scope_ref("/Users/me/proj/docs/plan.md");
+        ws.save_review_threads("docproj", &doc_scope, &[sweep_thread("d")]);
+
+        assert_eq!(
+            ws.sweep_dead_review_branches(),
+            0,
+            "three live branches and a document: nothing is dead",
+        );
+        assert!(
+            sweep_has_state(&ws, "docproj", &doc_scope),
+            "the document's threads survive a boot",
+        );
     }
 
     /// The accumulation #598 exists to clear IS the dead set, so a bound

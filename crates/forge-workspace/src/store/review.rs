@@ -551,6 +551,24 @@ mod tests {
         assert_eq!(load(&db, "forge", "feat").expect("load"), threads);
     }
 
+    /// A doc-scoped set round-trips under its own key, and the scope - a
+    /// path with slashes and the `doc:` marker - survives encode and
+    /// decode unchanged: the viewer reads its threads back by the exact
+    /// ref it wrote, and a branch of that name stays a different row.
+    #[test]
+    fn a_doc_scoped_thread_set_round_trips_under_its_own_scope() {
+        let (_dir, db) = open_db();
+        let scope = forge_primitives::review::doc_scope_ref("/Users/me/proj/docs/plan.md");
+        let mut doc = thread("d", 4);
+        doc.anchor.path = "/Users/me/proj/docs/plan.md".to_owned();
+        doc.anchor.base_ref = scope.clone();
+        save(&db, "forge", &scope, &[doc.clone()]).expect("save");
+        save(&db, "forge", "feat", &[thread("a", 10)]).expect("save a branch too");
+
+        assert_eq!(load(&db, "forge", &scope).expect("load"), vec![doc]);
+        assert_eq!(load(&db, "forge", "feat").expect("load").len(), 1, "the rows stay apart");
+    }
+
     #[test]
     fn load_is_empty_on_miss() {
         let (_dir, db) = open_db();

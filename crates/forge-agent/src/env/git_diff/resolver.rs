@@ -20,7 +20,7 @@
 
 use std::collections::HashSet;
 
-use forge_primitives::review::{ReviewAnchor, ReviewSide};
+use forge_primitives::review::{ReviewAnchor, ReviewSide, is_doc_scope};
 
 use super::hunks::{DiffLine, FileHunks, Hunk};
 
@@ -126,6 +126,11 @@ pub fn resolve_anchor(
     files: &[FileHunks],
     trust_line_number: bool,
 ) -> AnchorResolution {
+    // A doc scope is never a place in a diff, however its path collides
+    // with a changed file: the viewer places those threads, not this.
+    if is_doc_scope(&anchor.base_ref) {
+        return AnchorResolution::Outdated(OutdatedReason::Gone);
+    }
     let Some(file_idx) = files.iter().position(|f| f.path == anchor.path) else {
         return AnchorResolution::Outdated(OutdatedReason::Gone);
     };
@@ -175,6 +180,23 @@ fn side_line(line: &DiffLine, side: ReviewSide) -> Option<u32> {
 mod tests {
     use super::*;
     use crate::env::git_diff::hunks::{DiffLineKind, FileStatus};
+
+    /// **A doc-scoped anchor is never placed against a diff.** The scope
+    /// spells a document, and the viewer places those threads, not the
+    /// resolver: without the guard a document whose path coincides with a
+    /// changed file could have its comments resolved onto code.
+    #[test]
+    fn a_doc_scoped_anchor_is_never_resolved() {
+        let files = vec![file("docs/plan.md", vec![new_line("# Plan", 1), new_line("body", 2)])];
+        let mut a = anchor("docs/plan.md", ReviewSide::New, 1, "# Plan", &[]);
+        a.base_ref = forge_primitives::review::doc_scope_ref("/proj/docs/plan.md");
+
+        assert_eq!(
+            resolve_anchor(&a, &files, true),
+            AnchorResolution::Outdated(OutdatedReason::Gone),
+            "a document is not a place in the diff's numbering",
+        );
+    }
 
     /// A `new`-side line (added or context) at `new_line`.
     fn new_line(text: &str, n: u32) -> DiffLine {

@@ -130,9 +130,49 @@ pub struct ReviewSet {
     pub created_at: String,
 }
 
+/// A doc-scoped thread's scope: `base_ref` is this prefix plus the
+/// document's resolved absolute path, so the scope key a thread set is
+/// stored under IS the document.
+pub const DOC_SCOPE_PREFIX: &str = "doc:";
+
+/// The scope ref a document's threads are stored under.
+pub fn doc_scope_ref(path: &str) -> String {
+    format!("{DOC_SCOPE_PREFIX}{path}")
+}
+
+/// Whether a scope ref spells a document rather than a branch. **The one
+/// predicate**: the readers that place threads against a diff and the
+/// branch sweep all ask this, so a doc scope is skipped in exactly one
+/// place. It takes the ref string, not the anchor, because the sweep has
+/// only the stored scope in hand.
+pub fn is_doc_scope(base_ref: &str) -> bool {
+    base_ref.starts_with(DOC_SCOPE_PREFIX)
+}
+
+/// The document's resolved path a doc scope ref carries, or `None` for a
+/// branch scope.
+pub fn doc_scope_path(base_ref: &str) -> Option<&str> {
+    base_ref.strip_prefix(DOC_SCOPE_PREFIX)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The doc scope: a ref that spells a document, not a branch. The
+    /// branch named `docs/fix` is the control - it starts with the same
+    /// letters and is still not a doc scope.
+    #[test]
+    fn a_doc_scope_ref_is_recognised_and_carries_its_path() {
+        assert_eq!(doc_scope_ref("/proj/docs/plan.md"), "doc:/proj/docs/plan.md");
+        assert!(is_doc_scope("doc:/proj/docs/plan.md"));
+        assert_eq!(doc_scope_path("doc:/proj/docs/plan.md"), Some("/proj/docs/plan.md"));
+
+        assert!(!is_doc_scope("docs/fix"), "a branch is not a doc scope");
+        assert!(!is_doc_scope("main"));
+        assert!(!is_doc_scope(""), "nor is nothing a scope");
+        assert_eq!(doc_scope_path("main"), None);
+    }
 
     fn sample_thread() -> ReviewThread {
         ReviewThread {
