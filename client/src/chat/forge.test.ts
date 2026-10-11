@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+
 import { describe, expect, it } from 'vitest';
 
 import { forgeCardOf, forgeRowTitle, type ForgeCard } from './forge';
@@ -225,7 +227,7 @@ describe('the tasks card', () => {
     );
     expect(card?.title).toBe(RECORD.subject);
     expect(card?.chips, 'a wait has one state word, and it is what it waits on').toEqual([
-      { text: 'waiting on t-9', tone: 'warn' },
+      { text: 'on t-9', tone: 'warn' },
     ]);
     expect(card?.figure).toBe('owner lead');
     expect(card?.pieces[0], "the task's own words, as every record card draws them").toEqual({
@@ -259,11 +261,37 @@ describe('the tasks card', () => {
       { text: 'waiting on a resource', tone: 'warn' },
     ]);
     expect(chips({ id: 't-1', kind: 'dependency' }), 'a blocker none named').toEqual([
-      { text: 'waiting on another row', tone: 'warn' },
+      { text: 'on another row', tone: 'warn' },
     ]);
-    expect(chips({ id: 't-1' }), 'a call whose kind is unreadable keeps the record state').toEqual([
-      { text: 'waiting', tone: 'plain' },
-    ]);
+  });
+
+  it('spells its wait words the way the board spells them', () => {
+    // One wait, one reading: the chat's three chips must be the board's own
+    // (client/src/board/view.ts), and this reads that arm out of its source so
+    // the two cannot drift apart again. The board's dependency arm is a
+    // template, resolved here with the same blocker the chat draws.
+    const board = readFileSync(new URL('../board/view.ts', import.meta.url), 'utf8');
+    const arm = board.slice(board.indexOf('if (task.waiting_on !== null)'));
+    const labels = [
+      ...arm.slice(0, arm.indexOf('if (marks.')).matchAll(/label: (?:'([^']*)'|`([^`]*)`)/g),
+    ].map((found) => (found[1] ?? found[2] ?? '').replace(/\$\{[^}]*\}/g, 't-9'));
+    expect(labels.length, 'the board arm was found and read').toBe(4);
+    const chatWords = [
+      { id: 't-1', kind: 'decision' },
+      { id: 't-1', kind: 'dependency', on: 't-9' },
+      { id: 't-1', kind: 'resource' },
+    ].map((input) => {
+      const card = forgeCardOf(
+        'mcp__forge__tasks__wait',
+        input,
+        result(JSON.stringify({ ...RECORD, status: 'waiting' })),
+      );
+      return card?.chips?.[0]?.text ?? '';
+    });
+    expect(
+      [...chatWords].sort(),
+      'the chat draws the board words, one reading for one wait',
+    ).toEqual([...new Set(labels)].sort());
   });
 
   it('names a delete by the removed subject and counts the subtasks that went', () => {

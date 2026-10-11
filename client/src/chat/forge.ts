@@ -1359,21 +1359,18 @@ function taskWhen(record: TaskRecord): string | null {
 }
 
 /**
- * The one state word a waiting row carries: what it waits on, in the board's
- * own vocabulary.
+ * The chip a waiting row carries: what it waits on, in the board's own words.
  *
- * The board spells the same three kinds - a decision is the reader's to make,
- * a dependency names the row blocking it, a resource names itself - and the
- * chat says them the same way rather than inventing a second reading of one
- * wait. A call whose kind the page cannot read keeps the record's own state
- * word, so the chip is never blank.
+ * A test holds these three phrases equal to the board's (`board/view.ts`), so
+ * one wait reads the same on either surface. A call whose kind the page
+ * cannot read keeps the record's own state word, so the chip is never blank.
  */
 function waitChip(input: unknown, record: TaskRecord): ForgeChip {
   const held = obj(input);
   const kind = str(held, 'kind');
   if (kind === 'decision') return { text: 'waiting on you', tone: 'warn' };
   if (kind === 'dependency') {
-    return { text: `waiting on ${str(held, 'on') ?? 'another row'}`, tone: 'warn' };
+    return { text: `on ${str(held, 'on') ?? 'another row'}`, tone: 'warn' };
   }
   if (kind === 'resource') return { text: 'waiting on a resource', tone: 'warn' };
   return statusChip(record.status);
