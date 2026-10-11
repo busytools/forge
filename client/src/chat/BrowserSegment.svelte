@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from 'svelte';
   import Icon from '../components/Icon.svelte';
   import {
     browserUsed,
@@ -315,9 +316,9 @@
   function esc(event: KeyboardEvent): void {
     if (event.key !== 'Escape') return;
     // Escape inside the confirm keeps the list: the reader is backing out of
-    // the delete, not out of the panel.
+    // the delete, not out of the panel, and the focus is kept - see backOut.
     if (armed !== null) {
-      armed = null;
+      backOut();
       return;
     }
     toToggle();
@@ -370,6 +371,25 @@
         why = whyText(error);
       },
     );
+  }
+
+  /**
+   * Arm the confirm, and put focus on its Keep: the verb that armed it
+   * unmounts, so without this a keyboard reader's next Escape lands on the
+   * body, where nothing listens.
+   */
+  function armDelete(row: ProfileRow): void {
+    armed = row.name;
+    void tick().then(() => {
+      segEl?.querySelector<HTMLElement>(`[data-keep="${row.name}"]`)?.focus();
+    });
+  }
+
+  /** Back out of the confirm with the focus kept: the toggle takes it first,
+   *  like every dismissal, and the armed verb unmounts under it. */
+  function backOut(): void {
+    toToggle();
+    armed = null;
   }
 
   /**
@@ -515,8 +535,9 @@
             <button
               type="button"
               class="bz-take"
+              data-keep={row.name}
               aria-label="keep the {row.name} profile"
-              onclick={() => (armed = null)}
+              onclick={backOut}
               onkeydown={esc}
             >
               keep
@@ -576,7 +597,7 @@
               type="button"
               class="bz-take bz-del"
               aria-label="delete the {row.name} profile and its logins"
-              onclick={() => (armed = row.name)}
+              onclick={() => armDelete(row)}
               onkeydown={esc}
             >
               delete

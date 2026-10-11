@@ -422,6 +422,35 @@ describe('the browser segment', () => {
     shown.stop();
   });
 
+  it('moves the focus onto keep when a delete arms, and escape backs out from there', async () => {
+    vi.mocked(listProfiles).mockResolvedValue([
+      { name: 'hunt', owner: 'Busytools/forge/lead', running: true, windowed: false },
+    ]);
+    const shown = show(false, true);
+    click(shown.target.querySelector('.bz-tog'));
+    await vi.waitFor(() => expect(shown.target.textContent).toContain('hunt'));
+
+    click(shown.target.querySelector('.bz-del'));
+    await vi.waitFor(() => {
+      expect(
+        document.activeElement?.textContent?.trim(),
+        'arming puts the focus on keep, where Escape reaches',
+      ).toBe('keep');
+    });
+
+    const keep = shown.target.querySelector<HTMLButtonElement>('[data-keep="hunt"]');
+    if (keep === null) throw new Error('no keep');
+    keep.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    flushSync();
+
+    expect(shown.target.textContent, 'the warning goes').not.toContain(
+      'its logins and cookies go with it',
+    );
+    expect(shown.target.querySelector('.bz-list'), 'and the list stays open').not.toBeNull();
+    expect(document.activeElement, 'with the focus back on the toggle').toBe(toggle(shown.target));
+    shown.stop();
+  });
+
   it('opens on hover and closes once the pointer leaves', async () => {
     const shown = show(false, true);
     expect(list(shown.target), 'closed at rest').toBeNull();
