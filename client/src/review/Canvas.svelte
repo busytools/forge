@@ -243,7 +243,12 @@
   /** The tree's rows are the way to a file the list may not have drawn yet. */
   function jumpTo(path: string): void {
     const at = built.findIndex((file) => file.path === path);
-    if (at >= 0) list?.scrollToIndex(at, { align: 'start' });
+    if (at < 0) return;
+    // One scroller or the other: the virtualised list owns the wide layout,
+    // and below 980 the page is the scroller and the section is its own
+    // target - without this the rows were dead controls at that width.
+    if (list !== null) list.scrollToIndex(at, { align: 'start' });
+    else document.getElementById(path)?.scrollIntoView({ block: 'start' });
   }
 
   /**
