@@ -22,7 +22,7 @@
   } from './conversation';
   import Echo from './Echo.svelte';
   import { echoes, ownWords } from './echoes.svelte';
-  import Pinned from './Pinned.svelte';
+  import { pinnedRow } from './pinnedRow.svelte';
   import Turn from './Turn.svelte';
   import { turnOfDispatch } from './dispatch-jump';
   import { callRow, reachableIds, reveal, subagents } from './subagents.svelte';
@@ -751,6 +751,18 @@
       : null,
   );
 
+  // The composer's surface draws this row now, so the column publishes it: the
+  // strip lane lives in the foot, and the fold that mints the row lives here.
+  // Two effects because the cleanup must fire on a seat CHANGE and on unmount,
+  // not on every frame that republishes the row.
+  $effect(() => {
+    const key = seat;
+    return () => pinnedRow.set(key, null);
+  });
+  $effect(() => {
+    pinnedRow.set(seat, pinned?.info ?? null);
+  });
+
   /**
    * Every message the page holds, across every turn.
    *
@@ -1250,15 +1262,9 @@
     </button>
   {/if}
 {/if}
-<!-- The waiting prompts and the strip stand in EVERY conversation state,
-     not only under the list: a seat coming up, refused, not yet read or
-     empty holds the same tree, tasks and watchers as one mid-turn, and the
-     rows are the whole way into them. Last in the column, so the strip
-     keeps its place right above the box. -->
+<!-- The waiting prompts stand in EVERY conversation state, not only under the
+     list: a seat coming up, refused, not yet read or empty holds the same tree,
+     tasks and watchers as one mid-turn. The strip and the box are one surface
+     now, drawn by the composer - the column publishes its pinned row through
+     `pinnedRow` and nothing else stands at this foot. -->
 {#if queue !== undefined}{@render queue()}{/if}
-<!-- Outside the list rather than in it, which is what makes the row pinned:
-     the turns scroll under it, and the answer to whether the turn is still
-     being written stops depending on where the reader is looking. It is a
-     sibling of the scroller rather than a row of the grid, so the composer
-     and the dock - both drawn under this column - never have to know it. -->
-<Pinned info={pinned?.info ?? null} {connection} {slot} />

@@ -12,6 +12,7 @@ import type { Connection } from '../socket';
 import { Stores } from '../stores';
 import type { SessionSlot } from '../wire/types';
 import Chat from './Chat.svelte';
+import { pinnedRow } from './pinnedRow.svelte';
 import SeatSwitch from './testing/seat-switch.svelte';
 import { installResizeObserver, resized } from './testing/viewport';
 
@@ -33,6 +34,9 @@ vi.mock('./conversation', async (importOriginal) => {
 });
 
 const LEAD: SessionSlot = { org: 'Busytools', project: 'forge', label: 'lead' };
+
+/** The seat key the pinned-row store is read under, which is what the composer draws from. */
+const PIN = subjectKey({ session: LEAD });
 
 /**
  * A connection a test drives by hand.
@@ -172,16 +176,20 @@ afterEach(async () => {
   app = null;
   document.body.innerHTML = '';
   git.sync(null);
+  // The publish store is one per client, so a pin left behind is read by the
+  // next test as its own.
+  pinnedRow.set(PIN, null);
 });
 
 describe('the chat column as it draws', () => {
   /**
-   * **The queue sits above the pin, and both above the box.** The queue's
-   * DATA is the page's, but its place is the column's: what is waiting reads
-   * against what is running, and the strip keeps its place right above the
-   * composer.
+   * **The queue sits at the column's foot, and the foot surface follows it.**
+   * The queue's DATA is the page's, but its place is the column's: what is
+   * waiting reads against what is running. The strip (and the box) are the
+   * composer surface's first lane now, so the column draws the queue and
+   * hands the foot over.
    */
-  it('draws the queue snippet above the strip', () => {
+  it('draws the queue snippet at the column foot, and no strip of its own', () => {
     const server = stub();
     const queue = createRawSnippet(() => ({ render: () => '<span class="pile"></span>' }));
     git.sync({
@@ -194,59 +202,21 @@ describe('the chat column as it draws', () => {
     });
     draw({ queue }, server);
     // A page with a turn on it: the column's empty state owns a seat with no
-    // history, and the strip and the queue live in the drawn column.
+    // history, and the queue lives in the drawn column.
     server.answer([{ key: 't1', messages: [] }]);
 
-    const pile = document.querySelector('.pile');
-    const strip = document.querySelector('.strip');
-    expect(pile, 'the queue snippet did not draw').not.toBeNull();
-    expect(strip, 'the strip did not draw').not.toBeNull();
-    if (pile === null || strip === null) return;
-    expect(
-      pile.compareDocumentPosition(strip) & Node.DOCUMENT_POSITION_FOLLOWING,
-      'the strip did not follow the queue in the column',
-    ).not.toBe(0);
-  });
-
-  /**
-   * **The strip stands in every conversation state, not only under the
-   * list.** A seat coming up, refused, not yet read or empty holds the same
-   * tree, tasks and watchers as one mid-turn - and the rows are the whole
-   * way into them, so nesting the strip back inside any one state's arm is
-   * the regression this pins.
-   */
-  it('draws the strip on seats with no list at all', async () => {
-    const server = stub();
-    git.sync({
-      label: 'feat/x',
-      head: "the project's tree",
-      ahead: null,
-      uncommitted: null,
-      pr: null,
-      gate: null,
-    });
-    const redraw = async (props: Record<string, unknown>): Promise<void> => {
-      if (app !== null) await unmount(app);
-      document.body.innerHTML = '';
-      draw(props, server);
-    };
-
-    await redraw({ waking: true });
-    expect(document.querySelector('.strip'), 'no strip on a seat coming up').not.toBeNull();
-
-    await redraw({});
-    expect(document.querySelector('.strip'), 'no strip before the first read').not.toBeNull();
-
-    server.send({ kind: 'error', what: 'more', why: 'the conversation is not held yet' });
+    expect(document.querySelector('.pile'), 'the queue snippet did not draw').not.toBeNull();
     expect(
       document.querySelector('.strip'),
-      'no strip on a refused seat with nothing under it',
-    ).not.toBeNull();
-
-    await redraw({});
-    server.answer([]);
-    expect(document.querySelector('.strip'), 'no strip on an empty seat').not.toBeNull();
+      'the strip lives in the composer surface now, not in the column',
+    ).toBeNull();
   });
+
+  // **The strip stands in every conversation state** - a seat coming up,
+  // refused, not yet read or empty holds the same tree, tasks and watchers as
+  // one mid-turn. It is the composer surface's first lane now, so that pin -
+  // "the strip lane stands on a seat with no conversation state to speak of" -
+  // lives in `Composer.test.ts`.
 
   it('asks for the newest page before it draws anything', () => {
     const server = stub();
@@ -734,19 +704,20 @@ describe('the chat column as it draws', () => {
     expect(html, 'and labelled by its sender').toContain('forge/steward');
   });
 
-  it('pins the running row above the box, and out of the turn it belongs to', async () => {
+  it('pins the running row for the surface, and out of the turn it belongs to', async () => {
     // **The wiring, and both halves of it.** The row moves out of the newest
     // turn while it is being written, so a column that goes on drawing it in
     // the turn draws it twice, and a column that keeps it only in the turn
-    // loses the pin. Either one alone reads as a working page.
+    // loses the pin. Either one alone reads as a working page. The pin
+    // publishes to the store the composer's strip lane draws from.
     const server = stub();
     draw({}, server);
     server.answer([]);
     server.send(appended(frame('a-run', 100)));
     await painted();
 
-    expect(document.querySelectorAll('.strip'), 'one pinned row').toHaveLength(1);
-    expect(document.querySelectorAll('.strip .ring'), 'carrying the running mark').toHaveLength(1);
+    expect(pinnedRow.of(PIN), 'one pinned row').not.toBeNull();
+    expect(pinnedRow.of(PIN)?.running, 'carrying the running mark').toBe(true);
     expect(
       document.querySelectorAll('details.turninfo'),
       'and the turn draws no second copy of it',
@@ -765,9 +736,10 @@ describe('the chat column as it draws', () => {
       subject: { session: LEAD },
       data: { header: { turn_in_flight: true } },
     });
+    flushSync();
 
-    expect(document.querySelectorAll('.strip'), 'the row is pinned').toHaveLength(1);
-    expect(document.querySelectorAll('.strip .ring'), 'with the running mark').toHaveLength(1);
+    expect(pinnedRow.of(PIN), 'the row is pinned').not.toBeNull();
+    expect(pinnedRow.of(PIN)?.running, 'with the running mark').toBe(true);
     expect(document.querySelectorAll('details.turninfo'), 'and out of the turn').toHaveLength(0);
   });
 
@@ -783,16 +755,13 @@ describe('the chat column as it draws', () => {
       server.answer([]);
       server.send(appended(frame('a-run', 100)));
       await painted();
-      expect(document.querySelectorAll('.strip'), 'the running row is pinned').toHaveLength(1);
+      expect(pinnedRow.of(PIN), 'the running row is pinned').not.toBeNull();
 
       server.send(ended());
       server.answer([{ key: 'turn-a-run', messages: [frame('a-run', 100), settledFrame()] }]);
       await painted();
 
-      expect(
-        document.querySelector('.strip')?.textContent,
-        'the pin holds the finished row',
-      ).toContain('cumulative');
+      expect(pinnedRow.of(PIN)?.session_cost_usd, 'the pin holds the finished row').not.toBeNull();
       expect(
         document.querySelectorAll('details.turninfo'),
         'and the turn draws none of it while the pin has it',
@@ -801,7 +770,7 @@ describe('the chat column as it draws', () => {
       vi.advanceTimersByTime(450);
       flushSync();
 
-      expect(document.querySelector('.strip'), 'the pin lets go').toBeNull();
+      expect(pinnedRow.of(PIN), 'the pin lets go').toBeNull();
       expect(
         document.querySelectorAll('details.turninfo'),
         'and the turn has its row',
@@ -825,23 +794,17 @@ describe('the chat column as it draws', () => {
       server.send(ended());
       server.answer([{ key: 'turn-a-one', messages: [frame('a-one', 100), settledFrame()] }]);
       await painted();
-      expect(
-        document.querySelector('.strip')?.textContent,
-        'the first finish is beating',
-      ).toContain('cumulative');
+      expect(pinnedRow.of(PIN)?.session_cost_usd, 'the first finish is beating').not.toBeNull();
 
       server.send(appended(frame('a-two', 700)));
       await painted();
-      expect(
-        document.querySelector('.strip')?.textContent,
-        'the next turn draws its own figures',
-      ).toContain('700\u{2191}');
+      expect(pinnedRow.of(PIN)?.input_tokens, 'the next turn draws its own figures').toBe(700);
 
       vi.advanceTimersByTime(450);
       flushSync();
 
       expect(
-        document.querySelector('.strip'),
+        pinnedRow.of(PIN),
         'and stays pinned through the beat that belonged to the turn before',
       ).not.toBeNull();
 
@@ -849,9 +812,7 @@ describe('the chat column as it draws', () => {
       server.answer([{ key: 'turn-a-two', messages: [frame('a-two', 700), settledFrame()] }]);
       await painted();
 
-      expect(document.querySelector('.strip')?.textContent, 'and its own finish beats').toContain(
-        'cumulative',
-      );
+      expect(pinnedRow.of(PIN)?.session_cost_usd, 'and its own finish beats').not.toBeNull();
 
       // **And its beat lets go.** The assertion above is satisfied by a row
       // that is stuck exactly as well as by one that is beating, so this is the
@@ -861,7 +822,7 @@ describe('the chat column as it draws', () => {
       vi.advanceTimersByTime(450);
       flushSync();
 
-      expect(document.querySelector('.strip'), 'and its own beat lets go').toBeNull();
+      expect(pinnedRow.of(PIN), 'and its own beat lets go').toBeNull();
       expect(
         document.querySelectorAll('details.turninfo'),
         'and the turns take their rows back',
@@ -875,8 +836,9 @@ describe('the chat column as it draws', () => {
     const server = stub();
     draw({}, server);
     server.answer([{ key: 'turn-done', messages: [frame('a-done', 100), settledFrame()] }]);
+    flushSync();
 
-    expect(document.querySelectorAll('.strip'), 'no row is pinned').toHaveLength(0);
+    expect(pinnedRow.of(PIN), 'no row is pinned').toBeNull();
     expect(
       document.querySelectorAll('details.turninfo'),
       'and the turn draws its own',
@@ -986,9 +948,7 @@ describe('the chat column as it draws', () => {
       ]);
       await painted();
 
-      expect(document.querySelector('.strip')?.textContent, 'the pin holds the last row').toContain(
-        '$9.00 cumulative',
-      );
+      expect(pinnedRow.of(PIN)?.session_cost_usd, 'the pin holds the last row').toBe(9);
       expect(
         document.querySelectorAll('details.turninfo'),
         'and the turn keeps the row the pin never took',
@@ -1020,10 +980,8 @@ describe('the chat column as it draws', () => {
     server.send(appended(frame('a-three', 700)));
     await painted();
 
-    expect(document.querySelectorAll('.strip'), 'one pinned row').toHaveLength(1);
-    expect(document.querySelector('.strip')?.textContent, 'carrying the newest turn').toContain(
-      '700\u{2191}',
-    );
+    expect(pinnedRow.of(PIN), 'one pinned row').not.toBeNull();
+    expect(pinnedRow.of(PIN)?.input_tokens, 'carrying the newest turn').toBe(700);
     expect(
       document.querySelectorAll('details.turninfo'),
       'and the settled turns draw their own',

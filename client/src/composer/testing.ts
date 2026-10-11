@@ -208,6 +208,9 @@ export interface Wire {
     | 'subscribe'
     | 'unsubscribe'
     | 'refresh'
+    | 'browserRole'
+    | 'onBrowserRole'
+    | 'takeBrowserRole'
   >;
   /** Say something to every composer attached, as the server would. */
   say(message: ServerMessage): void;
@@ -251,6 +254,11 @@ export function wire(settings: ClientSettings = DEFAULT_SETTINGS): Wire {
         return () => listeners.delete(fn);
       },
       store: (what) => stores.get(what),
+      // The strip lane's browser segment, which registers a role listener and
+      // reads the role as it draws; these tests never press its override.
+      browserRole: () => false,
+      onBrowserRole: () => () => {},
+      takeBrowserRole: () => {},
       // The take's own three: a page that starts one streams frames here,
       // and the fixtures answer as a live socket does.
       frame(bytes: Uint8Array) {

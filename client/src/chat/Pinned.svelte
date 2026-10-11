@@ -42,7 +42,11 @@
     info,
     connection,
     slot = null,
-  }: { info: TurnInfo | null; connection: Connection; slot?: SessionSlot | null } = $props();
+  }: {
+    info: TurnInfo | null;
+    connection: Pick<Connection, 'browserRole' | 'onBrowserRole' | 'takeBrowserRole'>;
+    slot?: SessionSlot | null;
+  } = $props();
 
   const rows = $derived(
     subagents.all().length > 0 ||

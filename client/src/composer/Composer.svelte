@@ -2,10 +2,12 @@
   import { untrack } from 'svelte';
 
   import { echoes } from '../chat/echoes.svelte';
+  import Pinned from '../chat/Pinned.svelte';
+  import { pinnedRow } from '../chat/pinnedRow.svelte';
   import { runningAt } from '../chat/conversation';
   import { hideBrowser } from '../browser/host';
   import Icon from '../components/Icon.svelte';
-  import { slotOf } from '../protocol';
+  import { slotOf, subjectKey } from '../protocol';
   import { variantOf } from '../session/apply';
   import { report } from '../socket';
   import { mintPromptId } from '../wire/ids';
@@ -181,6 +183,8 @@
   const mac = navigator.platform.toLowerCase().includes('mac');
 
   const composer = $derived(composerState(record));
+  /** This seat's own key, which is what the pinned-row store is read under. */
+  const seatKey = $derived(subjectKey({ session: slot }));
   // A prompt only the shown seat's record may put up: answering the seat being
   // left's prompt through this composer would dispatch it as the seat moved to.
   const ask = $derived(owns ? pendingAsk(record) : null);
@@ -1070,174 +1074,179 @@
   }
 </script>
 
-{#if blocker !== null}
-  <div class="comp">
-    <div class="box" class:err={blocker.bad}>
-      <div class="blocked">
-        <span class="b1">
-          {#if blocker.waiting}<span class="ring"></span>{/if}
-          <span class:shimmer={blocker.shimmer}>{blocker.line}</span>
-        </span>
-        {#if blocker.sub !== null}<span class="b2">{blocker.sub}</span>{/if}
+<div class="comp">
+  <div
+    class="surf"
+    class:rec={ring === 'rec'}
+    class:tr={ring === 'tr'}
+    class:done={ring === 'done'}
+    class:err={blocker !== null && blocker.bad}
+  >
+    <Pinned info={pinnedRow.of(seatKey)} {connection} {slot} />
+    {#if blocker !== null}
+      <div class="box">
+        <div class="blocked">
+          <span class="b1">
+            {#if blocker.waiting}<span class="ring"></span>{/if}
+            <span class:shimmer={blocker.shimmer}>{blocker.line}</span>
+          </span>
+          {#if blocker.sub !== null}<span class="b2">{blocker.sub}</span>{/if}
+        </div>
       </div>
-    </div>
-  </div>
-{:else if dockAsk !== null}
-  <div class="comp">
-    <!-- Keyed on the prompt, so a batch's next question is a fresh dock: the
+    {:else if dockAsk !== null}
+      <!-- Keyed on the prompt, so a batch's next question is a fresh dock: the
          wire's option ids are positional, so a mark or a toggle left over from
          the question before is a valid answer to the one after, and the core
          accepts it. A repaint of the same prompt keeps its key, so a frame
          arriving clears nothing the reader has turned on. -->
-    {#key ownKeyOf(dockAsk)}
-      <Dock
-        ask={dockAsk}
-        ownKey={ownKeyOf(dockAsk)}
-        {slot}
-        {connection}
-        depth={seat.pendingDepth}
-        notice={box.refusal}
-        take={composer.take}
-        {wire}
-        bind:notes={dockDraft}
-        bind:ownOpen={dockOpen}
-        land={dockLanded}
-        onanswer={remember}
-        onabandon={abandon}
-        onmic={micTake}
-        {dictation}
-        takeline={box.dictateLine}
-        answered={box.answeredKey !== null &&
-          box.answeredKey === ownKeyOf(dockAsk) &&
-          box.refusal === null}
-      />
-    {/key}
-  </div>
-{:else}
-  <div class="comp">
-    {#if seat.lifecycle === 'AuthRequired'}
-      <div class="hint login">
-        Authentication required{#if composer.signIn !== null && composer.signIn.methodName !== ''}
-          · {composer.signIn.methodName}{/if}
-        <span class="sub">{signInLine(composer)}</span>
-      </div>
-    {/if}
-    <!-- The box's controls, drawn in one of two places: on the field's own line
+      {#key ownKeyOf(dockAsk)}
+        <Dock
+          ask={dockAsk}
+          ownKey={ownKeyOf(dockAsk)}
+          {slot}
+          {connection}
+          depth={seat.pendingDepth}
+          notice={box.refusal}
+          take={composer.take}
+          {wire}
+          bind:notes={dockDraft}
+          bind:ownOpen={dockOpen}
+          land={dockLanded}
+          onanswer={remember}
+          onabandon={abandon}
+          onmic={micTake}
+          {dictation}
+          takeline={box.dictateLine}
+          answered={box.answeredKey !== null &&
+            box.answeredKey === ownKeyOf(dockAsk) &&
+            box.refusal === null}
+        />
+      {/key}
+    {:else}
+      {#if seat.lifecycle === 'AuthRequired'}
+        <div class="hint login">
+          Authentication required{#if composer.signIn !== null && composer.signIn.methodName !== ''}
+            · {composer.signIn.methodName}{/if}
+          <span class="sub">{signInLine(composer)}</span>
+        </div>
+      {/if}
+      <!-- The box's controls, drawn in one of two places: on the field's own line
          while the bar is one row, and in the foot once a draft or a recording
          gives the bar a second. One copy, because the two are the same buttons
          and a second rendering of them is a second thing to keep in step. -->
-    {#snippet ctls()}
-      <span class="ctls">
-        {#if dictation}
-          <button
-            class="mic"
-            type="button"
-            bind:this={micEl}
-            title="press to dictate, hold or Shift+Enter for settings"
-            aria-label={take === null && composer.take === null ? 'dictate' : 'stop dictating'}
-            aria-expanded={panel}
-            onpointerdown={micHoldStart}
-            onpointerup={micHoldEnd}
-            onpointerleave={micHoldEnd}
-            onkeydown={(event: KeyboardEvent) => {
-              // **The hold's door for a keyboard.** The press is the button's
-              // own click; the settings need one modifier shape, said in the
-              // title so it is discoverable rather than folklore.
-              if (event.key === 'Enter' && event.shiftKey) {
-                event.preventDefault();
-                panel = true;
-              }
-            }}
-            onclick={mic}
-          >
-            <Icon name="mic" />
-          </button>
-        {/if}
-        {#if running}
-          <button class="stop" type="button" title="stop" aria-label="stop" onclick={stop}>
-            <Icon name="stop" />
-          </button>
-        {/if}
-        {#if filled}
-          <button class="send" type="button" title="send" aria-label="send" onclick={send}>
-            <Icon name="send" />
-          </button>
-        {/if}
-      </span>
-    {/snippet}
+      {#snippet ctls()}
+        <span class="ctls">
+          {#if dictation}
+            <button
+              class="mic"
+              type="button"
+              bind:this={micEl}
+              title="press to dictate, hold or Shift+Enter for settings"
+              aria-label={take === null && composer.take === null ? 'dictate' : 'stop dictating'}
+              aria-expanded={panel}
+              onpointerdown={micHoldStart}
+              onpointerup={micHoldEnd}
+              onpointerleave={micHoldEnd}
+              onkeydown={(event: KeyboardEvent) => {
+                // **The hold's door for a keyboard.** The press is the button's
+                // own click; the settings need one modifier shape, said in the
+                // title so it is discoverable rather than folklore.
+                if (event.key === 'Enter' && event.shiftKey) {
+                  event.preventDefault();
+                  panel = true;
+                }
+              }}
+              onclick={mic}
+            >
+              <Icon name="mic" />
+            </button>
+          {/if}
+          {#if running}
+            <button class="stop" type="button" title="stop" aria-label="stop" onclick={stop}>
+              <Icon name="stop" />
+            </button>
+          {/if}
+          {#if filled}
+            <button class="send" type="button" title="send" aria-label="send" onclick={send}>
+              <Icon name="send" />
+            </button>
+          {/if}
+        </span>
+      {/snippet}
 
-    <div
-      class="box"
-      class:rec={ring === 'rec'}
-      class:tr={ring === 'tr'}
-      class:done={ring === 'done'}
-    >
-      {#if composer.take !== null}
-        <TakeCard take={composer.take} {wire} oncancel={() => act('cancel')} />
-      {:else if line !== null}
-        <div class="notice {line.tone}">{line.text}</div>
-      {/if}
-      {#if list !== null}
-        <Autocomplete offer={list} marked={box.marked} onpick={pick} />
-      {/if}
-      <div class="line">
-        <!-- The list belongs to the field rather than being a surface the reader
+      <div
+        class="box"
+        class:rec={ring === 'rec'}
+        class:tr={ring === 'tr'}
+        class:done={ring === 'done'}
+      >
+        {#if composer.take !== null}
+          <TakeCard take={composer.take} {wire} oncancel={() => act('cancel')} />
+        {:else if line !== null}
+          <div class="notice {line.tone}">{line.text}</div>
+        {/if}
+        {#if list !== null}
+          <Autocomplete offer={list} marked={box.marked} onpick={pick} />
+        {/if}
+        <div class="line">
+          <!-- The list belongs to the field rather than being a surface the reader
              Tabs into: the field keeps focus and points at the marked row. The
              combobox role is not available here - ARIA allows it on an input,
              not on a textarea - so this is the textbox-and-controlled-listbox
              shape, which is what a multi-line composer can validly be. -->
-        <Field
-          editor="composer"
-          class="txt"
-          name="draft"
-          placeholder="Type a message..."
-          aria={{
-            autocomplete: 'list',
-            controls: list === null ? undefined : LIST_ID,
-            activeDescendant: list === null ? undefined : rowId(list, box.marked),
-          }}
-          bind:value={box.draft}
-          {oninput}
-          onkeydown={onkey}
-          field={(el: HTMLElement | null) => {
-            field = el;
-          }}
-        />
-        {#if !secondRow}
-          {@render ctls()}
-        {/if}
-      </div>
-      {#if secondRow}
-        <!-- The box's own foot: the keys the field honours on the left, the
+          <Field
+            editor="composer"
+            class="txt"
+            name="draft"
+            placeholder="Type a message..."
+            aria={{
+              autocomplete: 'list',
+              controls: list === null ? undefined : LIST_ID,
+              activeDescendant: list === null ? undefined : rowId(list, box.marked),
+            }}
+            bind:value={box.draft}
+            {oninput}
+            onkeydown={onkey}
+            field={(el: HTMLElement | null) => {
+              field = el;
+            }}
+          />
+          {#if !secondRow}
+            {@render ctls()}
+          {/if}
+        </div>
+        {#if secondRow}
+          <!-- The box's own foot: the keys the field honours on the left, the
              controls on the right. The draft keeps the box's whole width, and
              the controls follow it down to the box's bottom edge. An empty bar
              draws none of it - the controls ride the field's own line. -->
-        <div class="foot">
-          {#if filled}
-            <span class="hints"><kbd>Shift</kbd> <kbd>Enter</kbd> newline</span>
-            <span class="hints"><kbd>Enter</kbd> send</span>
-          {/if}
-          {@render ctls()}
-        </div>
+          <div class="foot">
+            {#if filled}
+              <span class="hints"><kbd>Shift</kbd> <kbd>Enter</kbd> newline</span>
+              <span class="hints"><kbd>Enter</kbd> send</span>
+            {/if}
+            {@render ctls()}
+          </div>
+        {/if}
+      </div>
+      {#if panel}
+        <DictationPanel
+          {connection}
+          axes={seatAxes}
+          {defaults}
+          bind={composer.bind}
+          mode={composer.mode}
+          device={seatDevice}
+          onaxes={setAxes}
+          ondevice={setDevice}
+          onclose={() => {
+            panel = false;
+            // The keyboard goes back where Escape puts it, so closing by the
+            // button is not a dead end for a keyboard reader.
+            field?.focus();
+          }}
+        />
       {/if}
-    </div>
-    {#if panel}
-      <DictationPanel
-        {connection}
-        axes={seatAxes}
-        {defaults}
-        bind={composer.bind}
-        mode={composer.mode}
-        device={seatDevice}
-        onaxes={setAxes}
-        ondevice={setDevice}
-        onclose={() => {
-          panel = false;
-          // The keyboard goes back where Escape puts it, so closing by the
-          // button is not a dead end for a keyboard reader.
-          field?.focus();
-        }}
-      />
     {/if}
   </div>
-{/if}
+</div>

@@ -41,7 +41,11 @@
     connection,
     slot = null,
     capable = canHost(),
-  }: { connection: Connection; slot?: SessionSlot | null; capable?: boolean } = $props();
+  }: {
+    connection: Pick<Connection, 'browserRole' | 'onBrowserRole' | 'takeBrowserRole'>;
+    slot?: SessionSlot | null;
+    capable?: boolean;
+  } = $props();
 
   let open = $state(false);
   /** The strip's own snapshot: read at mount and when the list opens, not per frame. */

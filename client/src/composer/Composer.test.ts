@@ -75,6 +75,8 @@ vi.mock('./mic', () => ({
 import Harness from './Harness.svelte';
 import { encodeFrame } from './capture.svelte';
 import { echoes, type Echo } from '../chat/echoes.svelte';
+import { pinnedRow } from '../chat/pinnedRow.svelte';
+import type { TurnInfo } from '../chat/units';
 import { boxKey } from './box.svelte';
 import { subjectKey, type ServerMessage } from '../protocol';
 import { DEFAULT_AXES, type DictateAxes } from '../session/wire';
@@ -2167,7 +2169,7 @@ interface Ring extends BoxRule {
  * green about a state it never saw.
  */
 function need(selector: string): Need | null {
-  const rest = selector.replace(/^\.box/, '');
+  const rest = selector.replace(/^\.surf/, '');
   if (/[\s>+~]/.test(rest.replace(/\([^)]*\)/g, ''))) return null;
   const found: Need = { classes: [], focus: false, without: [] };
   let at = 0;
@@ -2214,8 +2216,8 @@ function painted(body: string): string | null {
   return parts[2] ?? null;
 }
 
-/** A selector naming the box itself: the class is bounded after its letters. */
-const BOX = /^\.box(?![a-z0-9-])/;
+/** A selector naming the frame itself: the class is bounded after its letters. */
+const BOX = /^\.surf(?![a-z0-9-])/;
 
 /** The parts of a selector list, split outside any parentheses - a `:not(...)` carries its own commas. */
 function listed(selector: string): string[] {
@@ -2361,8 +2363,8 @@ describe('the frame', () => {
    */
   it('reports a state that arrived in front of the focus rule', () => {
     const mutated = sheet.replace(
-      '.box:focus-within',
-      '.box.warn { border-color: var(--warn); }\n.box:focus-within',
+      '.surf:focus-within',
+      '.surf.warn { border-color: var(--warn); }\n.surf:focus-within',
     );
     expect(
       ring(mutated, ['warn'], true),
@@ -2378,8 +2380,8 @@ describe('the frame', () => {
    */
   it('fails on a rule for the box it cannot read, rather than skipping it', () => {
     const spliced = sheet.replace(
-      '.box:focus-within',
-      '.box[data-phase="warn"] { border-color: var(--warn); }\n.box:focus-within',
+      '.surf:focus-within',
+      '.surf[data-phase="warn"] { border-color: var(--warn); }\n.surf:focus-within',
     );
     expect(
       () => ring(spliced, ['warn'], false),
@@ -2393,7 +2395,7 @@ describe('the frame', () => {
    * resolver to read and must not fail for saying so.
    */
   it('skips a border that names no colour rather than reading it as the ring', () => {
-    const spliced = sheet.replace('.box.rec', '.box.reset { border: 0; }\n.box.rec');
+    const spliced = sheet.replace('.surf.rec', '.surf.reset { border: 0; }\n.surf.rec');
     expect(ring(spliced, ['reset'], false), 'a reset is read as a ring colour').toBe('var(--ctl)');
   });
 
@@ -2431,8 +2433,8 @@ describe('the frame', () => {
    * container: without this the queries never match and the card simply grows
    * past its box at every width below the full reading.
    */
-  it('makes the box the container the card ladder measures', () => {
-    expect(baseRule('.box'), 'the box is not a container, so no step can fire').toContain(
+  it('makes the surface the container the card ladder measures', () => {
+    expect(baseRule('.surf'), 'the surface is not a container, so no step can fire').toContain(
       'container-type: inline-size',
     );
   });
@@ -2508,11 +2510,11 @@ describe('the frame', () => {
    */
   it('sees an inset line on a rule for the box that paints no border', () => {
     const spliced = sheet.replace(
-      '.box.rec',
-      '.box.shadow { box-shadow: inset 0 -2px 0 var(--accent); }\n.box.rec',
+      '.surf.rec',
+      '.surf.shadow { box-shadow: inset 0 -2px 0 var(--accent); }\n.surf.rec',
     );
     expect(insetRules(spliced), 'a borderless rule for the box draws the inset line').toEqual([
-      '.box.shadow',
+      '.surf.shadow',
     ]);
   });
 
@@ -2522,7 +2524,10 @@ describe('the frame', () => {
    * would throw and take every test here with it.
    */
   it("does not read a neighbour's class as the box", () => {
-    const spliced = sheet.replace('.box.rec', '.boxrow { border-color: var(--warn); }\n.box.rec');
+    const spliced = sheet.replace(
+      '.surf.rec',
+      '.surfrow { border-color: var(--warn); }\n.surf.rec',
+    );
     expect(ring(spliced, ['rec'], false), 'a class beginning with the same letters').toBe(
       'color-mix(in srgb, var(--accent) 35%, var(--hot))',
     );
@@ -2535,8 +2540,8 @@ describe('the frame', () => {
    */
   it('reads a grouped selector that names the box, first or second', () => {
     const colour = 'color-mix(in srgb, var(--accent) 35%, var(--hot))';
-    for (const grouped of ['.box.rec, .other {', '.other, .box.rec {']) {
-      const spliced = sheet.replace('.box.rec {', grouped);
+    for (const grouped of ['.surf.rec, .other {', '.other, .surf.rec {']) {
+      const spliced = sheet.replace('.surf.rec {', grouped);
       expect(ring(spliced, ['rec'], false), `a rule grouped as ${JSON.stringify(grouped)}`).toBe(
         colour,
       );
@@ -2545,8 +2550,8 @@ describe('the frame', () => {
 
   it('fails on a border shorthand it cannot read, rather than skipping it', () => {
     const spliced = sheet.replace(
-      '.box.rec',
-      '.box.odd { border: 1px solid var(--ok) inset; }\n.box.rec',
+      '.surf.rec',
+      '.surf.odd { border: 1px solid var(--ok) inset; }\n.surf.rec',
     );
     expect(
       () => ring(spliced, ['rec'], false),
@@ -2628,6 +2633,77 @@ describe('the frame', () => {
       sheetRule('.line .txt:focus'),
       'the field draws a second accent rectangle inside the box',
     ).toContain('outline: none');
+  });
+});
+
+/**
+ * The strip lane: the composer's surface is where the pin is drawn now.
+ *
+ * **A behaviour the column's tests used to pin**: the strip stands on a seat
+ * with no conversation state to speak of - coming up, refused, not yet read,
+ * empty - because the rows are the whole way into the seat's tree, tasks and
+ * watchers. The column publishes the row through `pinnedRow` (see `Chat.test.ts
+ * > the chat column as it draws`); this is where it draws, as the surface's
+ * first lane.
+ */
+describe('the strip lane', () => {
+  const SEAT = subjectKey({ session: SLOT });
+
+  /** One running row, which is what the lane is handed. */
+  const running: TurnInfo = {
+    running: true,
+    failed: false,
+    duration_ms: 4200,
+    api_ms: null,
+    ended_at_utc: null,
+    model: null,
+    thinking_tokens: null,
+    input_tokens: 700,
+    output_tokens: 20,
+    cache_read_tokens: null,
+    cache_written_tokens: null,
+    session_cost_usd: null,
+  };
+
+  afterEach(() => {
+    pinnedRow.set(SEAT, null);
+  });
+
+  it('draws as the surface’s first lane, above the box', () => {
+    pinnedRow.set(SEAT, running);
+    open({});
+
+    const strip = document.querySelector('.strip');
+    const surf = document.querySelector('.surf');
+    expect(strip, 'the strip lane did not draw').not.toBeNull();
+    expect(surf, 'the surface did not draw').not.toBeNull();
+    if (strip === null || surf === null) return;
+    expect(surf.firstElementChild === strip, 'the strip is not the surface’s first lane').toBe(
+      true,
+    );
+    expect(strip.textContent, 'the row the pin published').toContain('700');
+  });
+
+  it('stands on a seat with no conversation state to speak of', () => {
+    // The composer draws it without any conversation at all: no page has
+    // landed, nothing is running, and the lane is still there.
+    pinnedRow.set(SEAT, running);
+    open({});
+
+    expect(document.querySelector('.strip'), 'no strip lane on a bare seat').not.toBeNull();
+  });
+
+  it('shows one seat’s pin only', () => {
+    pinnedRow.set('session:somebody-else', running);
+    open({});
+
+    expect(document.querySelector('.strip'), 'another seat’s pin drew on this surface').toBeNull();
+  });
+
+  it('draws no lane at all when nothing is pinned and no rows hold anything', () => {
+    open({});
+
+    expect(document.querySelector('.strip'), 'a lane drew with nothing to say').toBeNull();
   });
 });
 
@@ -5701,7 +5777,9 @@ describe('the dictation panel', () => {
         observed.length,
         'nothing watches the composer, so a box growing under the panel re-clips it',
       ).toBeGreaterThan(0);
-      expect(observed[0]?.classList.contains('comp'), 'the composer is what is watched').toBe(true);
+      expect(observed[0]?.classList.contains('surf'), 'the composer frame is what is watched').toBe(
+        true,
+      );
     } finally {
       Reflect.set(globalThis, 'ResizeObserver', original);
     }

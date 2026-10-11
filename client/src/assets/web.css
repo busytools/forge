@@ -1998,8 +1998,7 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
    row, so the column's foot is this row's bottom edge with only the composer's
    padding under it - which is what puts it nearer the box than the turn above
    it. */
-.strip { flex: none; padding: 8px 13px 9px;
-  border: 1px solid var(--line); border-radius: var(--r); background: var(--s1); }
+.strip { flex: none; padding: 8px 13px 9px; }
 .strip .ti { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; row-gap: 2px;
   font-family: var(--mono); font-size: var(--fs-base); color: var(--dim); }
 /* Wrap between fields, never inside one: a broken token pair reads as two
@@ -2022,27 +2021,32 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
    the only thing keeping the box off the column's bottom edge, and its margin
    cancels the app grid's row gap for this row alone: `row-gap: 0` on the app
    draws the same today and would leave any row added later unspaced too. */
-.composer { padding: 4px 0 2px; margin-top: calc(-1 * var(--ins)); }
+.composer { padding: 4px 0 2px; }
 .comp { position: relative; display: flex; flex-direction: column; gap: 2px; }
+/* The one surface: the strip lane, the prompt lane and the composer lane are
+   children of this box and split by hairlines. Its ring is the box's state -
+   recording, transcribing, the landed beat and an error each take it, and at
+   rest it answers whether the keyboard is here - and what it is DOING wins
+   over focus, which the `:not` list states rather than leaving to order. */
+.surf { position: relative; container-type: inline-size;
+  border: 1.5px solid var(--ctl); border-radius: 16px;
+  background: linear-gradient(180deg, rgba(20,25,38,.72), rgba(13,17,26,.78));
+  backdrop-filter: blur(10px); box-shadow: 0 14px 38px rgba(0,0,0,.42);
+  display: flex; flex-direction: column; overflow: hidden;
+  transition: border-color .3s ease; }
+.surf > * + * { border-top: 1px solid var(--line); }
+.surf.rec { border-color: color-mix(in srgb, var(--accent) 35%, var(--hot)); }
+.surf.tr { border-color: var(--blue); }
+.surf.done { border-color: var(--ok); }
+.surf.err { border-color: var(--bad); }
+.surf:focus-within:not(.rec, .tr, .done, .err) { border-color: var(--accent); }
 .hint { font-size: var(--fs-base); padding-left: 4px; }
 .hint.login { color: var(--warn); }
 .hint.login .sub { color: var(--dim); display: block; font-size: var(--fs-data); }
 
-.box { position: relative; container-type: inline-size;
-  border: 1.5px solid var(--ctl); border-radius: 16px;
-  background: linear-gradient(180deg, rgba(20,25,38,.72), rgba(13,17,26,.78));
-  backdrop-filter: blur(10px); box-shadow: 0 14px 38px rgba(0,0,0,.42);
-  padding: 10px 13px; display: flex; flex-direction: column; gap: 0;
-  transition: border-color .3s ease; }
-/* The ring's colour is the box's state, and what it is DOING wins over focus:
-   recording, transcribing, the landed beat and an error each take it, and at
-   rest it answers whether the keyboard is here. The `:not` list is what states
-   that precedence rather than leaving it to source order. */
-.box.rec { border-color: color-mix(in srgb, var(--accent) 35%, var(--hot)); }
-.box.tr { border-color: var(--blue); }
-.box.done { border-color: var(--ok); }
-.box.err { border-color: var(--bad); }
-.box:focus-within:not(.rec, .tr, .done, .err) { border-color: var(--accent); }
+/* A lane of the surface now, not a box of its own: the ring lives on `.surf`. */
+.box { position: relative;
+  padding: 10px 13px; display: flex; flex-direction: column; gap: 0; }
 /* The draft's own row: the field, and the controls too while the bar is one
    row. A draft long enough to need the keys takes the second row instead, and
    the controls follow it down. */
@@ -2343,19 +2347,12 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .ac .it.sel .p { color: var(--text); }
 .ac .it .g { width: 20px; flex: 0 0 20px; text-align: center; }
 
-/* ---------- the dock: the box morphed into a prompt ---------- */
+/* ---------- the dock: the prompt's lane of the surface ---------- */
 
-/* The dock is a panel, not a warning: a neutral edge and the page's own
-   surface, with the accent left to the row being marked and the question's
-   own mark. The warm border and the orange-tinted gradient read as a state
-   rather than as a surface. */
-/* A container as well as a card: the take's own ladder measures its container,
-   and in here that is this dock - without it a card drawing in the words row
-   keeps every reading and runs the row out past the dock's edge. */
-.dock { container-type: inline-size;
-  border: 1px solid var(--line); border-radius: 14px;
-  background: linear-gradient(180deg, rgba(20,25,38,.85), rgba(13,17,26,.92));
-  box-shadow: 0 16px 44px rgba(0,0,0,.5); padding: 13px 15px;
+/* A lane of `.surf` now rather than a panel: the surface's ring and ground
+   carry it, and the accent is left to the row being marked and the question's
+   own mark. */
+.dock { padding: 13px 15px;
   display: flex; flex-direction: column; gap: 10px; }
 .dock .queue { display: flex; align-items: center; gap: 6px;
   font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
