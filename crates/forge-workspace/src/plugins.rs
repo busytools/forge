@@ -107,6 +107,56 @@ fn plugin_call_cwd(scope: &str, project_path: Option<&str>, home: &str) -> Strin
     }
 }
 
+/// The disk scan, off the runtime.
+///
+/// The scan walks the plugin tree, so it runs on a blocking thread exactly
+/// as the read path's own does - a dispatch reached from the connection
+/// must never stall a shared worker on it. The two failures stay distinct:
+/// a scan that could not run names the join, and a scan with no root to
+/// walk says so rather than reading as an empty machine.
+async fn scan_inventory(cli: &PluginCli) -> Result<PluginsInventorySnapshot, String> {
+    let scan = Arc::clone(&cli.scan);
+    tokio::task::spawn_blocking(move || scan())
+        .await
+        .map_err(|error| format!("the plugin disk scan failed to join: {error}"))?
+        .ok_or_else(|| {
+            "no plugins root resolves (no CLAUDE_CONFIG_DIR or HOME); the inventory cannot be read"
+                .to_owned()
+        })
+}
+
+/// Report a failed action, or a refusal found before one could run, on the
+/// frame the page already listens for.
+fn fail_action(ws: &Arc<Workspace>, cwd: String, message: String) {
+    tracing::warn!(
+        event_name = "plugin_cli_action_failed",
+        cwd = %cwd,
+        error = %message,
+        "a plugin action failed",
+    );
+    let _ =
+        ws.update_sender().send(SessionUpdate::PluginsCliActionFailed { cwd_raw: cwd, message });
+}
+
+/// Run one CLI action and report its outcome on the `Plugins` frames.
+async fn run_action(
+    ws: &Arc<Workspace>,
+    cli: &PluginCli,
+    cwd: String,
+    args: Vec<String>,
+    message: String,
+) {
+    match (cli.run_and_refresh)(cwd.clone(), args).await {
+        Ok((snapshot, claude_path)) => {
+            let _ = ws.update_sender().send(SessionUpdate::PluginsCliActionSucceeded {
+                cwd_raw: cwd,
+                result: PluginsCliActionSuccess { snapshot, message, claude_path },
+            });
+        }
+        Err(message) => fail_action(ws, cwd, message),
+    }
+}
+
 /// The run rows one update-all/check queues: exactly the stale installed
 /// entries, one per registry entry, each with the cwd its own scope runs
 /// in.
@@ -224,32 +274,52 @@ impl Workspace {
 
     /// Update one installed plugin, in the scope and project the registry
     /// records for it.
+    ///
+    /// The registry lookup is a disk scan, so it runs inside the spawned
+    /// task: the dispatch is fire-and-forget and its outcome rides the
+    /// `Plugins` frames, a refusal included - a plugin the registry does
+    /// not hold in that scope reports as a failed action naming it.
     pub(crate) fn start_plugin_update(
         self: &Arc<Self>,
         plugin_id: String,
         scope: String,
     ) -> Result<(), DispatchError> {
         let home = Self::plugin_home()?;
-        let cli = self.plugin_cli();
-        let scan = (cli.scan)();
-        let entry = scan
-            .as_ref()
-            .and_then(|snapshot| {
-                snapshot
-                    .installed
-                    .iter()
-                    .find(|entry| entry.id == plugin_id && entry.scope == scope)
-            })
-            .cloned()
-            .ok_or_else(|| DispatchError::PluginNotInstalled {
-                plugin_id: plugin_id.clone(),
-                scope: scope.clone(),
-            })?;
-        let cwd = plugin_call_cwd(&scope, entry.project_path.as_deref(), &home);
-        let message = format!("Updated {plugin_id} in {scope} scope");
-        let args =
-            vec!["plugin".to_owned(), "update".to_owned(), plugin_id, "--scope".to_owned(), scope];
-        self.start_plugin_cli_action(cwd, args, message)
+        self.begin_plugin_action()?;
+        let ws = Arc::clone(self);
+        tokio::spawn(async move {
+            let _guard = PluginActionGuard(Arc::clone(&ws));
+            let cli = ws.plugin_cli();
+            let snapshot = match scan_inventory(&cli).await {
+                Ok(snapshot) => snapshot,
+                Err(message) => return fail_action(&ws, home, message),
+            };
+            let Some(entry) = snapshot
+                .installed
+                .iter()
+                .find(|entry| entry.id == plugin_id && entry.scope == scope)
+                .cloned()
+            else {
+                return fail_action(
+                    &ws,
+                    home,
+                    format!(
+                        "plugin '{plugin_id}' is not installed in {scope} scope; refresh the page"
+                    ),
+                );
+            };
+            let cwd = plugin_call_cwd(&scope, entry.project_path.as_deref(), &home);
+            let message = format!("Updated {plugin_id} in {scope} scope");
+            let args = vec![
+                "plugin".to_owned(),
+                "update".to_owned(),
+                plugin_id,
+                "--scope".to_owned(),
+                scope,
+            ];
+            run_action(&ws, &cli, cwd, args, message).await;
+        });
+        Ok(())
     }
 
     /// One generic CLI action: gate, spawn, report. The outcome rides
@@ -266,48 +336,47 @@ impl Workspace {
         tokio::spawn(async move {
             let _guard = PluginActionGuard(Arc::clone(&ws));
             let cli = ws.plugin_cli();
-            match (cli.run_and_refresh)(cwd.clone(), args).await {
-                Ok((snapshot, claude_path)) => {
-                    let _ = ws.update_sender().send(SessionUpdate::PluginsCliActionSucceeded {
-                        cwd_raw: cwd,
-                        result: PluginsCliActionSuccess { snapshot, message, claude_path },
-                    });
-                }
-                Err(message) => {
-                    tracing::warn!(
-                        event_name = "plugin_cli_action_failed",
-                        cwd = %cwd,
-                        error = %message,
-                        "a plugin action failed",
-                    );
-                    let _ = ws
-                        .update_sender()
-                        .send(SessionUpdate::PluginsCliActionFailed { cwd_raw: cwd, message });
-                }
-            }
+            run_action(&ws, &cli, cwd, args, message).await;
         });
         Ok(())
     }
 
     /// Update exactly the stale installed plugins, one CLI call per entry,
-    /// continuing past failures. The set is computed from a disk scan at
-    /// dispatch, so the run updates what the marketplace reports now.
+    /// continuing past failures. The set is computed from a disk scan taken
+    /// inside the run's own task, so the dispatch never walks the tree on
+    /// the runtime and the run updates what the marketplace reports now.
+    ///
+    /// Nothing stale is not a refusal: the run lands finished with no rows,
+    /// exactly as a check with nothing to report does, and the page draws
+    /// its ordinary state.
     pub(crate) fn start_plugin_update_all(self: &Arc<Self>) -> Result<(), DispatchError> {
         let home = Self::plugin_home()?;
-        let cli = self.plugin_cli();
-        let snapshot = (cli.scan)().ok_or(DispatchError::PluginRootUnavailable)?;
-        let rows = stale_rows(&snapshot.installed, &snapshot.marketplace, &home);
         self.begin_plugin_action()?;
-        if rows.is_empty() {
-            self.plugin_action_running.store(false, Ordering::Release);
-            return Err(DispatchError::PluginNothingStale);
-        }
-        let run = PluginUpdateRun { trigger: PluginUpdateTrigger::Manual, finished: false, rows };
-        *self.plugin_run.lock() = Some(run.clone());
-        let marketplaces = snapshot.marketplaces;
         let ws = Arc::clone(self);
         tokio::spawn(async move {
             let _guard = PluginActionGuard(Arc::clone(&ws));
+            let cli = ws.plugin_cli();
+            let snapshot = match scan_inventory(&cli).await {
+                Ok(snapshot) => snapshot,
+                Err(message) => return fail_action(&ws, home, message),
+            };
+            let rows = stale_rows(&snapshot.installed, &snapshot.marketplace, &home);
+            if rows.is_empty() {
+                let run =
+                    PluginUpdateRun { trigger: PluginUpdateTrigger::Manual, finished: true, rows };
+                *ws.plugin_run.lock() = Some(run.clone());
+                let _ = ws.update_sender().send(SessionUpdate::PluginsUpdateRunFinished {
+                    cwd_raw: home,
+                    run,
+                    snapshot: Some(snapshot),
+                    claude_path: None,
+                });
+                return;
+            }
+            let run =
+                PluginUpdateRun { trigger: PluginUpdateTrigger::Manual, finished: false, rows };
+            *ws.plugin_run.lock() = Some(run.clone());
+            let marketplaces = snapshot.marketplaces;
             run_update_batch(ws, cli, home, marketplaces, run).await;
         });
         Ok(())
@@ -388,32 +457,38 @@ impl Workspace {
     /// Repair a drifted marketplace with the CLI's remove-and-re-add pair.
     /// The re-add source is the repo for a git marketplace and the clone
     /// location for a directory one - the same pair the terminal builds.
+    /// The registry lookup is a disk scan, so it runs inside the task.
     pub(crate) fn start_marketplace_repair(
         self: &Arc<Self>,
         name: String,
     ) -> Result<(), DispatchError> {
         let home = Self::plugin_home()?;
-        let cli = self.plugin_cli();
-        let scan = (cli.scan)().ok_or(DispatchError::PluginRootUnavailable)?;
-        let marketplace = scan
-            .marketplaces
-            .iter()
-            .find(|marketplace| marketplace.name == name)
-            .cloned()
-            .ok_or_else(|| DispatchError::MarketplaceUnknown { name: name.clone() })?;
-        let readd_source = match marketplace.source.as_deref() {
-            Some("directory") => marketplace
-                .install_location
-                .clone()
-                .or_else(|| marketplace.repo.clone())
-                .unwrap_or_else(|| name.clone()),
-            _ => marketplace.repo.clone().unwrap_or_else(|| name.clone()),
-        };
         self.begin_plugin_action()?;
         let ws = Arc::clone(self);
         tokio::spawn(async move {
             let _guard = PluginActionGuard(Arc::clone(&ws));
             let cli = ws.plugin_cli();
+            let snapshot = match scan_inventory(&cli).await {
+                Ok(snapshot) => snapshot,
+                Err(message) => return fail_action(&ws, home, message),
+            };
+            let Some(marketplace) =
+                snapshot.marketplaces.iter().find(|marketplace| marketplace.name == name).cloned()
+            else {
+                return fail_action(
+                    &ws,
+                    home,
+                    format!("no marketplace named '{name}' is configured; refresh the page"),
+                );
+            };
+            let readd_source = match marketplace.source.as_deref() {
+                Some("directory") => marketplace
+                    .install_location
+                    .clone()
+                    .or_else(|| marketplace.repo.clone())
+                    .unwrap_or_else(|| name.clone()),
+                _ => marketplace.repo.clone().unwrap_or_else(|| name.clone()),
+            };
             let remove = vec![
                 "plugin".to_owned(),
                 "marketplace".to_owned(),
@@ -443,17 +518,7 @@ impl Workspace {
                         },
                     });
                 }
-                Err(message) => {
-                    tracing::warn!(
-                        event_name = "plugin_marketplace_repair_failed",
-                        marketplace = %name,
-                        error = %message,
-                        "the marketplace repair failed",
-                    );
-                    let _ = ws
-                        .update_sender()
-                        .send(SessionUpdate::PluginsCliActionFailed { cwd_raw: home, message });
-                }
+                Err(message) => fail_action(&ws, home, message),
             }
         });
         Ok(())
@@ -839,25 +904,59 @@ provider = \"anthropic\"
         assert_eq!(stale.to_version.as_deref(), Some("1.1.0"));
     }
 
-    /// Nothing stale is its own refusal: there is no run to start, and the
-    /// gate is not left shut by the attempt.
+    /// Nothing stale is not a refusal: the run lands finished with no rows
+    /// (the check's own shape when it finds nothing), no CLI call goes out,
+    /// and the gate opens again.
     #[tokio::test]
-    async fn nothing_stale_is_refused_and_the_gate_reopens() {
-        let (ws, _rx) = Workspace::testing_stub();
+    async fn nothing_stale_lands_as_a_finished_empty_run() {
+        let (ws, mut rx) = Workspace::testing_stub();
         let scan = PluginsInventorySnapshot {
             installed: vec![installed("current@probe", "2.0.0", "user", None)],
             marketplace: vec![marketplace_entry("current@probe", "2.0.0")],
             ..PluginsInventorySnapshot::default()
         };
-        let (cli, _calls) = fake_cli(&scan, &PluginsInventorySnapshot::default());
+        let (cli, calls) = fake_cli(&scan, &PluginsInventorySnapshot::default());
         ws.set_plugin_cli(cli);
 
-        let refusal =
-            ws.dispatch(Command::PluginUpdateAll).expect_err("nothing stale is a refusal");
-        assert!(matches!(refusal, DispatchError::PluginNothingStale), "got: {refusal:?}");
+        ws.dispatch(Command::PluginUpdateAll).expect("the run dispatches");
+
+        let SessionUpdate::PluginsUpdateRunFinished { run, .. } = next_update(&mut rx).await else {
+            panic!("the run reports its finish");
+        };
+        assert!(run.finished, "an empty run is a finished one");
+        assert!(run.rows.is_empty(), "nothing stale is nothing to do");
+        assert!(calls.updates.lock().expect("lock").is_empty(), "and no update call went out");
         assert!(
             !ws.plugin_action_running.load(Ordering::Acquire),
-            "a refused run leaves the gate open"
+            "the gate opened when the run ended"
+        );
+    }
+
+    /// A scan with no root to walk reports its own words rather than reading
+    /// as an empty machine, and it does so as a frame: the dispatch is
+    /// fire-and-forget, so a refusal found inside the task lands the same
+    /// way a failed action does.
+    #[tokio::test]
+    async fn a_missing_plugins_root_reports_as_a_failed_action() {
+        let (ws, mut rx) = Workspace::testing_stub();
+        let (cli, _calls) =
+            fake_cli(&PluginsInventorySnapshot::default(), &PluginsInventorySnapshot::default());
+        let no_root = PluginCli { scan: Arc::new(|| None), ..cli };
+        ws.set_plugin_cli(no_root);
+
+        ws.dispatch(Command::PluginUpdateAll).expect("the dispatch is accepted");
+
+        let SessionUpdate::PluginsCliActionFailed { message, .. } = next_update(&mut rx).await
+        else {
+            panic!("the failure reports as a frame");
+        };
+        assert!(
+            message.contains("no plugins root resolves"),
+            "the message names the missing root, got: {message}"
+        );
+        assert!(
+            !ws.plugin_action_running.load(Ordering::Acquire),
+            "the gate opened when the task ended"
         );
     }
 
@@ -877,28 +976,28 @@ provider = \"anthropic\"
     }
 
     /// An update names a plugin the registry does not hold in that scope:
-    /// the view's snapshot is stale, and the refusal says so rather than
+    /// the view's snapshot is stale, and the failure names it rather than
     /// running a call that would fail at the CLI.
     #[tokio::test]
-    async fn an_update_of_an_uninstalled_plugin_is_refused_naming_it() {
-        let (ws, _rx) = Workspace::testing_stub();
+    async fn an_update_of_an_uninstalled_plugin_fails_naming_it() {
+        let (ws, mut rx) = Workspace::testing_stub();
         let (cli, calls) =
             fake_cli(&PluginsInventorySnapshot::default(), &PluginsInventorySnapshot::default());
         ws.set_plugin_cli(cli);
 
-        let refusal = ws
-            .dispatch(Command::PluginUpdate {
-                plugin_id: "ghost@probe".to_owned(),
-                scope: "user".to_owned(),
-            })
-            .expect_err("an uninstalled plugin is refused");
+        ws.dispatch(Command::PluginUpdate {
+            plugin_id: "ghost@probe".to_owned(),
+            scope: "user".to_owned(),
+        })
+        .expect("the dispatch is accepted");
+
+        let SessionUpdate::PluginsCliActionFailed { message, .. } = next_update(&mut rx).await
+        else {
+            panic!("the failure reports as a frame");
+        };
         assert!(
-            matches!(
-                &refusal,
-                DispatchError::PluginNotInstalled { plugin_id, scope }
-                    if plugin_id == "ghost@probe" && scope == "user"
-            ),
-            "got: {refusal:?}"
+            message.contains("ghost@probe") && message.contains("user"),
+            "the failure names the plugin and the scope, got: {message}"
         );
         assert!(calls.run.lock().expect("lock").is_empty(), "and no CLI call went out");
     }
@@ -977,13 +1076,13 @@ provider = \"anthropic\"
             "a directory marketplace re-adds from its clone location"
         );
 
-        let refusal = ws
-            .dispatch(Command::MarketplaceRepair { name: "absent".to_owned() })
-            .expect_err("an unknown marketplace is refused");
-        assert!(
-            matches!(&refusal, DispatchError::MarketplaceUnknown { name } if name == "absent"),
-            "got: {refusal:?}"
-        );
+        ws.dispatch(Command::MarketplaceRepair { name: "absent".to_owned() })
+            .expect("the dispatch is accepted");
+        let SessionUpdate::PluginsCliActionFailed { message, .. } = next_update(&mut rx).await
+        else {
+            panic!("the unknown marketplace reports as a failure frame");
+        };
+        assert!(message.contains("absent"), "the failure names it, got: {message}");
     }
 
     /// The check applies nothing: no update call goes out, and the run it

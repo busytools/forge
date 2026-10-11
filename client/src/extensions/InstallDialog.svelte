@@ -107,7 +107,7 @@
 
     <div class="ext-dlg-actions">
       <button type="button" class="btn ghost" onclick={oncancel}>cancel</button>
-      <button type="button" class="btn ok" disabled={!ready} onclick={confirm}> install </button>
+      <button type="button" class="btn go" disabled={!ready} onclick={confirm}> install </button>
     </div>
   </div>
 </div>

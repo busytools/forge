@@ -579,6 +579,14 @@ mod tests {
                 message: "no".to_owned(),
                 trigger: forge_primitives::plugins::PluginUpdateTrigger::Manual,
             },
+            SessionUpdate::PluginsCliActionSucceeded {
+                cwd_raw: "/tmp/proj".to_owned(),
+                result: forge_primitives::plugins::PluginsCliActionSuccess {
+                    snapshot: forge_primitives::plugins::PluginsInventorySnapshot::default(),
+                    message: "done".to_owned(),
+                    claude_path: std::path::PathBuf::from("claude"),
+                },
+            },
             SessionUpdate::PluginsCliActionFailed {
                 cwd_raw: "/tmp/proj".to_owned(),
                 message: "no".to_owned(),
@@ -590,6 +598,24 @@ mod tests {
                     finished: false,
                     rows: Vec::new(),
                 },
+            },
+            SessionUpdate::PluginsUpdateRunFinished {
+                cwd_raw: "/tmp/proj".to_owned(),
+                run: forge_primitives::plugins::PluginUpdateRun {
+                    trigger: forge_primitives::plugins::PluginUpdateTrigger::Manual,
+                    finished: true,
+                    rows: Vec::new(),
+                },
+                snapshot: None,
+                claude_path: None,
+            },
+            SessionUpdate::PluginsRollbackSucceeded {
+                cwd_raw: "/tmp/proj".to_owned(),
+                plugin_id: "a@probe".to_owned(),
+                scope: "user".to_owned(),
+                message: "done".to_owned(),
+                snapshot: forge_primitives::plugins::PluginsInventorySnapshot::default(),
+                claude_path: std::path::PathBuf::from("claude"),
             },
             SessionUpdate::PluginsRollbackFailed {
                 cwd_raw: "/tmp/proj".to_owned(),

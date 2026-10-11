@@ -2562,13 +2562,6 @@ pub enum DispatchError {
     /// cwd-derived directory (hard rule 14).
     #[error("no home directory resolves; plugin actions with no project context cannot run")]
     PluginHomeUnavailable,
-    /// No plugins root resolves (`CLAUDE_CONFIG_DIR` or `HOME`): the
-    /// inventory is unknowable, and an empty scan must not read as a
-    /// clean install.
-    #[error(
-        "no plugins root resolves (no CLAUDE_CONFIG_DIR or HOME); the inventory cannot be read"
-    )]
-    PluginRootUnavailable,
     /// A `project`/`local` install named no project; those scopes install
     /// into a project's own config, so the project is the caller's to say.
     #[error("a project-scoped plugin install needs a project")]
@@ -2577,17 +2570,6 @@ pub enum DispatchError {
     /// does not declare.
     #[error("no project named '{name}' is declared in forge.toml")]
     ProjectNotFound { name: String },
-    /// An update named a plugin the registry does not hold in that scope:
-    /// the view's snapshot is stale.
-    #[error("plugin '{plugin_id}' is not installed in {scope} scope; refresh the page")]
-    PluginNotInstalled { plugin_id: String, scope: String },
-    /// Update-all found nothing stale: the CLI would report every row
-    /// current, so there is no run to start.
-    #[error("no installed plugin is behind its marketplace copy")]
-    PluginNothingStale,
-    /// A repair named a marketplace the scan does not hold.
-    #[error("no marketplace named '{name}' is configured; refresh the page")]
-    MarketplaceUnknown { name: String },
 }
 
 #[cfg(test)]

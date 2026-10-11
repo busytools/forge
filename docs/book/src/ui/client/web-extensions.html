@@ -8,10 +8,13 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
 <style>
-  /* The same token set the client ships (theme.ts), so the drawing is held
-     against the real page rather than against a lookalike. The class names
-     are the shipped ones (`client/src/assets/web.css`, the `.extensions`
-     block), so this file and the page can be read side by side. */
+  /* The same token set the client ships (theme.ts) and the same class names
+     the page draws with (`client/src/assets/web.css`, the `.extensions`
+     block), so this file and the page can be read side by side. The rules
+     are written here UNSCOPED because the drawing has no `.extensions`
+     ancestor; the page's copies of them are the same declarations under that
+     scope, and `web-extensions.html` is held against the page rather than
+     against a lookalike. */
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   :root {
     --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130; --line:#222a3c;

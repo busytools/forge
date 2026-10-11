@@ -51,4 +51,22 @@ mod tests {
             .expect("chmod 755");
         assert!(lsp_binary_on_path("probe-ls", Some(&path)));
     }
+
+    /// The walk covers every `:`-separated directory, not just the first: a
+    /// binary living in a later entry is on the path exactly as one in the
+    /// first is.
+    #[test]
+    fn the_walk_covers_every_directory_on_the_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let first = tempfile::tempdir().expect("tempdir");
+        let second = tempfile::tempdir().expect("tempdir");
+        let binary = second.path().join("late-binary");
+        std::fs::write(&binary, "#!/bin/sh\n").expect("write");
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let path = format!("{}:{}", first.path().display(), second.path().display());
+        assert!(
+            lsp_binary_on_path("late-binary", Some(&path)),
+            "a directory after the first is walked like the first"
+        );
+    }
 }

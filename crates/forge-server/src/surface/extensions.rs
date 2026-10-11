@@ -114,4 +114,46 @@ mod tests {
             "no PATH at all reports every server missing rather than guessing"
         );
     }
+
+    /// A server an uninstalled plugin declares is not probed (the page's LSP
+    /// pane draws installed rows, so the check would be weight nothing
+    /// draws), and a manifest that declares no command falls back to the
+    /// server key as the binary to look for.
+    #[test]
+    fn only_installed_plugins_are_probed_and_a_blank_command_falls_back_to_the_key() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let binary = dir.path().join("key-named");
+        std::fs::write(&binary, b"#!/bin/sh").expect("write binary");
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let path = dir.path().to_string_lossy().into_owned();
+
+        let mut installed = PluginComponents {
+            plugin: "installed@probe-market".to_owned(),
+            installed: true,
+            enabled: true,
+            ..PluginComponents::default()
+        };
+        installed.lsp_servers.insert("key-named".to_owned(), String::new());
+        let mut gone = PluginComponents {
+            plugin: "gone@probe-market".to_owned(),
+            installed: false,
+            enabled: false,
+            ..PluginComponents::default()
+        };
+        gone.lsp_servers.insert("not-probed".to_owned(), "not-probed".to_owned());
+        let snapshot = PluginsInventorySnapshot {
+            components: vec![installed, gone],
+            ..PluginsInventorySnapshot::default()
+        };
+
+        let checks = lsp_checks(&snapshot, Some(&path));
+
+        assert_eq!(checks.len(), 1, "an uninstalled plugin's servers are not probed");
+        assert_eq!(checks[0].plugin, "installed@probe-market");
+        assert!(
+            checks[0].on_path,
+            "a blank declared command falls back to the server key as the binary"
+        );
+    }
 }

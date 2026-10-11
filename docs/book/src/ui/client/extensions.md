@@ -87,9 +87,10 @@ because of a query.
 - **An update waiting**: the band names the pairs, the Installed rail item
   wears a triangle, and every stale row carries its own Update.
 - **A run in flight**: the band carries the spinner and `n of m done`, and
-  each row the run is on says `updating...`. Every action control is
-  disabled while a plugin action runs - the core refuses a second one by
-  name, and a control that is offered and then refused reads as broken.
+  each row the run is on says `updating...`. The control a press started
+  waits for it, and a second press while one runs is refused by name above
+  the page - the core serializes plugin actions, and saying so is better
+  than a control that silently does nothing.
 - **A finished run**: the band's own report - `3 plugins updated`, or
   `1 updated, 1 failed` - with each failed row carrying its reason.
 - **A check in flight**: the Check button says `checking...` and the read's
@@ -107,12 +108,19 @@ because of a query.
 - **A marketplace whose manifest will not load**: the failure's own words on
   the row, and Repair beside it.
 - **The scope picker open**: three scopes, a project select for the two that
-  need one, and a note saying the press installs the whole bundle. Enter
-  sends, Esc, the backdrop and Cancel close it, and the hardware Back
-  closes what it opened.
+  need one, and a note saying the press installs the whole bundle. The
+  confirm press sends - focus lands on the first radio, and the button is
+  the control - and Esc, the backdrop and Cancel close it; the hardware
+  Back closes what it opened.
 - **A refused action**: the core's own words above the page - a second
   action while one runs, an unknown project, a plugin the registry does not
   hold in that scope.
+- **An action that ran and failed**: the core's own words above the page -
+  a failed update, install, marketplace add or repair, which rides the
+  `Plugins` frames rather than a reply - with the row's own reason on it
+  where the run reported one, and a rejected add reopening its input with
+  the draft kept, because a source that vanishes with its error cannot be
+  fixed.
 - **A search that matches nothing**: the lists empty and the counts under
   them say how many rows were on the page before the query.
 - **Reading**: connected, and the subject's snapshot has not landed.

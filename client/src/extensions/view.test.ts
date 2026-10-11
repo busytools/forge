@@ -272,6 +272,32 @@ describe("a kind's own pane", () => {
     expect(rows[0]?.stale).toBe(true);
   });
 
+  it('keys an LSP check by plugin AND server, and carries it into the fold', () => {
+    const entry = components({
+      plugin: 'lsp-plugin@probe',
+      lsp_servers: { alpha: 'alpha-bin', beta: 'beta-bin' },
+    });
+    const wire = read([entry], {
+      lsp: [
+        { plugin: 'lsp-plugin@probe', server: 'alpha', command: 'alpha-bin', on_path: true },
+        { plugin: 'lsp-plugin@probe', server: 'beta', command: 'beta-bin', on_path: false },
+      ],
+    });
+
+    const rows = kindRows(wire, 'lsp');
+    expect(rows.map((row) => `${row.name}:${row.note}`)).toEqual([
+      'alpha:alpha: on PATH',
+      'beta:beta: missing',
+    ]);
+
+    const groups = foldGroups(entry, wire.lsp);
+    const lsp = groups.find((group) => group.kind === 'lsp');
+    expect(lsp?.rows.map((row) => `${row.name}:${row.note}`)).toEqual([
+      'alpha:alpha: on PATH',
+      'beta:beta: missing',
+    ]);
+  });
+
   it("reads an LSP row's note off the server's PATH check", () => {
     const wire = read(
       [

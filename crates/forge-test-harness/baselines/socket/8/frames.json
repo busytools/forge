@@ -499,6 +499,96 @@
         "type"
       ]
     },
+    "SnapshotExtensions": {
+      "": [
+        "data",
+        "kind",
+        "subject"
+      ],
+      "/data": [
+        "lsp",
+        "snapshot",
+        "update_run"
+      ],
+      "/data/lsp[]": [
+        "command",
+        "on_path",
+        "plugin",
+        "server"
+      ],
+      "/data/snapshot": [
+        "components",
+        "installed",
+        "marketplace",
+        "marketplace_health",
+        "marketplaces",
+        "token_costs"
+      ],
+      "/data/snapshot/components[]": [
+        "agents",
+        "auto",
+        "available_version",
+        "commands",
+        "enabled",
+        "hooks",
+        "installed",
+        "load_error",
+        "lsp_servers",
+        "marketplace",
+        "mcp",
+        "plugin",
+        "skills",
+        "version"
+      ],
+      "/data/snapshot/installed[]": [
+        "capability",
+        "enabled",
+        "id",
+        "installed_at",
+        "last_updated",
+        "project_path",
+        "scope",
+        "version"
+      ],
+      "/data/snapshot/marketplace[]": [
+        "description",
+        "install_count",
+        "marketplace_name",
+        "name",
+        "plugin_id",
+        "source",
+        "version"
+      ],
+      "/data/snapshot/marketplace_health[]": [
+        "available",
+        "drifted",
+        "install_location",
+        "load_error",
+        "name",
+        "source"
+      ],
+      "/data/snapshot/marketplaces[]": [
+        "install_location",
+        "name",
+        "repo",
+        "source"
+      ],
+      "/data/update_run": [
+        "finished",
+        "rows",
+        "trigger"
+      ],
+      "/data/update_run/rows[]": [
+        "available_version",
+        "cwd_raw",
+        "detail",
+        "installed_version",
+        "marketplace",
+        "plugin_id",
+        "scope",
+        "status"
+      ]
+    },
     "SnapshotHome": {
       "": [
         "data",

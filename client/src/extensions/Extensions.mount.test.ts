@@ -2,7 +2,7 @@
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import type { ExtensionsRead } from '../wire/extensions';
+import type { ExtensionsRead, RunRow, RunRowStatus } from '../wire/extensions';
 import { components, extensionsWire, project, recorder, type Recorder } from './testing';
 import ExtensionsBody from './ExtensionsBody.svelte';
 
@@ -101,16 +101,28 @@ describe('the extensions page', () => {
     expect(rows[0]).toContain('pensive');
     // The band is the page's update state, not the query's: it still names
     // what is stale even when the row itself is filtered out.
-    expect(document.body.textContent).toContain('1 plugin has an update');
+    expect(document.body.textContent).toContain('2 plugins have updates');
   });
 
   it("dispatches an update for the row's own plugin and scope", () => {
     draw(extensionsWire());
-    chip('update').click();
+    // Two stale rows: superpowers (no registry entry, so the default user
+    // scope) and pensive (a local-scope entry, whose Update must carry that
+    // scope - a hardcoded `user` could never move it).
+    const chips = [...document.querySelectorAll('button')].filter(
+      (button) => button.textContent?.trim() === 'update',
+    );
+    expect(chips).toHaveLength(2);
+    (chips[0] as HTMLElement).click();
     flushSync();
     expect(held.commands).toEqual([
       { plugin_update: { plugin_id: 'superpowers@claude-plugins-official', scope: 'user' } },
     ]);
+    (chips[1] as HTMLElement).click();
+    flushSync();
+    expect(held.commands[1]).toEqual({
+      plugin_update: { plugin_id: 'pensive@claude-night-market', scope: 'local' },
+    });
   });
 
   it('dispatches update all from the band', () => {
@@ -179,5 +191,137 @@ describe('the extensions page', () => {
     chip('repair').click();
     flushSync();
     expect(held.commands).toEqual([{ marketplace_repair: { name: 'stx-clarity' } }]);
+  });
+});
+
+describe('the states the page draws', () => {
+  it('draws the three marks with their words in the legend', () => {
+    draw(extensionsWire());
+    const legend = document.querySelector('.ext-legend');
+    expect(legend).not.toBeNull();
+    expect(legend?.textContent).toContain('an update is available');
+    expect(legend?.textContent).toContain('work in flight');
+    expect(legend?.textContent).toContain('failed - the reason is on the row');
+    expect(legend?.querySelector('.dot.warn'), 'the triangle').not.toBeNull();
+    expect(legend?.querySelector('.ring'), 'the spinner').not.toBeNull();
+    expect(legend?.querySelector('.dot.failed'), 'the X').not.toBeNull();
+
+    // The stale row carries the same triangle class the legend names.
+    expect(document.querySelector('.ext-group .ext-row .dot.warn')).not.toBeNull();
+  });
+
+  it('draws a run in flight with its progress, and its report when finished', () => {
+    const row = (id: string, status: RunRowStatus): RunRow => ({
+      plugin_id: id,
+      scope: 'user',
+      status,
+      installed_version: '6.4.1',
+      available_version: '6.5.0',
+      detail: null,
+    });
+    draw(
+      extensionsWire({
+        update_run: {
+          trigger: 'manual',
+          finished: false,
+          rows: [
+            row('superpowers@claude-plugins-official', 'updated'),
+            row('pensive@claude-night-market', 'updating'),
+          ],
+        },
+      }),
+    );
+    expect(document.body.textContent).toContain('updating 2 plugins');
+    expect(document.body.textContent).toContain('1 of 2 done');
+
+    draw(
+      extensionsWire({
+        update_run: {
+          trigger: 'manual',
+          finished: true,
+          rows: [row('superpowers@claude-plugins-official', 'updated')],
+        },
+      }),
+    );
+    expect(document.body.textContent).toContain('1 plugin updated');
+  });
+
+  it('draws a failed update with its reason on the row and the restart contract', () => {
+    draw(
+      extensionsWire({
+        update_run: {
+          trigger: 'manual',
+          finished: true,
+          rows: [
+            {
+              plugin_id: 'superpowers@claude-plugins-official',
+              scope: 'user',
+              status: 'failed',
+              installed_version: '6.4.1',
+              available_version: '6.5.0',
+              detail: 'Plugin "superpowers" not found',
+            },
+          ],
+        },
+      }),
+    );
+    expect(document.body.textContent).toContain('Plugin "superpowers" not found');
+
+    draw(
+      extensionsWire({
+        update_run: {
+          trigger: 'manual',
+          finished: true,
+          rows: [
+            {
+              plugin_id: 'superpowers@claude-plugins-official',
+              scope: 'user',
+              status: 'updated',
+              installed_version: '6.5.0',
+              available_version: '6.5.0',
+              detail: 'restart required to apply',
+            },
+          ],
+        },
+      }),
+    );
+    expect(document.body.textContent).toContain('restart required');
+  });
+
+  it('draws an inventory that cannot be read as its own state alone', () => {
+    draw(extensionsWire({ snapshot: null }));
+    expect(document.body.textContent).toContain('could not read the plugin inventory');
+    expect(document.querySelector('.ext-split'), 'no panes stand under the error').toBeNull();
+  });
+
+  it('sends an install for the chosen project when project scope is picked', () => {
+    draw(
+      extensionsWire({
+        snapshot: {
+          installed: [],
+          marketplace: [],
+          marketplaces: [],
+          components: [components({ plugin: 'new@probe', installed: false })],
+          marketplace_health: [],
+        },
+      }),
+    );
+    chip('install').click();
+    flushSync();
+    const dialog = document.querySelector('[role="dialog"]');
+    const radios = [...(dialog?.querySelectorAll('input[type="radio"]') ?? [])];
+    const projectScope = radios.find((radio) => (radio as HTMLInputElement).value === 'project');
+    if (!(projectScope instanceof HTMLInputElement)) throw new Error('no project scope radio');
+    projectScope.click();
+    flushSync();
+    const confirm = [...(dialog?.querySelectorAll('button') ?? [])].find(
+      (button) => button.textContent?.trim() === 'install',
+    );
+    if (!(confirm instanceof HTMLButtonElement)) throw new Error('no confirm in the dialog');
+    confirm.click();
+    flushSync();
+    expect(held.commands).toEqual([
+      { plugin_install: { plugin_id: 'new@probe', scope: 'project', project: 'proj' } },
+    ]);
   });
 });

@@ -32,6 +32,16 @@
    * connection, so the page listens beside its own read.
    */
   let refusal = $state<string | null>(null);
+  /**
+   * The core's own words for an action that ran and failed - an update, an
+   * install, a marketplace add or repair - which rides the `Plugins` frames
+   * rather than a reply. Without it a failed press returns to its
+   * pre-press state with nothing said.
+   */
+  let failure = $state<string | null>(null);
+  /** Ticks on every plugin frame, so the body's press feedback clears on
+   * the frames that answer the press. */
+  let settled = $state(0);
 
   $effect(() => {
     const open = connection;
@@ -46,6 +56,24 @@
     if (open === null) return;
     return open.onMessage((message) => {
       if (message.kind === 'error' && message.what === 'dispatch') refusal = message.why;
+      if (message.kind !== 'update') return;
+      const variant =
+        typeof message.update === 'string' ? message.update : Object.keys(message.update)[0];
+      if (variant === undefined) return;
+      if (!variant.startsWith('plugins_')) return;
+      settled += 1;
+      const payload =
+        typeof message.update === 'string'
+          ? undefined
+          : (message.update[variant] as { message?: unknown } | undefined);
+      if (variant === 'plugins_cli_action_succeeded') {
+        failure = null;
+      } else if (
+        variant === 'plugins_cli_action_failed' ||
+        variant === 'plugins_inventory_refresh_failed'
+      ) {
+        failure = typeof payload?.message === 'string' ? payload.message : variant;
+      }
     });
   });
 
@@ -62,6 +90,9 @@
     const open = connection;
     if (open === null) return;
     refusal = null;
+    // A fresh press supersedes the last failure's line the way it supersedes
+    // a refusal: the reader is acting on it, not reading it.
+    failure = null;
     try {
       void open.dispatch(command);
     } catch (why) {
@@ -107,6 +138,8 @@
     <ExtensionsBody
       wire={page.read}
       {refusal}
+      {failure}
+      {settled}
       {projects}
       {mark}
       {update}

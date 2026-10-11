@@ -31,7 +31,17 @@ export function components(over: Partial<PluginComponents> = {}): PluginComponen
 export function extensionsWire(over: Partial<ExtensionsRead> = {}): ExtensionsRead {
   return {
     snapshot: {
-      installed: [],
+      // One entry in a non-user scope, so the scope join has something to
+      // carry: an Update that hardcodes `user` cannot move this plugin.
+      installed: [
+        {
+          id: 'pensive@claude-night-market',
+          version: '1.9.21',
+          scope: 'local',
+          enabled: true,
+          project_path: '/tmp/proj',
+        },
+      ],
       marketplace: [],
       marketplaces: [
         {
@@ -48,7 +58,7 @@ export function extensionsWire(over: Partial<ExtensionsRead> = {}): ExtensionsRe
           plugin: 'pensive@claude-night-market',
           marketplace: 'claude-night-market',
           version: '1.9.21',
-          available_version: '1.9.21',
+          available_version: '1.9.22',
           skills: ['architecture-review'],
           hooks: [],
         }),

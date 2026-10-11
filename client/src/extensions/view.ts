@@ -9,6 +9,7 @@
 import type {
   ExtensionsSnapshot,
   ExtensionsRead,
+  LspCheck,
   PluginComponents,
   RunRow,
   RunRowStatus,
@@ -60,6 +61,12 @@ export interface PluginRow {
   availableVersion: string | null;
   /** The counts line: `15 skills · 6 agents · hooks`. */
   detail: string;
+  /**
+   * The registry scope the install sits in (`user`, `project`, `local`).
+   * What an Update names: the terminal sends the entry's own scope, and a
+   * hardcoded `user` would make every other scope unfixable from here.
+   */
+  scope: string;
   auto: boolean;
   enabled: boolean;
   /** Why the row could not load, when the scan failed to read it. */
@@ -68,6 +75,9 @@ export interface PluginRow {
   groups: ComponentGroup[];
   /** This plugin's row in the live update run, when it has one. */
   runStatus: RunRowStatus | null;
+  /** That run row's own words: a failure's reason, or the restart contract
+   * the CLI stated (`restart required to apply`). */
+  runDetail: string | null;
 }
 
 /** What the updates band says. */
@@ -127,9 +137,19 @@ function groupLabel(kind: ComponentKind): string {
 }
 
 /** A plugin's fold: one group per kind it ships anything of. */
-export function foldGroups(entry: PluginComponents): ComponentGroup[] {
+export function foldGroups(entry: PluginComponents, lsp: LspCheck[] = []): ComponentGroup[] {
+  const checks = new Map(
+    lsp.filter((check) => check.plugin === entry.plugin).map((check) => [check.server, check]),
+  );
   return COMPONENT_KINDS.map((kind) => {
-    const rows = componentRows(entry, kind);
+    const rows = componentRows(entry, kind).map((row) => {
+      const check = kind === 'lsp' ? checks.get(row.name) : undefined;
+      // The fold's LSP rows carry the same PATH check the LSP pane does:
+      // one vocabulary for one fact, wherever the server is named.
+      return check === undefined
+        ? row
+        : { ...row, note: check.on_path ? `${check.server}: on PATH` : `${check.server}: missing` };
+    });
     return { kind, label: groupLabel(kind), count: rows.length, rows };
   }).filter((group) => group.count > 0);
 }
@@ -175,21 +195,44 @@ function statusFor(run: UpdateRun | null, id: string): RunRow | null {
 export function pluginRows(wire: ExtensionsRead): PluginRow[] {
   const snapshot = wire.snapshot;
   if (snapshot === null) return [];
+  const scopeById = scopesById(wire);
   return snapshot.components
     .filter((entry) => entry.installed)
-    .map((entry) => ({
-      id: entry.plugin,
-      name: pluginName(entry.plugin),
-      marketplace: entry.marketplace,
-      version: entry.version,
-      availableVersion: isStale(entry) ? entry.available_version : null,
-      detail: countsLine(entry),
-      auto: entry.auto,
-      enabled: entry.enabled,
-      loadError: entry.load_error,
-      groups: foldGroups(entry),
-      runStatus: statusFor(wire.update_run, entry.plugin)?.status ?? null,
-    }));
+    .map((entry) => {
+      const run = statusFor(wire.update_run, entry.plugin);
+      return {
+        id: entry.plugin,
+        name: pluginName(entry.plugin),
+        marketplace: entry.marketplace,
+        version: entry.version,
+        availableVersion: isStale(entry) ? entry.available_version : null,
+        detail: countsLine(entry),
+        scope: scopeById.get(entry.plugin) ?? 'user',
+        auto: entry.auto,
+        enabled: entry.enabled,
+        loadError: entry.load_error,
+        groups: foldGroups(entry, wire.lsp),
+        runStatus: run?.status ?? null,
+        runDetail: run?.detail ?? null,
+      };
+    });
+}
+
+/**
+ * Each plugin's registry scope, first entry wins.
+ *
+ * The scope lives on the registry entries, not the component scan, so the
+ * two halves are joined by id. A plugin installed in more than one scope
+ * has two entries and the first is the one a row acts on - the terminal's
+ * own rows are one per entry for the same reason, and its overlay picks by
+ * the row.
+ */
+function scopesById(wire: ExtensionsRead): Map<string, string> {
+  const scopes = new Map<string, string>();
+  for (const entry of wire.snapshot?.installed ?? []) {
+    if (!scopes.has(entry.id)) scopes.set(entry.id, entry.scope);
+  }
+  return scopes;
 }
 
 /** The mark one plugin row carries. */
@@ -305,6 +348,8 @@ export interface KindRow {
   source: string;
   /** The plugin's full id, which an update would name. */
   sourceId: string;
+  /** The registry scope the plugin's install sits in. */
+  sourceScope: string;
   /** Whether the plugin it belongs to has an update waiting. */
   stale: boolean;
   /** The plugin's row in the live run, when it has one. */
@@ -317,7 +362,13 @@ export interface KindRow {
 export function kindRows(wire: ExtensionsRead, kind: ComponentKind): KindRow[] {
   const snapshot = wire.snapshot;
   if (snapshot === null) return [];
-  const lspByPlugin = new Map(wire.lsp.map((check) => [check.plugin, check]));
+  // Keyed by plugin AND server: one plugin may declare several servers, and
+  // a check keyed by the plugin alone would hand the first one's result to
+  // every row under it. The terminal keys by both.
+  const lspChecks = new Map(
+    wire.lsp.map((check) => [`${check.plugin}\u0000${check.server}`, check]),
+  );
+  const scopeById = scopesById(wire);
   const rows: KindRow[] = [];
   for (const entry of snapshot.components) {
     if (!entry.installed) continue;
@@ -325,6 +376,7 @@ export function kindRows(wire: ExtensionsRead, kind: ComponentKind): KindRow[] {
     const base = {
       source: pluginName(entry.plugin),
       sourceId: entry.plugin,
+      sourceScope: scopeById.get(entry.plugin) ?? 'user',
       stale: isStale(entry),
       runStatus,
       note: null as string | null,
@@ -337,7 +389,7 @@ export function kindRows(wire: ExtensionsRead, kind: ComponentKind): KindRow[] {
     }
     if (kind === 'lsp') {
       for (const server of Object.keys(entry.lsp_servers)) {
-        const check = lspByPlugin.get(entry.plugin);
+        const check = lspChecks.get(`${entry.plugin}\u0000${server}`);
         const note =
           check === undefined
             ? null

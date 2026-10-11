@@ -2854,14 +2854,56 @@ details[open] > summary .arw { opacity: 1; }
 
 /* ---------- the extensions page ----------
    Everything under `.extensions`, for the reason the `.models` block gives:
-   `.split`, `.rail`, `.pane`, `.legend` and `.group` are short names another
-   surface already uses, and a bare rule here would reach it by coming later.
-   The pieces it shares - the header, the chip, the band card's gradient, the
-   three state marks (`.dot.warn`, `.ring`, `.dot.failed`) and the empty
-   treatment - are the shipped ones; these are the page's own layout. */
+   `.split`, `.rail`, `.pane`, `.legend`, `.title` and `.back` are short names
+   another surface already uses, and a bare rule here would reach it by coming
+   later. The pieces it shares and genuinely ships are the header row, the
+   band card's gradient, the four state marks (`.dot.warn`, `.dot.failed`,
+   `.dot.ok`, `.ring`) and the empty treatment; the models block owns `.chip`
+   and `.btn` under its own scope and the board its own row chrome, so this
+   page declares its own copies here. The row chrome is the third copy of the
+   band-gradient recipe (models, board, here); when a fourth page needs it the
+   recipe earns a shared class, and until then a lift would have to choose
+   between three layouts that only look alike. */
 
 .extensions .pending { color: var(--muted); font-size: var(--fs-base); margin-top: 12vh;
   text-align: center; }
+
+/* the page's own controls: the chip at this page's scale, as span (a state)
+   or button (an action), and the three button weights */
+.extensions .chip { display: inline-flex; align-items: center; gap: 7px;
+  font-family: var(--mono); font-size: var(--fs-label); padding: 4px 10px;
+  border: 1px solid var(--line); border-radius: 9px; color: var(--muted);
+  background: none; white-space: nowrap; }
+.extensions .chip.warn { color: var(--warn); border-color: rgba(201,161,59,.45);
+  background: rgba(201,161,59,.08); }
+.extensions .chip.dim { color: var(--dim); border-color: var(--line); background: none; }
+.extensions .chip.blue { color: var(--blue); border-color: rgba(97,160,224,.35); }
+.extensions .chip.bad { color: var(--bad); border-color: rgba(224,104,62,.45);
+  background: rgba(224,104,62,.08); }
+.extensions button.chip { cursor: pointer; }
+.extensions button.chip:hover { border-color: var(--ctl); color: var(--text); }
+.extensions button.chip:disabled { opacity: .5; cursor: default; }
+.extensions .btn { border: 0; cursor: pointer; font: inherit; font-family: var(--mono);
+  font-size: 13px; border-radius: 10px; }
+.extensions .btn.go { background: var(--ok); color: var(--bg); font-weight: 640; padding: 7px 14px; }
+.extensions .btn.go:hover { filter: brightness(1.06); }
+.extensions .btn.ghost { background: transparent; color: var(--muted);
+  box-shadow: inset 0 0 0 1px var(--line); padding: 7px 12px; }
+.extensions .btn.ghost:hover { color: var(--text); box-shadow: inset 0 0 0 1px var(--ctl); }
+.extensions .btn.add { background: var(--accent); color: var(--bg); font-weight: 640;
+  border-radius: 999px; padding: 8px 15px; }
+.extensions .btn.add:hover { filter: brightness(1.08); }
+.extensions .btn:disabled { opacity: .5; cursor: default; }
+
+/* the header's name block and the way back */
+.extensions .title { display: flex; flex-direction: column; }
+.extensions .title .t { font-size: var(--fs-title); font-weight: 650; letter-spacing: -.01em;
+  color: var(--text); }
+.extensions .title .s { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+.extensions .back { margin-left: auto; font-family: var(--mono); font-size: var(--fs-label);
+  color: var(--muted); text-decoration: none; border: 1px solid var(--line);
+  border-radius: 9px; padding: 6px 11px; }
+.extensions .back:hover { border-color: var(--ctl); color: var(--text); }
 
 /* the refusal line: the core's own words, above the page */
 .extensions .ext-said { margin: 0 0 14px; padding: 9px 13px; border-radius: 10px;
@@ -2994,9 +3036,6 @@ details[open] > summary .arw { opacity: 1; }
 .extensions .ext-note { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
   margin: 10px 2px 0; }
 
-.extensions .chip.bad { color: var(--bad); border-color: rgba(224,104,62,.45);
-  background: rgba(224,104,62,.08); }
-
 /* the install dialog: a scrim and a panel, the board's takeover shape at
    one question's size */
 .extensions .ext-scrim { position: fixed; inset: 0; z-index: 40; display: flex;
@@ -3024,7 +3063,8 @@ details[open] > summary .arw { opacity: 1; }
 @media (pointer: coarse) {
   /* A row, a rail item and a control are all things a finger reaches. */
   .extensions .ext-row, .extensions .ext-rail-item, .extensions .ext-mp,
-  .extensions .ext-scope { min-height: 44px; }
+  .extensions .ext-scope, .extensions .back { min-height: 44px; }
+  .extensions .back { display: inline-flex; align-items: center; }
   .extensions .chip, .extensions .btn { min-height: 44px; }
 }
 
