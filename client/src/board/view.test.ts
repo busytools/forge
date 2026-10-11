@@ -107,9 +107,9 @@ describe("one project's board", () => {
   });
 
   /**
-   * **A parent's own tasks, for its pill**: the children in the queue's
-   * order, each labelled with its lane's word, and a child carries its
-   * parent's id so the jump has somewhere to land.
+   * **A parent's own tasks, for the row's page**: the children in the
+   * queue's order, each labelled with its lane's word, and a child carries
+   * its parent's id so the jump has somewhere to land.
    */
   it("lists a parent's own tasks in the queue's order", () => {
     const wire = wireWith([

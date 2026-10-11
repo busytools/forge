@@ -56,9 +56,10 @@ Three lines, top to bottom:
 **The tree reads in two marks.** A parent's card wears an `epic` pill and a
 solid left spine; each child wears the epic's name in a pill with a return
 arrow and a dimmer spine, so a tree reads across lanes at a glance and the
-board still works without colour. The child's pill is a door: it brings the
-epic's own card into view and flashes it. The parent's pill is a label -
-what a parent's tasks are, and how to reach one, lives on the row's page.
+board still works without colour. The child's card pill is a door: it brings
+the epic's own card into view and flashes it. On the row's page the same pill
+is a label, and the doors there are the tasks it lists - what a parent's
+tasks are, and how to reach one, lives on that page.
 
 The mark carries shape as well as colour, so the board reads without colour:
 
