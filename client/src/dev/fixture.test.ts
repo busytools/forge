@@ -25,6 +25,14 @@ function filesUnder(dir: string): string[] {
  */
 const MARKER = 'TestOrg';
 
+/**
+ * A string the dev seed's comment carries and nothing else does. The seed is
+ * look scaffolding that files a round over the socket, so it ships no data -
+ * but it is still a development-only path, and a static import would defeat
+ * tree-shaking the same way the fixture's would.
+ */
+const SEED_MARKER = 'seeded for the dev-stack look';
+
 describe('the shipped bundle', () => {
   /**
    * **The app's only input is the server URL.** A shell that quietly draws
@@ -50,6 +58,7 @@ describe('the shipped bundle', () => {
 
     expect(bundle.length, 'the build produced nothing to read').toBeGreaterThan(0);
     expect(bundle, 'the fixture reached the production bundle').not.toContain(MARKER);
+    expect(bundle, 'the dev seed reached the production bundle').not.toContain(SEED_MARKER);
 
     // The tab's mark and the link to it: a build that loses either ships a
     // dangling link with nothing else failing.

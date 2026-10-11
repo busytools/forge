@@ -57,6 +57,30 @@
     return () => clearInterval(tick);
   });
 
+  /**
+   * A development door: `?seed=1` files a round through the socket, so a
+   * scratch stack has something real to draw before the page can compose its
+   * own. Dynamically imported behind the guard the dev fixture uses, so
+   * nothing of it reaches the shipped bundle, and the flag keeps the re-read
+   * that follows from seeding a second round.
+   */
+  let seedNote = $state<string | null>(null);
+  let seeded = false;
+  $effect(() => {
+    if (!import.meta.env.DEV || seeded) return;
+    if (new URLSearchParams(location.search).get('seed') !== '1') return;
+    const open = connection;
+    const branch = record?.work.branch ?? null;
+    if (open === null || branch === null) return;
+    seeded = true;
+    void import('../dev/seed')
+      .then((module) => module.seedReview(open, slot, branch))
+      .then(
+        (note) => (seedNote = note),
+        (why: unknown) => (seedNote = `seed failed: ${String(why)}`),
+      );
+  });
+
   function tallyChips(tally: ReturnType<typeof roundTally>): [string, number][] {
     const rows: [string, number][] = [
       ['open', tally.open],
@@ -87,6 +111,10 @@
       </span>
     {/if}
   </header>
+
+  {#if seedNote !== null}
+    <p class="half">{seedNote}</p>
+  {/if}
 
   {#if read.refused !== null}
     <p class="pending">This forge would not answer for the seat: {read.refused}</p>
