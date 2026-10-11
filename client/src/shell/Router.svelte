@@ -79,7 +79,7 @@
   <Connect {settings} initialAddress={address} launchFailure={failure} {notice} {onconnect} />
 {:else if route.name === 'home'}
   {#if home.wire}
-    <Home wire={home.wire} {address} mark={settings.mark} />
+    <Home wire={home.wire} {address} mark={settings.mark} {connection} />
   {:else if home.refused}
     <!-- The server turned the subscription down, in its own words. Handing
          the door back here would say the address was wrong, which is the one

@@ -173,7 +173,11 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
 
 /* ---------- system band ---------- */
 
-.band { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 22px; }
+/* Five cards across on a wide window, wrapping below - the last card can sit
+   alone in a middling band, and on a phone the fixed override below wraps
+   2+2+1. `auto-fit` at this floor is what puts all five in one row where the
+   room is, which a fixed count of five would refuse on a narrower window. */
+.band { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin-bottom: 22px; }
 .svc {
   background: linear-gradient(180deg, rgba(20,25,38,.75), rgba(13,17,26,.75));
   border: 1px solid var(--line); border-radius: var(--r);
@@ -191,15 +195,19 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
 .svc.bad { border-color: rgba(224,104,62,.4); }
 .svc.bad .v { color: var(--bad); }
 .svc.off { opacity: .72; }
-/* The one card that is a way in. The chevron is drawn at rest rather than
-   uncovered by the pointer - an affordance only hover reveals is what rule 22
-   forbids - and the hover recolours it, the way a row's own chrome does.
-   `opacity: 1` because the shared `.arw` is a DISCLOSURE's mark and rests
-   hidden: this one is a door, and a door nobody can see is not one. */
+/* The cards that are ways in (dictation and extensions). The chevron is
+   drawn at rest rather than uncovered by the pointer - an affordance only
+   hover reveals is what rule 22 forbids - and the hover recolours it, the
+   way a row's own chrome does. `opacity: 1` because the shared `.arw` is a
+   DISCLOSURE's mark and rests hidden: these are doors, and a door nobody
+   can see is not one. */
 .band a.svc { display: block; text-decoration: none; color: inherit; }
 .band a.svc .arw { margin-left: auto; opacity: 1; color: var(--dim); }
 .band a.svc:hover { border-color: var(--ctl); }
 .band a.svc:hover .arw { color: var(--accent); }
+/* A card is far taller than a finger needs; the floor is stated anyway, so
+   the door is sized like every other control on the page. */
+@media (pointer: coarse) { .band a.svc { min-height: 44px; } }
 
 /* The mock's upstream banner is not here: it hangs on a status probe the
    TUI runs once, before a browser can attach, so on the web it could only
