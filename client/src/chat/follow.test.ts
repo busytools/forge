@@ -539,6 +539,59 @@ describe('whether the column follows the newest end', () => {
     expect(pinned(), 'a couple of pixels is not a reader moving').toEqual([PIN]);
   });
 
+  it("re-arms at the foot on the reader's own return, even when that event carries a shrink", async () => {
+    // **The correction that swallowed the re-arm** (Ved, 2026-10-11: the
+    // way-back arrow "does not go until I go there and then press it", even
+    // with nothing to scroll). The shrink skip exists for the clamp, and the
+    // reader's return can carry a shrink in the SAME event - a row settling
+    // from the estimate to its drawn height corrects the content shorter
+    // exactly as their scroll lands - so the re-arm was skipped and, with
+    // nothing left to fire another event, nothing ever put the foot back. A
+    // reader-tokened event is theirs whatever the height did.
+    const server = stub();
+    await draw(server);
+    readerAt(0);
+    await settle();
+    clear();
+
+    document.querySelector('.conv')?.dispatchEvent(new WheelEvent('wheel', { deltaY: -120 }));
+    const shrunk = TOTAL - 120;
+    setElement(shrunk, VIEWPORT);
+    list()?.scrolledTo(Math.floor(shrunk) - VIEWPORT, shrunk, VIEWPORT);
+    flushSync();
+    clear();
+
+    server.frame();
+    await settle();
+
+    const want = { asked: Math.floor(shrunk), landed: Math.floor(shrunk) - VIEWPORT };
+    expect(pinned(), 'the return re-armed the follow over the shrink').toEqual([want]);
+  });
+
+  it('keeps an untokened shrink at the foot from re-arming, which is the clamp guard', async () => {
+    // **The other side of the same arm.** A clamp puts the reader at the foot
+    // with no wheel, touch or key behind it, and re-arming there would carry a
+    // reader who had scrolled away back down with whatever arrived - the
+    // mistake the shrink skip exists for. The control for the test above:
+    // same event, same foot, no token, nothing moves.
+    const server = stub();
+    await draw(server);
+    readerAt(0);
+    await settle();
+    clear();
+
+    const shrunk = TOTAL - 120;
+    setElement(shrunk, VIEWPORT);
+    list()?.scrolledTo(Math.floor(shrunk) - VIEWPORT, shrunk, VIEWPORT);
+    flushSync();
+    clear();
+
+    server.frame();
+    await settle();
+
+    expect(pinned(), 'the clamp put the follow nowhere').toEqual([]);
+  });
+
   it("disarms on the reader's own move at any distance", async () => {
     // The other half of the rule: when the reader's own wheel was just heard,
     // even a two-pixel move is theirs, and the follow lets them go.

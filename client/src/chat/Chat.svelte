@@ -2,7 +2,7 @@
   import { untrack, type Snippet } from 'svelte';
   import { SvelteMap } from 'svelte/reactivity';
   import { VList, type VListHandle } from 'virtua/svelte';
-  import { ROW_ESTIMATE, sizes } from './row-sizes';
+  import { heldReserve, sizes } from './row-sizes';
 
   import Icon from '../components/Icon.svelte';
   import { subjectKey } from '../protocol';
@@ -1054,7 +1054,16 @@
     const shrank = height < shaped;
     shaped = height;
     const foot = atFoot();
-    if (!shrank) {
+    // **A shrink is the layout's - unless the reader made the event too.** The
+    // skip below is for the clamp, and the reader's own return can carry a
+    // shrink in the same event: a row settling from the estimate to its drawn
+    // height corrects the content shorter exactly as their scroll lands, the
+    // skip swallowed the re-arm, and with nothing left to fire another event
+    // the way-back arrow stuck at the foot until pressed (Ved, 2026-10-11,
+    // "even if there is nothing to scroll"). A reader-tokened event is theirs
+    // whatever the height did; an untokened one stays the clamp's.
+    const byReader = readerMoved();
+    if (!shrank || byReader) {
       if (foot) {
         working?.following(true);
         // The foot is where a following reader wants to be, so the place they
@@ -1073,7 +1082,7 @@
       // reader's own wheel, touch or key was heard just before it; their
       // moves count at any distance.
       else {
-        const slack = readerMoved() ? 0 : DISARM_SLACK;
+        const slack = byReader ? 0 : DISARM_SLACK;
         if (offset < (placed ?? Infinity) - slack) working?.following(false);
       }
     }
@@ -1185,7 +1194,7 @@
     {#snippet children(turn: HeldTurn)}
       <div
         class="turn"
-        style:min-height={turn.held ? `${rowSizes.sizeOf(turn.key) ?? ROW_ESTIMATE}px` : undefined}
+        style:min-height={turn.held ? heldReserve(rowSizes.sizeOf(turn.key)) : undefined}
         {@attach (node: HTMLElement) => measureTurn(node, turn.key)}
       >
         <Turn

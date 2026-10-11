@@ -883,6 +883,45 @@ describe('the chat column as it draws', () => {
     ).toHaveLength(1);
   });
 
+  it('reserves no space for a held row that never measured', async () => {
+    // **The black plane** (Ved, 2026-10-11): a queued send's row is kept
+    // mounted and empty while the pile draws its words (#1890), and the
+    // wrapper reserved the 386px estimator as a fallback for one it had never
+    // measured - a big empty box standing for the whole queue wait. An
+    // estimate is not a size the row ever had; a measured held row still
+    // comes back at its own height, which is the shake the hold exists for.
+    const server = stub();
+    draw({}, server);
+    server.answer([]);
+
+    server.send({
+      kind: 'update',
+      update: {
+        chat_appended: {
+          key: LEAD,
+          msg: {
+            type: 'user',
+            uuid: 'u-queued',
+            message: { role: 'user', content: [{ type: 'text', text: 'let me in' }] },
+          },
+        },
+      },
+    });
+    // The row has to be DRAWN before the claim pulls it back - the fold is
+    // paint-gated, so the frame lands on the next painted one.
+    await painted();
+    server.send({
+      kind: 'update',
+      update: { prompt_queued: { key: LEAD, uuid: 'u-queued', source: 'you', text: 'let me in' } },
+    });
+    await painted();
+
+    const held = document.querySelector<HTMLElement>('.turn');
+    expect(held, 'the row is kept mounted while the hold waits').not.toBeNull();
+    expect(held?.textContent, 'and draws nothing').not.toContain('let me in');
+    expect(held?.style.minHeight, 'an estimate reserved as empty space was the plane').toBe('');
+  });
+
   it('holds one of two finished rows, and leaves the other in the turn', async () => {
     // **The pin holds one row, so the turn stands aside for one.** A turn can
     // carry two report rows - one per Result that landed in it, which is what a
