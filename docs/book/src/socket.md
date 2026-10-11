@@ -89,7 +89,7 @@ variants, 58 of them struct variants; the four unit variants,
 `plugin_check_updates`, cross as the name alone. An update is the same
 shape one level in,
 `{"kind": "update", "update": {"chat_appended": {"key": ..., "msg": ...}}}`,
-and 73 of `SessionUpdate`'s 77 variants are struct variants too. The other
+and 74 of `SessionUpdate`'s 78 variants are struct variants too. The other
 four are why the payload is not one shape: they are unit variants and cross
 as the name alone - `"catalog_loaded"`, `"cli_version_changed"`,
 `"dictate_availability"` and `"accounts_changed"`.
@@ -243,6 +243,21 @@ rather than silent. The displaced holder is TOLD (the same frame with
 if its connection had gone - a take-over is loud on both sides rather than
 half-done.
 
+**`document_read {session, path, reviewable}`** - one document out of a
+seat's own working tree, for the client's viewer. `path` resolves against
+that tree and nothing outside it reads, however the path is spelled: a `..`
+walk, an absolute path elsewhere and a symlink pointing out are each refused
+BY NAME. `reviewable` is what a hand-off flagged, in the one shape that is
+not the reader's to change - a PDF opens read-only always, and the flag on
+one is refused with the reason rather than quietly dropped. The read is
+bounded by the `[documents] max_size_mib` ceiling (`10` unless `forge.toml`
+says otherwise), and a document over it is refused naming the size before
+any bytes are read. **Every refusal is an `error` naming `document_read`,
+with the sentence as its `why`** - missing, unreadable, outside the tree,
+over the ceiling, a PDF handed reviewable, or a markdown or text kind that
+is not UTF-8 - and that sentence is what a viewer draws as its own line. The
+answer is a `document_read` message or that error; those are its only two.
+
 **Binary messages are frames, and a frame's first byte says which kind.** A
 client that captures sends one dictation frame per 20 ms of speech:
 
@@ -349,6 +364,15 @@ was asked for.
   state rather than as an event: a card left at `0 ready, probing` looks
   like a slow probe rather than like a page that stopped listening.
 - **`page {conversation, turns, cursor}`** - in answer to `more`.
+- **`document_read {session, path, document_kind, bytes, reviewable}`** - in
+  answer to `document_read`: the seat it was read for, the resolved absolute
+  path the viewer addresses by, the kind the read detected (`markdown`,
+  `pdf`, `text`, or `{"other": "<extension>"}` kept as itself), the bytes
+  base64 - the ceiling keeps a document well inside the socket's frame
+  bound - and the flag the hand-off passed. `session` is named back so a
+  client holding two seats routes each answer to its own viewer; a refused
+  read comes back as an `error` naming `document_read`, under the seat that
+  asked.
 - **`devices {devices, configured}`** - in answer to `devices`: every input
   forge can record from, each with the id a pick sends back, the label a
   picker draws, and whether the system would pick it. **`configured` is the

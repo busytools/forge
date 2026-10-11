@@ -521,6 +521,15 @@ name unset, which is the built-in.
 | `theme` | string | unset, drawing dark | The palette, by name. `dark` is the only one shipped so far; a second is its own pass, since every state colour needs a treatment that stays legible on the new background. |
 | `font` | string | unset, drawing Fira Code for prose and code alike | The typeface, by name. Fira Code is vendored, bundled with the client and licensed OFL 1.1; `system` is the opt-out to the stacks the OS already has. `--ui` and `--mono` come from here rather than from the stylesheet, so this is the only place a typeface is chosen. |
 
+## `[documents]`
+
+The ceiling on one document a session hands the reader through
+`hand_off_document`. Absent means the default.
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `max_size_mib` | integer | `10` | The largest document the viewer opens, in MiB. A read over it is refused naming the size, before any bytes are read. `0` fails the load: a ceiling of nothing would refuse every document, which reads as a bug rather than a choice. |
+
 A row's motion is not configurable. Each view animates its own: the
 TUI's spinner styles name glyph cycles, which is a terminal idiom a
 client has none of, and the marks move by state - the working mark turns
@@ -656,6 +665,9 @@ bind = "127.0.0.1"
 [client]
 mark = "panes"
 theme = "dark"
+
+[documents]
+max_size_mib = 10
 ```
 
 ## What forge does at startup

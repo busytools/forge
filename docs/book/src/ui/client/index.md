@@ -19,6 +19,7 @@ place.
 | Board | [board.md](./board.md) | `web-board.html` |
 | Dictation models | [dictate-models.md](./dictate-models.md) | `web-dictate-models.html` |
 | Extensions | [extensions.md](./extensions.md) | `web-extensions.html` |
+| A document | [document.md](./document.md) | `web-document.html` |
 | The queue pile | (session page pending) | `web-queue.html` |
 
 The session page, the chat and the composer are built; their drawings are
