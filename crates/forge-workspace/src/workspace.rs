@@ -4042,6 +4042,34 @@ impl Workspace {
         result
     }
 
+    /// Tell a row's live owner what the user just did to it, one line.
+    ///
+    /// **Forged, not plain.** The board's edits carry no envelope update of
+    /// their own, so a prompt routed the plain way queues invisibly in a
+    /// view - the forged frame is what draws the line the moment it lands.
+    /// Silent for an ownerless row and a sleeping seat: the board is where
+    /// that edit shows, and a prompt is a real turn.
+    fn tell_row_owner(self: &Arc<Self>, task: &forge_primitives::tasks::Task, text: String) {
+        if let Some(owner) = &task.owner
+            && self.seat_is_live(owner)
+        {
+            let _ = self.dispatch_forged_prompt(owner, text);
+        }
+    }
+
+    /// What a board notice calls the lane a move landed in.
+    fn lane_words(to: forge_primitives::tasks::TaskStatus) -> &'static str {
+        use forge_primitives::tasks::TaskStatus;
+        match to {
+            TaskStatus::Pending => "pending",
+            TaskStatus::InProgress => "in progress",
+            TaskStatus::Waiting => "waiting",
+            TaskStatus::Completed => "completed",
+            TaskStatus::Failed => "failed",
+            TaskStatus::Canceled => "canceled",
+        }
+    }
+
     /// Route a [`Command`]. Per-session commands (`cmd.key() ==
     /// Some(key)`) fan out to the matching `SessionTask`. App-level
     /// commands (`cmd.key() == None` - `SpawnProject`,
@@ -4971,23 +4999,28 @@ impl Workspace {
                     };
                     match moved {
                         Ok(Some(task)) => {
-                            // A send-back is news its owner wants: one
-                            // message, down the same ladder the chase
-                            // uses - a live owner hears it, a sleeping one
-                            // reads the row.
-                            if !approve
-                                && let Some(owner) = &task.owner
-                                && self.seat_is_live(owner)
-                            {
-                                let text = format!(
-                                    "task board: \"{}\" came back from the user's look - the \
-                                     words are in its detail; resume it.",
-                                    task.subject,
-                                );
-                                let _ = self.dispatch_workspace_prompt_from(
-                                    owner,
-                                    text,
-                                    PromptSource::Forge,
+                            // A send-back is news its owner wants, with the
+                            // user's words in it; an approval ends the row
+                            // and has nothing to resume. The notice goes down
+                            // the same ladder the chase uses - a live owner
+                            // hears it, a sleeping one reads the row.
+                            if !approve {
+                                let back = words.as_deref().unwrap_or("");
+                                self.tell_row_owner(
+                                    &task,
+                                    if back.is_empty() {
+                                        format!(
+                                            "task board: \"{}\" came back from the user's look - \
+                                             the words are in its detail; resume it.",
+                                            task.subject,
+                                        )
+                                    } else {
+                                        format!(
+                                            "task board: \"{}\" came back from the user's look: \
+                                             \"{back}\" - resume it.",
+                                            task.subject,
+                                        )
+                                    },
                                 );
                             }
                         }
@@ -5019,20 +5052,24 @@ impl Workspace {
                     let id = TaskId::from(id.as_str());
                     match self.answer_task(&project, &id, &words) {
                         Ok(Some(task)) => {
-                            if let Some(owner) = &task.owner
-                                && self.seat_is_live(owner)
-                            {
-                                let text = format!(
-                                    "task board: the user answered \"{}\" - the words are in its \
-                                     detail; resume it.",
-                                    task.subject,
-                                );
-                                let _ = self.dispatch_workspace_prompt_from(
-                                    owner,
-                                    text,
-                                    PromptSource::Forge,
-                                );
-                            }
+                            // The words ride the notice: the owner should read
+                            // what the user said where it is told to resume,
+                            // not go looking for it.
+                            self.tell_row_owner(
+                                &task,
+                                if words.is_empty() {
+                                    format!(
+                                        "task board: the user answered \"{}\" - the words are in \
+                                         its detail; resume it.",
+                                        task.subject,
+                                    )
+                                } else {
+                                    format!(
+                                        "task board: the user answered \"{}\": \"{}\" - resume it.",
+                                        task.subject, words,
+                                    )
+                                },
+                            );
                         }
                         Ok(None) => {
                             tracing::debug!(
@@ -5060,7 +5097,15 @@ impl Workspace {
                 }
                 Command::TaskRank { project, id, to } => {
                     match self.rank_task(&project, &TaskId::from(id.as_str()), to) {
-                        Ok(Some(_)) => {}
+                        Ok(Some(task)) => {
+                            self.tell_row_owner(
+                                &task,
+                                format!(
+                                    "task board: the user re-ordered \"{}\" in its queue.",
+                                    task.subject,
+                                ),
+                            );
+                        }
                         Ok(None) => {
                             tracing::debug!(
                                 target: "forge_workspace::tasks",
@@ -5087,7 +5132,16 @@ impl Workspace {
                 }
                 Command::TaskMove { project, id, to } => {
                     match self.user_move_task(&project, &TaskId::from(id.as_str()), to) {
-                        Ok(Some(_)) => {}
+                        Ok(Some(task)) => {
+                            self.tell_row_owner(
+                                &task,
+                                format!(
+                                    "task board: the user moved \"{}\" to {}.",
+                                    task.subject,
+                                    Self::lane_words(to),
+                                ),
+                            );
+                        }
                         Ok(None) => {
                             tracing::debug!(
                                 target: "forge_workspace::tasks",
@@ -5119,8 +5173,35 @@ impl Workspace {
                     if let Some(row) = self.config.projects.iter().find(|p| p.name == project) {
                         let owner_slot =
                             owner.map(|label| SessionSlot::new(&row.org, &project, label.clone()));
+                        // Who held it before the edit: an assignment can take
+                        // a row away, and the one who loses it is told.
+                        let prior = self
+                            .tasks_for_project(&project)
+                            .into_iter()
+                            .find(|task| task.id == TaskId::from(id.as_str()))
+                            .and_then(|task| task.owner);
                         match self.assign_task(&project, &TaskId::from(id.as_str()), owner_slot) {
-                            Ok(Some(_)) => {}
+                            Ok(Some(task)) => {
+                                if let Some(old) = prior
+                                    && Some(&old) != task.owner.as_ref()
+                                    && self.seat_is_live(&old)
+                                {
+                                    let _ = self.dispatch_forged_prompt(
+                                        &old,
+                                        format!(
+                                            "task board: the user took \"{}\" from you.",
+                                            task.subject,
+                                        ),
+                                    );
+                                }
+                                self.tell_row_owner(
+                                    &task,
+                                    format!(
+                                        "task board: the user gave \"{}\" to you.",
+                                        task.subject,
+                                    ),
+                                );
+                            }
                             Ok(None) => {
                                 tracing::debug!(
                                     target: "forge_workspace::tasks",
@@ -8733,6 +8814,132 @@ mod tests {
             }
             assert!(said, "{named} was not said on the service line");
         }
+    }
+
+    /// The text of the next `ChatAppended` frame the stub's stream carries.
+    fn told_text(
+        rx: &mut mpsc::UnboundedReceiver<crate::protocol::SessionUpdate>,
+    ) -> Option<String> {
+        drain_updates(rx).into_iter().find_map(|update| match update {
+            crate::protocol::SessionUpdate::ChatAppended { msg, .. } => Some(format!("{msg:?}")),
+            _ => None,
+        })
+    }
+
+    /// **A board edit the user makes tells the row's live owner**, one line -
+    /// and the answer carries the user's own words, because the notice tells
+    /// the owner to resume and it should not have to go looking for what was
+    /// said. Forged, so the line draws the moment it lands.
+    #[tokio::test]
+    async fn a_board_edit_tells_the_rows_live_owner() {
+        use forge_primitives::tasks::{Task, TaskId, TaskStatus, Waiting, WaitingKind};
+        let dir = tempdir().expect("tempdir");
+        let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-board-owner-told");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let slot = SessionSlot::new("TestOrg", "proj", "lead");
+        // Registers the domain (a conn) so `seat_is_live` reads true, and the
+        // routed prompt the delivery also sends lands on its receiver.
+        let _routed = install_fake_session_task(&ws, &slot);
+        let sample = |id: &str| Task {
+            id: TaskId::from(id),
+            project_name: "proj".to_owned(),
+            subject: format!("subject {id}"),
+            active_form: None,
+            detail: None,
+            status: TaskStatus::Pending,
+            owner: Some(slot.clone()),
+            parent: None,
+            waiting_on: None,
+            estimate: None,
+            rank: None,
+            verify: None,
+            links: Vec::new(),
+            attempt: 0,
+            archived_at: None,
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+            updated_at: std::time::SystemTime::UNIX_EPOCH,
+        };
+
+        // The wait, answered: the words ride the notice.
+        let mut waiting = sample("t-1");
+        waiting.status = TaskStatus::Waiting;
+        waiting.waiting_on = Some(Waiting {
+            kind: Some(WaitingKind::Decision),
+            detail: None,
+            on: None,
+            verification: false,
+        });
+        ws.push_task(waiting);
+        ws.dispatch(Command::TaskAnswer {
+            project: "proj".to_owned(),
+            id: "t-1".to_owned(),
+            words: "get going".to_owned(),
+        })
+        .expect("app-level commands are accepted");
+        let told = told_text(&mut rx).expect("the answer reached the owner");
+        assert!(told.contains("get going"), "the words ride the notice: {told}");
+        assert!(told.contains("answered"), "and it says what happened: {told}");
+
+        // A move: a line, and it names the lane.
+        let mut running = sample("t-2");
+        running.status = TaskStatus::InProgress;
+        ws.push_task(running);
+        ws.dispatch(Command::TaskMove {
+            project: "proj".to_owned(),
+            id: "t-2".to_owned(),
+            to: TaskStatus::Waiting,
+        })
+        .expect("accepted");
+        let moved = told_text(&mut rx).expect("the move reached the owner");
+        assert!(
+            moved.contains("moved") && moved.contains("waiting"),
+            "the notice names the edit and the lane: {moved}",
+        );
+    }
+
+    /// A row with no owner tells nobody, and neither does an edit that was
+    /// refused: the board is where those show, and the notice is a real turn.
+    #[tokio::test]
+    async fn a_board_edit_on_an_ownerless_row_tells_nobody() {
+        use forge_primitives::tasks::{Task, TaskId, TaskStatus};
+        let dir = tempdir().expect("tempdir");
+        let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-board-ownerless");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        ws.push_task(Task {
+            id: TaskId::from("t-1"),
+            project_name: "proj".to_owned(),
+            subject: "nobody holds this".to_owned(),
+            active_form: None,
+            detail: None,
+            status: TaskStatus::InProgress,
+            owner: None,
+            parent: None,
+            waiting_on: None,
+            estimate: None,
+            rank: None,
+            verify: None,
+            links: Vec::new(),
+            attempt: 0,
+            archived_at: None,
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+            updated_at: std::time::SystemTime::UNIX_EPOCH,
+        });
+        ws.dispatch(Command::TaskMove {
+            project: "proj".to_owned(),
+            id: "t-1".to_owned(),
+            to: TaskStatus::Waiting,
+        })
+        .expect("accepted");
+        assert!(
+            told_text(&mut rx).is_none(),
+            "an ownerless row has nobody to tell, and the board is where the move shows",
+        );
     }
 
     fn usage_workspace() -> (tempfile::TempDir, Arc<Workspace>) {
