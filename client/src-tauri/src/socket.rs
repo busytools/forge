@@ -140,6 +140,13 @@ enum Outbound {
         answering: bool,
         browser: bool,
     },
+    /// One subscribe frame on the wire with nothing held: the role's own
+    /// re-declaration (the page's `declare`), which must not add to the
+    /// counts a reconnect re-asks by.
+    Declare {
+        what: Value,
+        answering: bool,
+    },
     /// A browser answer's image, header included: a frame that cannot go
     /// ends the connection (the answer is already out and its images never
     /// all arriving would leave the ask hanging).
@@ -200,6 +207,16 @@ impl Socket {
         let _ = self.tx.send(Outbound::Unsubscribe { what });
     }
 
+    /// Re-declare the browser capability on a subject this connection already
+    /// watches: one frame, one outstanding ask, **and nothing held**. A
+    /// declare that went through `subscribe` would raise the Held count with
+    /// no reader behind it, and every reconnect from then on would re-ask a
+    /// surplus - a released seat asked for forever (`socket.ts`'s `declare`
+    /// asks the same way, through `askFor`).
+    pub fn declare(&self, what: Value, answering: bool) {
+        let _ = self.tx.send(Outbound::Declare { what, answering });
+    }
+
     /// Ask for more turns of a conversation.
     pub fn more(&self, conversation: Value, before: Option<String>, turns: u64) {
         let _ = self.tx.send(Outbound::More { conversation, before, turns });
@@ -246,8 +263,9 @@ impl Socket {
         let _ = self.tx.send(Outbound::TakeRole);
     }
 
-    /// One binary frame: a dictation take's audio, or an image an answer
-    /// carried. It rides under the answer that declared it, in order.
+    /// One dictation frame: a take's audio, best-effort. It rides under the
+    /// take's own stream, in order - **not** an answer's image, which has a
+    /// header and a failure policy of its own (`send_image`).
     pub fn send_binary(&self, bytes: Vec<u8>) {
         let _ = self.tx.send(Outbound::Binary(bytes));
     }
@@ -302,6 +320,9 @@ fn apply_offline(next: Outbound, held: &mut Vec<Held>, awaiting: &mut Vec<String
             hold(held, what, answering, browser);
             false
         }
+        // A declare has nothing held to move, and no frame to send while
+        // down: it is dropped, as the page's own `declare` is when closed.
+        Outbound::Declare { .. } => false,
         Outbound::Unsubscribe { what } => {
             unhold(held, awaiting, &what);
             false
@@ -365,9 +386,12 @@ async fn run(
         let ws = match tokio_tungstenite::connect_async(&url).await {
             Ok((ws, _)) => ws,
             Err(why) => {
-                // A dial that did not land says so: the alternatives are a
-                // silent retry loop (the door blames the server at the far
-                // end) or, worse, a reason nobody can read.
+                // A dial that did not land says so, at DEBUG: the shipping
+                // client's filter is Info, so this is read under a raised
+                // level - which is what an unreachable server deserves while
+                // the door already says "connecting". The reason is here so
+                // that a failure the door cannot name (a scheme this half
+                // cannot speak, a TLS refusal) is at least in the log.
                 tauri_plugin_log::log::debug!("the socket dial failed: {why}");
                 continue;
             }
@@ -383,8 +407,12 @@ async fn run(
                 if writer.send(h.subscribe_frame()).await.is_err() {
                     break;
                 }
+                // **One outstanding key per frame sent.** The server answers
+                // per subscription, and one splice per answer is what keeps
+                // this list the same length as the wire's (`socket.ts`'s
+                // `askFor` and `answered` are the pair being mirrored).
+                awaiting.push(h.key.clone());
             }
-            awaiting.push(h.key.clone());
         }
         let mut pending: HashMap<u64, oneshot::Sender<Result<Value, String>>> = HashMap::new();
         let mut closing = false;
@@ -418,6 +446,27 @@ async fn run(
                                 if let Some(h) = held.iter().find(|h| h.key == key) {
                                     let _ = writer.send(h.subscribe_frame()).await;
                                 }
+                                awaiting.push(key);
+                            }
+                        }
+                        Outbound::Declare { what, answering } => {
+                            // One frame with the browser capability, one
+                            // outstanding ask, and nothing held: see
+                            // `Socket::declare`.
+                            let key = subject_key(&what);
+                            if !key.is_empty() {
+                                let _ = writer
+                                    .send(Message::Text(
+                                        json!({
+                                            "kind": "subscribe",
+                                            "what": what,
+                                            "answering": answering,
+                                            "browser": true,
+                                        })
+                                        .to_string()
+                                        .into(),
+                                    ))
+                                    .await;
                                 awaiting.push(key);
                             }
                         }
@@ -472,13 +521,27 @@ async fn run(
                             let _ = writer.send(Message::Text(json!({ "kind": "browser_take_role" }).to_string().into())).await;
                         }
                         Outbound::Binary(bytes) => {
-                            let _ = writer.send(Message::Binary(bytes.into())).await;
+                            // Best-effort by contract - the take's own ring
+                            // holds what did not go - but not silent: a frame
+                            // that could not be sent is a fact about the
+                            // connection (debug: it repeats with the take's
+                            // own flush cadence).
+                            if let Err(why) = writer.send(Message::Binary(bytes.into())).await {
+                                tauri_plugin_log::log::debug!(
+                                    "a dictation frame could not be sent: {why}"
+                                );
+                            }
                         }
                         Outbound::Image(bytes) => {
                             if let Err(why) = writer.send(Message::Binary(bytes.into())).await {
                                 tauri_plugin_log::log::warn!(
                                     "an image frame could not be sent; ending the connection: {why}"
                                 );
+                                // A clean close even on this path, as the
+                                // webview's `socket.ts` closes rather than
+                                // dropping the stream (`socket.ts` does the
+                                // same on an image frame it cannot send).
+                                let _ = writer.send(Message::Close(None)).await;
                                 break;
                             }
                         }
@@ -532,7 +595,9 @@ fn receive(
                 // A reply nothing is waiting on is a fact about the two
                 // sides' reply spaces, and a silent drop is a command whose
                 // failure nobody can read (`socket.ts` reports the same).
-                None => tauri_plugin_log::log::debug!(
+                // WARN: it should never happen, and the Info filter would
+                // swallow a debug line in the shipping client.
+                None => tauri_plugin_log::log::warn!(
                     "a reply arrived for id {id:?}, which nothing is waiting on"
                 ),
             }
@@ -542,13 +607,17 @@ fn receive(
             say(events, SocketEvent::Role { hosting });
         }
         Some("snapshot") => {
-            // **A snapshot answers its subscription**, so its key comes off
-            // the outstanding list: without this a refusal pops the OLDEST
-            // key ever queued - one already answered - and lands on the
-            // wrong store while the refused one reads as loading forever.
+            // **A snapshot answers ONE subscription**, so one of its keys
+            // comes off the outstanding list: without this a refusal pops
+            // the OLDEST key ever queued - one already answered - and lands
+            // on the wrong store while the refused one reads as loading
+            // forever. One, not all: a subject two callers hold has two asks
+            // outstanding and the second answer is still owed.
             if let Some(subject) = value.get("subject") {
                 let key = subject_key(subject);
-                awaiting.retain(|k| k != &key);
+                if let Some(at) = awaiting.iter().position(|held| *held == key) {
+                    awaiting.remove(at);
+                }
             }
             say(events, SocketEvent::Message(value.clone()));
         }
@@ -578,7 +647,7 @@ pub(crate) mod tests {
     /// lands on.
     pub(crate) struct Stub {
         pub(crate) url: String,
-        heard: mpsc::UnboundedReceiver<Value>,
+        pub(crate) heard: mpsc::UnboundedReceiver<Value>,
         pub(crate) say: tokio::sync::broadcast::Sender<Value>,
         pub(crate) kill: tokio::sync::broadcast::Sender<()>,
         /// Kept so the broadcast always has a receiver: `send` refuses when
@@ -912,6 +981,9 @@ pub(crate) mod tests {
 
     /// A subject two callers hold is asked for twice on a reconnect, and one
     /// unsubscribe does not drop the entry the other caller still needs.
+    /// **The count is asserted exactly** - one re-ask where two were held is
+    /// the server reading a seat as half-watched (`socket.test.ts` counts
+    /// frames the same way).
     #[tokio::test]
     async fn a_subject_two_callers_hold_is_asked_for_twice() {
         let mut stub = stub().await;
@@ -921,12 +993,25 @@ pub(crate) mod tests {
         // Both went out, in order.
         let _ = stub.heard_until(|v| v["kind"] == "subscribe").await;
         let _ = stub.heard_until(|v| v["kind"] == "subscribe").await;
+        // The first drop: BOTH open subscriptions are re-asked.
+        stub.kill.send(()).expect("the stub drops its connections");
+        let _ = stub.heard_until(|v| v["kind"] == "subscribe").await;
+        let second = stub.heard_until(|v| v["kind"] == "subscribe").await;
+        assert_eq!(second["what"], json!("home"), "the second ask is the same subject");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), stub.heard.recv()).await.is_err(),
+            "exactly two, not three: the count is what the server was told"
+        );
         // One caller leaves: the entry survives with a count of one.
         socket.unsubscribe(json!("home"));
         let _ = stub.heard_until(|v| v["kind"] == "unsubscribe").await;
         stub.kill.send(()).expect("the stub drops its connections");
         let re_asked = stub.heard_until(|v| v["kind"] == "subscribe").await;
         assert_eq!(re_asked["what"], json!("home"), "the survivor is re-asked");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), stub.heard.recv()).await.is_err(),
+            "and only once"
+        );
         // The second caller leaves: now the entry goes with it, and the next
         // reconnect asks for nothing.
         socket.unsubscribe(json!("home"));
@@ -936,5 +1021,73 @@ pub(crate) mod tests {
             tokio::time::timeout(Duration::from_millis(200), stub.heard.recv()).await.is_err(),
             "the last unsubscribe dropped the entry, so nothing is re-asked"
         );
+    }
+
+    /// **A subscribe made while the socket is down is asked ONCE at the
+    /// connect.** The disconnected wait holds it and the reconnect's re-ask
+    /// sends it - queuing its key in both places left a phantom outstanding
+    /// entry, and a later refusal would land on the phantom while the real
+    /// seat kept reading as loading.
+    #[tokio::test]
+    async fn a_subscribe_made_while_down_is_asked_once_at_the_connect() {
+        let mut stub = stub().await;
+        let (socket, mut rx) = connected(&stub).await;
+        stub.kill.send(()).expect("the stub drops its connections");
+        // The drop is seen, and the retry window is where the subscribe
+        // lands - "made while down" as the bridge can really meet it.
+        loop {
+            if let SocketEvent::Status(Status::Connecting) = next_event(&mut rx).await {
+                break;
+            }
+        }
+        socket.subscribe(json!("home"), true, false);
+        // The reconnect's re-ask is the ONE frame: the hold queued the
+        // subscription, not an outstanding key as well.
+        let _ = stub.heard_until(|v| v["kind"] == "subscribe").await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), stub.heard.recv()).await.is_err(),
+            "one frame, not one from the hold and one from the re-ask"
+        );
+        // The snapshot answers it; the refusal that follows has nothing to
+        // attribute to and must NOT read as a refused subscribe.
+        stub.say
+            .send(json!({ "kind": "snapshot", "subject": "home", "data": {} }))
+            .expect("the stub answers");
+        let _ = event_of(&mut rx, "message").await;
+        stub.say
+            .send(json!({ "kind": "error", "what": "subscribe", "why": "nothing outstanding" }))
+            .expect("the stub refuses");
+        let refused = tokio::time::timeout(Duration::from_millis(500), async {
+            loop {
+                if let SocketEvent::Refused { .. } = next_event(&mut rx).await {
+                    return true;
+                }
+            }
+        })
+        .await;
+        assert!(refused.is_err(), "no subscribe was outstanding, so nothing is attributed");
+    }
+
+    /// A close of our own making fails what a command was holding with ITS
+    /// wording, not the drop's: `socket.ts` tells the two apart, and a
+    /// caller that reads "the socket dropped" learns the wrong thing.
+    #[tokio::test]
+    async fn an_own_close_says_the_connection_was_closed() {
+        let stub = stub().await;
+        let (socket, _rx) = connected(&stub).await;
+        // A reply-carrying command: the answer rides a reply, so a close
+        // that beats it is what the caller reads.
+        let waiting = tokio::spawn({
+            let socket = socket.clone();
+            async move { socket.dispatch(json!({ "spawn_worker": {} }), true).await }
+        });
+        // Let the frame reach the stub, so the command is registered as
+        // outstanding before the close lands on it.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        socket.close();
+        match waiting.await.expect("the task joins") {
+            Err(why) => assert_eq!(why, "the connection was closed"),
+            Ok(_) => panic!("a command whose reply died is answered with the reason"),
+        }
     }
 }

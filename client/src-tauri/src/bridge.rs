@@ -20,13 +20,17 @@
 //!
 //! **Frames pause while the page is away, and catch up from the records.**
 //! The page heartbeats; one older than `FRESH_MS` means a suspended webview,
-//! and frames stop being emitted (they still fold into the records) so a
-//! parked page cannot grow an unbounded event backlog. A heartbeat arriving
-//! after a spell is answered with a reconcile, built from the held records
-//! and delivered in the message kinds the page already reads: a snapshot per
-//! held subject, which is what the record is, and per seat the newest page
-//! its conversation makes - the answer that seat's `more` would have carried
-//! - so the catch-up is complete rather than merely live again.
+//! and live emission stops, so a parked page cannot grow an unbounded event
+//! backlog. Nothing is lost with it: **every suppressed frame except a
+//! seat's chat is HELD in a bounded ring** - a released seat, a dock's
+//! ending, a dictation's close, a prompt's queued row, an error, a devices
+//! answer - and the first heartbeat after the spell answers with the ring
+//! itself, in order, and then with the records: a snapshot per seat, which
+//! is what a record is, and that seat's newest page, which is the answer
+//! its `more` with no `before` would have carried. Only `chat_appended`
+//! updates are left out of the ring, because the record's conversation
+//! rebuilds those. A subject that is not a seat is re-read instead of
+//! handed a copy: nothing here folds a home record.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -87,21 +91,29 @@ struct Watch {
 struct State {
     records: Records,
     held: HashMap<String, Watch>,
+    /// The held keys in first-asked order. `held` is a map, and the role's
+    /// declare must re-ask the FIRST subject subscribed, as `socket.ts`'s
+    /// `held.values()` (insertion-ordered) does - a HashMap's own order is
+    /// arbitrary and would re-declare a different subject per run.
+    order: Vec<String>,
     socket: Option<Socket>,
     status: &'static str,
     greeting: Option<Value>,
     role: bool,
     /// When the page last heartbeated, and how many frames went unforwarded
-    /// while it was presumed parked. **The suppressed frames the records do
-    /// not rebuild are HELD, not dropped** (rule 25): the ring carries them
-    /// across the spell and the reconcile flushes it first, so a released
-    /// seat, a dock's ending or a dictation's close still reaches the page.
+    /// while it was presumed parked. **Every suppressed frame except a
+    /// seat's chat is HELD, not dropped** (rule 25): the ring carries a
+    /// released seat, a dock's ending, a dictation's close, a prompt's
+    /// queued row, an error and a devices answer across the spell, and the
+    /// reconcile flushes it first. Only `chat_appended` updates are left
+    /// out, because the record's conversation rebuilds those.
     last_beat: Option<Instant>,
     suppressed: u64,
     parked: VecDeque<Value>,
     /// Seats a REPLACES frame has asked a fresh read for and no snapshot has
     /// answered yet: a second frame while one is out coalesces into it
-    /// rather than asking again.
+    /// rather than asking again. Cleared by the answer, a refusal, or a new
+    /// connection.
     refreshing: HashSet<String>,
 }
 
@@ -122,6 +134,7 @@ impl Bridge {
             state: Mutex::new(State {
                 records: Records::new(),
                 held: HashMap::new(),
+                order: Vec::new(),
                 socket: None,
                 status: "connecting",
                 greeting: None,
@@ -153,18 +166,32 @@ impl Bridge {
         let socket = Socket::open(url, tx);
         let wanted: Vec<(Value, bool, bool, usize)> = {
             let mut state = self.lock();
+            // **The park outlives the connection it was kept across**: a
+            // page away when the socket drops is still away, so the held
+            // frames are handed over before the ring is emptied rather than
+            // discarded for a fresh start. Emitting into a parked page's
+            // queue is bounded by the ring's own cap.
+            while let Some(message) = state.parked.pop_front() {
+                self.emit(ClientEvent::Inbound(message));
+            }
             state.socket = Some(socket.clone());
             state.status = "connecting";
             state.greeting = None;
             state.last_beat = Some(Instant::now());
             state.suppressed = 0;
-            state.parked.clear();
             state.refreshing.clear();
-            state
-                .held
-                .values()
-                .map(|watch| (watch.what.clone(), watch.answering, watch.browser, watch.readers))
-                .collect()
+            let mut wanted = Vec::with_capacity(state.order.len());
+            for key in &state.order {
+                if let Some(watch) = state.held.get(key) {
+                    wanted.push((
+                        watch.what.clone(),
+                        watch.answering,
+                        watch.browser,
+                        watch.readers,
+                    ));
+                }
+            }
+            wanted
         };
         for (what, answering, browser, readers) in wanted {
             // Once per OPEN subscription: the server counts, and the new
@@ -199,6 +226,7 @@ impl Bridge {
                 watch.browser |= browser;
             }
             None => {
+                state.order.push(key.clone());
                 state
                     .held
                     .insert(key, Watch { what: what.clone(), readers: 1, answering, browser });
@@ -225,6 +253,7 @@ impl Bridge {
         };
         if last {
             state.held.remove(&key);
+            state.order.retain(|held| *held != key);
             state.records.release(&key);
         }
         if let Some(socket) = &state.socket {
@@ -300,13 +329,23 @@ impl Bridge {
     /// Take the browser role from whoever holds it.
     pub fn take_role(&self) {
         let state = self.lock();
+        // A claim while the socket is down is dropped with a record rather
+        // than kept: nothing would carry it (`socket.ts`'s own guard).
+        if state.status != "open" {
+            return;
+        }
         let Some(socket) = &state.socket else { return };
         // The claim re-declares first (the page's own `declare`): the relay
         // registers only connections that declared, and one displaced by an
         // earlier take is no longer in its line - so the bare claim would
-        // come back false with nothing re-registered.
-        if let Some(watch) = state.held.values().next() {
-            socket.subscribe(watch.what.clone(), watch.answering, true);
+        // come back false with nothing re-registered. **Through `declare`,
+        // not `subscribe`**: the frame goes and an ask is outstanding, but
+        // nothing is held, or every reconnect would re-ask a surplus the
+        // bridge has no reader behind.
+        if let Some(key) = state.order.first()
+            && let Some(watch) = state.held.get(key)
+        {
+            socket.declare(watch.what.clone(), watch.answering);
         }
         socket.take_role();
     }
@@ -354,15 +393,14 @@ impl Bridge {
     /// home fold reads the frames), so a copy of it here would be stale,
     /// while a re-subscribe answers with the truth.
     fn reconcile(&self) {
-        let mut flush = Vec::new();
-        {
-            let mut state = self.lock();
-            flush.extend(state.parked.drain(..));
-        }
-        for message in flush {
+        // **The drain and its emits share one guard**, so a live frame
+        // cannot slip between them and be overtaken by the held ones behind
+        // it. `emit` is a non-blocking send, so holding the lock across it
+        // costs nothing.
+        let mut state = self.lock();
+        while let Some(message) = state.parked.pop_front() {
             self.emit(ClientEvent::Inbound(message));
         }
-        let state = self.lock();
         for (key, watch) in &state.held {
             let Some(session) = watch.what.get("session") else {
                 if let Some(socket) = &state.socket {
@@ -404,7 +442,15 @@ impl Bridge {
                 self.emit(ClientEvent::Role { hosting });
             }
             SocketEvent::Refused { key, why } => {
-                self.lock().records.refuse(&key, &why);
+                {
+                    let mut state = self.lock();
+                    state.records.refuse(&key, &why);
+                    // The refusal IS the answer that read was asked for, so
+                    // the coalescing mark comes off with it: left on, a
+                    // later REPLACES for the same seat would be skipped as
+                    // "already being read" forever.
+                    state.refreshing.remove(&key);
+                }
                 self.emit(ClientEvent::Refused { key, why });
             }
             SocketEvent::Malformed(text) => {
@@ -424,17 +470,19 @@ impl Bridge {
             if status == Status::Open {
                 // A fresh connection's frames are forwarded at once: the page
                 // is there (it just asked to connect), and the first
-                // heartbeat carries the proof rather than the promise.
+                // heartbeat carries the proof rather than the promise. The
+                // held frames go first - a parked page is still parked
+                // across a reconnect, and they are its own.
+                while let Some(message) = state.parked.pop_front() {
+                    self.emit(ClientEvent::Inbound(message));
+                }
                 state.last_beat = Some(Instant::now());
                 state.suppressed = 0;
-                state.parked.clear();
                 state.refreshing.clear();
-            } else {
-                // A take is the page's own and its own status arm clears it
-                // (#1880); everything else stands until the reconnect's
-                // snapshots replace it.
-                state.records.dropped();
             }
+            // A drop keeps the records: the reconnect's snapshots replace
+            // them whole, and nothing else on this side has to move (a take
+            // is the page's own and its own status arm clears it, #1880).
         }
         self.emit(ClientEvent::Connection);
     }
@@ -488,10 +536,15 @@ impl Bridge {
         if !fresh {
             state.suppressed += 1;
             if !rebuilt_by_records(message) {
-                if state.parked.len() >= PARKED_RING {
-                    state.parked.pop_front();
+                // A ring this full is a park of hours with everything but a
+                // seat's chat held; on the pathological overflow the OLDEST
+                // goes, and the line names what went.
+                if state.parked.len() >= PARKED_RING
+                    && let Some(gone) = state.parked.pop_front()
+                {
                     tauri_plugin_log::log::warn!(
-                        "a parked page's frame ring overflowed; the oldest went"
+                        "the parked frame ring is full ({PARKED_RING}); dropping the oldest: {}",
+                        describe(&gone)
                     );
                 }
                 state.parked.push_back(message.clone());
@@ -558,12 +611,27 @@ impl Bridge {
 /// Whether the records rebuild this frame for a returning page: the chat's
 /// own bulk, which the record's conversation carries. **One case wide on
 /// purpose** - everything else, a kind neither side knows included, is held
-/// across a park rather than dropped.
+/// across a park rather than dropped. The held set is load-bearing beyond
+/// the obvious marks: a `prompt_queued` row is folded by the PAGE (the
+/// record's `state.queue` is only the snapshot's copy), so a park that ate
+/// it would lose the row from the pile a reader is looking at.
 fn rebuilt_by_records(message: &Value) -> bool {
     message.get("kind").and_then(Value::as_str) == Some("update")
         && message
             .get("update")
             .is_some_and(|update| records::variant_name(update) == Some("chat_appended"))
+}
+
+/// What a held frame is, for a log line: its kind and, for an update, its
+/// variant.
+fn describe(message: &Value) -> String {
+    let kind = message.get("kind").and_then(Value::as_str).unwrap_or("?");
+    match message.get("update") {
+        Some(update) => {
+            format!("{kind} {}", records::variant_name(update).unwrap_or("?"))
+        }
+        None => kind.to_owned(),
+    }
 }
 
 #[cfg(test)]
@@ -576,13 +644,20 @@ mod tests {
         (Bridge::new(None, tx), rx)
     }
 
-    /// Await the next event of a kind, skipping others.
+    /// Await the next event of a kind, skipping others. **Bounded**: an
+    /// event that never comes fails the test in seconds rather than hanging
+    /// it (and a mutant that stops an event has to DIE, not stall).
     async fn event(
         rx: &mut mpsc::UnboundedReceiver<ClientEvent>,
         want: impl Fn(&ClientEvent) -> bool,
     ) -> ClientEvent {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         loop {
-            let event = rx.recv().await.expect("an event");
+            let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let event = tokio::time::timeout(left, rx.recv())
+                .await
+                .expect("an event within the bound")
+                .expect("the bridge still feeding");
             if want(&event) {
                 return event;
             }
@@ -839,5 +914,120 @@ mod tests {
             }
         }
         assert_eq!(saw, vec![1, 0], "one ask in flight, then none");
+    }
+
+    /// **A stale heartbeat reconciles even with NOTHING counted.** A spell
+    /// whose frames the webview swallowed leaves no count here, and the
+    /// records still have to come back - the count is a bound on the
+    /// backlog, not the trigger.
+    #[tokio::test]
+    async fn a_stale_heartbeat_reconciles_with_nothing_counted() {
+        let (bridge, mut rx) = bridge();
+        let server = stub().await;
+        bridge.connect(server.url.clone());
+        bridge.subscribe(seat(), true, true);
+        sent(&bridge, snapshot(json!({ "conversation": { "turns": [] } })));
+        event(&mut rx, is_inbound()).await;
+        park(&bridge);
+        bridge.heartbeat();
+        assert_eq!(bridge.lock().suppressed, 0, "no frame arrived in the spell");
+        let ClientEvent::Inbound(caught) = event(&mut rx, is_inbound_kind("snapshot")).await else {
+            unreachable!("filtered to inbound");
+        };
+        assert_eq!(caught["subject"], seat(), "the record comes back regardless");
+    }
+
+    /// **A refresh re-declares what was HELD, not a capability of its own.**
+    /// `(true, true)` here escalated a seat watched without flags, and the
+    /// core parks turns on whatever answered.
+    #[tokio::test]
+    async fn a_refresh_re_declares_the_held_declaration() {
+        let mut server = stub().await;
+        let (bridge, mut rx) = bridge();
+        bridge.connect(server.url.clone());
+        bridge.subscribe(seat(), false, false);
+        let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
+        sent(&bridge, snapshot(json!({ "a": 1 })));
+        event(&mut rx, is_inbound()).await;
+        // A REPLACES frame: the seat is asked for again.
+        sent(
+            &bridge,
+            json!({
+                "kind": "update",
+                "update": { "session_replaced": { "key": seat()["session"] } },
+            }),
+        );
+        let _ = server.heard_until(|v| v["kind"] == "unsubscribe").await;
+        let again = server.heard_until(|v| v["kind"] == "subscribe").await;
+        assert_eq!(again["what"], seat(), "the same subject comes back");
+        assert_eq!(again["answering"], false, "with the declaration it was held under");
+        assert_eq!(again["browser"], false, "and no capability the page never claimed");
+    }
+
+    /// A subject two page readers hold is re-asked once per OPEN one on a
+    /// reconnect from the connect screen: the count is the server's, and one
+    /// ask would leave the seat half-watched.
+    #[tokio::test]
+    async fn a_subject_two_readers_hold_is_re_asked_per_reader() {
+        let mut server = stub().await;
+        let (bridge, _rx) = bridge();
+        bridge.connect(server.url.clone());
+        connected(&bridge).await;
+        bridge.subscribe(seat(), true, true);
+        bridge.subscribe(seat(), true, true);
+        let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
+        let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
+        bridge.connect(server.url.clone());
+        let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
+        let second = server.heard_until(|v| v["kind"] == "subscribe").await;
+        assert_eq!(second["what"], seat(), "the second ask is the same subject");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), server.heard.recv()).await.is_err(),
+            "exactly two: one per open subscription"
+        );
+    }
+
+    /// A subject that is not a seat is re-read on the reconcile rather than
+    /// handed a copy: nothing on this side folds a home record, so a copy
+    /// would be stale while a re-subscribe answers with the truth.
+    #[tokio::test]
+    async fn a_reconcile_re_asks_a_subject_that_is_not_a_seat() {
+        let mut server = stub().await;
+        let (bridge, _rx) = bridge();
+        bridge.connect(server.url.clone());
+        connected(&bridge).await;
+        bridge.subscribe(json!("home"), true, true);
+        let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
+        park(&bridge);
+        bridge.heartbeat();
+        let _ = server.heard_until(|v| v["kind"] == "unsubscribe").await;
+        let again = server.heard_until(|v| v["kind"] == "subscribe").await;
+        assert_eq!(again["what"], json!("home"), "the home is re-read, not copied");
+    }
+
+    /// The ring is bounded and the OLDEST goes when it overflows - the
+    /// newest are the frames a returning page would still be meeting.
+    #[tokio::test]
+    async fn the_ring_drops_the_oldest_when_full() {
+        let (bridge, _rx) = bridge();
+        let server = stub().await;
+        bridge.connect(server.url.clone());
+        park(&bridge);
+        for at in 0..=PARKED_RING {
+            sent(
+                &bridge,
+                json!({
+                    "kind": "update",
+                    "update": { "releasing": { "key": seat()["session"], "at": at } },
+                }),
+            );
+        }
+        let state = bridge.lock();
+        assert_eq!(state.parked.len(), PARKED_RING, "the cap holds");
+        assert_eq!(
+            state.parked.front().and_then(|message| message["update"]["releasing"]["at"].as_u64()),
+            Some(1),
+            "the oldest went, not the newest"
+        );
     }
 }

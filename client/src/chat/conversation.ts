@@ -690,7 +690,7 @@ export class Chat {
    */
   private drained = new Map<string, unknown>();
   /**
-   * Whether a drop was seen, and whether a snapshot ever reconciled.
+   * Whether a drop was seen, and whether a snapshot ever landed.
    *
    * **The two states that make a snapshot authoritative**: the first one
    * after a subscribe (the attacher's only word) and the first one after a
@@ -699,7 +699,7 @@ export class Chat {
    * before a send can be delivered after it - see {@link armed}.
    */
   private missed = false;
-  private reconciled = false;
+  private landed = false;
   /**
    * The newest held turn a newest page failed to reach, while the
    * conversation walks down to it.
@@ -1823,8 +1823,8 @@ export class Chat {
     // listing would undo what the frames just settled: releasing a hold draws
     // a row the pile is still drawing, and arming one retracts a row that
     // already started.
-    const fresh = !this.reconciled || this.missed;
-    this.reconciled = true;
+    const fresh = !this.landed || this.missed;
+    this.landed = true;
     // `state` is the wire's own record inside the snapshot, the same nesting
     // `sessionFrom` reads: the queue is a sibling of `scan_cwd` there.
     const root = (data ?? {}) as { state?: unknown };

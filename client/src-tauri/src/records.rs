@@ -151,25 +151,6 @@ impl Records {
         seat_update(record, name, payload);
         Vec::new()
     }
-
-    /// The socket is gone: a take goes with it.
-    ///
-    /// The core drops a take whose reader went away, and no frame says so - a
-    /// record left drawing a recording that is over is the live store's
-    /// `status` arm (`session/live.ts`, #1880). Everything else stands where
-    /// it was: the reconnect re-asks every held subscription and the answers
-    /// replace the records whole.
-    pub fn dropped(&mut self) {
-        for held in self.subjects.values_mut() {
-            let Held::Ready(record) = held else { continue };
-            let Some(composer) = record.get_mut("composer").and_then(Value::as_object_mut) else {
-                continue;
-            };
-            if composer.get("take").is_some_and(|take| !take.is_null()) {
-                composer.insert("take".to_owned(), Value::Null);
-            }
-        }
-    }
 }
 
 /// The variant's own name, for a caller that routes on it.

@@ -50,7 +50,10 @@ describe('the connection the door dials', () => {
 
     invoke.mockClear();
     delete marker()['__TAURI_INTERNALS__'];
+    const opened = vi.spyOn(globalThis, 'WebSocket');
     await connectTo('127.0.0.1:1', 50).catch(() => undefined);
+    expect(opened, "a page outside the shell keeps the webview's own socket").toHaveBeenCalled();
+    opened.mockRestore();
     expect(invoke, 'a page outside the shell never reaches it').not.toHaveBeenCalledWith(
       'client_connect',
       expect.anything(),
