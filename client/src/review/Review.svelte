@@ -99,7 +99,11 @@
     {#if record !== null}
       <span class="facts">
         {record.work.branch ?? ''}
-        {#if rounds.length}<span class="sep">&#183;</span> {rounds.length} rounds{/if}
+        {#if rounds.length}
+          <span class="sep">&#183;</span>
+          {rounds.length}
+          {rounds.length === 1 ? 'round' : 'rounds'}
+        {/if}
       </span>
       <span class="loop" class:needs={loop.waiting > 0}>
         {#if loop.waiting > 0}
