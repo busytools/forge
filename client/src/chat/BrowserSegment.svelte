@@ -404,7 +404,9 @@
   function armDelete(row: ProfileRow): void {
     armed = row.name;
     void tick().then(() => {
-      segEl?.querySelector<HTMLElement>(`[data-keep="${row.name}"]`)?.focus();
+      // The confirm lives in the panel, which is PORTALED to the body - so
+      // the keep is found on the panel, not on the segment.
+      panelEl?.querySelector<HTMLElement>(`[data-keep="${row.name}"]`)?.focus();
     });
   }
 
