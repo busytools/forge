@@ -12,7 +12,7 @@
 //! alone - answered by the client's host and never reaching a driver.
 //!
 //! Kept apart from the tools themselves so the surface a model reads is one
-//! table rather than twenty-eight structs: a shape is edited here and nowhere
+//! table rather than twenty-nine structs: a shape is edited here and nowhere
 //! else.
 
 use serde_json::{Value, json};
@@ -28,7 +28,9 @@ pub(crate) struct ToolSpec {
 /// The whole surface, in upstream's own order.
 ///
 /// Every tool carries the optional `profile` name: a session says which
-/// profile a call drives, and the client routes on it.
+/// profile a call drives, and the client routes on it - except
+/// `browser_profile_delete`, which names the profile to remove in `name` and
+/// is answered by the client's host.
 pub(crate) fn specs() -> Vec<ToolSpec> {
     let mut specs = vec![
         ToolSpec {
