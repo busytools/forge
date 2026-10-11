@@ -1061,6 +1061,7 @@ mod tests {
         run_git(dir.path(), &["init", "-q"]);
         run_git(dir.path(), &["config", "user.email", "t@example.com"]);
         run_git(dir.path(), &["config", "user.name", "Test"]);
+        run_git(dir.path(), &["config", "commit.gpgsign", "false"]);
         fs::write(dir.path().join("README.md"), "seed").expect("write seed");
         run_git(dir.path(), &["add", "."]);
         run_git(dir.path(), &["commit", "-q", "-m", "init"]);
@@ -2157,6 +2158,7 @@ mod tests {
         let (dir, wt, branch) = init_repo_with_agent_worktree(hex);
         let source = tempdir().expect("submodule source tempdir");
         run_git(source.path(), &["init", "-q"]);
+        run_git(source.path(), &["config", "commit.gpgsign", "false"]);
         fs::write(source.path().join("sub.txt"), "submodule seed").expect("write seed");
         run_git(source.path(), &["add", "."]);
         run_git(

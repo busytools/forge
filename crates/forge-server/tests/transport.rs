@@ -2936,6 +2936,7 @@ fn a_repo(dir: &std::path::Path) {
     git(&["init", "-q", "-b", "work"]);
     git(&["config", "user.email", "test@example.test"]);
     git(&["config", "user.name", "test"]);
+    git(&["config", "commit.gpgsign", "false"]);
     std::fs::write(dir.join("kept.txt"), "one").expect("write");
     git(&["add", "."]);
     git(&["commit", "-qm", "first"]);
