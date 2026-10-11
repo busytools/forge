@@ -392,7 +392,7 @@ async fn run(
                 // the door already says "connecting". The reason is here so
                 // that a failure the door cannot name (a scheme this half
                 // cannot speak, a TLS refusal) is at least in the log.
-                tauri_plugin_log::log::debug!("the socket dial failed: {why}");
+                tauri_plugin_log::log::debug!("socket_dial_failed: {why}");
                 continue;
             }
         };
@@ -528,14 +528,14 @@ async fn run(
                             // own flush cadence).
                             if let Err(why) = writer.send(Message::Binary(bytes.into())).await {
                                 tauri_plugin_log::log::debug!(
-                                    "a dictation frame could not be sent: {why}"
+                                    "socket_frame_not_sent: {why}"
                                 );
                             }
                         }
                         Outbound::Image(bytes) => {
                             if let Err(why) = writer.send(Message::Binary(bytes.into())).await {
                                 tauri_plugin_log::log::warn!(
-                                    "an image frame could not be sent; ending the connection: {why}"
+                                    "socket_image_not_sent: ending the connection: {why}"
                                 );
                                 // A clean close even on this path, as the
                                 // webview's `socket.ts` closes rather than
@@ -598,7 +598,7 @@ fn receive(
                 // WARN: it should never happen, and the Info filter would
                 // swallow a debug line in the shipping client.
                 None => tauri_plugin_log::log::warn!(
-                    "a reply arrived for id {id:?}, which nothing is waiting on"
+                    "socket_reply_unmatched: id {id:?} has nothing waiting on it"
                 ),
             }
         }
@@ -1073,7 +1073,7 @@ pub(crate) mod tests {
     /// caller that reads "the socket dropped" learns the wrong thing.
     #[tokio::test]
     async fn an_own_close_says_the_connection_was_closed() {
-        let stub = stub().await;
+        let mut stub = stub().await;
         let (socket, _rx) = connected(&stub).await;
         // A reply-carrying command: the answer rides a reply, so a close
         // that beats it is what the caller reads.
@@ -1081,13 +1081,45 @@ pub(crate) mod tests {
             let socket = socket.clone();
             async move { socket.dispatch(json!({ "spawn_worker": {} }), true).await }
         });
-        // Let the frame reach the stub, so the command is registered as
-        // outstanding before the close lands on it.
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        // **The frame really on the wire** before the close lands on it -
+        // awaiting the stub's own read, not a sleep whose margin is a coin
+        // flip under load.
+        let _ = stub.heard_until(|v| v["kind"] == "command").await;
         socket.close();
         match waiting.await.expect("the task joins") {
             Err(why) => assert_eq!(why, "the connection was closed"),
             Ok(_) => panic!("a command whose reply died is answered with the reason"),
         }
+    }
+
+    /// **One snapshot answers ONE of a subject's asks**, not all of them: a
+    /// subject two callers hold has two outstanding keys, and a refusal
+    /// still finds the second after the first is answered.
+    #[tokio::test]
+    async fn one_snapshot_answers_one_of_a_subjects_asks() {
+        let mut stub = stub().await;
+        let (socket, mut rx) = connected(&stub).await;
+        socket.subscribe(json!("home"), true, false);
+        socket.subscribe(json!("home"), true, false);
+        let _ = stub.heard_until(|v| v["kind"] == "subscribe").await;
+        let _ = stub.heard_until(|v| v["kind"] == "subscribe").await;
+        stub.say
+            .send(json!({ "kind": "snapshot", "subject": "home", "data": {} }))
+            .expect("the answer");
+        let _ = event_of(&mut rx, "message").await;
+        // The second ask is still owed, so a refusal lands on it...
+        stub.say
+            .send(json!({ "kind": "error", "what": "subscribe", "why": "still owed" }))
+            .expect("the refusal");
+        let refused = event_of(&mut rx, "refused").await;
+        let SocketEvent::Refused { key, .. } = refused else { unreachable!("filtered") };
+        assert_eq!(key, "home", "the second ask was still outstanding");
+        // ...and the one after that has nothing left to attribute to.
+        stub.say
+            .send(json!({ "kind": "error", "what": "subscribe", "why": "nothing" }))
+            .expect("the refusal");
+        let seen = event_of(&mut rx, "message").await;
+        let SocketEvent::Message(message) = seen else { unreachable!("filtered") };
+        assert_eq!(message["what"], "subscribe", "nothing outstanding reads as a plain frame");
     }
 }

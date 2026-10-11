@@ -543,7 +543,7 @@ impl Bridge {
                     && let Some(gone) = state.parked.pop_front()
                 {
                     tauri_plugin_log::log::warn!(
-                        "the parked frame ring is full ({PARKED_RING}); dropping the oldest: {}",
+                        "bridge_parked_ring_full ({PARKED_RING}); dropping the oldest: {}",
                         describe(&gone)
                     );
                 }
@@ -1003,6 +1003,48 @@ mod tests {
         let _ = server.heard_until(|v| v["kind"] == "unsubscribe").await;
         let again = server.heard_until(|v| v["kind"] == "subscribe").await;
         assert_eq!(again["what"], json!("home"), "the home is re-read, not copied");
+    }
+
+    /// The page's own `refresh` re-declares the held declaration too - the
+    /// same mapping as the REPLACES fold, on the other door a `(true, true)`
+    /// revert could slip in through.
+    #[tokio::test]
+    async fn a_page_refresh_re_declares_the_held_declaration() {
+        let mut server = stub().await;
+        let (bridge, _rx) = bridge();
+        bridge.connect(server.url.clone());
+        bridge.subscribe(seat(), false, false);
+        let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
+        bridge.refresh(&seat());
+        let _ = server.heard_until(|v| v["kind"] == "unsubscribe").await;
+        let again = server.heard_until(|v| v["kind"] == "subscribe").await;
+        assert_eq!(again["answering"], false, "the held declaration, not (true, true)");
+        assert_eq!(again["browser"], false, "and no capability the page never claimed");
+    }
+
+    /// A fresh heartbeat reconciles NOTHING: the reconcile answers a spell,
+    /// it is not a per-beat copy of the records. The connection's own status
+    /// events are not the subject - only an Inbound frame would be.
+    #[tokio::test]
+    async fn a_fresh_heartbeat_reconciles_nothing() {
+        let (bridge, mut rx) = bridge();
+        let server = stub().await;
+        bridge.connect(server.url.clone());
+        bridge.subscribe(seat(), true, true);
+        sent(&bridge, snapshot(json!({ "conversation": { "turns": [] } })));
+        event(&mut rx, is_inbound()).await;
+        bridge.heartbeat();
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(300);
+        while tokio::time::Instant::now() < deadline {
+            let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+            match tokio::time::timeout(left, rx.recv()).await {
+                Ok(Some(ClientEvent::Inbound(message))) => {
+                    panic!("a record copy on a beat that found the page alive: {message}");
+                }
+                Ok(Some(_)) => continue,
+                Ok(None) | Err(_) => break,
+            }
+        }
     }
 
     /// The ring is bounded and the OLDEST goes when it overflows - the
