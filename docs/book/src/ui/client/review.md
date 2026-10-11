@@ -21,16 +21,16 @@ rounds newest first.
 **Files changed** draws the review as it is anchored: the scope control, the
 file tree, and the diff with the threads on their lines.
 
-| Region | Shows | Read from |
-|---|---|---|
-| Header | the back link to the seat, `Review`, the branch, the round count, and the loop's state - `N replies to read`, in the warn tone while any thread waits on the reader, and `N open` | the record's `work.branch`, and the two review halves |
-| Tabs | `Conversation` and `Files changed`, with the commit count | the record's git chain |
-| Scope | the scope on screen, a stepper, the keys, and the unified/split picker | the record's git chain (the commit list) |
-| Tree | one file per row, its counts, and how many threads it carries | the scope's diff, and the threads in that scope |
-| Canvas | the scope's files as diffs, with each thread inserted under its own line and the composer under the line a comment is being written on | the scope's diff, the threads, and the server's landing per thread |
-| Outdated | every thread whose code could not be placed, drawn against the lines captured when the comment was written | the threads half |
-| Rounds | newest first: the round's number, its age, its tally by state, its summary, and each member thread | the rounds half |
-| Finish | the summary field and `finish review`, live once a comment is drafted | the page's own drafts |
+| Region   | Shows                                                                                                                                                                             | Read from                                                          |
+| -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| Header   | the back link to the seat, `Review`, the branch, the round count, and the loop's state - `N replies to read`, in the warn tone while any thread waits on the reader, and `N open` | the record's `work.branch`, and the two review halves              |
+| Tabs     | `Conversation` and `Files changed`, with the commit count                                                                                                                         | the record's git chain                                             |
+| Scope    | the scope on screen, a stepper, the keys, and the unified/split picker                                                                                                            | the record's git chain (the commit list)                           |
+| Tree     | one file per row, its counts, and how many threads it carries                                                                                                                     | the scope's diff, and the threads in that scope                    |
+| Canvas   | the scope's files as diffs, with each thread inserted under its own line and the composer under the line a comment is being written on                                            | the scope's diff, the threads, and the server's landing per thread |
+| Outdated | every thread whose code could not be placed, drawn against the lines captured when the comment was written                                                                        | the threads half                                                   |
+| Rounds   | newest first: the round's number, its age, its tally by state, its summary, and each member thread                                                                                | the rounds half                                                    |
+| Finish   | the summary field and `finish review`, live once a comment is drafted                                                                                                             | the page's own drafts                                              |
 
 ## A scope, and where a thread draws
 
@@ -141,9 +141,12 @@ the store's own answer rather than the page's guess at what the write did.
 
 **The write's outcome is read.** The two commands that answer through a
 reply reject on a refusal, and a dead socket throws before anything goes;
-either way the draft is added only once the write landed and a refusal is
-drawn where the reader acted. `finish review` keeps the summary and the
-drafts on a refusal rather than clearing words the round never filed.
+either way the draft is added only once the write landed, the box that
+wrote it keeps its words, and the refusal is drawn where the reader acted -
+at the top of the page at the wide widths, and riding the top of the
+viewport at the narrow one, where the single column can carry the reader
+far past it. `finish review` keeps the summary and the drafts on a refusal
+rather than clearing words the round never filed.
 
 ## The states the page can be in
 
@@ -156,7 +159,7 @@ drafts on a refusal rather than clearing words the round never filed.
   reverse - and a half whose outcome this build cannot name draws that word
   rather than being folded into a failure it is not.
 - **Empty**: both halves read and nothing filed draws `Nothing has been
-  reviewed on this branch yet.`; threads drafted with no round filed says how
+reviewed on this branch yet.`; threads drafted with no round filed says how
   many are drafted.
 - **A scope with nothing in it**: All changes on a branch with no commits of
   its own says so; a commit that changed nothing says so; a scope whose read

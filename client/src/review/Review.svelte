@@ -772,6 +772,17 @@
     .rv-conv {
       overflow: visible;
     }
+    /* The one column scrolls far past a refusal written above it - the
+       reader 231k px down saw nothing at all - so at this width the line
+       rides the top of the viewport instead. */
+    .rv-refusal {
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      background: var(--bg);
+      border-bottom: 1px solid var(--line);
+      padding: 6px 2px;
+    }
   }
   .rv-menu {
     position: absolute;
