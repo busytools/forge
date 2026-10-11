@@ -285,6 +285,7 @@ export function fakeConnection() {
     },
     more: () => false,
     devices: () => false,
+    commitDiff: () => false,
     frame: () => false,
     store: () => undefined,
     settings: () => null,

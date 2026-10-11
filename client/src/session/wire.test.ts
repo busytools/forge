@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { backgroundTaskFrom, gitFrom, reviewThreadFrom, reviewsFrom } from './wire';
+import { backgroundTaskFrom, diffFrom, gitFrom, reviewThreadFrom, reviewsFrom } from './wire';
 
 describe('the background-task registry parse', () => {
   it('drops a row missing its id, its kind or its words rather than drawing it blank', () => {
@@ -83,7 +83,7 @@ describe('the reviews parse', () => {
         path: 'a.rs',
         side: 'Both',
         line: 3,
-        content_hash: 1,
+        content_hash: '1',
         context: ['x', 7],
         base_ref: 'main',
       },
@@ -110,7 +110,7 @@ describe('the reviews parse', () => {
         path: 'a.rs',
         side: 'New',
         line: 1,
-        content_hash: 1,
+        content_hash: '1',
         context: [],
         base_ref: 'main',
       },
@@ -122,5 +122,122 @@ describe('the reviews parse', () => {
     expect(thread.comments[0]?.review_id, 'no review_id key').toBeNull();
     expect(thread.comments[0]?.author, 'the reviewer reads as the user').toEqual({ kind: 'user' });
     expect(thread.status, "and the state reads in this build's spelling").toBe('open');
+  });
+
+  it('reads the landing beside the thread: placed, moved, or outdated why', () => {
+    // The plausible regression is dropping `resolution` (it sits beside the
+    // thread's own fields, flattened, and reads like a foreign key) - which
+    // would leave every all-changes thread unplaceable and silently parked.
+    const base = {
+      id: 't1',
+      anchor: {
+        path: 'a.rs',
+        side: 'New',
+        line: 1,
+        content_hash: '1',
+        context: [],
+        base_ref: 'main',
+      },
+      comments: [],
+      status: 'Open',
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+      commit: null,
+    };
+    expect(
+      reviewThreadFrom({ ...base, resolution: { state: 'placed', line: 9, moved_from: 4 } })
+        .resolution,
+      'a moved landing keeps both numbers',
+    ).toEqual({ state: 'placed', line: 9, moved_from: 4 });
+    expect(
+      reviewThreadFrom({ ...base, resolution: { state: 'placed', line: 9, moved_from: null } })
+        .resolution,
+      'an in-place one has no origin to report',
+    ).toEqual({ state: 'placed', line: 9, moved_from: null });
+    expect(
+      reviewThreadFrom({
+        ...base,
+        resolution: { state: 'outdated', reason: { ambiguous: { matches: 3 } } },
+      }).resolution,
+      'an ambiguous reason keeps its count',
+    ).toEqual({ state: 'outdated', reason: { ambiguous: { matches: 3 } } });
+    expect(
+      reviewThreadFrom({
+        ...base,
+        resolution: { state: 'outdated', reason: 'gone' },
+      }).resolution,
+    ).toEqual({ state: 'outdated', reason: 'gone' });
+    expect(
+      reviewThreadFrom({ ...base, resolution: null }).resolution,
+      'a commit-scoped thread carries none',
+    ).toBeNull();
+    expect(
+      reviewThreadFrom({ ...base, resolution: { state: 'vibing' } }).resolution,
+      'and a shape this build cannot name is kept rather than guessed',
+    ).toEqual({ state: 'unknown', raw: 'vibing' });
+  });
+});
+
+describe('the diff parse', () => {
+  it('reads the layers, the hunks and the lines, keeping every state named', () => {
+    const diff = diffFrom({
+      worktree: {
+        populated: [
+          {
+            path: 'a.rs',
+            old_path: null,
+            status: 'modified',
+            binary: false,
+            submodule: false,
+            truncated: false,
+            hunks: [
+              {
+                old_start: 1,
+                old_count: 2,
+                new_start: 1,
+                new_count: 3,
+                lines: [
+                  { kind: 'context', text: 'one', old_line: 1, new_line: 1 },
+                  { kind: 'added', text: 'two', old_line: null, new_line: 2 },
+                  { kind: 'removed', text: 'gone', old_line: 2, new_line: null },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+      branch_ahead: 'clean',
+      truncated: true,
+    });
+    expect(diff.branchAhead, 'a clean layer is nothing to draw').toEqual({ state: 'clean' });
+    expect(diff.truncated).toBe(true);
+    expect(diff.worktree.state).toBe('populated');
+    if (diff.worktree.state !== 'populated') return;
+    const file = diff.worktree.files[0];
+    expect(file?.status).toBe('modified');
+    expect(file?.hunks[0]?.lines[1], 'an added line has no old number').toEqual({
+      kind: 'added',
+      text: 'two',
+      oldLine: null,
+      newLine: 2,
+    });
+    expect(file?.hunks[0]?.lines[2]?.oldLine, 'a removed line has no new one').toBe(2);
+  });
+
+  it('names a state it cannot read rather than drawing an empty tree', () => {
+    // The plausible regression is folding an unnamed layer state into
+    // `clean`: an empty changes list and an unread scan draw the same
+    // "nothing here" and mean opposite things.
+    expect(diffFrom({ worktree: 'scan_failed', branch_ahead: 'sulking' }).worktree).toEqual({
+      state: 'scan_failed',
+    });
+    expect(
+      diffFrom({ worktree: 'sulking', branch_ahead: 'clean' }).worktree,
+      'and a state this build cannot name is kept as itself',
+    ).toEqual({ state: 'unknown', raw: 'sulking' });
+    expect(diffFrom({}).worktree, 'an absent layer is named, not invented clean').toEqual({
+      state: 'unknown',
+      raw: 'absent',
+    });
   });
 });

@@ -10,6 +10,7 @@ import { dictationOffered, type ComposerConnection, type ComposerProps } from '.
 const idle = {
   dispatch: () => null,
   devices: () => true,
+  commitDiff: () => true,
   onMessage: () => () => {},
   store: () => undefined,
 } as unknown as ComposerConnection;

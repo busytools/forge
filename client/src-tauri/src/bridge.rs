@@ -326,6 +326,19 @@ impl Bridge {
         true
     }
 
+    /// One commit's own diff. False means no socket is open and no answer is
+    /// coming; the answer lands on the page's own `onMessage`.
+    pub fn commit_diff(&self, session: &Value, sha: &str) -> bool {
+        let state = self.lock();
+        if state.status != "open" {
+            return false;
+        }
+        if let Some(socket) = &state.socket {
+            socket.commit_diff(session.clone(), sha.to_owned());
+        }
+        true
+    }
+
     /// Take the browser role from whoever holds it.
     pub fn take_role(&self) {
         let state = self.lock();

@@ -123,3 +123,60 @@ export function ageOf(at: string, now: number): string {
   if (!Number.isFinite(seconds)) return '';
   return elapsedLabel({ secs_since_epoch: seconds, nanos_since_epoch: 0 }, now);
 }
+
+/** One canvas placement: the line to draw the thread against, and the
+ *  recorded line it moved from when it is not where it was written. */
+export interface Placed {
+  line: number;
+  movedFrom: number | null;
+}
+
+/**
+ * Where a thread draws on a canvas, or `null` when it cannot be placed.
+ *
+ * A commit-scoped thread always sits at its recorded line: a commit's diff
+ * is immutable, so the numbering it was written in is the numbering it
+ * drew in. An all-changes thread sits where the server's resolution says,
+ * and one with no resolution - a read that carried none - cannot be drawn
+ * rather than being guessed onto its recorded line.
+ */
+export function canvasLine(thread: ReviewThreadRecord): Placed | null {
+  if (thread.commit !== null) return { line: thread.anchor.line, movedFrom: null };
+  const resolution = thread.resolution;
+  if (resolution === null || resolution.state !== 'placed') return null;
+  return { line: resolution.line, movedFrom: resolution.moved_from };
+}
+
+/** The threads drawn in one scope: a commit's sha, or `null` for all
+ *  changes. A thread is drawn in its own scope and no other. */
+export function threadsInScope(
+  threads: ReviewThreadRecord[],
+  commit: string | null,
+): ReviewThreadRecord[] {
+  return threads.filter((thread) => thread.commit === commit);
+}
+
+/**
+ * The threads the parked section lists: code that cannot be drawn and is
+ * not resolved.
+ *
+ * The fresh landing wins over the store's status, because that status was
+ * written by whichever view last resolved and cannot say where the code
+ * stands now; a resolved thread parks nowhere, which is the terminal's own
+ * reopen rule read from the other side.
+ */
+export function outdatedThreads(threads: ReviewThreadRecord[]): ReviewThreadRecord[] {
+  return threads.filter(
+    (thread) => statusName(thread.status) !== 'resolved' && canvasLine(thread) === null,
+  );
+}
+
+/** Why a parked thread could not be placed, in words; empty when the read
+ *  carried no reason, which the card says by saying nothing. */
+export function parkedReason(thread: ReviewThreadRecord): string {
+  const resolution = thread.resolution;
+  if (resolution === null || resolution.state !== 'outdated') return '';
+  return typeof resolution.reason === 'string'
+    ? 'the code it was written against is gone'
+    : `its code matches ${resolution.reason.ambiguous.matches} places`;
+}

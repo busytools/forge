@@ -5,11 +5,15 @@ import {
   ageOf,
   authorName,
   awaitsReviewer,
+  canvasLine,
   loopState,
+  outdatedThreads,
+  parkedReason,
   roundTally,
   roundsNewestFirst,
   statusName,
   threadsInRound,
+  threadsInScope,
   turnRound,
 } from './view';
 
@@ -17,10 +21,18 @@ function thread(
   id: string,
   status: ReviewThreadRecord['status'],
   turns: { author: 'you' | 'agent' | 'unknown'; review_id: string | null }[],
+  extra: Partial<ReviewThreadRecord> = {},
 ): ReviewThreadRecord {
   return {
     id,
-    anchor: { path: 'a.rs', side: 'new', line: 1, content_hash: 1, context: [], base_ref: 'main' },
+    anchor: {
+      path: 'a.rs',
+      side: 'new',
+      line: 1,
+      content_hash: '1',
+      context: [],
+      base_ref: 'main',
+    },
     comments: turns.map((turn, i) => ({
       author:
         turn.author === 'you'
@@ -36,6 +48,8 @@ function thread(
     created_at: '2026-10-10T00:00:00Z',
     updated_at: '2026-10-10T00:00:00Z',
     commit: null,
+    resolution: null,
+    ...extra,
   };
 }
 
@@ -143,6 +157,85 @@ describe('a round and its members', () => {
       named: 1,
     });
     expect(statusName(odd.status), 'and reads by its own word').toBe('Pondered');
+  });
+});
+
+describe('where a thread draws on the canvas', () => {
+  it('places by the server landing for all changes, by the recorded line for a commit', () => {
+    // The plausible regression is trusting the recorded line for an
+    // all-changes thread - exactly the guess the server's resolution exists
+    // to replace - or parking a commit-scoped one, whose diff cannot move.
+    const placed = thread('a', 'open', [{ author: 'you', review_id: null }], {
+      resolution: { state: 'placed', line: 42, moved_from: 7 },
+    });
+    expect(canvasLine(placed), 'moved draws where it landed, remembering 7').toEqual({
+      line: 42,
+      movedFrom: 7,
+    });
+    const inPlace = thread('b', 'open', [{ author: 'you', review_id: null }], {
+      resolution: { state: 'placed', line: 9, moved_from: null },
+    });
+    expect(canvasLine(inPlace)).toEqual({ line: 9, movedFrom: null });
+    const scoped = thread('c', 'open', [{ author: 'you', review_id: null }], {
+      commit: 'abc123',
+      anchor: {
+        path: 'a.rs',
+        side: 'new',
+        line: 5,
+        content_hash: '1',
+        context: [],
+        base_ref: 'main',
+      },
+    });
+    expect(canvasLine(scoped), 'an immutable scope keeps its own numbering').toEqual({
+      line: 5,
+      movedFrom: null,
+    });
+    const unresolvable = thread('d', 'open', [{ author: 'you', review_id: null }], {
+      resolution: { state: 'outdated', reason: 'gone' },
+    });
+    expect(canvasLine(unresolvable), 'nothing to place against').toBeNull();
+    expect(
+      canvasLine(thread('e', 'open', [{ author: 'you', review_id: null }])),
+      'no landing carried: not guessed onto the recorded line',
+    ).toBeNull();
+  });
+
+  it('draws a thread in its own scope and no other, and parks only the unplaceable', () => {
+    const all = thread('all', 'open', [{ author: 'you', review_id: null }], {
+      resolution: { state: 'placed', line: 3, moved_from: null },
+    });
+    const scoped = thread('scoped', 'open', [{ author: 'you', review_id: null }], {
+      commit: 'abc123',
+    });
+    const parked = thread('parked', 'open', [{ author: 'you', review_id: null }], {
+      resolution: { state: 'outdated', reason: { ambiguous: { matches: 2 } } },
+    });
+    const resolved = thread('resolved', 'resolved', [{ author: 'you', review_id: null }], {
+      resolution: { state: 'outdated', reason: 'gone' },
+    });
+    const threads = [all, scoped, parked, resolved];
+
+    expect(threadsInScope(threads, null).map((t) => t.id)).toEqual(['all', 'parked', 'resolved']);
+    expect(threadsInScope(threads, 'abc123').map((t) => t.id)).toEqual(['scoped']);
+    expect(
+      outdatedThreads(threads).map((t) => t.id),
+      'the unplaceable park; a resolved one never does',
+    ).toEqual(['parked']);
+    expect(parkedReason(parked), 'an ambiguous landing says how many').toBe(
+      'its code matches 2 places',
+    );
+    expect(parkedReason(scoped), 'and a thread whose read carried no landing draws no reason').toBe(
+      '',
+    );
+    expect(
+      outdatedThreads([
+        thread('store', 'outdated', [{ author: 'you', review_id: null }], {
+          resolution: { state: 'placed', line: 4, moved_from: null },
+        }),
+      ]),
+      'code that came back un-parks: the fresh landing wins over the store',
+    ).toEqual([]);
   });
 });
 

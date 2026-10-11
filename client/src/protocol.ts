@@ -260,6 +260,15 @@ export type ClientMessage =
    */
   | { kind: 'devices' }
   /**
+   * One commit's own diff, for a review page's commit scopes.
+   *
+   * On demand rather than carried on the record: a branch can hold dozens of
+   * commits, and every reader of a record - the terminal included - would
+   * pay their content on every read for a scope only one page draws. The
+   * answer is a `commit_diff` message or an `error` naming it.
+   */
+  | { kind: 'commit_diff'; session: SessionSlot; sha: string }
+  /**
    * The host's answer to one `browser_ask`.
    *
    * `parts` are what the tool returned, in order; an image part's BYTES do
@@ -327,6 +336,12 @@ export type ServerMessage =
    * current input is wrong from its first pick onward.
    */
   | { kind: 'devices'; devices: DictateDevice[]; configured: string | null }
+  /**
+   * The answer to `commit_diff`: one commit's own bounded diff, in the same
+   * layer shape the record's content read carries, so both scopes draw
+   * through one parse.
+   */
+  | { kind: 'commit_diff'; sha: string; files: unknown; truncated: boolean }
   /** The answer to a command that asked for one, a refusal included. */
   | { kind: 'reply'; reply_to: number; body: unknown }
   /**
