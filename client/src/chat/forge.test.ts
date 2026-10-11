@@ -242,6 +242,11 @@ describe('the tasks card', () => {
       kind: 'quote',
       text: 'the board read has to land first',
     });
+    expect(pairsOf(card), "the record's own facts, under the words").toEqual([
+      ['owner', 'lead'],
+      ['estimate', '2h'],
+      ['updated', expect.stringMatching(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/)],
+    ]);
   });
 
   it("spells each wait kind in the board's own words", () => {
