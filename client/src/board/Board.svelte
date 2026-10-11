@@ -648,17 +648,15 @@
                 {:else}
                   <span class="b-un">unclaimed</span>
                 {/if}
-                {#if row.epic !== null && row.epicId !== null}
+                {#if row.epic !== null}
                   <button
                     type="button"
                     class="b-chip blue b-epic-pill"
-                    aria-label="jump to its epic"
+                    aria-label="jump to {row.epic}"
                     onclick={() => {
                       if (row.epicId !== null) jumpTo(row.epicId);
                     }}>&#8627; {row.epic}</button
                   >
-                {:else if row.epic !== null}
-                  <span class="b-chip blue b-epic-pill">&#8627; {row.epic}</span>
                 {/if}
                 {#if row.rollup !== null}
                   <span class="b-chip blue b-epic-pill">&#9636; epic</span>

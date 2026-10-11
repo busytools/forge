@@ -110,15 +110,15 @@ is a control like any other.
 
 A click - or Enter or Space on a focused card - opens the row over the board: its
 fields (state, owner, estimate, worked, both clocks, its parent and its
-links), **Waiting on you** when the wait is a decision, carrying the waiting
-strip's own controls (`approve`, the send-back box, the answer box) - a
-dependency or resource wait draws the section without them - its
+links), **Its tasks** on a parent - each row a door that closes the page and
+lands on that card - **Waiting on you** when the wait is a decision, carrying
+the waiting strip's own controls (`approve`, the send-back box, the answer
+box), while a dependency or resource wait draws the section without them, its
 **History** - the row's own transitions, which the core already records for
-the worked time - **Its tasks** on a parent, each row a door that closes the
-page and lands on that card - and the way into the owner's session. The
-button, the scrim and Escape all close it, and the card has the keyboard
-back when it goes; a jump hands it to the card jumped to instead. The board
-stays behind it, so a reader never loses the lane they were in.
+the worked time - and the way into the owner's session. The button, the scrim
+and Escape all close it, and the card has the keyboard back when it goes; a
+jump hands it to the card jumped to instead. The board stays behind it, so a
+reader never loses the lane they were in.
 
 **Every control is one command on the socket, carrying this project on it.**
 `task_move` moves a row between lanes and lands it at the drop's place,

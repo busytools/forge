@@ -642,6 +642,40 @@ describe("the board's controls", () => {
   });
 
   /**
+   * **The measure line's words, with their spaces.** The compiler trims a
+   * leading space in markup, so the string the card draws is pinned whole -
+   * the fix this piece carries - and with it the tree's two marks: a
+   * parent's card carries `epic`, a child's `tree`.
+   */
+  it('draws the measure line whole and the tree marks', () => {
+    summon(
+      wireWith([
+        row(task('epic', 'the epic', 'pending'), { rollup: [1, 2] }),
+        row(
+          task('child', 'a child', 'in_progress', {
+            parent: 'epic',
+            estimate: { words: '1d', secs: 86_400 },
+          }),
+          { worked_secs: 90_000 },
+        ),
+      ]),
+    );
+
+    expect(
+      document.querySelector('.b-card[data-id="child"] .b-time')?.textContent,
+      'the space before the slash survived',
+    ).toBe('worked 25h / 1d');
+    expect(
+      document.querySelector('.b-card[data-id="epic"]')?.classList.contains('epic'),
+      "a parent's card wears the epic spine",
+    ).toBe(true);
+    expect(
+      document.querySelector('.b-card[data-id="child"]')?.classList.contains('tree'),
+      "a child's card wears the tree spine",
+    ).toBe(true);
+  });
+
+  /**
    * **The epic's doors**: a child's pill jumps to its parent, and the
    * parent's own page lists its tasks, each a door onto its card. The
    * epic's own pill is a label, not a control.
@@ -663,7 +697,7 @@ describe("the board's controls", () => {
     );
 
     // The child names its epic in a pill and jumps to it.
-    const pill = document.querySelector<HTMLElement>('button[aria-label="jump to its epic"]');
+    const pill = document.querySelector<HTMLElement>('button[aria-label="jump to the epic"]');
     if (pill === null) throw new Error('the epic pill is not on the page');
     expect(pill.textContent).toContain('the epic');
     pill.click();
@@ -909,6 +943,61 @@ describe("the row's own page", () => {
     if (card === null) throw new Error('no card');
     press(card);
     expect(document.querySelector('.dr'), 'the row page is open').not.toBeNull();
+    expect(await violationsOf(document.body.innerHTML)).toEqual([]);
+  });
+
+  /**
+   * **A parent's page lists its tasks; a childless page draws no list - and
+   * both face axe with the marks' controls on screen.** The tree draws on
+   * the page a child's card opens too (the parent pill, the head spine, the
+   * jump), so the scans run over both shapes.
+   */
+  it("lists a parent's tasks, none for a childless row, and faces axe alike", async () => {
+    summon(
+      wireWith([
+        row(task('epic', 'the epic', 'pending'), { rollup: [1, 2] }),
+        row(
+          task('child', 'a child', 'waiting', {
+            parent: 'epic',
+            estimate: { words: '1d', secs: 86_400 },
+          }),
+          // The parent's NAME rides the wire's own field, which is what the
+          // row's page reads for its spine and pill.
+          { worked_secs: 90_000, parent_subject: 'the epic' },
+        ),
+      ]),
+    );
+    const open = (id: string): void => {
+      const card = document.querySelector<HTMLElement>(`.b-card[data-id="${id}"]`);
+      if (card === null) throw new Error(`no card ${id}`);
+      press(card);
+      flushSync();
+    };
+
+    open('child');
+    expect(document.querySelector('.dr'), 'the page is open').not.toBeNull();
+    expect(document.querySelector('.dr .dr-kid'), 'a childless page drew a task list').toBeNull();
+    const worked = [...document.querySelectorAll('.dr dt')].find(
+      (t) => t.textContent?.trim() === 'worked',
+    );
+    expect(worked?.nextElementSibling?.textContent, 'the worked line keeps its space').toBe(
+      '25h of 1d',
+    );
+    expect(document.querySelector('.dr-head.tree'), 'a child page wears the spine').not.toBeNull();
+    expect(await violationsOf(document.body.innerHTML)).toEqual([]);
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    flushSync();
+    await vi.waitFor(() => expect(document.querySelector('.dr')).toBeNull());
+
+    open('epic');
+    const heading = document.querySelector('.dr h3');
+    expect(heading?.textContent, 'the list is headed').toContain('Its tasks');
+    expect(
+      [...document.querySelectorAll('.dr .dr-kid .l')].some((l) =>
+        l.textContent?.includes('a child'),
+      ),
+      'the child is listed',
+    ).toBe(true);
     expect(await violationsOf(document.body.innerHTML)).toEqual([]);
   });
 

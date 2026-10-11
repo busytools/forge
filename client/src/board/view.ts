@@ -22,16 +22,14 @@ export interface BoardCardView {
   epicId: string | null;
   /**
    * A parent's own tasks, in the queue's order, each labelled with its
-   * lane's word - the list the epic's pill opens, so the reader can jump
-   * straight to one.
+   * lane's word - the list the row's page draws, each row a door that lands
+   * on its card.
    */
   children: { id: string; label: string }[];
   status: TaskStatus;
   owner: string | null;
   /** The owner picker's initial: `lead` is one person here, so one letter. */
   initials: string;
-  /** Worked time against the estimate, in the board's words. */
-  worked: string;
   /** The measure line's own words: worked, against the estimate where it has one. */
   time: string;
   estimate: string | null;
@@ -275,7 +273,6 @@ function cardView(
     initials: (task.owner === null || task.owner.label === '' ? '?' : task.owner.label)
       .slice(0, 1)
       .toUpperCase(),
-    worked: fmtSecs(row.worked_secs),
     time:
       estimate === null
         ? `worked ${fmtSecs(row.worked_secs)}`

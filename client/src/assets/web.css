@@ -414,9 +414,17 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
   width: 18px; height: 18px; border-radius: 50%; background: var(--s3); color: var(--muted);
   display: inline-flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 600;
 }
-/* the epic's doors: the pill a child jumps from, and the pill that opens a
-   parent's own tasks. The spine carries the tree when B was picked. */
-.b-epic-pill { border: 0; font: inherit; font-size: var(--fs-data); cursor: pointer; max-width: 100%; }
+/* The epic's marks: the pill a child's card names its parent in, and the
+   quiet `epic` pill a parent's card wears. A long name ellipsises inside the
+   card rather than painting past it, as the line it replaced did. A row both
+   parent and child (a mid-tree row) wears both classes; the dimmer child
+   spine is the one that wins, because the spine reads the row's place in its
+   own parent's tree. */
+.b-epic-pill {
+  border: 0; font: inherit; font-size: var(--fs-data); max-width: 100%;
+  display: inline-block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+button.b-epic-pill { cursor: pointer; }
 .b-card.epic { border-left: 2px solid var(--blue); }
 .b-card.tree { border-left: 2px solid rgba(97,160,224,.35); }
 .b-flash { outline: 2px solid var(--blue); outline-offset: 2px; }
@@ -542,7 +550,7 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
 .dr-body { flex: 1; overflow-y: auto; padding: 14px 16px 24px; }
 .dr-fields { display: grid; grid-template-columns: 92px 1fr; gap: 6px 12px; }
 .dr-fields dt { color: var(--dim); font-family: var(--mono); font-size: 11.5px; }
-.dr-fields dd { color: var(--text); font-family: var(--mono); font-size: 12px; }
+.dr-fields dd { color: var(--text); font-family: var(--mono); font-size: 12px; min-width: 0; }
 .dr-fields dd .dim { color: var(--dim); }
 .dr-fields a { color: var(--blue); text-decoration: none; }
 .dr-detail { margin-top: 12px; color: var(--muted); font-size: 12.5px; white-space: pre-wrap; }

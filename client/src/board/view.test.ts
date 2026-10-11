@@ -260,7 +260,7 @@ describe("one project's board", () => {
     const cards = view.lanes.flatMap((lane) => lane.cards);
     const card = (id: string) => cards.find((entry) => entry.id === id);
     const over = card('t1');
-    expect(over?.worked).toBe('25h');
+    expect(over?.time, 'the measure line keeps the space before the slash').toBe('worked 25h / 1d');
     expect(over?.estimate).toBe('1d');
     expect(over?.chips.map((chip) => chip.label)).toEqual(['overdue']);
     // Past the estimate the measure takes a tone; past 1.5x it is the loud one.

@@ -131,6 +131,9 @@
   .b-chip.bad { background: rgba(224,104,62,.14); color: var(--bad); }
   .b-chip.blue { background: rgba(97,160,224,.12); color: var(--blue); }
   .b-chip.dim { background: var(--s3); color: var(--dim); }
+  .b-epic-pill { max-width: 100%; display: inline-block; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
+  button.b-epic-pill { border: 0; font: inherit; font-size: 13px; cursor: pointer; }
 
   /* the last line: the measure under the time, how long since the row moved,
      and the owner picker at the end */
@@ -197,9 +200,19 @@
   .dr-body { flex: 1; overflow-y: auto; padding: 14px 16px 24px; }
   .dr-fields { display: grid; grid-template-columns: 92px 1fr; gap: 6px 12px; }
   .dr-fields dt { color: var(--dim); font-family: var(--mono); font-size: 11.5px; }
-  .dr-fields dd { color: var(--text); font-family: var(--mono); font-size: 12px; }
+  .dr-fields dd { color: var(--text); font-family: var(--mono); font-size: 12px; min-width: 0; }
   .dr-fields dd .dim { color: var(--dim); }
   .dr-fields a { color: var(--blue); text-decoration: none; }
+  .dr-head.tree { border-left: 2px solid rgba(97,160,224,.35); }
+  /* a parent's own tasks: each row a door onto its card */
+  .dr-kids { display: flex; flex-direction: column; gap: 4px; }
+  .dr-kid {
+    display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+    background: var(--s2); border: 0; border-radius: 8px; padding: 8px 10px;
+    color: var(--text); font: inherit; font-family: var(--mono); font-size: 12.5px; cursor: pointer;
+  }
+  .dr-kid .l { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dr-kid .go { color: var(--dim); }
   .dr h3 {
     margin: 20px 0 8px; font-size: 11px; letter-spacing: .09em;
     text-transform: uppercase; color: var(--dim); font-weight: 500;
@@ -448,7 +461,7 @@
        waiting on - answerable here - and where it has been. -->
   <div class="dr-scrim"></div>
   <div class="dr" role="dialog" aria-label="the task">
-    <div class="dr-head">
+    <div class="dr-head tree">
       <span class="dr-state warn">waiting on you</span>
       <div class="dr-title">
         <div class="t">a project's board opens as a takeover</div>
@@ -463,9 +476,20 @@
         <dt>worked</dt><dd>1m 49s <span class="dim">of 2m</span></dd>
         <dt>created</dt><dd>10:44</dd>
         <dt>updated</dt><dd>10:47 <span class="dim">3m ago</span></dd>
-        <dt>parent</dt><dd>the board walk</dd>
+        <dt>parent</dt><dd><span class="b-chip blue b-epic-pill">&#8627; the board walk</span></dd>
         <dt>links</dt><dd><a href="#">#1886</a></dd>
       </dl>
+      <h3>Its tasks</h3>
+      <div class="dr-kids">
+        <button class="dr-kid" aria-label="jump to In progress &middot; the strip's counts">
+          <span class="l">In progress &middot; the strip's counts</span>
+          <span class="go" aria-hidden="true">&rarr;</span>
+        </button>
+        <button class="dr-kid" aria-label="jump to Completed &middot; the lanes wrap at 430">
+          <span class="l">Completed &middot; the lanes wrap at 430</span>
+          <span class="go" aria-hidden="true">&rarr;</span>
+        </button>
+      </div>
       <h3>Waiting on you</h3>
       <div class="dr-ask">
         <div class="q">A decision is waiting on you.</div>
