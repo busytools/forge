@@ -37,6 +37,14 @@ pub enum Subject {
     /// them. Unlike `Usage` it does hear updates: a check landing, boot's
     /// or a page's own, arrives as `SessionUpdate::DictateModelsChanged`.
     DictateModels,
+    /// The Extensions page's read: the plugin inventory, the marketplace
+    /// health and the last update run.
+    ///
+    /// A subject of its own for `DictateModels`' reason - only the
+    /// Extensions page draws any of it - and it hears the whole `Plugins*`
+    /// family: an action's outcome, a run's progress, and the refreshed
+    /// inventory are all news about what this subscription is showing.
+    Extensions,
 }
 
 impl Subject {
@@ -77,6 +85,22 @@ impl Subject {
             Self::DictateModels => matches!(
                 update,
                 SessionUpdate::DictateModelsChanged { .. } | SessionUpdate::DictateAvailability
+            ),
+            // The whole `Plugins*` family: every one is news about what
+            // this subscription draws - an action's outcome, a run's rows
+            // moving, the refreshed inventory, a failed refresh, a
+            // rollback's result. The family belongs to no seat, so nothing
+            // else routes here.
+            Self::Extensions => matches!(
+                update,
+                SessionUpdate::PluginsInventoryUpdated { .. }
+                    | SessionUpdate::PluginsInventoryRefreshFailed { .. }
+                    | SessionUpdate::PluginsCliActionSucceeded { .. }
+                    | SessionUpdate::PluginsCliActionFailed { .. }
+                    | SessionUpdate::PluginsUpdateRunProgress { .. }
+                    | SessionUpdate::PluginsUpdateRunFinished { .. }
+                    | SessionUpdate::PluginsRollbackSucceeded { .. }
+                    | SessionUpdate::PluginsRollbackFailed { .. }
             ),
         }
     }
@@ -534,6 +558,61 @@ mod tests {
             !Subject::Home.covers(&update),
             "and the home is not: no row draws a conversation's words, and the slot-less arm \
              would take it if the key went",
+        );
+    }
+
+    /// **The Extensions page hears the whole `Plugins` family and nothing
+    /// else.** A variant dropped from the arm leaves the page drawing a run
+    /// that ended, or an inventory an action already moved, with no way to
+    /// tell it has fallen behind; a variant added to the arm would hand the
+    /// page a seat's own news.
+    #[test]
+    fn extensions_covers_the_plugins_family_and_no_seat_news() {
+        for update in [
+            SessionUpdate::PluginsInventoryUpdated {
+                cwd_raw: "/tmp/proj".to_owned(),
+                snapshot: forge_primitives::plugins::PluginsInventorySnapshot::default(),
+                claude_path: std::path::PathBuf::from("claude"),
+            },
+            SessionUpdate::PluginsInventoryRefreshFailed {
+                cwd_raw: "/tmp/proj".to_owned(),
+                message: "no".to_owned(),
+                trigger: forge_primitives::plugins::PluginUpdateTrigger::Manual,
+            },
+            SessionUpdate::PluginsCliActionFailed {
+                cwd_raw: "/tmp/proj".to_owned(),
+                message: "no".to_owned(),
+            },
+            SessionUpdate::PluginsUpdateRunProgress {
+                cwd_raw: "/tmp/proj".to_owned(),
+                run: forge_primitives::plugins::PluginUpdateRun {
+                    trigger: forge_primitives::plugins::PluginUpdateTrigger::Manual,
+                    finished: false,
+                    rows: Vec::new(),
+                },
+            },
+            SessionUpdate::PluginsRollbackFailed {
+                cwd_raw: "/tmp/proj".to_owned(),
+                plugin_id: "a@probe".to_owned(),
+                message: "no".to_owned(),
+                snapshot: None,
+            },
+        ] {
+            assert!(
+                Subject::Extensions.covers(&update),
+                "the Extensions page must hear {update:?}; a dropped arm leaves it stale",
+            );
+        }
+
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        let session_news = SessionUpdate::TurnComplete { key: seat.clone(), terminal_reason: None };
+        assert!(
+            !Subject::Extensions.covers(&session_news),
+            "a seat's own news is not the Extensions page's",
+        );
+        assert!(
+            !Subject::Extensions.covers(&SessionUpdate::CatalogLoaded),
+            "and neither is the catalog's",
         );
     }
 

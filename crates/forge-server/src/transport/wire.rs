@@ -17,6 +17,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Result;
+use forge_primitives::plugins::{PluginUpdateRun, PluginsInventorySnapshot};
 use forge_primitives::review::{ReviewSet, ReviewThread};
 use forge_primitives::runtime::{AvailableAgent, AvailableCommand, MonitorRecord};
 use forge_primitives::slack::SlackSubscription;
@@ -107,6 +108,37 @@ pub struct HomeWire {
     /// The last fatal error, held by the core: an App-level event with no
     /// state behind it reaches only whoever was subscribed when it fired.
     pub fatal_error: Option<Value>,
+}
+
+/// The Extensions page's read: the plugin inventory, the PATH checks the
+/// scan cannot carry, and the last update run.
+///
+/// **`snapshot` and `update_run` are the same shapes the live frames
+/// carry.** `PluginsInventoryUpdated`, `PluginsUpdateRunProgress` and
+/// `PluginsUpdateRunFinished` each embed these objects, so a client that
+/// takes one off the stream and a client that read the snapshot are
+/// drawing the same bytes (rule 25: the read path and the live path are
+/// one obligation). `lsp` is read-only - no frame carries it, and a page
+/// re-reads to refresh it.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ExtensionsWire {
+    /// `None` when no plugins root resolves (`CLAUDE_CONFIG_DIR` or
+    /// `HOME`): the inventory is unknowable, which is its own state rather
+    /// than an empty one.
+    pub snapshot: Option<PluginsInventorySnapshot>,
+    pub update_run: Option<PluginUpdateRun>,
+    pub lsp: Vec<LspCheckWire>,
+}
+
+/// One declared LSP server and whether its binary resolves on PATH.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct LspCheckWire {
+    pub plugin: String,
+    pub server: String,
+    pub command: String,
+    pub on_path: bool,
 }
 
 /// One project row: the project, and the per-row reads the home draws it from.
@@ -946,6 +978,28 @@ pub async fn encode_subject(state: &TransportState, subject: &Subject) -> Result
         // no lock held across a scan - the fetch that changes it runs
         // elsewhere and lands as its own update.
         Subject::DictateModels => Ok(serde_json::to_value(surface.dictate_models())?),
+        // The Extensions page's read: one disk scan of the plugin
+        // inventory per read, plus the PATH checks and the last run.
+        Subject::Extensions => Ok(serde_json::to_value(extensions(state).await)?),
+    }
+}
+
+/// The Extensions page's read, as the wire carries it.
+async fn extensions(state: &TransportState) -> ExtensionsWire {
+    let view = state.surface.extensions().await;
+    ExtensionsWire {
+        snapshot: view.snapshot,
+        update_run: view.update_run,
+        lsp: view
+            .lsp
+            .into_iter()
+            .map(|check| LspCheckWire {
+                plugin: check.plugin,
+                server: check.server,
+                command: check.command,
+                on_path: check.on_path,
+            })
+            .collect(),
     }
 }
 
@@ -2556,6 +2610,70 @@ mod tests {
             encoded.get("pricing_available").is_some(),
             "and the flag that blanks costs rather than reading a misleading zero: {encoded}"
         );
+    }
+
+    /// The Extensions read crosses with the inventory, the PATH checks and
+    /// the run, and the inventory half is **the same shape the live frames
+    /// carry** - a client that took either would be drawing the same bytes
+    /// (rule 25).
+    #[tokio::test]
+    async fn an_extensions_subscription_is_answered_with_the_inventory() {
+        let fleet = crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("fleet");
+        let mut components = forge_primitives::plugins::PluginComponents {
+            plugin: "demo@probe-market".to_owned(),
+            marketplace: "probe-market".to_owned(),
+            installed: true,
+            enabled: true,
+            version: Some("1.0.0".to_owned()),
+            available_version: Some("1.1.0".to_owned()),
+            skills: vec!["one".to_owned()],
+            ..forge_primitives::plugins::PluginComponents::default()
+        };
+        components.lsp_servers.insert("absent-server".to_owned(), "not-a-binary-xyz".to_owned());
+        let snapshot = forge_primitives::plugins::PluginsInventorySnapshot {
+            components: vec![components],
+            ..forge_primitives::plugins::PluginsInventorySnapshot::default()
+        };
+        let pinned = snapshot.clone();
+        fleet.workspace().set_plugin_scan_for_test(move || Some(pinned.clone()));
+        let state = TransportState {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            client: forge_primitives::ClientConfig::default(),
+            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+        };
+
+        let encoded = encode_subject(&state, &Subject::Extensions).await.expect("encode");
+
+        assert_eq!(
+            encoded["snapshot"]["components"][0]["plugin"], "demo@probe-market",
+            "the inventory crosses: {encoded}"
+        );
+        assert_eq!(
+            encoded["snapshot"]["components"][0]["available_version"], "1.1.0",
+            "with the version the marketplace reports"
+        );
+        assert_eq!(
+            encoded["snapshot"],
+            serde_json::to_value(&snapshot).expect("value"),
+            "the snapshot half is byte-for-byte the object the Plugins frames embed"
+        );
+        assert_eq!(
+            encoded["lsp"][0]["server"], "absent-server",
+            "the PATH check crosses beside it"
+        );
+        assert_eq!(
+            encoded["lsp"][0]["on_path"], false,
+            "and reflects this machine rather than guessing"
+        );
+        assert!(encoded["update_run"].is_null(), "no run has happened this process");
+
+        // The read's own type accepts its own bytes back.
+        let wire: ExtensionsWire = serde_json::from_value(encoded).expect("round trip");
+        assert_eq!(wire.snapshot.expect("snapshot").components.len(), 1);
+        assert_eq!(wire.lsp.len(), 1);
     }
 
     /// What one fixture pins, and what it only appears to.

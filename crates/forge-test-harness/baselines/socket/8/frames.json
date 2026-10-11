@@ -91,6 +91,7 @@
   },
   "subject": {
     "DictateModels": "dictate_models",
+    "Extensions": "extensions",
     "Home": "home",
     "Session": "session",
     "Usage": "usage"
@@ -119,8 +120,14 @@
     "DictateStop": "dictate_stop",
     "DictateStream": "dictate_stream",
     "DictateUninstall": "dictate_uninstall",
+    "MarketplaceAdd": "marketplace_add",
+    "MarketplaceRepair": "marketplace_repair",
     "NewSession": "new_session",
     "OpenUrl": "open_url",
+    "PluginCheckUpdates": "plugin_check_updates",
+    "PluginInstall": "plugin_install",
+    "PluginUpdate": "plugin_update",
+    "PluginUpdateAll": "plugin_update_all",
     "Prompt": "prompt",
     "PromptUnder": "prompt_under",
     "ReadCallOutput": "read_call_output",

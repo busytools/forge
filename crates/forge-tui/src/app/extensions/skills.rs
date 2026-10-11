@@ -37,19 +37,6 @@ const MAX_STATUS_COLUMN: usize = 52;
 /// The action column reserves this many cells at the row's end.
 const ACTION_COLUMN: usize = 12;
 
-/// Whether an LSP server binary resolves on `path_var`. `path_var` is
-/// injected so tests need not touch the process environment.
-pub fn lsp_binary_on_path(server_binary: &str, path_var: Option<&str>) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    let Some(path_var) = path_var else { return false };
-    path_var.split(':').any(|dir| {
-        let candidate = std::path::Path::new(dir).join(server_binary);
-        candidate
-            .metadata()
-            .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
-    })
-}
-
 /// Build the tab's row lines. `rows` are the tab's already-filtered
 /// rows; every column truncates so each row stays one line and the
 /// columns stay aligned across the tab.
@@ -821,28 +808,6 @@ mod tests {
             status_offset(text[0].as_str()),
             status_offset(text[1].as_str()),
             "the status column aligns across the tab: {text:?}"
-        );
-    }
-
-    /// The PATH check walks `:`-separated dirs and requires an
-    /// executable file; a missing PATH or a bare directory misses.
-    #[test]
-    fn the_path_check_accepts_only_executables_on_the_path() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().expect("tempdir");
-        let binary = dir.path().join("gopls");
-        std::fs::write(&binary, b"#!/bin/sh").expect("write binary");
-        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-
-        let path = format!("{}:{}", dir.path().display(), "/usr/bin");
-        assert!(lsp_binary_on_path("gopls", Some(path.as_str())));
-        assert!(!lsp_binary_on_path("rust-analyzer", Some(path.as_str())), "not present");
-        assert!(!lsp_binary_on_path("gopls", None), "no PATH, no binary");
-
-        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o644)).expect("chmod");
-        assert!(
-            !lsp_binary_on_path("gopls", Some(path.as_str())),
-            "a non-executable file is not a server binary"
         );
     }
 }

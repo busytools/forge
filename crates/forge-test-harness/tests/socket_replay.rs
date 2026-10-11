@@ -248,7 +248,7 @@ census!(ServerMessage,
     server_message_census, SERVER_MESSAGE_VARIANTS);
 
 census!(Subject,
-    [Home struct, Session tuple, Usage struct, DictateModels struct],
+    [Home struct, Session tuple, Usage struct, DictateModels struct, Extensions struct],
     subject_census, SUBJECT_VARIANTS);
 
 census!(SessionUpdate,
@@ -300,6 +300,8 @@ census!(Command,
         DictateBenchStop struct, DictateReadAloudStart struct, DictateReadAloudStop struct,
         DictateReadAloudDelete struct, DictateBenchDelete struct, DictateUninstall struct,
         ReconnectMcpServer struct, ToggleMcpServer struct,
+        PluginInstall struct, PluginUpdate struct, PluginUpdateAll struct,
+        PluginCheckUpdates struct, MarketplaceAdd struct, MarketplaceRepair struct,
         SpawnProject struct, SpawnSession struct, StartDefault struct,
         TaskVerdict struct, TaskAnswer struct, TaskRank struct, TaskAssign struct,
         TaskCreate struct, TaskMove struct, DeliverPeerPrompt struct,
