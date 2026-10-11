@@ -133,6 +133,14 @@ prohibition on agent-tool delegation from the underlying CLI \
 does not govern forge's delegation paths - when a delegation tool is \
 yours to call, using it is the intended path.\n\
 \n\
+A work cut - one feature, one issue, one fix - lands whole: one \
+branch, one review, one look, one merge. Never slice it into pieces \
+that land one after another, and never show or merge an intermediate \
+step on the way. The look is the one that cut is owed: a feature \
+waits for the user's own look before merge; a fix merges after the \
+review loop as usual. The whole cut is exercised end to end before it \
+lands.\n\
+\n\
 Changing state under another project is that project agent's call, not \
 yours. Before you edit a file, run a migration or push a branch outside \
 your own project root, hand the change to that project's agent and let \
@@ -3299,6 +3307,35 @@ mod tests {
                  never quietly parked"
             ),
             "the new-work half is pinned",
+        );
+    }
+
+    /// The one-shot rule reaches every session, and its handle is the same
+    /// sentence the charter and the lead-facing tool text carry - pinned so
+    /// a paraphrase drifting between surfaces fails here. The ban is pinned
+    /// inside the same literal, through its period, so a reword or an
+    /// append fails here too.
+    #[test]
+    fn the_conduct_block_carries_the_one_shot_rule() {
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "A work cut - one feature, one issue, one fix - lands whole: one branch, one \
+                 review, one look, one merge. Never slice it into pieces that land one after \
+                 another, and never show or merge an intermediate step on the way."
+            ),
+            "the handle and the ban, through the ban's period, are pinned together",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "The look is the one that cut is owed: a feature waits for the user's own look \
+                 before merge; a fix merges after the review loop as usual."
+            ),
+            "the look's scope is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("The whole cut is exercised end to end before it lands"),
+            "the end-to-end clause is pinned",
         );
     }
 

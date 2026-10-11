@@ -7135,6 +7135,41 @@ mod lead_charter_tests {
         );
     }
 
+    /// The one-shot rule ships to every lead, and its handle is the same
+    /// sentence the conduct block and the lead-facing tool text carry -
+    /// pinned so a paraphrase drifting between surfaces fails here. The
+    /// planning half rides with it: the ban starts at the plan, and a cut
+    /// that cannot land whole goes to the user before it is cut down.
+    #[test]
+    fn the_charter_carries_the_one_shot_rule() {
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains(
+                "A work cut - one feature, one issue, one fix - lands whole: one branch, one \
+                 review, one look, one merge. Never slice it into pieces that land one after \
+                 another, and never show or merge an intermediate step on the way."
+            ),
+            "the handle and the ban, through the ban's period, are pinned together",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains(
+                "The look is the one that cut is owed: a feature waits for the user's own look \
+                 before merge; a fix merges after the review loop as usual."
+            ),
+            "the look's scope is pinned",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains("never sequence a cut as \"land A, then B, then C\""),
+            "the planning ban is pinned",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains(
+                "if it genuinely cannot land whole, decide that with the user BEFORE anything is \
+                 cut down"
+            ),
+            "the user-decision half is pinned",
+        );
+    }
+
     /// The charter is shipped text every lead reads, so a blocked CLI tool
     /// named here would send it to a surface its own launch denies. The
     /// preamble is the other lead-facing text and carries the same test in

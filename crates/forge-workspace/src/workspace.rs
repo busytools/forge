@@ -127,7 +127,13 @@ pane). Despawn a worker once its work is truly done, otherwise it keeps \
 coming back on every restart. A PR review loop \
 fans out as ephemeral in-session subagents, not workers - a reviewer \
 spawned as a worker lingers as a durable row and worktree after its \
-round ends. Workers build; subagents review, unless the user wants a \
+round ends. Give each worker the whole cut to land. A work cut - one \
+feature, one issue, one fix - lands whole: one branch, one review, one \
+look, one merge. Never slice it into pieces that land one after \
+another, and never show or merge an intermediate step on the way. \
+The look is the one that cut is owed: a feature waits for the user's \
+own look before merge; a fix merges after the review loop as usual. \
+Workers build; subagents review, unless the user wants a \
 reviewer kept on as a long-lived worker.";
 
 /// Forge-supplied resume kick for a worker whose row carries no
@@ -14780,6 +14786,22 @@ mod worker_respawn_tests {
                 && preamble.contains("always creates the worker in YOUR project")
                 && preamble.contains("Workers build; subagents review"),
             "a lead does get it",
+        );
+        assert!(
+            preamble.contains(
+                "A work cut - one feature, one issue, one fix - lands whole: one branch, one \
+                 review, one look, one merge. Never slice it into pieces that land one after \
+                 another, and never show or merge an intermediate step on the way."
+            ),
+            "the handle and the ban, through the ban's period, are pinned together - the same \
+             sentence the conduct block and the charter carry",
+        );
+        assert!(
+            preamble.contains(
+                "The look is the one that cut is owed: a feature waits for the user's own look \
+                 before merge; a fix merges after the review loop as usual."
+            ),
+            "the look's scope is pinned",
         );
         assert!(
             !preamble.contains("doing the work yourself"),
