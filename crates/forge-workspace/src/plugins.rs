@@ -932,6 +932,31 @@ provider = \"anthropic\"
         );
     }
 
+    /// A scan whose thread cannot run reports the join by name, distinct
+    /// from a missing root: the two failure modes collapse silently under a
+    /// `unwrap_or_default()` or a dropped `?`, and the page would then say
+    /// "no plugins root resolves" about a machine that has one.
+    #[tokio::test]
+    async fn a_scan_that_cannot_run_reports_the_join() {
+        let (ws, mut rx) = Workspace::testing_stub();
+        let (cli, _calls) =
+            fake_cli(&PluginsInventorySnapshot::default(), &PluginsInventorySnapshot::default());
+        let panicking = PluginCli { scan: Arc::new(|| panic!("the scan thread died")), ..cli };
+        ws.set_plugin_cli(panicking);
+
+        ws.dispatch(Command::PluginUpdateAll).expect("the dispatch is accepted");
+
+        let SessionUpdate::PluginsCliActionFailed { message, .. } = next_update(&mut rx).await
+        else {
+            panic!("the failure reports as a frame");
+        };
+        assert!(message.contains("failed to join"), "the join is named, got: {message}");
+        assert!(
+            !message.contains("no plugins root resolves"),
+            "and not as a missing root, got: {message}"
+        );
+    }
+
     /// A scan with no root to walk reports its own words rather than reading
     /// as an empty machine, and it does so as a frame: the dispatch is
     /// fire-and-forget, so a refusal found inside the task lands the same

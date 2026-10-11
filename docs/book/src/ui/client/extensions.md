@@ -112,12 +112,13 @@ because of a query.
   confirm press sends - focus lands on the first radio, and the button is
   the control - and Esc, the backdrop and Cancel close it; the hardware
   Back closes what it opened.
-- **A refused action**: the core's own words above the page - a second
-  action while one runs, an unknown project, a plugin the registry does not
-  hold in that scope.
+- **A refused action**: the core's own words above the page, straight off
+  the dispatch - a second action while one runs, a project-scoped install
+  with no project named, a project `forge.toml` does not declare.
 - **An action that ran and failed**: the core's own words above the page -
-  a failed update, install, marketplace add or repair, which rides the
-  `Plugins` frames rather than a reply - with the row's own reason on it
+  a failed update, install, marketplace add or repair, a plugin the registry
+  does not hold in that scope, or a scan with no root to walk, all of which
+  ride the `Plugins` frames rather than a reply - with the row's own reason on it
   where the run reported one, and a rejected add reopening its input with
   the draft kept, because a source that vanishes with its error cannot be
   fixed.
@@ -152,8 +153,9 @@ width - the sheet has no sideways scroller anywhere.
 ## Touch
 
 Every control takes the 44px target under `@media (pointer: coarse)` - the
-shared rule covers a button and an input, and the page adds the three it
-cannot reach: a plugin row, a rail item and a marketplace row. The fold's
-chevron is drawn at rest rather than uncovered by the pointer, because the
-fold is the page's one interaction and a phone has no pointer to arrive
-with. No affordance lives on hover alone.
+shared rule covers a button and an input, and the page adds the five it
+cannot reach: a plugin row, a rail item, a marketplace row, the install
+dialog's scope row and the way back to the home. The fold's chevron is drawn
+at rest rather than uncovered by the pointer, because the fold is the page's
+one interaction and a phone has no pointer to arrive with. No affordance
+lives on hover alone.

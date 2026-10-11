@@ -156,15 +156,29 @@
   });
 
   /** The draft of an add whose outcome has not landed: kept so a rejected
-   * source is reopened with its words rather than silently discarded. */
+   * source is reopened with its words rather than silently discarded; the
+   * frame count it was submitted at, so only a frame that lands AFTER it
+   * counts as its outcome. */
   let pendingSource = $state<string | null>(null);
+  let pendingFrom = $state(0);
 
+  // The reopen rides the add's OWN outcome, and this runs on every plugin
+  // frame (`settled`) - not only when `failure` becomes set, because a
+  // SUCCESSFUL add lands with no failure at all, and a source left pending
+  // past it would reopen the input on some LATER, unrelated failure while
+  // the line describes something else. The frame must be one that landed
+  // since the submission: without that, the effect's own dependency on
+  // `pendingSource` would clear the draft the moment it is set.
   $effect(() => {
-    if (failure !== null && pendingSource !== null) {
-      adding = true;
-      draft = pendingSource;
+    const tick = settled;
+    if (pendingSource === null || tick === pendingFrom) return;
+    if (failure === null) {
       pendingSource = null;
+      return;
     }
+    adding = true;
+    draft = pendingSource;
+    pendingSource = null;
   });
 
   // The install dialog is an overlay, so it takes a history entry: the
@@ -213,6 +227,8 @@
     addmarketplace(source);
     // The draft is kept until the outcome lands: a rejected source reopens
     // the input with its words rather than vanishing (see the effect above).
+    // The frame it is measured from is this submission's own.
+    pendingFrom = settled;
     pendingSource = source;
     adding = false;
     draft = '';

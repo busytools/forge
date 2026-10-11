@@ -61,14 +61,13 @@ impl Subject {
     /// conversation - so a second table of variants here would both drift and
     /// hand a home subscriber every token of every seat in the fleet.
     ///
-    /// **The fleet region is not the whole home.** Two variants carry no slot,
-    /// are not fleet news and are fields of the home's own snapshot - the
-    /// service status and the fatal error - so `fleet_news` alone would drop
-    /// them, leaving a client to draw what it read once at subscribe for the
-    /// life of the connection. They come with the slot-less arm below. (The
-    /// plugin records are slot-less too and reach no home subscriber: the
-    /// terminal folds them onto a channel of its own, so the home's snapshot
-    /// carries them for a client rather than a stream.)
+    /// **The fleet region is not the whole home.** The service status, the
+    /// fatal error and the plugin records carry no slot, are not fleet news,
+    /// and are fields of the home's own snapshot - so `fleet_news` alone
+    /// would drop them, leaving a client to draw what it read once at
+    /// subscribe for the life of the connection. They come with the
+    /// slot-less arm below, which the client mirrors in
+    /// `client/src/wire/fleet.ts`'s `coversHome`.
     pub fn covers(&self, update: &SessionUpdate) -> bool {
         match self {
             Self::Home => fleet_news(update).any() || update.slot().is_none(),

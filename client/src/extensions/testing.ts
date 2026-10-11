@@ -4,7 +4,9 @@
  * every row kind the page has in front of whatever is checking.
  */
 
-import type { Command } from '../protocol';
+import type { Command, ServerMessage, SessionUpdate, Subject } from '../protocol';
+import type { Connection } from '../socket';
+import { Stores } from '../stores';
 import type { ProjectView } from '../wire/home';
 import type { ExtensionsRead, PluginComponents } from '../wire/extensions';
 
@@ -129,6 +131,82 @@ export function recorder(): Recorder {
         commands.push({ plugin_install: { plugin_id: pluginId, scope, project } }),
       repair: (name: string) => commands.push({ marketplace_repair: { name } }),
       addmarketplace: (source: string) => commands.push({ marketplace_add: { source } }),
+    },
+  };
+}
+
+/**
+ * A connection the PAGE can be mounted against: the extensions subject
+ * answers with `read`, every dispatch and refresh is recorded, and the
+ * frames a live forge pushes are driven by hand with `emit`.
+ *
+ * This is what pins the page's frame-handling - the failure line, the
+ * settled unlatch, an add's outcome reopening its input - which a Body
+ * mounted with fixed props cannot exercise, because those live in the
+ * stream rather than in the read.
+ */
+export interface FakePage {
+  connection: Connection;
+  sent: Command[];
+  refreshes: Subject[];
+  /** One `update` frame, as the server would push it. */
+  emit(update: SessionUpdate): void;
+  /** Any frame, for the ones that are not updates. */
+  say(message: ServerMessage): void;
+}
+
+export function fakePage(read: ExtensionsRead): FakePage {
+  const sent: Command[] = [];
+  const refreshes: Subject[] = [];
+  const listeners = new Set<(message: ServerMessage) => void>();
+  const stores = new Stores();
+  const refused = (): never => {
+    throw new Error('the page reached a connection method this fake does not model');
+  };
+  const connection = {
+    dispatch(command: Command) {
+      sent.push(command);
+      return null;
+    },
+    onMessage(fn: (message: ServerMessage) => void) {
+      listeners.add(fn);
+      return () => listeners.delete(fn);
+    },
+    subscribe(what: Subject) {
+      const store = stores.open(what);
+      if (typeof what === 'string' && what === 'extensions') store.set(read);
+      return store;
+    },
+    unsubscribe() {},
+    refresh(what: Subject) {
+      refreshes.push(what);
+    },
+    onStatus() {
+      return () => {};
+    },
+    status: () => 'open',
+    more: refused,
+    devices: refused,
+    frame: refused,
+    onBrowserAsk: refused,
+    browserRole: refused,
+    onBrowserRole: refused,
+    takeBrowserRole: refused,
+    store: refused,
+    settings: refused,
+    skew: refused,
+    serverProtocol: refused,
+    close: refused,
+  } as unknown as Connection;
+  return {
+    connection,
+    sent,
+    refreshes,
+    emit(update: SessionUpdate) {
+      for (const fn of listeners) fn({ kind: 'update', update });
+    },
+    say(message: ServerMessage) {
+      for (const fn of listeners) fn(message);
     },
   };
 }

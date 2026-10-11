@@ -2856,14 +2856,15 @@ details[open] > summary .arw { opacity: 1; }
    Everything under `.extensions`, for the reason the `.models` block gives:
    `.split`, `.rail`, `.pane`, `.legend`, `.title` and `.back` are short names
    another surface already uses, and a bare rule here would reach it by coming
-   later. The pieces it shares and genuinely ships are the header row, the
-   band card's gradient, the four state marks (`.dot.warn`, `.dot.failed`,
-   `.dot.ok`, `.ring`) and the empty treatment; the models block owns `.chip`
-   and `.btn` under its own scope and the board its own row chrome, so this
-   page declares its own copies here. The row chrome is the third copy of the
-   band-gradient recipe (models, board, here); when a fourth page needs it the
-   recipe earns a shared class, and until then a lift would have to choose
-   between three layouts that only look alike. */
+   later. The pieces it genuinely shares with the shipped sheet are the header
+   row, the four state marks (`.dot.warn`, `.dot.failed`, `.dot.ok`, `.ring`)
+   and the empty treatment. `.chip` and `.btn` live under the models block's
+   and the dock's own scopes (there is no `.models .btn`), so this page
+   declares its own copies here. The row chrome - the band gradient over
+   `--line` - is the second copy of that recipe, `.models .model` being the
+   other (the board's rows are flat `.b-card`, no gradient); when a third page
+   needs it the recipe earns a shared class, and until then a lift would have
+   to choose between two layouts that only look alike. */
 
 .extensions .pending { color: var(--muted); font-size: var(--fs-base); margin-top: 12vh;
   text-align: center; }
