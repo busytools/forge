@@ -2,7 +2,14 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- `interactive-widget=resizes-content`: the Android keyboard shrinks only
+         the visual viewport by default, so the foot would sit under it; this
+         makes the layout viewport shrink with the keyboard, which is what lifts
+         the composer's surface above it. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, interactive-widget=resizes-content"
+    />
     <link rel="icon" type="image/png" href="/favicon.png" />
     <title>forge</title>
   </head>

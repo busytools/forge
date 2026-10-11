@@ -281,11 +281,11 @@
    *
    * **An empty bar is one row** (Ved, 2026-10-09): the controls ride the
    * field's own line, so an idle seat is not two rows tall for a stop button
-   * nobody is looking at. A draft needs somewhere for the keys to live, and a
-   * recording needs its controls under the field rather than beside it - that
-   * is the three-row shape, with the take above the field.
+   * nobody is looking at. A draft needs somewhere for the keys to live - and a
+   * take asks for no second row at all: it takes the draft's OWN line, so the
+   * controls ride the take with it.
    */
-  const secondRow = $derived(filled || composer.take !== null);
+  const secondRow = $derived(filled && composer.take === null);
 
   /**
    * Whether this seat has a turn to stop.
@@ -1180,39 +1180,46 @@
         class:tr={ring === 'tr'}
         class:done={ring === 'done'}
       >
-        {#if composer.take !== null}
-          <TakeCard take={composer.take} {wire} oncancel={() => act('cancel')} />
-        {:else if line !== null}
+        {#if line !== null && composer.take === null}
           <div class="notice {line.tone}">{line.text}</div>
         {/if}
         {#if list !== null}
           <Autocomplete offer={list} marked={box.marked} onpick={pick} />
         {/if}
-        <div class="line">
-          <!-- The list belongs to the field rather than being a surface the reader
+        <div class="line" class:takeline={composer.take !== null}>
+          {#if composer.take !== null}
+            <!-- **The take takes the draft's own line.** The row the words
+                 would be typed into is the row they arrive on, so nothing is
+                 added and nothing moves when a take starts or ends; the
+                 controls ride it, and the surface's ring carries the state. -->
+            <TakeCard take={composer.take} {wire} oncancel={() => act('cancel')} />
+            {@render ctls()}
+          {:else}
+            <!-- The list belongs to the field rather than being a surface the reader
              Tabs into: the field keeps focus and points at the marked row. The
              combobox role is not available here - ARIA allows it on an input,
              not on a textarea - so this is the textbox-and-controlled-listbox
              shape, which is what a multi-line composer can validly be. -->
-          <Field
-            editor="composer"
-            class="txt"
-            name="draft"
-            placeholder="Type a message..."
-            aria={{
-              autocomplete: 'list',
-              controls: list === null ? undefined : LIST_ID,
-              activeDescendant: list === null ? undefined : rowId(list, box.marked),
-            }}
-            bind:value={box.draft}
-            {oninput}
-            onkeydown={onkey}
-            field={(el: HTMLElement | null) => {
-              field = el;
-            }}
-          />
-          {#if !secondRow}
-            {@render ctls()}
+            <Field
+              editor="composer"
+              class="txt"
+              name="draft"
+              placeholder="Type a message..."
+              aria={{
+                autocomplete: 'list',
+                controls: list === null ? undefined : LIST_ID,
+                activeDescendant: list === null ? undefined : rowId(list, box.marked),
+              }}
+              bind:value={box.draft}
+              {oninput}
+              onkeydown={onkey}
+              field={(el: HTMLElement | null) => {
+                field = el;
+              }}
+            />
+            {#if !secondRow}
+              {@render ctls()}
+            {/if}
           {/if}
         </div>
         {#if secondRow}

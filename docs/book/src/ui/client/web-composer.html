@@ -55,7 +55,7 @@
   .lab { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
     letter-spacing: .06em; text-transform: uppercase; margin-bottom: 6px; }
 
-  /* ---------- the composer box ---------- */
+  /* ---------- the composer surface ---------- */
   .comp { display: flex; flex-direction: column; gap: 2px; }
   .hint { font-size: var(--fs-base); padding-left: 4px; }
   .hint.login { color: var(--warn); }
@@ -66,21 +66,43 @@
   .hint.sugg .tab { border: 1px solid var(--line); border-radius: 5px; padding: 0 6px;
     margin-left: 8px; }
 
-  .box { position: relative; container-type: inline-size;
+  /* **The surface: one box for the whole foot.** The strip lane, the prompt
+     lane and the composer lane are children of it, split by hairlines; the
+     ring's colour is the state, and what it is DOING wins over focus:
+     recording, transcribing, the landed beat and an error each take it, and at
+     rest it answers whether the keyboard is here. The `:not` list is what
+     states that precedence rather than leaving it to source order. */
+  .surf { position: relative; container-type: inline-size;
     border: 1.5px solid var(--ctl); border-radius: 16px;
     background: linear-gradient(180deg, rgba(20,25,38,.72), rgba(13,17,26,.78));
     backdrop-filter: blur(10px); box-shadow: 0 14px 38px rgba(0,0,0,.42);
-    padding: 10px 13px; display: flex; flex-direction: column; gap: 0;
+    display: flex; flex-direction: column; overflow: hidden;
     transition: border-color .3s ease; }
-  /* The ring's colour is the box's state, and what it is DOING wins over focus:
-     recording, transcribing, the landed beat and an error each take it, and at
-     rest it answers whether the keyboard is here. The `:not` list is what states
-     that precedence rather than leaving it to source order. */
-  .box.rec { border-color: color-mix(in srgb, var(--accent) 35%, var(--hot)); }
-  .box.tr { border-color: var(--blue); }
-  .box.done { border-color: var(--ok); }
-  .box.err { border-color: var(--bad); }
-  .box:focus-within:not(.rec, .tr, .done, .err) { border-color: var(--accent); }
+  .surf > * + * { border-top: 1px solid var(--line); }
+  .surf.rec { border-color: color-mix(in srgb, var(--accent) 35%, var(--hot)); }
+  .surf.tr { border-color: var(--blue); }
+  .surf.done { border-color: var(--ok); }
+  .surf.err { border-color: var(--bad); }
+  .surf:focus-within:not(.rec, .tr, .done, .err) { border-color: var(--accent); }
+  /* The strip lane: the turn's figures on the left, the seat's chips on the
+     right; below the width that holds them together the chips take a lane of
+     their own that scrolls (the sheet's own rule). */
+  .strip { padding: 8px 13px 9px; font-family: var(--mono); font-size: var(--fs-base);
+    color: var(--dim); display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    row-gap: 2px; }
+  .strip .seg { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+  .strip .seg .cnt { color: var(--dim); }
+  .strip .dot { width: 7px; height: 7px; flex: none; border-radius: 50%;
+    background: var(--accent); }
+  .strip .dot.off { background: var(--dim); }
+  .strip .fill { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+  .strip .sep { opacity: .5; }
+  .strip .ring { width: 10px; height: 10px; display: inline-block; border-radius: 50%;
+    border: 1.5px solid rgba(244,118,0,.3); border-top-color: var(--accent);
+    animation: spin 900ms linear infinite; flex: none; }
+
+  /* The composer lane: the field and its controls. */
+  .box { display: flex; flex-direction: column; padding: 10px 13px; }
   /* The draft's own row, which is the field alone: the controls sit in the
      foot below, so the text keeps the box's whole width. */
   .line { display: flex; align-items: center; gap: 8px; }
@@ -119,6 +141,10 @@
     background: linear-gradient(180deg, #1b1622, #12161f);
     box-shadow: 0 6px 18px rgba(0,0,0,.45); }
   .tc.tr { border-color: rgba(97,160,224,.45); }
+  /* The take on the draft's own line: the card's border, background and shadow
+     drop here - the surface's ring carries the state. */
+  .line.takeline .tc { align-self: center; margin: 0; border: 0; background: none;
+    box-shadow: none; padding: 0; }
   .tc .dot { width: 7px; height: 7px; flex: none; border-radius: 50%;
     background: var(--accent); animation: pulse 1.05s ease-in-out infinite; }
   .tc .spin { width: 11px; height: 11px; flex: none; border-radius: 50%;
@@ -238,20 +264,18 @@
   .ac .grp { padding: 7px 13px 2px; font-family: var(--mono); font-size: var(--fs-label);
     color: var(--dim); text-transform: uppercase; letter-spacing: .06em; }
 
-  /* ---------- the dock: the box morphed into a prompt ---------- */
-  .dock { container-type: inline-size;
-    border: 1.5px solid rgba(244,118,0,.75); border-radius: 16px;
-    background: linear-gradient(180deg, rgba(24,20,16,.82), rgba(15,13,12,.86));
-    box-shadow: 0 16px 44px rgba(0,0,0,.5); padding: 15px 17px;
-    display: flex; flex-direction: column; gap: 11px; }
+  /* ---------- the dock: the prompt's lane of the surface ---------- */
+  .dock { padding: 13px 15px; display: flex; flex-direction: column; gap: 10px; }
   .dock .queue { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
   .dock .d-head { display: flex; align-items: baseline; gap: 9px; font-size: var(--fs-base); }
   .dock .d-head .qm { color: var(--accent); font-weight: 700; flex: none; }
   .dock .d-head .q { color: var(--dim); font-family: var(--mono); font-size: var(--fs-data); }
   .dock .d-q { font-size: 16px; font-weight: 600; color: var(--text); }
-  .dock .segs { display: flex; align-items: center; gap: 5px; margin-left: auto; }
+  .dock .headend { margin-left: auto; display: flex; align-items: center; gap: 5px; }
+  .dock .segs { display: flex; align-items: center; gap: 5px; }
   .dock .segs i { width: 14px; height: 3px; border-radius: 999px; background: var(--s3); }
   .dock .segs i.on { background: var(--accent); }
+  .dock .chevb { color: var(--dim); display: grid; place-items: center; margin-left: 6px; }
   .dock .tag { font-family: var(--mono); font-size: var(--fs-label); border-radius: 999px;
     padding: 3px 10px; }
   .dock .tag.warn { color: var(--warn); border: 1px solid rgba(201,161,59,.45); }
@@ -279,24 +303,45 @@
     border: 1.5px solid var(--ctl); display: grid; place-items: center; }
   .opt .box2.on { border-color: var(--ok); color: var(--ok); }
   .opt .box2 svg { width: 11px; height: 11px; }
-  /* The one row that takes words, which is also where a take's words land. It
-     wraps rather than pushing the mic out of a narrow dock. */
-  .dock .custom { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-    border-top: 1px solid var(--line); padding-top: 10px; }
-  .dock .notes { flex: 1; min-width: 0; font-size: var(--fs-base); color: var(--text); }
-  .dock .notes.ph { color: var(--dim); font-style: italic; }
-  .dock .custom .micb { flex: none; width: 26px; height: 26px; border-radius: 8px;
-    border: 1px solid var(--line); color: var(--dim); display: grid; place-items: center; }
-  .dock .custom.live .micb { border-color: rgba(244,118,0,.45); color: var(--hot); }
-  .dock .custom .sendb { flex: none; width: 26px; height: 26px; border-radius: 8px;
+  .opt .radio { width: 15px; height: 15px; flex: 0 0 15px; border-radius: 50%;
+    border: 1.5px solid var(--ctl); display: grid; place-items: center; margin-top: 2px; }
+  .opt .radio.on { border-color: var(--ok); }
+  .opt .radio.on::after { content: ''; width: 7px; height: 7px; border-radius: 50%;
+    background: var(--ok); }
+  /* **The words row is the prompt's last row, and it is the input**: arriving
+     on it - the keys, a click, a typed character - puts the caret in it, and
+     what is written is the answer. No tint for that; the caret is the signal.
+     A take draws here too, in the composer's own card. */
+  .dock .qrow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    margin-top: 1px; padding: 6px 9px; border-radius: 9px; }
+  .dock .qrow .notes { flex: 1; min-width: 0; width: auto; font-size: var(--fs-base);
+    color: var(--text); }
+  .dock .qrow .notes.ph { color: var(--dim); }
+  .dock .qrow .micb { flex: none; margin-left: auto; width: 26px; height: 26px;
+    border-radius: 8px; border: 1px solid var(--line); color: var(--dim);
+    display: grid; place-items: center; }
+  .dock .qrow.on .micb { border-color: rgba(244,118,0,.45); color: var(--hot); }
+  .dock .qrow .sendb { flex: none; width: 26px; height: 26px; border-radius: 8px;
     border: 1px solid rgba(244,118,0,.45); background: none; color: var(--accent);
     display: grid; place-items: center; cursor: pointer; }
+  /* The take on the row its words land in: the same card, its own chrome
+     dropped in this context. */
+  .dock .qrow .tc { align-self: center; margin-bottom: 0; }
   .dock .keys { display: flex; gap: 14px; font-family: var(--mono);
     font-size: var(--fs-label); color: var(--dim); }
   .dock .keys .k { border: 1px solid var(--line); border-radius: 5px; padding: 0 6px; }
-  /* A permission's actions and a post's verbs: buttons, the trusting one
-     primary, the refusal as reachable as the approval. */
-  .dock .acts { display: flex; gap: 8px; justify-content: flex-end; }
+  /* The folded state: the bar is the question and the count waiting behind it.
+     A click, Enter or Space unfolds. */
+  .dock .qbar { display: flex; align-items: center; gap: 9px; padding: 12px 14px;
+    font-size: var(--fs-base); cursor: pointer; }
+  .dock .qbar .qm { color: var(--accent); font-weight: 700; flex: none; }
+  .dock .qbar .t { color: var(--text); font-weight: 600; }
+  .dock .qbar .cnt { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+  .dock .qbar .chevc { margin-left: auto; color: var(--dim); font-size: 13px; }
+  /* A permission's actions and a post's verbs: buttons, the approving one
+     primary and LEADING (the settled redesign), the refusal last, and the row
+     left-aligned under the body. */
+  .dock .acts { display: flex; gap: 8px; justify-content: flex-start; flex-wrap: wrap; }
   .dock .btn { border: 1px solid var(--line); border-radius: 9px; color: var(--muted);
     font-family: var(--mono); font-size: var(--fs-label); padding: 7px 13px; }
   .dock .btn.p { border-color: rgba(244,118,0,.5); color: var(--hot);
@@ -338,41 +383,82 @@ autocomplete surface, a dictation status row and a prompt dock that morphs the w
 Below is each of those, redesigned for the web rather than ported.</p>
 
 <h2>The box</h2>
-<p class="note">Web-native here means: no prompt character (the border is the identity),
-a send affordance that appears with content, and the hint as a line above rather than a
-character-cell row. Slash commands keep their magenta, because that is a real distinction.</p>
+<p class="note"><b>The foot is one surface.</b> The strip lane, the prompt lane and the composer
+lane are children of one <span class="mono">.surf</span>, split by hairlines - so the strip's
+chips, the question and the field are one thing that changes state rather than three rows
+competing for the same pixels. Below the width that holds the figures and the chips together,
+the chips take a lane of their own that scrolls sideways; the surface is the container the
+take's own ladder measures. Web-native here means: no prompt character (the ring is the
+identity), a send affordance that appears with content, and the hint as a line above rather
+than a character-cell row. Slash commands keep their magenta, because that is a real
+distinction.</p>
 <div class="stage">
   <div class="row">
     <div class="col">
-      <div class="lab">idle &middot; one row, the controls on the field</div>
+      <div class="lab">idle &middot; the strip lane and one field row</div>
       <div class="comp">
-        <div class="box">
-          <div class="line"><span class="txt ph">Type a message...</span>
-            <span class="ctls"><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></span></div>
+        <div class="surf">
+          <div class="strip"><span class="fig">0:42</span><span class="sep">&#183;</span>
+            <span class="fig">7% cached</span>
+            <span class="fill">
+              <span class="seg"><span class="dot off"></span> browser <span class="cnt">1</span></span>
+              <span class="seg"><span class="dot"></span> agents <span class="cnt">2</span></span>
+              <span class="seg"><span class="dot"></span> git <span style="color:var(--ok)">+312</span> <span style="color:var(--bad)">&minus;48</span></span>
+              <span class="seg"><span class="dot off"></span> tasks <span class="cnt">4</span></span>
+            </span>
+          </div>
+          <div class="box">
+            <div class="line"><span class="txt ph">Type a message...</span>
+              <span class="ctls"><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></span></div>
+          </div>
         </div>
       </div>
+      <p class="note" style="margin:8px 0 0">The turn's figures lead the strip lane while a
+      turn is written (and are absent when none is); the seat's chips follow at the right.
+      The field's row is the whole composer when there is nothing to say - controls ride it.</p>
     </div>
     <div class="col">
       <div class="lab">typing &middot; draft grows, send appears</div>
       <div class="comp">
-        <div class="box">
-          <div class="line"><span class="txt">Fix the flaky retry test in <span class="slash">crates/forge-web</span> and run the gate<span class="caret"></span></span></div>
-          <div class="foot"><span class="hints"><span class="k">&#8679;&#9166;</span> newline</span>
-            <span class="hints"><span class="k">&#9166;</span> send</span>
-            <span class="ctls"><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span>
-            <span class="send"><svg class="ic"><use href="#i-send"/></svg></span></span></div>
+        <div class="surf">
+          <div class="strip">
+            <span class="fill">
+              <span class="seg"><span class="dot"></span> agents <span class="cnt">2</span></span>
+              <span class="seg"><span class="dot"></span> git <span style="color:var(--ok)">+312</span> <span style="color:var(--bad)">&minus;48</span></span>
+            </span>
+          </div>
+          <div class="box">
+            <div class="line"><span class="txt">Fix the flaky retry test in <span class="slash">crates/forge-web</span> and run the gate<span class="caret"></span></span></div>
+            <div class="foot"><span class="hints"><span class="k">&#8679;&#9166;</span> newline</span>
+              <span class="hints"><span class="k">&#9166;</span> send</span>
+              <span class="ctls"><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span>
+              <span class="send"><svg class="ic"><use href="#i-send"/></svg></span></span></div>
+          </div>
         </div>
       </div>
     </div>
     <div class="col">
-      <div class="lab">running &middot; the stop joins the controls, still one row</div>
+      <div class="lab">running &middot; the figures lead, the stop joins the controls</div>
       <div class="comp">
-        <div class="box">
-          <div class="line"><span class="txt ph">Type a message...</span>
-            <span class="ctls"><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span>
-            <span class="stop"><svg class="ic"><use href="#i-stop"/></svg></span></span></div>
+        <div class="surf">
+          <div class="strip"><span class="ring"></span><span class="fig">0:42</span><span class="sep">&#183;</span>
+            <span class="fig">thinking 1.2k</span><span class="sep">&#183;</span>
+            <span class="fig">12.4k&#8593; 890&#8595;</span><span class="sep">&#183;</span>
+            <span class="fig">7% cached</span>
+            <span class="fill">
+              <span class="seg"><span class="dot"></span> git <span style="color:var(--ok)">+312</span> <span style="color:var(--bad)">&minus;48</span></span>
+            </span>
+          </div>
+          <div class="box">
+            <div class="line"><span class="txt ph">Type a message...</span>
+              <span class="ctls"><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span>
+              <span class="stop"><svg class="ic"><use href="#i-stop"/></svg></span></span></div>
+          </div>
         </div>
       </div>
+      <p class="note" style="margin:8px 0 0">A running row carries the clock, the thinking
+      count and the token counters with their cached share - and no cumulative cost, which
+      exists only on the Result frame; the row settles under the turn when it ends.</p>
     </div>
   </div>
 
@@ -382,8 +468,8 @@ character-cell row. Slash commands keep their magenta, because that is a real di
       <div class="comp">
         <div class="hint login">Authentication required: claude.ai &#183; Anthropic OAuth (Pro)
           <span class="sub">Run `claude auth login` in another terminal to authenticate</span></div>
-        <div class="box"><div class="line"><span class="txt ph">Type a message...</span>
-          <span class="ctls"><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></span></div></div>
+        <div class="surf"><div class="box"><div class="line"><span class="txt ph">Type a message...</span>
+          <span class="ctls"><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></span></div></div></div>
       </div>
     </div>
     <div class="col">
@@ -391,11 +477,12 @@ character-cell row. Slash commands keep their magenta, because that is a real di
       <div class="comp">
         <div class="hint cancel">Cancelling current turn&#8230; draft will auto-submit when ready.</div>
         <div class="hint sugg">Suggestion: <b>run the feature-config gate too</b><span class="tab">Tab</span></div>
-        <div class="box"><div class="line"><span class="txt">push it once CI is green<span class="caret"></span></span></div>
+        <div class="surf"><div class="box">
+          <div class="line"><span class="txt">push it once CI is green<span class="caret"></span></span></div>
           <div class="foot"><span class="hints"><span class="k">&#8679;&#9166;</span> newline</span>
           <span class="hints"><span class="k">&#9166;</span> send</span>
           <span class="ctls"><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span>
-          <span class="send"><svg class="ic"><use href="#i-send"/></svg></span></span></div></div>
+          <span class="send"><svg class="ic"><use href="#i-send"/></svg></span></span></div></div></div>
       </div>
     </div>
   </div>
@@ -470,28 +557,34 @@ heading, and a query drops the headings and leaves the order.</p>
 </div>
 
 <h2>Dictation</h2>
-<p class="note">A take draws as one card on the box's top-right corner rather than a row inside
-it, so a running take never moves the draft. The card is the dot, the clock, the level graph,
+<p class="note"><b>The take takes the draft's own line.</b> The row the words would be typed
+into becomes the take, so nothing is added and nothing moves when a take starts or ends - the
+card keeps its readings and drops only its own chrome in this context, because the surface's
+ring already says recording or transcribing. The card is the dot, the clock, the level graph,
 the ready tally, the frames, the bytes, the pace and the way out &#8212; and while the take
 transcribes, the graph's slot becomes the section bar: a tick per section up to eight, then a
 fill with the count in words, because a section is a 30 to 60 second window and a take can hold
-sixty of them. As the box narrows, one reading leaves at a time from the left &#8212; clock,
+sixty of them. As the surface narrows, one reading leaves at a time from the left &#8212; clock,
 graph, ready tally, frames, bytes, pace &#8212; and the dot and the way out are never removed.</p>
 <div class="stage">
   <div class="row">
     <div class="col">
-      <div class="lab">recording</div>
+      <div class="lab">recording &middot; the take on the draft's line</div>
       <div class="comp">
-        <div class="box rec">
-          <span class="tc"><span class="dot"></span><span class="clock">0:07</span>
-            <span class="bars"><i style="height:22%"></i><i class="mid" style="height:38%"></i><i style="height:57%"></i><i class="hot" style="height:81%"></i><i class="mid" style="height:44%"></i><i style="height:29%"></i><i class="hot" style="height:92%"></i><i style="height:35%"></i><i class="mid" style="height:52%"></i><i style="height:26%"></i><i class="hot" style="height:74%"></i><i style="height:41%"></i></span>
-            <span class="ready">2 ready</span>
-            <span class="fr">412 fr</span>
-            <span class="kb">251.5 KB</span>
-            <span class="pace">32 KB/s</span>
-            <span class="x">&#10005;</span></span>
-          <div class="line"><span class="txt ph">Type a message...</span></div>
-          <div class="foot"><span class="ctls"><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></span></div>
+        <div class="surf rec">
+          <div class="box">
+            <div class="line takeline">
+              <span class="tc"><span class="dot"></span><span class="clock">0:07</span>
+                <span class="bars"><i style="height:22%"></i><i class="mid" style="height:38%"></i><i style="height:57%"></i><i class="hot" style="height:81%"></i><i class="mid" style="height:44%"></i><i style="height:29%"></i><i class="hot" style="height:92%"></i><i style="height:35%"></i><i class="mid" style="height:52%"></i><i style="height:26%"></i><i class="hot" style="height:74%"></i><i style="height:41%"></i></span>
+                <span class="ready">2 ready</span>
+                <span class="fr">412 fr</span>
+                <span class="kb">251.5 KB</span>
+                <span class="pace">32 KB/s</span>
+                <span class="x">&#10005;</span></span>
+              <span class="ctls"><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span>
+              <span class="stop"><svg class="ic"><use href="#i-stop"/></svg></span></span>
+            </div>
+          </div>
         </div>
       </div>
       <p class="note" style="margin:8px 0 0">The count is what the terminal says while speech
@@ -500,19 +593,23 @@ graph, ready tally, frames, bytes, pace &#8212; and the dot and the way out are 
       pace are the page's own reading of the audio it captured - the same measure the core takes
       over the same frames, read here so it keeps moving while the socket is holding them. A take
       this page did not capture falls back to the record's readings, which is the only source
-      there is for it.</p>
+      there is for it. The field is not drawn beside the card: the row is the take's while it
+      runs, and the draft it held comes back when the take ends.</p>
     </div>
     <div class="col">
       <div class="lab">transcribing</div>
       <div class="comp">
-        <div class="box tr">
-          <span class="tc tr"><span class="spin"></span><span class="clock">0:07</span>
-            <span class="ticks"><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></span>
-            <span class="count">2 of 6</span>
-            <span class="fr">412 fr</span>
-            <span class="x">&#10005;</span></span>
-          <div class="line"><span class="txt ph">Type a message...</span></div>
-          <div class="foot"><span class="ctls"><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></span></div>
+        <div class="surf tr">
+          <div class="box">
+            <div class="line takeline">
+              <span class="tc tr"><span class="spin"></span><span class="clock">0:07</span>
+                <span class="ticks"><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></span>
+                <span class="count">2 of 6</span>
+                <span class="fr">412 fr</span>
+                <span class="x">&#10005;</span></span>
+              <span class="ctls"><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></span>
+            </div>
+          </div>
         </div>
       </div>
       <p class="note" style="margin:8px 0 0">The dot becomes the spinner and the graph becomes
@@ -525,14 +622,17 @@ graph, ready tally, frames, bytes, pace &#8212; and the dot and the way out are 
     <div class="col">
       <div class="lab">transcribing &middot; more sections than ticks</div>
       <div class="comp">
-        <div class="box tr">
-          <span class="tc tr"><span class="spin"></span><span class="clock">22:40</span>
-            <span class="bar"><i style="width:38%"></i></span>
-            <span class="count">18 of 48</span>
-            <span class="fr">68k fr</span>
-            <span class="x">&#10005;</span></span>
-          <div class="line"><span class="txt ph">Type a message...</span></div>
-          <div class="foot"><span class="ctls"><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></span></div>
+        <div class="surf tr">
+          <div class="box">
+            <div class="line takeline">
+              <span class="tc tr"><span class="spin"></span><span class="clock">22:40</span>
+                <span class="bar"><i style="width:38%"></i></span>
+                <span class="count">18 of 48</span>
+                <span class="fr">68k fr</span>
+                <span class="x">&#10005;</span></span>
+              <span class="ctls"><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></span>
+            </div>
+          </div>
         </div>
       </div>
       <p class="note" style="margin:8px 0 0">Past eight sections one tick stops meaning one
@@ -542,14 +642,17 @@ graph, ready tally, frames, bytes, pace &#8212; and the dot and the way out are 
     <div class="col">
       <div class="lab">transcribing &middot; the count is not in yet</div>
       <div class="comp">
-        <div class="box tr">
-          <span class="tc tr"><span class="spin"></span><span class="clock">0:34</span>
-            <span class="bar sweep"><i></i></span>
-            <span class="count">transcribing</span>
-            <span class="fr">1712 fr</span>
-            <span class="x">&#10005;</span></span>
-          <div class="line"><span class="txt ph">Type a message...</span></div>
-          <div class="foot"><span class="ctls"><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></span></div>
+        <div class="surf tr">
+          <div class="box">
+            <div class="line takeline">
+              <span class="tc tr"><span class="spin"></span><span class="clock">0:34</span>
+                <span class="bar sweep"><i></i></span>
+                <span class="count">transcribing</span>
+                <span class="fr">1712 fr</span>
+                <span class="x">&#10005;</span></span>
+              <span class="ctls"><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></span>
+            </div>
+          </div>
         </div>
       </div>
       <p class="note" style="margin:8px 0 0">Before the core has said how many sections the take
@@ -560,29 +663,31 @@ graph, ready tally, frames, bytes, pace &#8212; and the dot and the way out are 
     <div class="col">
       <div class="lab">landed &middot; one green beat, then idle</div>
       <div class="comp">
-        <div class="box done">
-          <div class="line"><span class="txt">fix the flaky retry test and<span class="caret"></span></span></div>
-          <div class="foot"><span class="hints"><span class="k">&#8679;&#9166;</span> newline</span>
-            <span class="hints"><span class="k">&#9166;</span> send</span>
-            <span class="ctls"><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></span></div>
+        <div class="surf done">
+          <div class="box">
+            <div class="line"><span class="txt">fix the flaky retry test and<span class="caret"></span></span></div>
+            <div class="foot"><span class="hints"><span class="k">&#8679;&#9166;</span> newline</span>
+              <span class="hints"><span class="k">&#9166;</span> send</span>
+              <span class="ctls"><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></span></div>
+          </div>
         </div>
       </div>
-      <p class="note" style="margin:8px 0 0">The card goes with the take, the words land at the
-      caret, and the border takes one green beat before easing back.</p>
+      <p class="note" style="margin:8px 0 0">The take goes with its row, the field comes back with
+      the words at the caret, and the ring takes one green beat before easing back.</p>
     </div>
     <div class="col">
       <div class="lab">notice &middot; shares the row, and wins it</div>
       <div class="comp">
-        <div class="box">
+        <div class="surf"><div class="box">
           <div class="notice q">nothing above -50 dBFS in 4s &#183; loudest was -38.2 &#183; try again</div>
           <div class="line"><span class="txt ph">Type a message...</span>
             <span class="ctls"><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></span></div>
-        </div>
-        <div class="box" style="margin-top:10px">
+        </div></div>
+        <div class="surf" style="margin-top:10px"><div class="box">
           <div class="notice bad">microphone is held by another application</div>
           <div class="line"><span class="txt ph">Type a message...</span>
             <span class="ctls"><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></span></div>
-        </div>
+        </div></div>
       </div>
     </div>
   </div>
@@ -795,46 +900,49 @@ way the TUI does it &#8212; the slot always says why it is not accepting keys.</
 </div>
 
 <h2>The prompt dock</h2>
-<p class="note">The box morphs into the prompt: your eye is already in that slot, so a
-permission request arrives where you were about to type rather than somewhere else on the
-screen. Each kind says what it is: a question draws its own words with the batch as marks, a
-permission draws the subject it is about with its actions as buttons, and a held post draws
-the body that would go out. The one row that takes words is always drawn, carries the mic, and
-is where a take's words land. Your in-flight draft is held and restored around the whole
-thing.</p>
+<p class="note"><b>The prompt is a lane of the surface, not a morph.</b> A prompt arriving adds
+its lane between the strip's and the field's, and the composer's row is not drawn while it
+waits - the whole answer lives in the prompt. <b>The last row is the input</b>: &quot;tell the
+agent something else&quot; is a hint at rest, and the moment the reader arrives on it - an
+arrow past the last option, a digit, a click, or simply a typed character - the caret is in it,
+with the mic at its end. There is no second words row and no separate bar: exactly one words
+affordance, and it is the row they land on. The queue count leads the lane, and the head's
+chevron folds the question to the bar - the question, a pending count, and nothing else -
+which a click, Enter or Space unfolds.</p>
 
 <div class="stage">
   <div class="row">
     <div class="col">
       <div class="lab">permission &middot; common case</div>
-      <div class="dock">
+      <div class="surf"><div class="dock">
         <div class="d-head"><span class="tag warn">&#9888; needs approval</span>
           <span class="q" style="margin-left:auto">Bash</span></div>
         <div class="d-q">git push origin polish/rate-limit-chip-softer-34</div>
-        <div class="custom"><span class="notes ph">Tell the agent something else</span>
+        <div class="qrow"><span class="notes ph">Tell the agent something else</span>
           <span class="micb"><svg class="ic"><use href="#i-mic"/></svg></span></div>
-        <div class="acts"><span class="btn d">Deny</span><span class="btn">Allow once</span>
-          <span class="btn p">Allow always</span></div>
+        <div class="acts"><span class="btn p">Allow always</span><span class="btn">Allow once</span>
+          <span class="btn d">Deny</span></div>
         <div class="keys"><span><span class="k">tab</span> between the actions</span>
           <span><span class="k">&#9166;</span> activates</span>
           <span><span class="k">esc</span> reject</span></div>
-      </div>
+      </div></div>
       <p class="note" style="margin:8px 0 0">The subject is drawn exactly as it arrives - prose
-      when Claude sent prose, a command when it did not - and the actions are buttons with the
-      trusting one primary.</p>
+      when the agent sent prose, a command when it did not - and the actions lead with the
+      approving one, which is primary; the refusal sits last, and the row is left-aligned under
+      the body.</p>
     </div>
     <div class="col">
       <div class="lab">permission &middot; denying in your own words</div>
-      <div class="dock">
+      <div class="surf"><div class="dock">
         <div class="d-head"><span class="tag warn">&#9888; needs approval</span>
           <span class="q" style="margin-left:auto">Read</span></div>
         <div class="d-q">/tmp/forge-deny-scenario.txt</div>
         <div class="reason">Path is outside allowed working directories</div>
-        <div class="custom"><span class="notes">I am not touching files outside the project tonight</span>
+        <div class="qrow on"><span class="notes">I am not touching files outside the project tonight</span>
           <span class="micb"><svg class="ic"><use href="#i-mic"/></svg></span></div>
         <div class="acts"><span class="btn d">Deny with these words</span>
           <span class="btn">Allow once</span></div>
-      </div>
+      </div></div>
       <p class="note" style="margin:8px 0 0">The words become the denial's reason, and the deny
       says so rather than leaving the reader to guess. The mic dictates them; on a phone it is
       the only way in, because a touch screen has no push-to-talk key.</p>
@@ -843,14 +951,15 @@ thing.</p>
 
   <div class="row">
     <div class="col">
-      <div class="lab">question &middot; multi-select, second of three</div>
-      <div class="dock">
+      <div class="lab">question &middot; the row past the last option is the input</div>
+      <div class="surf"><div class="dock">
+        <div class="queue">&#8595; 2 more pending after this</div>
         <div class="d-head"><span class="qm">?</span>
           <span class="d-q">Pick the environments to deploy to.</span>
-          <span class="segs"><i></i><i class="on"></i><i></i></span></div>
-        <div class="desc">Environments</div>
+          <span class="headend"><span class="segs"><i></i><i class="on"></i><i></i></span>
+          <span class="chevb">&#9662;</span></span></div>
         <div class="opts">
-          <div class="opt sel"><span class="n">1</span>
+          <div class="opt"><span class="n">1</span>
             <span class="box2 on"><svg class="ic"><use href="#i-check"/></svg></span>
             <span class="tx"><span class="lbl">Staging</span><span class="why">The pre-production cluster</span></span>
             <span class="kk"><span class="k">&#9166;</span></span></div>
@@ -859,26 +968,39 @@ thing.</p>
             <span class="tx"><span class="lbl">Production</span></span></div>
           <div class="opt"><span class="n">3</span><span class="box2"></span>
             <span class="tx"><span class="lbl">Development</span></span></div>
-          <div class="opt"><span class="n">4</span>
-            <span class="tx"><span class="lbl">Tell the agent something else</span></span></div>
         </div>
-        <div class="custom"><span class="notes">Also bump the queue worker concurrency<span class="caret"></span></span>
+        <div class="qrow on"><span class="n" style="font-family:var(--mono);font-size:var(--fs-label);color:var(--hot);flex:none;width:10px">4</span>
+          <span class="notes">also bump the queue worker concurrency<span class="caret"></span></span>
           <span class="micb"><svg class="ic"><use href="#i-mic"/></svg></span>
           <span class="sendb"><svg class="ic"><use href="#i-send"/></svg></span></div>
         <div class="keys"><span><span class="k">&#8593;&#8595;</span> move</span>
           <span><span class="k">space</span> toggle</span>
-          <span><span class="k">1</span>-<span class="k">9</span> pick</span>
+          <span><span class="k">1</span>-<span class="k">4</span> pick</span>
+          <span><span class="k">&#8595;</span> past the last option: your own words</span>
           <span><span class="k">&#9166;</span> submit 2</span>
           <span><span class="k">esc</span> reject</span></div>
-      </div>
-      <p class="note" style="margin:8px 0 0">Rows carry their own number, which is the key that
-      answers them; the submit key says how many will go, so a set is never sent unseen. The
-      custom answer is a row of its own, opening the words rather than answering, and the words
-      alone can go by the send at the row's end.</p>
+      </div></div>
+      <p class="note" style="margin:8px 0 0">The count leads the lane, so a reader knows what
+      waits behind before reading the question. Rows carry their own number, which is the key
+      that answers them; the number past the last option is the words row, and its key lands the
+      caret there too. The submit key says how many will go, so a set is never sent unseen.</p>
+    </div>
+    <div class="col">
+      <div class="lab">question &middot; folded to the bar</div>
+      <div class="surf"><div class="dock">
+        <div class="qbar"><span class="qm">?</span>
+          <span class="t">Pick the environments to deploy to.</span>
+          <span class="cnt">+2</span>
+          <span class="chevc">&#9652;</span></div>
+      </div></div>
+      <p class="note" style="margin:8px 0 0">The bar is the question and the count behind it,
+      and that is all - a click, Enter or Space unfolds. Your typed answer survives the fold,
+      because the row is never unmounted; the reader gets the page back to read the thing the
+      question is about.</p>
     </div>
     <div class="col">
       <div class="lab">question &middot; a take in the words row</div>
-      <div class="dock">
+      <div class="surf"><div class="dock">
         <div class="d-head"><span class="qm">?</span>
           <span class="d-q">Which branch should I land on?</span></div>
         <div class="opts">
@@ -887,20 +1009,18 @@ thing.</p>
             <span class="kk"><span class="k">&#9166;</span></span></div>
           <div class="opt"><span class="n">2</span>
             <span class="tx"><span class="lbl">release branch</span></span></div>
-          <div class="opt"><span class="n">3</span>
-            <span class="tx"><span class="lbl">Tell the agent something else</span></span></div>
         </div>
-        <div class="custom live">
+        <div class="qrow on">
           <span class="tc" style="margin:0">
             <span class="dot"></span><span class="clock">0:07</span>
             <span class="bars" style="width:80px;height:14px"><i style="height:30%"></i><i class="mid" style="height:55%"></i><i class="hot" style="height:88%"></i><i style="height:40%"></i><i class="mid" style="height:62%"></i><i style="height:28%"></i></span>
             <span class="ready">2 ready</span>
-            <span class="sep">&#183;</span><span class="pace">32 KB/s</span>
+            <span class="pace">32 KB/s</span>
             <span class="x">&#10005;</span></span>
           <span class="micb"><svg class="ic"><use href="#i-mic"/></svg></span>
         </div>
         <div class="keys"><span><span class="k">esc</span> cancels the take, then rejects</span></div>
-      </div>
+      </div></div>
       <p class="note" style="margin:8px 0 0">A take draws on the row its words will land in, in
       the same card the composer draws - one component, two surfaces - and the mic stays beside
       it, because pressing it is what put the take there and pressing it again ends it. The
@@ -911,7 +1031,7 @@ thing.</p>
   <div class="row">
     <div class="col">
       <div class="lab">queued &middot; and an answer on its way</div>
-      <div class="dock">
+      <div class="surf"><div class="dock">
         <div class="d-head"><span class="qm">?</span>
           <span class="d-q">Which branch should I land on?</span></div>
         <div class="opts">
@@ -920,18 +1040,14 @@ thing.</p>
             <span class="answering"><span class="ring"></span>sending</span></div>
           <div class="opt"><span class="n">2</span>
             <span class="tx"><span class="lbl">release branch</span></span></div>
-          <div class="opt"><span class="n">3</span>
-            <span class="tx"><span class="lbl">Tell the agent something else</span></span></div>
         </div>
-        <div class="queue">2 more pending after this</div>
-      </div>
-      <p class="note" style="margin:8px 0 0">The wait rides the row that was answered, the keys
-      line stands down while it is out, and the queue count sits under the list - what comes next
-      rather than a headline.</p>
+      </div></div>
+      <p class="note" style="margin:8px 0 0">The wait rides the row that was answered, and the
+      keys line stands down while it is out - it holds until the core takes it.</p>
     </div>
     <div class="col">
       <div class="lab">refused &middot; a row of its own, in the bad tone</div>
-      <div class="dock">
+      <div class="surf"><div class="dock">
         <div class="d-head"><span class="qm">?</span>
           <span class="d-q">Which branch should I land on?</span></div>
         <div class="opts">
@@ -940,29 +1056,28 @@ thing.</p>
             <span class="kk"><span class="k">&#9166;</span></span></div>
           <div class="opt"><span class="n">2</span>
             <span class="tx"><span class="lbl">release branch</span></span></div>
-          <div class="opt"><span class="n">3</span>
-            <span class="tx"><span class="lbl">Tell the agent something else</span></span></div>
         </div>
         <div class="refusal">the prompt was already answered</div>
         <div class="keys"><span><span class="k">&#8593;&#8595;</span> move</span>
           <span><span class="k">&#9166;</span> submit</span>
           <span><span class="k">esc</span> reject</span></div>
-      </div>
+      </div></div>
       <p class="note" style="margin:8px 0 0">A refusal brings the dock back live with the reason
       in the bad tone: the reader can answer again rather than being left with a dead prompt.</p>
     </div>
     <div class="col">
       <div class="lab">held slack post &middot; the approval is the message</div>
-      <div class="dock">
+      <div class="surf"><div class="dock">
         <div class="d-head"><span class="dest">Trust Machines &#183; granite-staging-alerts &#183; thread 1758901234.482910</span>
           <span class="q" style="margin-left:auto">Reply in Slack</span></div>
         <div class="sent">Deploy finished on staging. 148 of 148 checks green, rollback not needed.</div>
-        <div class="acts"><span class="btn d">Don't send</span><span class="btn p">Post</span></div>
-      </div>
+        <div class="acts"><span class="btn p">Post</span><span class="btn d">Don't send</span></div>
+      </div></div>
       <p class="note" style="margin:8px 0 0">The words being approved are shown in full, because a
-      summary is not what goes out. The destination is a chip and the conversation is Slack's own
-      name for it rather than a <span class="mono">#</span> the panel made up: a DM's label is the
-      partner's user id. No mic here - the text is approved, not composed.</p>
+      summary is not what goes out; the approving verb leads here too. The destination is a chip
+      and the conversation is Slack's own name for it rather than a <span class="mono">#</span>
+      the panel made up: a DM's label is the partner's user id. No mic here - the text is
+      approved, not composed.</p>
     </div>
   </div>
 </div>

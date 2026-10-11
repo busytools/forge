@@ -2001,6 +2001,22 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
 .strip { flex: none; padding: 8px 13px 9px; }
 .strip .ti { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; row-gap: 2px;
   font-family: var(--mono); font-size: var(--fs-base); color: var(--dim); }
+/* Below the width that holds the figures and the chips together, the chips
+   take a lane of their own that scrolls sideways (Ved, 2026-10-10: the ragged
+   wrap "does not look great") - deliberate, not accidental, and the turn's
+   figures keep their line. Desktop is untouched: one lane, everything on it. */
+@container (max-width: 720px) {
+  .strip .sg-fill {
+    flex-basis: 100%;
+    margin-left: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+    padding-right: 26px;
+    -webkit-mask-image: linear-gradient(90deg, #000 84%, transparent);
+    mask-image: linear-gradient(90deg, #000 84%, transparent);
+  }
+  .strip .sg-fill::-webkit-scrollbar { display: none; }
+}
 /* Wrap between fields, never inside one: a broken token pair reads as two
    numbers rather than as in and out. */
 .strip .ti > span { white-space: nowrap; }
@@ -2147,6 +2163,11 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
 .tc .x { color: var(--dim); background: none; border: 0; cursor: pointer;
   font-family: inherit; font-size: inherit; padding: 0 3px; line-height: 1; }
 .tc .x:hover { color: var(--text); }
+/* The take on the draft's own line: the same readings as the dock's pill,
+   with none of the pill's chrome - the surface's ring carries the state, and
+   the row is the one the words land in rather than something above it. */
+.takeline .tc { align-self: center; margin: 0; border: 0; background: none;
+  box-shadow: none; padding: 0; }
 /* The phase, for a screen reader only: the card's counts are visual readings
    and would be unreadable announced fifty times a second. */
 .tc .sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
@@ -2372,6 +2393,24 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .dock .segs { display: flex; align-items: center; gap: 5px; margin-left: auto; flex: none; }
 .dock .segs i { width: 14px; height: 3px; border-radius: 999px; background: var(--s3); }
 .dock .segs i.on { background: var(--accent); }
+/* The head's right end: the batch marks and the fold control together, so one
+   auto margin carries both to the edge whether or not there is a batch. */
+.dock .headend { margin-left: auto; display: flex; align-items: center; gap: 5px; flex: none; }
+.dock .headend .segs { margin-left: 0; }
+.dock .chevb { color: var(--dim); background: none; border: 0; padding: 0 2px;
+  cursor: pointer; display: grid; place-items: center; margin-left: 6px; }
+.dock .chevb:hover { color: var(--accent); }
+/* The folded state: the bar is the question and nothing else (Ved, 2026-10-10
+   - the count is the one other thing it carries, so a reader knows more wait
+   behind it). A click, Enter or Space unfolds. */
+.dock .qbar { display: flex; align-items: center; gap: 9px; padding: 12px 14px;
+  font-size: var(--fs-base); cursor: pointer; }
+.dock .qbar .qm { color: var(--accent); font-weight: 700; flex: none; }
+.dock .qbar .t { color: var(--text); font-weight: 600; letter-spacing: -.01em;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.dock .qbar .cnt { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); flex: none; }
+.dock .qbar .chevc { margin-left: auto; color: var(--dim); flex: none; font-size: 13px; }
+.dock .qbar:hover .chevc { color: var(--accent); }
 /* What kind of decision this is, and where a post would go. */
 .dock .tag { display: inline-flex; align-items: center; gap: 7px;
   font-family: var(--mono); font-size: var(--fs-label); border-radius: 999px;
@@ -2382,7 +2421,11 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
   border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; }
 .dock .reason { color: var(--warn); font-size: var(--fs-base); }
 .dock .desc { color: var(--dim); font-size: var(--fs-base); }
-.dock .opts { display: flex; flex-direction: column; gap: 1px; }
+/* A long option list scrolls in place rather than pushing the foot off a
+   phone: the prompt lane is a lane, not a page, and the words row below it
+   must stay reachable however many options the wire sent. */
+.dock .opts { display: flex; flex-direction: column; gap: 1px;
+  max-height: min(46vh, 420px); overflow-y: auto; }
 /* The listbox takes the keyboard when the dock arrives, and its own marked row
    is what shows where the keyboard is - so the page's accent focus ring, which
    drew an orange rectangle around every option at once, is not drawn here. */
@@ -2435,9 +2478,10 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .opt .radio.on { border-color: var(--ok); }
 .opt .radio.on::after { content: ''; width: 7px; height: 7px; border-radius: 50%;
   background: var(--ok); }
-/* A permission's actions, and a held post's verbs: buttons, with the trusting
-   one primary and the refusal as reachable as the approval. */
-.dock .acts { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+/* A permission's actions, and a held post's verbs: buttons, the approving one
+   primary and leading (the settled design), the refusal last - left-aligned
+   under the body rather than scattered to the far edge. */
+.dock .acts { display: flex; gap: 8px; justify-content: flex-start; flex-wrap: wrap; }
 .dock .btn { border: 1px solid var(--line); border-radius: 9px; background: none;
   color: var(--muted); font-family: var(--mono); font-size: var(--fs-label);
   padding: 7px 13px; cursor: pointer; }
@@ -2445,18 +2489,18 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .dock .btn.p { border-color: color-mix(in srgb, var(--accent) 50%, transparent);
   color: var(--hot); background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .dock .btn.d { border-color: color-mix(in srgb, var(--bad) 45%, transparent); color: var(--bad); }
-/* The one row that takes words, which is also where a take's words land: the
-   field, and the mic that is this surface's own door to a take. */
-/* The row wraps rather than pushing the mic out of the dock: the card in here
-   is the composer's own, shed by the ladder above only so far, and at a narrow
-   dock the mic is what would otherwise hang past the edge. */
-.dock .custom { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  border-top: 1px solid var(--line); padding-top: 10px; }
-.dock .custom .notes { flex: 1; min-width: 0; }
-.dock .custom .micb { flex: none; width: 26px; height: 26px; border-radius: 8px;
+/* The words row, which is the prompt's LAST row and its input: it draws like
+   any option, and the field inside it is the answer. Arriving on it puts the
+   caret in it - no tint for that, the caret is the signal - and the mic rides
+   its end. A take draws here too, in the composer's own card. */
+.dock .qrow { align-items: center; gap: 10px; margin-top: 1px;
+  flex-wrap: wrap; }
+.dock .qrow .notes { flex: 1; min-width: 0; width: auto; caret-color: var(--hot); }
+.dock .qrow:focus-within .n { color: var(--hot); }
+.dock .qrow .micb { flex: none; margin-left: auto; width: 26px; height: 26px; border-radius: 8px;
   border: 1px solid var(--line); background: none; color: var(--dim);
   display: grid; place-items: center; cursor: pointer; }
-.dock .custom .micb:hover { color: var(--accent); border-color: var(--ctl); }
+.dock .qrow .micb:hover { color: var(--accent); border-color: var(--ctl); }
 /* The take's card is built for the composer - top left, its draft below it -
    and `align-self: flex-start` with the trailing margin is what that shape
    reserves. In the dock's row there is no draft under it and the mic stands
@@ -2464,12 +2508,12 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
    against the card's margin box: four pixels below the card's own centre, and
    the recording dot's. Centred here instead, with the margin the composer's
    shape reserved dropped. */
-.dock .custom .tc { align-self: center; margin-bottom: 0; }
-.dock .custom .sendb { flex: none; width: 26px; height: 26px; border-radius: 8px;
+.dock .qrow .tc { align-self: center; margin-bottom: 0; }
+.dock .qrow .sendb { flex: none; width: 26px; height: 26px; border-radius: 8px;
   border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
   background: none; color: var(--accent); display: grid; place-items: center; cursor: pointer; }
-.dock .custom .sendb:hover { border-color: var(--accent); color: var(--hot); }
-.dock .custom.live .micb { border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+.dock .qrow .sendb:hover { border-color: var(--accent); color: var(--hot); }
+.dock .qrow.on .micb { border-color: color-mix(in srgb, var(--accent) 45%, transparent);
   color: var(--hot); }
 /* A refusal is a row of its own, in the tone of a thing gone wrong. */
 .dock .refusal { border: 1px solid color-mix(in srgb, var(--bad) 45%, transparent);
@@ -2485,8 +2529,8 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
    floor, so its width is stated here. */
 @media (pointer: coarse) {
   .dock .btn { min-height: 44px; }
-  .dock .custom .micb { min-height: 44px; min-width: 44px; }
-  .dock .custom .sendb { min-height: 44px; min-width: 44px; }
+  .dock .qrow .micb { min-height: 44px; min-width: 44px; }
+  .dock .qrow .sendb { min-height: 44px; min-width: 44px; }
 }
 /* The phase or the batch, for a screen reader only: the marks say nothing. */
 .dock .sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;

@@ -458,7 +458,7 @@ describe('the box', () => {
     expect(document.querySelector('.stop'), 'no turn, no control').toBeNull();
   });
 
-  it('draws the card on the box while a take runs, and takes it away when it resolves', () => {
+  it("draws the take on the draft's own line, and takes it away when it resolves", () => {
     const harness = open();
 
     harness.page.record = record({
@@ -466,14 +466,19 @@ describe('the box', () => {
     });
     flushSync();
 
-    const card = document.querySelector('.box .tc');
-    expect(card, 'the card is drawn inside the box').not.toBeNull();
-    expect(card?.previousElementSibling, 'as its first row, above the draft').toBeNull();
+    const card = document.querySelector('.line .tc');
+    expect(card, "the take did not take the draft's own line").not.toBeNull();
+    expect(
+      document.querySelector('.line textarea'),
+      'the field still draws beside a live take',
+    ).toBeNull();
+    expect(document.querySelector('.foot'), 'the take grew a second row').toBeNull();
 
     harness.page.record = record();
     flushSync();
 
     expect(document.querySelector('.tc'), 'the card goes with the take').toBeNull();
+    expect(document.querySelector('.line textarea'), 'and the field comes back').not.toBeNull();
   });
 
   it('draws no wire counts for a take this page did not start', () => {
@@ -983,30 +988,30 @@ describe('the box', () => {
     expect(document.querySelector('.line .stop'), 'the stop left the field line').not.toBeNull();
   });
 
-  /** The other arm: a recording takes the second row, controls under the field. */
-  it('gives a recording its own row, with the controls below the field', () => {
+  /** The other arm: a recording takes the draft's own line, controls on it. */
+  it("gives a recording the draft's own line, with the controls on it", () => {
     const harness = open({ dictation: true });
     harness.page.record = record({
       composer: { take: take(), notice: null, compacting: false, sign_in: null },
     });
     flushSync();
 
-    expect(document.querySelector('.foot'), 'a recording drew no bottom row').not.toBeNull();
+    expect(document.querySelector('.line .tc'), 'the take took no row').not.toBeNull();
     expect(
-      document.querySelector('.foot .mic'),
-      'the mic did not follow the take down to the bottom row',
+      document.querySelector('.line .mic'),
+      'the mic did not stay on the row the take runs in',
     ).not.toBeNull();
+    expect(document.querySelector('.foot'), 'a recording grew a second row').toBeNull();
   });
 
   /**
-   * **The mic keeps the caret when a started take moves it.**
+   * **The mic keeps the caret when a started take redraws it.**
    *
-   * The gate destroys and rebuilds the button as it changes rows, so a reader
-   * who pressed the mic from the keyboard would lose the caret to the body -
-   * Enter could no longer finish the take - and the phone's press-again would
-   * land a row below where the finger left it, on the field.
+   * The gate destroys and rebuilds the button as the take takes the row, so a
+   * reader who pressed the mic from the keyboard would lose the caret to the
+   * body - Enter could no longer finish the take.
    */
-  it('keeps the caret on the mic when a started take moves it to the bottom row', () => {
+  it('keeps the caret on the mic when a started take redraws its row', () => {
     const harness = open({ dictation: true });
     const resting = document.querySelector('.line .mic');
     expect(resting, 'precondition: the mic rests on the field line').not.toBeNull();
@@ -1019,8 +1024,8 @@ describe('the box', () => {
     flushSync();
 
     expect(
-      document.querySelector('.foot .mic'),
-      'precondition: the take moved the mic to the bottom row',
+      document.querySelector('.line .mic'),
+      'precondition: the take redrew the mic for its row',
     ).not.toBeNull();
     expect(document.activeElement?.className, 'the caret fell off the mic').toContain('mic');
   });
@@ -1806,10 +1811,14 @@ describe('the key', () => {
    */
   it('gives Escape to a live take rather than to the list underneath it', () => {
     const harness = open({ dictation: true });
-    harness.page.record = bound('right_cmd', 'auto', take());
-    flushSync();
+    // The state is reachable one way now: the reader types the `/` that opens
+    // the list, and the take arrives while it stands. (A take owns the draft's
+    // line, so it cannot be typed into once one runs.)
     type('/');
     expect(document.querySelector('.ac'), 'a list is open under the field').not.toBeNull();
+
+    harness.page.record = bound('right_cmd', 'auto', take());
+    flushSync();
 
     press('Escape');
 
@@ -2669,7 +2678,7 @@ describe('the strip lane', () => {
     pinnedRow.set(SEAT, null);
   });
 
-  it('draws as the surface’s first lane, above the box', () => {
+  it("draws as the surface's first lane, above the box", () => {
     pinnedRow.set(SEAT, running);
     open({});
 
@@ -2678,7 +2687,7 @@ describe('the strip lane', () => {
     expect(strip, 'the strip lane did not draw').not.toBeNull();
     expect(surf, 'the surface did not draw').not.toBeNull();
     if (strip === null || surf === null) return;
-    expect(surf.firstElementChild === strip, 'the strip is not the surface’s first lane').toBe(
+    expect(surf.firstElementChild === strip, "the strip is not the surface's first lane").toBe(
       true,
     );
     expect(strip.textContent, 'the row the pin published').toContain('700');
@@ -2693,11 +2702,11 @@ describe('the strip lane', () => {
     expect(document.querySelector('.strip'), 'no strip lane on a bare seat').not.toBeNull();
   });
 
-  it('shows one seat’s pin only', () => {
+  it("shows one seat's pin only", () => {
     pinnedRow.set('session:somebody-else', running);
     open({});
 
-    expect(document.querySelector('.strip'), 'another seat’s pin drew on this surface').toBeNull();
+    expect(document.querySelector('.strip'), "another seat's pin drew on this surface").toBeNull();
   });
 
   it('draws no lane at all when nothing is pinned and no rows hold anything', () => {
@@ -3198,23 +3207,28 @@ describe('the dock', () => {
     ]);
   });
 
-  it('draws the custom answer as a row of its own, which opens the words rather than answering', () => {
+  it('draws the words row past the last option, where arriving lands the caret', () => {
     const harness = open({
       record: record({ pending_asks: [questionAsk('tu-q', { multi_select: false })] }),
     });
 
     expect(
       [...document.querySelectorAll('.dock .opt .lbl')].map((held) => held.textContent),
-      'the custom answer sits last, where every other choice is',
-    ).toEqual(['Staging', 'Production', 'Tell the agent something else']);
+      'the options are exactly what the wire sent',
+    ).toEqual(['Staging', 'Production']);
 
-    options()[2]?.click();
-    flushSync();
-    expect(commands(harness), 'the door itself answers nothing').toEqual([]);
+    // The row past the last option IS the input: one step onto it lands the
+    // caret, and the words alone are the answer.
+    press('ArrowDown');
+    press('ArrowDown');
 
     const notes = document.querySelector('.dock .notes');
     if (!(notes instanceof HTMLTextAreaElement)) throw new Error('no words row');
-    expect(document.activeElement, 'the door put the caret in the words').toBe(notes);
+    expect(
+      document.activeElement,
+      'the row past the last option did not put the caret in the words',
+    ).toBe(notes);
+    expect(commands(harness), 'arriving answers nothing').toEqual([]);
 
     notes.value = 'custom only';
     notes.dispatchEvent(new Event('input', { bubbles: true }));
@@ -4113,7 +4127,7 @@ describe('the dock', () => {
     });
 
     expect(
-      document.querySelector('.dock .custom .tc'),
+      document.querySelector('.dock .qrow .tc'),
       'the take draws on the row its words land in, rather than being swallowed',
     ).not.toBeNull();
 
@@ -5837,5 +5851,205 @@ describe('the dictation panel', () => {
     } finally {
       Reflect.set(globalThis, 'ResizeObserver', original);
     }
+  });
+});
+
+/**
+ * The dock's settled shape (2026-10-10): the queue leads, the last row is the
+ * input, and the bar folds the question to itself.
+ */
+describe("the dock's settled shape", () => {
+  /** Every command the composer sent, in order. */
+  const commands = (harness: { sent: { command: Record<string, unknown> }[] }) =>
+    harness.sent.map((entry) => entry.command);
+
+  it('types through from an option: a printable character moves into the words and lands there', () => {
+    // The ARIA practice's rule for a list beside an input, and the defect the
+    // round was filed for: a reader who starts typing must not have to
+    // discover the row first.
+    const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
+
+    press('l');
+
+    const notes = document.querySelector('.dock .notes');
+    if (!(notes instanceof HTMLTextAreaElement)) throw new Error('no words row');
+    expect(document.activeElement, 'the character did not take the caret into the words').toBe(
+      notes,
+    );
+    expect(notes.value, 'and did not land there').toBe('l');
+    expect(commands(harness), 'typing answers nothing').toEqual([]);
+  });
+
+  it('leads the dock with the waiting count', () => {
+    open({
+      record: record({ pending_asks: [questionAsk()] }),
+      seat: seatRead({ pendingDepth: 3 }),
+    });
+
+    const queue = document.querySelector('.dock .queue');
+    expect(queue, 'the dock drew no queue line').not.toBeNull();
+    const head = document.querySelector('.dock .d-head');
+    if (!(queue instanceof HTMLElement) || head === null) return;
+    expect(
+      queue.compareDocumentPosition(head) & Node.DOCUMENT_POSITION_FOLLOWING,
+      'the count does not lead the question',
+    ).not.toBe(0);
+    expect(queue.textContent, 'the count is not the one waiting behind').toContain(
+      '2 more pending',
+    );
+  });
+
+  it('folds the question to its bar, and the bar unwraps it', () => {
+    open({
+      record: record({ pending_asks: [questionAsk()] }),
+      seat: seatRead({ pendingDepth: 2 }),
+    });
+
+    const chev = document.querySelector('.dock .chevb');
+    if (!(chev instanceof HTMLElement)) throw new Error('the head drew no fold control');
+    chev.click();
+    flushSync();
+
+    expect(document.querySelector('.dock .qbar'), 'no bar after folding').not.toBeNull();
+    expect(document.querySelector('.dock .opts'), 'the options stayed under the bar').toBeNull();
+    expect(document.querySelector('.dock .keys'), 'the keys stayed under the bar').toBeNull();
+    expect(document.querySelector('.dock .qbar .cnt')?.textContent, 'the count left the bar').toBe(
+      '+1',
+    );
+
+    const bar = document.querySelector('.dock .qbar');
+    if (!(bar instanceof HTMLElement)) throw new Error('no bar');
+    bar.click();
+    flushSync();
+
+    expect(document.querySelector('.dock .qbar'), 'the bar did not unwrap').toBeNull();
+    expect(document.querySelector('.dock .opts'), 'the options did not come back').not.toBeNull();
+  });
+
+  it('keeps the bar folded across a repaint of the same prompt', () => {
+    // The record is replaced on every frame and on the session poll; the fold
+    // is the reader's, keyed on the prompt, so a repaint must not re-expand it.
+    const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
+
+    const chev = document.querySelector('.dock .chevb');
+    if (!(chev instanceof HTMLElement)) throw new Error('the head drew no fold control');
+    chev.click();
+    flushSync();
+    expect(document.querySelector('.dock .qbar'), 'precondition: folded').not.toBeNull();
+
+    harness.page.record = record({ pending_asks: [questionAsk()] });
+    flushSync();
+
+    expect(document.querySelector('.dock .qbar'), 'a repaint re-expanded the bar').not.toBeNull();
+  });
+
+  it('swaps the keys line while the caret is in the words row', () => {
+    open({ record: record({ pending_asks: [questionAsk()] }) });
+
+    press('ArrowDown');
+    press('ArrowDown');
+
+    const keys = document.querySelector('.dock .keys')?.textContent ?? '';
+    expect(keys, 'the keys line still reads as the list').toContain('send these words');
+    expect(keys, 'and still promises submit').not.toContain('move');
+  });
+
+  it('hands the keyboard back when the prompt vanishes under the caret', () => {
+    // Review Focus: answered from another view, refused, or replaced - the
+    // caret must land somewhere real, never on the body.
+    const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
+
+    press('ArrowDown');
+    press('ArrowDown');
+    const notes = document.querySelector('.dock .notes');
+    expect(document.activeElement, 'precondition: the caret is in the words').toBe(notes);
+
+    harness.page.record = record({ pending_asks: [] });
+    flushSync();
+
+    expect(document.querySelector('.dock'), 'the dock is gone').toBeNull();
+    expect(document.activeElement, 'the caret fell to the body').not.toBe(document.body);
+    expect(document.activeElement?.tagName, 'the caret did not land on the composer field').toBe(
+      'TEXTAREA',
+    );
+  });
+});
+
+/**
+ * One shape for every kind, approving first (Ved, 2026-10-10): a permission's
+ * actions and a held post's verbs lead with the action that carries the
+ * reader's intent forward, and the refusal sits last.
+ */
+describe('the approving action leads', () => {
+  it("orders a permission's actions allow-always, allow-once, deny", () => {
+    open({
+      record: record({
+        pending_asks: [
+          permissionAsk('tu-1', {
+            options: [
+              {
+                option_id: 'opt-once',
+                name: 'Allow once',
+                kind: 'allow',
+                action: { kind: 'allow' },
+              },
+              { option_id: 'opt-deny', name: 'Deny', kind: 'deny', action: { kind: 'deny' } },
+              {
+                option_id: 'opt-always',
+                name: 'Allow always',
+                kind: 'allow',
+                action: { kind: 'allow' },
+              },
+              {
+                option_id: 'opt-notes',
+                name: 'Tell the agent something else',
+                kind: 'notes',
+                action: { kind: 'deny' },
+              },
+            ],
+          }),
+        ],
+      }),
+    });
+
+    const buttons = [...document.querySelectorAll('.dock .acts .btn')];
+    const labels = buttons.map((button) => button.textContent?.trim());
+    expect(labels, 'the approving action does not lead').toEqual([
+      'Allow always',
+      'Allow once',
+      'Deny',
+    ]);
+    expect(
+      buttons[0]?.classList.contains('p'),
+      'the action that leads is not the one drawn primary',
+    ).toBe(true);
+  });
+
+  it("orders a held post's verbs Post, then Don't send", () => {
+    open({ record: record({ pending_asks: [slackDraftAsk()] }) });
+
+    const labels = [...document.querySelectorAll('.dock .acts .btn')].map((button) =>
+      button.textContent?.trim(),
+    );
+    expect(labels, 'the approved action does not lead').toEqual(['Post', "Don't send"]);
+  });
+
+  it("lands the caret in a permission's words row on a typed character, riding the deny", () => {
+    open({ record: record({ pending_asks: [permissionAsk()] }) });
+
+    press('n');
+
+    const notes = document.querySelector('.dock .notes');
+    expect(document.activeElement, "typing did not land in the permission's words row").toBe(notes);
+    expect(
+      notes instanceof HTMLTextAreaElement ? notes.value : null,
+      'and did not land there',
+    ).toBe('n');
+    const deny = [...document.querySelectorAll('.dock .acts .btn')].find((button) =>
+      button.textContent?.includes('Deny'),
+    );
+    expect(deny?.textContent, 'the deny does not say the words ride it').toContain(
+      'with these words',
+    );
   });
 });
