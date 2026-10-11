@@ -1187,9 +1187,12 @@ function verbOf(name: string): string {
   return parts.length === 0 ? '' : (parts[parts.length - 1] ?? '');
 }
 
-/** The tasks family's card: create / update echo a record, delete an envelope, list an array. */
+/**
+ * The tasks family's card: create / update / claim / wait echo a record,
+ * delete an envelope, list an array.
+ */
 function tasksCard(verb: string, input: unknown, answer: unknown): ForgeCard | null {
-  if (verb === 'create' || verb === 'update') {
+  if (verb === 'create' || verb === 'update' || verb === 'claim') {
     const record = taskOf(answer);
     if (record === null || record.subject === null) return null;
     const pieces: ForgePiece[] = [];
@@ -1202,13 +1205,39 @@ function tasksCard(verb: string, input: unknown, answer: unknown): ForgeCard | n
     pieces.push({
       kind: 'kv',
       pairs: [
+        // The patch line is an update's own: its input names the fields it
+        // moved. A claim's input named the row and nothing else, so the
+        // record's own state is the whole of what it says.
         ...namedBy(input, verb === 'update'),
-        ...recordFacts(record, verb === 'update' ? 'updated_at' : 'created_at'),
+        ...recordFacts(record, verb === 'create' ? 'created_at' : 'updated_at'),
       ],
     });
     return {
       title: record.subject,
       chips: [statusChip(record.status)],
+      figure: record.owner === null ? null : `owner ${record.owner}`,
+      pieces,
+    };
+  }
+  if (verb === 'wait') {
+    const record = taskOf(answer);
+    if (record === null || record.subject === null) return null;
+    const pieces: ForgePiece[] = [];
+    if (record.detail !== null && record.detail !== '') {
+      pieces.push({ kind: 'quote', text: record.detail });
+    }
+    // The words the caller left with the wait: the tool's echo carries the
+    // record and not its `waiting_on`, so what the row now waits on is read
+    // off the call's own input - the same statement the server wrote.
+    const said = str(obj(input), 'detail');
+    if (said !== null && said.trim() !== '') {
+      pieces.push({ kind: 'tag', text: 'the wait' });
+      pieces.push({ kind: 'quote', text: said });
+    }
+    pieces.push({ kind: 'kv', pairs: recordFacts(record, 'updated_at') });
+    return {
+      title: record.subject,
+      chips: [waitChip(input, record)],
       figure: record.owner === null ? null : `owner ${record.owner}`,
       pieces,
     };
@@ -1327,6 +1356,24 @@ function taskWhen(record: TaskRecord): string | null {
   if (record.estimate !== null && record.estimate.trim() !== '') parts.push(record.estimate);
   if (parts.length === 0) parts.push(record.artifact ?? 'unclaimed');
   return parts.join(' \u{b7} ');
+}
+
+/**
+ * The chip a waiting row carries: what it waits on, in the board's own words.
+ *
+ * A test holds these three phrases equal to the board's (`board/view.ts`), so
+ * one wait reads the same on either surface. A call whose kind the page
+ * cannot read keeps the record's own state word, so the chip is never blank.
+ */
+function waitChip(input: unknown, record: TaskRecord): ForgeChip {
+  const held = obj(input);
+  const kind = str(held, 'kind');
+  if (kind === 'decision') return { text: 'waiting on you', tone: 'warn' };
+  if (kind === 'dependency') {
+    return { text: `on ${str(held, 'on') ?? 'another row'}`, tone: 'warn' };
+  }
+  if (kind === 'resource') return { text: 'waiting on a resource', tone: 'warn' };
+  return statusChip(record.status);
 }
 
 /** The chip a task's status draws: the word the wire sends, spaced and toned. */
