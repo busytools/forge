@@ -3328,3 +3328,28 @@ details[open] > summary .arw { opacity: 1; }
   .extensions .ext-row .ext-src { flex-basis: 100%; order: 3; padding-left: 22px; }
   .extensions .ext-subwrap { grid-template-columns: 1fr; }
 }
+
+/* ---------- the document viewer ---------- */
+/* One document is the page: a reading measure, centred rather than a cap
+   with the hole on one side. */
+.doc { max-width: 860px; margin: 0 auto; }
+/* A refusal, an unsupported kind and an empty document: the same line the
+   other pages state a state in. */
+.doc .doc-said { margin-top: 10vh; color: var(--muted); font-size: var(--fs-base);
+  text-align: center; }
+.doc .doc-empty { margin-top: 10vh; color: var(--dim); font-size: var(--fs-base);
+  text-align: center; }
+/* A plain-text document WRAPS: its long lines are read, not scrolled to -
+   the sheet has no horizontal scroller and this page brings none. */
+.doc .doc-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere;
+  font-family: var(--mono); font-size: var(--fs-data); color: var(--text);
+  line-height: 1.6; }
+/* The platform's own PDF viewer, sized to the page and outlined like every
+   other panel. */
+.doc .doc-pdf { width: 100%; height: 78dvh; border: 1px solid var(--line);
+  border-radius: var(--r); background: var(--s1); }
+/* pdf.js draws to canvases at the container's width; the page behind them
+   is the paper the document was written on, not this theme's. */
+.doc .doc-pdf-js { display: flex; flex-direction: column; gap: 14px; }
+.doc .doc-pdf-js canvas { max-width: 100%; border: 1px solid var(--line);
+  border-radius: var(--r); background: #fff; }

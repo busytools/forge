@@ -42,6 +42,7 @@
     "@tauri-apps/api": "^2.12.0",
     "highlight.js": "^11.12.0",
     "markdown-it": "^15.0.2",
+    "pdfjs-dist": "^6.4.299",
     "virtua": "^0.52.9"
   }
 }

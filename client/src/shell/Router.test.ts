@@ -72,6 +72,31 @@ function draw(): string {
   }).body;
 }
 
+describe('the router at a document address', () => {
+  /**
+   * The viewer is what a document address exists for: a route that drew the
+   * not-found page would make every hand-off and every thread deep link a
+   * dead end.
+   */
+  it("mounts the document viewer for the route's document", () => {
+    const body = render(Router, {
+      props: {
+        route: { name: 'doc', slot: LEAD, path: '/proj/docs/plan.md', reviewable: false },
+        settings: DEFAULT_SETTINGS,
+        address: '127.0.0.1:8790',
+        home: { wire: homeWire, refused: null, report: null },
+        failure: null,
+        connected: true,
+        connection: untouched(),
+        notice: null,
+        onconnect: () => {},
+      },
+    }).body;
+
+    expect(body, 'the document address drew no viewer').toContain('Opening /proj/docs/plan.md');
+  });
+});
+
 describe('the router at a session address', () => {
   /**
    * The conversation column is where the seat's history draws, and it is the

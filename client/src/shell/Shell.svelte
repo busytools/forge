@@ -5,6 +5,7 @@
   import { DEFAULT_ADDRESS, displayAddress, type Attempt } from '../connect/attempt';
   import { boot } from '../connect/boot';
   import { rememberedAddress } from '../connect/remembered';
+  import { watchDocumentHandOffs } from '../doc/live';
   import { watchHome, type HomeRead } from '../home/live';
   import { skewMessage, subjectKey, type Skew } from '../protocol';
   import { hrefFor, parseRoute, type Route } from '../routes';
@@ -229,6 +230,19 @@
     route = next;
     history.pushState(null, '', hrefFor(next));
   }
+
+  /**
+   * A hand-off pulls the reader to the document: every raise lands on the
+   * viewer's own address, and one that arrives while the viewer is open
+   * moves it to the newest.
+   */
+  $effect(() => {
+    const open = connection;
+    if (open === null) return;
+    return watchDocumentHandOffs(open, (raise) => {
+      go({ name: 'doc', slot: raise.slot, path: raise.path, reviewable: raise.reviewable });
+    });
+  });
 
   /** The connection the pages read through, and what it came with. */
   function take(connected: Extract<Attempt, { ok: true }>) {

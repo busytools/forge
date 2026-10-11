@@ -7,6 +7,7 @@
   import Fixture from '../dev/Fixture.svelte';
   import Board from '../board/Board.svelte';
   import Extensions from '../extensions/Extensions.svelte';
+  import Document from '../doc/Document.svelte';
   import Home from '../home/Home.svelte';
   import type { HomeRead } from '../home/live';
   import Models from '../models/Models.svelte';
@@ -181,6 +182,14 @@
     />
   {:else if connection !== null}
     <main class="wrap"><p class="pending">Reading the fleet...</p></main>
+  {:else}
+    <Connect {settings} initialAddress={address} launchFailure={failure} {notice} {onconnect} />
+  {/if}
+{:else if route.name === 'doc'}
+  {#if connection !== null}
+    <!-- The viewer asks the connection for the document itself: the route
+         is the address, and the read is the page's own. -->
+    <Document slot={route.slot} path={route.path} reviewable={route.reviewable} {connection} />
   {:else}
     <Connect {settings} initialAddress={address} launchFailure={failure} {notice} {onconnect} />
   {/if}

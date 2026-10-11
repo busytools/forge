@@ -181,6 +181,17 @@ async function stubForge(
         socket.send(JSON.stringify({ kind: 'update', update: { releasing: { key: seat } } }));
       }
     },
+    /** A document hand-off, as a session's own tool raises it. */
+    handOff(seat: SessionSlot, path: string, reviewable: boolean) {
+      for (const socket of server.clients) {
+        socket.send(
+          JSON.stringify({
+            kind: 'update',
+            update: { document_hand_off: { key: seat, path, reviewable } },
+          }),
+        );
+      }
+    },
     async close() {
       for (const client of server.clients) client.terminate();
       await new Promise((resolve) => server.close(resolve));
@@ -302,6 +313,31 @@ describe('the shell at launch', () => {
     );
     expect(drawn(), 'the door is what a session route draws when nothing answers').toContain(
       'is not an address',
+    );
+  });
+
+  /**
+   * A hand-off is the session pulling the reader to the document: the raise
+   * lands ON the viewer's own address, and a second hand-off moves it to the
+   * newest - the navigation half of the two-in-a-row case (the unsent
+   * comments' half belongs to the review page's own tests).
+   */
+  it('opens the viewer when a document is handed over, and moves to the newest', async () => {
+    const forge = await stubForge({ mark: null, theme: null, font: null });
+    forges.push(forge);
+    await openAt('/session/TestOrg/proj/lead', forge.address);
+    await crossed();
+
+    forge.handOff({ org: 'TestOrg', project: 'proj', label: 'lead' }, '/proj/docs/a.md', false);
+    await landed('/doc/TestOrg/proj/lead/proj/docs/a.md');
+    expect(drawn(), 'the first hand-off did not raise the viewer').toContain(
+      'Opening /proj/docs/a.md',
+    );
+
+    forge.handOff({ org: 'TestOrg', project: 'proj', label: 'lead' }, '/proj/docs/b.md', true);
+    await landed('/doc/TestOrg/proj/lead/proj/docs/b.md');
+    expect(drawn(), 'the second hand-off did not move the viewer').toContain(
+      'Opening /proj/docs/b.md',
     );
   });
 

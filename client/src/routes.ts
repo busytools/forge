@@ -13,6 +13,16 @@ export type Route =
   | { name: 'home' }
   | { name: 'session'; slot: SessionSlot }
   | { name: 'connect' }
+  /**
+   * One document in the viewer: the seat whose tree its path resolves
+   * against, and the resolved absolute path - the document IS the address,
+   * so a hand-off and a thread's deep link spell one.
+   *
+   * `reviewable` is the hand-off's flag rather than the address's: it rides
+   * the raise into this route, and an address read back from the URL decides
+   * it again where it opens (the read refuses it for a PDF either way).
+   */
+  | { name: 'doc'; slot: SessionSlot; path: string; reviewable: boolean }
   /** The dictation models: the pins, the catalogue and the updates it proposes. */
   | { name: 'models' }
   /** The extensions: the plugin inventory, its components and the marketplaces. */
@@ -46,6 +56,18 @@ export function parseRoute(path: string): Route {
       slot: { org: decode(org), project: decode(project), label: decode(label) },
     };
   }
+  if (segments.length >= 5 && segments[0] === 'doc') {
+    const [, org, project, label] = segments as [string, string, string, string, ...string[]];
+    return {
+      name: 'doc',
+      slot: { org: decode(org), project: decode(project), label: decode(label) },
+      // The path is absolute on the wire (the read answers the resolved
+      // one), so its leading slash comes back here rather than from a
+      // segment the filter dropped.
+      path: `/${segments.slice(4).map(decode).join('/')}`,
+      reviewable: false,
+    };
+  }
   return { name: 'notFound' };
 }
 
@@ -66,6 +88,14 @@ export function hrefFor(route: Route): string {
       return `/board/${encode(route.org)}/${encode(route.project)}`;
     case 'session':
       return `/session/${encode(route.slot.org)}/${encode(route.slot.project)}/${encode(route.slot.label)}`;
+    case 'doc': {
+      const document = route.path
+        .split('/')
+        .filter((segment) => segment !== '')
+        .map(encode)
+        .join('/');
+      return `/doc/${encode(route.slot.org)}/${encode(route.slot.project)}/${encode(route.slot.label)}/${document}`;
+    }
     case 'notFound':
       return '/';
   }
@@ -91,6 +121,13 @@ export function titleFor(route: Route): string {
   if (route.name === 'models') return 'forge \u{b7} models';
   if (route.name === 'extensions') return 'forge \u{b7} extensions';
   if (route.name === 'board') return `forge \u{b7} ${route.project}`;
+  if (route.name === 'doc') {
+    const name = route.path
+      .split('/')
+      .filter((segment) => segment !== '')
+      .pop();
+    return name === undefined ? 'forge' : `forge \u{b7} ${name}`;
+  }
   if (route.name !== 'session') return 'forge';
   const { project, label } = route.slot;
   return label === 'lead' ? project : `${project} \u{b7} ${label}`;
