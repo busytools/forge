@@ -22,6 +22,8 @@
     now,
     onact,
     onclose,
+    tasks = [],
+    onjump = null,
   }: {
     row: BoardRow;
     /**
@@ -36,6 +38,10 @@
     now: number;
     onact: (command: Record<string, Record<string, unknown>>) => boolean;
     onclose: () => void;
+    /** A parent's own tasks, each labelled with its lane's word; empty for a row without children. */
+    tasks?: { id: string; label: string }[];
+    /** The board's jump, so picking one of those tasks lands on its card. */
+    onjump?: ((id: string) => void) | null;
   } = $props();
 
   const task = $derived(row.task);
@@ -79,6 +85,9 @@
   const ago = $derived(
     fmtSecs(Math.max(0, Math.floor(now / 1_000) - task.updated_at.secs_since_epoch)),
   );
+  /** The estimate's half of the worked line: the leading space lives in the
+      string, where the compiler cannot trim it off the number. */
+  const estimateWords = $derived(task.estimate === null ? '' : ` of ${task.estimate.words}`);
 
   let answer = $state('');
   let sendBack = $state('');
@@ -108,7 +117,7 @@
   tabindex="-1"
   bind:this={root}
 >
-  <div class="dr-head">
+  <div class="dr-head" class:tree={row.parent_subject !== null}>
     {#if task.status === 'waiting'}
       <span class="dr-state warn">waiting on you</span>
     {:else if task.status === 'completed'}
@@ -141,17 +150,17 @@
       <dt>estimate</dt>
       <dd>{task.estimate === null ? 'none' : task.estimate.words}</dd>
       <dt>worked</dt>
-      <dd>
-        {fmtSecs(row.worked_secs)}{#if task.estimate !== null}<span class="dim">
-            of {task.estimate.words}</span
-          >{/if}
-      </dd>
+      <dd>{fmtSecs(row.worked_secs)}<span class="dim">{estimateWords}</span></dd>
       <dt>created</dt>
       <dd>{created}</dd>
       <dt>updated</dt>
       <dd>{updated} <span class="dim">{ago} ago</span></dd>
       <dt>parent</dt>
-      <dd>{row.parent_subject ?? 'none'}</dd>
+      <dd>
+        {#if row.parent_subject !== null}
+          <span class="b-chip blue b-epic-pill">&#8627; {row.parent_subject}</span>
+        {:else}none{/if}
+      </dd>
       <dt>links</dt>
       <dd>
         {#if task.links.length === 0}<span class="dim">none</span>{:else}
@@ -169,6 +178,23 @@
 
     {#if task.detail !== null}
       <p class="dr-detail">{task.detail}</p>
+    {/if}
+
+    {#if tasks.length > 0}
+      <h3>Its tasks</h3>
+      <div class="dr-kids">
+        {#each tasks as child (child.id)}
+          <button
+            type="button"
+            class="dr-kid"
+            onclick={() => onjump?.(child.id)}
+            aria-label="jump to {child.label}"
+          >
+            <span class="l">{child.label}</span>
+            <span class="go" aria-hidden="true">&rarr;</span>
+          </button>
+        {/each}
+      </div>
     {/if}
 
     {#if task.waiting_on !== null}

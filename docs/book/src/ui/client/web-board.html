@@ -118,7 +118,10 @@
   .b-owner { display: inline-flex; align-items: center; gap: 6px; }
   .b-ava { width: 18px; height: 18px; border-radius: 50%; background: var(--s3); color: var(--muted);
     display: inline-flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 600; }
-  .b-epic { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* the tree reads in two marks: a parent wears the epic pill and a solid
+     left spine, a child the epic's name pill and a dimmer spine */
+  .b-card.epic { border-left: 2px solid var(--blue); }
+  .b-card.tree { border-left: 2px solid rgba(97,160,224,.35); }
   .b-meta a { color: var(--blue); text-decoration: none; }
   .b-link { color: var(--muted); }
   .b-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-left: auto; }
@@ -128,6 +131,9 @@
   .b-chip.bad { background: rgba(224,104,62,.14); color: var(--bad); }
   .b-chip.blue { background: rgba(97,160,224,.12); color: var(--blue); }
   .b-chip.dim { background: var(--s3); color: var(--dim); }
+  .b-epic-pill { max-width: 100%; display: inline-block; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
+  button.b-epic-pill { border: 0; font: inherit; font-size: 13px; cursor: pointer; }
 
   /* the last line: the measure under the time, how long since the row moved,
      and the owner picker at the end */
@@ -194,9 +200,19 @@
   .dr-body { flex: 1; overflow-y: auto; padding: 14px 16px 24px; }
   .dr-fields { display: grid; grid-template-columns: 92px 1fr; gap: 6px 12px; }
   .dr-fields dt { color: var(--dim); font-family: var(--mono); font-size: 11.5px; }
-  .dr-fields dd { color: var(--text); font-family: var(--mono); font-size: 12px; }
+  .dr-fields dd { color: var(--text); font-family: var(--mono); font-size: 12px; min-width: 0; }
   .dr-fields dd .dim { color: var(--dim); }
   .dr-fields a { color: var(--blue); text-decoration: none; }
+  .dr-head.tree { border-left: 2px solid rgba(97,160,224,.35); }
+  /* a parent's own tasks: each row a door onto its card */
+  .dr-kids { display: flex; flex-direction: column; gap: 4px; }
+  .dr-kid {
+    display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+    background: var(--s2); border: 0; border-radius: 8px; padding: 8px 10px;
+    color: var(--text); font: inherit; font-family: var(--mono); font-size: 12.5px; cursor: pointer;
+  }
+  .dr-kid .l { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dr-kid .go { color: var(--dim); }
   .dr h3 {
     margin: 20px 0 8px; font-size: 11px; letter-spacing: .09em;
     text-transform: uppercase; color: var(--dim); font-weight: 500;
@@ -332,7 +348,7 @@
 
     <section class="b-lane" data-state="in_progress">
       <div class="b-cap"><span class="b-lane-nm">In progress</span><span class="b-count">2</span><span class="b-rule"></span></div>
-      <article class="b-card">
+      <article class="b-card tree">
         <div class="b-row1">
           <span class="b-mark b-run"></span>
           <span class="b-sub">
@@ -342,7 +358,7 @@
         </div>
         <div class="b-meta">
           <span class="b-owner"><span class="b-ava">F</span>forge</span>
-          <span class="b-epic">the board walk</span>
+          <button class="b-chip blue b-epic-pill">&#8627; the board walk</button>
           <a href="#">spec</a><a href="#">#1886</a>
           <span class="b-chips"><span class="b-chip dim">attempt 1</span></span>
         </div>
@@ -379,7 +395,7 @@
 
     <section class="b-lane" data-state="completed">
       <div class="b-cap"><span class="b-lane-nm">Completed</span><span class="b-count">1</span><span class="b-rule"></span></div>
-      <article class="b-card">
+      <article class="b-card epic">
         <div class="b-row1">
           <span class="b-mark b-done"><svg class="ic" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg></span>
           <span class="b-sub settled">
@@ -388,6 +404,7 @@
         </div>
         <div class="b-meta">
           <span class="b-owner"><span class="b-ava">F</span>forge</span>
+          <span class="b-chip blue b-epic-pill">&#9636; epic</span>
           <span class="b-chips">
             <span class="b-chip">5/5 done</span>
             <span class="b-chip blue">to close</span>
@@ -444,7 +461,7 @@
        waiting on - answerable here - and where it has been. -->
   <div class="dr-scrim"></div>
   <div class="dr" role="dialog" aria-label="the task">
-    <div class="dr-head">
+    <div class="dr-head tree">
       <span class="dr-state warn">waiting on you</span>
       <div class="dr-title">
         <div class="t">a project's board opens as a takeover</div>
@@ -459,9 +476,20 @@
         <dt>worked</dt><dd>1m 49s <span class="dim">of 2m</span></dd>
         <dt>created</dt><dd>10:44</dd>
         <dt>updated</dt><dd>10:47 <span class="dim">3m ago</span></dd>
-        <dt>parent</dt><dd>the board walk</dd>
+        <dt>parent</dt><dd><span class="b-chip blue b-epic-pill">&#8627; the board walk</span></dd>
         <dt>links</dt><dd><a href="#">#1886</a></dd>
       </dl>
+      <h3>Its tasks</h3>
+      <div class="dr-kids">
+        <button class="dr-kid" aria-label="jump to In progress &middot; the strip's counts">
+          <span class="l">In progress &middot; the strip's counts</span>
+          <span class="go" aria-hidden="true">&rarr;</span>
+        </button>
+        <button class="dr-kid" aria-label="jump to Completed &middot; the lanes wrap at 430">
+          <span class="l">Completed &middot; the lanes wrap at 430</span>
+          <span class="go" aria-hidden="true">&rarr;</span>
+        </button>
+      </div>
       <h3>Waiting on you</h3>
       <div class="dr-ask">
         <div class="q">A decision is waiting on you.</div>

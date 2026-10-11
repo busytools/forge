@@ -640,6 +640,101 @@ describe("the board's controls", () => {
     const unowned = [...cards].find((card) => card.querySelector('.b-un') !== null);
     expect(unowned, 'the unclaimed card names its owner-less state').not.toBeUndefined();
   });
+
+  /**
+   * **The measure line's words, with their spaces.** The compiler trims a
+   * leading space in markup, so the string the card draws is pinned whole -
+   * the fix this piece carries - and with it the tree's two marks: a
+   * parent's card carries `epic`, a child's `tree`.
+   */
+  it('draws the measure line whole and the tree marks', () => {
+    summon(
+      wireWith([
+        row(task('epic', 'the epic', 'pending'), { rollup: [1, 2] }),
+        row(
+          task('child', 'a child', 'in_progress', {
+            parent: 'epic',
+            estimate: { words: '1d', secs: 86_400 },
+          }),
+          { worked_secs: 90_000 },
+        ),
+      ]),
+    );
+
+    expect(
+      document.querySelector('.b-card[data-id="child"] .b-time')?.textContent,
+      'the space before the slash survived',
+    ).toBe('worked 25h / 1d');
+    expect(
+      document.querySelector('.b-card[data-id="epic"]')?.classList.contains('epic'),
+      "a parent's card wears the epic spine",
+    ).toBe(true);
+    expect(
+      document.querySelector('.b-card[data-id="child"]')?.classList.contains('tree'),
+      "a child's card wears the tree spine",
+    ).toBe(true);
+  });
+
+  /**
+   * **The epic's doors**: a child's pill jumps to its parent, and the
+   * parent's own page lists its tasks, each a door onto its card. The
+   * epic's own pill is a label, not a control.
+   */
+  it('jumps between an epic and its tasks', async () => {
+    // jsdom performs no layout: scrollIntoView is a browser call the jump
+    // makes, so it is stubbed for the length of the case.
+    const original = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollIntoView');
+    Object.defineProperty(Element.prototype, 'scrollIntoView', {
+      value: (): void => {},
+      configurable: true,
+      writable: true,
+    });
+    summon(
+      wireWith([
+        row(task('epic', 'the epic', 'pending'), { rollup: [1, 2] }),
+        row(task('child', 'a child', 'waiting', { parent: 'epic' })),
+      ]),
+    );
+
+    // The child names its epic in a pill and jumps to it.
+    const pill = document.querySelector<HTMLElement>('button[aria-label="jump to the epic"]');
+    if (pill === null) throw new Error('the epic pill is not on the page');
+    expect(pill.textContent).toContain('the epic');
+    pill.click();
+    flushSync();
+    const epicCard = document.querySelector<HTMLElement>('.b-card[data-id="epic"]');
+    expect(document.activeElement, 'the jump lands on the epic').toBe(epicCard);
+    expect(epicCard?.classList.contains('b-flash'), 'and the card flashes').toBe(true);
+
+    // The epic's pill is a label: a span, not a button.
+    const mark = epicCard?.querySelector('.b-epic-pill');
+    expect(mark?.tagName, 'the epic pill is a label').toBe('SPAN');
+
+    // Its page lists its tasks; picking one closes the page and lands on
+    // the task's card.
+    if (epicCard === null) throw new Error('no epic card');
+    epicCard.dispatchEvent(
+      new MouseEvent('pointerdown', { bubbles: true, clientX: 10, clientY: 10, button: 0 }),
+    );
+    window.dispatchEvent(new MouseEvent('pointerup', { clientX: 10, clientY: 10 }));
+    flushSync();
+    expect(document.querySelector('.dr'), 'the press opens the page').not.toBeNull();
+    const taskRow = document.querySelector<HTMLElement>('.dr .dr-kid');
+    if (taskRow === null) throw new Error('the task is not listed on the page');
+    expect(taskRow.textContent).toContain('a child');
+    taskRow.click();
+    flushSync();
+    await vi.waitFor(() => expect(document.querySelector('.dr')).toBeNull());
+    expect(document.activeElement, 'the pick lands on the task').toBe(
+      document.querySelector('.b-card[data-id="child"]'),
+    );
+
+    if (original !== undefined) {
+      Object.defineProperty(Element.prototype, 'scrollIntoView', original);
+    } else {
+      Reflect.deleteProperty(Element.prototype, 'scrollIntoView');
+    }
+  });
 });
 
 describe("the row's own page", () => {
@@ -848,6 +943,61 @@ describe("the row's own page", () => {
     if (card === null) throw new Error('no card');
     press(card);
     expect(document.querySelector('.dr'), 'the row page is open').not.toBeNull();
+    expect(await violationsOf(document.body.innerHTML)).toEqual([]);
+  });
+
+  /**
+   * **A parent's page lists its tasks; a childless page draws no list - and
+   * both face axe with the marks' controls on screen.** The tree draws on
+   * the page a child's card opens too (the parent pill, the head spine, the
+   * jump), so the scans run over both shapes.
+   */
+  it("lists a parent's tasks, none for a childless row, and faces axe alike", async () => {
+    summon(
+      wireWith([
+        row(task('epic', 'the epic', 'pending'), { rollup: [1, 2] }),
+        row(
+          task('child', 'a child', 'waiting', {
+            parent: 'epic',
+            estimate: { words: '1d', secs: 86_400 },
+          }),
+          // The parent's NAME rides the wire's own field, which is what the
+          // row's page reads for its spine and pill.
+          { worked_secs: 90_000, parent_subject: 'the epic' },
+        ),
+      ]),
+    );
+    const open = (id: string): void => {
+      const card = document.querySelector<HTMLElement>(`.b-card[data-id="${id}"]`);
+      if (card === null) throw new Error(`no card ${id}`);
+      press(card);
+      flushSync();
+    };
+
+    open('child');
+    expect(document.querySelector('.dr'), 'the page is open').not.toBeNull();
+    expect(document.querySelector('.dr .dr-kid'), 'a childless page drew a task list').toBeNull();
+    const worked = [...document.querySelectorAll('.dr dt')].find(
+      (t) => t.textContent?.trim() === 'worked',
+    );
+    expect(worked?.nextElementSibling?.textContent, 'the worked line keeps its space').toBe(
+      '25h of 1d',
+    );
+    expect(document.querySelector('.dr-head.tree'), 'a child page wears the spine').not.toBeNull();
+    expect(await violationsOf(document.body.innerHTML)).toEqual([]);
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    flushSync();
+    await vi.waitFor(() => expect(document.querySelector('.dr')).toBeNull());
+
+    open('epic');
+    const heading = document.querySelector('.dr h3');
+    expect(heading?.textContent, 'the list is headed').toContain('Its tasks');
+    expect(
+      [...document.querySelectorAll('.dr .dr-kid .l')].some((l) =>
+        l.textContent?.includes('a child'),
+      ),
+      'the child is listed',
+    ).toBe(true);
     expect(await violationsOf(document.body.innerHTML)).toEqual([]);
   });
 
