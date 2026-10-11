@@ -697,48 +697,54 @@
   {@const mine = scoped.filter(
     (thread) => thread.anchor.path === file.path && canvasLine(thread) !== null,
   )}
+  <!-- The floor is the section's, and the MEASUREMENT is its inner body's:
+       an observer on the floored section records the clamp, so the height
+       can never shrink and a collapsed file leaves a blank as tall as its
+       diff (measured: a section's rect and min-height both 7887px after the
+       collapse, its .rv-diff gone). -->
   <section
     class="rv-file"
     id={file.path}
     style:min-height={heights.get(heightKey(file.path)) === undefined
       ? undefined
       : `${heights.get(heightKey(file.path))}px`}
-    {@attach (node: HTMLElement) => measureFile(node, file.path)}
   >
-    <div class="rv-filehead">
-      <button
-        type="button"
-        class="rv-fold"
-        aria-expanded={!closedFiles.has(file.path)}
-        aria-label="collapse this file"
-        onclick={() => toggle(closedFiles, file.path)}
-      >
-        <span class="rv-arw" class:open={!closedFiles.has(file.path)}>&#9656;</span>
-      </button>
-      <span class="rv-path">
-        {#if file.file.oldPath !== null}<span class="rv-from"
-            >{file.file.oldPath} &#8594;
-          </span>{/if}{file.path}
-      </span>
-      <span class="rv-tally">
-        {#if mine.length}
-          <span class="rv-cc">{mine.length} {mine.length === 1 ? 'thread' : 'threads'}</span>
-        {/if}
-        {#if file.file.truncated}<span class="rv-cc">truncated</span>{/if}
-        {#if file.file.binary}<span class="rv-cc">binary</span>{/if}
-      </span>
-    </div>
-    {#if !closedFiles.has(file.path)}
-      <div class="rv-diff" data-rv-path={file.path} bind:this={canvases[file.path]}>
-        <DiffView
-          diffFile={file.diffFile}
-          diffViewMode={mode === 'unified' ? DiffModeEnum.Unified : DiffModeEnum.Split}
-          diffViewTheme="dark"
-          diffViewHighlight={true}
-          diffViewFontSize={12}
-          diffViewWrap={true}
-        />
+    <div class="rv-file-body" {@attach (node: HTMLElement) => measureFile(node, file.path)}>
+      <div class="rv-filehead">
+        <button
+          type="button"
+          class="rv-fold"
+          aria-expanded={!closedFiles.has(file.path)}
+          aria-label="collapse this file"
+          onclick={() => toggle(closedFiles, file.path)}
+        >
+          <span class="rv-arw" class:open={!closedFiles.has(file.path)}>&#9656;</span>
+        </button>
+        <span class="rv-path">
+          {#if file.file.oldPath !== null}<span class="rv-from"
+              >{file.file.oldPath} &#8594;
+            </span>{/if}{file.path}
+        </span>
+        <span class="rv-tally">
+          {#if mine.length}
+            <span class="rv-cc">{mine.length} {mine.length === 1 ? 'thread' : 'threads'}</span>
+          {/if}
+          {#if file.file.truncated}<span class="rv-cc">truncated</span>{/if}
+          {#if file.file.binary}<span class="rv-cc">binary</span>{/if}
+        </span>
       </div>
-    {/if}
+      {#if !closedFiles.has(file.path)}
+        <div class="rv-diff" data-rv-path={file.path} bind:this={canvases[file.path]}>
+          <DiffView
+            diffFile={file.diffFile}
+            diffViewMode={mode === 'unified' ? DiffModeEnum.Unified : DiffModeEnum.Split}
+            diffViewTheme="dark"
+            diffViewHighlight={true}
+            diffViewFontSize={12}
+            diffViewWrap={true}
+          />
+        </div>
+      {/if}
+    </div>
   </section>
 {/snippet}
