@@ -8938,6 +8938,20 @@ mod tests {
         assert!(text.contains("narrow it"), "a send-back carries the words: {text}");
         assert!(text.contains("came back"), "and names what happened: {text}");
 
+        // A send-back with no words at all says so, the same as the answer.
+        let mut bare = sample("t-6", TaskStatus::Waiting);
+        bare.waiting_on = Some(Waiting { verification: true, ..question() });
+        ws.push_task(bare);
+        ws.dispatch(Command::TaskVerdict {
+            project: "proj".to_owned(),
+            id: "t-6".to_owned(),
+            approve: false,
+            words: None,
+        })
+        .expect("accepted");
+        let (_, text) = told_one(&mut rx);
+        assert!(text.contains("no words"), "an empty send-back is said plainly: {text}");
+
         // A re-order that lands the row where it started is not an edit: the
         // queue is unchanged and nobody is told.
         let mut queued = sample("t-4", TaskStatus::Pending);
@@ -8950,6 +8964,18 @@ mod tests {
         })
         .expect("accepted");
         assert!(told(&mut rx).is_empty(), "no change to the queue, no notice");
+
+        // And a re-order that does move the row is told: the owner hears it.
+        let beside = sample("t-5", TaskStatus::Pending);
+        ws.push_task(beside);
+        ws.dispatch(Command::TaskRank {
+            project: "proj".to_owned(),
+            id: "t-5".to_owned(),
+            to: crate::protocol::RankMove::Up,
+        })
+        .expect("accepted");
+        let (_, text) = told_one(&mut rx);
+        assert!(text.contains("re-ordered"), "the owner hears the re-order: {text}");
     }
 
     /// A row with no owner tells nobody even though the project's lead is
