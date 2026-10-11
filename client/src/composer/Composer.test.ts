@@ -1384,17 +1384,23 @@ describe('the key', () => {
     harness.page.record = bound('right_cmd', 'auto', take());
     flushSync();
 
-    const newest = () => document.querySelector('.tc .bars i:last-child')?.getAttribute('style');
+    // The take spans the draft's line, so the graph is the envelope: its
+    // newest point is the last reading, and its y is what that reading drew.
+    const newest = (): number | undefined => {
+      const d = document.querySelector('.tc .wave path.area')?.getAttribute('d') ?? '';
+      const match = / 100 ([\d.]+) L 100 100 L 0 100 Z$/.exec(d);
+      return match === null ? undefined : Number(match[1]);
+    };
     mic.held.onFrame?.(encodeFrame([0.9]));
     flushSync();
-    expect(newest(), "a loud frame's own reading").toBe('height: 94%;');
+    expect(newest(), "a loud frame's own reading (94% tall, so y 6)").toBe(6);
 
     // A quieter frame the socket does not take: the record's levels never see
     // it, and the card's graph reads it anyway.
     shared.takes = false;
     mic.held.onFrame?.(encodeFrame([0.4]));
     flushSync();
-    expect(newest(), 'and a quieter one, read where it was produced').toBe('height: 83%;');
+    expect(newest(), 'and a quieter one, read where it was produced (83%, y 17)').toBe(17);
   });
 
   /**
@@ -2492,7 +2498,7 @@ describe('the frame', () => {
     // two slots, so they leave with the graph and the tally they replace.
     const leaving = [
       '.tc .clock',
-      '.tc .bars, .tc .ticks, .tc .bar',
+      '.tc .bars, .tc .wave, .tc .ticks, .tc .bar',
       '.tc .ready, .tc .count',
       '.tc .fr',
       '.tc .kb',

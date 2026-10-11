@@ -1187,7 +1187,7 @@
                  would be typed into is the row they arrive on, so nothing is
                  added and nothing moves when a take starts or ends; the
                  controls ride it, and the surface's ring carries the state. -->
-            <TakeCard take={composer.take} {wire} oncancel={() => act('cancel')} />
+            <TakeCard take={composer.take} {wire} oncancel={() => act('cancel')} spread />
             {@render ctls()}
           {:else}
             <!-- The list belongs to the field rather than being a surface the reader

@@ -2167,11 +2167,28 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
 .tc .x { color: var(--dim); background: none; border: 0; cursor: pointer;
   font-family: inherit; font-size: inherit; padding: 0 3px; line-height: 1; }
 .tc .x:hover { color: var(--text); }
-/* The take on the draft's own line: the same readings as the dock's pill,
-   with none of the pill's chrome - the surface's ring carries the state, and
-   the row is the one the words land in rather than something above it. */
-.takeline .tc { align-self: center; margin: 0; border: 0; background: none;
-  box-shadow: none; padding: 0; }
+/* **The take takes the line, and the graph takes the line's room** (Ved,
+   2026-10-11): the draft's own line in the composer and the question's words
+   row in the dock both hand the card everything the controls leave, and the
+   card wears none of the pill's chrome - the surface's ring carries the state,
+   and the row is the one the words land in rather than something above it. */
+.takeline .tc, .dock .qrow .tc { align-self: center; margin: 0; border: 0; background: none;
+  box-shadow: none; padding: 0; flex: 1 1 auto; min-width: 0; }
+/* The graph inside the card takes whatever the readings leave: pinned at the
+   pill's 116px it read as a bead between the counts rather than as the meter of
+   what is being recorded. */
+.takeline .tc .bar, .dock .qrow .tc .bar { flex: 1 1 auto; width: auto; min-width: 0; }
+.takeline .tc .ticks, .dock .qrow .tc .ticks { flex: 1 1 auto; justify-content: space-between; }
+/* **One smooth envelope, a deeper track for it** (Ved, 2026-10-11, on the
+   stretched take): the pill's per-cell bars read as chunks once the graph has
+   the row's width, and their 16px track made the readings look flat - the
+   highs and lows of what is being recorded sat inside two pixels. A spread
+   card draws the same readings as one path, and the box stretches to the
+   row, so the amplitude scales with it. The pill keeps its own bars. */
+.tc .wave { flex: 1 1 auto; min-width: 0; height: 26px; align-self: center; }
+.tc .wave .area { fill: var(--accent); }
+.tc .wave .edge { fill: none; stroke: var(--hot); stroke-width: 1.5px;
+  vector-effect: non-scaling-stroke; }
 /* The phase, for a screen reader only: the card's counts are visual readings
    and would be unreadable announced fifty times a second. */
 .tc .sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
@@ -2219,7 +2236,7 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
    box under ~51px, narrower than the pill's 22px of padding and border, which
    nothing draws at. */
 @container (max-width: 505px) { .tc .clock { display: none; } }
-@container (max-width: 456px) { .tc .bars, .tc .ticks, .tc .bar { display: none; } }
+@container (max-width: 456px) { .tc .bars, .tc .wave, .tc .ticks, .tc .bar { display: none; } }
 @container (max-width: 330px) { .tc .ready, .tc .count { display: none; } }
 @container (max-width: 266px) { .tc .fr { display: none; } }
 @container (max-width: 195px) { .tc .kb { display: none; } }
@@ -2508,14 +2525,9 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
   border: 1px solid var(--line); background: none; color: var(--dim);
   display: grid; place-items: center; cursor: pointer; }
 .dock .qrow .micb:hover { color: var(--accent); border-color: var(--ctl); }
-/* The take's card is built for the composer - top left, its draft below it -
-   and `align-self: flex-start` with the trailing margin is what that shape
-   reserves. In the dock's row there is no draft under it and the mic stands
-   beside it, so left alone the card pins to the row's top and the mic centres
-   against the card's margin box: four pixels below the card's own centre, and
-   the recording dot's. Centred here instead, with the margin the composer's
-   shape reserved dropped. */
-.dock .qrow .tc { align-self: center; margin-bottom: 0; }
+/* The dock's take card rides the same rule as the composer's line above: one
+   look for one thing - the question's row and the draft's row draw the take
+   the same way (Ved, 2026-10-11). */
 .dock .qrow .sendb { flex: none; width: 26px; height: 26px; border-radius: 8px;
   border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
   background: none; color: var(--accent); display: grid; place-items: center; cursor: pointer; }

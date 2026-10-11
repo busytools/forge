@@ -958,6 +958,11 @@
     flex: none; }
   .tc .bars i { flex: 1 0 1px; border-radius: 1px;
     background: linear-gradient(180deg, var(--hot), var(--accent)); }
+  /* The spread card's graph: one smooth envelope over the same readings. */
+  .tc .wave { flex: 1 1 auto; min-width: 0; height: 26px; align-self: center; }
+  .tc .wave .area { fill: var(--accent); }
+  .tc .wave .edge { fill: none; stroke: var(--hot); stroke-width: 1.5px;
+    vector-effect: non-scaling-stroke; }
   .tc .ticks { display: flex; gap: 3px; flex: none; }
   .tc .ticks i { width: 18px; height: 6px; border-radius: 999px; background: var(--s3); }
   .tc .ticks i.on { background: var(--blue); }
@@ -2635,7 +2640,10 @@ branch main, nothing to commit</div>
           <div class="mbox rec">
             <div class="mline takeline">
               <span class="tc"><span class="dot"></span><span class="clock">0:07</span>
-                <span class="bars"><i style="height:22%"></i><i class="mid" style="height:38%"></i><i style="height:57%"></i><i class="hot" style="height:81%"></i><i class="mid" style="height:44%"></i><i style="height:29%"></i><i class="hot" style="height:92%"></i><i style="height:35%"></i><i class="mid" style="height:52%"></i><i style="height:26%"></i><i class="hot" style="height:74%"></i><i style="height:41%"></i></span>
+                <svg class="wave" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+                  <path class="area" d="M 0 82 C 8 82, 12 58, 20 58 C 28 58, 32 12, 42 12 C 52 12, 54 66, 63 66 C 72 66, 76 30, 85 30 C 94 30, 96 52, 100 52 L 100 100 L 0 100 Z"></path>
+                  <path class="edge" d="M 0 82 C 8 82, 12 58, 20 58 C 28 58, 32 12, 42 12 C 52 12, 54 66, 63 66 C 72 66, 76 30, 85 30 C 94 30, 96 52, 100 52"></path>
+                </svg>
                 <span class="ready">2 ready</span>
                 <span class="fr">412 fr</span>
                 <span class="kb">251.5 KB</span>

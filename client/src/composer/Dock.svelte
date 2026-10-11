@@ -804,7 +804,7 @@
         <span class="n" aria-hidden="true">{rows.length + 1}</span>
       {/if}
       {#if take !== null}
-        <TakeCard {take} {wire} oncancel={onabandon} />
+        <TakeCard {take} {wire} oncancel={onabandon} spread />
       {:else}
         <Field
           editor="dock"

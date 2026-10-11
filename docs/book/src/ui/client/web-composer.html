@@ -141,10 +141,11 @@
     background: linear-gradient(180deg, #1b1622, #12161f);
     box-shadow: 0 6px 18px rgba(0,0,0,.45); }
   .tc.tr { border-color: rgba(97,160,224,.45); }
-  /* The take on the draft's own line: the card's border, background and shadow
-     drop here - the surface's ring carries the state. */
+  /* The take takes the line, and the graph takes the line's room: the card
+     fills what the controls leave and wears none of the pill's chrome - the
+     surface's ring carries the state. */
   .line.takeline .tc { align-self: center; margin: 0; border: 0; background: none;
-    box-shadow: none; padding: 0; }
+    box-shadow: none; padding: 0; flex: 1 1 auto; min-width: 0; }
   .tc .dot { width: 7px; height: 7px; flex: none; border-radius: 50%;
     background: var(--accent); animation: pulse 1.05s ease-in-out infinite; }
   .tc .spin { width: 11px; height: 11px; flex: none; border-radius: 50%;
@@ -162,6 +163,12 @@
     height: 16px; flex: none; }
   .tc .bars i { flex: 1 0 1px; border-radius: 1px;
     background: linear-gradient(180deg, var(--hot), var(--accent)); }
+  /* The spread card's graph: one smooth envelope over the same readings, its
+     box stretched to the row, so the amplitude scales with it. */
+  .tc .wave { flex: 1 1 auto; min-width: 0; height: 26px; align-self: center; }
+  .tc .wave .area { fill: var(--accent); }
+  .tc .wave .edge { fill: none; stroke: var(--hot); stroke-width: 1.5px;
+    vector-effect: non-scaling-stroke; }
   .tc .ticks { display: flex; gap: 3px; flex: none; }
   .tc .ticks i { width: 18px; height: 6px; border-radius: 999px; background: var(--s3); }
   .tc .ticks i.on { background: var(--blue); }
@@ -324,9 +331,11 @@
   .dock .qrow .sendb { flex: none; width: 26px; height: 26px; border-radius: 8px;
     border: 1px solid rgba(244,118,0,.45); background: none; color: var(--accent);
     display: grid; place-items: center; cursor: pointer; }
-  /* The take on the row its words land in: the same card, its own chrome
-     dropped in this context. */
-  .dock .qrow .tc { align-self: center; margin-bottom: 0; }
+  /* The take on the row its words land in rides the same rule as the
+     composer's line: one look for one thing - the question's row and the
+     draft's row draw the take the same way. */
+  .dock .qrow .tc { align-self: center; margin: 0; border: 0; background: none;
+    box-shadow: none; padding: 0; flex: 1 1 auto; min-width: 0; }
   .dock .keys { display: flex; gap: 14px; font-family: var(--mono);
     font-size: var(--fs-label); color: var(--dim); }
   .dock .keys .k { border: 1px solid var(--line); border-radius: 5px; padding: 0 6px; }
@@ -575,7 +584,12 @@ graph, ready tally, frames, bytes, pace &#8212; and the dot and the way out are 
           <div class="box">
             <div class="line takeline">
               <span class="tc"><span class="dot"></span><span class="clock">0:07</span>
-                <span class="bars"><i style="height:22%"></i><i class="mid" style="height:38%"></i><i style="height:57%"></i><i class="hot" style="height:81%"></i><i class="mid" style="height:44%"></i><i style="height:29%"></i><i class="hot" style="height:92%"></i><i style="height:35%"></i><i class="mid" style="height:52%"></i><i style="height:26%"></i><i class="hot" style="height:74%"></i><i style="height:41%"></i></span>
+                <!-- The graph is the envelope the spread card draws: one path
+                     through the readings, stretched to the row. -->
+                <svg class="wave" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+                  <path class="area" d="M 0 82 C 8 82, 12 58, 20 58 C 28 58, 32 12, 42 12 C 52 12, 54 66, 63 66 C 72 66, 76 30, 85 30 C 94 30, 96 52, 100 52 L 100 100 L 0 100 Z"></path>
+                  <path class="edge" d="M 0 82 C 8 82, 12 58, 20 58 C 28 58, 32 12, 42 12 C 52 12, 54 66, 63 66 C 72 66, 76 30, 85 30 C 94 30, 96 52, 100 52"></path>
+                </svg>
                 <span class="ready">2 ready</span>
                 <span class="fr">412 fr</span>
                 <span class="kb">251.5 KB</span>
@@ -1014,7 +1028,10 @@ which a click, Enter or Space unfolds.</p>
         <div class="qrow on">
           <span class="tc" style="margin:0">
             <span class="dot"></span><span class="clock">0:07</span>
-            <span class="bars" style="width:80px;height:14px"><i style="height:30%"></i><i class="mid" style="height:55%"></i><i class="hot" style="height:88%"></i><i style="height:40%"></i><i class="mid" style="height:62%"></i><i style="height:28%"></i></span>
+            <svg class="wave" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+              <path class="area" d="M 0 82 C 8 82, 12 58, 20 58 C 28 58, 32 12, 42 12 C 52 12, 54 66, 63 66 C 72 66, 76 30, 85 30 C 94 30, 96 52, 100 52 L 100 100 L 0 100 Z"></path>
+              <path class="edge" d="M 0 82 C 8 82, 12 58, 20 58 C 28 58, 32 12, 42 12 C 52 12, 54 66, 63 66 C 72 66, 76 30, 85 30 C 94 30, 96 52, 100 52"></path>
+            </svg>
             <span class="ready">2 ready</span>
             <span class="pace">32 KB/s</span>
             <span class="x">&#10005;</span></span>

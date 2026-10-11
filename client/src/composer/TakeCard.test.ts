@@ -56,10 +56,11 @@ const produced = (
 function open(
   over: Record<string, unknown> = {},
   wire: ReturnType<typeof produced> | null = produced(),
+  spread = false,
 ) {
   app = mount(TakeCard, {
     target: document.body,
-    props: { take: narrowed(over), wire, oncancel: () => (cancelled += 1) },
+    props: { take: narrowed(over), wire, oncancel: () => (cancelled += 1), spread },
   });
   flushSync();
 }
@@ -103,6 +104,30 @@ describe('the take card', () => {
     expect(bars.at(-1)?.classList.contains('hot'), 'the loudest reading is the hot tone').toBe(
       true,
     );
+    expect(
+      document.querySelector('.tc .wave'),
+      'the pill keeps its bars, not the envelope',
+    ).toBeNull();
+  });
+
+  it('draws a spread card as one smooth envelope, where the pill keeps its bars', () => {
+    // **The stretched graph** (Ved, 2026-10-11): at the row's width the 40
+    // per-cell bars read as chunks and their 16px track flattened the
+    // readings, so a card spanning a line draws the same levels as ONE path -
+    // and the curve is the point: straight segments through the same readings
+    // pass every other assertion here.
+    open({}, produced(), true);
+
+    expect(document.querySelector('.tc .bars'), 'no bars on a spread card').toBeNull();
+    const d = document.querySelector('.tc .wave path.area')?.getAttribute('d') ?? '';
+    expect(d, 'one closed envelope, curved rather than stepped').toMatch(
+      /^M [\d.]+ [\d.]+ C .* L 100 100 L 0 100 Z$/,
+    );
+    expect(
+      document.querySelector('.tc .wave path.edge')?.getAttribute('d'),
+      'the edge draws the same line the area fills under',
+    ).toBe(d.replace(' L 100 100 L 0 100 Z', ''));
+    expect(d, 'the newest, loudest reading tops the envelope').toContain(' 100 4 L');
   });
 
   it("draws the record's levels and clock for a take this page did not capture", () => {
