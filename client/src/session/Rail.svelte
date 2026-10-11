@@ -120,7 +120,9 @@
       <div class="pj">
         <div class="pr" class:on={project.shown === 'lead'}>
           <span class="dot {leadDot}"></span>
-          <span class="nm"><a href={hrefForSlot(project.row.slot)}>{project.name}</a></span>
+          <span class="nm"
+            ><a class="rail-go" href={hrefForSlot(project.row.slot)}>{project.name}</a></span
+          >
           <span class="org">{project.org}</span>
           {#if project.asleep}
             <span class="age">{project.age}</span>
@@ -137,7 +139,9 @@
             <!-- No closing arm here: a closed worker folds into the sleeper
                  fold on the grouping, so this each never draws one. -->
             <span class="dot {railMark(worker.state)}"></span>
-            <span class="nm"><a href={hrefForSlot(worker.slot)}>{worker.slot.label}</a></span>
+            <span class="nm"
+              ><a class="rail-go" href={hrefForSlot(worker.slot)}>{worker.slot.label}</a></span
+            >
             <CloseChip name={worker.slot.label} onclose={() => close(worker.slot)} />
           </div>
           <!-- The failure draws under the row that failed, dim as the

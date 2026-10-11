@@ -7,7 +7,7 @@ import { homeWire } from '../dev/fixture.data';
 import { PROTOCOL_VERSION } from '../protocol';
 import type { ServerMessage } from '../protocol';
 import type { Connection } from '../socket';
-import type { AgentRow } from '../wire/home';
+import type { AgentRow, HomeWire } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
 import { closeSeat, forgetClosed, watchReleases } from './close';
 import Rail from './Rail.svelte';
@@ -405,5 +405,37 @@ describe('a row that is not a way in', () => {
     expect(rule('details.sfold div.wk'), 'the fold row still points like a link').toContain(
       'cursor: default',
     );
+  });
+});
+
+describe('the rail rows are ways in', () => {
+  /**
+   * **The whole row opens its session.** The name's box stretches over the
+   * row (`.rail-go::after` in the sheet), so the whitespace is the link; the
+   * close chip keeps a target of its own above the stretch. Both halves are
+   * pinned where each lives: the door in the rendered markup, the stretch in
+   * the sheet - no rendered assertion can see a pseudo-element.
+   */
+  it("stretches each row's link over the whole row", () => {
+    const [first] = homeWire.agents;
+    if (first === undefined) throw new Error('the fixture holds no agent');
+    const withWorker: HomeWire = {
+      ...homeWire,
+      agents: [
+        ...homeWire.agents,
+        { ...first, slot: { org: 'TestOrg', project: 'proj', label: 'w1' } },
+      ],
+    };
+    const drawn = render(Rail, {
+      props: { home: withWorker, current: LEAD, now: Date.now(), connection: untouched() },
+    }).body;
+    expect(drawn, 'the project row links its lead').toMatch(
+      /class="rail-go" href="\/session\/TestOrg\/proj\/lead"/,
+    );
+    expect(drawn, 'a worker row links its own seat').toMatch(
+      /class="rail-go" href="\/session\/TestOrg\/proj\/w1"/,
+    );
+    expect(rule('.rail-go::after'), 'the name stretches over the row').toContain('inset: 0');
+    expect(rule('.pr .x, .wk .x'), 'and the chip sits above the stretch').toContain('z-index: 1');
   });
 });

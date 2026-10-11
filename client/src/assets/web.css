@@ -1114,7 +1114,7 @@ details.gfold[open] > summary .arw { color: var(--accent); }
 .pr .x, .wk .x { margin-left: auto; flex: none; color: var(--muted);
   background: none; border: 0; display: flex; align-items: center;
   border-radius: 5px; padding: 2px 5px; cursor: pointer;
-  opacity: 0; pointer-events: none; }
+  opacity: 0; pointer-events: none; position: relative; z-index: 1; }
 /* The chip arrives with the pointer, like the chevron: a column of rail rows
    carries no close marks it does not need. **Instant, not a fade**: crossing
    rows leaves two fading chips on screen at once, which reads as a fragment
@@ -1139,6 +1139,14 @@ details.gfold[open] > summary .arw { color: var(--accent); }
 .pr.on .dot.live, .wk.on .dot.live { border-top-color: var(--accent); }
 .wk { display: flex; align-items: center; gap: 9px; padding: 5px 10px 5px 34px; cursor: pointer; }
 .wk:hover { background: rgba(27,33,48,.4); border-radius: 0 8px 8px 0; }
+/* The row is the way into its session, as a home row is: the name's box
+   stretches over the whole row, and the close chip rides above it with a
+   target of its own. */
+.pr, .wk { position: relative; }
+.rail-go { color: inherit; text-decoration: none; }
+.rail-go::after { content: ""; position: absolute; inset: 0; border-radius: 8px; }
+.rail-go:focus-visible { outline: none; }
+.rail-go:focus-visible::after { outline: 2px solid var(--blue); outline-offset: -2px; }
 .wk .nm { font-family: var(--mono); font-size: var(--fs-data); color: var(--muted);
   flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* A worker's mark is a step down from its project's: the size is what makes
@@ -1878,9 +1886,8 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
   /* The mag door takes both axes, like the chip beside it. */
   .pal-btn { min-width: 44px; min-height: 44px; }
   /* A row's own link is the finger's target: its box carries the 44, and the
-     row grows with it. The rail's rows also stretch the link over the whole
-     row - the way the home rows' own rule already stretches theirs - so the
-     middle of a row is the link rather than dead space.
+     row grows with it. The rail's link stretches over the whole row (its
+     base rule, as the home rows' does).
      Block, and the height in the line, so a long name still ellipsises: an
      inline-block box here is shrink-to-fit, so under `nowrap` it draws as wide
      as its whole text and has no overflow of its own - the phone showed the
@@ -1888,11 +1895,9 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
      width, which is the overflow an ellipsis needs. */
   .pr .nm a, .wk .nm a, .row .name a { display: block; min-width: 0; min-height: 44px;
     line-height: 44px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .pr, .wk { position: relative; }
-  .pr .nm a::after, .wk .nm a::after { content: ""; position: absolute; inset: 0; }
   /* The row's chip is a live control and sits above the stretch, so its own
      presses are the chip's and its box is a finger's to hit. */
-  .pr .x, .wk .x { min-width: 44px; position: relative; z-index: 1; }
+  .pr .x, .wk .x { min-width: 44px; }
   /* An artifact link inside a home row is its own control, above that row's
      stretch, and takes the 44 the same way - the width too, since a short
      label draws one narrower than a finger. Block rather than flex, and the
