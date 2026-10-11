@@ -488,10 +488,13 @@ impl BrowserHost {
     /// directory is the one refusal. The whole act holds the profile's call
     /// lock first (no call runs while the files go) and then the launch
     /// lock a launch takes (nothing - this process or another - starts a
-    /// browser onto a half-removed tree); both are taken in the call path's
-    /// own order, so the two cannot deadlock, and an in-flight call is
-    /// WAITED for rather than refused. The close inside runs under the held
-    /// launch lock, not through `chromium::hide`, which would take it again.
+    /// browser onto a half-removed tree). That is the REVERSE of the call
+    /// path's order - it takes and releases the launch locks before the call
+    /// lock - so the pair is safe only because nothing ever holds a launch
+    /// lock while taking a call lock; a future holder of both, launch first,
+    /// would close the cycle. An in-flight call is WAITED for rather than
+    /// refused. The close inside runs under the held launch lock, not
+    /// through `chromium::hide`, which would take it again.
     #[cfg(desktop)]
     pub async fn delete(&self, name: &str) -> Result<(), String> {
         if let Some(refusal) = profiles::name_refusal(name) {
