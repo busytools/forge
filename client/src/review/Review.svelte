@@ -114,8 +114,12 @@
    */
   async function write(command: unknown): Promise<boolean> {
     const open = connection;
-    if (open === null || branch === '') {
+    if (open === null) {
       refusal = 'the socket is not open';
+      return false;
+    }
+    if (branch === '') {
+      refusal = 'this seat has no branch to file a review against yet';
       return false;
     }
     busy = true;
