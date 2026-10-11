@@ -994,9 +994,11 @@ inspected.
     **A work cut - one feature, one issue, one fix - lands whole: one
     branch, one review, one look, one merge.** Never sliced into
     pieces that land one after another; no intermediate step is shown
-    or merged on the way. A plan that sequences the cut as "land A,
-    then B, then C", and a first PR that lands part of it while the
-    rest waits behind, are both this rule's subject.
+    or merged on the way. The look is the one that cut is owed: a
+    feature waits for the user's own look before merge; a fix merges
+    after the review loop as usual. A plan that sequences the cut as
+    "land A, then B, then C", and a first PR that lands part of it
+    while the rest waits behind, are both this rule's subject.
 
     **A slice is reviewed wrong as well as late.** Feedback on a piece
     arrives after part of the cut has merged, each intermediate
