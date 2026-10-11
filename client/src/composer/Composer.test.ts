@@ -2635,7 +2635,7 @@ describe('the frame', () => {
     // where the one-line pattern above cannot reach it: read from the media
     // query to the control's own line, the lines between allowed.
     expect(sheet, 'the fold control lost its width floor on a finger').toMatch(
-      /@media \(pointer: coarse\) \{\n(?:  [^\n]*\n)*?  \.dock \.chevb \{ min-width: 44px; \}/,
+      /@media \(pointer: coarse\) \{\n(?: {2}[^\n]*\n)*? {2}\.dock \.chevb \{ min-width: 44px; \}/,
     );
     expect(sheetRule('.mic:hover'), 'the mic lost its accent hover').toContain(
       'color: var(--accent)',
