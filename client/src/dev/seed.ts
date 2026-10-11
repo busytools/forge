@@ -82,7 +82,16 @@ const SEEDS: SeedThread[] = [
   },
 ];
 
-/** File one round on the seat's branch, over its own connection. */
+/**
+ * File one round on the seat's branch, over its own connection.
+ *
+ * **Two phases, because sealing reopens an answered thread.** The store
+ * flips an `Addressed` thread back to `Open` when `submit_review` seals a
+ * new reviewer turn into it (`store/review.rs`), which is the reviewer
+ * speaking again and the ball going back to the agent. So the round is
+ * sealed first, with every thread Open, and only then does the answered one
+ * receive its agent reply - which is also the order the real loop runs in.
+ */
 export async function seedReview(
   connection: Connection,
   slot: SessionSlot,
@@ -90,8 +99,14 @@ export async function seedReview(
 ): Promise<string> {
   if (!import.meta.env.DEV) return 'not a development build';
 
-  const threads = SEEDS.map((seed) => ({
-    id: crypto.randomUUID(),
+  const seeded = SEEDS.map((seed) => ({ ...seed, id: crypto.randomUUID() }));
+  const shape = (
+    seed: (typeof seeded)[number],
+    status: string,
+    turns: { author: 'User' | 'Agent'; text: string }[],
+    reviewId: string | null,
+  ) => ({
+    id: seed.id,
     anchor: {
       path: seed.path,
       side: seed.side,
@@ -100,18 +115,29 @@ export async function seedReview(
       context: seed.context,
       base_ref: 'main',
     },
-    comments: seed.turns.map((turn) => ({
+    comments: turns.map((turn) => ({
       author: turn.author === 'User' ? 'User' : { Agent: { label: AGENT } },
       text: turn.text,
       at: '',
-      review_id: null,
+      review_id: turn.author === 'User' ? reviewId : null,
     })),
-    status: seed.status,
+    status,
     created_at: '',
     updated_at: '',
     commit: null,
-  }));
+  });
 
+  // Phase 1: each thread carries only its reviewer turn, unfiled; the round
+  // then seals those turns. The answered one starts Open so the seal does not
+  // have to flip it, and the rest keep the state they were seeded for.
+  const threads = seeded.map((seed) =>
+    shape(
+      seed,
+      seed.status === 'Addressed' ? 'Open' : seed.status,
+      seed.turns.filter((turn) => turn.author === 'User'),
+      null,
+    ),
+  );
   for (const thread of threads) {
     await connection.dispatch(
       { upsert_review_thread: { project: slot.project, branch, thread } },
@@ -130,14 +156,32 @@ export async function seedReview(
     },
     slot,
   );
+  const number =
+    filed !== null && typeof filed === 'object' && 'number' in filed
+      ? (filed as { number: number }).number
+      : null;
+  const reviewId =
+    filed !== null && typeof filed === 'object' && 'id' in filed ? String(filed.id) : null;
+
+  // Phase 2: the answered thread gets its agent reply, its reviewer turn now
+  // carrying the round, and the state the reply puts it in.
+  const answered = seeded.find((seed) => seed.status === 'Addressed');
+  if (answered !== undefined && reviewId !== null) {
+    await connection.dispatch(
+      {
+        upsert_review_thread: {
+          project: slot.project,
+          branch,
+          thread: shape(answered, 'Addressed', answered.turns, reviewId),
+        },
+      },
+      slot,
+    );
+  }
 
   // The record's reviews ride the snapshot, so a re-read is what carries the
   // seeded round onto the page: nothing pushes a review change.
   connection.refresh({ session: slot });
 
-  const number =
-    filed !== null && typeof filed === 'object' && 'number' in filed
-      ? (filed as { number: number }).number
-      : null;
   return number === null ? 'filed a round' : `filed round #${number}`;
 }
