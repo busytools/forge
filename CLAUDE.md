@@ -998,7 +998,10 @@ inspected.
     feature waits for the user's own look before merge; a fix merges
     after the review loop as usual. A plan that sequences the cut as
     "land A, then B, then C", and a first PR that lands part of it
-    while the rest waits behind, are both this rule's subject.
+    while the rest waits behind, are both this rule's subject. A cut
+    that genuinely cannot land whole is decided with the user BEFORE
+    anything is cut down - a smaller PR followed by the rest is the
+    failure this names.
 
     **A slice is reviewed wrong as well as late.** Feedback on a piece
     arrives after part of the cut has merged, each intermediate
