@@ -3226,13 +3226,17 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .review .diff-tailwindcss-wrapper[data-theme='dark'] .hljs-formula { color: var(--dim); }
 
 @media (max-width: 980px) {
-  /* The tree and the diff stack; both scroll with the page. */
+  /* The tree and the diff stack; the page is the one scroller, so every
+     pane lets its content through. */
   .review .rv-body { grid-template-columns: minmax(0, 1fr); }
-  .review .rv-canvas, .review .rv-files { overflow: visible; }
+  .review .rv-canvas,
+  .review .rv-canvas-list,
+  .review .rv-files { overflow: visible; }
 }
 
 @media (pointer: coarse) {
-  /* The way back is the page's only control a finger reaches. */
+  /* Every control a finger reaches takes a real target, the way back and
+     the canvas's doors and buttons alike. */
   .review .back { min-height: 44px; display: inline-flex; align-items: center; }
   .review .rv-a { min-height: 44px; padding: 0 14px; }
   .review .rv-frow, .review .rv-dir { padding-top: 10px; padding-bottom: 10px; }

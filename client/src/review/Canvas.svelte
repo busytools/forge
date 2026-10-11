@@ -26,7 +26,17 @@
   } from '../session/wire';
   import { diffLayerFrom } from '../session/wire';
   import type { SessionSlot } from '../wire/types';
-  import { filesOf, findLine, lineCounts, synthesizeFileDiff, treeOf } from './diff';
+  import {
+    anchorRow,
+    doorSpot,
+    filesOf,
+    findLine,
+    insertRow,
+    lineCounts,
+    rowSide,
+    synthesizeFileDiff,
+    treeOf,
+  } from './diff';
   import { ageOf, authorName, canvasLine, statusName, threadsInScope, turnRound } from './view';
   import { captureContext, type ComposedComment } from './write';
 
@@ -97,12 +107,30 @@
   const tree = $derived(treeOf(scopeFiles));
   const scoped = $derived(threadsInScope(threads, scopeCommit));
 
-  /** One commit's diff, fetched when its scope is shown for the first time. */
+  /**
+   * One commit's diff, fetched when its scope is shown. **An ask the
+   * socket did not take is asked again**: `commitDiff` answers false when
+   * no socket is open and no answer is coming, and a scope left on
+   * "Reading the commit..." for a dropped ask is a page that lies about
+   * the connection rather than one that recovers.
+   */
   $effect(() => {
     const sha = scopeCommit;
     const open = connection;
     if (sha === null || open === null || fetched.has(sha)) return;
-    open.commitDiff(slot, sha);
+    const ask = (): void => {
+      if (!fetched.has(sha)) open.commitDiff(slot, sha);
+    };
+    ask();
+    // An ask the socket did not take (it was down at the moment) would
+    // otherwise leave the scope on "Reading the commit..." for ever. Asking
+    // again is one frame and idempotent: the answer lands, and the loop
+    // stops on its next tick.
+    const timer = setInterval(() => {
+      if (fetched.has(sha)) clearInterval(timer);
+      else ask();
+    }, 1500);
+    return () => clearInterval(timer);
   });
 
   $effect(() => {
@@ -163,6 +191,23 @@
    */
   let list: VListHandle | null = $state(null);
   /**
+   * Whether the page is in its narrow, one-column regime. The list exists
+   * to bound what is mounted; a page that scrolls as one column has no
+   * bounds to give it (its viewport inside an `overflow: visible` wrapper
+   * measures nothing, and the list draws empty), so there the sections are
+   * drawn plain.
+   */
+  let narrow = $state(false);
+  $effect(() => {
+    const query = window.matchMedia('(max-width: 980px)');
+    const moved = (event: MediaQueryListEvent): void => {
+      narrow = event.matches;
+    };
+    narrow = query.matches;
+    query.addEventListener('change', moved);
+    return () => query.removeEventListener('change', moved);
+  });
+  /**
    * The last measured height of each section, by path and mode: the
    * virtualiser drops a size when an item unmounts, and a section scrolled
    * back into view should not arrive at the estimator's guess first.
@@ -200,29 +245,17 @@
    * carries a `data-for` key so a redraw leaves the one already there alone.
    */
   function injectDoors(el: HTMLDivElement, path: string): void {
-    if (mode === 'split') {
-      const spots = [
-        ['new', 'td[data-side="new"] span[data-line-num], tr[data-side="new"] span[data-line-num]'],
-        ['old', 'td[data-side="old"] span[data-line-num], tr[data-side="old"] span[data-line-num]'],
-      ] as const;
-      for (const tr of el.querySelectorAll('tr.diff-line')) {
-        for (const [side, selector] of spots) {
-          const span = tr.querySelector(selector);
-          if (span === null || !(span instanceof HTMLElement)) continue;
-          const cell = span.closest('td') ?? span.parentElement;
-          if (cell === null) continue;
-          const line = lineOf(span);
-          if (line === null) continue;
-          placeDoor(cell, path, side, line);
-        }
-      }
-      return;
-    }
     for (const tr of el.querySelectorAll('tr.diff-line')) {
-      const hit = rowSide(tr, null);
-      if (hit === null) continue;
+      if (mode === 'split') {
+        for (const side of ['new', 'old'] as const) {
+          const spot = doorSpot(tr, side, mode);
+          if (spot !== null) placeDoor(spot.cell, path, side, spot.line);
+        }
+        continue;
+      }
+      const hit = rowSide(tr, null, mode);
       const cell = tr.querySelector('td');
-      if (cell === null) continue;
+      if (hit === null || !(cell instanceof HTMLElement)) continue;
       placeDoor(cell, path, hit.side, hit.line);
     }
   }
@@ -242,41 +275,6 @@
       composeText = '';
     });
     cell.append(door);
-  }
-
-  /** The line a number span names, whichever attribute form carries it. */
-  function lineOf(span: HTMLElement): number | null {
-    const line = Number(
-      span.dataset['lineNewNum'] ?? span.dataset['lineOldNum'] ?? span.textContent,
-    );
-    return Number.isInteger(line) && line > 0 ? line : null;
-  }
-
-  /**
-   * The side and line a line-row click means: the clicked cell's own side in
-   * split, and in unified the new number where the row has one - a removed
-   * line has only the old.
-   */
-  function rowSide(
-    row: Element,
-    target: HTMLElement | null,
-  ): { side: 'old' | 'new'; line: number } | null {
-    const numOf = (side: 'old' | 'new'): number | null => {
-      const selector =
-        mode === 'unified'
-          ? `span[data-line-${side}-num]`
-          : `td[data-side="${side}"] span[data-line-num], tr[data-side="${side}"] span[data-line-num]`;
-      const span = row.querySelector(selector);
-      return span instanceof HTMLElement ? lineOf(span) : null;
-    };
-    const at = (side: 'old' | 'new'): { side: 'old' | 'new'; line: number } | null => {
-      const line = numOf(side);
-      return line === null ? null : { side, line };
-    };
-    const clicked =
-      mode === 'split' ? target?.closest('td[data-side]')?.getAttribute('data-side') : null;
-    if (clicked === 'old') return at('old') ?? at('new');
-    return at('new') ?? at('old');
   }
 
   /**
@@ -347,7 +345,7 @@
       const kept = new SvelteSet<string>();
       for (const entry of want) {
         if (kept.has(entry.key)) continue;
-        const at = anchorRow(el, entry.side, entry.line);
+        const at = anchorRow(el, entry.side, entry.line, mode);
         if (at === null) continue;
         const have = existing.get(entry.key);
         if (have !== undefined) {
@@ -400,25 +398,11 @@
       if (selection !== null && String(selection).trim() !== '') return;
       const row = target.closest('tr.diff-line');
       if (row === null) return;
-      const hit = rowSide(row, target);
+      const hit = rowSide(row, target, mode);
       if (hit === null) return;
       composing = { path, side: hit.side, line: hit.line };
       composeText = '';
     });
-  }
-
-  /** The row a line's number sits on, by the side that number belongs to. */
-  function anchorRow(
-    el: HTMLElement,
-    side: 'old' | 'new',
-    line: number,
-  ): HTMLTableRowElement | null {
-    const anchor =
-      mode === 'unified'
-        ? el.querySelector(`span[data-line-${side}-num="${line}"]`)
-        : (el.querySelector(`td[data-side="${side}"] span[data-line-num="${line}"]`) ??
-          el.querySelector(`tr[data-side="${side}"] span[data-line-num="${line}"]`));
-    return anchor?.closest('tr') ?? null;
   }
 
   function span(cls: string, text: string): HTMLSpanElement {
@@ -433,53 +417,6 @@
     node.className = `rv-mk ${status}`;
     node.setAttribute('aria-hidden', 'true');
     return node;
-  }
-
-  /**
-   * One inserted row, shaped after the row it lands under. **In split the
-   * card holds the half it comments on** - a right-side comment under a
-   * right-side line, a left-side one under the left - and in unified it
-   * takes the whole lane, where the line itself does.
-   *
-   * The anchor's own cells decide the geometry rather than a fixed count:
-   * a split row pads its missing half with a spanning placeholder cell, so
-   * rows in one file do not all carry the same number of cells.
-   */
-  function insertRow(
-    at: HTMLTableRowElement,
-    side: 'old' | 'new',
-    body: HTMLElement,
-  ): HTMLTableRowElement {
-    const row = document.createElement('tr');
-    row.className = 'rv-insert';
-    const cells = [...at.children].map((cell) => {
-      const el = cell as HTMLElement;
-      const own =
-        el.dataset['side'] ??
-        (el.className.includes('old') ? 'old' : el.className.includes('new') ? 'new' : null);
-      return { side: own, colspan: Number(el.getAttribute('colspan') ?? 1) };
-    });
-    const card = (colspan: number): HTMLTableCellElement => {
-      const cell = document.createElement('td');
-      cell.className = 'rv-insert-cell';
-      cell.colSpan = colspan;
-      return cell;
-    };
-    const spanOf = (which: 'old' | 'new'): number =>
-      cells.filter((cell) => cell.side === which).reduce((n, cell) => n + cell.colspan, 0);
-    // No cell names a side: unified, whose line owns the whole width.
-    if (!cells.some((cell) => cell.side !== null)) {
-      const cell = card(cells.reduce((n, held) => n + held.colspan, 0));
-      cell.append(body);
-      row.append(cell);
-      return row;
-    }
-    const mine = card(spanOf(side));
-    mine.append(body);
-    const theirs = card(spanOf(side === 'new' ? 'old' : 'new'));
-    if (side === 'new') row.append(theirs, mine);
-    else row.append(mine, theirs);
-    return row;
   }
 
   function turnBlock(turn: ReviewThreadRecord['comments'][number], index: number): HTMLElement {
@@ -530,7 +467,7 @@
       reopen.className = 'rv-a';
       reopen.textContent = 'reopen';
       reopen.disabled = busy;
-      reopen.addEventListener('click', () => onreopen(thread));
+      reopen.addEventListener('click', () => void onreopen(thread));
       acts.append(reopen);
     } else {
       const resolve = document.createElement('button');
@@ -538,7 +475,7 @@
       resolve.className = 'rv-a';
       resolve.textContent = 'resolve';
       resolve.disabled = busy;
-      resolve.addEventListener('click', () => onresolve(thread));
+      resolve.addEventListener('click', () => void onresolve(thread));
       acts.append(resolve);
     }
     card.append(acts);
@@ -551,6 +488,7 @@
       area.value = replyText;
       area.placeholder = 'Respond to this thread...';
       area.setAttribute('aria-label', 'your response');
+      area.dataset['editor'] = 'nowhere';
       box.append(area);
       const row = document.createElement('div');
       row.className = 'rv-acts';
@@ -567,7 +505,7 @@
         send.disabled = busy || area.value.trim() === '';
       });
       send.addEventListener('click', () => {
-        onreply(thread, replyText.trim());
+        void onreply(thread, replyText.trim());
         replying = null;
         replyText = '';
       });
@@ -604,7 +542,7 @@
     } else {
       wrap.append(threadCard(thread, placed.movedFrom));
     }
-    return insertRow(at, side, wrap);
+    return insertRow(at, side, mode, wrap);
   }
 
   function composerRow(at: HTMLTableRowElement, path: string): HTMLTableRowElement {
@@ -622,6 +560,7 @@
     area.value = composeText;
     area.placeholder = 'Comment on this line...';
     area.setAttribute('aria-label', 'your comment');
+    area.dataset['editor'] = 'nowhere';
     card.append(area);
     const acts = document.createElement('div');
     acts.className = 'rv-acts';
@@ -644,7 +583,7 @@
       if (found === null) return;
       const line = found.hunk.lines[found.index];
       if (line === undefined) return;
-      oncomment({
+      void oncomment({
         path: at.path,
         side: at.side,
         line: at.line,
@@ -666,7 +605,7 @@
     acts.append(comment, cancel);
     card.append(acts);
     wrap.append(card);
-    return insertRow(at, composing?.side ?? 'new', wrap);
+    return insertRow(at, composing?.side ?? 'new', mode, wrap);
   }
 </script>
 
@@ -721,6 +660,10 @@
         ? 'This branch has no changes against its base.'
         : 'This commit changed nothing.'}
     </p>
+  {:else if narrow}
+    {#each built as file (file.path)}
+      {@render fileSection(file)}
+    {/each}
   {:else}
     <VList
       class="rv-canvas-list"
@@ -729,54 +672,58 @@
       bind:this={list}
     >
       {#snippet children(file: BuiltFile)}
-        {@const mine = scoped.filter(
-          (thread) => thread.anchor.path === file.path && canvasLine(thread) !== null,
-        )}
-        <section
-          class="rv-file"
-          id={file.path}
-          style:min-height={heights.get(heightKey(file.path)) === undefined
-            ? undefined
-            : `${heights.get(heightKey(file.path))}px`}
-          {@attach (node: HTMLElement) => measureFile(node, file.path)}
-        >
-          <div class="rv-filehead">
-            <button
-              type="button"
-              class="rv-fold"
-              aria-expanded={!closedFiles.has(file.path)}
-              aria-label="collapse this file"
-              onclick={() => toggle(closedFiles, file.path)}
-            >
-              <span class="rv-arw" class:open={!closedFiles.has(file.path)}>&#9656;</span>
-            </button>
-            <span class="rv-path">
-              {#if file.file.oldPath !== null}<span class="rv-from"
-                  >{file.file.oldPath} &#8594;
-                </span>{/if}{file.path}
-            </span>
-            <span class="rv-tally">
-              {#if mine.length}
-                <span class="rv-cc">{mine.length} {mine.length === 1 ? 'thread' : 'threads'}</span>
-              {/if}
-              {#if file.file.truncated}<span class="rv-cc">truncated</span>{/if}
-              {#if file.file.binary}<span class="rv-cc">binary</span>{/if}
-            </span>
-          </div>
-          {#if !closedFiles.has(file.path)}
-            <div class="rv-diff" data-rv-path={file.path} bind:this={canvases[file.path]}>
-              <DiffView
-                diffFile={file.diffFile}
-                diffViewMode={mode === 'unified' ? DiffModeEnum.Unified : DiffModeEnum.Split}
-                diffViewTheme="dark"
-                diffViewHighlight={true}
-                diffViewFontSize={12}
-                diffViewWrap={true}
-              />
-            </div>
-          {/if}
-        </section>
+        {@render fileSection(file)}
       {/snippet}
     </VList>
   {/if}
 </main>
+
+{#snippet fileSection(file: BuiltFile)}
+  {@const mine = scoped.filter(
+    (thread) => thread.anchor.path === file.path && canvasLine(thread) !== null,
+  )}
+  <section
+    class="rv-file"
+    id={file.path}
+    style:min-height={heights.get(heightKey(file.path)) === undefined
+      ? undefined
+      : `${heights.get(heightKey(file.path))}px`}
+    {@attach (node: HTMLElement) => measureFile(node, file.path)}
+  >
+    <div class="rv-filehead">
+      <button
+        type="button"
+        class="rv-fold"
+        aria-expanded={!closedFiles.has(file.path)}
+        aria-label="collapse this file"
+        onclick={() => toggle(closedFiles, file.path)}
+      >
+        <span class="rv-arw" class:open={!closedFiles.has(file.path)}>&#9656;</span>
+      </button>
+      <span class="rv-path">
+        {#if file.file.oldPath !== null}<span class="rv-from"
+            >{file.file.oldPath} &#8594;
+          </span>{/if}{file.path}
+      </span>
+      <span class="rv-tally">
+        {#if mine.length}
+          <span class="rv-cc">{mine.length} {mine.length === 1 ? 'thread' : 'threads'}</span>
+        {/if}
+        {#if file.file.truncated}<span class="rv-cc">truncated</span>{/if}
+        {#if file.file.binary}<span class="rv-cc">binary</span>{/if}
+      </span>
+    </div>
+    {#if !closedFiles.has(file.path)}
+      <div class="rv-diff" data-rv-path={file.path} bind:this={canvases[file.path]}>
+        <DiffView
+          diffFile={file.diffFile}
+          diffViewMode={mode === 'unified' ? DiffModeEnum.Unified : DiffModeEnum.Split}
+          diffViewTheme="dark"
+          diffViewHighlight={true}
+          diffViewFontSize={12}
+          diffViewWrap={true}
+        />
+      </div>
+    {/if}
+  </section>
+{/snippet}

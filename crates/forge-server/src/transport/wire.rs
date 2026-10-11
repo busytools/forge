@@ -647,7 +647,19 @@ pub enum OutdatedReasonWire {
 
 /// Every thread with its landing against `content` - the same content the
 /// record ships, so a page draws a thread where this answer says.
-fn reviewed_threads(threads: Vec<ReviewThread>, content: &DiffContent) -> Vec<ReviewedThreadWire> {
+///
+/// **Only a thread numbered against this diff's own base is placed.** A
+/// whole-diff anchor records the base it was written against, and a
+/// terminal overlay opened against another target writes line numbers that
+/// address unrelated code here (its own scope filter refuses exactly that:
+/// "line numbers against another base would anchor onto unrelated code"). A
+/// thread from another base answers `None` - no landing - which the page
+/// draws as itself rather than parking it on a guess.
+fn reviewed_threads(
+    threads: Vec<ReviewThread>,
+    content: &DiffContent,
+    default_branch: Option<&str>,
+) -> Vec<ReviewedThreadWire> {
     let files = match &content.branch_ahead {
         LayerState::Populated(files) => Some(files.as_slice()),
         LayerState::Clean | LayerState::ScanFailed => None,
@@ -655,8 +667,9 @@ fn reviewed_threads(threads: Vec<ReviewThread>, content: &DiffContent) -> Vec<Re
     threads
         .into_iter()
         .map(|thread| {
+            let home_base = default_branch == Some(thread.anchor.base_ref.as_str());
             let resolution = match (&thread.commit, files) {
-                (None, Some(files)) => Some(resolution_wire(&thread.anchor, files)),
+                (None, Some(files)) if home_base => Some(resolution_wire(&thread.anchor, files)),
                 _ => None,
             };
             ReviewedThreadWire { thread, resolution }
@@ -1388,9 +1401,9 @@ async fn session(
             turn_in_flight: header.turn_in_flight,
         },
         reviews: ReviewsWire {
-            threads: ReadWire::from(
-                reviews.threads.map(|threads| reviewed_threads(threads, &diff)),
-            ),
+            threads: ReadWire::from(reviews.threads.map(|threads| {
+                reviewed_threads(threads, &diff, held.diff.default_branch.as_deref())
+            })),
             reviews: ReadWire::from(reviews.reviews),
         },
         state: SessionStateWire {
@@ -2507,6 +2520,11 @@ mod tests {
     /// The landing rides the read because a client has no working tree to
     /// re-scan; a commit's diff is immutable, so a thread anchored to one
     /// is settled by construction and this content is not its numbering.
+    ///
+    /// **A thread written against another base is refused the landing too**:
+    /// its line numbers belong to a diff this record does not carry, and a
+    /// placement would be a guess (the terminal's own scope filter refuses
+    /// exactly that).
     #[tokio::test]
     async fn the_record_carries_each_threads_landing() {
         let fleet =
@@ -2525,8 +2543,12 @@ mod tests {
                 read_at: std::time::Instant::now(),
             },
         );
-        let thread =
-            |id: &str, text: &str, commit: Option<&str>| forge_primitives::review::ReviewThread {
+        let thread = |id: &str,
+                      text: &str,
+                      commit: Option<&str>,
+                      base: &str|
+         -> forge_primitives::review::ReviewThread {
+            forge_primitives::review::ReviewThread {
                 id: id.to_owned(),
                 anchor: forge_primitives::review::ReviewAnchor {
                     path: "branch.txt".to_owned(),
@@ -2534,7 +2556,7 @@ mod tests {
                     line: 1,
                     content_hash: forge_workspace::env::git_diff::resolver::anchor_hash(text),
                     context: Vec::new(),
-                    base_ref: "main".to_owned(),
+                    base_ref: base.to_owned(),
                 },
                 comments: vec![forge_primitives::review::ReviewComment {
                     author: forge_primitives::review::ReviewAuthor::User,
@@ -2546,17 +2568,19 @@ mod tests {
                 created_at: "2026-01-01T00:00:00Z".to_owned(),
                 updated_at: "2026-01-01T00:00:00Z".to_owned(),
                 commit: commit.map(str::to_owned),
-            };
-        for (id, text, commit) in [
-            ("placed", "committed on the branch", None),
-            ("gone", "a line the branch does not carry", None),
-            ("scoped", "committed on the branch", Some("abc123")),
+            }
+        };
+        for (id, text, commit, base) in [
+            ("placed", "committed on the branch", None, "main"),
+            ("gone", "a line the branch does not carry", None, "main"),
+            ("scoped", "committed on the branch", Some("abc123"), "main"),
+            ("other-base", "committed on the branch", None, "HEAD"),
         ] {
             assert!(
                 fleet.workspace().upsert_review_thread(
                     "proj",
                     "worktree-pr",
-                    thread(id, text, commit),
+                    thread(id, text, commit, base),
                 ),
                 "the {id} thread stores",
             );
@@ -2589,6 +2613,11 @@ mod tests {
             of("scoped")["resolution"],
             serde_json::Value::Null,
             "a commit-scoped thread has no landing against the record's content",
+        );
+        assert_eq!(
+            of("other-base")["resolution"],
+            serde_json::Value::Null,
+            "nor has one numbered against another base, whose lines address other code here",
         );
     }
 

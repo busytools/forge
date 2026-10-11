@@ -251,9 +251,13 @@ pub enum ServerMessage {
     },
     /// The answer to `commit_diff`: one commit's own bounded diff, in the
     /// same layer shape the record's content read carries, so a client
-    /// draws both scopes through one parse. A seat forge holds no session
-    /// for, or a `sha` git cannot read, is an `error` naming `commit_diff`
-    /// rather than a layer dressed as an empty commit.
+    /// draws both scopes through one parse.
+    ///
+    /// **A `sha` git cannot read is the scan's own `scan_failed` layer, not
+    /// an `error`** - the diff-viewer contract keeps a read that answered
+    /// something apart from a read that could not run, and the client draws
+    /// the state as itself. Only a seat forge holds no session for is an
+    /// `error` naming `commit_diff`.
     CommitDiff {
         sha: String,
         files: LayerState<Vec<FileContent>>,

@@ -27,6 +27,17 @@ describe('the anchor capture', () => {
       '16591147884985137298',
     );
     expect(anchorHash('fn café() {}').toString()).toBe('14060598129659224412');
+    // The collapse's edges, where JS's `\s` and Rust's `split_whitespace`
+    // disagree: NEL is White_Space and splits, the BOM is not and stays.
+    // Both spelled by codepoint, because both are invisible in an editor.
+    expect(
+      anchorHash(`a${String.fromCodePoint(0x85)}b`).toString(),
+      'NEL collapses like Rust splits it',
+    ).toBe('16591147884985137298');
+    expect(
+      anchorHash(`a${String.fromCodePoint(0xfeff)}b`).toString(),
+      'the BOM is content, not whitespace',
+    ).toBe('4988096857352653883');
   });
 
   it("captures the neighbours the crate's radius takes", () => {

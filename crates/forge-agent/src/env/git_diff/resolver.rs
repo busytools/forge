@@ -307,11 +307,18 @@ mod tests {
     /// implementations must agree byte for byte or a thread written there
     /// never places in the terminal. Whitespace collapsing and a non-ASCII
     /// byte are both exercised, because the two are where a port drifts.
+    ///
+    /// **The last two vectors are the collapse's edges**, where JS's `\s`
+    /// and Rust's `split_whitespace` disagree: U+0085 (NEL) is Unicode
+    /// White_Space and splits, U+FEFF (the BOM) is not and stays. The JS
+    /// side names the class explicitly for exactly these two.
     #[test]
     fn the_hash_vectors_the_web_client_mirrors() {
         assert_eq!(anchor_hash("let x = 1;"), 12_051_066_714_322_805_831);
         assert_eq!(anchor_hash("  a  b  "), 16_591_147_884_985_137_298);
         assert_eq!(anchor_hash("fn caf\u{e9}() {}"), 14_060_598_129_659_224_412);
+        assert_eq!(anchor_hash("a\u{85}b"), 16_591_147_884_985_137_298);
+        assert_eq!(anchor_hash("a\u{feff}b"), 4_988_096_857_352_653_883);
     }
 
     /// The view-shaped placement names the line it landed on and the one

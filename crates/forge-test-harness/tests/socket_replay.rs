@@ -374,6 +374,149 @@ fn a_unit_command_crosses_as_its_name() {
     }
 }
 
+/// **The review commands a page writes by hand cross as their own names.**
+/// The review page builds these three frames itself (`review/write.ts`), so
+/// both halves are pinned for each: what the core writes for the variant,
+/// and that the exact frame the page hands the socket decodes back to it. A
+/// rename on either side fails nothing until the button does nothing when
+/// it is pressed, with nothing on either side saying so.
+#[test]
+fn the_review_commands_cross_as_their_names() {
+    use forge_primitives::review::{
+        ReviewAnchor, ReviewAuthor, ReviewComment, ReviewSide, ReviewStatus, ReviewThread,
+    };
+
+    let slot = SessionSlot::lead("TestOrg", "proj");
+    let thread = ReviewThread {
+        id: "t1".to_owned(),
+        anchor: ReviewAnchor {
+            path: "src/a.rs".to_owned(),
+            side: ReviewSide::New,
+            line: 4,
+            content_hash: 12_051_066_714_322_805_831,
+            context: vec!["ctx".to_owned()],
+            base_ref: "main".to_owned(),
+        },
+        comments: vec![ReviewComment {
+            author: ReviewAuthor::User,
+            text: "why this?".to_owned(),
+            at: String::new(),
+            review_id: None,
+        }],
+        status: ReviewStatus::Open,
+        created_at: String::new(),
+        updated_at: String::new(),
+        commit: None,
+    };
+
+    let frame = |command: serde_json::Value, reply_to: serde_json::Value| json!({ "kind": "command", "command": command, "reply_to": reply_to });
+
+    // What the core writes for each variant, under its own name.
+    let written = serde_json::to_value(Command::UpsertReviewThread {
+        project: "proj".to_owned(),
+        branch: "b".to_owned(),
+        thread: thread.clone(),
+        respond: None,
+    })
+    .expect("the variant encodes");
+    assert!(written.get("upsert_review_thread").is_some(), "upsert: {written}");
+    let written = serde_json::to_value(Command::SubmitReview {
+        project: "proj".to_owned(),
+        branch: "b".to_owned(),
+        summary: Some("pass".to_owned()),
+        thread_ids: vec!["t1".to_owned()],
+        origin: slot.clone(),
+        respond: None,
+    })
+    .expect("the variant encodes");
+    assert!(written.get("submit_review").is_some(), "submit: {written}");
+    let written = serde_json::to_value(Command::SetReviewThreadStatus {
+        project: "proj".to_owned(),
+        branch: "b".to_owned(),
+        thread_id: "t1".to_owned(),
+        status: ReviewStatus::Resolved,
+    })
+    .expect("the variant encodes");
+    assert!(written.get("set_review_thread_status").is_some(), "status: {written}");
+
+    // And the exact frames the page hands the socket decode back.
+    let upsert = frame(
+        json!({
+            "upsert_review_thread": {
+                "project": "proj",
+                "branch": "b",
+                "thread": serde_json::to_value(&thread).expect("the thread encodes"),
+            }
+        }),
+        json!(7),
+    );
+    let message: ClientMessage =
+        serde_json::from_value(upsert).expect("the frame the review page writes parses");
+    let ClientMessage::Command { command, reply_to } = message else {
+        panic!("a command frame decoded as {message:?}");
+    };
+    match *command {
+        Command::UpsertReviewThread { project, branch, thread: held, .. } => {
+            assert_eq!(project, "proj");
+            assert_eq!(branch, "b");
+            assert_eq!(held.id, "t1");
+            assert_eq!(reply_to, Some(7), "the upsert answers through a reply");
+        }
+        other => panic!("an upsert decoded as {other:?}"),
+    }
+
+    let submit = frame(
+        json!({
+            "submit_review": {
+                "project": "proj",
+                "branch": "b",
+                "summary": "pass",
+                "thread_ids": ["t1"],
+                "origin": serde_json::to_value(&slot).expect("the slot encodes"),
+            }
+        }),
+        json!(8),
+    );
+    let message: ClientMessage =
+        serde_json::from_value(submit).expect("the frame the review page writes parses");
+    let ClientMessage::Command { command, reply_to } = message else {
+        panic!("a command frame decoded as {message:?}");
+    };
+    match *command {
+        Command::SubmitReview { thread_ids, summary, .. } => {
+            assert_eq!(thread_ids, vec!["t1".to_owned()]);
+            assert_eq!(summary.as_deref(), Some("pass"));
+            assert_eq!(reply_to, Some(8), "the submit answers through a reply");
+        }
+        other => panic!("a submit decoded as {other:?}"),
+    }
+
+    let status = frame(
+        json!({
+            "set_review_thread_status": {
+                "project": "proj",
+                "branch": "b",
+                "thread_id": "t1",
+                "status": "Resolved",
+            }
+        }),
+        json!(null),
+    );
+    let message: ClientMessage =
+        serde_json::from_value(status).expect("the frame the review page writes parses");
+    let ClientMessage::Command { command, reply_to } = message else {
+        panic!("a command frame decoded as {message:?}");
+    };
+    match *command {
+        Command::SetReviewThreadStatus { thread_id, status, .. } => {
+            assert_eq!(thread_id, "t1");
+            assert_eq!(status, ReviewStatus::Resolved);
+            assert!(reply_to.is_none(), "a status change rides the subscription, not a reply");
+        }
+        other => panic!("a status change decoded as {other:?}"),
+    }
+}
+
 /// Where the records live, named by the protocol the server speaks rather
 /// than by a literal: a version bump looks for a directory that is not there
 /// and fails, which is the right answer for a client that would refuse to
@@ -728,6 +871,47 @@ fn frames_record() -> Value {
     // ever.
     payload_sampled
         .insert("BrowserRole".to_owned(), shape_of(&ServerMessage::BrowserRole { hosting: true }));
+    // The commit answer's own fields, one file with one hunk: the review
+    // canvas parses these names (`fileFrom`, `hunkFrom`, `lineFrom`), and a
+    // rename among them moves no census line - the scope would draw an empty
+    // table with nothing failing.
+    payload_sampled.insert(
+        "CommitDiff".to_owned(),
+        shape_of(&ServerMessage::CommitDiff {
+            sha: "abc123".to_owned(),
+            files: forge_primitives::git_diff::LayerState::Populated(vec![
+                forge_workspace::env::git_diff::content::FileContent {
+                    path: "src/a.rs".to_owned(),
+                    old_path: None,
+                    status: forge_primitives::git::FileStatus::Modified,
+                    binary: false,
+                    submodule: false,
+                    truncated: false,
+                    hunks: vec![forge_workspace::env::git_diff::hunks::Hunk {
+                        old_start: 1,
+                        old_count: 2,
+                        new_start: 1,
+                        new_count: 3,
+                        lines: vec![
+                            forge_workspace::env::git_diff::hunks::DiffLine {
+                                kind: forge_workspace::env::git_diff::hunks::DiffLineKind::Context,
+                                text: "one".to_owned(),
+                                old_line: Some(1),
+                                new_line: Some(1),
+                            },
+                            forge_workspace::env::git_diff::hunks::DiffLine {
+                                kind: forge_workspace::env::git_diff::hunks::DiffLineKind::Added,
+                                text: "two".to_owned(),
+                                old_line: None,
+                                new_line: Some(2),
+                            },
+                        ],
+                    }],
+                },
+            ]),
+            truncated: false,
+        }),
+    );
     // **The hand-off's own fields, where a rename proved invisible to the
     // census.** `context` became `profile` in v7 - the field crosses in this
     // update and in the snapshot's pending asks alike, and a one-sided rename

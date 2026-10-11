@@ -48,15 +48,26 @@ scope's:
   a read that answered none - is parked rather than guessed onto its
   recorded line.
 
-The keys: `[` and `]` step one scope, `a` flips between all changes and the
-commit you were on, and `j` opens the picker (arrows and Enter; Escape
-closes). They are live only while the diff half is on screen, and a keypress
-in a text field is the field's.
+The keys, as the keycap row under the tabs states them: `←` and `→` step one
+scope, `a` flips between all changes and the commit you were on, and `j`
+opens the picker (arrows and Enter; Escape closes). The brackets do the same
+stepping and are not advertised beside the arrows. They are live only while
+the diff half is on screen, and a keypress in a text field is the field's.
 
 The commit list is the record's own; a commit's diff is fetched when its
 scope is first shown, and not carried on the record - a branch can hold
 dozens of commits, and every reader of a record, the terminal included,
-would pay their content on every read for a scope only this page draws.
+would pay their content on every read for a scope only this page draws. An
+ask the socket did not take is asked again, so a scope opened while the
+connection was down recovers rather than reading for ever.
+
+**The canvas draws what is on screen.** The sections are virtualised over
+files - the browser holds the two or three a reader can see and the rest
+stays data - which is what makes the unified/split switch fluid: the mode
+change re-renders the tables on screen, not every table on the branch
+(measured at about ninety milliseconds after the change, against
+three-quarters of a second for the whole branch). The tree's rows jump to a
+file the list has not drawn yet.
 
 ## A thread
 
@@ -77,6 +88,15 @@ carried no landing at all - whether the store's status agrees is not the
 test, because a store status was written by whichever view last resolved and
 cannot say where the code stands now. A thread with no rounds filed yet
 draws nothing in the conversation; it is a draft until a round seals it.
+
+**A thread is drawn where its own side is.** An old-side thread - a
+comment on a removed line - draws under the removed line's row, and in
+split view the card holds the half it was written on rather than spanning
+the lane; in unified it takes the whole width, as the line itself does. The
+same rule runs the doors and the drawing: one door per side's number cell
+in split, one per row in unified (an added or context line is the new side,
+a removed line the old), and a click anywhere on a line opens the composer
+on that line's side - the terminal's own reading of the same gesture.
 
 The loop's `N replies to read` is derived rather than served: it counts the
 threads in `addressed` or `outdated` whose last turn is an agent's. An
@@ -118,6 +138,12 @@ verbatim on a reply, so a round-trip cannot round the hash off.
 Every write re-reads the record when it lands, because nothing pushes a
 review change: the drawn round, the drawn thread and the header are always
 the store's own answer rather than the page's guess at what the write did.
+
+**The write's outcome is read.** The two commands that answer through a
+reply reject on a refusal, and a dead socket throws before anything goes;
+either way the draft is added only once the write landed and a refusal is
+drawn where the reader acted. `finish review` keeps the summary and the
+drafts on a refusal rather than clearing words the round never filed.
 
 ## The states the page can be in
 

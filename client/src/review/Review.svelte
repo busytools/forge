@@ -94,16 +94,38 @@
   const drafts = new SvelteSet<string>();
   let busy = $state(false);
   let summary = $state('');
+  /** The last write's refusal, drawn where the reader acted; cleared by the
+   *  next write that lands. */
+  let refusal = $state<string | null>(null);
   /** The conversation half's reply box, one thread at a time. */
   let answering = $state<string | null>(null);
   let answerText = $state('');
 
-  async function write(command: unknown): Promise<void> {
+  /**
+   * Send one write and read its outcome.
+   *
+   * **The reply IS the outcome** for the two commands that answer through
+   * one - it rejects on a refusal - and a dead socket throws before
+   * anything goes. Both are drawn where the reader acted rather than
+   * swallowed: a refused submit that cleared the drafts would take the
+   * words with it, and a comment counted as filed before the server said
+   * so would mint an empty round later. The caller adds the thread to the
+   * drafts only after this says the write landed.
+   */
+  async function write(command: unknown): Promise<boolean> {
     const open = connection;
-    if (open === null || branch === '') return;
+    if (open === null || branch === '') {
+      refusal = 'the socket is not open';
+      return false;
+    }
     busy = true;
     try {
       await open.dispatch(command as never, slot);
+      refusal = null;
+      return true;
+    } catch (why) {
+      refusal = why instanceof Error ? why.message : String(why);
+      return false;
     } finally {
       busy = false;
       // The reviews ride the record, so the write's own outcome arrives by
@@ -112,38 +134,40 @@
     }
   }
 
-  function commented(at: ComposedComment): void {
+  async function commented(at: ComposedComment): Promise<void> {
     const thread = newThread({
       ...at,
       baseRef: record?.git.defaultBranch ?? '',
       commit: scopeCommit,
     });
-    drafts.add(thread.id);
-    void write(upsertCommand(slot, branch, thread));
+    if (await write(upsertCommand(slot, branch, thread))) drafts.add(thread.id);
   }
 
-  function replied(thread: { id: string }, text: string): void {
+  async function replied(thread: { id: string }, text: string): Promise<void> {
     const full = threads.find((held) => held.id === thread.id);
     if (full === undefined) return;
-    drafts.add(full.id);
-    void write(upsertCommand(slot, branch, withReply(full, text)));
+    if (await write(upsertCommand(slot, branch, withReply(full, text)))) drafts.add(full.id);
   }
 
-  function resolved(thread: { id: string }): void {
-    void write(statusCommand(slot, branch, thread.id, 'Resolved'));
+  async function resolved(thread: { id: string }): Promise<void> {
+    await write(statusCommand(slot, branch, thread.id, 'Resolved'));
   }
 
-  function reopened(thread: { id: string }): void {
-    void write(statusCommand(slot, branch, thread.id, 'Open'));
+  async function reopened(thread: { id: string }): Promise<void> {
+    await write(statusCommand(slot, branch, thread.id, 'Open'));
   }
 
-  function finish(): void {
+  async function finish(): Promise<void> {
     if (drafts.size === 0) return;
-    void write(
+    const sealed = await write(
       submitCommand(slot, branch, [...drafts], summary.trim() === '' ? null : summary.trim()),
     );
-    drafts.clear();
-    summary = '';
+    // The words survive a refusal: the reader's round is still theirs to
+    // send once whatever refused it is fixed.
+    if (sealed) {
+      drafts.clear();
+      summary = '';
+    }
   }
 
   /** The scope picker's rows, all changes first. */
@@ -365,6 +389,10 @@
       </p>
     {/if}
 
+    {#if refusal !== null}
+      <p class="rv-refusal">The write was refused: {refusal}</p>
+    {/if}
+
     {#if tab === 'conversation'}
       <div class="rv-conv">
         {#if outdated.length > 0}
@@ -452,14 +480,14 @@
                         type="button"
                         class="rv-a"
                         disabled={busy}
-                        onclick={() => reopened(thread)}>reopen</button
+                        onclick={() => void reopened(thread)}>reopen</button
                       >
                     {:else}
                       <button
                         type="button"
                         class="rv-a"
                         disabled={busy}
-                        onclick={() => resolved(thread)}>resolve</button
+                        onclick={() => void resolved(thread)}>resolve</button
                       >
                     {/if}
                     {#if drafts.has(thread.id)}<span class="rv-cc">drafted</span>{/if}
@@ -479,7 +507,7 @@
                           class="rv-a on"
                           disabled={busy || answerText.trim() === ''}
                           onclick={() => {
-                            replied(thread, answerText.trim());
+                            void replied(thread, answerText.trim());
                             answering = null;
                             answerText = '';
                           }}>send</button
@@ -519,7 +547,7 @@
               type="button"
               class="rv-finish"
               disabled={busy || drafts.size === 0}
-              onclick={finish}
+              onclick={() => void finish()}
             >
               finish review
               {#if drafts.size > 0}({drafts.size}){/if}
@@ -699,10 +727,22 @@
     padding: 1px 6px;
     line-height: 1.4;
   }
+  .rv-refusal {
+    font-family: var(--mono);
+    font-size: var(--fs-data);
+    color: var(--bad);
+    padding: 2px 2px 8px;
+  }
   /* Narrow: the scope control drops to its own line under the tabs rather
      than being clipped at the edge - it is the door to every commit, and a
-     control a finger cannot reach is not there. */
+     control a finger cannot reach is not there - and the page becomes one
+     scrolling column, because a phone has no room for panes each holding
+     their own scroll. */
   @media (max-width: 980px) {
+    .review {
+      height: auto;
+      overflow: visible;
+    }
     .rv-tabs {
       flex-wrap: wrap;
     }
@@ -712,6 +752,9 @@
     }
     .rv-hint {
       display: none;
+    }
+    .rv-conv {
+      overflow: visible;
     }
   }
   .rv-menu {

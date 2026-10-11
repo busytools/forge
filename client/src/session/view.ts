@@ -31,6 +31,7 @@ import type { Row, RowState } from '../home/view';
 import { FORGE_COMMANDS } from '../composer/forge-commands';
 import type { ComposerRecord } from '../composer/view';
 import { CLIENT_VERSION, PROTOCOL_VERSION } from '../protocol';
+import { awaitsReviewer } from '../review/view';
 import { hrefForSlot } from '../routes';
 import type { Connection } from '../socket';
 import type {
@@ -1563,9 +1564,6 @@ export interface ReviewStripRow {
 export function reviewRows(record: SessionRecord | null): ReviewStripRow[] | null {
   const held = record?.reviews ?? null;
   if (held === null || held.threads.outcome !== 'read') return null;
-  const waiting = (thread: (typeof held.threads)['value'][number]): boolean =>
-    (thread.status === 'addressed' || thread.status === 'outdated') &&
-    thread.comments[thread.comments.length - 1]?.author.kind === 'agent';
   const rows = held.threads.value.map((thread) => {
     const last = thread.comments[thread.comments.length - 1];
     return {
@@ -1573,7 +1571,9 @@ export function reviewRows(record: SessionRecord | null): ReviewStripRow[] | nul
       state: typeof thread.status === 'string' ? thread.status : thread.status.unknown,
       where: `${thread.anchor.path.split('/').pop() ?? thread.anchor.path} \u{b7} line ${thread.anchor.line}`,
       words: last?.text ?? '',
-      waiting: waiting(thread),
+      // The page's own predicate, not a second copy of it: two surfaces
+      // drawing the same loop must not disagree about who waits.
+      waiting: awaitsReviewer(thread),
     };
   });
   // Waiting rows first; the sort is stable, so the rest keep their order.

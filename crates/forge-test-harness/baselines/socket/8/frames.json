@@ -246,6 +246,39 @@
         "uuid"
       ]
     },
+    "CommitDiff": {
+      "": [
+        "files",
+        "kind",
+        "sha",
+        "truncated"
+      ],
+      "/files": [
+        "populated"
+      ],
+      "/files/populated[]": [
+        "binary",
+        "hunks",
+        "old_path",
+        "path",
+        "status",
+        "submodule",
+        "truncated"
+      ],
+      "/files/populated[]/hunks[]": [
+        "lines",
+        "new_count",
+        "new_start",
+        "old_count",
+        "old_start"
+      ],
+      "/files/populated[]/hunks[]/lines[]": [
+        "kind",
+        "new_line",
+        "old_line",
+        "text"
+      ]
+    },
     "Devices": {
       "": [
         "configured",

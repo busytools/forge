@@ -1084,10 +1084,9 @@ async fn handle_client(
                 )
                 .await;
             };
-            // A `sha` git cannot read answers the empty diff rather than a
-            // refusal: the commit list and the scan are one tree's, so a
-            // stale sha is a scope the branch no longer holds, which the
-            // client draws as an empty scope.
+            // A `sha` git cannot read answers the scan's own `scan_failed`
+            // layer, not an error: a read that could not run is not a read
+            // that answered empty, and the client draws each as itself.
             let content = forge_workspace::env::git_diff::content::scan_commit(&cwd, &sha).await;
             send(
                 socket,
