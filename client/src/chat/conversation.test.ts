@@ -3203,6 +3203,30 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
   });
 
   /**
+   * **A queued send is the reader acting** (Ved, 2026-10-11: "when I press a
+   * message, the chat does not scroll to my message"). A prompt the CLI queues
+   * never folds as a user unit - the one thing the fold engages the follow for
+   * - so sending mid-turn left the column wherever the reader had it while
+   * their words went to the pile below the fold. The claim puts the foot back
+   * under their eyes, the same way a folded user frame does.
+   */
+  it('engages the follow when a send is queued, which folds no user unit', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'kept')], null));
+    chat.following(false);
+    expect(get(chat.value).following, 'precondition: the reader is away from the foot').toBe(false);
+
+    server.update({ prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'the words' } });
+
+    expect(get(chat.value).following, 'the queued send put the foot back under the reader').toBe(
+      true,
+    );
+    stop();
+  });
+
+  /**
    * A reconnect that takes the queue with it must not leave a held row standing
    * empty: clearing the hold bookkeeping without the row strands it, no drain
    * can fill it, and the page that later carries the prompt draws it again.

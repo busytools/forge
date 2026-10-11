@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { sizes } from './row-sizes';
+import { heldReserve, sizes } from './row-sizes';
 
 describe('the column memory of what each row measured', () => {
   it('keeps a height across the send cycle that removes and re-adds the row', () => {
@@ -41,5 +41,19 @@ describe('the column memory of what each row measured', () => {
     const rows = sizes();
     expect(rows.sizeOf('never')).toBeUndefined();
     expect(rows.sizeOf(null)).toBeUndefined();
+  });
+});
+
+describe('what a held row reserves', () => {
+  it('comes back at the height it measured, which is the shake the hold exists for', () => {
+    expect(heldReserve(512), 'a measured row holds its own space').toBe('512px');
+  });
+
+  it('reserves nothing for a row that never measured, so no estimate draws as a plane', () => {
+    // Ved, 2026-10-11: an unmeasured held row reserved the 386px estimate as
+    // an EMPTY box and stood as a black plane for the whole queue wait - the
+    // queued words are the pile's to draw, and an estimate is not a size the
+    // row ever had.
+    expect(heldReserve(undefined), 'nothing measured, nothing reserved').toBeUndefined();
   });
 });

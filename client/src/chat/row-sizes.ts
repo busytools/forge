@@ -14,7 +14,22 @@
  * shared map would let one seat's prune forget a neighbour's rows and bring the
  * shake back on the next switch. `sizes()` closes the map over each column.
  */
-export const ROW_ESTIMATE = 386;
+
+/**
+ * What a held row's wrapper reserves: the height it last measured, or NOTHING
+ * when it never measured at all.
+ *
+ * **An estimate is not a space to hold.** A held row that was never measured
+ * has no size to preserve - the queued prompt's words are drawn by the pile's
+ * card (rule 25: the state is drawn, by the pile), and the drain draws the row
+ * fully when it starts. Reserving an estimate for one was a 386px empty box
+ * standing for the whole queue wait (Ved, 2026-10-11: the black plane); the
+ * #1890 shake this reserve exists for is a row that measured while it HELD its
+ * words, and only that case has a number to come back at.
+ */
+export function heldReserve(size: number | undefined): string | undefined {
+  return size === undefined ? undefined : `${size}px`;
+}
 
 /** A column's own memory of what each of its rows measured. */
 export interface RowSizes {

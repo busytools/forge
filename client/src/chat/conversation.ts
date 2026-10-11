@@ -1659,6 +1659,15 @@ export class Chat {
         // the transport coalesces both updates into one flush, so the draw and
         // the retraction land in one paint. Outside that window the row hops
         // back into the pile a beat late rather than standing in both.
+        //
+        // **And a queued send is the reader acting, so the column follows it.**
+        // A prompt the CLI queues never folds as a user unit - which is the one
+        // thing that engages the follow - so sending mid-turn left the column
+        // wherever the reader had it while their words went to the pile below
+        // (Ved, 2026-10-11: "the chat does not scroll to my message"). The same
+        // rule as a folded user frame: their own message arriving puts the foot
+        // under their eyes, and here the pile's card IS that message's row.
+        this.following(true);
         this.retract(uuid);
       }
       return;
