@@ -98,6 +98,29 @@ struct Caps {
     withheld: bool,
 }
 
+/// One commit's own diff as bounded content.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitContent {
+    pub files: LayerState<Vec<FileContent>>,
+    /// Something was withheld for the budget, the same flag the record's
+    /// two-layer read carries.
+    pub truncated: bool,
+}
+
+/// Read one commit's own diff as bounded content, under its own budget.
+///
+/// The ref spec is [`super::hunks::scan_commit`]'s, so the two reads
+/// describe the same range; the caps are this read's, spent fresh
+/// because the answer stands alone rather than sharing a record's one
+/// budget. `Clean` for a diff with nothing in it, which for a commit is
+/// an empty change rather than a missing one.
+pub async fn scan_commit(cwd: &Path, sha: &str) -> CommitContent {
+    let ref_spec = super::hunks::commit_ref_spec(cwd, sha).await;
+    let mut caps = Caps::default();
+    let files = scan_layer(cwd, &ref_spec, &mut caps).await;
+    CommitContent { files, truncated: caps.withheld }
+}
+
 /// Read both layers of `snapshot` for `cwd` into bounded content.
 ///
 /// Infallible like the stats scan: a layer's failure collapses to
@@ -717,6 +740,48 @@ index 1111111..2222222 160000
         assert_eq!(ahead[0].path, "feat.rs", "the branch layer is the commit the branch added");
         assert_eq!(ahead[0].status, FileStatus::Added);
         assert!(!content.truncated);
+    }
+
+    /// One commit's read is that commit's own diff, both from a root
+    /// (no parent to diff against) and from a child, and it does not
+    /// carry the rest of the branch with it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_commit_reads_its_own_diff_alone() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        init_repo(&dir, "main");
+        write_file(&dir, "base.rs", "base\n");
+        commit_all(&dir, "root");
+        let root = String::from_utf8(
+            StdCommand::new("git")
+                .arg("-C")
+                .arg(dir.path())
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .expect("rev-parse")
+                .stdout,
+        )
+        .expect("utf8")
+        .trim()
+        .to_owned();
+        write_file(&dir, "second.rs", "second\n");
+        git(&dir, &["checkout", "-q", "-b", "feat/x"]);
+        commit_all(&dir, "second");
+
+        let root_content = scan_commit(dir.path(), &root).await;
+        assert!(!root_content.truncated, "a one-file commit withholds nothing");
+        let files = populated(root_content.files);
+        assert_eq!(files.len(), 1, "the root commit's read is its own file");
+        assert_eq!(files[0].path, "base.rs", "the file the root added, not the child's");
+        assert_eq!(files[0].status, FileStatus::Added);
+
+        // A branch read would carry both; the commit read must not.
+        let snapshot = scan_stats(dir.path(), None).await;
+        let whole = scan(dir.path(), &snapshot).await;
+        let LayerState::Populated(entries) = whole.branch_ahead else {
+            panic!("the branch layer is populated");
+        };
+        let all: Vec<&str> = entries.iter().map(|file| file.path.as_str()).collect();
+        assert!(all.contains(&"second.rs"), "the branch read carries the child's file");
     }
 
     /// The read's future must be `Send`: the socket's record encode awaits

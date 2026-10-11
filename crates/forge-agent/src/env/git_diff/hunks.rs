@@ -224,7 +224,7 @@ pub async fn scan_commit(cwd: &Path, sha: &str) -> ScanOutcome {
 /// non-zero-exit WARN) to detect a parent: `<sha> <parent…>` means a
 /// normal commit (`<sha>^..<sha>`, first-parent for a merge), a lone
 /// `<sha>` means a root commit (diff against the empty tree).
-async fn commit_ref_spec(cwd: &Path, sha: &str) -> String {
+pub(crate) async fn commit_ref_spec(cwd: &Path, sha: &str) -> String {
     match run_git(cwd, &["rev-list", "--parents", "-n", "1", sha]).await {
         GitOutput::Ok(s) if s.split_whitespace().count() > 1 => format!("{sha}^..{sha}"),
         GitOutput::Ok(_) => format!("{EMPTY_TREE_SHA}..{sha}"),

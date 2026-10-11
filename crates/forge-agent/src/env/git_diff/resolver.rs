@@ -22,6 +22,7 @@ use std::collections::HashSet;
 
 use forge_primitives::review::{ReviewAnchor, ReviewSide};
 
+use super::content::FileContent;
 use super::hunks::{DiffLine, FileHunks, Hunk};
 
 /// Lines captured on each side of an anchored line for fuzzy re-anchor
@@ -126,14 +127,78 @@ pub fn resolve_anchor(
     files: &[FileHunks],
     trust_line_number: bool,
 ) -> AnchorResolution {
-    let Some(file_idx) = files.iter().position(|f| f.path == anchor.path) else {
+    let located: Vec<(&str, &[Hunk])> =
+        files.iter().map(|file| (file.path.as_str(), file.hunks.as_slice())).collect();
+    resolve_in(anchor, &located, trust_line_number)
+}
+
+/// Re-resolve `anchor` against the socket's bounded content read, whose
+/// files carry hunks but not the overlay scan's own shape. Same
+/// resolution as [`resolve_anchor`], one implementation.
+pub fn resolve_anchor_in_content(
+    anchor: &ReviewAnchor,
+    files: &[FileContent],
+    trust_line_number: bool,
+) -> AnchorResolution {
+    let located: Vec<(&str, &[Hunk])> =
+        files.iter().map(|file| (file.path.as_str(), file.hunks.as_slice())).collect();
+    resolve_in(anchor, &located, trust_line_number)
+}
+
+/// One anchor's landing in the terms a view draws it: no positional
+/// indices into one scan's arrays, just the line the anchor sits on now
+/// and, when it could not be placed, the resolver's own reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnchorPlacement {
+    /// Placed, at `line` in the anchor's own side's numbering.
+    /// `moved_from` is the recorded line when that is not where it sits.
+    Placed { line: u32, moved_from: Option<u32> },
+    /// Not placed, for [`OutdatedReason`]'s reason.
+    Outdated(OutdatedReason),
+}
+
+/// [`resolve_anchor_in_content`], narrowed to what a view draws.
+pub fn place_anchor_in_content(
+    anchor: &ReviewAnchor,
+    files: &[FileContent],
+    trust_line_number: bool,
+) -> AnchorPlacement {
+    let line_at = |file_idx: usize, hunk_idx: usize, line_idx: usize| {
+        files
+            .get(file_idx)
+            .and_then(|file| file.hunks.get(hunk_idx))
+            .and_then(|hunk| hunk.lines.get(line_idx))
+            .and_then(|line| side_line(line, anchor.side))
+            // The resolver only lands on lines carrying the anchor's own
+            // side, so this is its recorded line at worst.
+            .unwrap_or(anchor.line)
+    };
+    match resolve_anchor_in_content(anchor, files, trust_line_number) {
+        AnchorResolution::InPlace { file_idx, hunk_idx, line_idx } => AnchorPlacement::Placed {
+            line: line_at(file_idx, hunk_idx, line_idx),
+            moved_from: None,
+        },
+        AnchorResolution::Moved { file_idx, hunk_idx, line_idx, from } => AnchorPlacement::Placed {
+            line: line_at(file_idx, hunk_idx, line_idx),
+            moved_from: Some(from),
+        },
+        AnchorResolution::Outdated(reason) => AnchorPlacement::Outdated(reason),
+    }
+}
+
+fn resolve_in(
+    anchor: &ReviewAnchor,
+    files: &[(&str, &[Hunk])],
+    trust_line_number: bool,
+) -> AnchorResolution {
+    let Some(file_idx) = files.iter().position(|(path, _)| *path == anchor.path) else {
         return AnchorResolution::Outdated(OutdatedReason::Gone);
     };
-    let file = &files[file_idx];
+    let (_, hunks) = &files[file_idx];
 
     // In place: the recorded line number still carrying the same content.
     if trust_line_number {
-        for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
+        for (hunk_idx, hunk) in hunks.iter().enumerate() {
             for (line_idx, line) in hunk.lines.iter().enumerate() {
                 if side_line(line, anchor.side) == Some(anchor.line)
                     && text_matches(anchor, &line.text)
@@ -145,7 +210,7 @@ pub fn resolve_anchor(
     }
 
     let mut found = Vec::new();
-    for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
+    for (hunk_idx, hunk) in hunks.iter().enumerate() {
         for (line_idx, line) in hunk.lines.iter().enumerate() {
             if side_line(line, anchor.side).is_some()
                 && text_matches(anchor, &line.text)
@@ -203,6 +268,72 @@ mod tests {
             hunks: vec![Hunk { old_start: 1, old_count: 0, new_start: 1, new_count: 0, lines }],
             oversize: false,
         }
+    }
+
+    fn content_file(path: &str, lines: Vec<DiffLine>) -> FileContent {
+        FileContent {
+            path: path.to_owned(),
+            old_path: None,
+            status: FileStatus::Modified,
+            binary: false,
+            submodule: false,
+            truncated: false,
+            hunks: vec![Hunk { old_start: 1, old_count: 0, new_start: 1, new_count: 0, lines }],
+        }
+    }
+
+    /// The socket path resolves exactly as the overlay's own scan does -
+    /// one resolution, two content shapes - and a file the content does
+    /// not carry is the same Gone the overlay reports.
+    #[test]
+    fn the_content_read_resolves_like_the_overlay_scan() {
+        let lines = vec![new_line("fn a() {", 4), new_line("    body();", 5), new_line("}", 6)];
+        let overlay = vec![file("src/x.rs", lines.clone())];
+        let content = vec![content_file("src/x.rs", lines)];
+        let placed = anchor("src/x.rs", ReviewSide::New, 5, "    body();", &["fn a() {", "}"]);
+        assert_eq!(
+            resolve_anchor_in_content(&placed, &content, true),
+            resolve_anchor(&placed, &overlay, true),
+        );
+        let absent = anchor("src/y.rs", ReviewSide::New, 5, "    body();", &[]);
+        assert_eq!(
+            resolve_anchor_in_content(&absent, &content, true),
+            AnchorResolution::Outdated(OutdatedReason::Gone),
+        );
+    }
+
+    /// The values the web client's own `anchorHash` is pinned against: the
+    /// page computes this hash for the anchors it writes, and the two
+    /// implementations must agree byte for byte or a thread written there
+    /// never places in the terminal. Whitespace collapsing and a non-ASCII
+    /// byte are both exercised, because the two are where a port drifts.
+    #[test]
+    fn the_hash_vectors_the_web_client_mirrors() {
+        assert_eq!(anchor_hash("let x = 1;"), 12_051_066_714_322_805_831);
+        assert_eq!(anchor_hash("  a  b  "), 16_591_147_884_985_137_298);
+        assert_eq!(anchor_hash("fn caf\u{e9}() {}"), 14_060_598_129_659_224_412);
+    }
+
+    /// The view-shaped placement names the line it landed on and the one
+    /// it left - the two numbers a client draws, neither of which is an
+    /// index into this scan.
+    #[test]
+    fn the_placement_names_the_line_it_moved_to() {
+        let content = vec![content_file(
+            "src/x.rs",
+            vec![new_line("fn a() {", 8), new_line("    body();", 9), new_line("}", 10)],
+        )];
+        let moved = anchor("src/x.rs", ReviewSide::New, 5, "    body();", &["fn a() {", "}"]);
+        assert_eq!(
+            place_anchor_in_content(&moved, &content, false),
+            AnchorPlacement::Placed { line: 9, moved_from: Some(5) },
+        );
+        let home = anchor("src/x.rs", ReviewSide::New, 9, "    body();", &["fn a() {", "}"]);
+        assert_eq!(
+            place_anchor_in_content(&home, &content, true),
+            AnchorPlacement::Placed { line: 9, moved_from: None },
+            "in place draws no note",
+        );
     }
 
     fn anchor(

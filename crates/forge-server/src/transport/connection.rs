@@ -1070,6 +1070,35 @@ async fn handle_client(
             )
             .await
         }
+        ClientMessage::CommitDiff { session, sha } => {
+            // The same seat resolution the session record takes, so a
+            // commit scope reads the tree the record's own content read.
+            let Some(cwd) = state.surface.roster().cwd_for(&session) else {
+                return send(
+                    socket,
+                    ServerMessage::Error {
+                        what: "commit_diff".to_owned(),
+                        why: format!("forge holds no session for {}", session.display()),
+                        seat: Some(session),
+                    },
+                )
+                .await;
+            };
+            // A `sha` git cannot read answers the empty diff rather than a
+            // refusal: the commit list and the scan are one tree's, so a
+            // stale sha is a scope the branch no longer holds, which the
+            // client draws as an empty scope.
+            let content = forge_workspace::env::git_diff::content::scan_commit(&cwd, &sha).await;
+            send(
+                socket,
+                ServerMessage::CommitDiff {
+                    sha,
+                    files: content.files,
+                    truncated: content.truncated,
+                },
+            )
+            .await
+        }
         ClientMessage::Devices => {
             // The walk opens the microphone stack and takes as long as it
             // takes, so it runs in a blocking task rather than inline. This
