@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>forge &middot; review</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  /* The same token set the client ships (theme.ts), so the drawing is held
+     against the real page rather than against a lookalike. */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130; --line:#222a3c;
+    --ctl:#516590; --text:#c9d1d9; --muted:#8f98a8; --dim:#788294;
+    --accent:#f47600; --ok:#82c76b; --warn:#c9a13b; --bad:#e0683e;
+    --ui: "Fira Code", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "Fira Code", ui-monospace, Menlo, monospace;
+    --r: 10px;
+    --fs-prose: 15.5px; --fs-base: 15.5px;
+    --fs-data: 14px; --fs-label: 12.5px; --fs-title: 18px;
+  }
+  html, body { height: 100%; }
+  body {
+    background:
+      radial-gradient(1100px 520px at 8% -12%, rgba(244,118,0,.07), transparent 60%),
+      radial-gradient(900px 460px at 96% 108%, rgba(91,156,248,.05), transparent 62%),
+      var(--bg);
+    color: var(--text); font-family: var(--ui); font-size: 15.5px; line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { padding: 30px 40px 64px; max-width: 900px; margin: 0 auto; }
+  header.top { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+    padding-bottom: 14px; margin-bottom: 14px; border-bottom: 1px solid var(--line); }
+  .back { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim);
+    text-decoration: none; }
+  h1 { font-size: var(--fs-title); font-weight: 650; letter-spacing: -.01em; }
+  .facts { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
+  .facts .sep { color: var(--line); margin: 0 7px; }
+  .loop { margin-left: auto; font-family: var(--mono); font-size: var(--fs-data);
+    color: var(--warn); }
+  .half { font-size: var(--fs-base); color: var(--muted); margin: 4px 0; }
+  .pending { color: var(--muted); font-size: var(--fs-base); margin-top: 12vh;
+    text-align: center; }
+
+  .group { margin: 18px 0 8px; }
+  .group h2 { display: flex; gap: 8px; align-items: baseline; margin-bottom: 6px;
+    font-size: var(--fs-label); font-weight: 700; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--dim); }
+  .n { font-family: var(--mono); letter-spacing: 0; }
+  .empty { font-size: var(--fs-base); color: var(--dim); margin: 2px 0 8px; }
+
+  .round { border: 1px solid var(--line); border-radius: var(--r); background: var(--s1);
+    padding: 9px 11px 10px; margin-bottom: 10px; }
+  .heads { display: flex; align-items: baseline; gap: 9px; }
+  .rn { font-family: var(--mono); font-size: var(--fs-base); font-weight: 600;
+    color: var(--accent); }
+  .age { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+  .tally { margin-left: auto; display: flex; gap: 6px; }
+  .chip { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
+    border: 1px solid var(--line); border-radius: 99px; padding: 0 8px; }
+  .chip.addressed { color: var(--warn); border-color: rgba(201,161,59,.4); }
+  .chip.outdated { color: var(--dim); }
+  .summary { font-size: var(--fs-base); color: var(--muted); margin: 6px 0 2px; }
+
+  .thread { border-top: 1px solid rgba(34,42,60,.55); margin-top: 8px; padding-top: 8px; }
+  .thread:first-of-type { border-top: 0; margin-top: 4px; padding-top: 4px; }
+  .thread.parked { border: 1px solid rgba(120,130,148,.35); border-radius: var(--r);
+    padding: 9px 11px 10px; margin: 0 0 10px; background: var(--s1); }
+  .state { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
+    border: 1px solid var(--line); border-radius: 99px; padding: 0 8px; }
+  .state.open { color: var(--text); border-color: var(--ctl); }
+  .state.addressed { color: var(--warn); border-color: rgba(201,161,59,.4);
+    background: rgba(201,161,59,.08); }
+  .state.outdated { color: var(--dim); }
+  .where { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .captured { margin: 7px 0; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--s2); overflow: hidden; }
+  .caphead { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+    padding: 4px 10px; border-bottom: 1px solid var(--line); }
+  .captured pre { margin: 0; padding: 6px 10px; font-family: var(--mono);
+    font-size: var(--fs-label); color: var(--muted); white-space: pre-wrap;
+    overflow-wrap: anywhere; }
+
+  .turn { border-left: 1px solid var(--line); padding: 2px 0 2px 10px; margin: 7px 0; }
+  .turn.you { border-left-color: var(--accent); }
+  .who { display: flex; gap: 8px; font-family: var(--mono); font-size: var(--fs-label);
+    color: var(--dim); }
+  .turn.you .who { color: var(--muted); }
+  .tag { color: var(--dim); }
+  .words { margin: 1px 0 0; font-size: var(--fs-base); color: var(--muted);
+    overflow-wrap: anywhere; max-width: 72ch; }
+  .turn.you .words { color: var(--text); }
+
+  @media (max-width: 760px) { .wrap { padding: 18px 16px 48px; } }
+</style>
+</head>
+<body>
+<main class="wrap">
+  <header class="top">
+    <a class="back" href="#">&#8249; lead</a>
+    <h1>Review</h1>
+    <span class="facts">work/review-page<span class="sep">&#183;</span>1 round</span>
+    <span class="loop">1 reply to read<span class="sep">&#183;</span>1 open</span>
+  </header>
+
+  <section class="group">
+    <h2>Outdated <span class="n">1</span></h2>
+    <article class="thread parked">
+      <div class="heads">
+        <span class="state outdated">outdated</span>
+        <span class="where">client/src/session/wire.ts &#183; line 199</span>
+      </div>
+      <div class="captured">
+        <div class="caphead">captured when the comment was written</div>
+        <pre>export type ReadWire&lt;T&gt; =
+  | { outcome: 'read'; value: T }
+  | { outcome: 'failed'; value: string }</pre>
+      </div>
+      <div class="turn you">
+        <div class="who">you</div>
+        <p class="words">The unknown-outcome arm needs to survive the parse - a read that answered something is not a failed one.</p>
+      </div>
+    </article>
+  </section>
+
+  <section class="group">
+    <h2>Rounds <span class="n">newest first</span></h2>
+    <article class="round">
+      <div class="heads">
+        <span class="rn">R1</span>
+        <span class="age">3m</span>
+        <span class="tally">
+          <span class="chip">1 open</span>
+          <span class="chip addressed">1 addressed</span>
+          <span class="chip outdated">1 outdated</span>
+        </span>
+      </div>
+      <p class="summary">First pass: the signature and the doc comment.</p>
+
+      <div class="thread">
+        <div class="heads">
+          <span class="state addressed">addressed</span>
+          <span class="where">client/src/review/Review.svelte &#183; line 74</span>
+        </div>
+        <div class="turn you">
+          <div class="who">you <span class="tag">R1</span></div>
+          <p class="words">The header says Review but the seat it belongs to is only in the back link. Name the seat here too?</p>
+        </div>
+        <div class="turn">
+          <div class="who">implementer</div>
+          <p class="words">Named it - the header now carries the branch beside the title.</p>
+        </div>
+      </div>
+
+      <div class="thread">
+        <div class="heads">
+          <span class="state open">open</span>
+          <span class="where">client/src/review/view.ts &#183; line 54</span>
+        </div>
+        <div class="turn you">
+          <div class="who">you <span class="tag">R1</span></div>
+          <p class="words">This counts waits and opens; should it also say how many rounds are unsettled?</p>
+        </div>
+      </div>
+
+      <div class="thread">
+        <div class="heads">
+          <span class="state outdated">outdated</span>
+          <span class="where">client/src/session/wire.ts &#183; line 199</span>
+        </div>
+        <div class="turn you">
+          <div class="who">you <span class="tag">R1</span></div>
+          <p class="words">The unknown-outcome arm needs to survive the parse - a read that answered something is not a failed one.</p>
+        </div>
+      </div>
+    </article>
+  </section>
+</main>
+</body>
+</html>

@@ -17,6 +17,7 @@ place.
 | Connect | [connect.md](./connect.md) | `web-connect.html` |
 | Home | [home.md](./home.md) | `web-home.html` |
 | Board | [board.md](./board.md) | `web-board.html` |
+| Review | [review.md](./review.md) | `web-review.html` |
 | Dictation models | [dictate-models.md](./dictate-models.md) | `web-dictate-models.html` |
 | Extensions | [extensions.md](./extensions.md) | `web-extensions.html` |
 | The queue pile | (session page pending) | `web-queue.html` |
@@ -24,8 +25,8 @@ place.
 The session page, the chat and the composer are built; their drawings are
 here and their pages are still to land. `web-session.html` declares six
 sections and the client's plan owns four of them: the fifth is the
-composer's blocking states and the sixth is the diff review overlay,
-which is deliberately not built.
+composer's blocking states, and the sixth - the diff review overlay it
+named - landed as a route of its own instead, [review.md](./review.md).
 
 `web-queue.html` is the queued-prompt pile that draws above the composer:
 the variants it can be in, and the wire's own lifecycle it follows. It
