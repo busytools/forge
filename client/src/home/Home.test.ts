@@ -193,7 +193,13 @@ describe('the home page as it draws', () => {
 
     expect(body, 'the card is a way in').toContain('href="/extensions"');
     expect(body.match(/href="\/extensions"/g), 'one door, not a row of them').toHaveLength(1);
-    expect(body, 'the title line carries the door chevron').toContain('i-chev');
+    // Scoped to THIS anchor's markup: over the whole body the dictation
+    // card's own chevron satisfies a bare `i-chev`, so a change that hides
+    // the extensions card's (in the quiet state every connectionless render
+    // lands in) would leave this test green with the door's affordance gone.
+    expect(body, 'the title line carries the door chevron').toMatch(
+      /<a class="svc off" href="\/extensions">[\s\S]*?i-chev/,
+    );
     expect(body, 'no read without a connection, and the card says so').toContain('>reading<');
   });
 
