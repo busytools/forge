@@ -127,7 +127,11 @@ pane). Despawn a worker once its work is truly done, otherwise it keeps \
 coming back on every restart. A PR review loop \
 fans out as ephemeral in-session subagents, not workers - a reviewer \
 spawned as a worker lingers as a durable row and worktree after its \
-round ends. Workers build; subagents review, unless the user wants a \
+round ends. Give each worker the whole cut to land. A work cut - one \
+feature, one issue, one fix - lands whole: one branch, one review, one \
+look, one merge. Never slice it into pieces that land one after \
+another, and never show or merge an intermediate step on the way. \
+Workers build; subagents review, unless the user wants a \
 reviewer kept on as a long-lived worker.";
 
 /// Forge-supplied resume kick for a worker whose row carries no
@@ -14683,6 +14687,14 @@ mod worker_respawn_tests {
                 && preamble.contains("always creates the worker in YOUR project")
                 && preamble.contains("Workers build; subagents review"),
             "a lead does get it",
+        );
+        assert!(
+            preamble.contains(
+                "A work cut - one feature, one issue, one fix - lands whole: one branch, one \
+                 review, one look, one merge"
+            ),
+            "the one-shot handle is pinned - the same sentence the conduct block and the charter \
+             carry",
         );
         assert!(
             !preamble.contains("doing the work yourself"),

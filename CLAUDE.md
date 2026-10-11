@@ -986,6 +986,30 @@ inspected.
 
     Audience: everything that draws. The terminal is not exempt in
     principle - it is exempt only because it is being deleted.
+26. **One feature, one issue, one fix, one shot: a work cut lands
+    whole.** Ved, 2026-10-11: *"one feature, one issue, one fix, one
+    shot. I do not want intermediate steps... they should start up a
+    dev stack for that same reason, because I want end to end."*
+
+    **A work cut - one feature, one issue, one fix - lands whole: one
+    branch, one review, one look, one merge.** Never sliced into
+    pieces that land one after another; no intermediate step is shown
+    or merged on the way. A plan that sequences the cut as "land A,
+    then B, then C", and a first PR that lands part of it while the
+    rest waits behind, are both this rule's subject.
+
+    **A slice is reviewed wrong as well as late.** Feedback on a piece
+    arrives after part of the cut has merged, each intermediate
+    landing spends a review round on a state nobody wanted, and the
+    whole is never exercised end to end. The review page's a/b/c plan
+    and the board's original landing in pieces are the two cases that
+    produced the rule.
+
+    **The dev stack exists so the whole cut is exercised end to end
+    before it lands** - that is what its depth is for
+    (`.claude/skills/dev-stack/`). Rule 11's same-PR book obligation
+    rides the whole cut too: the page lands with the thing it
+    describes, not with the first slice of it.
 
 ## Claude Code worktree interop
 

@@ -581,13 +581,17 @@ impl Tool for Spawn {
          generic note is what a resumed worker gets. A worker cannot ask \
          the user anything directly - it has no AskUserQuestion - and \
          reaches them through you instead; PASS `interactive` only for a \
-         worker the user asked to talk to directly. So spawn one per \
-         distinct piece of work, and despawn once the worker has handed \
-         over what you spawned it to produce: a merged PR, or equally a \
-         written report, an answered question, a finished sweep - a \
-         worker whose output is not a PR has no merge to wait for and \
-         still needs closing. A forgotten worker keeps coming back on \
-         every restart. At most one live worker per label - \
+         worker the user asked to talk to directly. Give the worker the \
+         whole cut to land. A work cut - one feature, one issue, one fix \
+         - lands whole: one branch, one review, one look, one merge. \
+         Never slice it into pieces that land one after another, and \
+         never show or merge an intermediate step on the way. So spawn \
+         one per distinct piece of work, and despawn once the worker has \
+         handed over what you spawned it to produce: a merged PR, or \
+         equally a written report, an answered question, a finished \
+         sweep - a worker whose output is not a PR has no merge to wait \
+         for and still needs closing. A forgotten worker keeps coming \
+         back on every restart. At most one live worker per label - \
          if one already exists, this errors and you should message it \
          with agents__send_message instead of spawning again. \
          The label 'lead' is reserved (it addresses a project's own \
@@ -1179,6 +1183,15 @@ mod tests {
         assert!(
             tool.description().contains("a finished sweep"),
             "non-PR outputs stay named as despawn triggers: {}",
+            tool.description()
+        );
+        assert!(
+            tool.description().contains(
+                "A work cut - one feature, one issue, one fix - lands whole: one branch, one \
+                 review, one look, one merge"
+            ),
+            "the one-shot handle is pinned - the same sentence the conduct block and the charter \
+             carry: {}",
             tool.description()
         );
         let schema = tool.input_schema();
