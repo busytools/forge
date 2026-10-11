@@ -29,7 +29,15 @@ tauri-plugin-log = "2"
 # the driver needs, so the host speaks MCP rather than reimplementing it.
 rmcp = { version = "=3.5.0", features = ["client", "transport-child-process"] }
 serde = { version = "1", features = ["derive"] }
-tokio = { version = "1", features = ["process", "rt-multi-thread", "macros", "time"] }
+tokio = { version = "1", features = ["process", "rt-multi-thread", "macros", "time", "net", "sync"] }
+# The client's socket, pinned here rather than by the workspace (this crate is
+# its own workspace root). **TLS is on**, matching the workspace's own feature
+# set: a page may be served on wss://, and the webview's own WebSocket would
+# connect where this half could not, which is a fork nobody would see.
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-native-roots"] }
+futures-util = "0.3"
+# The driver's image parts cross as base64; the wire wants the raw bytes.
+base64 = "0.22"
 # The launch lock: flock, the same idiom the workspace's single-instance
 # guard uses.
 rustix = { version = "1", features = ["fs"] }
