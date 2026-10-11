@@ -16,7 +16,7 @@
   } from '../browser/host';
   import { browserInflight } from '../browser/inflight.svelte';
   import type { Connection } from '../socket';
-  import { panelStyle } from './strip-panel';
+  import { panelStyle, portal } from './strip-panel';
   import type { SessionSlot } from '../wire/types';
 
   /**
@@ -94,6 +94,8 @@
   // svelte-ignore state_referenced_locally
   let hosting = $state(connection.browserRole());
   let segEl = $state<HTMLElement | null>(null);
+  /** The panel, portaled to the body, so the leave guards can see it. */
+  let panelEl = $state<HTMLElement | null>(null);
   /** The panel's measured caps, remeasured every frame while open. */
   let limits = $state('');
 
@@ -214,17 +216,31 @@
    */
   function release(event?: FocusEvent): void {
     if (event === undefined) {
+      // The panel is PORTALED to the body (`use:portal`), so moving off the
+      // segment into the panel is not a departure - and a panel control
+      // holding focus must not close the very thing the reader is on.
       if (segEl !== null && segEl.matches(':hover')) return;
+      if (panelEl !== null && panelEl.matches(':hover')) return;
       const active = document.activeElement;
       const toggle = segEl?.querySelector('button') ?? null;
-      if (segEl !== null && active instanceof Node && segEl.contains(active) && active !== toggle) {
+      if (
+        active instanceof Node &&
+        ((segEl !== null && segEl.contains(active)) ||
+          (panelEl !== null && panelEl.contains(active))) &&
+        active !== toggle
+      ) {
         return;
       }
       arm();
       return;
     }
     const next = event.relatedTarget ?? document.activeElement;
-    if (segEl !== null && next instanceof Node && segEl.contains(next)) return;
+    if (
+      next instanceof Node &&
+      ((segEl !== null && segEl.contains(next)) || (panelEl !== null && panelEl.contains(next)))
+    ) {
+      return;
+    }
     arm();
   }
 
@@ -463,6 +479,8 @@
     <div
       class="bz-list"
       style={limits}
+      bind:this={panelEl}
+      use:portal
       role="group"
       aria-label="the browser's profiles"
       onpointerenter={(event) => {

@@ -1174,12 +1174,7 @@
         </span>
       {/snippet}
 
-      <div
-        class="box"
-        class:rec={ring === 'rec'}
-        class:tr={ring === 'tr'}
-        class:done={ring === 'done'}
-      >
+      <div class="box">
         {#if line !== null && composer.take === null}
           <div class="notice {line.tone}">{line.text}</div>
         {/if}
@@ -1236,24 +1231,28 @@
           </div>
         {/if}
       </div>
-      {#if panel}
-        <DictationPanel
-          {connection}
-          axes={seatAxes}
-          {defaults}
-          bind={composer.bind}
-          mode={composer.mode}
-          device={seatDevice}
-          onaxes={setAxes}
-          ondevice={setDevice}
-          onclose={() => {
-            panel = false;
-            // The keyboard goes back where Escape puts it, so closing by the
-            // button is not a dead end for a keyboard reader.
-            field?.focus();
-          }}
-        />
-      {/if}
     {/if}
   </div>
+  <!-- The panel is a popover OVER the surface, not a lane of it: it hangs off
+       `.comp`, as it did before the surface existed. Anything drawn inside the
+       surface's box rides its lanes' clipping, and this is the one piece here
+       that leaves the box entirely. -->
+  {#if panel}
+    <DictationPanel
+      {connection}
+      axes={seatAxes}
+      {defaults}
+      bind={composer.bind}
+      mode={composer.mode}
+      device={seatDevice}
+      onaxes={setAxes}
+      ondevice={setDevice}
+      onclose={() => {
+        panel = false;
+        // The keyboard goes back where Escape puts it, so closing by the
+        // button is not a dead end for a keyboard reader.
+        field?.focus();
+      }}
+    />
+  {/if}
 </div>

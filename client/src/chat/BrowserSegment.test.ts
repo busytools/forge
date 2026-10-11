@@ -20,6 +20,10 @@ afterEach(() => {
   vi.mocked(hideBrowser).mockClear();
   vi.mocked(profileWindowed).mockClear();
   vi.mocked(deleteProfile).mockClear();
+  // **The panel is PORTALED to the body** (`use:portal`), so a test that ends
+  // with one open would hand it to the next - and the next test's `list()`
+  // would read the stale one. The mount targets live under the body too.
+  document.body.innerHTML = '';
 });
 
 /**
@@ -97,7 +101,17 @@ function toggle(target: HTMLElement): HTMLButtonElement {
 }
 
 function list(target: HTMLElement): Element | null {
-  return target.querySelector('.bz-list');
+  // **The panel is PORTALED to the body** (`use:portal`), so it is not a
+  // descendant of the mounted segment - and a query scoped to the mount would
+  // read every open panel as absent.
+  void target;
+  return document.body.querySelector('.bz-list');
+}
+
+/** What the segment shows: its own text plus the PORTALED panel's. */
+function shownText(target: HTMLElement): string {
+  const panel = document.body.querySelector('.bz-list');
+  return `${target.textContent ?? ''}${panel?.textContent ?? ''}`;
 }
 
 /** A pointer event of the kind the browser synthesises, with its device said. */
@@ -114,22 +128,22 @@ describe('the browser segment', () => {
         'the resting row names the count once a read has answered',
       ).toBe('0 profiles');
     });
-    expect(shown.target.textContent, 'and nothing about the role until it is open').not.toContain(
+    expect(shownText(shown.target), 'and nothing about the role until it is open').not.toContain(
       'browser connected',
     );
 
     click(shown.target.querySelector('.bz-tog'));
 
-    expect(shown.target.textContent, 'a capable client that is not hosting is told so').toContain(
+    expect(shownText(shown.target), 'a capable client that is not hosting is told so').toContain(
       'browser not connected',
     );
     expect(
-      shown.target.textContent,
+      shownText(shown.target),
       'the shared profile is always listed: most sessions drive it',
     ).toContain('shared');
     await vi.waitFor(() => {
       expect(
-        shown.target.textContent,
+        shownText(shown.target),
         'with no NAMED profiles said plainly, once the read has answered',
       ).toContain('no named profiles yet');
     });
@@ -146,11 +160,11 @@ describe('the browser segment', () => {
       shown.target.querySelector('.bz-tog .n')?.textContent,
       'the count is not known before a read answers',
     ).toBe('…');
-    expect(shown.target.textContent, 'and the list says it is reading').toContain(
+    expect(shownText(shown.target), 'and the list says it is reading').toContain(
       'reading the profiles…',
     );
     expect(
-      shown.target.textContent,
+      shownText(shown.target),
       'an empty row would be a claim about a read that never answered',
     ).not.toContain('no named profiles yet');
     shown.stop();
@@ -186,7 +200,7 @@ describe('the browser segment', () => {
     const shown = show(false, true);
     click(shown.target.querySelector('.bz-tog'));
 
-    const door = shown.target.querySelector('.bz-show');
+    const door = list(shown.target)?.querySelector('.bz-show');
     expect(door, 'the shared row carries the way to look').not.toBeNull();
     click(door);
 
@@ -236,10 +250,10 @@ describe('the browser segment', () => {
     vi.mocked(showBrowser).mockResolvedValueOnce('no browser to drive: install Brave');
     const shown = show(false, true);
     click(shown.target.querySelector('.bz-tog'));
-    click(shown.target.querySelector('.bz-show'));
+    click(list(shown.target)?.querySelector('.bz-show'));
 
     await vi.waitFor(() => {
-      expect(shown.target.textContent).toContain('no browser to drive: install Brave');
+      expect(shownText(shown.target)).toContain('no browser to drive: install Brave');
     });
     expect(list(shown.target), 'the row stays for a door that failed').not.toBeNull();
     shown.stop();
@@ -253,10 +267,10 @@ describe('the browser segment', () => {
     click(shown.target.querySelector('.bz-tog'));
 
     await vi.waitFor(() => {
-      expect(shown.target.textContent).toContain('the profile list would not read');
+      expect(shownText(shown.target)).toContain('the profile list would not read');
     });
     expect(
-      shown.target.textContent,
+      shownText(shown.target),
       'an empty row would be a claim about a read that never answered',
     ).not.toContain('no named profiles yet');
     shown.stop();
@@ -268,7 +282,7 @@ describe('the browser segment', () => {
     ]);
     const shown = show(false, true);
     click(shown.target.querySelector('.bz-tog'));
-    await vi.waitFor(() => expect(shown.target.textContent).toContain('hunt'));
+    await vi.waitFor(() => expect(shownText(shown.target)).toContain('hunt'));
     // **One is singular.** The count arm has a `=== 1 ? '' : 's'` that
     // nothing pinned, and "1 profiles" is what a reader sees when it goes.
     expect(
@@ -280,13 +294,13 @@ describe('the browser segment', () => {
     // two strings sit beside each other on the row, and a swap would strand
     // exactly the profile whose owner is gone - the one this door exists for.
     vi.mocked(closeProfile).mockRejectedValueOnce('no browser profile is open under hunt');
-    click(shown.target.querySelector('.bz-close'));
+    click(list(shown.target)?.querySelector('.bz-close'));
 
     expect(closeProfile, 'the name the row carries is what is closed').toHaveBeenCalledWith('hunt');
     await vi.waitFor(() => {
-      expect(shown.target.textContent).toContain('no browser profile is open under hunt');
+      expect(shownText(shown.target)).toContain('no browser profile is open under hunt');
     });
-    expect(shown.target.textContent, 'the row is not taken away by a close that failed').toContain(
+    expect(shownText(shown.target), 'the row is not taken away by a close that failed').toContain(
       'hunt',
     );
     shown.stop();
@@ -588,7 +602,7 @@ describe('the browser segment', () => {
   it('keeps the panel while focus crosses into it, and drops it when focus leaves', async () => {
     const shown = show(false, true);
     click(toggle(shown.target));
-    const control = shown.target.querySelector<HTMLButtonElement>('.bz-override');
+    const control = list(shown.target)?.querySelector<HTMLButtonElement>('.bz-override') ?? null;
     if (control === null) throw new Error('no control');
 
     // Tabbing from the toggle into a control: a bubbling focusout whose
@@ -622,7 +636,7 @@ describe('the browser segment', () => {
     const shown = show(false, true);
     toggle(shown.target).dispatchEvent(pointer('pointerenter', 'mouse'));
     flushSync();
-    const control = shown.target.querySelector<HTMLButtonElement>('.bz-override');
+    const control = list(shown.target)?.querySelector<HTMLButtonElement>('.bz-override') ?? null;
     if (control === null) throw new Error('no control');
     control.focus();
 
@@ -636,7 +650,7 @@ describe('the browser segment', () => {
     const shown = show(false, true);
     toggle(shown.target).dispatchEvent(pointer('pointerenter', 'mouse'));
     flushSync();
-    const control = shown.target.querySelector<HTMLButtonElement>('.bz-override');
+    const control = list(shown.target)?.querySelector<HTMLButtonElement>('.bz-override') ?? null;
     if (control === null) throw new Error('no control');
     control.focus();
 
@@ -652,7 +666,7 @@ describe('the browser segment', () => {
     const shown = show(false, true);
     click(shown.target.querySelector('.bz-tog'));
 
-    const take = shown.target.querySelector('.bz-override');
+    const take = list(shown.target)?.querySelector('.bz-override');
     expect(take, 'capable and not hosting: the override is the door').not.toBeNull();
     click(take);
     expect(shown.taken, 'and pressing it asks the server for the role').toHaveBeenCalledTimes(1);
@@ -663,9 +677,9 @@ describe('the browser segment', () => {
     const shown = show(false, false);
     click(shown.target.querySelector('.bz-tog'));
 
-    expect(shown.target.textContent).toContain('browser not connected');
+    expect(shownText(shown.target)).toContain('browser not connected');
     expect(
-      shown.target.querySelector('.bz-override'),
+      list(shown.target)?.querySelector('.bz-override'),
       'nothing to override with no host',
     ).toBeNull();
     shown.stop();
@@ -674,22 +688,28 @@ describe('the browser segment', () => {
   it('flips on the role frame: holding it drops the override and says so', () => {
     const shown = show(false, true);
     click(shown.target.querySelector('.bz-tog'));
-    expect(shown.target.querySelector('.bz-override')).not.toBeNull();
+    expect(list(shown.target)?.querySelector('.bz-override')).not.toBeNull();
 
     shown.flip(true);
     flushSync();
 
-    expect(shown.target.textContent, 'the role frame is what the line reads').toContain(
+    expect(shownText(shown.target), 'the role frame is what the line reads').toContain(
       'browser connected',
     );
-    expect(shown.target.querySelector('.bz-override'), 'a holder offers no override').toBeNull();
+    expect(
+      list(shown.target)?.querySelector('.bz-override'),
+      'a holder offers no override',
+    ).toBeNull();
     shown.stop();
   });
 
   /** The show/hide button on the row whose `.nm` reads `name` (shared included). */
   function rowButton(target: HTMLElement, name: string): Element | null {
+    // The rows live in the PORTALED panel, not under the mount.
+    const panel = list(target);
+    if (panel === null) return null;
     return (
-      [...target.querySelectorAll('.bz-it')]
+      [...panel.querySelectorAll('.bz-it')]
         .find((el) => el.querySelector('.nm')?.textContent === name)
         ?.querySelector('button.bz-show') ?? null
     );
@@ -711,10 +731,10 @@ describe('the browser segment', () => {
     });
     click(shown.target.querySelector('.bz-tog'));
     await vi.waitFor(() => {
-      expect(shown.target.textContent, "this slot's profile is listed").toContain('mine');
+      expect(shownText(shown.target), "this slot's profile is listed").toContain('mine');
     });
     expect(
-      shown.target.textContent,
+      shownText(shown.target),
       "another slot's profile is not this slot's business",
     ).not.toContain('theirs');
     shown.stop();
@@ -753,7 +773,7 @@ describe('the browser segment', () => {
     click(rowButton(shown.target, 'hunt'));
     expect(hideBrowser, 'the row lowers its own window').toHaveBeenCalledWith('hunt');
     await vi.waitFor(() => {
-      expect(shown.target.textContent, 'a refused hide is drawn, not swallowed').toContain(
+      expect(shownText(shown.target), 'a refused hide is drawn, not swallowed').toContain(
         'no browser profile is open under hunt',
       );
     });
@@ -768,7 +788,7 @@ describe('the browser segment', () => {
     const shown = show();
     click(shown.target.querySelector('.bz-tog'));
     await vi.waitFor(() => {
-      expect(shown.target.textContent, 'a shared-line read that failed says so').toContain(
+      expect(shownText(shown.target), 'a shared-line read that failed says so').toContain(
         'the browser window state would not read',
       );
     });

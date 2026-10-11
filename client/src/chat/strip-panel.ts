@@ -41,5 +41,27 @@ export function panelStyle(el: HTMLElement | null): string {
   // back.
   const height = Math.round(Math.max(0, Math.min(window.innerHeight * 0.6, box.top - 18)));
   const width = Math.round(Math.max(0, Math.min(780, right - 12)));
-  return `right:${inset}px;width:${width}px;max-height:${height}px`;
+  // The panel is portaled to the body (see `portal`), so its anchor above the
+  // segment has to be stated in viewport terms too - `bottom: calc(100% + 6px)`
+  // measured the segment only while the panel was its child.
+  const bottom = Math.round(Math.max(0, window.innerHeight - box.top + 6));
+  return `right:${inset}px;bottom:${bottom}px;width:${width}px;max-height:${height}px`;
+}
+
+/**
+ * Move a node to the document body for the length of its life.
+ *
+ * **The foot's surface clips its rounded corners and the strip's chips lane
+ * scrolls, so a panel drawn inside either is cut to nothing** - measured: the
+ * panel kept its rect and painted a 2px sliver. A panel is positioned in
+ * viewport coordinates (`panelStyle` measures rects), which is what the body
+ * can carry; Svelte has no portal of its own.
+ */
+export function portal(node: HTMLElement): { destroy: () => void } {
+  document.body.appendChild(node);
+  return {
+    destroy() {
+      node.remove();
+    },
+  };
 }

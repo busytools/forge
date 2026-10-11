@@ -520,7 +520,7 @@ describe('the box', () => {
       expect(field().value, 'the words land where the reader was about to type').toBe(
         'fix the flaky retry test',
       );
-      expect(document.querySelector('.box')?.classList.contains('done'), 'one green beat').toBe(
+      expect(document.querySelector('.surf')?.classList.contains('done'), 'one green beat').toBe(
         true,
       );
 
@@ -528,7 +528,7 @@ describe('the box', () => {
       flushSync();
 
       expect(
-        document.querySelector('.box')?.classList.contains('done'),
+        document.querySelector('.surf')?.classList.contains('done'),
         "and the border eases back to the box's own",
       ).toBe(false);
       expect(field().value, 'the words stay').toBe('fix the flaky retry test');
@@ -2448,6 +2448,16 @@ describe('the frame', () => {
     );
   });
 
+  it('caps a long option list rather than growing the lane past the viewport', () => {
+    // Review Focus 4: eight options on a phone must scroll in place, with the
+    // words row below them still reachable. **Deliberately not pointer-scoped**
+    // (the plan said "under a coarse pointer"): a lane should not grow past the
+    // viewport on any input, and 46vh/420px is a generous desktop measure too.
+    const rule = baseRule('.dock .opts');
+    expect(rule, 'the option list has no cap').toContain('max-height');
+    expect(rule, 'and does not scroll').toContain('overflow-y: auto');
+  });
+
   /**
    * The card's ladder: as the box narrows, one reading leaves at a time from
    * the left, and the dot and the way out are never among them.
@@ -2713,6 +2723,49 @@ describe('the strip lane', () => {
     open({});
 
     expect(document.querySelector('.strip'), 'a lane drew with nothing to say').toBeNull();
+  });
+
+  it('follows the seat when the page moves', () => {
+    // The pin is read under the SHOWN seat: a page that moves must swap the
+    // lanes with it, never keep drawing the seat being left's figures.
+    const other: SessionSlot = { org: 'Busytools', project: 'forge', label: 'worker' };
+    const otherKey = subjectKey({ session: other });
+    pinnedRow.set(SEAT, running);
+    pinnedRow.set(otherKey, { ...running, input_tokens: 42 });
+    const harness = open({});
+
+    expect(document.querySelector('.strip')?.textContent, "the first seat's figures").toContain(
+      '700',
+    );
+
+    harness.page.slot = other;
+    flushSync();
+
+    expect(
+      document.querySelector('.strip')?.textContent,
+      'the figures did not follow the shown seat',
+    ).toContain('42');
+    pinnedRow.set(otherKey, null);
+  });
+
+  it('stands in every surface state: under a prompt, and on a blocked seat', () => {
+    // The breadth the column's own test used to hold (four conversation
+    // states): the lane is the surface's first child in EVERY arm - the
+    // normal box, the prompt's lane, and the blocked line.
+    pinnedRow.set(SEAT, running);
+    const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
+    expect(document.querySelector('.surf .strip'), 'no strip lane under a prompt').not.toBeNull();
+
+    harness.page.record = record();
+    harness.page.seat = seatRead({ lifecycle: null, waking: true });
+    flushSync();
+
+    expect(document.querySelector('.dock'), 'precondition: the prompt is gone').toBeNull();
+    expect(document.querySelector('.blocked'), 'precondition: the seat is blocked').not.toBeNull();
+    expect(
+      document.querySelector('.surf .strip'),
+      'no strip lane on a blocked seat',
+    ).not.toBeNull();
   });
 });
 
@@ -3253,21 +3306,17 @@ describe('the dock', () => {
     ]);
   });
 
-  it('opens the words on Space over the custom row, rather than toggling an id of its own', () => {
+  it('lands the caret on the words row with an ArrowUp off the first option', () => {
     const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
 
-    // The custom row is the last one: an ArrowUp from the first wraps to it.
+    // The words row is the last row: an ArrowUp from the first wraps to it,
+    // and arriving there is what puts the caret in the field.
     press('ArrowUp');
     flushSync();
-    press(' ');
-    flushSync();
 
-    expect(commands(harness), 'Space on the door answers nothing').toEqual([]);
     const notes = document.querySelector('.dock .notes');
-    expect(document.activeElement, 'the door put the caret in the words').toBe(notes);
-    expect(drawn(), 'and no count rides the key for a row that cannot be turned on').not.toContain(
-      'submit 1',
-    );
+    expect(document.activeElement, 'the wrap did not put the caret in the words').toBe(notes);
+    expect(commands(harness), 'arriving answers nothing').toEqual([]);
   });
 
   it("hands a permission's words to its deny, which carries them", () => {
@@ -5791,9 +5840,7 @@ describe('the dictation panel', () => {
         observed.length,
         'nothing watches the composer, so a box growing under the panel re-clips it',
       ).toBeGreaterThan(0);
-      expect(observed[0]?.classList.contains('surf'), 'the composer frame is what is watched').toBe(
-        true,
-      );
+      expect(observed[0]?.classList.contains('comp'), 'the composer is what is watched').toBe(true);
     } finally {
       Reflect.set(globalThis, 'ResizeObserver', original);
     }
@@ -5972,6 +6019,70 @@ describe("the dock's settled shape", () => {
     expect(document.activeElement?.tagName, 'the caret did not land on the composer field').toBe(
       'TEXTAREA',
     );
+  });
+
+  it('draws no prompt for the seat being left', () => {
+    // **The interregnum.** The page moves seats and hands over the new seat's
+    // record only when its read lands; between the two, the record in hand is
+    // the seat being LEFT's - and `owns` is the only thing stopping its prompt
+    // drawing on the surface moved to.
+    const other: SessionSlot = { org: 'Busytools', project: 'forge', label: 'worker' };
+    const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
+    expect(document.querySelector('.dock'), 'precondition: the prompt draws').not.toBeNull();
+
+    harness.page.slot = other;
+    flushSync();
+    expect(
+      document.querySelector('.dock'),
+      "the left seat's prompt drew on the seat moved to",
+    ).toBeNull();
+
+    harness.page.record = record({ slot: other, pending_asks: [questionAsk()] });
+    flushSync();
+    expect(
+      document.querySelector('.dock'),
+      "the moved-to seat's own prompt does not draw",
+    ).not.toBeNull();
+  });
+
+  it('keeps the caret where the reader put it across a repaint', () => {
+    // The docking effect is keyed on the prompt's identity, not the record
+    // object, so a repaint of the SAME prompt must not hand the keyboard back
+    // to the option list mid-sentence.
+    const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
+
+    press('ArrowDown');
+    press('ArrowDown');
+    const notes = document.querySelector('.dock .notes');
+    expect(document.activeElement, 'precondition: the caret is in the words row').toBe(notes);
+
+    harness.page.record = record({ pending_asks: [questionAsk()] });
+    flushSync();
+
+    expect(document.activeElement, 'a repaint stole the caret back to the options').toBe(notes);
+  });
+
+  it('unfolds by keyboard without answering the marked row', () => {
+    // **The accidental-answer defect**: the bar used to be a div with its own
+    // key handler, so the Enter that unfolded ALSO reached the dock's handler
+    // and answered the marked option. As a real button, the root's guard hands
+    // it its keys.
+    const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
+
+    const chev = document.querySelector('.dock .chevb');
+    if (!(chev instanceof HTMLElement)) throw new Error('the head drew no fold control');
+    chev.click();
+    flushSync();
+    const bar = document.querySelector('.dock .qbar');
+    if (!(bar instanceof HTMLButtonElement)) throw new Error('the bar is not a button');
+    expect(document.activeElement, 'the fold did not hand the keyboard to the bar').toBe(bar);
+
+    bar.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    bar.click();
+    flushSync();
+
+    expect(commands(harness), 'unfolding answered the question').toEqual([]);
+    expect(document.querySelector('.dock .opts'), 'the body did not unfold').not.toBeNull();
   });
 });
 

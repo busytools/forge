@@ -980,7 +980,7 @@
   .mai .d { margin-left: auto; color: var(--dim); font-size: var(--fs-data); }
   .mai.sel { background: rgba(244,118,0,.09); }
 
-  /* The box morphed into a prompt: same slot, so your eye is already here.
+  /* The prompt's own lane: the slot the box would use, so your eye is already here.
      A neutral panel, as the client draws it: the accent is left to the marked
      row and the question's own mark, never painted behind the dock. */
   .mdock { padding: 13px 15px; display: flex; flex-direction: column; gap: 10px; }
@@ -2668,7 +2668,7 @@ branch main, nothing to commit</div>
           </div>
         </div>
 
-        <!-- the box morphed into a permission prompt -->
+        <!-- the prompt lane: a permission -->
         <div class="cst" data-cs="ask">
           <div class="mdock">
             <div class="mdhead"><span class="mtag warn">&#9888; needs approval</span>

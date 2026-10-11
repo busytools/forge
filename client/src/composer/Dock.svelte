@@ -48,7 +48,7 @@
     take?: Take | null;
     /**
      * That take's wire side, when this page owns the capture - the card the
-     * custom row draws, on the same terms the composer's card draws it.
+     * words row draws, on the same terms the composer's card draws it.
      */
     wire?: {
       frames: number;
@@ -58,7 +58,7 @@
       elapsedMs: number;
     } | null;
     /**
-     * The mic on the custom row: this surface's own door to a take.
+     * The mic on the words row: this surface's own door to a take.
      *
      * A divergence from the composer's "the mic is the door, not the trigger",
      * and the reason is rule 22's touch door: the terminal's push-to-talk key
@@ -227,6 +227,18 @@
 
   /** Whether the body is folded to the bar, which the reader toggles. */
   let collapsed = $state(false);
+  /** The folded bar, so the keyboard has somewhere to land when it folds. */
+  let barEl = $state<HTMLButtonElement | null>(null);
+
+  // **The keyboard follows the fold.** Folding unmounts the head's control, so
+  // the caret would land on the body and the bar is the only route back. Keyed
+  // on the bar element as well as the flag: it does not exist yet when
+  // `collapsed` flips, and binding is what makes this run again and take.
+  // Unfolding is covered by the arrival effect above (the listbox remounts).
+  $effect(() => {
+    if (!collapsed) return;
+    barEl?.focus();
+  });
   /** The options a multi-select question has toggled, in the order they were. */
   let toggled = $state<string[]>([]);
 
@@ -234,7 +246,7 @@
   const submitLabel = $derived(
     multi && toggled.length > 0 ? `submit ${String(toggled.length)}` : 'submit',
   );
-  /** The field the custom row draws, which is also where a take's words land. */
+  /** The field the words row draws, which is also where a take's words land. */
   let field = $state<HTMLElement | null>(null);
   /** The listbox, which owns the keys while the dock has the slot. */
   let listbox = $state<HTMLDivElement | null>(null);
@@ -267,6 +279,10 @@
   // field it is the reader's, so this leaves it where they put it.
   $effect(() => {
     void ownKey;
+    // **While folded the bar owns the caret.** The listbox unmounts with the
+    // body, which re-runs this effect with `listbox` null - and without this
+    // guard the root takes the focus the bar's own effect just placed.
+    if (collapsed) return;
     if (inFieldNow()) return;
     // The options where there are any, and the dock itself where there are not
     // (a permission, a held post) - NOT the words row: the options are what
@@ -291,7 +307,7 @@
     if (el !== null) el.focus({ preventScroll: true });
   });
 
-  /** Whether the caret is in the custom row's field right now. */
+  /** Whether the caret is in the words row's field right now. */
   function inFieldNow(): boolean {
     return field !== null && field.contains(document.activeElement);
   }
@@ -762,13 +778,6 @@
   tabindex="-1"
   onkeydown={onkey}
 >
-  <!-- The waiting prompts, above the question (Ved, 2026-10-10): knowing there
-       are more behind this one is part of reading it, and at the head it stays
-       legible when the body folds to the bar. -->
-  {#if depth > 1}
-    <div class="queue">&darr; {depth - 1} more pending after this</div>
-  {/if}
-
   {#snippet wordsRow()}
     <!-- **The words row is the prompt's last row, and it IS the input.** One
          step past the last option (or a typed character) lands the caret in
@@ -827,31 +836,35 @@
   {/snippet}
 
   {#if collapsed}
-    <!-- The bar: the question, and that is all - a click (or Enter/Space on
-         it) folds and unfolds the body so the reader can see the page the
-         question is about. A take keeps drawing under it either way. -->
-    <div
+    <!-- The bar: the question and the count behind it, and that is all - a
+         click (or Enter/Space on it) unfolds the body so the reader can see
+         the page the question is about. **A real button, not a div with a key
+         handler**: the root's own guard hands a button its keys, so the Enter
+         that unfolds can never ALSO reach the dock's handler and answer the
+         marked row (the accidental-answer defect this was drawn around). A
+         take keeps drawing under it either way. -->
+    <button
       class="qbar"
-      role="button"
-      tabindex="0"
+      type="button"
       aria-expanded="false"
+      bind:this={barEl}
       onclick={() => {
         collapsed = false;
-      }}
-      onkeydown={(event: KeyboardEvent) => {
-        if (event.key === 'Enter' || event.key === ' ') {
-          event.preventDefault();
-          collapsed = false;
-        }
       }}
     >
       <span class="qm">?</span>
       <span class="t">{ask.kind === 'question' ? ask.request.question : ''}</span>
       {#if depth > 1}<span class="cnt">+{depth - 1}</span>{/if}
       <span class="chevc" aria-hidden="true">&#9652;</span>
-    </div>
+    </button>
     {#if take !== null}{@render wordsRow()}{/if}
   {:else}
+    <!-- The waiting prompts lead the EXPANDED lane only (Ved, 2026-10-10):
+         knowing there are more behind this one is part of reading it, and the
+         folded bar carries the count in its own chip instead of this line. -->
+    {#if depth > 1}
+      <div class="queue">&darr; {depth - 1} more pending after this</div>
+    {/if}
     {#if ask.kind === 'permission'}
       <div class="d-head">
         <span class="tag warn">&#9888; needs approval</span>
@@ -954,7 +967,7 @@
         aria-label="the prompt's options"
         bind:this={listbox}
         tabindex="-1"
-        aria-activedescendant={rowId(marked)}
+        aria-activedescendant={onWords ? undefined : rowId(marked)}
       >
         {#each rows as row, at (row.key)}
           <div

@@ -50,8 +50,9 @@ function open(): Page {
 
 /** The classes the ring carries right now, as one line a trace can hold. */
 function ringClasses(): string {
-  const box = document.querySelector('.box');
-  return [...(box?.classList ?? [])].join('.');
+  // The ring is the SURFACE's since the foot became one box; `.box` is a lane.
+  const surf = document.querySelector('.surf');
+  return [...(surf?.classList ?? [])].join('.');
 }
 
 /** What the dictation row inside the box says it is doing, or `-` when there is none. */

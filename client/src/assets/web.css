@@ -1986,18 +1986,13 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
   font-display: swap;
 }
 
-/* ---------- the strip pinned above the box ---------- */
+/* ---------- the strip, the surface's first lane ---------- */
 
-/* The running turn's metadata row, pinned above the composer for as long as
-   the turn is incomplete and through the beat that follows it. It shares the
-   box's edges and sits outside its ring, so the row's height is the only thing
-   it ever costs the column.
+/* The running turn's metadata row, drawn in the surface's first lane for as
+   long as the turn is incomplete and through the beat that follows it - one
+   child of `.surf`, hairline-separated from the lane below.
    Its fields are the settled row's own, under `.turninfo`, and its element is
-   the flex row the fields wrap in - the strip renders no box of its own.
-   No margin of its own: the composer cancels the grid's row gap for its own
-   row, so the column's foot is this row's bottom edge with only the composer's
-   padding under it - which is what puts it nearer the box than the turn above
-   it. */
+   the flex row the fields wrap in - the strip renders no box of its own. */
 .strip { flex: none; padding: 8px 13px 9px; }
 .strip .ti { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; row-gap: 2px;
   font-family: var(--mono); font-size: var(--fs-base); color: var(--dim); }
@@ -2009,12 +2004,17 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
   .strip .sg-fill {
     flex-basis: 100%;
     margin-left: 0;
+    /* **nowrap is the lane**: without it the chips still wrap (measured: three
+       ragged rows at 400px, and the mask faded the last chip of each), so the
+       scroll never happens and the ragged wrap the redesign replaced stays. */
+    flex-wrap: nowrap;
     overflow-x: auto;
     scrollbar-width: none;
     padding-right: 26px;
     -webkit-mask-image: linear-gradient(90deg, #000 84%, transparent);
     mask-image: linear-gradient(90deg, #000 84%, transparent);
   }
+  .strip .sg-fill > * { flex: none; }
   .strip .sg-fill::-webkit-scrollbar { display: none; }
 }
 /* Wrap between fields, never inside one: a broken token pair reads as two
@@ -2044,11 +2044,15 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
    recording, transcribing, the landed beat and an error each take it, and at
    rest it answers whether the keyboard is here - and what it is DOING wins
    over focus, which the `:not` list states rather than leaving to order. */
+/* No `overflow: hidden` here, deliberately: the rounded corners need no clip
+   (nothing inside paints to them), and clipping would cut every panel drawn to
+   leave the surface - the strip's segment lists, which are PORTALED to the
+   body since this surface and the chips lane both clipped them. */
 .surf { position: relative; container-type: inline-size;
   border: 1.5px solid var(--ctl); border-radius: 16px;
   background: linear-gradient(180deg, rgba(20,25,38,.72), rgba(13,17,26,.78));
   backdrop-filter: blur(10px); box-shadow: 0 14px 38px rgba(0,0,0,.42);
-  display: flex; flex-direction: column; overflow: hidden;
+  display: flex; flex-direction: column;
   transition: border-color .3s ease; }
 .surf > * + * { border-top: 1px solid var(--line); }
 .surf.rec { border-color: color-mix(in srgb, var(--accent) 35%, var(--hot)); }
@@ -2529,6 +2533,8 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
    floor, so its width is stated here. */
 @media (pointer: coarse) {
   .dock .btn { min-height: 44px; }
+  /* The fold control is a glyph: its box is ~19px wide without this floor. */
+  .dock .chevb { min-width: 44px; }
   .dock .qrow .micb { min-height: 44px; min-width: 44px; }
   .dock .qrow .sendb { min-height: 44px; min-width: 44px; }
 }
