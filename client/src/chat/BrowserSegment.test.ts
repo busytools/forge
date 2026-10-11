@@ -376,6 +376,58 @@ describe('the browser segment', () => {
     shown.stop();
   });
 
+  it("keeps each row's deleting mark while another row's delete is still running", async () => {
+    vi.mocked(listProfiles).mockResolvedValue([
+      { name: 'hunt', owner: 'Busytools/forge/lead', running: true, windowed: false },
+      { name: 'scout', owner: 'Busytools/forge/lead', running: true, windowed: false },
+    ]);
+    const gates: Record<string, () => void> = {};
+    vi.mocked(deleteProfile).mockImplementation(
+      (name: string) =>
+        new Promise<void>((resolve) => {
+          gates[name] = resolve;
+        }),
+    );
+    const shown = show(false, true);
+    click(shown.target.querySelector('.bz-tog'));
+    await vi.waitFor(() => expect(shown.target.textContent).toContain('scout'));
+
+    const rowFor = (name: string) => {
+      const row = [...shown.target.querySelectorAll('.bz-it')].find((it) =>
+        it.textContent?.includes(name),
+      );
+      if (!(row instanceof HTMLElement)) throw new Error(`no row for ${name}`);
+      return row;
+    };
+    const marks = () => (shown.target.textContent?.match(/deleting\.\.\./g) ?? []).length;
+
+    click(rowFor('hunt').querySelector('.bz-del'));
+    click(rowFor('hunt').querySelector('.bz-del.confirm'));
+    click(rowFor('scout').querySelector('.bz-del'));
+    click(rowFor('scout').querySelector('.bz-del.confirm'));
+    await vi.waitFor(() => {
+      expect(marks(), 'both rows report the work at once').toBe(2);
+    });
+
+    // The first delete answers: its row falls away with the re-read, and the
+    // second row's mark must survive the first's completion.
+    vi.mocked(listProfiles).mockResolvedValue([
+      { name: 'scout', owner: 'Busytools/forge/lead', running: true, windowed: false },
+    ]);
+    gates.hunt?.();
+    await vi.waitFor(() => {
+      expect(shown.target.textContent, 'the first row falls away').not.toContain('hunt');
+      expect(marks(), "and the second row's mark is still there").toBe(1);
+    });
+
+    vi.mocked(listProfiles).mockResolvedValue([]);
+    gates.scout?.();
+    await vi.waitFor(() => {
+      expect(marks(), 'the last completion clears it').toBe(0);
+    });
+    shown.stop();
+  });
+
   it('lists a closed profile with no close and a way to delete it', async () => {
     vi.mocked(listProfiles).mockResolvedValue([
       { name: 'hunt', owner: '', running: false, windowed: false },

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tick } from 'svelte';
+  import { SvelteSet } from 'svelte/reactivity';
   import Icon from '../components/Icon.svelte';
   import {
     browserUsed,
@@ -66,7 +67,9 @@
    * One at a time, and the confirm clears on every door that closes the list.
    */
   let armed = $state<string | null>(null);
-  let deleting = $state<string | null>(null);
+  /** Every row a delete is running for: deletes on different rows overlap,
+   *  and one completing must not clear another's mark. */
+  let deleting = new SvelteSet<string>();
   /** Whether the SHARED browser is up as a window: its row's button says hide
    *  where it is, and the collapsed row marks it without opening. */
   let sharedUp = $state(false);
@@ -402,14 +405,14 @@
    */
   function del(row: ProfileRow): void {
     armed = null;
-    deleting = row.name;
+    deleting.add(row.name);
     void deleteProfile(row.name).then(
       () => {
-        deleting = null;
+        deleting.delete(row.name);
         void readProfiles();
       },
       (error: unknown) => {
-        deleting = null;
+        deleting.delete(row.name);
         read = 'failed';
         why = whyText(error);
       },
@@ -543,7 +546,7 @@
               keep
             </button>
           </div>
-        {:else if deleting === row.name}
+        {:else if deleting.has(row.name)}
           <div class="bz-it">
             <span class="ring"></span>
             <span class="nm">{row.name}</span>
