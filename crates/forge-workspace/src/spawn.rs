@@ -7145,9 +7145,10 @@ mod lead_charter_tests {
         assert!(
             DEFAULT_LEAD_CHARTER.contains(
                 "A work cut - one feature, one issue, one fix - lands whole: one branch, one \
-                 review, one look, one merge"
+                 review, one look, one merge. Never slice it into pieces that land one after \
+                 another, and never show or merge an intermediate step on the way."
             ),
-            "the shared handle is pinned",
+            "the handle and the ban, through the ban's period, are pinned together",
         );
         assert!(
             DEFAULT_LEAD_CHARTER.contains("never sequence a cut as \"land A, then B, then C\""),

@@ -1188,10 +1188,11 @@ mod tests {
         assert!(
             tool.description().contains(
                 "A work cut - one feature, one issue, one fix - lands whole: one branch, one \
-                 review, one look, one merge"
+                 review, one look, one merge. Never slice it into pieces that land one after \
+                 another, and never show or merge an intermediate step on the way."
             ),
-            "the one-shot handle is pinned - the same sentence the conduct block and the charter \
-             carry: {}",
+            "the handle and the ban, through the ban's period, are pinned together - the same \
+             sentence the conduct block and the charter carry: {}",
             tool.description()
         );
         let schema = tool.input_schema();

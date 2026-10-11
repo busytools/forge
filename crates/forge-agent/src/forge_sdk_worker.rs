@@ -3318,16 +3318,10 @@ mod tests {
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
                 "A work cut - one feature, one issue, one fix - lands whole: one branch, one \
-                 review, one look, one merge"
+                 review, one look, one merge. Never slice it into pieces that land one after \
+                 another, and never show or merge an intermediate step on the way."
             ),
-            "the shared handle is pinned",
-        );
-        assert!(
-            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
-                "Never slice it into pieces that land one after another, and never show or merge \
-                 an intermediate step on the way"
-            ),
-            "the slice ban and the intermediate-step ban are pinned",
+            "the handle and the ban, through the ban's period, are pinned together",
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
