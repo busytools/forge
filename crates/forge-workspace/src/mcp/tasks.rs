@@ -1074,6 +1074,7 @@ mod tests {
             },
             rollup: None,
             parent_subject: None,
+            history: Vec::new(),
         }
     }
 

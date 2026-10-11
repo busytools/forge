@@ -3,7 +3,9 @@ import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { homeWire } from '../dev/fixture.data';
+import { extensionsWire, fakePage } from '../extensions/testing';
 import type { HomeWire } from '../wire/home';
+import Home from './Home.svelte';
 import Frames from './testing/Frames.svelte';
 
 /**
@@ -54,5 +56,30 @@ describe("the home's clock", () => {
 
     expect(drew(), 'no frame reached the page, so this test proves nothing').toContain('frame-4');
     expect(age(), 'the ages froze while the frames landed').toBe('1m');
+  });
+});
+
+/**
+ * The extensions card over a live connection: the read is the card's own
+ * subscription, so a server-rendered home can only ever draw its reading
+ * state. This is the half that says the facts land.
+ */
+describe('the extensions card over a connection', () => {
+  it('draws the counts once its read lands', () => {
+    const page = fakePage(extensionsWire());
+    app = mount(Home, {
+      target: document.body,
+      props: { wire: homeWire, address: '127.0.0.1:8790', connection: page.connection },
+    });
+    flushSync();
+
+    const cards = [...document.querySelectorAll('.svc')];
+    const card = cards.find((row) => row.querySelector('.k')?.textContent?.includes('extensions'));
+    expect(card, 'the fifth card drew').not.toBeUndefined();
+    expect(card?.querySelector('.v')?.textContent, 'the read landed and the card says so').toBe(
+      '2 plugins',
+    );
+    expect(card?.querySelector('.sub')?.textContent).toBe('2 updates waiting');
+    expect(card?.classList.contains('warn'), 'stale lifts the tone').toBe(true);
   });
 });

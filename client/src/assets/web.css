@@ -34,7 +34,8 @@ html::-webkit-scrollbar,
 .sg-list::-webkit-scrollbar,
 .pop::-webkit-scrollbar,
 .box textarea::-webkit-scrollbar,
-.dock .notes::-webkit-scrollbar {
+.dock .notes::-webkit-scrollbar,
+.dr-body::-webkit-scrollbar {
   width: 8px;
   cursor: pointer;
 }
@@ -45,7 +46,8 @@ html::-webkit-scrollbar-track,
 .sg-list::-webkit-scrollbar-track,
 .pop::-webkit-scrollbar-track,
 .box textarea::-webkit-scrollbar-track,
-.dock .notes::-webkit-scrollbar-track {
+.dock .notes::-webkit-scrollbar-track,
+.dr-body::-webkit-scrollbar-track {
   background: transparent;
   cursor: pointer;
 }
@@ -56,7 +58,8 @@ html::-webkit-scrollbar-corner,
 .sg-list::-webkit-scrollbar-corner,
 .pop::-webkit-scrollbar-corner,
 .box textarea::-webkit-scrollbar-corner,
-.dock .notes::-webkit-scrollbar-corner {
+.dock .notes::-webkit-scrollbar-corner,
+.dr-body::-webkit-scrollbar-corner {
   background: transparent;
   cursor: pointer;
 }
@@ -67,7 +70,8 @@ html::-webkit-scrollbar-thumb,
 .sg-list::-webkit-scrollbar-thumb,
 .pop::-webkit-scrollbar-thumb,
 .box textarea::-webkit-scrollbar-thumb,
-.dock .notes::-webkit-scrollbar-thumb {
+.dock .notes::-webkit-scrollbar-thumb,
+.dr-body::-webkit-scrollbar-thumb {
   background: var(--s3);
   border-radius: 99px;
   cursor: pointer;
@@ -79,7 +83,8 @@ html::-webkit-scrollbar-thumb:hover,
 .sg-list::-webkit-scrollbar-thumb:hover,
 .pop::-webkit-scrollbar-thumb:hover,
 .box textarea::-webkit-scrollbar-thumb:hover,
-.dock .notes::-webkit-scrollbar-thumb:hover {
+.dock .notes::-webkit-scrollbar-thumb:hover,
+.dr-body::-webkit-scrollbar-thumb:hover {
   background: var(--line);
 }
 html::-webkit-scrollbar-thumb:active,
@@ -89,7 +94,8 @@ html::-webkit-scrollbar-thumb:active,
 .sg-list::-webkit-scrollbar-thumb:active,
 .pop::-webkit-scrollbar-thumb:active,
 .box textarea::-webkit-scrollbar-thumb:active,
-.dock .notes::-webkit-scrollbar-thumb:active {
+.dock .notes::-webkit-scrollbar-thumb:active,
+.dr-body::-webkit-scrollbar-thumb:active {
   background: var(--muted);
 }
 
@@ -167,7 +173,11 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
 
 /* ---------- system band ---------- */
 
-.band { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 22px; }
+/* Five cards across on a wide window, wrapping below - the last card can sit
+   alone in a middling band, and on a phone the fixed override below wraps
+   2+2+1. `auto-fit` at this floor is what puts all five in one row where the
+   room is, which a fixed count of five would refuse on a narrower window. */
+.band { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin-bottom: 22px; }
 .svc {
   background: linear-gradient(180deg, rgba(20,25,38,.75), rgba(13,17,26,.75));
   border: 1px solid var(--line); border-radius: var(--r);
@@ -185,15 +195,19 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
 .svc.bad { border-color: rgba(224,104,62,.4); }
 .svc.bad .v { color: var(--bad); }
 .svc.off { opacity: .72; }
-/* The one card that is a way in. The chevron is drawn at rest rather than
-   uncovered by the pointer - an affordance only hover reveals is what rule 22
-   forbids - and the hover recolours it, the way a row's own chrome does.
-   `opacity: 1` because the shared `.arw` is a DISCLOSURE's mark and rests
-   hidden: this one is a door, and a door nobody can see is not one. */
+/* The cards that are ways in (dictation and extensions). The chevron is
+   drawn at rest rather than uncovered by the pointer - an affordance only
+   hover reveals is what rule 22 forbids - and the hover recolours it, the
+   way a row's own chrome does. `opacity: 1` because the shared `.arw` is a
+   DISCLOSURE's mark and rests hidden: these are doors, and a door nobody
+   can see is not one. */
 .band a.svc { display: block; text-decoration: none; color: inherit; }
 .band a.svc .arw { margin-left: auto; opacity: 1; color: var(--dim); }
 .band a.svc:hover { border-color: var(--ctl); }
 .band a.svc:hover .arw { color: var(--accent); }
+/* A card is far taller than a finger needs; the floor is stated anyway, so
+   the door is sized like every other control on the page. */
+@media (pointer: coarse) { .band a.svc { min-height: 44px; } }
 
 /* The mock's upstream banner is not here: it hangs on a status probe the
    TUI runs once, before a browser can attach, so on the web it could only
@@ -344,7 +358,7 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
    state keeps its lane, and lanes that do not fit wrap to a second row:
    the sheet never scrolls sideways, and a missing lane would read as a
    missing state. */
-.b-lanes { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 18px; align-items: start; }
+.b-lanes { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 18px; }
 
 .b-cap { display: flex; align-items: center; gap: 8px; padding: 0 2px 10px; }
 .b-lane-nm { font-size: var(--fs-label); font-weight: 600; color: var(--muted); letter-spacing: .01em; }
@@ -375,7 +389,10 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
   border: 1px solid var(--line); transform: rotate(1.2deg);
   box-shadow: 0 26px 52px -24px rgba(0, 0, 0, .9);
 }
-.b-lane { transition: background .16s ease; }
+/* The lane fills its column - the whole of it is the drop target, an empty
+   one included - with a floor so a board of near-empty lanes still offers a
+   bucket to drop into. */
+.b-lane { min-height: 120px; transition: background .16s ease; }
 .b-lane.drop { background: rgba(255, 255, 255, .025); border-radius: 14px; }
 .b-lane.drop .b-cap .b-lane-nm { color: var(--text); }
 .b-top.dragging .b-seat.drop { background: var(--accent); color: var(--bg); }
@@ -465,17 +482,112 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
 .b-item.on { color: var(--hot); }
 
 /* marks: shape first, colour second */
-.b-mark { width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--dim); flex: none; margin-top: 3px; }
+.b-mark {
+  width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid var(--dim);
+  flex: none; margin-top: 4px;
+  display: inline-flex; align-items: center; justify-content: center;
+}
 .b-mark.b-run { background: var(--accent); border-color: var(--accent); }
-.b-mark.b-wait { border-radius: 3px; border: 2.5px solid var(--warn); margin-top: 2px; }
-.b-mark.b-done { background: var(--ok); border-color: var(--ok); }
-.b-mark.b-fail { background: var(--bad); border-color: var(--bad); }
+.b-mark.b-wait { border-radius: 3px; border: 1.8px solid var(--warn); margin-top: 3px; }
+/* Done and failed carry the house's own glyphs - the tick and the cross the
+   chat draws a settled or a failed turn with - not a coloured blob. */
+.b-mark.b-done { background: none; border: 0; color: var(--ok); margin-top: 0; }
+.b-mark.b-fail { background: none; border: 0; color: var(--bad); margin-top: 0; }
+.b-mark .ic { width: 12px; height: 12px; }
 .b-mark.b-cancel { height: 2px; border: 0; border-radius: 2px; background: var(--dim); margin-top: 6px; }
 
 .b-create { display: flex; gap: 9px; align-items: center; flex-wrap: wrap; margin-top: 22px; }
 @media (pointer: coarse) {
   .b-btn, .b-pick, .b-in, .b-seat, .b-item { min-height: 44px; }
 }
+
+/* ---------- the drawer: one row's own page over the board ---------- */
+
+.dr-scrim { position: fixed; inset: 0; background: rgba(4,5,10,.55); z-index: 40; }
+.dr {
+  /* Full-bleed once the window is narrower than the panel: a phone's drawer
+     is the screen, not a strip of it. */
+  position: fixed; top: 0; right: 0; bottom: 0; width: min(520px, 100%);
+  background: var(--s1); border-left: 1px solid var(--line);
+  box-shadow: -18px 0 40px rgba(0,0,0,.4); z-index: 41;
+  display: flex; flex-direction: column;
+}
+.dr:focus { outline: none; }
+.dr-head {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 14px 16px 12px; border-bottom: 1px solid var(--line);
+}
+.dr-state {
+  display: inline-flex; align-items: center; gap: 5px; margin-top: 2px;
+  font-family: var(--mono); font-size: 11px; color: var(--muted);
+  border: 1px solid var(--line); border-radius: 6px; padding: 1px 7px;
+}
+.dr-state.warn { color: var(--warn); border-color: rgba(201,161,59,.45); }
+.dr-state.ok { color: var(--ok); border-color: rgba(130,199,107,.45); }
+.dr-state.bad { color: var(--bad); border-color: rgba(224,104,62,.45); }
+.dr-state.run { color: var(--accent); border-color: rgba(244,118,0,.45); }
+.dr-state .ic { width: 11px; height: 11px; }
+.dr-title .t { font-size: 15px; font-weight: 600; }
+.dr-title .sub { color: var(--dim); font-family: var(--mono); font-size: 11.5px; margin-top: 2px; }
+.dr-x {
+  margin-left: auto; background: none; border: 0; color: var(--dim);
+  font: inherit; font-size: 15px; cursor: pointer; padding: 4px 8px;
+}
+.dr-body { flex: 1; overflow-y: auto; padding: 14px 16px 24px; }
+.dr-fields { display: grid; grid-template-columns: 92px 1fr; gap: 6px 12px; }
+.dr-fields dt { color: var(--dim); font-family: var(--mono); font-size: 11.5px; }
+.dr-fields dd { color: var(--text); font-family: var(--mono); font-size: 12px; }
+.dr-fields dd .dim { color: var(--dim); }
+.dr-fields a { color: var(--blue); text-decoration: none; }
+.dr-detail { margin-top: 12px; color: var(--muted); font-size: 12.5px; white-space: pre-wrap; }
+.dr h3 {
+  margin: 20px 0 8px; font-size: 11px; letter-spacing: .09em;
+  text-transform: uppercase; color: var(--dim); font-weight: 500;
+}
+.dr-none { color: var(--dim); font-family: var(--mono); font-size: 11.5px; }
+.dr-ask {
+  border: 1px solid rgba(201,161,59,.4); border-left: 3px solid var(--warn);
+  border-radius: 9px; background: rgba(201,161,59,.06); padding: 11px 12px;
+}
+.dr-ask .q { color: var(--text); font-size: 13px; }
+.dr-ask .from { color: var(--dim); font-family: var(--mono); font-size: 11px; margin-top: 3px; }
+.dr-ask .answer { display: flex; gap: 8px; margin-top: 10px; }
+.dr-ask input {
+  flex: 1; min-width: 0; background: var(--s2); color: var(--text);
+  border: 1px solid var(--line); border-radius: 7px;
+  padding: 6px 9px; font-family: var(--mono); font-size: 12px;
+}
+.dr-btn {
+  border: 1px solid var(--line); background: var(--s2); color: var(--text);
+  border-radius: 7px; padding: 6px 12px; font: inherit; font-size: 12px; cursor: pointer;
+}
+.dr-btn.go { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 600; }
+.dr-btn.no { background: transparent; color: var(--bad); box-shadow: inset 0 0 0 1px rgba(224,104,62,.45); }
+.dr-hold { font-size: var(--fs-label); color: var(--warn); }
+.dr-said { margin: 0 0 14px; padding: 9px 13px; border-radius: 10px; font-size: var(--fs-data); }
+.dr-said.warning { background: rgba(201,161,59,.12); color: var(--warn); }
+.dr-said.error { background: rgba(224,104,62,.12); color: var(--bad); }
+.dr-ses {
+  display: inline-block; margin-top: 9px; color: var(--blue); text-decoration: none;
+  font-family: var(--mono); font-size: 11.5px;
+}
+.dr-hist .h {
+  display: grid; grid-template-columns: 74px 1fr; gap: 10px;
+  padding: 6px 0; border-bottom: 1px solid rgba(34,42,60,.6);
+  font-family: var(--mono); font-size: 11.5px;
+}
+.dr-hist .h:last-child { border-bottom: 0; }
+.dr-hist .w { color: var(--dim); }
+.dr-hist .what { color: var(--muted); }
+.dr-hist .what b { color: var(--text); font-weight: 500; }
+.dr-last { color: var(--muted); font-family: var(--mono); font-size: 11.5px; }
+.dr-last .dr-ses { margin: 0 0 0 10px; }
+@media (pointer: coarse) {
+  .dr-x { min-width: 44px; min-height: 44px; }
+  .dr-btn, .dr-ask input { min-height: 44px; }
+  .dr-ses { display: inline-flex; align-items: center; min-height: 44px; }
+}
+
 @media (max-width: 700px) {
   .b-ask + .b-ask { border-left: 0; padding-left: 0; }
 }
@@ -554,7 +666,7 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
 }
 @media (max-width: 900px) {
   .fleet-row { grid-template-columns: 22px minmax(0, 1fr) auto; row-gap: 8px; }
-  .fleet-where, .fleet-when, .fleet-seats, .fleet-counts, .fleet-misses { grid-column: 2 / -1; }
+  .fleet-where, .fleet-when, .fleet-seats, .fleet-counts, .fleet-misses, .fleet-open { grid-column: 2 / -1; }
 }
 
 /* the mark inside a row: the shared shapes, with the row's own reset so a

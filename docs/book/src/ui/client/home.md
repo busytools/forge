@@ -22,7 +22,7 @@ nothing to draw, and the client never falls back to bundled data.
 |---|---|---|
 | Stopped | the core's last fatal, above everything else: `forge stopped:` and the terminal's own words | `fatal_error` |
 | Header | the brand mark, `forge`, the forge build serving the socket, the socket protocol, the claude version, the CLI's update notice, this app's own update line (or, in a browser, the build and the latest published), and the fleet totals | `ClientSettings.mark` from the greeting; `forge_version_short`; `PROTOCOL_VERSION`; `cli_version`; the shell's update check, or the served `latest.json`; `agents` and `projects` counted |
-| Band | four cards: the gateway listener, the client's own address, dictation, and the account pool | `accounts.gateway`, the connection the client made, `dictate.snapshot`, `accounts.loading` |
+| Band | five cards: the gateway listener, the client's own address, dictation, the account pool, and the extensions | `accounts.gateway`, the connection the client made, `dictate.snapshot`, `accounts.loading`, the `extensions` subject |
 | Fleet row | one per project: the strongest seat mark, the project, its branch and changed-file count, when it last moved (the newest write among its seats and the sessions its catalog remembers, `now`/`3h`/`2d`, or `never` for a project with neither a seat nor a session behind it), its seats, `live of cap slots · queue · on you`, the named misses, and the ways in - the row itself, each seat, and the board | `fleet` for the counts and the misses; `projects` for the tree; `agents` and `projects[].sessions` for the seats and the age |
 
 Every cell of a fleet row is the server's own read. The mark is the
@@ -36,12 +36,26 @@ while a seat chip opens its own seat and `open board` opens the
 [board](./board.md). A project with no live seat is started by that same
 click, as a sleeping seat is from the terminal's rail.
 
-**The dictation card is the way into the [models page](./dictate-models.md).**
-The band's cards are facts about this forge, and that one opens `/models`,
-where the pins, the catalogue check and the feed are drawn. It is a link at
-rest - a chevron on the card's title line, dimmed until the pointer is on it -
+**Two cards are ways in.** The dictation card opens the
+[models page](./dictate-models.md), where the pins, the catalogue check and
+the feed are drawn; the extensions card opens the
+[extensions page](./extensions.md), where the plugin inventory, its
+components and the marketplaces are. Both are links at rest - a chevron on
+the card's title line, drawn dim rather than uncovered by the pointer,
 because an affordance only the hover uncovers is one a touch reader cannot
-find. The other three cards open nothing.
+find - and both take Enter and Space. **The other three cards open
+nothing.**
+
+**The extensions card reads its own subject.** What a reader wants on it -
+how many plugins are installed, and whether any is behind its marketplace -
+is in the `extensions` read and nowhere on the home's own wire (the home
+snapshot carries only the update records), so the card subscribes that
+subject from the home and takes it with the page. Its states are its own:
+**reading** before the read lands, **unread** for a refused subscription or
+an inventory with no plugins root to scan (with the core's own reason on
+the page behind it), **a warning** when something is stale, naming how many
+updates wait, and **quiet** when nothing is, naming the marketplaces the
+card draws nothing of.
 
 **The header draws the forge build, not this app's own version.** The header
 states which forge is serving, and the client is a different program, so the
@@ -163,6 +177,7 @@ it. At 430 the band becomes a two-column grid, the header wraps to two lines,
 and a fleet row's cells flow onto second lines under the project name;
 nothing overflows horizontally at either width.
 
-The sheet's own breakpoints are at 1280, 980, 760 and 560. This page's
-columns are all in the header and the band, so it has no collapse of its own
-to check at the middle two.
+The sheet's own breakpoints are at 900, 760, 700 and 560. This page's own
+collapse is the fleet row's at 900; its chrome's is at 760, where the header
+wraps and the band drops to two columns. Nothing scoped to this page sits
+below that, so the 430 check covers what the sheet changes here.

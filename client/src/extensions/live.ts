@@ -23,7 +23,8 @@ import type { Store } from '../stores';
 import { extensionsFrom, updateRunFrom, type ExtensionsRead } from '../wire/extensions';
 import type { Subject } from '../protocol';
 
-/** The Extensions page's subject, which only this page watches. */
+/** The Extensions page's subject, watched by this page and by the home's
+ * extensions card. */
 const EXTENSIONS: Subject = 'extensions';
 
 /** What the page has to draw from, and why it has nothing when it does not. */

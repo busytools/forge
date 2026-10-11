@@ -16,7 +16,9 @@
  */
 
 import { displayAddress } from '../connect/attempt';
+import { railCounts, stalePlugins } from '../extensions/view';
 import { hrefFor, hrefForSlot } from '../routes';
+import type { ExtensionsRead } from '../wire/extensions';
 import type {
   AgentRow,
   Gate,
@@ -43,9 +45,10 @@ export interface BandCard {
   /**
    * Where the card opens, when it opens anywhere.
    *
-   * The dictation card is the way into the models page: the band is where a
-   * reader looks for dictation, and the page is what draws it. The others are
-   * facts about this forge and open nothing.
+   * The dictation card is the way into the models page and the extensions
+   * card into the extensions page: the band is where a reader looks for
+   * each, and the page is what draws it. The rest are facts about this
+   * forge and open nothing.
    */
   href: string | null;
 }
@@ -522,7 +525,7 @@ export function band(wire: HomeWire, address: string): BandCard[] {
 
   const models = wire.dictate.snapshot.models;
   const failure = wire.dictate.snapshot.failure;
-  // The one card that is a way in. It stays a door with dictation off, too:
+  // A card that is a way in. It stays a door with dictation off, too:
   // the models page draws the off state and names the key that would switch
   // it on, which is where a reader who came looking for dictation lands.
   const door = '/models';
@@ -591,6 +594,50 @@ export function band(wire: HomeWire, address: string): BandCard[] {
     dictation,
     accounts,
   ];
+}
+
+/**
+ * The extensions card: the fifth band card, and the second way in.
+ *
+ * It reads the `extensions` subject rather than the home snapshot, because
+ * what a reader wants here - how many plugins are installed and whether any
+ * is behind its marketplace - is in that read and nowhere on the wire the
+ * home carries. `read` is `null` until that read lands (and forever, on a
+ * page rendered without a connection), which is its own state rather than a
+ * zero.
+ */
+export function extensionsCard(read: ExtensionsRead | null, refused = false): BandCard {
+  const door = hrefFor({ name: 'extensions' });
+  if (read === null) {
+    return {
+      title: 'extensions',
+      tone: 'off',
+      value: refused ? 'unread' : 'reading',
+      detail: refused ? 'open to see why' : 'plugins · marketplaces',
+      href: door,
+    };
+  }
+  if (read.snapshot === null) {
+    return {
+      title: 'extensions',
+      tone: 'bad',
+      value: 'unread',
+      detail: 'no plugins root resolves',
+      href: door,
+    };
+  }
+  const counts = railCounts(read);
+  const stale = stalePlugins(read).length;
+  return {
+    title: 'extensions',
+    tone: stale > 0 ? 'warn' : 'ready',
+    value: `${counts.installed} plugin${counts.installed === 1 ? '' : 's'}`,
+    detail:
+      stale > 0
+        ? `${stale} update${stale === 1 ? '' : 's'} waiting`
+        : `${counts.marketplaces} marketplace${counts.marketplaces === 1 ? '' : 's'}`,
+    href: door,
+  };
 }
 
 /** The key a project and the seats that belong to it are matched by. */

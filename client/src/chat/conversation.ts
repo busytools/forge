@@ -734,7 +734,7 @@ export class Chat {
    */
   private drained = new Map<string, unknown>();
   /**
-   * Whether a drop was seen, and whether a snapshot ever reconciled.
+   * Whether a drop was seen, and whether a snapshot ever landed.
    *
    * **The two states that make a snapshot authoritative**: the first one
    * after a subscribe (the attacher's only word) and the first one after a
@@ -743,7 +743,7 @@ export class Chat {
    * before a send can be delivered after it - see {@link armed}.
    */
   private missed = false;
-  private reconciled = false;
+  private landed = false;
   /**
    * The newest held turn a newest page failed to reach, while the
    * conversation walks down to it.
@@ -1081,11 +1081,27 @@ export class Chat {
 
   private receive(message: ServerMessage): void {
     switch (message.kind) {
-      case 'page':
-        if (sameSlot(message.conversation, this.slot)) {
-          this.takePage(message.turns, message.cursor, this.inFlight ?? 'newest');
+      case 'page': {
+        if (!sameSlot(message.conversation, this.slot)) return;
+        // **A page the client's own half reconciled is the catch-up after a
+        // park, not an answer.** It is always the newest window, and nothing
+        // is waiting on it - while an older ask that died with the park
+        // would otherwise have this spliced as an older page and the order
+        // scrambled (the ask's side of the connection was gone; only this
+        // mark can tell the two apart).
+        const reconciled = message.reconciled === true;
+        if (reconciled) {
+          this.abandoned = 0;
+          this.inFlight = null;
+          this.askedBefore = null;
         }
+        this.takePage(
+          message.turns,
+          message.cursor,
+          reconciled ? 'newest' : (this.inFlight ?? 'newest'),
+        );
         return;
+      }
       case 'error':
         // A refusal names what failed rather than which subject, and the
         // socket hands a listener EVERY message it receives - so a page that
@@ -1873,8 +1889,8 @@ export class Chat {
     // listing would undo what the frames just settled: releasing a hold draws
     // a row the pile is still drawing, and arming one retracts a row that
     // already started.
-    const fresh = !this.reconciled || this.missed;
-    this.reconciled = true;
+    const fresh = !this.landed || this.missed;
+    this.landed = true;
     // `state` is the wire's own record inside the snapshot, the same nesting
     // `sessionFrom` reads: the queue is a sibling of `scan_cwd` there.
     const root = (data ?? {}) as { state?: unknown };

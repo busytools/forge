@@ -66,11 +66,13 @@ describe('an agent row from a server that names no failure', () => {
     ).toBeNull();
   });
 });
+import { components, extensionsWire } from '../extensions/testing';
 import {
   artifactLabel,
   availableVersion,
   chipFor,
   elapsedLabel,
+  extensionsCard,
   fleetRows,
   gateLine,
   failureFile,
@@ -174,6 +176,7 @@ function boardRow(task: Task): BoardRow {
     },
     rollup: null,
     parent_subject: null,
+    history: [],
   };
 }
 
@@ -1073,6 +1076,9 @@ describe('what a row says', () => {
     expect(rows[0]?.worked_secs).toBe(0);
     expect(rows[0]?.marks.overdue).toBe(false);
     expect(rows[0]?.rollup).toBeNull();
+    // A server (or a committed capture) that never stated the row's own
+    // transitions reads as none, so the drawer draws without the section.
+    expect(rows[0]?.history).toEqual([]);
     expect(task?.rank).toBeNull();
     expect(task?.waiting_on).toBeNull();
     expect(task?.attempt).toBe(0);
@@ -1213,5 +1219,53 @@ describe('the fatal on the wire', () => {
       homeFrom({ ...homeWire, fatal_error: 7 as unknown as string }).fatal_error,
       'a value that is not words reads as no fatal',
     ).toBeNull();
+  });
+});
+
+describe('the extensions card', () => {
+  it('opens /extensions and reads the counts off the extensions read', () => {
+    const card = extensionsCard(extensionsWire());
+    expect(card.href).toBe('/extensions');
+    expect(card.tone, 'the fixture carries stale plugins').toBe('warn');
+    expect(card.value).toBe('2 plugins');
+    expect(card.detail).toBe('2 updates waiting');
+  });
+
+  it('reads current as ready, naming the marketplaces it draws nothing of', () => {
+    const read = extensionsWire({
+      snapshot: {
+        installed: [],
+        marketplace: [],
+        marketplaces: [
+          { name: 'one', source: 'github', repo: null, install_location: null },
+          { name: 'two', source: 'github', repo: null, install_location: null },
+        ],
+        components: [components({ available_version: '6.4.1' })],
+        marketplace_health: [],
+      },
+    });
+    const card = extensionsCard(read);
+    expect(card.tone).toBe('ready');
+    expect(card.value).toBe('1 plugin');
+    expect(card.detail).toBe('2 marketplaces');
+  });
+
+  it('draws no read yet, a refused read, and an unreadable inventory as their own states', () => {
+    const reading = extensionsCard(null);
+    expect(reading.value, 'before the read lands').toBe('reading');
+    expect(reading.tone, 'and it is quiet rather than a claim').toBe('off');
+    expect(reading.detail).toBe('plugins · marketplaces');
+
+    const refused = extensionsCard(null, true);
+    expect(refused.value, 'a refused subscription').toBe('unread');
+    expect(refused.tone).toBe('off');
+    expect(refused.detail).toBe('open to see why');
+
+    const unreadable = extensionsCard(extensionsWire({ snapshot: null }));
+    expect(unreadable.tone, 'no plugins root').toBe('bad');
+    expect(unreadable.value).toBe('unread');
+    expect(unreadable.detail, 'and it names what is missing, not the page').toBe(
+      'no plugins root resolves',
+    );
   });
 });

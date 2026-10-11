@@ -132,6 +132,27 @@ export interface BoardRow {
   rollup: [number, number] | null;
   /** A child's parent subject. */
   parent_subject: string | null;
+  /** The row's own transitions, in time order - the detail drawer's history. */
+  history: BoardTransition[];
+}
+
+/**
+ * The mover of one transition: a seat, the user, or the core's own
+ * machinery (a cleared dependency, the verify gate, archiving). `unknown` is
+ * this client's own case, narrowed where the field enters: a `by` a newer
+ * server invents reads as an unknown mover rather than as a seat shape this
+ * client would dereference into a crash.
+ */
+export type ByWire = { seat: SessionSlot } | 'user' | 'system' | 'unknown';
+
+/** One status transition of a row, as the board's detail drawer reads it. */
+export interface BoardTransition {
+  task_id: string;
+  project_name: string;
+  from: TaskStatus | null;
+  to: TaskStatus;
+  at: WireTime;
+  by: ByWire;
 }
 
 /**
@@ -418,6 +439,9 @@ function rowFrom(entry: unknown): BoardRow {
     marks: (raw['marks'] as Marks | undefined) ?? NO_MARKS,
     rollup: (raw['rollup'] as [number, number] | null | undefined) ?? null,
     parent_subject: (raw['parent_subject'] as string | null | undefined) ?? null,
+    // A capture or a server older than the field carries none: an empty
+    // history draws the drawer without the section rather than throwing.
+    history: historyFrom(raw['history']),
   };
 }
 
@@ -460,6 +484,44 @@ function linksFrom(task: Record<string, unknown>): TaskLinkWire[] {
     });
   }
   return links;
+}
+
+/**
+ * A row's history as this client reads it. **Total, like the links reader**:
+ * a payload carrying `history` as anything but an array of objects reads as
+ * no history, and each entry's unions are narrowed HERE, at the boundary,
+ * exactly as lifecycle and links are - a `to` outside the six states reads
+ * as `pending`, and a `from` outside them as `pending` too, which only
+ * decides between "created" and "moved" in the drawer's words.
+ */
+function historyFrom(raw: unknown): BoardTransition[] {
+  const held = Array.isArray(raw) ? raw : [];
+  return held
+    .filter((step): step is Record<string, unknown> => typeof step === 'object' && step !== null)
+    .map((step) => {
+      const from = step['from'];
+      return {
+        task_id: typeof step['task_id'] === 'string' ? step['task_id'] : '',
+        project_name: typeof step['project_name'] === 'string' ? step['project_name'] : '',
+        from:
+          from === null || from === undefined
+            ? null
+            : narrow(statusFrom(from), TASK_STATUSES, 'pending'),
+        to: narrow(statusFrom(step['to']), TASK_STATUSES, 'pending'),
+        at: (step['at'] ?? { secs_since_epoch: 0, nanos_since_epoch: 0 }) as WireTime,
+        by: byFrom(step['by']),
+      };
+    });
+}
+
+/** One transition's mover, narrowed to the shapes this client draws. */
+function byFrom(raw: unknown): ByWire {
+  if (raw === 'user') return 'user';
+  if (raw === 'system') return 'system';
+  if (typeof raw === 'object' && raw !== null && 'seat' in raw) {
+    return raw as { seat: SessionSlot };
+  }
+  return 'unknown';
 }
 
 /**

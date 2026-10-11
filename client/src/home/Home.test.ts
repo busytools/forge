@@ -207,8 +207,29 @@ describe('the home page as it draws', () => {
 
     expect(body).toContain('href="/models"');
     expect(body, 'the door draws no marker a reader can see').toContain('i-chev');
-    // One door, not four: the band's other cards are facts about this forge.
+    // Two doors, not five: the band's other cards are facts about this forge.
     expect(body.match(/href="\/models"/g)).toHaveLength(1);
+  });
+
+  /**
+   * The second door, and the one the view test cannot see either: the card
+   * is drawn as a real anchor to /extensions, with the chevron at rest. Its
+   * facts need the connection (the read is the card's own), so a rendered
+   * home without one draws the card's reading state - which is itself the
+   * state this asserts is honest.
+   */
+  it('opens the extensions page from the extensions card', () => {
+    const body = draw();
+
+    expect(body, 'the card is a way in').toContain('href="/extensions"');
+    expect(body.match(/href="\/extensions"/g), 'one door, not a row of them').toHaveLength(1);
+    // Scoped to THIS anchor's markup and bounded at its close: over the whole
+    // body the dictation card's own chevron satisfies a bare `i-chev`, and an
+    // unbounded tail would let any chevron drawn after the anchor satisfy
+    // that too - so the pin holds only if the door's own markup carries one.
+    const door = body.match(/<a class="svc off" href="\/extensions">[\s\S]*?<\/a>/)?.[0] ?? '';
+    expect(door, 'the title line carries the door chevron').toContain('i-chev');
+    expect(body, 'no read without a connection, and the card says so').toContain('>reading<');
   });
 
   /**

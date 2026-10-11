@@ -296,6 +296,54 @@ describe('the conversation the chat draws', () => {
   });
 
   /**
+   * **A page the client's half reconciled is the catch-up, not an answer.**
+   * After a park, an ask that died with the connection leaves the count of
+   * abandoned asks standing - and the reconcile's newest window would be
+   * swallowed by it, the reader meeting an old conversation with no way to
+   * tell. The mark is what tells the two apart; without it this page
+   * disappears, which is the case beside this one.
+   */
+  it('lands a reconciled page even when an ask died with the park', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    // A page with a cursor, so an older ask can go out and never answer.
+    server.send(page([turn('t1', 'the kept turn')], 'cursor-1'));
+    chat.older();
+    server.update({ session_replaced: { key: LEAD } });
+
+    server.send({
+      kind: 'page',
+      conversation: LEAD,
+      turns: [turn('t9', 'the catch-up')],
+      cursor: null,
+      reconciled: true,
+    });
+
+    const drawn = words(chat);
+    expect(drawn, 'the catch-up lands as the newest window').toContain('the catch-up');
+    stop();
+  });
+
+  /** The same state, unmarked: the abandoned count swallows it (the pair
+   *  with the test above is what makes the mark load-bearing). */
+  it('swallows an unmarked page while an ask is abandoned', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'the kept turn')], 'cursor-1'));
+    chat.older();
+    server.update({ session_replaced: { key: LEAD } });
+
+    server.send(page([turn('t9', 'not an answer')], null));
+
+    expect(words(chat), 'an answer to an ask nobody wants is dropped').not.toContain(
+      'not an answer',
+    );
+    stop();
+  });
+
+  /**
    * A return whose page does not reach the held tail KEEPS the tail and
    * walks back to it. Dropping it (the old contract) made the stretch
    * between the page and the tail unreachable except by a scroll, and the

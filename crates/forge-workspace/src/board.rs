@@ -62,6 +62,21 @@ pub struct BoardRow {
     pub rollup: Option<(usize, usize)>,
     /// A child's parent subject.
     pub parent_subject: Option<String>,
+    /// The row's own transitions, in time order - what the detail drawer
+    /// reads as its history. The walk below already groups them for the
+    /// worked time, so building one costs a clone per transition, and
+    /// carrying it costs every `board_rows` caller and every home encode
+    /// that weight. Measured: ~190-245 bytes per transition, 66-164 KiB
+    /// fleet-wide against a 448 KB home, ~2 MiB a year at 30 moves a day per
+    /// fleet; the store is append-only with no prune and a project's read is
+    /// a full scan. The bound is its own piece (#1981).
+    ///
+    /// `default` is backward compatibility with older records, and nothing
+    /// more: no server-side pin decodes a `BoardRow`, so nothing in the tree
+    /// depends on it - a capture written before the field can still be read
+    /// wherever one is.
+    #[serde(default)]
+    pub history: Vec<TaskTransition>,
 }
 
 /// One named miss on a project's fleet row.
@@ -152,7 +167,8 @@ impl Workspace {
         tasks
             .iter()
             .map(|task| {
-                let worked = worked_secs(by_task.get(&task.id).map_or(&[][..], Vec::as_slice), now);
+                let mine = by_task.get(&task.id).map_or(&[][..], Vec::as_slice);
+                let worked = worked_secs(mine, now);
                 let updated_secs_ago = secs_ago(task.updated_at, now);
                 let children: Vec<&Task> =
                     tasks.iter().filter(|c| c.parent.as_ref() == Some(&task.id)).collect();
@@ -185,6 +201,7 @@ impl Workspace {
                     parent_subject: task.parent.as_ref().and_then(|id| {
                         tasks.iter().find(|p| p.id == *id).map(|p| p.subject.clone())
                     }),
+                    history: mine.iter().map(|t| (*t).clone()).collect(),
                 }
             })
             .collect()
