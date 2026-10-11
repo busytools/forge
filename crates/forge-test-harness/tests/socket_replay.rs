@@ -872,9 +872,10 @@ fn frames_record() -> Value {
     payload_sampled
         .insert("BrowserRole".to_owned(), shape_of(&ServerMessage::BrowserRole { hosting: true }));
     // The commit answer's own fields, one file with one hunk: the review
-    // canvas parses these names (`fileFrom`, `hunkFrom`, `lineFrom`), and a
-    // rename among them moves no census line - the scope would draw an empty
-    // table with nothing failing.
+    // canvas parses these names (`diffLayerFrom` and the `diffFileFrom` it
+    // maps with, in the client's `session/wire.ts`), and a rename among them
+    // moves no census line - the scope would draw an empty table with
+    // nothing failing.
     payload_sampled.insert(
         "CommitDiff".to_owned(),
         shape_of(&ServerMessage::CommitDiff {
