@@ -2455,7 +2455,21 @@ describe('the frame', () => {
     // viewport on any input, and 46vh/420px is a generous desktop measure too.
     const rule = baseRule('.dock .opts');
     expect(rule, 'the option list has no cap').toContain('max-height');
+    // The 46vh component is what holds the decision above: a cap weakened to
+    // a fixed 4000px would still read as "a cap" without this.
+    expect(rule, 'the cap no longer measures against the viewport').toContain('46vh');
     expect(rule, 'and does not scroll').toContain('overflow-y: auto');
+  });
+
+  it('resets the UA button chrome off the folded bar', () => {
+    // The bar is a real `<button>`, so without the house reset it wears the
+    // UA sheet - measured against the real sheet: an rgb(239,239,239) ground,
+    // a 2px outset border around it, Arial - light-mode chrome inside the
+    // dark surface, visible whenever a prompt is folded.
+    const rule = baseRule('.dock .qbar');
+    expect(rule, 'the bar keeps the UA ground').toContain('background: none');
+    expect(rule, 'and the UA border').toContain('border: 0');
+    expect(rule, 'and the UA font').toContain('font: inherit');
   });
 
   /**
@@ -2616,6 +2630,12 @@ describe('the frame', () => {
     expect(coarse, 'the mic lost its width floor on a finger').toContain('min-width: 44px');
     expect(coarse, "the panel's close lost its width floor").toContain(
       '.pop .hd .x { min-width: 44px; }',
+    );
+    // The fold control's floor lives in the dock's own multiline coarse block,
+    // where the one-line pattern above cannot reach it: read from the media
+    // query to the control's own line, the lines between allowed.
+    expect(sheet, 'the fold control lost its width floor on a finger').toMatch(
+      /@media \(pointer: coarse\) \{\n(?:  [^\n]*\n)*?  \.dock \.chevb \{ min-width: 44px; \}/,
     );
     expect(sheetRule('.mic:hover'), 'the mic lost its accent hover').toContain(
       'color: var(--accent)',
@@ -4164,6 +4184,16 @@ describe('the dock', () => {
       list.getAttribute('aria-activedescendant'),
       'and the listbox points at the row it moved to',
     ).toContain('q-prod');
+
+    // One more step wraps onto the words row, which is NOT an option: the
+    // attribute has to be absent there, or a screen reader keeps hearing an
+    // option while the caret is in the input.
+    press('ArrowUp');
+    press('ArrowUp');
+    expect(
+      list.getAttribute('aria-activedescendant'),
+      'the listbox still points at an option while the mark is on the words row',
+    ).toBeNull();
     void harness;
   });
 
@@ -4919,7 +4949,7 @@ describe('the dock', () => {
 
     expect(
       [...document.querySelectorAll('.dock .opt .n')].map((held) => held.textContent),
-      'the rows carry their own numbers, the first row one, the custom answer last',
+      'the rows carry their own numbers, the first row one, the words row last',
     ).toEqual(['1', '2', '3']);
 
     press('2');
@@ -5963,6 +5993,14 @@ describe("the dock's settled shape", () => {
     expect(document.querySelector('.dock .qbar .cnt')?.textContent, 'the count left the bar').toBe(
       '+1',
     );
+    expect(
+      document.querySelector('.dock .qbar .chevc'),
+      'the bar carries its own unfold glyph',
+    ).not.toBeNull();
+    expect(
+      document.querySelector('.dock .queue'),
+      'the pending line drew under the fold, where the bar carries the count instead',
+    ).toBeNull();
 
     const bar = document.querySelector('.dock .qbar');
     if (!(bar instanceof HTMLElement)) throw new Error('no bar');
@@ -5971,6 +6009,10 @@ describe("the dock's settled shape", () => {
 
     expect(document.querySelector('.dock .qbar'), 'the bar did not unwrap').toBeNull();
     expect(document.querySelector('.dock .opts'), 'the options did not come back').not.toBeNull();
+    expect(
+      document.querySelector('.dock .queue'),
+      'the pending line did not come back with the body',
+    ).not.toBeNull();
   });
 
   it('keeps the bar folded across a repaint of the same prompt', () => {
@@ -6062,6 +6104,29 @@ describe("the dock's settled shape", () => {
     expect(document.activeElement, 'a repaint stole the caret back to the options').toBe(notes);
   });
 
+  it('keeps a focused action across a repaint, which is what the keying is for', () => {
+    // **The keying, discriminated.** The caret test above passes even if the
+    // dock remounts and something re-focuses the list on arrival; an action
+    // button has no re-focus to ride - a remount drops it to the body, so
+    // this fails the moment the `{#key}` stops keying on the prompt's own
+    // identity.
+    const harness = open({ record: record({ pending_asks: [permissionAsk()] }) });
+
+    const btn = document.querySelector('.dock .acts .btn');
+    if (!(btn instanceof HTMLButtonElement)) throw new Error('the dock drew no actions');
+    btn.focus();
+    flushSync();
+    expect(document.activeElement, 'precondition: an action holds the keyboard').toBe(btn);
+
+    harness.page.record = record({ pending_asks: [permissionAsk()] });
+    flushSync();
+
+    expect(
+      document.activeElement,
+      'a repaint remounted the dock and dropped the focused action to the body',
+    ).toBe(btn);
+  });
+
   it('unfolds by keyboard without answering the marked row', () => {
     // **The accidental-answer defect**: the bar used to be a div with its own
     // key handler, so the Enter that unfolded ALSO reached the dock's handler
@@ -6078,11 +6143,26 @@ describe("the dock's settled shape", () => {
     expect(document.activeElement, 'the fold did not hand the keyboard to the bar').toBe(bar);
 
     bar.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    // Space is the browser's other activation key for a button, and it must
+    // ride the same guard: reaching the dock's handler would toggle the marked
+    // row on a question behind the fold, where nobody can see it.
+    bar.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+    flushSync();
+    expect(commands(harness), 'Space answered the question').toEqual([]);
+    expect(
+      document.querySelector('.dock .qbar'),
+      'Space unfolded behind the guard, or dropped the fold',
+    ).not.toBeNull();
+
     bar.click();
     flushSync();
 
     expect(commands(harness), 'unfolding answered the question').toEqual([]);
     expect(document.querySelector('.dock .opts'), 'the body did not unfold').not.toBeNull();
+    expect(
+      [...document.querySelectorAll('.dock .box2')].map((box) => box.classList.contains('on')),
+      'a Space rode the guard through and flipped a mark that was never seen',
+    ).toEqual([false, false]);
   });
 });
 

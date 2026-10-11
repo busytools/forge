@@ -2406,8 +2406,11 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .dock .chevb:hover { color: var(--accent); }
 /* The folded state: the bar is the question and nothing else (Ved, 2026-10-10
    - the count is the one other thing it carries, so a reader knows more wait
-   behind it). A click, Enter or Space unfolds. */
+   behind it). A click, Enter or Space unfolds. It is a real `<button>` and
+   wears the house reset, or the UA's chrome paints through - measured: a
+   light-mode ground with a 2px outset border, inside the dark surface. */
 .dock .qbar { display: flex; align-items: center; gap: 9px; padding: 12px 14px;
+  background: none; border: 0; font: inherit; color: inherit; text-align: left;
   font-size: var(--fs-base); cursor: pointer; }
 .dock .qbar .qm { color: var(--accent); font-weight: 700; flex: none; }
 .dock .qbar .t { color: var(--text); font-weight: 600; letter-spacing: -.01em;

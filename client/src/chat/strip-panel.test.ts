@@ -62,13 +62,24 @@ describe('the room a strip panel may take', () => {
     );
   });
 
+  it('keeps the panel flush with the segment, not the viewport edge', () => {
+    // **The composed placement, which is the only reading that tells the
+    // containing blocks apart.** An inset kept in segment terms resolves
+    // against the viewport once the panel is a body child, so the panel's
+    // right edge silently becomes the viewport's - 23px past a 1577px
+    // segment on a 1600px window, measured against the real sheet.
+    sheet(1600);
+    const style = panelStyle(at(1577, 300));
+    expect(1600 - number(style, 'right'), 'the anchor is the segment edge').toBe(1577);
+  });
+
   it('pulls a segment part-way off the right back into the viewport', () => {
     sheet(390);
     const style = panelStyle(at(400, 300));
-    const inset = number(style, 'right');
+    const panelRight = 390 - number(style, 'right');
     const width = number(style, 'width');
-    expect(400 - inset, 'the right edge stays on screen').toBeLessThanOrEqual(390);
-    expect(400 - inset - width, 'and so does the left').toBeGreaterThanOrEqual(12);
+    expect(panelRight, 'the panel hangs from the pulled-in anchor').toBe(384);
+    expect(panelRight - width, 'and its left stays on screen').toBeGreaterThanOrEqual(12);
   });
 
   it('hands a segment whose room is past its own edge a zero, not a negative', () => {

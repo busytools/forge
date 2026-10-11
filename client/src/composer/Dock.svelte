@@ -630,6 +630,22 @@
   }
 
   /**
+   * **The capped list is a scroll container, so the mark has to be brought
+   * into view.** Arrowing past the cap moved the mark to a row nobody could see,
+   * and Enter answered it - worst on a phone, where the keyboard eats the
+   * height the cap reserved. `nearest` is the slide that does nothing while
+   * the row is already in view; a row on the words side scrolls itself into
+   * view when the focus lands in it. jsdom implements no `scrollIntoView`, so
+   * the call is guarded rather than fired blindly.
+   */
+  $effect(() => {
+    if (onWords) return;
+    const el = document.getElementById(rowId(marked));
+    if (el === null || typeof el.scrollIntoView !== 'function') return;
+    el.scrollIntoView({ block: 'nearest' });
+  });
+
+  /**
    * Turn the marked row on or off, which only a multi-select question does.
    *
    * The key the chip names has to do this from wherever the dock's keys are

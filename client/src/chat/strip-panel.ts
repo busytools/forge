@@ -2,13 +2,12 @@
  * The space a strip panel may take, as a style string, measured where its
  * segment sits.
  *
- * **The limits cannot be pure CSS.** The panel hangs above its segment
- * (`bottom: calc(100% + 6px)`), so what bounds it is the distance from the
- * segment to the viewport's top and left edges - a fact about the strip's
- * place on the page, which no viewport-relative rule can see. Measured
- * 2026-10-06 on a wide window: a viewport cap alone let a row's 200-character
- * command stretch the panel past the left edge (headlines clipped mid-word)
- * and past the top one.
+ * **The limits cannot be pure CSS.** The panel hangs above its segment, so
+ * what bounds it is the distance from the segment to the viewport's top and
+ * left edges - a fact about the strip's place on the page, which no
+ * viewport-relative rule can see. Measured 2026-10-06 on a wide window: a
+ * viewport cap alone let a row's 200-character command stretch the panel past
+ * the left edge (headlines clipped mid-word) and past the top one.
  *
  * **The limits are the ROOM, and there is no floor.** The panel is anchored
  * to its segment's right edge and grows leftward, so a segment sitting
@@ -33,7 +32,12 @@ export function panelStyle(el: HTMLElement | null): string {
   // The edge the panel hangs from, inside the viewport whatever the strip's
   // own scroll did to the segment.
   const right = Math.min(box.right, window.innerWidth - 6);
-  const inset = Math.round(box.right - right);
+  // **Viewport terms, not segment ones.** The panel is portaled to the body
+  // (see `portal`), so `right:` resolves against the viewport: an inset kept
+  // in segment terms drew the panel's right edge at the viewport's own -
+  // measured, 23px past a 1577px segment on a 1600px window, and flush with
+  // the screen edge on a phone.
+  const inset = Math.round(Math.max(0, window.innerWidth - right));
   // -18, not -12: the panel's bottom sits 6px above the segment, so this
   // lands its top 12px under the viewport's. The zero floors are honesty
   // rather than shape: a room past its own edge would emit a negative
@@ -51,11 +55,10 @@ export function panelStyle(el: HTMLElement | null): string {
 /**
  * Move a node to the document body for the length of its life.
  *
- * **The foot's surface clips its rounded corners and the strip's chips lane
- * scrolls, so a panel drawn inside either is cut to nothing** - measured: the
- * panel kept its rect and painted a 2px sliver. A panel is positioned in
- * viewport coordinates (`panelStyle` measures rects), which is what the body
- * can carry; Svelte has no portal of its own.
+ * **The strip's chips lane scrolls, so a panel drawn inside it is cut to
+ * nothing** - measured: the panel kept its rect and painted a 2px sliver. A
+ * panel is positioned in viewport coordinates (`panelStyle` measures rects),
+ * which is what the body can carry; Svelte has no portal of its own.
  */
 export function portal(node: HTMLElement): { destroy: () => void } {
   document.body.appendChild(node);

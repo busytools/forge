@@ -39,18 +39,19 @@
   .tnote { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); margin-top: 9px; }
 
   /* The foot is one surface (the settled shape): the strip is its first lane,
-     and the box or the dock is the lane under it. */
+     and the box or the dock is the lane under it. No `overflow: hidden`: the
+     real one drops it, since the rounded corners need no clip and clipping
+     cuts the portaled segment lists. */
   .surf { margin-top: 8px; border: 1.5px solid var(--ctl); border-radius: 16px;
     background: linear-gradient(180deg, rgba(20,25,38,.72), rgba(13,17,26,.78));
-    box-shadow: 0 14px 38px rgba(0,0,0,.42); display: flex; flex-direction: column;
-    overflow: hidden; }
+    box-shadow: 0 14px 38px rgba(0,0,0,.42); display: flex; flex-direction: column; }
   .surf > * + * { border-top: 1px solid var(--line); }
   .surf:has(.mbox.focus) { border-color: rgba(244,118,0,.85); }
   .surf:has(.mbox.hushed) { border-color: rgba(244,118,0,.25); }
   /* The strip lane: the running turn's figures, as the real one draws them. */
   .strip { padding: 8px 13px 9px; }
   .strip .ti { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; row-gap: 2px;
-    font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
+    font-family: var(--mono); font-size: var(--fs-base); color: var(--dim); }
   .strip .ti > span { white-space: nowrap; }
   .strip .ti .sep { opacity: .5; }
   .ring { display: inline-block; width: 9px; height: 9px; border-radius: 50%;
@@ -92,7 +93,7 @@
     font-size: var(--fs-label); color: var(--dim); }
 
   /* The prompt's lane, drawn as the dock draws it: a head and its rows. */
-  .dock { padding: 10px 14px; display: flex; flex-direction: column; gap: 6px; }
+  .dock { padding: 13px 15px; display: flex; flex-direction: column; gap: 10px; }
   .dock .q { display: flex; align-items: baseline; gap: 9px; }
   .dock .qm { color: var(--accent); font-family: var(--mono); font-size: var(--fs-data); }
   .dock .op { display: flex; gap: 16px; font-size: var(--fs-data); color: var(--muted); }

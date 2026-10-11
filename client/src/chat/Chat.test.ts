@@ -925,6 +925,30 @@ describe('the chat column as it draws', () => {
     expect(held?.style.minHeight, 'the row holds the height it measured').toBe('512px');
   });
 
+  it('lets the pin go when the column moves to another seat', async () => {
+    // **The switch, not the teardown.** The pin is keyed on the seat it was
+    // published under, and a cleanup clearing the CURRENT seat instead of the
+    // captured one leaves the left seat's row standing for whatever seat
+    // comes next - a running row drawn over another seat's conversation.
+    const server = stub();
+    const column = mount(SeatSwitch, {
+      target: document.body,
+      props: { connection: server.connection, first: LEAD, second: { ...LEAD, label: 'w1' } },
+    }) as unknown as { flip: () => void };
+    app = column;
+    flushSync();
+
+    server.answer([]);
+    server.send(appended(frame('a-run', 100)));
+    await painted();
+    expect(pinnedRow.of(PIN), 'precondition: the running row is pinned').not.toBeNull();
+
+    column.flip();
+    flushSync();
+
+    expect(pinnedRow.of(PIN), 'the pin outlived the seat it was published under').toBeNull();
+  });
+
   it('holds one of two finished rows, and leaves the other in the turn', async () => {
     // **The pin holds one row, so the turn stands aside for one.** A turn can
     // carry two report rows - one per Result that landed in it, which is what a
