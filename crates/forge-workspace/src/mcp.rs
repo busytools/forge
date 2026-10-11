@@ -7,6 +7,9 @@
 //!   `tell`, `ask` and `whoami` for any caller, plus `spawn`,
 //!   `despawn`, `update` and `capacity` for a lead. Tools render as
 //!   `mcp__forge__agents__<name>`.
+//! - `documents` - the document hand-off: a session hands the person at a
+//!   client a document that opens in the client's own viewer. Renders as
+//!   `mcp__forge__hand_off_document`.
 //! - `review` - the review-conversation loop (list / get / reply /
 //!   resolve). Tools render as `mcp__forge__review__<name>`.
 //! - `cron` - the caller's own durable crons.
@@ -42,6 +45,7 @@ use crate::SessionSlot;
 use crate::mcp::agents::facade::AgentDispatcher;
 use crate::mcp::browser::facade::BrowserFacade;
 use crate::mcp::cron::facade::CronFacade;
+use crate::mcp::documents::facade::DocumentFacade;
 use crate::mcp::gotify::facade::GotifyFacade;
 use crate::mcp::peers::facade::WorkspaceFacade;
 use crate::mcp::review::facade::ReviewFacade;
@@ -55,6 +59,7 @@ pub mod browser;
 pub(crate) mod caller_context;
 pub mod cron;
 pub(crate) mod deleted;
+pub mod documents;
 pub mod gotify;
 pub mod peers;
 pub mod review;
@@ -254,6 +259,7 @@ pub struct ForgeServerFacades {
     pub workspace: Arc<dyn WorkspaceFacade>,
     pub worker: Arc<dyn WorkerFacade>,
     pub browser: Arc<dyn BrowserFacade>,
+    pub documents: Arc<dyn DocumentFacade>,
     pub review: Arc<dyn ReviewFacade>,
     pub cron: Arc<dyn CronFacade>,
     pub gotify: Arc<dyn GotifyFacade>,
@@ -305,6 +311,7 @@ pub fn build_forge_server(
         workspace,
         worker,
         browser,
+        documents,
         review,
         cron,
         gotify,
@@ -323,6 +330,10 @@ pub fn build_forge_server(
     // session with no browser-capable client connected gets the named error
     // from the tool rather than a surface that varies by who is running.
     builder = browser::add_tools(builder, browser, slot.clone());
+    // Unconditional for the same reason: a hand-off reads the caller's own
+    // tree, so every session may hand a document and no project has anything
+    // to withhold.
+    builder = documents::add_tools(builder, documents, slot.clone());
     if families.contains(&McpFamily::Review) {
         builder = review::add_tools(builder, review, slot.clone());
     }
@@ -378,6 +389,7 @@ mod tests {
     use super::*;
     use crate::mcp::browser::facade::MockBrowserFacade;
     use crate::mcp::cron::facade::MockCronFacade;
+    use crate::mcp::documents::facade::MockDocumentFacade;
     use crate::mcp::gotify::facade::MockGotifyFacade;
     use crate::mcp::peers::facade::MockWorkspaceFacade;
     use crate::mcp::review::facade::MockReviewFacade;
@@ -462,6 +474,7 @@ mod tests {
                 workspace: MockWorkspaceFacade::new().into_arc(),
                 worker: MockWorkerFacade::new().into_arc(),
                 browser: MockBrowserFacade::new().into_arc(),
+                documents: MockDocumentFacade::new().into_arc(),
                 review: MockReviewFacade::new().into_arc(),
                 cron: MockCronFacade::new().into_arc(),
                 gotify: MockGotifyFacade::new().into_arc(),
@@ -646,6 +659,8 @@ mod tests {
             .into_iter()
             .map(str::to_owned)
             .chain(crate::mcp::browser::specs::specs().iter().map(|spec| spec.name.to_owned()))
+            // The document hand-off is always-on beside the browser.
+            .chain(["hand_off_document"].into_iter().map(str::to_owned))
             .collect();
         expected.sort();
         assert_eq!(
@@ -677,6 +692,7 @@ mod tests {
             .into_iter()
             .map(str::to_owned)
             .chain(crate::mcp::browser::specs::specs().iter().map(|spec| spec.name.to_owned()))
+            .chain(["hand_off_document"].into_iter().map(str::to_owned))
             .chain(["cron__create", "cron__delete", "cron__list"].into_iter().map(str::to_owned))
             .collect();
         expected.sort();

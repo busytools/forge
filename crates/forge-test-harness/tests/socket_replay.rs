@@ -290,6 +290,7 @@ census!(SessionUpdate,
         DictateStarted struct, DictateLevel struct, DictateTranscribing struct,
         DictateProgress struct, DictateEnded struct, FatalError struct,
         DictateModelsChanged struct,
+        DocumentHandOff struct,
     ],
     session_update_census, SESSION_UPDATE_VARIANTS);
 
@@ -772,6 +773,21 @@ fn frames_record() -> Value {
                     reason: "solve the CAPTCHA".to_owned(),
                     profile: Some("job-hunt".to_owned()),
                 },
+            }),
+        }),
+    );
+    // **The document hand-off's raise, whose fields a viewer opens by.** A
+    // rename here - the path a route addresses, or the flag deciding whether
+    // comments are offered - moves no census line and would leave the raise
+    // drawn as a blank, so the sample is what makes the next such rename a
+    // record change.
+    payload_sampled.insert(
+        "DocumentHandOff".to_owned(),
+        shape_of(&ServerMessage::Update {
+            update: Box::new(SessionUpdate::DocumentHandOff {
+                key: seat.clone(),
+                path: "/proj/docs/readme.md".to_owned(),
+                reviewable: true,
             }),
         }),
     );

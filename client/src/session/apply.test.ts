@@ -1191,6 +1191,7 @@ const EVERY_VARIANT = [
   'dictate_ended',
   'fatal_error',
   'dictate_models_changed',
+  'document_hand_off',
 ] as const;
 
 /**
@@ -1251,9 +1252,9 @@ describe('the variant list', () => {
     // raise it in the same edit that adds a variant, as the plan says.
     expect(
       EVERY_VARIANT.length,
-      'the census no longer carries every variant the enum declares (77 of them): a truncated ' +
+      'the census no longer carries every variant the enum declares (78 of them): a truncated ' +
         'census leaves the assertions below checking only the names it still has',
-    ).toBe(77);
+    ).toBe(78);
   });
 
   it('classifies every variant the core can send', () => {

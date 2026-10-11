@@ -37,6 +37,7 @@
     "DictateStarted": "dictate_started",
     "DictateTranscribing": "dictate_transcribing",
     "DispatchesChanged": "dispatches_changed",
+    "DocumentHandOff": "document_hand_off",
     "FatalError": "fatal_error",
     "FileIndexChanged": "file_index_changed",
     "ForgeAccountIdentity": "forge_account_identity",
@@ -459,6 +460,25 @@
       "/update/dictate_models_changed/models/updates[]/current": [
         "fleurs_en_wer",
         "speed_x"
+      ]
+    },
+    "DocumentHandOff": {
+      "": [
+        "kind",
+        "update"
+      ],
+      "/update": [
+        "document_hand_off"
+      ],
+      "/update/document_hand_off": [
+        "key",
+        "path",
+        "reviewable"
+      ],
+      "/update/document_hand_off/key": [
+        "label",
+        "org",
+        "project"
       ]
     },
     "DocumentRead": {

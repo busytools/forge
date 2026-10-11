@@ -726,7 +726,10 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         // path on its own monitor rows and reads the file there, so the frame
         // exists for the views that hold no path. Nothing to redraw here.
         | SessionUpdate::CallOutput { .. }
-        | SessionUpdate::FileIndexChanged { .. } => {}
+        | SessionUpdate::FileIndexChanged { .. }
+        // No viewer exists in the terminal: the hand-off raises a client's
+        // own route, and this view is being deleted.
+        | SessionUpdate::DocumentHandOff { .. } => {}
         SessionUpdate::DictateStarted { key, floor_db, generation, .. } => {
             app.dictate_take_pending = false;
             if let Some(bucket) = app.session_mut(&key) {

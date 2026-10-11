@@ -2070,6 +2070,20 @@ pub enum SessionUpdate {
     DictateModelsChanged {
         models: crate::catalogue::DictateModelsSnapshot,
     },
+    /// A session handed the reader a document, and the client drawing that
+    /// seat opens its viewer at the resolved path.
+    ///
+    /// **The raise is the whole event.** Nothing parks here, unlike the
+    /// browser hand-off: the hand-off's tool answered at the open, and a
+    /// review the reader leaves arrives later as its own event. `path` is
+    /// the resolved absolute path, which is the viewer's stable address -
+    /// `reviewable` is what the hand-off flagged, so a viewer knows whether
+    /// to offer comments.
+    DocumentHandOff {
+        key: SessionSlot,
+        path: String,
+        reviewable: bool,
+    },
 }
 
 impl SessionUpdate {
@@ -2116,6 +2130,7 @@ impl SessionUpdate {
             | Self::SlackDraftResolved { key, .. }
             | Self::BrowserHandOffPending { key, .. }
             | Self::BrowserHandOffResolved { key, .. }
+            | Self::DocumentHandOff { key, .. }
             | Self::RuntimeReloadCompleted { key }
             | Self::RuntimeReloadFailed { key, .. }
             | Self::ChatAppended { key, .. }
@@ -2473,6 +2488,9 @@ impl std::fmt::Debug for SessionUpdate {
                 .field("in_use", &models.in_use.len())
                 .field("rows", &models.rows.len())
                 .finish(),
+            Self::DocumentHandOff { key, .. } => {
+                f.debug_struct("DocumentHandOff").field("key", key).finish_non_exhaustive()
+            }
             Self::CatalogLoaded => f.write_str("CatalogLoaded"),
             Self::CliVersionChanged => f.write_str("CliVersionChanged"),
             Self::AccountsChanged => f.write_str("AccountsChanged"),

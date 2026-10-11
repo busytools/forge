@@ -241,6 +241,8 @@ const NOT_NEWS: readonly string[] = [
   'cron_prompt_appended',
   'slack_message_appended',
   'prompt_queued_while_busy',
+  // The hand-off raises the seat's own viewer; no home row draws one.
+  'document_hand_off',
   // The pile's own: a seat's queued prompts, which the session page draws
   // above its composer and no home row does.
   'prompt_queued',
@@ -529,11 +531,11 @@ describe('the variant census', () => {
     ).toBe(true);
     expect(
       names.length,
-      'this count and the enum disagree, and `SessionUpdate` held 77 variants when it was last ' +
+      'this count and the enum disagree, and `SessionUpdate` held 78 variants when it was last ' +
         'set. Raise or lower it in the same edit that adds or removes one - the census below names ' +
         'the bucket an added variant belongs in - and if you moved no variant, the parse read a ' +
         'different set of names than the enum holds',
-    ).toBe(77);
+    ).toBe(78);
     expect(news.size, 'the `fleet_news` arms were not read out of live.rs at all').toBeGreaterThan(
       5,
     );

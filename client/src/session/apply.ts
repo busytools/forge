@@ -415,6 +415,9 @@ export const IGNORED: readonly string[] = [
   'catalog_loaded',
   'cli_version_changed',
   'cron_prompt_appended',
+  // The hand-off opens the viewer route, which is a surface's own listener
+  // rather than a field of this record.
+  'document_hand_off',
   'dictate_availability',
   'dictate_device_pin',
   // The models page reads the catalogue through its own subject; a

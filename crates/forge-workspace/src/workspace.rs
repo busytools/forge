@@ -1733,6 +1733,39 @@ impl Workspace {
         self.config.document_max_bytes
     }
 
+    /// Hand one document to the reader: read it out of `seat`'s own tree,
+    /// raise it at the clients drawing that seat, and answer the resolved
+    /// absolute path.
+    ///
+    /// **The raise is the open, and nothing waits on the reader.** Unlike
+    /// the browser hand-off this does not park: the hand-off's tool answers
+    /// here with what the read resolved to, and a review the reader leaves
+    /// arrives later as its own event. A refused read raises nothing.
+    pub fn hand_off_document(
+        &self,
+        seat: &SessionSlot,
+        path: &str,
+        reviewable: bool,
+    ) -> Result<String, String> {
+        let Some(cwd) = self.cwd_for_session(seat) else {
+            return Err(format!("forge holds no session for {}", seat.display()));
+        };
+        let read = crate::env::documents::read(
+            std::path::Path::new(&cwd),
+            path,
+            reviewable,
+            self.document_max_bytes(),
+        )
+        .map_err(|refusal| refusal.to_string())?;
+        let resolved = read.path.to_string_lossy().into_owned();
+        let _ = self.update_sender().send(crate::protocol::SessionUpdate::DocumentHandOff {
+            key: seat.clone(),
+            path: resolved.clone(),
+            reviewable: read.reviewable,
+        });
+        Ok(resolved)
+    }
+
     /// The browser relay: the one client connection that drives the browser.
     /// Read by the binary entry point, which hands it to the transport so a
     /// capable connection can take the role, and by the browser family's
@@ -2195,6 +2228,8 @@ impl Workspace {
             let worker_facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(self);
             let browser_facade =
                 crate::mcp::browser::facade::ProdBrowserFacade::from_workspace(self);
+            let documents_facade =
+                crate::mcp::documents::facade::ProdDocumentFacade::from_workspace(self);
             let review_facade = crate::mcp::review::facade::ProdReviewFacade::from_arc(self);
             let cron_facade = crate::mcp::cron::facade::ProdCronFacade::from_arc(self);
             let gotify_facade = crate::mcp::gotify::facade::ProdGotifyFacade::from_arc(self);
@@ -2215,6 +2250,7 @@ impl Workspace {
                     workspace: workspace_facade,
                     worker: worker_facade,
                     browser: browser_facade,
+                    documents: documents_facade,
                     review: review_facade,
                     cron: cron_facade,
                     gotify: gotify_facade,
@@ -14733,6 +14769,9 @@ mod worker_respawn_tests {
                 workspace: crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(workspace),
                 worker: crate::mcp::workers::facade::ProdWorkerFacade::from_arc(workspace),
                 browser: crate::mcp::browser::facade::ProdBrowserFacade::from_workspace(workspace),
+                documents: crate::mcp::documents::facade::ProdDocumentFacade::from_workspace(
+                    workspace,
+                ),
                 review: crate::mcp::review::facade::ProdReviewFacade::from_arc(workspace),
                 cron: crate::mcp::cron::facade::ProdCronFacade::from_arc(workspace),
                 gotify: crate::mcp::gotify::facade::ProdGotifyFacade::from_arc(workspace),
@@ -17351,6 +17390,74 @@ provider = "anthropic"
         assert_eq!(
             ws.cwd_for_session(&session_key).as_deref(),
             project_root.join(".claude/worktrees/pyth-review-fixes").to_str(),
+        );
+    }
+
+    /// A hand-off reads the document out of the seat's OWN tree, raises it
+    /// at that seat with the resolved path, and answers the path - the
+    /// open, not the finish.
+    #[test]
+    fn a_document_hand_off_reads_the_seats_tree_and_raises_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().to_str().expect("utf8").to_owned();
+        let (ws, mut updates) = Workspace::testing_stub();
+        let (project_root, session_key) = seed_project_and_worker(
+            &ws,
+            "forge",
+            &root,
+            "implementer",
+            "worker-uuid-hand-off",
+            true,
+        );
+        let cwd = project_root.join(".claude/worktrees/implementer");
+        std::fs::create_dir_all(cwd.join("docs")).expect("the worktree");
+        std::fs::write(cwd.join("docs/readme.md"), b"# hi\n").expect("the document");
+        // The read answers the CANONICAL path (the `/var` -> `/private/var`
+        // case on this machine), which is what a viewer deep-links by.
+        let expected = cwd.canonicalize().expect("canonical").join("docs/readme.md");
+
+        let resolved =
+            ws.hand_off_document(&session_key, "docs/readme.md", true).expect("the hand-off lands");
+
+        assert_eq!(resolved, expected.to_string_lossy(), "answered with the resolved path");
+        let raised = std::iter::from_fn(|| updates.try_recv().ok())
+            .find_map(|update| match update {
+                SessionUpdate::DocumentHandOff { key, path, reviewable } => {
+                    Some((key, path, reviewable))
+                }
+                _ => None,
+            })
+            .expect("the raise reaches the seat's stream");
+        assert_eq!(raised.0, session_key, "raised at the seat that handed it");
+        assert_eq!(raised.1, resolved, "with the resolved path - the viewer's address");
+        assert!(raised.2, "and the flag the hand-off passed");
+    }
+
+    /// A refused read raises nothing and answers the read's own sentence.
+    #[test]
+    fn a_refused_document_hand_off_raises_nothing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().to_str().expect("utf8").to_owned();
+        let (ws, mut updates) = Workspace::testing_stub();
+        let (project_root, session_key) = seed_project_and_worker(
+            &ws,
+            "forge",
+            &root,
+            "implementer",
+            "worker-uuid-hand-off-refused",
+            true,
+        );
+        let cwd = project_root.join(".claude/worktrees/implementer");
+        std::fs::create_dir_all(&cwd).expect("the worktree");
+
+        let refused =
+            ws.hand_off_document(&session_key, "gone.md", false).expect_err("nothing to read");
+
+        assert!(refused.contains("no document at"), "{refused}");
+        assert!(
+            std::iter::from_fn(|| updates.try_recv().ok())
+                .all(|update| !matches!(update, SessionUpdate::DocumentHandOff { .. })),
+            "a refusal is not a hand-off",
         );
     }
 
