@@ -6,6 +6,7 @@ import { homeWire } from '../dev/fixture.data';
 import { violationsOf } from '../testing/axe';
 import type { BoardRow, HomeWire, Marks, Task, TaskStatus } from '../wire/home';
 import Board from './Board.svelte';
+import Frames from './testing/Frames.svelte';
 
 /**
  * The board's controls: every press hands the app one command with its
@@ -277,10 +278,13 @@ describe("the board's controls", () => {
       flushSync();
     };
 
-    // Onto the Waiting lane: the row moves state, and the card lands in
-    // that lane at once - before any wire snapshot could arrive.
+    // Onto the Waiting lane: the row moves state and carries its place, and
+    // the card lands in that lane at once - before any wire snapshot could
+    // arrive.
     drag(() => document.querySelector('.b-lane[data-state="waiting"]'));
-    expect(acts[0]).toEqual({ task_move: { project: 'proj', id: 't2', to: 'waiting' } });
+    expect(acts[0]).toEqual({
+      task_move: { project: 'proj', id: 't2', to: 'waiting', place: { before: null } },
+    });
     expect(
       document.querySelector('.b-lane[data-state="waiting"] .b-card[data-id="t2"]'),
       'the card is in its new lane the moment the pointer lets go',
@@ -329,6 +333,58 @@ describe("the board's controls", () => {
     ).not.toBeNull();
     press('ArrowLeft');
     expect(acts[1]).toEqual({ task_move: { project: 'proj', id: 't1', to: 'pending' } });
+  });
+
+  /**
+   * **A keyboard lane step asks for the state alone.** The wire carries the
+   * row where the core put it, which for a place-less move is not necessarily
+   * last in the lane - a step that recorded itself as ranked would demand the
+   * place, call the edit unlanded after the bound, and say it failed while
+   * the core had taken it.
+   */
+  it('lands a keyboard lane step on the state alone', async () => {
+    vi.useFakeTimers();
+    try {
+      // The mount's static type does not carry a component's own exports, so
+      // the drive handle is narrowed once, here.
+      const frame = mount(Frames, {
+        target: document.body,
+        props: {
+          initial: wireWith([row(task('t1', 'stepped', 'pending'))]),
+          onact: (command: Record<string, Record<string, unknown>>) => acts.push(command),
+        },
+      }) as unknown as { set: (next: HomeWire) => void };
+      flushSync();
+
+      const card = document.querySelector<HTMLElement>('.b-card[data-id="t1"]');
+      if (card === null) throw new Error('the card is not on the page');
+      card.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+      flushSync();
+      expect(acts[0]).toEqual({ task_move: { project: 'proj', id: 't1', to: 'waiting' } });
+
+      // The server's answer: the row is in waiting, FIRST - not where a place
+      // would have put it, because the step asked for none.
+      frame.set(
+        wireWith([
+          row(task('t1', 'stepped', 'waiting', { rank: 1 })),
+          row(task('stay', 'already waiting', 'waiting', { rank: 2 })),
+        ]),
+      );
+      flushSync();
+      // The clock ticks every 5s and the bound is 12s, so the tick that reads
+      // past it is the one at 15s.
+      vi.advanceTimersByTime(16_000);
+      flushSync();
+
+      expect(document.querySelector('.b-said'), 'the step read as a failed edit').toBeNull();
+      expect(
+        document.querySelector('.b-lane[data-state="waiting"] .b-card[data-id="t1"]'),
+        'the row sits where the wire put it',
+      ).not.toBeNull();
+      await unmount(frame);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   /**

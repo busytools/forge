@@ -5136,12 +5136,39 @@ impl Workspace {
                         }
                     }
                 }
-                Command::TaskMove { project, id, to } => {
+                Command::TaskMove { project, id, to, place } => {
                     match self.user_move_task(&project, &TaskId::from(id.as_str()), to) {
                         // The landed status, not the asked one: a drag into
                         // `completed` on a verify=user row lands in waiting,
                         // and the notice must name the lane the board shows.
                         Ok(Some(task)) => {
+                            // A drag carries where it landed: the row keeps
+                            // the place the reader chose. A place that does
+                            // not apply is LOGGED, not said on the board's
+                            // line - the move itself landed, and a refusal
+                            // would report the whole edit as failed.
+                            if let Some(place) = place {
+                                match self.rank_task(&project, &TaskId::from(id.as_str()), place) {
+                                    Ok(Some(_)) => {}
+                                    Ok(None) => {
+                                        tracing::debug!(
+                                            target: "forge_workspace::tasks",
+                                            project = %project,
+                                            id = %id.as_str(),
+                                            "a drop's place named a row that is not there; the move landed without it",
+                                        );
+                                    }
+                                    Err(refused) => {
+                                        tracing::debug!(
+                                            target: "forge_workspace::tasks",
+                                            project = %project,
+                                            id = %id.as_str(),
+                                            refusal = %refused,
+                                            "a drop's place was refused; the move landed without it",
+                                        );
+                                    }
+                                }
+                            }
                             self.tell_row_owner(
                                 &task,
                                 format!(
@@ -8795,6 +8822,7 @@ mod tests {
                     project: "proj".to_owned(),
                     id: "gone".to_owned(),
                     to: TaskStatus::InProgress,
+                    place: None,
                 },
                 "refused a move",
             ),
@@ -8818,6 +8846,71 @@ mod tests {
             }
             assert!(said, "{named} was not said on the service line");
         }
+    }
+
+    /// **A drag carries its place**: a move with a `place` lands the row at
+    /// the position the drop chose, and one without it leaves the queue
+    /// alone - the keyboard's lane step moves state only.
+    #[tokio::test]
+    async fn a_board_move_with_a_place_lands_the_row_there() {
+        use forge_primitives::tasks::{Task, TaskId, TaskStatus};
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-board-place");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let owner = SessionSlot::new("TestOrg", "proj", "w1");
+        let sample = |id: &str| Task {
+            id: TaskId::from(id),
+            project_name: "proj".to_owned(),
+            subject: format!("subject {id}"),
+            active_form: None,
+            detail: None,
+            status: TaskStatus::Pending,
+            owner: Some(owner.clone()),
+            parent: None,
+            waiting_on: None,
+            estimate: None,
+            rank: None,
+            verify: None,
+            links: Vec::new(),
+            attempt: 0,
+            archived_at: None,
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+            updated_at: std::time::SystemTime::UNIX_EPOCH,
+        };
+        for id in ["a", "b", "c"] {
+            ws.push_task(sample(id));
+        }
+        let order = || {
+            let mut rows = ws.tasks_for_project("proj");
+            rows.sort_by_key(|t| (t.rank.unwrap_or(i64::MAX), t.created_at));
+            rows.iter().map(|t| t.id.as_str().to_owned()).collect::<Vec<_>>()
+        };
+        assert_eq!(order(), vec!["a", "b", "c"], "the push order is the queue");
+
+        // A drop above `a`, coming from across the board: `c` lands first.
+        ws.dispatch(Command::TaskMove {
+            project: "proj".to_owned(),
+            id: "c".to_owned(),
+            to: TaskStatus::InProgress,
+            place: Some(crate::protocol::RankMove::Before(Some("a".to_owned()))),
+        })
+        .expect("accepted");
+        assert_eq!(order(), vec!["c", "a", "b"], "the drop IS the priority");
+
+        // The control: a step carrying no place moves state only. It moves
+        // the row in the MIDDLE, so a default that ranks it to either end
+        // shows - a row already last would be blind to one.
+        ws.dispatch(Command::TaskMove {
+            project: "proj".to_owned(),
+            id: "a".to_owned(),
+            to: TaskStatus::InProgress,
+            place: None,
+        })
+        .expect("accepted");
+        assert_eq!(order(), vec!["c", "a", "b"], "a step without a place leaves the queue");
     }
 
     /// Every `ChatAppended` frame the stub's stream carries, each with the
@@ -9016,6 +9109,7 @@ mod tests {
             project: "proj".to_owned(),
             id: "t-1".to_owned(),
             to: TaskStatus::Waiting,
+            place: None,
         })
         .expect("accepted");
         assert!(
@@ -9060,6 +9154,7 @@ mod tests {
             project: "proj".to_owned(),
             id: "t-1".to_owned(),
             to: TaskStatus::Waiting,
+            place: None,
         })
         .expect("accepted");
         assert!(told(&mut rx).is_empty(), "a sleeping owner is told when it wakes, from the board");
@@ -9105,6 +9200,7 @@ mod tests {
             project: "proj".to_owned(),
             id: "t-1".to_owned(),
             to: TaskStatus::Pending,
+            place: None,
         })
         .expect("accepted");
         let (key, text) = told_one(&mut rx);
@@ -9119,6 +9215,7 @@ mod tests {
             project: "proj".to_owned(),
             id: "t-2".to_owned(),
             to: TaskStatus::Completed,
+            place: None,
         })
         .expect("accepted");
         let (_, text) = told_one(&mut rx);

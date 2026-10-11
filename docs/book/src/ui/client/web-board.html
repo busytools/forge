@@ -84,10 +84,11 @@
   /* lanes: a name, a count and a rule - no boxes around the column. Every
      state keeps its lane, and lanes that do not fit wrap to a second row:
      the sheet never scrolls sideways, and a missing lane would read as a
-     missing state. */
+     missing state. A lane fills its column, an empty one included, so the
+     whole strip takes a drop. */
   .b-lanes { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-    gap: 18px; align-items: start; }
-  .b-lane { transition: background .16s ease; }
+    gap: 18px; }
+  .b-lane { min-height: 120px; transition: background .16s ease; }
   .b-lane.drop { background: rgba(255, 255, 255, .025); border-radius: 14px; }
   .b-lane.drop .b-cap .b-lane-nm { color: var(--text); }
   .b-cap { display: flex; align-items: center; gap: 8px; padding: 0 2px 10px; }
