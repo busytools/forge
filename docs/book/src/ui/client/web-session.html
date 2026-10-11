@@ -810,13 +810,12 @@
   .turninfo > summary .st.err { color: var(--bad); }
   .turninfo > summary .arw { color: var(--dim); }
   .turninfo[open] > summary .arw { color: var(--accent); }
-  /* The strip pinned above the box: its own row, sharing the composer's edges
-     and outside its ring. Its fields are the settled row's own - the row moved
-     to the pin is the same one - so its element is the flex row they wrap in
-     and it draws no box of its own. It can also stand with no turn row at all,
-     which is what an idle seat with rows to show draws. */
-  .strip { flex: none; padding: 8px 13px 9px;
-    border: 1px solid var(--line); border-radius: 10px; background: var(--s1); }
+  /* The strip LANE of the surface: the running turn's row plus the seat's
+     chips, one lane of `.surf` now - its own frame went with the merge. Its
+     fields are the settled row's own - the row moved to the pin is the same
+     one - so it draws no box of its own, and it can stand with no turn row at
+     all, which is what an idle seat with rows to show draws. */
+  .strip { flex: none; padding: 8px 13px 9px; }
   .strip .ti { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; row-gap: 2px;
     font-family: var(--mono); font-size: var(--fs-base); color: var(--dim); }
   /* Wrap between fields, never inside one: a broken token pair reads as two
@@ -910,13 +909,22 @@
   .cst { display: none; }
   .cst.on { display: block; }
 
-  .mbox { border: 1.5px solid rgba(244,118,0,.45); border-radius: 16px;
+  /* **One surface for the whole foot.** The strip lane and the composer lane -
+     or the prompt's, when one waits - are children of it, split by hairlines;
+     the ring's colour is the state, and what it is DOING wins over focus:
+     recording, transcribing, the landed beat and an error each take it. */
+  .surf { position: relative; container-type: inline-size;
+    border: 1.5px solid var(--ctl); border-radius: 16px;
     background: linear-gradient(180deg, rgba(20,25,38,.72), rgba(13,17,26,.78));
     backdrop-filter: blur(10px); box-shadow: 0 14px 38px rgba(0,0,0,.42);
-    padding: 11px 14px; display: flex; flex-direction: column; gap: 8px;
+    display: flex; flex-direction: column; overflow: hidden;
     transition: border-color .3s ease; }
-  .mbox.rec { border-color: #b06a2a; }
-  .mbox.tr { border-color: var(--blue); }
+  .surf > * + * { border-top: 1px solid var(--line); }
+  /* The state rides the shown specimen's own class, so the ring follows the
+     chip that is on rather than decorating every state at once. */
+  .surf:has(.cst.on .mbox.rec) { border-color: color-mix(in srgb, var(--accent) 35%, var(--hot)); }
+  .surf:has(.cst.on .mbox.tr) { border-color: var(--blue); }
+  .mbox { padding: 11px 14px; display: flex; flex-direction: column; gap: 8px; }
   .mline { display: flex; align-items: flex-start; gap: 10px; }
   .mtxt { flex: 1; min-width: 0; font-size: var(--fs-prose); line-height: 1.5;
     white-space: pre-wrap; word-break: break-word; }
@@ -929,29 +937,36 @@
     font-size: var(--fs-label); color: var(--dim); }
   .mk { border: 1px solid var(--line); border-radius: 5px; padding: 0 6px; }
 
-  .mdict { display: flex; align-items: center; gap: 11px;
-    font-family: var(--mono); font-size: var(--fs-data); }
-  .mdot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent);
-    animation: pulse 1.05s ease-in-out infinite; flex: none; }
-  .mdot.tr { background: var(--blue); animation: none; }
-  .mt { color: var(--accent); }
-  .mdb { color: var(--hot); }
-  .mt.tr, .mdb.tr { color: var(--dim); }
-  .mlbl, .mesc { color: var(--dim); }
-  .mesc { margin-left: auto; }
-  /* The meter is a scrolling history: each cell is one past sample, newest
-     at the right, flowing left. Two copies of the shape translate by half. */
-  .mwave { height: 22px; flex: 1; min-width: 0; overflow: hidden; }
-  .wtr { display: flex; align-items: flex-end; gap: 2px; height: 100%;
-    width: max-content; animation: flow 2.6s linear infinite; }
-  .wtr i { flex: 0 0 4px; border-radius: 1px; background: var(--s3); }
-  .wtr i.mid { background: #ab6100; }
-  .wtr i.hot { background: var(--hot); }
-  .mwave.tr .wtr { animation: none; }
-  .mwave.tr .wtr i { background: #26354a; }
-  .mwave.tr .wtr i.mid { background: #2f486d; }
-  .mwave.tr .wtr i.hot { background: #365582; }
-  @keyframes flow { to { transform: translateX(-50%); } }
+  /* The take on the draft's own line: the card's readings - dot or spinner,
+     clock, graph or section bar, ready tally, frames, bytes, pace, the way
+     out - with none of the pill's chrome, because the surface's ring already
+     says recording or transcribing. */
+  .tc { display: flex; align-items: center; gap: 10px; font-family: var(--mono);
+    font-size: var(--fs-label); white-space: nowrap; }
+  .tc .dot { width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--accent);
+    animation: pulse 1.05s ease-in-out infinite; }
+  .tc .spin { width: 11px; height: 11px; flex: none; border-radius: 50%;
+    border: 2px solid var(--s3); border-top-color: var(--blue);
+    animation: spin 1s linear infinite; }
+  .tc .clock { color: var(--text); }
+  .tc .ready { color: var(--muted); }
+  .tc .fr, .tc .kb { color: var(--dim); }
+  .tc .pace { color: var(--ok); }
+  .tc .count { color: var(--blue); }
+  .tc .x { color: var(--dim); }
+  .tc .bars { display: flex; align-items: flex-end; gap: 1px; width: 116px; height: 16px;
+    flex: none; }
+  .tc .bars i { flex: 1 0 1px; border-radius: 1px;
+    background: linear-gradient(180deg, var(--hot), var(--accent)); }
+  /* The spread card's graph: one smooth envelope over the same readings. */
+  .tc .wave { flex: 1 1 auto; min-width: 0; height: 26px; align-self: center; }
+  .tc .wave .area { fill: var(--accent); }
+  .tc .wave .edge { fill: none; stroke: var(--hot); stroke-width: 1.5px;
+    vector-effect: non-scaling-stroke; }
+  .tc .ticks { display: flex; gap: 3px; flex: none; }
+  .tc .ticks i { width: 18px; height: 6px; border-radius: 999px; background: var(--s3); }
+  .tc .ticks i.on { background: var(--blue); }
+  .mline.takeline { align-items: center; }
   .mnotice { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
 
   .mac { border: 1px solid var(--line); border-radius: 12px; overflow: hidden;
@@ -970,13 +985,10 @@
   .mai .d { margin-left: auto; color: var(--dim); font-size: var(--fs-data); }
   .mai.sel { background: rgba(244,118,0,.09); }
 
-  /* The box morphed into a prompt: same slot, so your eye is already here.
+  /* The prompt's own lane: the slot the box would use, so your eye is already here.
      A neutral panel, as the client draws it: the accent is left to the marked
      row and the question's own mark, never painted behind the dock. */
-  .mdock { border: 1px solid var(--line); border-radius: 14px;
-    background: linear-gradient(180deg, rgba(20,25,38,.85), rgba(13,17,26,.92));
-    box-shadow: 0 16px 44px rgba(0,0,0,.5); padding: 13px 15px;
-    display: flex; flex-direction: column; gap: 10px; }
+  .mdock { padding: 13px 15px; display: flex; flex-direction: column; gap: 10px; }
   .mdhead { display: flex; align-items: baseline; gap: 9px; font-size: var(--fs-base); }
   .mdhead .t { font-weight: 500; color: var(--text); font-family: var(--mono); }
   .mdhead .q { color: var(--dim); font-family: var(--mono); font-size: var(--fs-data); }
@@ -997,11 +1009,16 @@
     flex: none; width: 10px; margin-top: 1px; }
   .mopt.sel .n { color: var(--hot); }
   .mopt .kk { margin-left: auto; flex: none; opacity: .85; }
-  /* The one row that takes words, which is also where a take's words land. */
+  /* The words row: the prompt's LAST row and its input - arriving on it puts
+     the caret, and what is written is the answer. No tint for that; the caret
+     is the signal. */
   .mcustom { display: flex; align-items: center; gap: 10px;
-    border-top: 1px solid var(--line); padding-top: 10px; }
+    padding: 6px 9px; border-radius: 9px; }
+  .mcustom.on { background: var(--sel); }
+  .mcustom .n { font-family: var(--mono); font-size: var(--fs-label); color: var(--hot);
+    flex: none; width: 10px; }
   .mnotes { flex: 1; min-width: 0; font-size: var(--fs-base); color: var(--text); }
-  .mnotes.ph { color: var(--dim); font-style: italic; }
+  .mnotes.ph { color: var(--dim); }
   .mmic { flex: none; width: 26px; height: 26px; border-radius: 8px;
     border: 1px solid var(--line); color: var(--dim); display: grid; place-items: center; }
   /* A permission's actions and a post's verbs: buttons, the trusting one
@@ -2421,28 +2438,40 @@ branch main, nothing to commit</div>
       </div>
 
     <div class="composer">
-      <!-- The strip pinned above the box: the running turn's row, outside the
+      <div class="cstates" data-mock-ignore>
+        <span class="cl">composer</span>
+        <button class="cs on" data-cs="idle">idle</button>
+        <button class="cs" data-cs="typing">typing</button>
+        <button class="cs" data-cs="cmds">/ commands</button>
+        <button class="cs" data-cs="rec">recording</button>
+        <button class="cs" data-cs="tr">transcribing</button>
+        <button class="cs" data-cs="notice">notice</button>
+        <button class="cs" data-cs="ask">permission</button>
+      </div>
+      <!-- **The foot is one surface.** The strip lane and the composer lane (or
+           the prompt's, when one waits) are children of one `.surf`, split by
+           hairlines: the strip's chips, the question and the field are one
+           thing that changes state rather than three rows competing for the
+           same pixels.
+
+           The strip stands for as long as it has anything to say - an idle
+           seat's tree, tasks and watchers included, not only a running turn -
+           and its figures lead the lane while a turn is written, outside the
            scroll, so a reader who has scrolled up can still see whether the
-           turn is working. Its own row, sharing the composer's edges and
-           outside its ring, standing for as long as it has anything to say -
-           an idle seat's tree, tasks and watchers included, not only a
-           running turn.
+           turn is working.
 
            One row of a turn, never two: while the row is pinned the turn above
            draws none of it, and when the turn ends the finished row holds here
            for a beat - the check and the cumulative - before it goes back into
-           the turn. The settled rows higher up the page are that half drawn.
-
-           Early in a turn it carries only what has arrived: the mark and the
-           clock at the barest, then thinking, the token pair, cached and
-           written as their frames land. An absent field is dropped rather than
-           dashed, because a dash is a claim that a value exists. A dock takes
-           the box's place beneath it and the row is unchanged - one row above
-           one box.
+           the turn. Early in a turn it carries only what has arrived: the mark
+           and the clock at the barest, then thinking, the token pair, cached
+           and written as their frames land. An absent field is dropped rather
+           than dashed, because a dash is a claim that a value exists.
 
            The terminal draws these figures inside the turn and pins nothing
            above its input; the client has a scroll position the terminal does
            not, and that is the whole reason for the row. -->
+      <div class="surf">
       <div class="strip" id="pin">
         <div class="ti">
           <span id="lv-mark"><span class="ring"></span></span>
@@ -2575,17 +2604,6 @@ branch main, nothing to commit</div>
           </span>
         </div>
       </div>
-      <div class="cstates" data-mock-ignore>
-        <span class="cl">composer</span>
-        <button class="cs on" data-cs="idle">idle</button>
-        <button class="cs" data-cs="typing">typing</button>
-        <button class="cs" data-cs="cmds">/ commands</button>
-        <button class="cs" data-cs="rec">recording</button>
-        <button class="cs" data-cs="tr">transcribing</button>
-        <button class="cs" data-cs="notice">notice</button>
-        <button class="cs" data-cs="ask">permission</button>
-      </div>
-
       <div class="comp" id="comp">
         <!-- idle -->
         <div class="cst" data-cs="idle">
@@ -2617,29 +2635,36 @@ branch main, nothing to commit</div>
           </div>
         </div>
 
-        <!-- recording -->
+        <!-- recording &middot; the take takes the draft's own line -->
         <div class="cst" data-cs="rec">
           <div class="mbox rec">
-            <div class="mdict"><span class="mdot"></span><span class="mt">0:07</span>
-              <span class="mdb">-18 dB</span>
-              <span class="mwave">
-              </span>
-              <span class="mlbl">listening</span>
-              <span class="mesc">esc cancel</span></div>
-            <div class="mline"><span class="mtxt mph">Type a message...</span></div>
+            <div class="mline takeline">
+              <span class="tc"><span class="dot"></span><span class="clock">0:07</span>
+                <svg class="wave" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+                  <path class="area" d="M 0 82 C 8 82, 12 58, 20 58 C 28 58, 32 12, 42 12 C 52 12, 54 66, 63 66 C 72 66, 76 30, 85 30 C 94 30, 96 52, 100 52 L 100 100 L 0 100 Z"></path>
+                  <path class="edge" d="M 0 82 C 8 82, 12 58, 20 58 C 28 58, 32 12, 42 12 C 52 12, 54 66, 63 66 C 72 66, 76 30, 85 30 C 94 30, 96 52, 100 52"></path>
+                </svg>
+                <span class="ready">2 ready</span>
+                <span class="fr">412 fr</span>
+                <span class="kb">251.5 KB</span>
+                <span class="pace">32 KB/s</span>
+                <span class="x">&#10005;</span></span>
+              <span class="msend"><svg class="ic"><use href="#i-mic"/></svg></span>
+            </div>
           </div>
         </div>
 
-        <!-- transcribing -->
+        <!-- transcribing &middot; the same row, its readings turned to the bar -->
         <div class="cst" data-cs="tr">
           <div class="mbox tr">
-            <div class="mdict"><span class="mdot tr"></span><span class="mt tr">0:07</span>
-              <span class="mdb tr">-18 dB</span>
-              <span class="mwave tr">
-              </span>
-              <span class="mlbl">transcribing 2/6</span>
-              <span class="mesc">esc cancel</span></div>
-            <div class="mline"><span class="mtxt">fix the flaky retry test and&#8230;<span class="mcaret"></span></span></div>
+            <div class="mline takeline">
+              <span class="tc tr"><span class="spin"></span><span class="clock">0:07</span>
+                <span class="ticks"><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></span>
+                <span class="count">2 of 6</span>
+                <span class="fr">412 fr</span>
+                <span class="x">&#10005;</span></span>
+              <span class="msend"><svg class="ic"><use href="#i-mic"/></svg></span>
+            </div>
           </div>
         </div>
 
@@ -2651,7 +2676,7 @@ branch main, nothing to commit</div>
           </div>
         </div>
 
-        <!-- the box morphed into a permission prompt -->
+        <!-- the prompt lane: a permission -->
         <div class="cst" data-cs="ask">
           <div class="mdock">
             <div class="mdhead"><span class="mtag warn">&#9888; needs approval</span>
@@ -2659,8 +2684,8 @@ branch main, nothing to commit</div>
             <div class="md-q">git push origin polish/rate-limit-chip-softer-34</div>
             <div class="mcustom"><span class="mnotes ph">Tell the agent something else</span>
               <span class="mmic"><svg class="ic"><use href="#i-mic"/></svg></span></div>
-            <div class="macts"><span class="mbtn d">Deny</span><span class="mbtn">Allow once</span>
-              <span class="mbtn p">Allow always</span></div>
+            <div class="macts"><span class="mbtn p">Allow always</span><span class="mbtn">Allow once</span>
+              <span class="mbtn d">Deny</span></div>
             <div class="mkeys"><span><span class="mk">tab</span> between the actions</span>
               <span><span class="mk">&#9166;</span> activates</span>
               <span><span class="mk">esc</span> reject</span></div>
@@ -2685,15 +2710,18 @@ branch main, nothing to commit</div>
                   <span class="why">live traffic</span></span></div>
               <div class="mopt"><span class="n">3</span><span class="box2"></span>
                 <span class="tx"><span class="lbl">Development</span></span></div>
-              <div class="mopt"><span class="n">4</span>
-                <span class="tx"><span class="lbl">Tell the agent something else</span></span></div>
             </div>
             <div class="mpreview"><p><strong>staging</strong> &#183; deploys run the full migration set against the replica first.</p></div>
-            <div class="mcustom"><span class="mnotes ph">Or tell the agent something else&#8230;</span>
+            <!-- The row past the last option IS the input: arriving on it - the
+                 arrow, its number, a click, or a typed character - puts the
+                 caret here, and what is written is the answer. -->
+            <div class="mcustom on"><span class="n">4</span>
+              <span class="mnotes ph">Tell the agent something else&#8230;</span>
               <span class="mmic"><svg class="ic"><use href="#i-mic"/></svg></span></div>
             <div class="mkeys"><span><span class="mk">&#8593;&#8595;</span> move</span>
               <span><span class="mk">space</span> toggle</span>
-              <span><span class="mk">1</span>-<span class="mk">9</span> pick</span>
+              <span><span class="mk">1</span>-<span class="mk">4</span> pick</span>
+              <span><span class="mk">&#8595;</span> past the last option: your own words</span>
               <span><span class="mk">&#9166;</span> submit 2</span>
               <span><span class="mk">esc</span> reject</span></div>
           </div>
@@ -2703,9 +2731,10 @@ branch main, nothing to commit</div>
             <div class="mdhead"><span class="mdest">Trust Machines &#183; #granite-staging-alerts</span>
               <span class="q trail">Post to Slack</span></div>
             <div class="mpreview">The staging deploy is green. Rolling to production once the 14:30 window closes.</div>
-            <div class="macts"><span class="mbtn d">Don't send</span><span class="mbtn p">Post</span></div>
+            <div class="macts"><span class="mbtn p">Post</span><span class="mbtn d">Don't send</span></div>
           </div>
         </div>
+      </div>
       </div>
     </div>
   </main>
@@ -2906,25 +2935,6 @@ branch main, nothing to commit</div>
     b.addEventListener('click', function () { show(b.dataset.cs); });
   });
   show('idle');
-
-  /* The dictation meter is a history of levels, so it is drawn from a shape
-     and scrolls as one track rather than being typed out twice. */
-  var SHAPE = [12,26,48,72,94,64,40,26,14,10,30,54,78,96,70,46,28,14,10,
-               22,44,66,50,34,20,12];
-  document.querySelectorAll('.mwave').forEach(function (w) {
-    var track = document.createElement('span');
-    track.className = 'wtr';
-    for (var pass = 0; pass < 2; pass++) {
-      SHAPE.forEach(function (h) {
-        var b = document.createElement('i');
-        b.style.height = h + '%';
-        if (h >= 70) { b.className = 'hot'; }
-        else if (h >= 40) { b.className = 'mid'; }
-        track.appendChild(b);
-      });
-    }
-    w.appendChild(track);
-  });
 })();
 </script>
 </body>

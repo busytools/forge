@@ -38,11 +38,20 @@
   .tcap b { color: var(--text); font-weight: 400; }
   .tnote { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); margin-top: 9px; }
 
-  /* pinned thinking bar - the real .strip */
-  .strip { padding: 8px 13px 9px; border: 1px solid var(--line);
-    border-radius: var(--r); background: var(--s1); margin-bottom: 8px; }
+  /* The foot is one surface (the settled shape): the strip is its first lane,
+     and the box or the dock is the lane under it. No `overflow: hidden`: the
+     real one drops it, since the rounded corners need no clip and clipping
+     cuts the portaled segment lists. */
+  .surf { margin-top: 8px; border: 1.5px solid var(--ctl); border-radius: 16px;
+    background: linear-gradient(180deg, rgba(20,25,38,.72), rgba(13,17,26,.78));
+    box-shadow: 0 14px 38px rgba(0,0,0,.42); display: flex; flex-direction: column; }
+  .surf > * + * { border-top: 1px solid var(--line); }
+  .surf:has(.mbox.focus) { border-color: rgba(244,118,0,.85); }
+  .surf:has(.mbox.hushed) { border-color: rgba(244,118,0,.25); }
+  /* The strip lane: the running turn's figures, as the real one draws them. */
+  .strip { padding: 8px 13px 9px; }
   .strip .ti { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; row-gap: 2px;
-    font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
+    font-family: var(--mono); font-size: var(--fs-base); color: var(--dim); }
   .strip .ti > span { white-space: nowrap; }
   .strip .ti .sep { opacity: .5; }
   .ring { display: inline-block; width: 9px; height: 9px; border-radius: 50%;
@@ -77,25 +86,21 @@
   .qcard.face .w { color: var(--text); }
   .qcard.face .m .del { display: inline-block; }
 
-  .mbox { border: 1.5px solid rgba(244,118,0,.45); border-radius: 16px;
-    background: linear-gradient(180deg, rgba(20,25,38,.72), rgba(13,17,26,.78));
-    box-shadow: 0 14px 38px rgba(0,0,0,.42); padding: 11px 14px;
-    display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
-  .mbox.focus { border-color: rgba(244,118,0,.85); }
-  .mbox.hushed { border-color: rgba(244,118,0,.18); }
+  /* The box's lane: no chrome of its own - the surface's ring is the state. */
+  .mbox { padding: 11px 14px; display: flex; flex-direction: column; gap: 8px; }
   .mbox .mtxt { font-size: var(--fs-prose); color: var(--dim); }
   .mbox .mfoot { display: flex; gap: 14px; font-family: var(--mono);
     font-size: var(--fs-label); color: var(--dim); }
 
-  .dock { border: 1.5px solid rgba(244,118,0,.55); border-radius: 16px; background: var(--s2);
-    padding: 10px 14px; display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+  /* The prompt's lane, drawn as the dock draws it: a head and its rows. */
+  .dock { padding: 13px 15px; display: flex; flex-direction: column; gap: 10px; }
   .dock .q { display: flex; align-items: baseline; gap: 9px; }
   .dock .qm { color: var(--accent); font-family: var(--mono); font-size: var(--fs-data); }
   .dock .op { display: flex; gap: 16px; font-size: var(--fs-data); color: var(--muted); }
   .dock .op .cur { color: var(--text); }
   .dock .fo { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
-  .ended { border: 1px solid var(--line); border-radius: 16px; background: var(--s1);
-    padding: 10px 14px; margin-top: 8px; font-family: var(--mono); font-size: var(--fs-label);
+  /* The line a dock leaves behind, in its lane. */
+  .ended { padding: 10px 14px; font-family: var(--mono); font-size: var(--fs-label);
     color: var(--dim); display: flex; align-items: baseline; gap: 10px; }
   .ended b { color: var(--muted); font-weight: 400; }
 
@@ -116,7 +121,7 @@
 <div class="page">
 
   <h1>Queued prompts - every variant</h1>
-  <p class="sub">The queued-prompt pile, in the variants it can be in. Every tile is the same foot: the queue pile above the pinned thinking bar, then the dock or the box - the bar, the box and the dock are <span class="mono">web-session.html</span>'s shipped shapes lifted as-is, and the pile is new here. Every tile draws the real states; the timings under
+  <p class="sub">The queued-prompt pile, in the variants it can be in. Every tile is the same foot: the queue pile above the surface, whose first lane is the strip and whose second is the box or the prompt's own lane - the lanes are drawn as <span class="mono">web-session.html</span> and <span class="mono">web-composer.html</span> draw them today, and the pile is new here. Every tile draws the real states; the timings under
   <span class="mono">The wire</span> are the measured ones.</p>
   <div class="legend">
     <span>sources: <span style="color:var(--text)">you</span> &#183; <span style="color:var(--warn)">cron</span> &#183; <span style="color:var(--teal)">gotify</span> &#183; <span style="color:var(--ok)">slack</span> &#183; <span style="color:var(--blue)">peer</span></span>
@@ -175,9 +180,11 @@ function foot(tile, spec) {
   el.innerHTML =
     `<div class="tcap">${spec.cap}</div>
      <div class="qwrap"><div class="qcount"></div><div class="qstack"></div></div>
-     <div class="strip"><div class="ti"><span class="ring"></span><span>12s</span><span class="sep">&#183;</span>
-       <span>1.2k&#8593; 340&#8595;</span><span class="sep">&#183;</span><span>91% cached</span></div></div>
-     <div class="mslot"></div>`;
+     <div class="surf">
+       <div class="strip"><div class="ti"><span class="ring"></span><span>12s</span><span class="sep">&#183;</span>
+         <span>1.2k&#8593; 340&#8595;</span><span class="sep">&#183;</span><span>91% cached</span></div></div>
+       <div class="mslot"></div>
+     </div>`;
   const n = spec.items.length, cur = spec.cur ?? -1;
   const stack = el.querySelector('.qstack');
   const qc = el.querySelector('.qcount');

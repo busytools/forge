@@ -1,7 +1,7 @@
 <script lang="ts">
   import Icon from '../components/Icon.svelte';
   import { tasks } from './tasks.svelte';
-  import { panelStyle } from './strip-panel';
+  import { panelStyle, portal } from './strip-panel';
 
   /**
    * The tasks row in the strip above the composer: what this seat's project
@@ -61,6 +61,9 @@
   function release(event?: FocusEvent) {
     if (event === undefined) {
       if (segEl !== null && segEl.matches(':hover')) return;
+      // The panel is portaled to the body (`use:portal`), so moving off the
+      // segment into the panel is not a departure.
+      if (listEl !== null && listEl.matches(':hover')) return;
       const active = document.activeElement;
       const onRow =
         segEl !== null && listEl !== null && active instanceof Node && listEl.contains(active);
@@ -69,7 +72,14 @@
       return;
     }
     const next = event.relatedTarget ?? document.activeElement;
-    if (segEl !== null && next instanceof Node && segEl.contains(next)) return;
+    // The panel is portaled to the body (`use:portal`), so focus moving INTO
+    // it is not a departure - the segment can no longer contain it.
+    if (
+      next instanceof Node &&
+      ((segEl !== null && segEl.contains(next)) || (listEl !== null && listEl.contains(next)))
+    ) {
+      return;
+    }
     arm();
   }
 
@@ -146,7 +156,7 @@
     </button>
 
     {#if open}
-      <div class="sg-list" bind:this={listEl} style={limits}>
+      <div class="sg-list" bind:this={listEl} style={limits} use:portal>
         {#if href !== null}
           <!-- The way into the whole board, in the strip the composer
                carries. A door rather than a row: it is drawn apart from the

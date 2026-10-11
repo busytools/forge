@@ -48,6 +48,11 @@
     devices: () => true,
     onMessage: () => () => {},
     store: () => undefined,
+    // The strip lane the composer draws now reads the browser role as it
+    // mounts; without these this page throws before any state can be read.
+    browserRole: () => false,
+    onBrowserRole: () => () => {},
+    takeBrowserRole: () => {},
   } as unknown as ComposerConnection;
 
   function blank(): ComposerRecord {

@@ -2,8 +2,9 @@
   import { untrack } from 'svelte';
 
   import Chevron from '../components/Chevron.svelte';
+  import { runningClock } from './clock.svelte';
   import { clock, duration, money, tokens } from './numbers';
-  import { attributed, cached, elapsed } from './report';
+  import { attributed, cached } from './report';
   import Strip from './Strip.svelte';
   import type { TurnInfo } from './units';
 
@@ -28,24 +29,15 @@
   const held = $derived(attributed(info));
 
   /**
-   * The tick the body's clock moves on, which is the row's own tick.
-   *
-   * The body draws `elapsed` as a fact of its own, and it is the same figure
-   * the row leads with: a body left reading the clock once would freeze on the
-   * call that walks a turn past a minute.
+   * The body's own clock, which the row above leads with: the same figure in
+   * two places, from `clock.svelte.ts`'s one copy - and gated on `opened`,
+   * because a closed row carries no clock and a tick recomputing the facts
+   * for one would be work nobody sees.
    */
-  let now = $state(Date.now());
-  /** The running fact as a value, so the timer below does not restart per frame (see `Strip.svelte`). */
-  const running = $derived(held.running);
-  $effect(() => {
-    // Only while the body is on screen: a closed row carries no clock, and a
-    // tick that kept recomputing the facts for one would be work nobody sees.
-    if (!opened || !running) return;
-    const id = setInterval(() => {
-      now = Date.now();
-    }, 1000);
-    return () => clearInterval(id);
-  });
+  const elapsing = runningClock(
+    () => held,
+    () => opened,
+  );
 
   /** The turn's own clock, read from the instant it ended in the reader's zone. */
   const ended = $derived(clock(held.ended_at_utc));
@@ -76,7 +68,7 @@
       // the row does not claim one.
       { label: 'ended', value: held.running ? dash : (ended ?? dash) },
       { label: 'model', value: held.model ?? dash },
-      { label: 'elapsed', value: elapsed(held, now) },
+      { label: 'elapsed', value: elapsing() },
       { label: 'api', value: held.api_ms === null ? dash : duration(held.api_ms) },
       { label: 'local', value: local === null ? dash : `${duration(local)} tools + hooks` },
       {

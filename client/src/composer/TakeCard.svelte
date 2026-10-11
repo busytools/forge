@@ -6,6 +6,7 @@
     take,
     wire,
     oncancel,
+    spread = false,
   }: {
     take: Take;
     /**
@@ -22,6 +23,15 @@
       elapsedMs: number;
     } | null;
     oncancel: () => void;
+    /**
+     * Whether the card spans a line - the composer's take line, the dock's
+     * words row - rather than sitting as the pill. **The graph follows the
+     * shape**: the pill keeps its per-cell bars, and a spread card draws the
+     * same readings as one smooth envelope (Ved, 2026-10-11: at the row's
+     * width the cells' gaps read as chunks, and a path through the same
+     * readings moves as a line).
+     */
+    spread?: boolean;
   } = $props();
 
   /**
@@ -95,6 +105,35 @@
   const cells = $derived(meterWindow(levels, CARD_CELLS));
 
   /**
+   * The same readings as one smooth envelope, for a card that spans a line.
+   *
+   * A Catmull-Rom curve through the cells' tops, drawn into a 0..100 box the
+   * SVG stretches to whatever width and height the row gives it - so the
+   * readings scale with the row instead of sitting in a fixed track, and one
+   * path moves where forty bars stepped. Control points can overshoot the box
+   * on a spike, which the viewBox clips rather than the card drawing outside
+   * itself.
+   */
+  const waveLine = $derived.by(() => {
+    const n = cells.length;
+    if (n === 0) return '';
+    const x = (at: number): number => (at / (n - 1)) * 100;
+    const y = (at: number): number => 100 - (cells[at]?.height ?? 0);
+    let d = `M ${String(x(0))} ${String(y(0))}`;
+    for (let at = 0; at < n - 1; at += 1) {
+      const lo = Math.max(0, at - 1);
+      const hi = Math.min(n - 1, at + 2);
+      const c1x = x(at) + (x(at + 1) - x(lo)) / 6;
+      const c1y = y(at) + (y(at + 1) - y(lo)) / 6;
+      const c2x = x(at + 1) - (x(hi) - x(at)) / 6;
+      const c2y = y(at + 1) - (y(hi) - y(at)) / 6;
+      d += ` C ${String(c1x)} ${String(c1y)} ${String(c2x)} ${String(c2y)} ${String(x(at + 1))} ${String(y(at + 1))}`;
+    }
+    return d;
+  });
+  const waveArea = $derived(waveLine === '' ? '' : `${waveLine} L 100 100 L 0 100 Z`);
+
+  /**
    * How long the take has run, as a reader reads it - this side's own clock
    * for a take it started, the record's for one it did not.
    */
@@ -132,11 +171,24 @@
       <span class="count">{done} of {total}</span>
     {/if}
   {:else}
-    <span class="bars" aria-hidden="true">
-      {#each cells as cell, at (at)}
-        <i class={cell.tone} style={`height:${String(cell.height)}%`}></i>
-      {/each}
-    </span>
+    {#if spread}
+      <svg
+        class="wave"
+        viewBox="0 0 100 100"
+        preserveAspectRatio="none"
+        aria-hidden="true"
+        role="presentation"
+      >
+        <path class="area" d={waveArea} />
+        <path class="edge" d={waveLine} />
+      </svg>
+    {:else}
+      <span class="bars" aria-hidden="true">
+        {#each cells as cell, at (at)}
+          <i class={cell.tone} style={`height:${String(cell.height)}%`}></i>
+        {/each}
+      </span>
+    {/if}
     {#if done > 0}<span class="ready">{done} ready</span>{/if}
   {/if}
   {#if live !== null}

@@ -50,12 +50,24 @@ export function cached(info: TurnInfo): number | null {
 }
 
 /**
+ * The span a running record measures at `now`: its frames' own span plus the
+ * wait since the last of them.
+ *
+ * The two terms cancel to `now - turn start` while a frame's span and its
+ * stamp agree - which is what lets a reader watch the clock at all: the wait
+ * is the part the local tick drives, and the frame lands as a correction.
+ */
+export function runningMs(info: TurnInfo, now: number): number {
+  const since = info.ended_at_utc === null ? 0 : now - Date.parse(info.ended_at_utc);
+  const waited = Number.isFinite(since) && since > 0 ? since : 0;
+  return (info.duration_ms ?? 0) + waited;
+}
+
+/**
  * The clock the row leads with: the span an unfinished turn's frames measure,
  * plus the wait since its last one, and a settled turn's own clock.
  */
 export function elapsed(info: TurnInfo, now: number): string {
   if (!info.running) return duration(info.duration_ms);
-  const since = info.ended_at_utc === null ? 0 : now - Date.parse(info.ended_at_utc);
-  const waited = Number.isFinite(since) && since > 0 ? since : 0;
-  return duration((info.duration_ms ?? 0) + waited);
+  return duration(runningMs(info, now));
 }
