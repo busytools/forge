@@ -3312,9 +3312,9 @@ mod tests {
 
     /// The one-shot rule reaches every session, and its handle is the same
     /// sentence the charter and the lead-facing tool text carry - pinned so
-    /// a paraphrase drifting between surfaces fails here. The ban's two
-    /// halves are pinned separately: slicing, and an intermediate step
-    /// shown or merged.
+    /// a paraphrase drifting between surfaces fails here. The ban is pinned
+    /// inside the same literal, through its period, so a reword or an
+    /// append fails here too.
     #[test]
     fn the_conduct_block_carries_the_one_shot_rule() {
         assert!(
