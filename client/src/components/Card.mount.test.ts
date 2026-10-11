@@ -32,7 +32,7 @@ function draw(href: string | null): HTMLElement {
 }
 
 describe('a band card that is a way in', () => {
-  it('opens on Space as it does on Enter', () => {
+  it('opens on Space as it does on Enter, and swallows the scroll Space causes', () => {
     const card = draw('/extensions');
     let clicks = 0;
     card.addEventListener('click', (event) => {
@@ -41,14 +41,45 @@ describe('a band card that is a way in', () => {
       event.preventDefault();
     });
 
-    card.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+    const space = new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true });
+    card.dispatchEvent(space);
     flushSync();
     expect(clicks, 'Space activates the door').toBe(1);
+    expect(
+      space.defaultPrevented,
+      'the press does not also page down, which is the guard doing its work',
+    ).toBe(true);
 
     // Enter is the anchor's own key and is left alone.
     const enter = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
     card.dispatchEvent(enter);
     expect(enter.defaultPrevented, 'Enter is not intercepted').toBe(false);
+  });
+
+  it('leaves a modified Space to the browser', () => {
+    const card = draw('/extensions');
+    let clicks = 0;
+    card.addEventListener('click', (event) => {
+      clicks += 1;
+      event.preventDefault();
+    });
+
+    for (const modifiers of [
+      { shiftKey: true },
+      { ctrlKey: true },
+      { metaKey: true },
+      { altKey: true },
+    ]) {
+      const space = new KeyboardEvent('keydown', {
+        key: ' ',
+        bubbles: true,
+        cancelable: true,
+        ...modifiers,
+      });
+      card.dispatchEvent(space);
+      expect(space.defaultPrevented, "a modified Space is the browser's").toBe(false);
+    }
+    expect(clicks, 'and it does not open the door').toBe(0);
   });
 
   it('leaves a card that opens nothing alone', () => {

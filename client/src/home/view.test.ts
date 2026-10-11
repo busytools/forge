@@ -1241,8 +1241,21 @@ describe('the extensions card', () => {
   });
 
   it('draws no read yet, a refused read, and an unreadable inventory as their own states', () => {
-    expect(extensionsCard(null).value, 'before the read lands').toBe('reading');
-    expect(extensionsCard(null, true).value, 'a refused subscription').toBe('unread');
-    expect(extensionsCard(extensionsWire({ snapshot: null })).tone, 'no plugins root').toBe('bad');
+    const reading = extensionsCard(null);
+    expect(reading.value, 'before the read lands').toBe('reading');
+    expect(reading.tone, 'and it is quiet rather than a claim').toBe('off');
+    expect(reading.detail).toBe('plugins · marketplaces');
+
+    const refused = extensionsCard(null, true);
+    expect(refused.value, 'a refused subscription').toBe('unread');
+    expect(refused.tone).toBe('off');
+    expect(refused.detail).toBe('open to see why');
+
+    const unreadable = extensionsCard(extensionsWire({ snapshot: null }));
+    expect(unreadable.tone, 'no plugins root').toBe('bad');
+    expect(unreadable.value).toBe('unread');
+    expect(unreadable.detail, 'and it names what is missing, not the page').toBe(
+      'no plugins root resolves',
+    );
   });
 });

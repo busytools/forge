@@ -45,9 +45,10 @@ export interface BandCard {
   /**
    * Where the card opens, when it opens anywhere.
    *
-   * The dictation card is the way into the models page: the band is where a
-   * reader looks for dictation, and the page is what draws it. The others are
-   * facts about this forge and open nothing.
+   * The dictation card is the way into the models page and the extensions
+   * card into the extensions page: the band is where a reader looks for
+   * each, and the page is what draws it. The rest are facts about this
+   * forge and open nothing.
    */
   href: string | null;
 }
@@ -513,7 +514,7 @@ export function band(wire: HomeWire, address: string): BandCard[] {
 
   const models = wire.dictate.snapshot.models;
   const failure = wire.dictate.snapshot.failure;
-  // The one card that is a way in. It stays a door with dictation off, too:
+  // A card that is a way in. It stays a door with dictation off, too:
   // the models page draws the off state and names the key that would switch
   // it on, which is where a reader who came looking for dictation lands.
   const door = '/models';

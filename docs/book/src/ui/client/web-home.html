@@ -121,6 +121,9 @@
 
   /* ---------- system band ---------- */
 
+  /* Five cards across on a wide window, wrapping below - the last card can
+     sit alone in a middling band, and on a phone the fixed override wraps
+     2+2+1. The sheet's own rule, mirrored. */
   .band { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin-bottom: 22px; }
   .svc {
     background: linear-gradient(180deg, rgba(20,25,38,.75), rgba(13,17,26,.75));
@@ -139,13 +142,17 @@
   .svc.bad { border-color: rgba(224,104,62,.4); }
   .svc.bad .v { color: var(--bad); }
   .svc.off { opacity: .72; }
-  /* The one card that is a way in: the dictation card opens the models page.
-     The chevron is drawn at rest, not uncovered by the pointer. */
+  /* The cards that are ways in: dictation opens the models page and
+     extensions the extensions page. The chevron is drawn at rest, not
+     uncovered by the pointer. */
   .band a.svc { display: block; text-decoration: none; color: inherit; }
   .band a.svc .ic { display: block; width: 15px; height: 15px; flex: 0 0 15px; }
   .band a.svc .arw { margin-left: auto; color: var(--dim); }
   .band a.svc:hover { border-color: var(--ctl); }
   .band a.svc:hover .arw { color: var(--accent); }
+  /* The sheet's own floor, mirrored: a card is taller than a finger needs,
+     and the drawing mirrors the rule the page carries. */
+  @media (pointer: coarse) { .band a.svc { min-height: 44px; } }
 
   .banner {
     display: flex; align-items: center; gap: 10px;
