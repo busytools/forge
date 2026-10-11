@@ -66,8 +66,9 @@
     threads: ReviewThreadRecord[];
     reviews: ReviewSetRecord[];
     busy: boolean;
-    oncomment: (comment: ComposedComment) => void;
-    onreply: (thread: ReviewThreadRecord, text: string) => void;
+    /** Both answer whether the write landed: a refusal keeps the draft. */
+    oncomment: (comment: ComposedComment) => Promise<boolean>;
+    onreply: (thread: ReviewThreadRecord, text: string) => Promise<boolean>;
     onresolve: (thread: ReviewThreadRecord) => void;
     onreopen: (thread: ReviewThreadRecord) => void;
   } = $props();
@@ -525,9 +526,13 @@
         send.disabled = busy || area.value.trim() === '';
       });
       send.addEventListener('click', () => {
-        void onreply(thread, replyText.trim());
-        replying = null;
-        replyText = '';
+        // The box closes only once the write landed: a refusal keeps the
+        // reader's words where they wrote them.
+        void onreply(thread, replyText.trim()).then((filed) => {
+          if (!filed) return;
+          replying = null;
+          replyText = '';
+        });
       });
       const cancel = document.createElement('button');
       cancel.type = 'button';
@@ -603,6 +608,8 @@
       if (found === null) return;
       const line = found.hunk.lines[found.index];
       if (line === undefined) return;
+      // As with a reply: the composer stays open, holding the words, until
+      // the write lands.
       void oncomment({
         path: at.path,
         side: at.side,
@@ -610,9 +617,11 @@
         text: composeText.trim(),
         context: captureContext(found.hunk.lines, found.index),
         lineText: line.text,
+      }).then((filed) => {
+        if (!filed) return;
+        composing = null;
+        composeText = '';
       });
-      composing = null;
-      composeText = '';
     });
     const cancel = document.createElement('button');
     cancel.type = 'button';

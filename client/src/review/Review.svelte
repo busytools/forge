@@ -138,19 +138,25 @@
     }
   }
 
-  async function commented(at: ComposedComment): Promise<void> {
+  /** The canvas keeps its draft unless this says the write landed: a refusal
+   *  that cleared the box would take the reader's words with it. */
+  async function commented(at: ComposedComment): Promise<boolean> {
     const thread = newThread({
       ...at,
       baseRef: record?.git.defaultBranch ?? '',
       commit: scopeCommit,
     });
-    if (await write(upsertCommand(slot, branch, thread))) drafts.add(thread.id);
+    const filed = await write(upsertCommand(slot, branch, thread));
+    if (filed) drafts.add(thread.id);
+    return filed;
   }
 
-  async function replied(thread: { id: string }, text: string): Promise<void> {
+  async function replied(thread: { id: string }, text: string): Promise<boolean> {
     const full = threads.find((held) => held.id === thread.id);
-    if (full === undefined) return;
-    if (await write(upsertCommand(slot, branch, withReply(full, text)))) drafts.add(full.id);
+    if (full === undefined) return false;
+    const filed = await write(upsertCommand(slot, branch, withReply(full, text)));
+    if (filed) drafts.add(full.id);
+    return filed;
   }
 
   async function resolved(thread: { id: string }): Promise<void> {
@@ -502,6 +508,7 @@
                         class="rv-txarea"
                         rows="2"
                         data-editor="nowhere"
+                        aria-label="your response"
                         placeholder="Respond to this thread..."
                         value={answerText}
                         oninput={(event) => (answerText = event.currentTarget.value)}></textarea>
@@ -511,9 +518,14 @@
                           class="rv-a on"
                           disabled={busy || answerText.trim() === ''}
                           onclick={() => {
-                            void replied(thread, answerText.trim());
-                            answering = null;
-                            answerText = '';
+                            const text = answerText.trim();
+                            void replied(thread, text).then((filed) => {
+                              // A refusal keeps the words: the reply is the
+                              // reader's until the server took it.
+                              if (!filed) return;
+                              answering = null;
+                              answerText = '';
+                            });
                           }}>send</button
                         >
                         <button
