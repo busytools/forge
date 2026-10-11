@@ -265,6 +265,20 @@ describe('the tasks card', () => {
     ]);
   });
 
+  it('draws the record own state word when a wait kind is unreadable', () => {
+    // A field the page cannot read must keep the RECORD's state, not a
+    // constant: the status here is not the wait's own, so a hardcoded
+    // "waiting" would be this test's failure rather than a pass.
+    const card = forgeCardOf(
+      'mcp__forge__tasks__wait',
+      { id: 't-1' },
+      result(JSON.stringify({ ...RECORD, status: 'blocked' })),
+    );
+    expect(card?.chips, 'the record state, the way the family spells it').toEqual([
+      { text: 'blocked', tone: 'warn' },
+    ]);
+  });
+
   it('spells its wait words the way the board spells them', () => {
     // One wait, one reading: the chat's three chips must be the board's own
     // (client/src/board/view.ts), and this reads that arm out of its source so
