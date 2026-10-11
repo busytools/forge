@@ -115,7 +115,7 @@ impl DriverStart<'_> {
 }
 
 /// The driver a profile holds, and the browser identity it was built against.
-struct Held {
+pub(super) struct Held {
     identity: String,
     driver: Option<Arc<Driver>>,
 }
@@ -131,6 +131,14 @@ pub struct Profile {
 impl Profile {
     pub(super) fn new() -> Self {
         Self { held: Mutex::new(Held { identity: String::new(), driver: None }) }
+    }
+
+    /// The lock a call holds for its whole round: a delete takes the same one
+    /// first, so no call runs while a profile's files are going. Desktop
+    /// only - the delete that takes it is, and the phone's profiles never do.
+    #[cfg(desktop)]
+    pub(super) async fn call_lock(&self) -> tokio::sync::MutexGuard<'_, Held> {
+        self.held.lock().await
     }
 
     /// Whether a driver is there to answer. **The browser's own liveness is a

@@ -231,6 +231,54 @@ impl BrowserHost {
         tool: &str,
         args: Value,
     ) -> Result<Vec<ReplyPart>, String> {
+        // **The delete verb is a host action, not a driver tool.** It rides
+        // the same ask relay as every browser tool - a session calls it and
+        // the answer is the tool's own - but it never reaches the driver, so
+        // it is answered here, before the profile argument or the browser is
+        // consulted. A session may delete only the profile it OWNS (the
+        // verdict's own rule); the person's own door is the strip, which
+        // takes no seat and can reach a closed profile's files by name.
+        if tool == "browser_profile_delete" {
+            let name = args.get("name").and_then(Value::as_str).unwrap_or_default().to_owned();
+            if name.is_empty() {
+                return Err(
+                    "the shared browser is not a profile, so there is nothing to delete; name \
+                     the profile"
+                        .to_owned(),
+                );
+            }
+            // The phone runs one browser and holds no named profiles, so the
+            // ownership question does not exist there: its delete refuses by
+            // name, in its own words.
+            #[cfg(target_os = "android")]
+            {
+                return self.delete(&name).await.map(|()| {
+                    vec![ReplyPart::Text { text: format!("deleted the '{name}' profile") }]
+                });
+            }
+            #[cfg(desktop)]
+            {
+                let owner = {
+                    let named = self.named.lock().await;
+                    named.get(&name).map(|entry| entry.owner.clone())
+                };
+                return match owner {
+                    Some(owner) if &owner == seat => self.delete(&name).await.map(|()| {
+                        vec![ReplyPart::Text {
+                            text: format!("deleted the '{name}' profile and its saved logins"),
+                        }]
+                    }),
+                    Some(owner) => Err(format!(
+                        "the profile '{name}' belongs to {owner}; the person can delete it from \
+                         the browser strip"
+                    )),
+                    None => Err(format!(
+                        "no profile named '{name}' is open to this session; the person can delete \
+                         a closed profile from the browser strip"
+                    )),
+                };
+            }
+        }
         let (profile, args) = take_profile(args)?;
         // **The shell's own entry, so a parked ask and a never-arrived one
         // stop looking alike.** Measured live 2026-10-07: a call parked with
@@ -417,6 +465,61 @@ impl BrowserHost {
         Err(format!("no browser profile is open under '{name}'"))
     }
 
+    /// Delete a named profile, wherever it stands: the name's browser is
+    /// killed, its entry goes, and its files are removed.
+    ///
+    /// **The one act that takes the logins.** Close ends the run and keeps
+    /// everything; delete ends the run and removes `profiles/<name>` - the
+    /// cookies and sessions with it - so it is the person's alone to make
+    /// and it is confirmed in the row that makes it.
+    ///
+    /// **By name, whether or not the profile is open**: a closed profile's
+    /// entry is gone while its files remain, and those files are exactly
+    /// what a person means to remove. A name with neither an entry nor a
+    /// directory is the one refusal. The whole act holds the profile's call
+    /// lock first (no call runs while the files go) and then the launch
+    /// lock a launch takes (nothing - this process or another - starts a
+    /// browser onto a half-removed tree); both are taken in the call path's
+    /// own order, so the two cannot deadlock, and an in-flight call is
+    /// WAITED for rather than refused.
+    #[cfg(desktop)]
+    pub async fn delete(&self, name: &str) -> Result<(), String> {
+        if let Some(refusal) = profiles::name_refusal(name) {
+            return Err(refusal);
+        }
+        let paths = self.paths.clone()?;
+        let dir = paths.profiles.join(name);
+        let entry = self.named.lock().await.get(name).map(Arc::clone);
+        if entry.is_none() && !dir.exists() {
+            return Err(format!("no profile named '{name}' on this client"));
+        }
+        let _calls = match &entry {
+            Some(entry) => Some(entry.profile.call_lock().await),
+            None => None,
+        };
+        // A lock lives beside the port file, so the directory it sits in has
+        // to exist before the lock can.
+        if let Err(why) = std::fs::create_dir_all(&dir) {
+            return Err(format!("the profile's directory cannot be made: {why}"));
+        }
+        let _launch = chromium::LaunchLock::acquire(&dir).await?;
+        chromium::hide(&dir).await;
+        self.named.lock().await.remove(name);
+        match tokio::fs::remove_dir_all(&dir).await {
+            Ok(()) => Ok(()),
+            Err(why) if why.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(why) => Err(format!("the profile's files could not be removed: {why}")),
+        }
+    }
+
+    /// The phone has no named profiles; the delete says so in the same
+    /// sentence its close does.
+    #[cfg(target_os = "android")]
+    pub async fn delete(&self, name: &str) -> Result<(), String> {
+        self.paths.clone()?;
+        Err(format!("no profile named '{name}' on this client"))
+    }
+
     /// Bring the browser up, without any driver.
     ///
     /// **The app's own start, so the browser is there before anything asks
@@ -478,6 +581,32 @@ impl BrowserHost {
                 // window that an X-close already took down.
                 windowed: chromium::windowed(&entry.dir).await,
             });
+        }
+        drop(named);
+        // **A closed profile is still a profile.** Its entry goes on close
+        // while its files stay - the logins a person means to delete - so a
+        // directory with no entry is listed too, ownerless and not running,
+        // or the one act that removes it has nothing to be reached from.
+        if let Ok(paths) = self.paths.clone()
+            && let Ok(entries) = std::fs::read_dir(&paths.profiles)
+        {
+            for entry in entries.flatten() {
+                let Ok(kind) = entry.file_type() else { continue };
+                if !kind.is_dir() {
+                    continue;
+                }
+                let Some(name) = entry.file_name().to_str().map(str::to_owned) else { continue };
+                if profiles::name_refusal(&name).is_some()
+                    || rows.iter().any(|row| row.name == name)
+                {
+                    continue;
+                }
+                // A window can be up over a closed profile - the strip's own
+                // show launches one without an entry - so the predicate is
+                // still asked, on the directory itself.
+                let windowed = chromium::windowed(&paths.profiles.join(&name)).await;
+                rows.push(ProfileRow { name, owner: String::new(), running: false, windowed });
+            }
         }
         rows.sort_by(|a, b| a.name.cmp(&b.name));
         rows
@@ -789,6 +918,17 @@ pub async fn browser_profile_close(
     host.close(&name).await
 }
 
+/// Delete a named profile from the client's own UI: the strip's row, acting
+/// for the person. **The one act that takes a profile's logins with it**, so
+/// the row that makes it confirms it first.
+#[tauri::command]
+pub async fn browser_profile_delete(
+    host: tauri::State<'_, Arc<BrowserHost>>,
+    name: String,
+) -> Result<(), String> {
+    host.delete(&name).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1024,5 +1164,195 @@ mod tests {
                 .expect("a v6 name is taken off");
         assert_eq!(named, Some("hunt".to_owned()));
         assert_eq!(rest, json!({ "url": "https://example.com" }));
+    }
+
+    /// **Delete removes the name AND the tree** - the one act that takes the
+    /// logins; close keeps them.
+    #[tokio::test]
+    async fn a_delete_takes_the_name_and_the_tree() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let host = BrowserHost::new(paths.clone());
+        let named = Named::open(seat(), "hunt", &paths);
+        std::fs::create_dir_all(&named.dir).expect("the profile dir");
+        std::fs::write(named.dir.join("Cookies"), b"the logins").expect("some data");
+        host.named.lock().await.insert("hunt".to_owned(), Arc::new(named));
+        host.delete("hunt").await.expect("the delete");
+        assert!(host.named.lock().await.get("hunt").is_none(), "the entry went");
+        assert!(!paths.profiles.join("hunt").exists(), "and the tree with it");
+    }
+
+    /// **Delete works by name for a closed profile**: the entry is gone while
+    /// the files remain, and those files are what a person means to remove.
+    #[tokio::test]
+    async fn a_delete_works_by_name_for_a_closed_profile() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let host = BrowserHost::new(paths.clone());
+        std::fs::create_dir_all(paths.profiles.join("hunt")).expect("the files");
+        std::fs::write(paths.profiles.join("hunt").join("Cookies"), b"the logins")
+            .expect("some data");
+        host.delete("hunt").await.expect("the delete");
+        assert!(!paths.profiles.join("hunt").exists(), "the closed profile's files went");
+    }
+
+    /// A name with neither an entry nor a directory is the one refusal, in
+    /// the shell's own sentence.
+    #[tokio::test]
+    async fn a_delete_of_nothing_at_all_is_refused() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let host = BrowserHost::new(paths);
+        let refused = host.delete("hunt").await.expect_err("nothing to delete");
+        assert_eq!(refused, "no profile named 'hunt' on this client");
+    }
+
+    /// **A delete waits out a call in flight** - the profile's own lock is
+    /// held across a call, and the delete takes it before touching the tree.
+    #[tokio::test]
+    async fn a_delete_waits_for_a_call_in_flight() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let host = Arc::new(BrowserHost::new(paths.clone()));
+        let named = Arc::new(Named::open(seat(), "hunt", &paths));
+        std::fs::create_dir_all(&named.dir).expect("the profile dir");
+        let calls = named.profile.call_lock().await;
+        host.named.lock().await.insert("hunt".to_owned(), Arc::clone(&named));
+
+        let deleting = tokio::spawn({
+            let host = Arc::clone(&host);
+            async move { host.delete("hunt").await }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        assert!(!deleting.is_finished(), "the delete waits while a call holds the profile's lock");
+        drop(calls);
+        deleting.await.expect("the task joins").expect("the delete");
+        assert!(!paths.profiles.join("hunt").exists(), "and then it runs");
+    }
+
+    /// **A delete waits for a launch in flight too**: it takes the same
+    /// machine-wide lock a launch takes, so nothing starts a browser onto a
+    /// half-removed tree.
+    #[tokio::test]
+    async fn a_delete_waits_for_a_launch_in_flight() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let host = Arc::new(BrowserHost::new(paths.clone()));
+        let profile_dir = paths.profiles.join("hunt");
+        std::fs::create_dir_all(&profile_dir).expect("the files");
+        let launch = chromium::LaunchLock::acquire(&profile_dir).await.expect("the launch lock");
+
+        let deleting = tokio::spawn({
+            let host = Arc::clone(&host);
+            async move { host.delete("hunt").await }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        assert!(!deleting.is_finished(), "the delete waits while a launch holds the lock");
+        drop(launch);
+        deleting.await.expect("the task joins").expect("the delete");
+        assert!(!profile_dir.exists(), "and then the tree goes");
+    }
+
+    /// **A session deletes only the profile it owns**, and the shared
+    /// browser is never a delete target: each refusal names what to do
+    /// instead.
+    #[tokio::test]
+    async fn a_session_deletes_only_the_profile_it_owns() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let host = BrowserHost::new(paths.clone());
+        let named = Named::open(seat(), "hunt", &paths);
+        std::fs::create_dir_all(&named.dir).expect("the profile dir");
+        host.named.lock().await.insert("hunt".to_owned(), Arc::new(named));
+
+        let other = Seat { org: "Other".to_owned(), ..seat() };
+        let refused = host
+            .call(&other, "browser_profile_delete", json!({ "name": "hunt" }))
+            .await
+            .expect_err("another session's profile");
+        assert!(refused.contains("belongs to Busytools/forge/lead"), "{refused}");
+        assert!(refused.contains("from the browser strip"), "{refused}");
+        assert!(paths.profiles.join("hunt").exists(), "and nothing was removed");
+
+        let no_name = host
+            .call(&seat(), "browser_profile_delete", json!({}))
+            .await
+            .expect_err("the shared browser");
+        assert!(no_name.contains("the shared browser is not a profile"), "{no_name}");
+
+        let closed = host
+            .call(&seat(), "browser_profile_delete", json!({ "name": "gone" }))
+            .await
+            .expect_err("a name with no open profile");
+        assert!(closed.contains("no profile named 'gone' is open to this session"), "{closed}");
+
+        // Its own, open: the delete runs and the answer is the tool's own
+        // sentence.
+        let parts = host
+            .call(&seat(), "browser_profile_delete", json!({ "name": "hunt" }))
+            .await
+            .expect("the owner deletes its own");
+        let text = parts
+            .iter()
+            .map(|part| match part {
+                driver::ReplyPart::Text { text } => text.clone(),
+                driver::ReplyPart::Image { .. } => String::new(),
+            })
+            .collect::<String>();
+        assert!(text.contains("deleted the 'hunt' profile"), "{text}");
+        assert!(!paths.profiles.join("hunt").exists(), "the tree went");
+    }
+
+    /// **A closed profile is still a row**: its directory is listed with no
+    /// owner and no driver, or the one act that removes its logins has
+    /// nothing to be reached from.
+    #[tokio::test]
+    async fn a_closed_profiles_files_are_listed() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let host = BrowserHost::new(paths.clone());
+        std::fs::create_dir_all(paths.profiles.join("hunt")).expect("the files");
+        // A file where a profile would be is not one.
+        std::fs::write(paths.profiles.join("stray.txt"), b"").expect("a stray file");
+        let rows = host.profiles().await;
+        let row = rows.iter().find(|row| row.name == "hunt").expect("the closed profile's row");
+        assert_eq!(row.owner, "", "nobody owns a closed profile");
+        assert!(!row.running, "and nothing is running behind it");
+        assert!(!rows.iter().any(|row| row.name == "stray.txt"), "a file is not a profile",);
     }
 }

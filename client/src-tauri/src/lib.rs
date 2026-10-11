@@ -55,6 +55,7 @@ pub fn run() {
         tauri::generate_handler![
             browser::browser_call,
             browser::browser_profile_close,
+            browser::browser_profile_delete,
             browser::browser_profiles,
             browser::browser_windowed,
             browser::browser_show,
@@ -79,12 +80,11 @@ pub fn run() {
     // engine, in-app libnode for the driver), so its command set is the
     // desktop's, served by `browser::android`'s engine bridge.
     #[cfg(target_os = "android")]
-    let builder = builder
-        .plugin(android::init())
-        .plugin(browser::android::init())
-        .invoke_handler(tauri::generate_handler![
+    let builder = builder.plugin(android::init()).plugin(browser::android::init()).invoke_handler(
+        tauri::generate_handler![
             browser::browser_call,
             browser::browser_profile_close,
+            browser::browser_profile_delete,
             browser::browser_profiles,
             browser::browser_windowed,
             browser::browser_show,
@@ -92,7 +92,8 @@ pub fn run() {
             browser::browser_used,
             check_update,
             install_update
-        ]);
+        ],
+    );
 
     let run = builder
         .setup(|app| {

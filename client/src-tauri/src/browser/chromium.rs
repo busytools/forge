@@ -375,7 +375,7 @@ fn fresh_session(profile: &Path) {
 /// A crash releases the flock with the process, so there is no stale-lock
 /// cleanup; a holder that wedges past every bound is given up on by name
 /// rather than waited for.
-struct LaunchLock {
+pub(super) struct LaunchLock {
     _file: std::fs::File,
 }
 
@@ -417,8 +417,9 @@ fn try_lock(profile: &Path) -> Locked {
 impl LaunchLock {
     /// The lock for `profile`, waiting out whoever holds it - a launch takes
     /// seconds and the holder releases the moment its port answers - up to
-    /// the launch deadline plus slack.
-    async fn acquire(profile: &Path) -> Result<Self, String> {
+    /// the launch deadline plus slack. A delete takes the same lock, so a
+    /// launch and a removal can never interleave.
+    pub(super) async fn acquire(profile: &Path) -> Result<Self, String> {
         let deadline = tokio::time::Instant::now() + LAUNCH_TIMEOUT + Duration::from_secs(2);
         loop {
             match try_lock(profile) {
