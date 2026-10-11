@@ -571,10 +571,10 @@ describe('whether the column follows the newest end', () => {
   it('re-arms when the reader comes back DOWN to the foot in a shrinking event', async () => {
     // **Ved's gesture verbatim** (2026-10-11): "I scroll up and come back
     // down... the arrow does not go until I press it". A down-scroll arms no
-    // up-capable token - only wheel-up, ArrowUp, PageUp and Home do - so the
-    // return is read from the event's own direction: it moved the reader
-    // toward the foot. Without this the fix covered only the clamp shape and
-    // his own gesture still stuck the arrow.
+    // up-capable token - wheel-up, ArrowUp, PageUp, Home and shift-space are
+    // what do - so the return is read from the event's own direction: it
+    // moved the reader toward the foot. Without this the fix covered only
+    // the clamp shape and his own gesture still stuck the arrow.
     const server = stub();
     await draw(server);
     readerAt(0);
