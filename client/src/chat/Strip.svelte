@@ -1,7 +1,8 @@
 <script lang="ts">
   import Icon from '../components/Icon.svelte';
+  import { runningClock } from './clock.svelte';
   import { money, tokens } from './numbers';
-  import { attributed, cached, elapsed } from './report';
+  import { attributed, cached } from './report';
   import type { TurnInfo } from './units';
 
   /**
@@ -22,34 +23,8 @@
   /** The record with an unattributed usage block dropped, which is the rule `report.ts` holds. */
   const held = $derived(attributed(info));
 
-  /**
-   * The tick a running row's clock moves on.
-   *
-   * The fold's span only grows when a frame lands, and a live turn can wait
-   * minutes on one call, so the row would otherwise freeze mid-turn - which is
-   * the very stretch a reader is watching the clock through.
-   */
-  let now = $state(Date.now());
-  /**
-   * The running fact as a value, so the timer does not restart per frame.
-   *
-   * **Reading `held.running` in the effect below restarts the timer on every
-   * frame**: `held` is a fresh object each time a frame lands, so the tracked
-   * dependency changes, the cleanup clears the interval before it can fire,
-   * and the clock freezes while frames stream - then jumps when they pause
-   * (Ved, 2026-10-09: "it stops and then it just jumps to a bigger value").
-   * A boolean changes only when the state flips.
-   */
-  const running = $derived(held.running);
-  $effect(() => {
-    if (!running) return;
-    const id = setInterval(() => {
-      now = Date.now();
-    }, 1000);
-    return () => clearInterval(id);
-  });
-
-  const clock = $derived(elapsed(held, now));
+  /** The clock the row leads with, which `clock.svelte.ts` owns for both rows. */
+  const clock = runningClock(() => held);
   const share = $derived(cached(held));
 </script>
 
@@ -63,7 +38,7 @@
 {:else}
   <Icon name="check" class="st" />
 {/if}
-<span>{clock}</span>
+<span>{clock()}</span>
 {#if held.running && held.thinking_tokens !== null}
   <span class="sep">{'\u{b7}'}</span>
   <span>thinking {tokens(held.thinking_tokens)}</span>
