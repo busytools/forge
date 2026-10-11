@@ -4057,11 +4057,12 @@ impl Workspace {
         }
     }
 
-    /// What a board notice calls the lane a move landed in.
+    /// What a board notice calls the lane a move landed in: the board's own
+    /// names, so `Pending` reads `backlog` as its lane does.
     fn lane_words(to: forge_primitives::tasks::TaskStatus) -> &'static str {
         use forge_primitives::tasks::TaskStatus;
         match to {
-            TaskStatus::Pending => "pending",
+            TaskStatus::Pending => "backlog",
             TaskStatus::InProgress => "in progress",
             TaskStatus::Waiting => "waiting",
             TaskStatus::Completed => "completed",
@@ -5001,17 +5002,18 @@ impl Workspace {
                         Ok(Some(task)) => {
                             // A send-back is news its owner wants, with the
                             // user's words in it; an approval ends the row
-                            // and has nothing to resume. The notice goes down
-                            // the same ladder the chase uses - a live owner
-                            // hears it, a sleeping one reads the row.
+                            // and has nothing to resume. The notice goes to a
+                            // live owner and nowhere else - the
+                            // owner-and-liveness check, without the chase's
+                            // fallback to the lead.
                             if !approve {
                                 let back = words.as_deref().unwrap_or("");
                                 self.tell_row_owner(
                                     &task,
                                     if back.is_empty() {
                                         format!(
-                                            "task board: \"{}\" came back from the user's look - \
-                                             the words are in its detail; resume it.",
+                                            "task board: \"{}\" came back from the user's look \
+                                             with no words - resume it.",
                                             task.subject,
                                         )
                                     } else {
@@ -5059,8 +5061,8 @@ impl Workspace {
                                 &task,
                                 if words.is_empty() {
                                     format!(
-                                        "task board: the user answered \"{}\" - the words are in \
-                                         its detail; resume it.",
+                                        "task board: the user answered \"{}\" with no words - \
+                                         resume it.",
                                         task.subject,
                                     )
                                 } else {
@@ -5097,7 +5099,10 @@ impl Workspace {
                 }
                 Command::TaskRank { project, id, to } => {
                     match self.rank_task(&project, &TaskId::from(id.as_str()), to) {
-                        Ok(Some(task)) => {
+                        // A drag that lands the row back where it started is
+                        // not an edit: the queue is unchanged, and a notice
+                        // would be a turn spent on nothing.
+                        Ok(Some((task, true))) => {
                             self.tell_row_owner(
                                 &task,
                                 format!(
@@ -5106,6 +5111,7 @@ impl Workspace {
                                 ),
                             );
                         }
+                        Ok(Some((_, false))) => {}
                         Ok(None) => {
                             tracing::debug!(
                                 target: "forge_workspace::tasks",
@@ -5132,13 +5138,16 @@ impl Workspace {
                 }
                 Command::TaskMove { project, id, to } => {
                     match self.user_move_task(&project, &TaskId::from(id.as_str()), to) {
+                        // The landed status, not the asked one: a drag into
+                        // `completed` on a verify=user row lands in waiting,
+                        // and the notice must name the lane the board shows.
                         Ok(Some(task)) => {
                             self.tell_row_owner(
                                 &task,
                                 format!(
                                     "task board: the user moved \"{}\" to {}.",
                                     task.subject,
-                                    Self::lane_words(to),
+                                    Self::lane_words(task.status),
                                 ),
                             );
                         }
@@ -5173,17 +5182,11 @@ impl Workspace {
                     if let Some(row) = self.config.projects.iter().find(|p| p.name == project) {
                         let owner_slot =
                             owner.map(|label| SessionSlot::new(&row.org, &project, label.clone()));
-                        // Who held it before the edit: an assignment can take
-                        // a row away, and the one who loses it is told.
-                        let prior = self
-                            .tasks_for_project(&project)
-                            .into_iter()
-                            .find(|task| task.id == TaskId::from(id.as_str()))
-                            .and_then(|task| task.owner);
                         match self.assign_task(&project, &TaskId::from(id.as_str()), owner_slot) {
-                            Ok(Some(task)) => {
+                            // Both ends of a hand-over hear it, and neither
+                            // does when the owner did not actually change.
+                            Ok(Some((task, prior))) if prior != task.owner => {
                                 if let Some(old) = prior
-                                    && Some(&old) != task.owner.as_ref()
                                     && self.seat_is_live(&old)
                                 {
                                     let _ = self.dispatch_forged_prompt(
@@ -5202,6 +5205,7 @@ impl Workspace {
                                     ),
                                 );
                             }
+                            Ok(Some(_)) => {}
                             Ok(None) => {
                                 tracing::debug!(
                                     target: "forge_workspace::tasks",
@@ -8816,20 +8820,37 @@ mod tests {
         }
     }
 
-    /// The text of the next `ChatAppended` frame the stub's stream carries.
-    fn told_text(
+    /// Every `ChatAppended` frame the stub's stream carries, each with the
+    /// seat it is addressed to.
+    fn told(
         rx: &mut mpsc::UnboundedReceiver<crate::protocol::SessionUpdate>,
-    ) -> Option<String> {
-        drain_updates(rx).into_iter().find_map(|update| match update {
-            crate::protocol::SessionUpdate::ChatAppended { msg, .. } => Some(format!("{msg:?}")),
-            _ => None,
-        })
+    ) -> Vec<(SessionSlot, String)> {
+        drain_updates(rx)
+            .into_iter()
+            .filter_map(|update| match update {
+                crate::protocol::SessionUpdate::ChatAppended { key, msg, .. } => {
+                    Some((key, format!("{msg:?}")))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The single frame a dispatch drew, or a failure naming what arrived.
+    fn told_one(
+        rx: &mut mpsc::UnboundedReceiver<crate::protocol::SessionUpdate>,
+    ) -> (SessionSlot, String) {
+        let mut frames = told(rx);
+        assert_eq!(frames.len(), 1, "exactly one frame: {frames:?}");
+        frames.pop().expect("one frame")
     }
 
     /// **A board edit the user makes tells the row's live owner**, one line -
     /// and the answer carries the user's own words, because the notice tells
     /// the owner to resume and it should not have to go looking for what was
-    /// said. Forged, so the line draws the moment it lands.
+    /// said. Forged, so the line draws the moment it lands. The owner is a
+    /// worker here and the project's lead is just as live, so the frame's
+    /// seat is what pins the targeting.
     #[tokio::test]
     async fn a_board_edit_tells_the_rows_live_owner() {
         use forge_primitives::tasks::{Task, TaskId, TaskStatus, Waiting, WaitingKind};
@@ -8839,18 +8860,21 @@ mod tests {
         ws.install_db_for_test(
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
-        let slot = SessionSlot::new("TestOrg", "proj", "lead");
-        // Registers the domain (a conn) so `seat_is_live` reads true, and the
-        // routed prompt the delivery also sends lands on its receiver.
-        let _routed = install_fake_session_task(&ws, &slot);
-        let sample = |id: &str| Task {
+        let owner = SessionSlot::new("TestOrg", "proj", "w1");
+        let lead = SessionSlot::new("TestOrg", "proj", "lead");
+        // Both registered (a conn each) so `seat_is_live` reads true: the
+        // owner holds the rows, and the lead is the seat a fallback would
+        // reach for.
+        let _owner_routed = install_fake_session_task(&ws, &owner);
+        let _lead_routed = install_fake_session_task(&ws, &lead);
+        let sample = |id: &str, status: TaskStatus| Task {
             id: TaskId::from(id),
             project_name: "proj".to_owned(),
             subject: format!("subject {id}"),
             active_form: None,
             detail: None,
-            status: TaskStatus::Pending,
-            owner: Some(slot.clone()),
+            status,
+            owner: Some(owner.clone()),
             parent: None,
             waiting_on: None,
             estimate: None,
@@ -8862,16 +8886,17 @@ mod tests {
             created_at: std::time::SystemTime::UNIX_EPOCH,
             updated_at: std::time::SystemTime::UNIX_EPOCH,
         };
-
-        // The wait, answered: the words ride the notice.
-        let mut waiting = sample("t-1");
-        waiting.status = TaskStatus::Waiting;
-        waiting.waiting_on = Some(Waiting {
+        let question = || Waiting {
             kind: Some(WaitingKind::Decision),
             detail: None,
             on: None,
             verification: false,
-        });
+        };
+
+        // The wait, answered: the words ride the notice, and it goes to the
+        // row's owner rather than to the live lead.
+        let mut waiting = sample("t-1", TaskStatus::Waiting);
+        waiting.waiting_on = Some(question());
         ws.push_task(waiting);
         ws.dispatch(Command::TaskAnswer {
             project: "proj".to_owned(),
@@ -8879,29 +8904,56 @@ mod tests {
             words: "get going".to_owned(),
         })
         .expect("app-level commands are accepted");
-        let told = told_text(&mut rx).expect("the answer reached the owner");
-        assert!(told.contains("get going"), "the words ride the notice: {told}");
-        assert!(told.contains("answered"), "and it says what happened: {told}");
+        let (key, text) = told_one(&mut rx);
+        assert_eq!(key, owner, "the owner hears it, not the lead");
+        assert!(text.contains("get going"), "the words ride the notice: {text}");
+        assert!(text.contains("answered"), "and it says what happened: {text}");
 
-        // A move: a line, and it names the lane.
-        let mut running = sample("t-2");
-        running.status = TaskStatus::InProgress;
-        ws.push_task(running);
-        ws.dispatch(Command::TaskMove {
+        // An answer with no words says so rather than pointing at a detail
+        // the empty append never filled.
+        let mut quiet = sample("t-2", TaskStatus::Waiting);
+        quiet.waiting_on = Some(question());
+        ws.push_task(quiet);
+        ws.dispatch(Command::TaskAnswer {
             project: "proj".to_owned(),
             id: "t-2".to_owned(),
-            to: TaskStatus::Waiting,
+            words: String::new(),
         })
         .expect("accepted");
-        let moved = told_text(&mut rx).expect("the move reached the owner");
-        assert!(
-            moved.contains("moved") && moved.contains("waiting"),
-            "the notice names the edit and the lane: {moved}",
-        );
+        let (_, text) = told_one(&mut rx);
+        assert!(text.contains("no words"), "an empty answer is said plainly: {text}");
+
+        // A send-back carries the words too.
+        let mut sent = sample("t-3", TaskStatus::Waiting);
+        sent.waiting_on = Some(Waiting { verification: true, ..question() });
+        ws.push_task(sent);
+        ws.dispatch(Command::TaskVerdict {
+            project: "proj".to_owned(),
+            id: "t-3".to_owned(),
+            approve: false,
+            words: Some("narrow it".to_owned()),
+        })
+        .expect("accepted");
+        let (_, text) = told_one(&mut rx);
+        assert!(text.contains("narrow it"), "a send-back carries the words: {text}");
+        assert!(text.contains("came back"), "and names what happened: {text}");
+
+        // A re-order that lands the row where it started is not an edit: the
+        // queue is unchanged and nobody is told.
+        let mut queued = sample("t-4", TaskStatus::Pending);
+        queued.rank = Some(0);
+        ws.push_task(queued);
+        ws.dispatch(Command::TaskRank {
+            project: "proj".to_owned(),
+            id: "t-4".to_owned(),
+            to: crate::protocol::RankMove::Up,
+        })
+        .expect("accepted");
+        assert!(told(&mut rx).is_empty(), "no change to the queue, no notice");
     }
 
-    /// A row with no owner tells nobody, and neither does an edit that was
-    /// refused: the board is where those show, and the notice is a real turn.
+    /// A row with no owner tells nobody even though the project's lead is
+    /// live: the notice goes to the row's owner, and there is no fallback.
     #[tokio::test]
     async fn a_board_edit_on_an_ownerless_row_tells_nobody() {
         use forge_primitives::tasks::{Task, TaskId, TaskStatus};
@@ -8911,6 +8963,10 @@ mod tests {
         ws.install_db_for_test(
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
+        // Live, so silence can only be the ownerless hold, never a missing
+        // recipient.
+        let lead = SessionSlot::new("TestOrg", "proj", "lead");
+        let _lead_routed = install_fake_session_task(&ws, &lead);
         ws.push_task(Task {
             id: TaskId::from("t-1"),
             project_name: "proj".to_owned(),
@@ -8937,9 +8993,198 @@ mod tests {
         })
         .expect("accepted");
         assert!(
-            told_text(&mut rx).is_none(),
+            told(&mut rx).is_empty(),
             "an ownerless row has nobody to tell, and the board is where the move shows",
         );
+    }
+
+    /// A sleeping owner is not a recipient either, with the lead live: the
+    /// row waits for its owner to read the board.
+    #[tokio::test]
+    async fn a_board_edit_on_a_sleeping_owners_row_tells_nobody() {
+        use forge_primitives::tasks::{Task, TaskId, TaskStatus};
+        let dir = tempdir().expect("tempdir");
+        let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-board-sleeping-owner");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let lead = SessionSlot::new("TestOrg", "proj", "lead");
+        let _lead_routed = install_fake_session_task(&ws, &lead);
+        ws.push_task(Task {
+            id: TaskId::from("t-1"),
+            project_name: "proj".to_owned(),
+            subject: "its owner is asleep".to_owned(),
+            active_form: None,
+            detail: None,
+            status: TaskStatus::InProgress,
+            owner: Some(SessionSlot::new("TestOrg", "proj", "sleeper")),
+            parent: None,
+            waiting_on: None,
+            estimate: None,
+            rank: None,
+            verify: None,
+            links: Vec::new(),
+            attempt: 0,
+            archived_at: None,
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+            updated_at: std::time::SystemTime::UNIX_EPOCH,
+        });
+        ws.dispatch(Command::TaskMove {
+            project: "proj".to_owned(),
+            id: "t-1".to_owned(),
+            to: TaskStatus::Waiting,
+        })
+        .expect("accepted");
+        assert!(told(&mut rx).is_empty(), "a sleeping owner is told when it wakes, from the board");
+    }
+
+    /// **A drag is told by the lane the row LANDED in, not the one it asked
+    /// for**: the verify gate turns a drag into `completed` on a verify=user
+    /// row into a wait, and `pending` reads as the board's own `backlog`.
+    #[tokio::test]
+    async fn a_board_move_is_told_by_its_landed_lane() {
+        use forge_primitives::tasks::{Task, TaskId, TaskStatus, Verify};
+        let dir = tempdir().expect("tempdir");
+        let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-board-landed-lane");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let owner = SessionSlot::new("TestOrg", "proj", "w1");
+        let _owner_routed = install_fake_session_task(&ws, &owner);
+        let sample = |id: &str, verify: Option<Verify>| Task {
+            id: TaskId::from(id),
+            project_name: "proj".to_owned(),
+            subject: format!("subject {id}"),
+            active_form: None,
+            detail: None,
+            status: TaskStatus::InProgress,
+            owner: Some(owner.clone()),
+            parent: None,
+            waiting_on: None,
+            estimate: None,
+            rank: None,
+            verify,
+            links: Vec::new(),
+            attempt: 0,
+            archived_at: None,
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+            updated_at: std::time::SystemTime::UNIX_EPOCH,
+        };
+
+        // Backlog is the board's word for `Pending`, and the notice wears it.
+        ws.push_task(sample("t-1", None));
+        ws.dispatch(Command::TaskMove {
+            project: "proj".to_owned(),
+            id: "t-1".to_owned(),
+            to: TaskStatus::Pending,
+        })
+        .expect("accepted");
+        let (key, text) = told_one(&mut rx);
+        assert_eq!(key, owner);
+        assert!(text.contains("backlog"), "the lane's own word: {text}");
+        assert!(!text.contains("pending"), "not the state's spelling: {text}");
+
+        // The verify gate holds the user's own drag too: completed lands in
+        // waiting, and the notice follows the row, not the drop.
+        ws.push_task(sample("t-2", Some(Verify::User)));
+        ws.dispatch(Command::TaskMove {
+            project: "proj".to_owned(),
+            id: "t-2".to_owned(),
+            to: TaskStatus::Completed,
+        })
+        .expect("accepted");
+        let (_, text) = told_one(&mut rx);
+        assert!(text.contains("moved") && text.contains("waiting"), "the landed lane: {text}");
+        assert!(!text.contains("completed"), "not the asked one: {text}");
+    }
+
+    /// **An assignment tells both ends of the hand-over** - the seat that
+    /// lost the row and the one that got it - and a re-assignment to the
+    /// same owner tells nobody, because nothing changed.
+    #[tokio::test]
+    async fn a_board_assignment_tells_both_ends() {
+        use forge_primitives::tasks::{Task, TaskId, TaskStatus};
+        let dir = tempdir().expect("tempdir");
+        // The assign arm resolves the project through `config.projects`,
+        // which the test overlay does not populate - so this stub carries a
+        // real forge.toml.
+        let path = dir.path().join("proj");
+        let forge_dir = crate::config::ensure_forge_data_dir(dir.path()).expect("forge dir");
+        fs::write(
+            forge_dir.join("forge.toml"),
+            format!(
+                r#"
+[[accounts]]
+display_name = "Stargate"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+
+[[orgs]]
+name = "TestOrg"
+accounts = ["Stargate"]
+[[orgs.projects]]
+name = "proj"
+path = "{}"
+"#,
+                path.display()
+            ),
+        )
+        .expect("write forge.toml");
+        let config = crate::config::load_from_dir(dir.path()).expect("load config");
+        let (ws, mut rx) = Workspace::testing_stub_with_config(dir.path().to_owned(), config)
+            .expect("the stub config is well-formed");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let lead = SessionSlot::new("TestOrg", "proj", "lead");
+        let worker = SessionSlot::new("TestOrg", "proj", "w1");
+        let _lead_routed = install_fake_session_task(&ws, &lead);
+        let _worker_routed = install_fake_session_task(&ws, &worker);
+        ws.push_task(Task {
+            id: TaskId::from("t-1"),
+            project_name: "proj".to_owned(),
+            subject: "subject t-1".to_owned(),
+            active_form: None,
+            detail: None,
+            status: TaskStatus::InProgress,
+            owner: Some(lead.clone()),
+            parent: None,
+            waiting_on: None,
+            estimate: None,
+            rank: None,
+            verify: None,
+            links: Vec::new(),
+            attempt: 0,
+            archived_at: None,
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+            updated_at: std::time::SystemTime::UNIX_EPOCH,
+        });
+        ws.dispatch(Command::TaskAssign {
+            project: "proj".to_owned(),
+            id: "t-1".to_owned(),
+            owner: Some("w1".to_owned()),
+        })
+        .expect("accepted");
+        let mut frames = told(&mut rx).into_iter();
+        let (first_key, first_text) = frames.next().expect("the seat that lost it is told");
+        assert_eq!(first_key, lead, "the one who lost the row hears first");
+        assert!(first_text.contains("took"), "and hears what happened: {first_text}");
+        let (second_key, second_text) = frames.next().expect("the seat that got it is told");
+        assert_eq!(second_key, worker, "then the one who got it");
+        assert!(second_text.contains("gave"), "hearing what happened: {second_text}");
+        assert!(frames.next().is_none(), "and exactly the two ends");
+
+        // The same owner again: nothing changed, nobody is told.
+        ws.dispatch(Command::TaskAssign {
+            project: "proj".to_owned(),
+            id: "t-1".to_owned(),
+            owner: Some("w1".to_owned()),
+        })
+        .expect("accepted");
+        assert!(told(&mut rx).is_empty(), "a re-assignment to the same owner is not an edit");
     }
 
     fn usage_workspace() -> (tempfile::TempDir, Arc<Workspace>) {

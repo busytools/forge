@@ -357,13 +357,14 @@ impl Workspace {
     /// one place, and `Before` where a drag landed - directly above the row
     /// it was dropped on, or the end of the queue when it names none. The
     /// whole queue is renumbered in one write, so the order a reader sees is
-    /// the order the next read returns.
+    /// the order the next read returns. The bool says whether the row's
+    /// place changed: a pick-up-and-put-back lands the same position.
     pub(crate) fn rank_task(
         &self,
         project_name: &str,
         id: &TaskId,
         to: RankMove,
-    ) -> Result<Option<Task>, MoveError> {
+    ) -> Result<Option<(Task, bool)>, MoveError> {
         let at = SystemTime::now();
         let outcome = self.with_tasks_mut(|tasks| {
             let index = tasks.iter().position(|t| t.id == *id && t.project_name == project_name)?;
@@ -391,12 +392,13 @@ impl Workspace {
                 // The queue is one shorter for the row that just left it.
                 RankMove::Down => (position + 1).min(queue.len()),
             };
+            let changed = target != position;
             queue.insert(target, moved);
             for (rank, i) in queue.iter().enumerate() {
                 tasks[*i].rank = Some(i64::try_from(rank).unwrap_or(i64::MAX));
             }
             tasks[index].updated_at = at;
-            Some(tasks[index].clone())
+            Some((tasks[index].clone(), changed))
         });
         if outcome.is_some() {
             self.announce_tasks_changed(project_name);
@@ -404,17 +406,22 @@ impl Workspace {
         Ok(outcome)
     }
 
-    /// Give a row an owner, or take it back.
+    /// Give a row an owner, or take it back. The returned record carries
+    /// the owner it had before, read under the same lock as the write so a
+    /// concurrent claim cannot slip between the two.
     pub(crate) fn assign_task(
         &self,
         project_name: &str,
         id: &TaskId,
         owner: Option<SessionSlot>,
-    ) -> Result<Option<Task>, MoveError> {
-        self.move_task(project_name, id, By::User, false, |task| {
+    ) -> Result<Option<(Task, Option<SessionSlot>)>, MoveError> {
+        let mut prior = None;
+        let moved = self.move_task(project_name, id, By::User, false, |task| {
+            prior.clone_from(&task.owner);
             task.owner = owner;
             Ok(())
-        })
+        })?;
+        Ok(moved.map(|task| (task, prior)))
     }
 
     /// Claim the top of a queue: the row `by_id`, or the first ready row
