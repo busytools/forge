@@ -5,8 +5,6 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
-import { SEED_MARKER } from './seed';
-
 const CLIENT = fileURLToPath(new URL('../..', import.meta.url));
 
 /** Every file under `dir`, at any depth. */
@@ -52,7 +50,6 @@ describe('the shipped bundle', () => {
 
     expect(bundle.length, 'the build produced nothing to read').toBeGreaterThan(0);
     expect(bundle, 'the fixture reached the production bundle').not.toContain(MARKER);
-    expect(bundle, 'the dev seed reached the production bundle').not.toContain(SEED_MARKER);
 
     // The tab's mark and the link to it: a build that loses either ships a
     // dangling link with nothing else failing.

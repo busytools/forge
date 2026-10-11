@@ -1,26 +1,44 @@
 <script lang="ts">
+  import { SvelteSet } from 'svelte/reactivity';
   import { hrefForSlot } from '../routes';
   import { watchSession, type SessionRead } from '../session/live';
   import type { SessionRecord } from '../session/wire';
   import type { Connection } from '../socket';
   import type { SessionSlot } from '../wire/types';
+  import Canvas from './Canvas.svelte';
   import {
     ageOf,
     authorName,
     loopState,
+    outdatedThreads,
+    parkedReason,
     roundTally,
     roundsNewestFirst,
     statusName,
     threadsInRound,
     turnRound,
   } from './view';
+  import {
+    newThread,
+    statusCommand,
+    submitCommand,
+    upsertCommand,
+    withReply,
+    type ComposedComment,
+  } from './write';
 
   /**
-   * The review page: one seat's rounds and their threads.
+   * The review page: one seat's reviews, as the conversation they ran as and
+   * as the diff they are anchored to.
    *
    * It subscribes the seat itself, as the models page subscribes its own
    * subject, and it answers nothing - the dock that answers a prompt lives in
    * a composer this page does not have.
+   *
+   * **The page writes.** A comment is captured where it is written (the
+   * anchor's hash and context, off the lines this page draws), filed when the
+   * round is sealed, and a reply or a resolve goes out as it is made - all
+   * through the same command surface the terminal's overlay writes with.
    *
    * **Its states are drawn here rather than left to a neighbour.** The read
    * arrives as one of: nothing yet (loading), a seat the server refused (the
@@ -48,42 +66,152 @@
     reviews?.reviews.outcome === 'read' ? roundsNewestFirst(reviews.reviews.value) : [],
   );
   const loop = $derived(loopState(threads));
-  const outdated = $derived(threads.filter((thread) => thread.status === 'outdated'));
+  /** The parked section: code that cannot be drawn and is not resolved, the
+   *  fresh landing over the store's own status. */
+  const outdated = $derived(outdatedThreads(threads));
   /** Whether both reads answered, which is what an empty copy needs to be
    *  true: a half that failed draws its own line and no "nothing filed". */
   const bothRead = $derived(
     reviews !== null && reviews.threads.outcome === 'read' && reviews.reviews.outcome === 'read',
   );
 
+  /** Which half of the page is on screen. */
+  let tab = $state<'conversation' | 'files'>('files');
+  /** The diff scope: 0 is all changes, i+1 is commit i. */
+  let scopeIdx = $state(0);
+  let lastCommit = $state(1);
+  let pickerOpen = $state(false);
+  let pickerHi = $state(0);
+  let mode = $state<'unified' | 'split'>('split');
+
+  const branch = $derived(record?.work.branch ?? '');
+  const commits = $derived(record?.git.ahead?.commits ?? []);
+  const scopeCommit = $derived(scopeIdx === 0 ? null : (commits[scopeIdx - 1]?.sha ?? null));
+  const diffLayer = $derived(record?.diff.branchAhead ?? { state: 'clean' as const });
+
+  /** The threads this sitting has drafted or replied on, unfiled: what a
+   *  `finish` seals into a round. */
+  const drafts = new SvelteSet<string>();
+  let busy = $state(false);
+  let summary = $state('');
+  /** The conversation half's reply box, one thread at a time. */
+  let answering = $state<string | null>(null);
+  let answerText = $state('');
+
+  async function write(command: unknown): Promise<void> {
+    const open = connection;
+    if (open === null || branch === '') return;
+    busy = true;
+    try {
+      await open.dispatch(command as never, slot);
+    } finally {
+      busy = false;
+      // The reviews ride the record, so the write's own outcome arrives by
+      // re-reading it - nothing pushes a review change.
+      open.refresh({ session: slot });
+    }
+  }
+
+  function commented(at: ComposedComment): void {
+    const thread = newThread({
+      ...at,
+      baseRef: record?.git.defaultBranch ?? '',
+      commit: scopeCommit,
+    });
+    drafts.add(thread.id);
+    void write(upsertCommand(slot, branch, thread));
+  }
+
+  function replied(thread: { id: string }, text: string): void {
+    const full = threads.find((held) => held.id === thread.id);
+    if (full === undefined) return;
+    drafts.add(full.id);
+    void write(upsertCommand(slot, branch, withReply(full, text)));
+  }
+
+  function resolved(thread: { id: string }): void {
+    void write(statusCommand(slot, branch, thread.id, 'Resolved'));
+  }
+
+  function reopened(thread: { id: string }): void {
+    void write(statusCommand(slot, branch, thread.id, 'Open'));
+  }
+
+  function finish(): void {
+    if (drafts.size === 0) return;
+    void write(
+      submitCommand(slot, branch, [...drafts], summary.trim() === '' ? null : summary.trim()),
+    );
+    drafts.clear();
+    summary = '';
+  }
+
+  /** The scope picker's rows, all changes first. */
+  const choices = $derived([
+    { idx: 0, label: 'All changes', sub: `${commits.length} commits` },
+    ...commits.map((commit, i) => ({
+      idx: i + 1,
+      label: commit.subject,
+      sub: commit.sha.slice(0, 8),
+    })),
+  ]);
+
+  function choose(idx: number): void {
+    scopeIdx = idx;
+    if (idx > 0) lastCommit = idx;
+    pickerOpen = false;
+  }
+
+  function stepScope(delta: number): void {
+    const next = scopeIdx + delta;
+    if (next < 0 || next >= choices.length) return;
+    choose(next);
+  }
+
+  function toggleAll(): void {
+    choose(scopeIdx === 0 ? lastCommit : 0);
+  }
+
+  /**
+   * The scope keys, live only while the diff half is on screen: `[` and `]`
+   * step, `a` flips between all changes and the commit you were on, `j` opens
+   * the picker. A keypress in a text field is the field's.
+   */
+  function onKey(event: KeyboardEvent): void {
+    if (tab !== 'files') return;
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+    const typing =
+      event.target instanceof HTMLElement && event.target.closest('input, textarea') !== null;
+    if (typing) return;
+    if (pickerOpen) {
+      if (event.key === 'ArrowDown') pickerHi = Math.min(choices.length - 1, pickerHi + 1);
+      else if (event.key === 'ArrowUp') pickerHi = Math.max(0, pickerHi - 1);
+      else if (event.key === 'Enter') choose(choices[pickerHi]?.idx ?? 0);
+      else if (event.key === 'Escape' || event.key === 'j') pickerOpen = false;
+      else return;
+      event.preventDefault();
+      return;
+    }
+    if (event.key === '[' || event.key === 'ArrowLeft') stepScope(-1);
+    else if (event.key === ']' || event.key === 'ArrowRight') stepScope(1);
+    else if (event.key === 'a') toggleAll();
+    else if (event.key === 'j') {
+      pickerHi = scopeIdx;
+      pickerOpen = true;
+    } else return;
+    event.preventDefault();
+  }
+
+  $effect(() => {
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
+
   /** The clock the ages read against; ticking keeps a sitting page honest. */
   let now = $state(Date.now());
   $effect(() => {
     const tick = setInterval(() => (now = Date.now()), 30_000);
     return () => clearInterval(tick);
-  });
-
-  /**
-   * A development door: `?seed=1` files a round through the socket, so a
-   * scratch stack has something real to draw before the page can compose its
-   * own. Dynamically imported behind the guard the dev fixture uses, so
-   * nothing of it reaches the shipped bundle, and the flag keeps the re-read
-   * that follows from seeding a second round.
-   */
-  let seedNote = $state<string | null>(null);
-  let seeded = false;
-  $effect(() => {
-    if (!import.meta.env.DEV || seeded) return;
-    if (new URLSearchParams(location.search).get('seed') !== '1') return;
-    const open = connection;
-    const branch = record?.work.branch ?? null;
-    if (open === null || branch === null) return;
-    seeded = true;
-    void import('../dev/seed')
-      .then((module) => module.seedReview(open, slot, branch))
-      .then(
-        (note) => (seedNote = note),
-        (why: unknown) => (seedNote = `seed failed: ${String(why)}`),
-      );
   });
 
   function tallyChips(tally: ReturnType<typeof roundTally>): [string, number][] {
@@ -121,10 +249,6 @@
     {/if}
   </header>
 
-  {#if seedNote !== null}
-    <p class="half">{seedNote}</p>
-  {/if}
-
   {#if read.refused !== null}
     <p class="pending">This forge would not answer for the seat: {read.refused}</p>
   {:else if reviews === null}
@@ -147,78 +271,266 @@
       </p>
     {/if}
 
-    {#if outdated.length > 0}
-      <section class="group">
-        <h2>Outdated <span class="n">{outdated.length}</span></h2>
-        {#each outdated as thread (thread.id)}
-          <article class="thread parked">
-            <div class="heads">
-              <span class="rv-state outdated">outdated</span>
-              <span class="where">{thread.anchor.path} &#183; line {thread.anchor.line}</span>
-            </div>
-            <div class="captured">
-              <div class="caphead">captured when the comment was written</div>
-              <pre>{thread.anchor.context.join('\n')}</pre>
-            </div>
-            {#each thread.comments as turn, i (i)}
-              <div class="rv-turn" class:you={turn.author.kind === 'user'}>
-                <div class="who">{authorName(turn.author)}</div>
-                <p class="words">{turn.text}</p>
-              </div>
-            {/each}
-          </article>
-        {/each}
-      </section>
-    {/if}
-
-    <section class="group">
-      <h2>Rounds <span class="n">newest first</span></h2>
-      {#if bothRead && rounds.length === 0 && threads.length === 0}
-        <p class="rv-empty">Nothing has been reviewed on this branch yet.</p>
-      {:else if bothRead && rounds.length === 0}
-        <p class="rv-empty">
-          No round has been filed. {threads.length}
-          {threads.length === 1 ? 'thread is' : 'threads are'} drafted on this branch.
-        </p>
-      {/if}
-      {#each rounds as round (round.id)}
-        {@const tally = roundTally(threads, round)}
-        <article class="round">
-          <div class="heads">
-            <span class="rn">R{round.number}</span>
-            <span class="age">{ageOf(round.created_at, now)}</span>
-            <span class="tally">
-              {#each tallyChips(tally) as [state, count] (state)}
-                <span class="chip {state}">{count} {state}</span>
-              {/each}
-              {#if tally.named > 0}
-                <span class="chip">{tally.named} unnamed</span>
-              {/if}
+    <nav class="rv-tabs" aria-label="review sections">
+      <button
+        type="button"
+        class:on={tab === 'conversation'}
+        onclick={() => (tab = 'conversation')}
+      >
+        Conversation
+      </button>
+      <button type="button" class:on={tab === 'files'} onclick={() => (tab = 'files')}>
+        Files changed <span class="rv-tn">{commits.length}</span>
+      </button>
+      {#if tab === 'files'}
+        <span class="rv-scope">
+          <button
+            type="button"
+            class="rv-scope-btn"
+            aria-haspopup="listbox"
+            aria-expanded={pickerOpen}
+            onclick={() => {
+              pickerHi = scopeIdx;
+              pickerOpen = !pickerOpen;
+            }}
+          >
+            <span class="rv-scope-lb">Scope</span>
+            <span class="rv-scope-now">
+              {scopeCommit === null ? 'All changes' : (scopeCommit.slice(0, 8) ?? '')}
             </span>
-          </div>
-          {#if round.summary !== null}<p class="summary">{round.summary}</p>{/if}
-          {#each threadsInRound(threads, round.id) as thread (thread.id)}
-            {@const name = statusName(thread.status)}
-            <div class="thread">
-              <div class="heads">
-                <span class="rv-state {name}">{name}</span>
-                <span class="where">{thread.anchor.path} &#183; line {thread.anchor.line}</span>
-              </div>
-              {#each thread.comments as turn, i (i)}
-                {@const sealedInto = turnRound(rounds, turn)}
-                <div class="rv-turn" class:you={turn.author.kind === 'user'}>
-                  <div class="who">
-                    {authorName(turn.author)}
-                    {#if sealedInto !== null}<span class="tag">R{sealedInto}</span>{/if}
+            <span class="rv-scope-sub">
+              {scopeCommit === null
+                ? `${commits.length} commits`
+                : (commits[scopeIdx - 1]?.subject ?? '')}
+            </span>
+          </button>
+          <span class="rv-step">
+            <button
+              type="button"
+              class="rv-step-btn"
+              aria-label="previous scope"
+              disabled={scopeIdx === 0}
+              onclick={() => stepScope(-1)}>&#8249;</button
+            >
+            <button
+              type="button"
+              class="rv-step-btn"
+              aria-label="next scope"
+              disabled={scopeIdx >= choices.length - 1}
+              onclick={() => stepScope(1)}>&#8250;</button
+            >
+          </span>
+          <span class="rv-keys">[ ] step &#183; a all &#183; j pick</span>
+          {#if pickerOpen}
+            <div class="rv-menu" role="listbox" aria-label="diff scope">
+              {#each choices as choice (choice.idx)}
+                <button
+                  type="button"
+                  class="rv-menu-it"
+                  class:hi={pickerHi === choice.idx}
+                  class:on={choice.idx === scopeIdx}
+                  role="option"
+                  aria-selected={choice.idx === scopeIdx}
+                  onclick={() => choose(choice.idx)}
+                >
+                  <span class="rv-menu-label">{choice.label}</span>
+                  <span class="rv-menu-sub">{choice.sub}</span>
+                </button>
+              {/each}
+            </div>
+          {/if}
+        </span>
+        <span class="rv-mode rv-viewmode">
+          <button type="button" class:on={mode === 'unified'} onclick={() => (mode = 'unified')}>
+            unified
+          </button>
+          <button type="button" class:on={mode === 'split'} onclick={() => (mode = 'split')}>
+            split
+          </button>
+        </span>
+      {/if}
+    </nav>
+
+    {#if tab === 'conversation'}
+      <div class="rv-conv">
+        {#if outdated.length > 0}
+          <section class="group">
+            <h2>Outdated <span class="n">{outdated.length}</span></h2>
+            {#each outdated as thread (thread.id)}
+              <article class="thread parked">
+                <div class="heads">
+                  <span class="rv-state outdated">outdated</span>
+                  <span class="where">{thread.anchor.path} &#183; line {thread.anchor.line}</span>
+                </div>
+                {#if parkedReason(thread) !== ''}
+                  <p class="rv-why">{parkedReason(thread)}</p>
+                {/if}
+                <div class="captured">
+                  <div class="caphead">captured when the comment was written</div>
+                  <pre>{thread.anchor.context.join('\n')}</pre>
+                </div>
+                {#each thread.comments as turn, i (i)}
+                  <div class="rv-turn" class:you={turn.author.kind === 'user'}>
+                    <div class="who">{authorName(turn.author)}</div>
+                    <p class="words">{turn.text}</p>
                   </div>
-                  <p class="words">{turn.text}</p>
+                {/each}
+              </article>
+            {/each}
+          </section>
+        {/if}
+
+        <section class="group">
+          <h2>Rounds <span class="n">newest first</span></h2>
+          {#if bothRead && rounds.length === 0 && threads.length === 0}
+            <p class="rv-empty">Nothing has been reviewed on this branch yet.</p>
+          {:else if bothRead && rounds.length === 0}
+            <p class="rv-empty">
+              No round has been filed. {threads.length}
+              {threads.length === 1 ? 'thread is' : 'threads are'} drafted on this branch.
+            </p>
+          {/if}
+          {#each rounds as round (round.id)}
+            {@const tally = roundTally(threads, round)}
+            <article class="round">
+              <div class="heads">
+                <span class="rn">R{round.number}</span>
+                <span class="age">{ageOf(round.created_at, now)}</span>
+                <span class="tally">
+                  {#each tallyChips(tally) as [state, count] (state)}
+                    <span class="chip {state}">{count} {state}</span>
+                  {/each}
+                  {#if tally.named > 0}
+                    <span class="chip">{tally.named} unnamed</span>
+                  {/if}
+                </span>
+              </div>
+              {#if round.summary !== null}<p class="summary">{round.summary}</p>{/if}
+              {#each threadsInRound(threads, round.id) as thread (thread.id)}
+                {@const name = statusName(thread.status)}
+                <div class="thread">
+                  <div class="heads">
+                    <span class="rv-state {name}">{name}</span>
+                    <span class="where">{thread.anchor.path} &#183; line {thread.anchor.line}</span>
+                  </div>
+                  {#each thread.comments as turn, i (i)}
+                    {@const sealedInto = turnRound(rounds, turn)}
+                    <div class="rv-turn" class:you={turn.author.kind === 'user'}>
+                      <div class="who">
+                        {authorName(turn.author)}
+                        {#if sealedInto !== null}<span class="tag">R{sealedInto}</span>{/if}
+                      </div>
+                      <p class="words">{turn.text}</p>
+                    </div>
+                  {/each}
+                  <div class="acts">
+                    <button
+                      type="button"
+                      class="rv-a"
+                      disabled={busy}
+                      onclick={() => {
+                        answering = answering === thread.id ? null : thread.id;
+                        answerText = '';
+                      }}>respond</button
+                    >
+                    {#if name === 'resolved'}
+                      <button
+                        type="button"
+                        class="rv-a"
+                        disabled={busy}
+                        onclick={() => reopened(thread)}>reopen</button
+                      >
+                    {:else}
+                      <button
+                        type="button"
+                        class="rv-a"
+                        disabled={busy}
+                        onclick={() => resolved(thread)}>resolve</button
+                      >
+                    {/if}
+                    {#if drafts.has(thread.id)}<span class="rv-cc">drafted</span>{/if}
+                  </div>
+                  {#if answering === thread.id}
+                    <div class="rv-reply">
+                      <textarea
+                        class="rv-txarea"
+                        rows="2"
+                        data-editor="nowhere"
+                        placeholder="Respond to this thread..."
+                        value={answerText}
+                        oninput={(event) => (answerText = event.currentTarget.value)}></textarea>
+                      <div class="acts">
+                        <button
+                          type="button"
+                          class="rv-a on"
+                          disabled={busy || answerText.trim() === ''}
+                          onclick={() => {
+                            replied(thread, answerText.trim());
+                            answering = null;
+                            answerText = '';
+                          }}>send</button
+                        >
+                        <button
+                          type="button"
+                          class="rv-a"
+                          onclick={() => {
+                            answering = null;
+                            answerText = '';
+                          }}>cancel</button
+                        >
+                      </div>
+                    </div>
+                  {/if}
                 </div>
               {/each}
-            </div>
+            </article>
           {/each}
-        </article>
-      {/each}
-    </section>
+        </section>
+
+        <section class="group">
+          <h2>Finish</h2>
+          <p class="rv-quiet">
+            Comments written on the diff file into the next round when you finish the review.
+          </p>
+          <div class="rv-finishrow">
+            <input
+              class="rv-summary"
+              type="text"
+              data-editor="nowhere"
+              placeholder="summary (optional)"
+              value={summary}
+              oninput={(event) => (summary = event.currentTarget.value)}
+            />
+            <button
+              type="button"
+              class="rv-finish"
+              disabled={busy || drafts.size === 0}
+              onclick={finish}
+            >
+              finish review
+              {#if drafts.size > 0}({drafts.size}){/if}
+            </button>
+          </div>
+        </section>
+      </div>
+    {:else}
+      <div class="rv-body rv-filesbody">
+        <Canvas
+          {connection}
+          {slot}
+          {scopeCommit}
+          {mode}
+          layer={diffLayer}
+          {threads}
+          reviews={reviews.reviews.outcome === 'read' ? reviews.reviews.value : []}
+          {busy}
+          oncomment={commented}
+          onreply={replied}
+          onresolve={resolved}
+          onreopen={reopened}
+        />
+      </div>
+    {/if}
   {/if}
 </main>
 
@@ -229,6 +541,265 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
+    /* The diff half scrolls inside the page rather than the page growing:
+       the tree and the canvas each keep their own scroll, the way the app's
+       own shell does. */
+    height: 100dvh;
+    overflow: hidden;
+  }
+  /* The rounds read as a column, centred: a measure cap that is not centred
+     is a hole. */
+  .rv-conv {
+    max-width: 820px;
+    margin: 0 auto;
+    width: 100%;
+    overflow-y: auto;
+    min-height: 0;
+    scrollbar-gutter: stable;
+  }
+  .rv-tabs {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 0 0 6px;
+  }
+  .rv-tabs > button {
+    font-size: var(--fs-base);
+    color: var(--dim);
+    background: none;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    padding: 5px 12px 6px;
+    cursor: pointer;
+  }
+  .rv-tabs > button:hover {
+    color: var(--muted);
+  }
+  .rv-tabs > button.on {
+    color: var(--text);
+    border-bottom-color: var(--accent);
+  }
+  .rv-tn {
+    font-family: var(--mono);
+    font-size: var(--fs-label);
+    color: var(--dim);
+  }
+  /* The scope control: one button naming the scope on screen, the list
+     behind it, and a stepper beside it. */
+  .rv-scope {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+  }
+  .rv-scope-btn {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    max-width: 460px;
+    background: var(--s1);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 4px 10px;
+    cursor: pointer;
+    font: inherit;
+    color: inherit;
+  }
+  .rv-scope-btn:hover {
+    border-color: var(--ctl);
+  }
+  .rv-scope-lb {
+    font-size: var(--fs-label);
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--dim);
+    flex: none;
+  }
+  .rv-scope-now {
+    font-family: var(--mono);
+    font-size: var(--fs-data);
+    color: var(--text);
+    flex: none;
+  }
+  .rv-scope-sub {
+    font-family: var(--mono);
+    font-size: var(--fs-label);
+    color: var(--dim);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+  .rv-step {
+    display: flex;
+  }
+  .rv-step-btn {
+    font-family: var(--mono);
+    font-size: var(--fs-data);
+    color: var(--muted);
+    background: none;
+    border: 1px solid var(--line);
+    padding: 3px 9px;
+    cursor: pointer;
+  }
+  .rv-step-btn:first-child {
+    border-radius: 8px 0 0 8px;
+  }
+  .rv-step-btn:last-child {
+    border-radius: 0 8px 8px 0;
+    border-left: 0;
+  }
+  .rv-step-btn:hover {
+    color: var(--text);
+    border-color: var(--ctl);
+  }
+  .rv-step-btn:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+  .rv-keys {
+    font-family: var(--mono);
+    font-size: var(--fs-label);
+    color: var(--dim);
+  }
+  /* Narrow: the scope control drops to its own line under the tabs rather
+     than being clipped at the edge - it is the door to every commit, and a
+     control a finger cannot reach is not there. */
+  @media (max-width: 980px) {
+    .rv-tabs {
+      flex-wrap: wrap;
+    }
+    .rv-scope {
+      margin-left: 0;
+      width: 100%;
+    }
+    .rv-keys {
+      display: none;
+    }
+  }
+  .rv-menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    z-index: 40;
+    width: 460px;
+    max-width: calc(100vw - 40px);
+    max-height: 340px;
+    overflow-y: auto;
+    background: var(--s2);
+    outline: 1px solid var(--line);
+    outline-offset: -1px;
+    border-radius: 11px;
+    box-shadow: 0 14px 38px rgba(0, 0, 0, 0.5);
+    padding: 4px;
+  }
+  .rv-menu-it {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 62px;
+    gap: 8px;
+    align-items: baseline;
+    width: 100%;
+    text-align: left;
+    background: none;
+    border: 0;
+    border-radius: 8px;
+    padding: 6px 9px;
+    cursor: pointer;
+    font: inherit;
+  }
+  .rv-menu-it.hi {
+    background: var(--s3);
+  }
+  .rv-menu-it.on .rv-menu-label {
+    color: var(--accent);
+  }
+  .rv-menu-label {
+    font-size: var(--fs-data);
+    color: var(--text);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .rv-menu-sub {
+    font-family: var(--mono);
+    font-size: var(--fs-label);
+    color: var(--dim);
+    text-align: right;
+  }
+  .rv-mode {
+    display: flex;
+    border: 1px solid var(--line);
+    border-radius: 99px;
+    overflow: hidden;
+  }
+  .rv-mode button {
+    font-family: var(--mono);
+    font-size: var(--fs-label);
+    color: var(--dim);
+    background: none;
+    border: 0;
+    padding: 3px 11px;
+    cursor: pointer;
+  }
+  .rv-mode button + button {
+    border-left: 1px solid var(--line);
+  }
+  .rv-mode button.on {
+    color: var(--text);
+    background: var(--s2);
+  }
+  .rv-mode button:hover {
+    color: var(--muted);
+  }
+  .rv-viewmode {
+    flex: none;
+  }
+  .rv-finishrow {
+    display: flex;
+    gap: 9px;
+    align-items: center;
+  }
+  .rv-summary {
+    flex: 1;
+    min-width: 0;
+    background: var(--s1);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    font-family: var(--ui);
+    font-size: var(--fs-base);
+    padding: 6px 9px;
+  }
+  .rv-summary:focus {
+    outline: none;
+    border-color: var(--ctl);
+  }
+  .rv-finish {
+    font-family: var(--mono);
+    font-size: var(--fs-data);
+    color: var(--bg);
+    background: var(--accent);
+    border: 0;
+    border-radius: 8px;
+    padding: 6px 14px;
+    cursor: pointer;
+    flex: none;
+  }
+  .rv-finish:hover {
+    background: var(--hot);
+  }
+  .rv-finish:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+  .acts {
+    display: flex;
+    gap: 8px;
+    padding-top: 6px;
+    align-items: center;
   }
   .top {
     align-items: baseline;
