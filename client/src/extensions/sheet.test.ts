@@ -25,5 +25,18 @@ describe("the extensions page's rules", () => {
     // without its own rule would still be a smaller target than the rest.
     const back = /\.extensions \.back[^{}]*\{[^{}]*min-height:\s*44px/.exec(coarse)?.[0] ?? '';
     expect(back, 'the way back lost its height floor on a finger').not.toBe('');
+
+    // **The floor is inert without this.** `.back` is an anchor, and
+    // `min-height` is ignored on non-replaced inline boxes: only a
+    // flex/inline-block display makes the 44px bite, so the pin requires
+    // the same rule to carry one.
+    const bites =
+      /\.extensions \.back[^{}]*\{[^{}]*display:\s*(inline-flex|inline-block)[^{}]*\}/.exec(
+        coarse,
+      )?.[0] ?? '';
+    expect(
+      bites,
+      'the floor on the way back no longer bites (no flex/inline-block display)',
+    ).not.toBe('');
   });
 });
