@@ -240,6 +240,15 @@ impl BrowserHost {
         // takes no seat and can reach a closed profile's files by name.
         if tool == "browser_profile_delete" {
             let name = args.get("name").and_then(Value::as_str).unwrap_or_default().to_owned();
+            // **The arrival line, for this tool too**: the log below is the
+            // host-reached discriminator, and this branch returns before it -
+            // a delete that takes its time must not read like an ask that
+            // never arrived. No profile is read for it: the name is the whole
+            // addressing.
+            tauri_plugin_log::log::info!(
+                "a browser tool call reached the host (event_name browser_call_entered, seat \
+                 {seat}, tool {tool}, profile None, name {name:?})"
+            );
             if name.is_empty() {
                 return Err(
                     "the shared browser is not a profile, so there is nothing to delete; name \
