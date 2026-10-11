@@ -131,11 +131,16 @@
       <!-- Org-scoped in the key: two orgs may declare a project of the same
            name, and a key that collided would leave one of them unrendered. -->
       {#each fleet as row (`${row.org}/${row.name}`)}
-        <li class="fleet-row">
+        <!-- The age's tooltip lives on the row itself: the stretched link
+             covers the age cell, so a title on it never shows. -->
+        <li class="fleet-row" title="when the project last moved">
           <!-- The `.row <state>` ancestor is what the sheet keys every dot
                shape on, so the fleet reuses the whole mark vocabulary. -->
           <span class="row {markOf(row.state).class}"><Mark state={row.state} /></span>
-          <span class="fleet-name">{row.name}</span>
+          <!-- The row's own way in: this link stretches over the whole row,
+               so anywhere that is not another control opens the lead's
+               chat. -->
+          <a class="fleet-name fleet-go" href={row.leadHref}>{row.name}</a>
           <span class="fleet-where">
             {#if row.gate}{row.gate}{:else}
               {#if row.place.branch}{row.place.branch}{/if}
@@ -143,12 +148,12 @@
               {#if row.place.files}<span class="files">{row.place.files}</span>{/if}
             {/if}
           </span>
-          <span class="fleet-when" title="when the project last moved">{ageOf(row, now)}</span>
+          <span class="fleet-when">{ageOf(row, now)}</span>
           <span class="fleet-seats">
             {#each row.seats as seat (seat.label)}
-              <span class="fleet-seat"
+              <a class="fleet-seat" href={seat.href}
                 ><span class="row {markOf(seat.state).class}"><Mark state={seat.state} /></span
-                >{seat.label}</span
+                >{seat.label}</a
               >
             {/each}
           </span>

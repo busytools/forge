@@ -16,7 +16,7 @@
  */
 
 import { displayAddress } from '../connect/attempt';
-import { hrefFor } from '../routes';
+import { hrefFor, hrefForSlot } from '../routes';
 import type {
   AgentRow,
   Gate,
@@ -135,13 +135,22 @@ export interface HomeView {
 export interface FleetViewRow {
   org: string;
   name: string;
-  /** Where the row opens: the project's own board. */
+  /** Where the board control opens: the project's own board. */
   href: string;
+  /**
+   * Where the row ITSELF opens: the project's lead in chat. The whole row's
+   * area is this link - the way in before the fleet row replaced the
+   * per-seat rows, kept - and the controls with targets of their own (each
+   * seat, the board) ride above it. A project with no live seat still reads
+   * its own slot: the session page there draws its start, and the row's
+   * click begins it, the way-in the terminal's rail gives a sleeping seat.
+   */
+  leadHref: string;
   /** The strongest seat state, drawn with the same `Mark` a seat row uses. */
   state: RowState;
   place: { branch: string | null; files: string | null };
   gate: string | null;
-  seats: { label: string; state: RowState }[];
+  seats: { label: string; state: RowState; href: string }[];
   /**
    * When the project last moved: the newest `last_activity` across its seats
    * and the sessions its catalog remembers, or null when nothing has ever
@@ -195,6 +204,7 @@ export function fleetRows(wire: HomeWire): FleetViewRow[] {
     const seats = agents.map((agent) => ({
       label: agent.label,
       state: stateOf(agent, wire.unseen),
+      href: hrefForSlot(agent.slot),
     }));
     // The newest write the project has: a live seat's, or a session the
     // catalog still remembers once no seat is left. **The catalog half is not
@@ -222,14 +232,15 @@ export function fleetRows(wire: HomeWire): FleetViewRow[] {
           : best,
       { kind: 'never-started' },
     );
+    const org = project?.project.org ?? orgOf(wire, row.project);
+    // The lead is the row's own target; a project between lead sessions still
+    // reads its slot, where the session page draws its start.
+    const lead = seats.find((seat) => seat.label === 'lead');
     return {
-      org: project?.project.org ?? orgOf(wire, row.project),
+      org,
       name: row.project,
-      href: hrefFor({
-        name: 'board',
-        org: project?.project.org ?? orgOf(wire, row.project),
-        project: row.project,
-      }),
+      href: hrefFor({ name: 'board', org, project: row.project }),
+      leadHref: lead?.href ?? hrefForSlot({ org, project: row.project, label: 'lead' }),
       state: strongest,
       place: project === undefined ? { branch: null, files: null } : placeOf(project.work),
       gate: project === undefined ? null : gateLine(project.work.gate),

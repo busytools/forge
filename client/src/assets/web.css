@@ -414,7 +414,11 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
 /* the last line: the measure under the time, the controls at the end -
    wrapping onto its own line when a lane is too narrow for both */
 .b-last { display: flex; align-items: center; gap: 12px; margin-top: 13px; flex-wrap: wrap; }
-.b-prog { display: flex; flex-direction: column; gap: 4px; min-width: 90px; flex: 1; }
+/* `flex: 1` gives this cell a zero basis, so the line breaker measures only
+   its 90px floor while the nowrap ink runs about 132px - a narrow card kept
+   one line and the items spilled over each other. A content basis lets the
+   line break, and the cell still takes the slack where there is room. */
+.b-prog { display: flex; flex-direction: column; gap: 4px; min-width: 90px; flex: auto; }
 .b-time { color: var(--dim); font-size: var(--fs-data); white-space: nowrap; font-family: var(--mono); }
 .b-bar { height: 2px; border-radius: 99px; background: var(--s3); overflow: hidden; }
 .b-fill { display: block; height: 100%; border-radius: 99px; background: var(--muted); }
@@ -480,11 +484,12 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
 
 /* One row per project, nothing mixed: the mark, the name, the tree, the
    seats, the counts and the misses - and the row is the way into the
-   board. The columns read left to right in that order, and the counts
-   take the surplus so the name and the tree keep their shape. */
+   lead's chat, with the board behind its own control. The columns read
+   left to right in that order, and the counts take the surplus so the name
+   and the tree keep their shape. */
 .fleet { list-style: none; margin: 8px 0 0; padding: 0; }
 .fleet-row {
-  display: grid;
+  display: grid; position: relative;
   /* One track per cell (mark, name, tree, age, seats, counts, misses, the
      way in): a track short and the trailing cells wrap onto an implicit row,
      where the misses stack one word per line and the link draws over them. */
@@ -495,7 +500,24 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
   padding: 13px 16px; margin-bottom: 10px;
 }
 .fleet-row:hover { background: var(--s2); }
+/* The mark wrappers carry the home's `.row` class for its state shapes, and
+   the scaffolding under that class lays out or decorates cells this row does
+   not have: the grid and padding inflated a seat's mark to hundreds of
+   pixels, the hover ground washed the chip, and the chevron rode over it and
+   joined its accessible name - so the fleet shapes the wrapper back to its
+   own content. `pointer-events: none` ends the scaffolding's hover at the
+   source: the state wash stays (it is not a hover style), and a click on the
+   mark falls through to the link whose surface it sits on. */
+.fleet-row .row { display: inline-flex; padding: 0; pointer-events: none; }
+.fleet-row .row::after { content: none; }
 .fleet-name { font-weight: 500; }
+/* The row is the way into the lead's chat: this link's box stretches over
+   the whole row, and the controls with targets of their own (a seat chip,
+   the board) ride above it. */
+.fleet-go { color: inherit; text-decoration: none; }
+.fleet-go::after { content: ""; position: absolute; inset: 0; border-radius: var(--r); }
+.fleet-go:focus-visible { outline: none; }
+.fleet-go:focus-visible::after { outline: 2px solid var(--blue); outline-offset: 2px; }
 .fleet-where { color: var(--muted); font-size: var(--fs-label); font-family: var(--mono); }
 .fleet-where .files { color: var(--text); }
 .fleet-when { color: var(--dim); font-size: var(--fs-label); font-family: var(--mono); }
@@ -503,7 +525,9 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
 .fleet-seat {
   display: inline-flex; align-items: center; gap: 7px;
   color: var(--dim); font-size: var(--fs-label); font-family: var(--mono);
+  position: relative; z-index: 1; text-decoration: none;
 }
+.fleet-seat:hover { color: var(--text); }
 .fleet-counts { color: var(--muted); font-size: var(--fs-label); font-family: var(--mono); white-space: nowrap; }
 .fleet-you { color: var(--hot); }
 .fleet-misses { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -518,12 +542,14 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
   color: var(--blue); text-decoration: none; font-family: var(--mono);
   font-size: var(--fs-label); border: 1px solid var(--line); border-radius: 6px;
   padding: 6px 10px; white-space: nowrap;
+  position: relative; z-index: 1;
 }
 .fleet-open:hover { border-color: var(--ctl); }
 .fleet-open:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
 @media (pointer: coarse) {
   /* Every control a finger reaches takes a 44px target. */
   .fleet-open { min-height: 44px; display: inline-flex; align-items: center; }
+  .fleet-seat { min-height: 44px; }
   .fleet-row { padding-top: 16px; padding-bottom: 16px; }
 }
 @media (max-width: 900px) {

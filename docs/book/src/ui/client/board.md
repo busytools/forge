@@ -7,11 +7,11 @@ fleet stays the glance; this is the world. Nothing of any other project
 appears here. The drawing it is held against is
 [web-board.html](./web-board.html), beside this page.
 
-It is reached from two doors: the project's row on the [home](./home.md),
-and the tasks strip in a session's chat, which carries `open board` first in
-its list. Both open the same page. `back` and `done` return the reader where
-they came from, and a deep link with nothing to go back to lands on the
-home.
+It is reached from two doors: `open board` on the project's row on the
+[home](./home.md), and the tasks strip in a session's chat, which carries
+`open board` first in its list. Both open the same page. `back` and `done`
+return the reader where they came from, and a deep link with nothing to go
+back to lands on the home.
 
 The page draws from the same `home` snapshot the fleet does - a project's
 rows ride in that project's entry - so the board is live off the same
