@@ -568,7 +568,9 @@ fn annotate_rows_on_path(app: &mut App, path: Option<&str>) {
     for (id, name, command) in lsp {
         let checked = command.unwrap_or_else(|| name.clone());
         let Some(row) = app.plugins.row_mut(&id) else { continue };
-        let on_path = path.is_some_and(|path| skills::lsp_binary_on_path(&checked, Some(path)));
+        let on_path = path.is_some_and(|path| {
+            forge_workspace::env::lsp_path::lsp_binary_on_path(&checked, Some(path))
+        });
         row.detail =
             Some(if on_path { format!("{name}: on PATH") } else { format!("{name}: missing") });
     }
@@ -1575,17 +1577,20 @@ fn action_cwd_for(app_cwd: &str, scope: &str, project_path: Option<&str>) -> Str
     }
 }
 
-/// One future handed back by the [`UpdateCli`] seams.
-type UpdateCliFut<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T>>>;
+/// One future handed back by the [`UpdateCli`] seams. `Send` because the
+/// update-runner seam it feeds into is shared with the workspace, which
+/// drives a batch from a task that moves across threads.
+type UpdateCliFut<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>>;
 /// The refresh seam's result: the inventory plus a resolved claude path.
 type RefreshResult = Result<(PluginsInventorySnapshot, PathBuf), String>;
 /// The update seam's result: the resolved claude path plus the CLI's
 /// combined stdout+stderr.
 type UpdateResult = Result<(PathBuf, String), String>;
-type SharedUpdateFn =
-    std::sync::Arc<dyn Fn(Option<PathBuf>, String, Vec<String>) -> UpdateCliFut<UpdateResult>>;
+type SharedUpdateFn = std::sync::Arc<
+    dyn Fn(Option<PathBuf>, String, Vec<String>) -> UpdateCliFut<UpdateResult> + Send + Sync,
+>;
 type SharedRefreshFn =
-    std::sync::Arc<dyn Fn(Option<PathBuf>, String) -> UpdateCliFut<RefreshResult>>;
+    std::sync::Arc<dyn Fn(Option<PathBuf>, String) -> UpdateCliFut<RefreshResult> + Send + Sync>;
 type DetailsResult =
     std::collections::BTreeMap<String, (String, forge_primitives::plugins::PluginDetails)>;
 type SharedDetailsFn = std::sync::Arc<

@@ -330,6 +330,17 @@ pub struct Workspace {
     /// `Command::DictateInstall`, read by the models page through
     /// `dictate_install`.
     pub(crate) dictate_install: Mutex<crate::install::InstallState>,
+    /// How a plugin action reaches `claude` plus the disk scan the actions
+    /// and the Extensions read share. Real in production; a test swaps it
+    /// so a whole action runs without shelling out or touching `~/.claude`.
+    pub(crate) plugin_cli: Mutex<crate::plugins::PluginCli>,
+    /// The last plugin update run or check, in flight or finished: what a
+    /// view attaching mid-run reads, and the guard that keeps one run at a
+    /// time (a second press is refused while this is unfinished).
+    pub(crate) plugin_run: Mutex<Option<forge_primitives::plugins::PluginUpdateRun>>,
+    /// One plugin CLI action at a time; cleared when its task ends, panic
+    /// included, so a crashed task never wedges the surface.
+    pub(crate) plugin_action_running: std::sync::atomic::AtomicBool,
     /// Where the last model activation got to. Set by
     /// `Command::DictateActivate`, read by the models page through
     /// `dictate_activate`.
@@ -1606,6 +1617,9 @@ impl Workspace {
             browser: Arc::new(crate::browser::BrowserRelay::new()),
             dictate_catalogue: Mutex::new(crate::catalogue::CatalogueState::default()),
             dictate_install: Mutex::new(crate::install::InstallState::default()),
+            plugin_cli: Mutex::new(crate::plugins::PluginCli::real()),
+            plugin_run: Mutex::new(None),
+            plugin_action_running: std::sync::atomic::AtomicBool::new(false),
             dictate_activate: Mutex::new(crate::install::ActivateState::default()),
             dictate_bench: Mutex::new(crate::bench::BenchState::default()),
             dictate_bench_cancel: std::sync::atomic::AtomicBool::new(false),
@@ -4763,6 +4777,24 @@ impl Workspace {
                 }
                 Command::DictateCatalogueCheck => {
                     return self.check_dictate_catalogue();
+                }
+                Command::PluginInstall { plugin_id, scope, project } => {
+                    return self.start_plugin_install(plugin_id, scope, project.as_deref());
+                }
+                Command::PluginUpdate { plugin_id, scope } => {
+                    return self.start_plugin_update(plugin_id, scope);
+                }
+                Command::PluginUpdateAll => {
+                    return self.start_plugin_update_all();
+                }
+                Command::PluginCheckUpdates => {
+                    return self.start_plugin_check();
+                }
+                Command::MarketplaceAdd { source } => {
+                    return self.start_marketplace_add(source);
+                }
+                Command::MarketplaceRepair { name } => {
+                    return self.start_marketplace_repair(name);
                 }
                 Command::DictateInstall { variant } => {
                     return self.start_install(variant);

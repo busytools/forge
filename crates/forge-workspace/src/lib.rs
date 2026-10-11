@@ -86,6 +86,7 @@ pub mod launch_settings;
 pub(crate) mod mcp;
 pub mod output_tail;
 mod parked;
+mod plugins;
 pub mod prompt;
 pub mod protocol;
 mod provider_probe;
@@ -175,6 +176,9 @@ pub mod env {
     }
     pub mod git_diff {
         pub use forge_agent::env::git_diff::*;
+    }
+    pub mod lsp_path {
+        pub use forge_agent::env::lsp_path::*;
     }
     pub mod processes {
         pub use forge_agent::env::processes::*;

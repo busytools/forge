@@ -26,6 +26,8 @@ import {
 import Turn from './chat/Turn.svelte';
 import Connect from './connect/Connect.svelte';
 import { homeWire } from './dev/fixture.data';
+import ExtensionsBody from './extensions/ExtensionsBody.svelte';
+import { extensionsWire, project, recorder } from './extensions/testing';
 import Home from './home/Home.svelte';
 import Models from './models/Models.svelte';
 import ModelsBody from './models/ModelsBody.svelte';
@@ -713,6 +715,60 @@ describe('axe over the rendered pages', () => {
     const html = render(Models, { props: { connection: null } }).body;
     expect(html).toContain('Reading the models');
     expect(await idsOf(html)).toEqual([]);
+  });
+
+  /**
+   * The extensions page: the rail's tabs, a plugin row whose fold button is
+   * an overlay with its own label, the band's controls and the marketplace
+   * rows. Rendered inside a landmark, which is what the page's own `<main>`
+   * gives it in the app.
+   */
+  it('draws the extensions page with no violations', async () => {
+    const html = render(ExtensionsBody, {
+      props: {
+        wire: extensionsWire(),
+        refusal: null,
+        projects: [project],
+        mark: null,
+        ...recorder().actions,
+      },
+    }).body;
+    expect(html, 'the plugin rows drew, so axe saw them').toContain('superpowers');
+    expect(html, 'and the marketplaces section').toContain('From the marketplaces');
+    expect(await idsOf(`<main>${html}</main>`)).toEqual([]);
+  });
+
+  /**
+   * The page with an unknown inventory: no plugins root resolved, so the
+   * read is `null` and the page says so rather than drawing an empty tree.
+   */
+  it('draws the extensions page with no inventory, with no violations', async () => {
+    const html = render(ExtensionsBody, {
+      props: {
+        wire: extensionsWire({ snapshot: null }),
+        refusal: null,
+        projects: [project],
+        mark: null,
+        ...recorder().actions,
+      },
+    }).body;
+    expect(html).toContain('could not read the plugin inventory');
+    expect(await idsOf(`<main>${html}</main>`)).toEqual([]);
+  });
+
+  /** A refused dispatch, in the core's own words, is the page's own line. */
+  it('draws the extensions page with a refusal, with no violations', async () => {
+    const html = render(ExtensionsBody, {
+      props: {
+        wire: extensionsWire(),
+        refusal: 'a plugin action is already running; wait for it to finish',
+        projects: [project],
+        mark: null,
+        ...recorder().actions,
+      },
+    }).body;
+    expect(html).toContain('a plugin action is already running');
+    expect(await idsOf(`<main>${html}</main>`)).toEqual([]);
   });
 });
 

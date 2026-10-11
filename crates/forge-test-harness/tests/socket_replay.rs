@@ -51,6 +51,11 @@ use std::path::PathBuf;
 use forge_dictate::ModelFacts;
 use forge_dictate::bench::{CorpusId, Metrics, StageTotals, Tier};
 use forge_dictate::catalogue::EntryKind;
+use forge_primitives::plugins::{
+    InstalledPluginEntry, MarketplaceEntry, MarketplaceHealth, MarketplaceSourceEntry,
+    PluginCapability, PluginComponents, PluginRunRowStatus, PluginUpdateRun, PluginUpdateRunRow,
+    PluginUpdateTrigger, PluginsInventorySnapshot,
+};
 use forge_primitives::{Message, SessionSlot};
 use forge_sdk::transport::codec::{DecodedLine, decode_dispatch};
 use forge_server::transport::PROTOCOL_VERSION;
@@ -248,7 +253,7 @@ census!(ServerMessage,
     server_message_census, SERVER_MESSAGE_VARIANTS);
 
 census!(Subject,
-    [Home struct, Session tuple, Usage struct, DictateModels struct],
+    [Home struct, Session tuple, Usage struct, DictateModels struct, Extensions struct],
     subject_census, SUBJECT_VARIANTS);
 
 census!(SessionUpdate,
@@ -300,6 +305,8 @@ census!(Command,
         DictateBenchStop struct, DictateReadAloudStart struct, DictateReadAloudStop struct,
         DictateReadAloudDelete struct, DictateBenchDelete struct, DictateUninstall struct,
         ReconnectMcpServer struct, ToggleMcpServer struct,
+        PluginInstall struct, PluginUpdate struct, PluginUpdateAll struct,
+        PluginCheckUpdates struct, MarketplaceAdd struct, MarketplaceRepair struct,
         SpawnProject struct, SpawnSession struct, StartDefault struct,
         TaskVerdict struct, TaskAnswer struct, TaskRank struct, TaskAssign struct,
         TaskCreate struct, TaskMove struct, DeliverPeerPrompt struct,
@@ -590,7 +597,13 @@ fn frames_record() -> Value {
         );
     }
 
-    let subjects = [Subject::Home, Subject::Usage, Subject::Session(seat.clone())];
+    let subjects = [
+        Subject::Home,
+        Subject::Usage,
+        Subject::Session(seat.clone()),
+        Subject::DictateModels,
+        Subject::Extensions,
+    ];
     for subject in &subjects {
         let encoded = serde_json::to_value(subject).expect("a subject encodes");
         assert_eq!(
@@ -872,6 +885,94 @@ fn frames_record() -> Value {
                 "../../forge-server/tests/wire_fixtures/home.json"
             ))
             .expect("the home fixture parses"),
+        }),
+    );
+    // **The extensions read, built from the server's own types** so a field
+    // rename moves this record rather than only the page. One of each member
+    // rides the sample: an empty list pins nothing about the rows it would
+    // carry.
+    payload_sampled.insert(
+        "SnapshotExtensions".to_owned(),
+        shape_of(&ServerMessage::Snapshot {
+            subject: Subject::Extensions,
+            data: serde_json::to_value(forge_server::transport::wire::ExtensionsWire {
+                snapshot: Some(PluginsInventorySnapshot {
+                    installed: vec![InstalledPluginEntry {
+                        id: "superpowers@claude-plugins-official".to_owned(),
+                        version: Some("6.4.1".to_owned()),
+                        scope: "user".to_owned(),
+                        enabled: true,
+                        installed_at: None,
+                        last_updated: None,
+                        project_path: None,
+                        capability: PluginCapability::Skill,
+                    }],
+                    marketplace: vec![MarketplaceEntry {
+                        plugin_id: "plugin-dev@claude-plugins-official".to_owned(),
+                        name: "plugin-dev".to_owned(),
+                        description: Some("author plugins".to_owned()),
+                        marketplace_name: Some("claude-plugins-official".to_owned()),
+                        version: Some("1.0.0".to_owned()),
+                        install_count: None,
+                        source: None,
+                    }],
+                    marketplaces: vec![MarketplaceSourceEntry {
+                        name: "claude-plugins-official".to_owned(),
+                        source: Some("github".to_owned()),
+                        repo: Some("anthropics/claude-plugins-official".to_owned()),
+                        install_location: Some("/tmp/clone".to_owned()),
+                    }],
+                    components: vec![PluginComponents {
+                        plugin: "superpowers@claude-plugins-official".to_owned(),
+                        marketplace: "claude-plugins-official".to_owned(),
+                        version: Some("6.4.1".to_owned()),
+                        installed: true,
+                        enabled: true,
+                        auto: false,
+                        available_version: Some("6.5.0".to_owned()),
+                        skills: vec!["brainstorming".to_owned()],
+                        agents: vec!["code-reviewer".to_owned()],
+                        commands: vec!["review".to_owned()],
+                        hooks: vec!["SessionStart".to_owned()],
+                        mcp: false,
+                        lsp_servers: std::collections::BTreeMap::from([(
+                            "rust-analyzer".to_owned(),
+                            "rust-analyzer".to_owned(),
+                        )]),
+                        load_error: None,
+                    }],
+                    marketplace_health: vec![MarketplaceHealth {
+                        name: "claude-plugins-official".to_owned(),
+                        source: "github".to_owned(),
+                        available: 37,
+                        load_error: None,
+                        install_location: PathBuf::from("/tmp/clone"),
+                        drifted: false,
+                    }],
+                    token_costs: std::collections::BTreeMap::new(),
+                }),
+                update_run: Some(PluginUpdateRun {
+                    trigger: PluginUpdateTrigger::Manual,
+                    finished: false,
+                    rows: vec![PluginUpdateRunRow {
+                        plugin_id: "superpowers@claude-plugins-official".to_owned(),
+                        scope: "user".to_owned(),
+                        cwd_raw: "/tmp/proj".to_owned(),
+                        marketplace: "claude-plugins-official".to_owned(),
+                        status: PluginRunRowStatus::Updating,
+                        installed_version: Some("6.4.1".to_owned()),
+                        available_version: Some("6.5.0".to_owned()),
+                        detail: None,
+                    }],
+                }),
+                lsp: vec![forge_server::transport::wire::LspCheckWire {
+                    plugin: "superpowers@claude-plugins-official".to_owned(),
+                    server: "rust-analyzer".to_owned(),
+                    command: "rust-analyzer".to_owned(),
+                    on_path: true,
+                }],
+            })
+            .expect("the extensions read encodes"),
         }),
     );
 

@@ -93,7 +93,8 @@ Work top-down; the first match wins.
 
 **The view surface is built, reads and writes.** A view reads the core
 through named verbs by subject - `roster`, `session`, `agents`,
-`accounts`, `plugins`, `reviews`, `workers`, `connectors`, `dictate`,
+`accounts`, `plugins`, `extensions`, `reviews`, `workers`, `connectors`,
+`dictate`,
 `dictate_models`, `cli_version`, `conversation`, `slash_commands`,
 `forge_commands`, `subagents`, `has_dispatches`, `subagent_cards`,
 `file_index`, `walk_file_index`, `respect_gitignore`, `header`, `mcp_servers`,
@@ -102,7 +103,7 @@ through named verbs by subject - `roster`, `session`, `agents`,
 and `usage` - receives changes through
 `subscribe()`, and acts through `dispatch()`, which is a verb rather than
 an accessor so a view is handed the commands it needs and not the whole
-core. All thirty-one exist in `forge-server`, and the TUI reads
+core. All thirty-two exist in `forge-server`, and the TUI reads
 its project roster, session scan cwd, worker registry, account pool,
 plugin records, review threads,
 connector subscriptions, dictation state and the session's process walk

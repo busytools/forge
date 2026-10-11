@@ -1628,7 +1628,13 @@ pub(crate) fn execute_command_via_handle(
         | Command::TaskRank { .. }
         | Command::TaskAssign { .. }
         | Command::TaskCreate { .. }
-        | Command::TaskMove { .. }) => {
+        | Command::TaskMove { .. }
+        | Command::PluginInstall { .. }
+        | Command::PluginUpdate { .. }
+        | Command::PluginUpdateAll
+        | Command::PluginCheckUpdates
+        | Command::MarketplaceAdd { .. }
+        | Command::MarketplaceRepair { .. }) => {
             tracing::warn!(
                 target: "forge_workspace::session_task",
                 slot = %key.display(),

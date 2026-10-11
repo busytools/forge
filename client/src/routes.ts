@@ -15,6 +15,8 @@ export type Route =
   | { name: 'connect' }
   /** The dictation models: the pins, the catalogue and the updates it proposes. */
   | { name: 'models' }
+  /** The extensions: the plugin inventory, its components and the marketplaces. */
+  | { name: 'extensions' }
   /**
    * One project's board: its rows, the waiting-on-you pair, and the
    * takeover the tasks row above the composer opens. One project only -
@@ -31,6 +33,7 @@ export function parseRoute(path: string): Route {
   if (segments.length === 0) return { name: 'home' };
   if (segments.length === 1 && segments[0] === 'connect') return { name: 'connect' };
   if (segments.length === 1 && segments[0] === 'models') return { name: 'models' };
+  if (segments.length === 1 && segments[0] === 'extensions') return { name: 'extensions' };
   if (segments.length === 1 && segments[0] === 'fixture') return { name: 'fixture' };
   if (segments.length === 3 && segments[0] === 'board') {
     const [, org, project] = segments as [string, string, string];
@@ -55,6 +58,8 @@ export function hrefFor(route: Route): string {
       return '/connect';
     case 'models':
       return '/models';
+    case 'extensions':
+      return '/extensions';
     case 'fixture':
       return '/fixture';
     case 'board':
@@ -84,6 +89,7 @@ export function hrefForSlot(slot: SessionSlot): string {
  */
 export function titleFor(route: Route): string {
   if (route.name === 'models') return 'forge \u{b7} models';
+  if (route.name === 'extensions') return 'forge \u{b7} extensions';
   if (route.name === 'board') return `forge \u{b7} ${route.project}`;
   if (route.name !== 'session') return 'forge';
   const { project, label } = route.slot;

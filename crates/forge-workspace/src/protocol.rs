@@ -468,6 +468,43 @@ pub enum Command {
         server_name: String,
         enabled: bool,
     },
+    // --- Plugins / marketplaces (app-level; the Extensions page) ---
+    //
+    // The terminal runs these from its own view layer; these variants are
+    // the same work reachable through the command bus so a second view
+    // can act. Every one is app-level (`key()` returns `None`), serialized
+    // one at a time, and reports through the `Plugins*` updates a view
+    // already listens to.
+    /// Install one plugin at a scope. `project` names a declared project
+    /// for the `project`/`local` scopes and is ignored for `user`, which
+    /// runs in the home dir; it is a NAME rather than a path so the
+    /// working directory always comes from `forge.toml`.
+    PluginInstall {
+        plugin_id: String,
+        scope: String,
+        project: Option<String>,
+    },
+    /// Update one installed plugin in its own scope and project, which the
+    /// registry lookup resolves - the caller states no cwd.
+    PluginUpdate {
+        plugin_id: String,
+        scope: String,
+    },
+    /// Update exactly the stale installed plugins, one CLI call per entry,
+    /// continuing past failures. The set is computed from a fresh scan at
+    /// dispatch, so it is what the marketplace reports NOW.
+    PluginUpdateAll,
+    /// Refresh the inventory through the CLI and report which installed
+    /// plugins have a newer marketplace version, applying nothing.
+    PluginCheckUpdates,
+    /// Add a marketplace by `owner/repo` or URL, at user scope.
+    MarketplaceAdd {
+        source: String,
+    },
+    /// Repair a drifted marketplace with the CLI's remove-and-re-add pair.
+    MarketplaceRepair {
+        name: String,
+    },
     /// User clicked an inactive project to wake it. No `key` - the
     /// session doesn't exist yet; workspace resolves the id it will run
     /// under and emits `SessionUpdate::Spawning` then `::Connected` on
@@ -849,7 +886,13 @@ impl Command {
             | Self::TaskRank { .. }
             | Self::TaskAssign { .. }
             | Self::TaskCreate { .. }
-            | Self::TaskMove { .. } => None,
+            | Self::TaskMove { .. }
+            | Self::PluginInstall { .. }
+            | Self::PluginUpdate { .. }
+            | Self::PluginUpdateAll
+            | Self::PluginCheckUpdates
+            | Self::MarketplaceAdd { .. }
+            | Self::MarketplaceRepair { .. } => None,
         }
     }
 }
@@ -1097,6 +1140,25 @@ impl std::fmt::Debug for Command {
                 .field("id", id)
                 .field("to", to)
                 .finish_non_exhaustive(),
+            Self::PluginInstall { plugin_id, scope, project } => f
+                .debug_struct("PluginInstall")
+                .field("plugin_id", plugin_id)
+                .field("scope", scope)
+                .field("project", project)
+                .finish(),
+            Self::PluginUpdate { plugin_id, scope } => f
+                .debug_struct("PluginUpdate")
+                .field("plugin_id", plugin_id)
+                .field("scope", scope)
+                .finish(),
+            Self::PluginUpdateAll => f.write_str("PluginUpdateAll"),
+            Self::PluginCheckUpdates => f.write_str("PluginCheckUpdates"),
+            Self::MarketplaceAdd { source } => {
+                f.debug_struct("MarketplaceAdd").field("source", source).finish()
+            }
+            Self::MarketplaceRepair { name } => {
+                f.debug_struct("MarketplaceRepair").field("name", name).finish()
+            }
         }
     }
 }
@@ -2491,6 +2553,23 @@ pub enum DispatchError {
     /// and a second fetch would answer the same thing twice.
     #[error("a catalogue check is already running")]
     CatalogueChecking,
+    /// A plugin action is already running: the CLI serializes one at a
+    /// time, so a second press waits rather than racing the first.
+    #[error("a plugin action is already running; wait for it to finish")]
+    PluginActionRunning,
+    /// No home directory resolves, so a plugin call with no project
+    /// context has nowhere to run. Refused rather than substituting a
+    /// cwd-derived directory (hard rule 14).
+    #[error("no home directory resolves; plugin actions with no project context cannot run")]
+    PluginHomeUnavailable,
+    /// A `project`/`local` install named no project; those scopes install
+    /// into a project's own config, so the project is the caller's to say.
+    #[error("a project-scoped plugin install needs a project")]
+    PluginProjectRequired,
+    /// A project-named install or update names a project `forge.toml`
+    /// does not declare.
+    #[error("no project named '{name}' is declared in forge.toml")]
+    ProjectNotFound { name: String },
 }
 
 #[cfg(test)]

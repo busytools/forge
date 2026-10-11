@@ -2851,3 +2851,237 @@ details[open] > summary .arw { opacity: 1; }
 @media (hover: none) {
   .arw { opacity: 1; color: var(--dim); }
 }
+
+/* ---------- the extensions page ----------
+   Everything under `.extensions`, for the reason the `.models` block gives:
+   `.split`, `.rail`, `.pane`, `.legend`, `.title` and `.back` are short names
+   another surface already uses, and a bare rule here would reach it by coming
+   later. The pieces it genuinely shares with the shipped sheet are the header
+   row, the four state marks (`.dot.warn`, `.dot.failed`, `.dot.ok`, `.ring`)
+   and the empty treatment. `.chip` and `.btn` live under the models block's
+   and the dock's own scopes (there is no `.models .btn`), so this page
+   declares its own copies here. The row chrome - the band gradient over
+   `--line` - is the second copy of that recipe, `.models .model` being the
+   other (the board's rows are flat `.b-card`, no gradient); when a third page
+   needs it the recipe earns a shared class, and until then a lift would have
+   to choose between two layouts that only look alike. */
+
+.extensions .pending { color: var(--muted); font-size: var(--fs-base); margin-top: 12vh;
+  text-align: center; }
+
+/* the page's own controls: the chip at this page's scale, as span (a state)
+   or button (an action), and the three button weights */
+.extensions .chip { display: inline-flex; align-items: center; gap: 7px;
+  font-family: var(--mono); font-size: var(--fs-label); padding: 4px 10px;
+  border: 1px solid var(--line); border-radius: 9px; color: var(--muted);
+  background: none; white-space: nowrap; }
+.extensions .chip.warn { color: var(--warn); border-color: rgba(201,161,59,.45);
+  background: rgba(201,161,59,.08); }
+.extensions .chip.dim { color: var(--dim); border-color: var(--line); background: none; }
+.extensions .chip.blue { color: var(--blue); border-color: rgba(97,160,224,.35); }
+.extensions .chip.bad { color: var(--bad); border-color: rgba(224,104,62,.45);
+  background: rgba(224,104,62,.08); }
+.extensions button.chip { cursor: pointer; }
+.extensions button.chip:hover { border-color: var(--ctl); color: var(--text); }
+.extensions button.chip:disabled { opacity: .5; cursor: default; }
+.extensions .btn { border: 0; cursor: pointer; font: inherit; font-family: var(--mono);
+  font-size: 13px; border-radius: 10px; }
+.extensions .btn.go { background: var(--ok); color: var(--bg); font-weight: 640; padding: 7px 14px; }
+.extensions .btn.go:hover { filter: brightness(1.06); }
+.extensions .btn.ghost { background: transparent; color: var(--muted);
+  box-shadow: inset 0 0 0 1px var(--line); padding: 7px 12px; }
+.extensions .btn.ghost:hover { color: var(--text); box-shadow: inset 0 0 0 1px var(--ctl); }
+.extensions .btn.add { background: var(--accent); color: var(--bg); font-weight: 640;
+  border-radius: 999px; padding: 8px 15px; }
+.extensions .btn.add:hover { filter: brightness(1.08); }
+.extensions .btn:disabled { opacity: .5; cursor: default; }
+
+/* the header's name block and the way back */
+.extensions .title { display: flex; flex-direction: column; }
+.extensions .title .t { font-size: var(--fs-title); font-weight: 650; letter-spacing: -.01em;
+  color: var(--text); }
+.extensions .title .s { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+.extensions .back { margin-left: auto; font-family: var(--mono); font-size: var(--fs-label);
+  color: var(--muted); text-decoration: none; border: 1px solid var(--line);
+  border-radius: 9px; padding: 6px 11px; }
+.extensions .back:hover { border-color: var(--ctl); color: var(--text); }
+
+/* the refusal line: the core's own words, above the page */
+.extensions .ext-said { margin: 0 0 14px; padding: 9px 13px; border-radius: 10px;
+  font-size: var(--fs-data); background: rgba(224,104,62,.12); color: var(--bad); }
+
+/* the marks' legend: said once, in words, so a shape is never a guess */
+.extensions .ext-legend { display: flex; gap: 18px; flex-wrap: wrap;
+  font-family: var(--mono); font-size: 11px; color: var(--dim); margin: -4px 0 16px; }
+.extensions .ext-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.extensions .ext-legend .dot { width: 9px; height: 9px; flex-basis: 9px; }
+
+.extensions .ext-split { display: flex; align-items: flex-start; }
+.extensions .ext-rail { flex: 0 0 216px; padding: 2px 16px 2px 0; }
+.extensions .ext-rail-item {
+  display: flex; align-items: center; gap: 9px; width: 100%; text-align: left;
+  font-family: var(--mono); font-size: var(--fs-data); color: var(--muted);
+  background: none; border: 1px solid transparent; border-radius: 9px;
+  padding: 9px 11px; margin-bottom: 2px; cursor: pointer;
+}
+.extensions .ext-rail-item:hover { background: var(--s2); color: var(--text); }
+.extensions .ext-rail-item.on { background: var(--sel); color: var(--hot);
+  border-color: rgba(244,118,0,.25); }
+.extensions .ext-rail-item .n { margin-left: auto; font-size: var(--fs-label); color: var(--dim); }
+.extensions .ext-rail-item.on .n { color: var(--hot); }
+.extensions .ext-rail-item .dot { width: 8px; height: 8px; flex-basis: 8px; }
+.extensions .ext-rule { height: 1px; background: var(--line); margin: 10px 11px; }
+
+.extensions .ext-pane { flex: 1 1 auto; min-width: 0; padding-left: 22px;
+  border-left: 1px solid var(--line); }
+.extensions .ext-pane-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  margin: 2px 0 14px; }
+.extensions .ext-pane-head .t { font-size: 19px; font-weight: 620; letter-spacing: -.01em;
+  color: var(--text); }
+.extensions .ext-pane-head .s { font-family: var(--mono); font-size: var(--fs-label);
+  color: var(--dim); }
+.extensions .ext-pane-head .right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.extensions .find { display: block; width: 100%; font-family: var(--mono); font-size: var(--fs-data);
+  color: var(--text); background: var(--s1); border: 1px solid var(--line);
+  border-radius: 9px; padding: 9px 12px; margin-bottom: 12px; }
+.extensions .find::placeholder { color: var(--dim); }
+.extensions .find:focus { outline: none; border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(244,118,0,.12); }
+
+.extensions .ext-add-in { background: var(--bg); border: 0; box-shadow: inset 0 0 0 1px var(--line);
+  border-radius: 10px; color: var(--text); font-family: var(--mono);
+  font-size: var(--fs-data); padding: 8px 11px; min-width: 220px; }
+.extensions .ext-add-in::placeholder { color: var(--dim); }
+.extensions .ext-add-in:focus { outline: none;
+  box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 3px rgba(244,118,0,.12); }
+
+/* the updates band: the band card's own ground, toned by what it says */
+.extensions .ext-band { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  border: 1px solid var(--line); border-radius: var(--r); background: rgba(13,17,26,.6);
+  padding: 12px 15px; margin-bottom: 14px; }
+.extensions .ext-band.in { border-color: rgba(201,161,59,.35); background: rgba(201,161,59,.07); }
+.extensions .ext-band.in .t { color: var(--warn); }
+.extensions .ext-band.done { border-color: rgba(130,199,107,.4); background: rgba(130,199,107,.07); }
+.extensions .ext-band.done .t { color: var(--ok); }
+.extensions .ext-band .t { font-family: var(--mono); font-size: var(--fs-data); color: var(--text); }
+.extensions .ext-band .pairs { font-family: var(--mono); font-size: var(--fs-label);
+  color: var(--dim); }
+.extensions .ext-band .right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.extensions .ext-band .dot { width: 9px; height: 9px; flex-basis: 9px; }
+.extensions .ext-band .ring { flex: none; }
+
+/* one plugin: the row, and the fold under it */
+.extensions .ext-group { margin-bottom: 8px; }
+.extensions .ext-row { display: flex; align-items: center; gap: 11px; position: relative;
+  background: linear-gradient(180deg, rgba(20,25,38,.75), rgba(13,17,26,.75));
+  border: 1px solid var(--line); border-radius: var(--r); padding: 11px 13px;
+  cursor: pointer; -webkit-user-select: none; user-select: none; }
+.extensions .ext-row:hover { background: linear-gradient(180deg, rgba(27,33,48,.9), rgba(17,22,33,.9)); }
+.extensions .ext-row.flat { cursor: default; margin-bottom: 8px; }
+.extensions .ext-row.failed .ext-nm { color: var(--bad); }
+.extensions .ext-row.avail { opacity: .66; }
+.extensions .ext-row.avail .ext-nm { color: var(--muted); }
+.extensions .ext-group .ext-row.open { border-color: rgba(244,118,0,.45);
+  border-radius: var(--r) var(--r) 0 0; margin-bottom: 0; }
+/* The row is the fold toggle, so the whole card takes the press: the hit
+   target is an overlay behind the content, and the row's own controls sit
+   above it so they stay pressable. */
+.extensions .ext-row .pick { position: absolute; inset: 0; z-index: 1; background: none;
+  border: 0; padding: 0; cursor: pointer; border-radius: var(--r); }
+.extensions .ext-row.flat .pick { display: none; }
+.extensions .ext-row .pick:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.extensions .ext-row .side { position: relative; z-index: 2; display: flex; align-items: center;
+  gap: 8px; flex: none; margin-left: auto; }
+/* The shared chevron arrives with the pointer; here it is the fold's own
+   affordance and a phone has no pointer to arrive with, so it is drawn at
+   rest and turns with the open state. */
+.extensions .ext-row .arw { opacity: 1; color: var(--dim); flex: none; position: relative;
+  z-index: 2; transition: transform 120ms ease; }
+.extensions .ext-row.open .arw { transform: rotate(90deg); color: var(--accent); }
+.extensions .ext-row .dot { width: 10px; height: 10px; flex-basis: 10px; }
+.extensions .ext-row .ring { flex: none; }
+.extensions .ext-nm { font-family: var(--mono); font-size: var(--fs-data); color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.extensions .ext-src { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.extensions .ext-src .to { color: var(--warn); }
+.extensions .ext-problem { color: var(--warn); }
+
+.extensions .ext-subs { padding: 4px 0 10px 24px; border-left: 2px solid var(--line);
+  border-right: 1px solid var(--line); border-bottom: 1px solid var(--line);
+  border-radius: 0 0 var(--r) var(--r);
+  background: linear-gradient(180deg, rgba(13,17,26,.55), rgba(13,17,26,.3)); }
+.extensions .ext-subkind { display: flex; align-items: baseline; gap: 8px; font-family: var(--mono);
+  font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--dim);
+  padding: 9px 4px 4px; }
+.extensions .ext-subkind .c { letter-spacing: 0; color: var(--dim); text-transform: none; }
+.extensions .ext-subwrap { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 0 18px; }
+.extensions .ext-sub { display: flex; align-items: center; gap: 6px; padding: 3px 4px;
+  font-family: var(--mono); font-size: var(--fs-label); color: var(--muted); min-width: 0; }
+.extensions .ext-sub .k { color: var(--text); overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.extensions .ext-sub .w { color: var(--dim); }
+
+.extensions .ext-mp { display: flex; align-items: center; gap: 11px; flex-wrap: wrap;
+  background: linear-gradient(180deg, rgba(20,25,38,.75), rgba(13,17,26,.75));
+  border: 1px solid var(--line); border-radius: var(--r); padding: 11px 13px; margin-bottom: 8px; }
+.extensions .ext-mp .side { margin-left: auto; display: flex; gap: 8px; }
+.extensions .ext-mp .dot { width: 10px; height: 10px; flex-basis: 10px; }
+
+.extensions .ext-sect { display: flex; align-items: baseline; gap: 9px; margin: 22px 0 10px;
+  font-size: var(--fs-label); font-weight: 600; letter-spacing: .11em; text-transform: uppercase;
+  color: var(--muted); }
+.extensions .ext-sect .c { letter-spacing: 0; text-transform: none; font-family: var(--mono);
+  font-size: 11px; color: var(--dim); font-weight: 400; }
+.extensions .ext-note { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+  margin: 10px 2px 0; }
+
+/* the install dialog: a scrim and a panel, the board's takeover shape at
+   one question's size */
+.extensions .ext-scrim { position: fixed; inset: 0; z-index: 40; display: flex;
+  align-items: center; justify-content: center; padding: 24px;
+  background: rgba(4,5,10,.62); }
+.extensions .ext-dialog { width: min(480px, 100%); background: var(--s1);
+  border: 1px solid var(--line); border-radius: 14px; padding: 20px 22px 18px;
+  box-shadow: 0 24px 60px rgba(0,0,0,.5); }
+.extensions .ext-dlg-t { font-size: 17px; font-weight: 620; color: var(--text); }
+.extensions .ext-dlg-s { font-size: var(--fs-data); color: var(--muted); margin: 6px 0 14px; }
+.extensions .ext-scopes { display: flex; flex-direction: column; gap: 6px; }
+.extensions .ext-scope { display: flex; align-items: center; gap: 10px; font-size: var(--fs-data);
+  color: var(--text); padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px;
+  cursor: pointer; }
+.extensions .ext-scope:hover { border-color: var(--ctl); }
+.extensions .ext-scope b { font-weight: 600; }
+.extensions .ext-scope span { color: var(--muted); }
+.extensions .ext-dlg-field { display: flex; align-items: center; gap: 10px; margin-top: 12px;
+  font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+.extensions .ext-dlg-field select { background: var(--bg); color: var(--text);
+  border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px; }
+.extensions .ext-dlg-note { margin-top: 12px; font-size: var(--fs-label); color: var(--warn); }
+.extensions .ext-dlg-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+
+@media (pointer: coarse) {
+  /* A row, a rail item and a control are all things a finger reaches. */
+  .extensions .ext-row, .extensions .ext-rail-item, .extensions .ext-mp,
+  .extensions .ext-scope, .extensions .back { min-height: 44px; }
+  .extensions .back { display: inline-flex; align-items: center; }
+  .extensions .chip, .extensions .btn { min-height: 44px; }
+}
+
+@media (max-width: 760px) {
+  /* The rail wraps rather than scrolling sideways: the sheet has no
+     horizontal scroller anywhere, and a rail that had one would be the
+     first - the invariant `wrap.test.ts` pins. */
+  .extensions .ext-split { flex-direction: column; }
+  .extensions .ext-rail { flex: none; width: 100%; padding: 0 0 10px; display: flex;
+    flex-wrap: wrap; gap: 6px; }
+  .extensions .ext-rail-item { width: auto; flex: 0 0 auto; margin-bottom: 0; }
+  .extensions .ext-rail-item .n { margin-left: 6px; }
+  .extensions .ext-rail-item .dot { width: 8px; height: 8px; flex-basis: 8px; margin-left: 0; }
+  .extensions .ext-rule { display: none; }
+  .extensions .ext-pane { padding-left: 0; border-left: 0; }
+  .extensions .ext-row { flex-wrap: wrap; }
+  .extensions .ext-row .ext-src { flex-basis: 100%; order: 3; padding-left: 22px; }
+  .extensions .ext-subwrap { grid-template-columns: 1fr; }
+}

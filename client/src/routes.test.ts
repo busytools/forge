@@ -28,6 +28,11 @@ describe('the URLs the server serves', () => {
     expect(parseRoute(hrefFor({ name: 'models' }))).toEqual({ name: 'models' });
   });
 
+  it('resolves the extensions page and round-trips it', () => {
+    expect(parseRoute('/extensions')).toEqual({ name: 'extensions' });
+    expect(parseRoute(hrefFor({ name: 'extensions' }))).toEqual({ name: 'extensions' });
+  });
+
   it('refuses a path the server does not serve', () => {
     expect(parseRoute('/sessions')).toEqual({ name: 'notFound' });
     expect(parseRoute('/session/Busytools/forge/lead/extra')).toEqual({ name: 'notFound' });
@@ -78,6 +83,9 @@ describe("the tab's title", () => {
     expect(titleFor({ name: 'connect' })).toBe('forge');
     expect(titleFor({ name: 'models' }), 'the models page names what it is').toBe(
       'forge \u{b7} models',
+    );
+    expect(titleFor({ name: 'extensions' }), 'and the extensions page names itself').toBe(
+      'forge \u{b7} extensions',
     );
     expect(
       titleFor({ name: 'session', slot: { org: 'Busytools', project: 'core-v1', label: 'lead' } }),
