@@ -195,6 +195,77 @@ describe('the tasks card', () => {
     ).not.toContain('detail');
   });
 
+  it('names a claim by the subject the echo carries, with the state it took', () => {
+    // A claim's echo is the record itself, the same one an update reads, so
+    // the row draws the task as it now stands. No patch line: the input named
+    // only the row, and the claim moved fields the record already shows.
+    const card = forgeCardOf(
+      'mcp__forge__tasks__claim',
+      // Claimed by epic, the input that could be mistaken for a patch: the
+      // row a claim was asked for is not a field it moved.
+      { epic: 't-5' },
+      result(JSON.stringify(RECORD)),
+    );
+    expect(card?.title, 'titled by the subject, not the tool').toBe(RECORD.subject);
+    expect(card?.chips, 'the state the claim took').toEqual([
+      { text: 'in progress', tone: 'info' },
+    ]);
+    expect(card?.figure, "the owner is the figure at the row's right").toBe('owner lead');
+    expect(
+      pairsOf(card).map((pair) => pair[0]),
+      "the record's own facts, and no changed line",
+    ).toEqual(['owner', 'estimate', 'updated']);
+  });
+
+  it('names a wait by what it waits on, and labels the words the caller left', () => {
+    const card = forgeCardOf(
+      'mcp__forge__tasks__wait',
+      { id: 't-1', kind: 'dependency', detail: 'the board read has to land first', on: 't-9' },
+      result(JSON.stringify({ ...RECORD, status: 'waiting', detail: 'One agents family.' })),
+    );
+    expect(card?.title).toBe(RECORD.subject);
+    expect(card?.chips, 'a wait has one state word, and it is what it waits on').toEqual([
+      { text: 'waiting on t-9', tone: 'warn' },
+    ]);
+    expect(card?.figure).toBe('owner lead');
+    expect(card?.pieces[0], "the task's own words, as every record card draws them").toEqual({
+      kind: 'quote',
+      text: 'One agents family.',
+    });
+    expect(card?.pieces[1], "the wait's words, labelled apart from them").toEqual({
+      kind: 'tag',
+      text: 'the wait',
+    });
+    expect(card?.pieces[2]).toEqual({
+      kind: 'quote',
+      text: 'the board read has to land first',
+    });
+  });
+
+  it("spells each wait kind in the board's own words", () => {
+    // The board's own three phrases, so one wait is not described two ways.
+    const chips = (input: Record<string, unknown>) => {
+      const card = forgeCardOf(
+        'mcp__forge__tasks__wait',
+        input,
+        result(JSON.stringify({ ...RECORD, status: 'waiting' })),
+      );
+      return card?.chips;
+    };
+    expect(chips({ id: 't-1', kind: 'decision' }), "a decision is the reader's to make").toEqual([
+      { text: 'waiting on you', tone: 'warn' },
+    ]);
+    expect(chips({ id: 't-1', kind: 'resource' })).toEqual([
+      { text: 'waiting on a resource', tone: 'warn' },
+    ]);
+    expect(chips({ id: 't-1', kind: 'dependency' }), 'a blocker none named').toEqual([
+      { text: 'waiting on another row', tone: 'warn' },
+    ]);
+    expect(chips({ id: 't-1' }), 'a call whose kind is unreadable keeps the record state').toEqual([
+      { text: 'waiting', tone: 'plain' },
+    ]);
+  });
+
   it('names a delete by the removed subject and counts the subtasks that went', () => {
     const deleted = (descendants: number) =>
       forgeCardOf(
