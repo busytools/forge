@@ -190,6 +190,74 @@ export interface ComposerState {
   sign_in: unknown;
 }
 
+/**
+ * One of the seat's review reads: the records, or why they could not be read.
+ * The two halves fail apart on the server, so neither is collapsed here, and an
+ * outcome this build cannot name is kept as it arrived rather than folded into
+ * a failure it is not.
+ */
+export type ReadWire<T> =
+  | { outcome: 'read'; value: T }
+  | { outcome: 'failed'; value: string }
+  | { outcome: 'unknown'; value: unknown };
+
+/** Which side of the diff a thread is anchored to. */
+export type ReviewSideRecord = 'old' | 'new' | { unknown: string };
+
+/** A thread's lifecycle state. */
+export type ReviewStatusRecord =
+  'open' | 'addressed' | 'resolved' | 'outdated' | { unknown: string };
+
+/** Who wrote a review turn: the reviewer, an agent by label, or a shape this
+ *  build cannot name - kept raw so the row can draw it plainly. */
+export type ReviewAuthorRecord =
+  { kind: 'user' } | { kind: 'agent'; label: string } | { kind: 'unknown'; raw: unknown };
+
+/** Where a thread is anchored, as the record carries it: a durable location
+ *  the resolver re-reads against a fresh scan, not a rendered position. */
+export interface ReviewAnchorRecord {
+  path: string;
+  side: ReviewSideRecord;
+  line: number;
+  content_hash: number;
+  context: string[];
+  base_ref: string;
+}
+
+/** One turn in a thread. `review_id` is the round that sealed it, when one has. */
+export interface ReviewTurnRecord {
+  author: ReviewAuthorRecord;
+  text: string;
+  at: string;
+  review_id: string | null;
+}
+
+/** A thread: its anchor, its turns and its state. `commit` scopes it to one
+ *  commit's diff; `null` is the whole-branch scope. */
+export interface ReviewThreadRecord {
+  id: string;
+  anchor: ReviewAnchorRecord;
+  comments: ReviewTurnRecord[];
+  status: ReviewStatusRecord;
+  created_at: string;
+  updated_at: string;
+  commit: string | null;
+}
+
+/** One submitted round, as the reviewer sealed it. */
+export interface ReviewSetRecord {
+  id: string;
+  number: number;
+  summary: string | null;
+  created_at: string;
+}
+
+/** The seat's review reads, each with its own failure. */
+export interface ReviewsRecord {
+  threads: ReadWire<ReviewThreadRecord[]>;
+  reviews: ReadWire<ReviewSetRecord[]>;
+}
+
 /** One session, as this shell reads it. */
 export interface SessionRecord {
   slot: SessionSlot;
@@ -245,6 +313,9 @@ export interface SessionRecord {
   pr: { number: number; url: string; draft: boolean } | null;
   /** The issues that pull request closes. */
   closes: { number: number; url: string }[];
+  /** The seat's review threads and submitted rounds, each half with its own
+   *  read outcome - the review page's whole input. */
+  reviews: ReviewsRecord;
 }
 
 /** How git classified one file's change, as the wire spells it. */
@@ -471,6 +542,7 @@ export function sessionFrom(data: unknown): SessionRecord {
     git: gitFrom(held['git']),
     pr: prFrom(held['pr']),
     closes: issuesFrom(held['closes']),
+    reviews: reviewsFrom(held['reviews']),
   };
 }
 
@@ -496,6 +568,95 @@ function queuedFrom(value: unknown): QueuedPromptRow[] {
     if (uuid === null || words === null) return [];
     return [{ uuid, source: text(held['source']) ?? 'forge', text: words }];
   });
+}
+
+/** One half of the reviews read, narrowed at the boundary: a named outcome
+ *  carries its records, `failed` its reason, and anything else is kept whole
+ *  so a reader can be shown it rather than told it is a failure. */
+function readWireFrom<T>(value: unknown, parse: (records: unknown[]) => T[]): ReadWire<T[]> {
+  const held = record(value);
+  if (held['outcome'] === 'read') return { outcome: 'read', value: parse(list(held['value'])) };
+  if (held['outcome'] === 'failed') {
+    return { outcome: 'failed', value: text(held['value']) ?? 'the read failed' };
+  }
+  return { outcome: 'unknown', value: held['outcome'] };
+}
+
+function reviewAuthorFrom(value: unknown): ReviewAuthorRecord {
+  if (value === 'User') return { kind: 'user' };
+  const agent = record(record(value)['Agent']);
+  const label = text(agent['label']);
+  if (label !== null) return { kind: 'agent', label };
+  return { kind: 'unknown', raw: value };
+}
+
+function reviewSideFrom(value: unknown): ReviewSideRecord {
+  if (value === 'Old') return 'old';
+  if (value === 'New') return 'new';
+  return { unknown: typeof value === 'string' ? value : 'unnamed' };
+}
+
+function reviewStatusFrom(value: unknown): ReviewStatusRecord {
+  switch (value) {
+    case 'Open':
+      return 'open';
+    case 'Addressed':
+      return 'addressed';
+    case 'Resolved':
+      return 'resolved';
+    case 'Outdated':
+      return 'outdated';
+    default:
+      return { unknown: typeof value === 'string' ? value : 'unnamed' };
+  }
+}
+
+export function reviewThreadFrom(entry: unknown): ReviewThreadRecord {
+  const held = record(entry);
+  const anchor = record(held['anchor']);
+  return {
+    id: text(held['id']) ?? '',
+    anchor: {
+      path: text(anchor['path']) ?? '',
+      side: reviewSideFrom(anchor['side']),
+      line: number(anchor['line']) ?? 0,
+      content_hash: number(anchor['content_hash']) ?? 0,
+      // Context is captured code lines; a non-string entry is not a line.
+      context: list(anchor['context']).flatMap((line) => text(line) ?? []),
+      base_ref: text(anchor['base_ref']) ?? '',
+    },
+    comments: list(held['comments']).map((turn) => {
+      const comment = record(turn);
+      return {
+        author: reviewAuthorFrom(comment['author']),
+        text: text(comment['text']) ?? '',
+        at: text(comment['at']) ?? '',
+        review_id: text(comment['review_id']),
+      };
+    }),
+    status: reviewStatusFrom(held['status']),
+    created_at: text(held['created_at']) ?? '',
+    updated_at: text(held['updated_at']) ?? '',
+    commit: text(held['commit']),
+  };
+}
+
+export function reviewSetFrom(entry: unknown): ReviewSetRecord {
+  const held = record(entry);
+  return {
+    id: text(held['id']) ?? '',
+    number: number(held['number']) ?? 0,
+    summary: text(held['summary']),
+    created_at: text(held['created_at']) ?? '',
+  };
+}
+
+export function reviewsFrom(value: unknown): ReviewsRecord {
+  const held = record(value);
+  return {
+    threads: readWireFrom(held['threads'], (records) => records.map(reviewThreadFrom)),
+    reviews: readWireFrom(held['reviews'], (records) => records.map(reviewSetFrom)),
+  };
 }
 
 function mcpFrom(value: unknown): McpServers | null {

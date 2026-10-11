@@ -30,6 +30,7 @@ import ExtensionsBody from './extensions/ExtensionsBody.svelte';
 import { extensionsWire, project, recorder } from './extensions/testing';
 import Home from './home/Home.svelte';
 import Models from './models/Models.svelte';
+import Review from './review/Review.svelte';
 import ModelsBody from './models/ModelsBody.svelte';
 import { modelsWire } from './models/testing';
 import Palette from './session/Palette.svelte';
@@ -460,6 +461,21 @@ describe('axe over the rendered pages', () => {
         slot: { org: 'TestOrg', project: 'proj', label: 'lead' },
         connection: untouched(),
         wire: homeWire,
+      },
+    }).body;
+    expect(await idsOf(html)).toEqual([]);
+  });
+
+  /**
+   * The review page before its read lands: the state a server render draws,
+   * the same way the session page's is drawn above. Its populated states are
+   * the subscription's, which a server render does not run.
+   */
+  it('draws the review page with no violations', async () => {
+    const html = render(Review, {
+      props: {
+        slot: { org: 'TestOrg', project: 'proj', label: 'lead' },
+        connection: untouched(),
       },
     }).body;
     expect(await idsOf(html)).toEqual([]);

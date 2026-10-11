@@ -33,6 +33,25 @@ describe('the URLs the server serves', () => {
     expect(parseRoute(hrefFor({ name: 'extensions' }))).toEqual({ name: 'extensions' });
   });
 
+  it('resolves a seat review as a sub-path of the seat and round-trips it', () => {
+    // The plausible regression is the bare four-segment path swallowing the
+    // fifth: `/session/o/p/l/review` parsing as a label called `l` with a
+    // stray segment, which the not-found copy would then have to explain.
+    const review = {
+      name: 'review',
+      slot: { org: 'Busytools', project: 'forge', label: 'lead' },
+    } as const;
+    expect(parseRoute('/session/Busytools/forge/lead/review')).toEqual(review);
+    expect(parseRoute(hrefFor(review))).toEqual(review);
+  });
+
+  it('refuses a review path whose last segment is not `review`', () => {
+    expect(parseRoute('/session/Busytools/forge/lead/reviewe')).toEqual({ name: 'notFound' });
+    expect(parseRoute('/session/Busytools/forge/lead/review/extra')).toEqual({
+      name: 'notFound',
+    });
+  });
+
   it('refuses a path the server does not serve', () => {
     expect(parseRoute('/sessions')).toEqual({ name: 'notFound' });
     expect(parseRoute('/session/Busytools/forge/lead/extra')).toEqual({ name: 'notFound' });
