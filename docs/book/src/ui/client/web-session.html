@@ -585,42 +585,58 @@
   .term .sum { color: var(--ok); }
   /* A task that ended badly is the same line in the bad tone. */
   .term .fail { color: var(--bad); }
-  /* A systemone decision's block: the question it answered, the answer, its
-     distribution with each option's own description under it, and what it
-     cost. The winner's fill is the shipped teal, which no other rule uses.
-     A structured value draws its own words where it has any, and the value
-     whole behind a disclosure under its row - the picked shape (2026-10-06),
-     the chevron the same one every other disclosure on the page carries. */
-  .dec { border: 1px solid var(--line); border-radius: 10px; overflow: hidden;
-    background: linear-gradient(180deg, rgba(20,25,38,.42), rgba(13,17,26,.6)); }
-  .dec .verdict { display: flex; align-items: baseline; gap: 10px; padding: 10px 14px 8px; }
-  .dec .num { font-size: 21px; font-weight: 650; letter-spacing: -.02em; }
-  .dec .num.sure { color: var(--ok); }
-  .dec .num.unsure { color: var(--warn); }
-  .dec .read { font-size: var(--fs-label); color: var(--muted); }
-  .dec .read b { color: var(--text); font-weight: 500; }
-  .dec .dist { padding: 2px 14px 11px; display: grid; gap: 6px; }
-  /* The question the call asked, which the row's own title cuts to one line. */
-  .dec .q { padding: 10px 14px 0; font-size: var(--fs-label); color: var(--dim); }
-  .dec .opt { display: block; font-size: var(--fs-label); }
-  .dec .oline { display: grid; grid-template-columns: minmax(0,150px) minmax(0,1fr) 44px;
-    gap: 10px; align-items: center; }
-  /* A score level's name IS its description, so it wraps in full rather than
-     eliding; a choice's short name and its description line under it. */
-  .dec .name { color: var(--muted); }
-  .dec .crit { color: var(--dim); padding-top: 1px; }
-  .dec .opt.win .name { color: var(--text); }
-  .dec .track { display: block; height: 7px; border-radius: 99px; background: var(--s3); overflow: hidden; }
-  .dec .fill { display: block; height: 100%; border-radius: 99px; background: var(--s2); }
-  .dec .fill.win { background: var(--teal); }
-  .dec .p { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
-  .dec .opt.win .p { color: var(--text); }
-  .dec .foot { display: flex; align-items: center; gap: 12px; padding: 8px 14px 10px;
-    border-top: 1px solid var(--line); font-size: 11.5px; color: var(--dim); }
-  .dec .foot .sep { opacity: .5; }
+  /* A systemone decision's block: the question it answered, the answer as a
+     facts line, the options as a plain list in the order they were given, the
+     material it judged behind one fold, and what it cost along the bottom.
+     Low-key, like the other tools' cards: no box, no big number, no bars, the
+     winner's row the one bright element (Ved, 2026-10-12). A structured value
+     draws its own words where it has any, and the value whole behind a
+     disclosure under its row, the chevron the same one every other disclosure
+     on the page carries. */
+  .dec { container-type: inline-size; }
+  /* The answer, as the other cards state their facts: one run of label and
+     value. */
+  .dec .fam-meta.answer { margin: 7px 0 6px; color: var(--muted); }
+  /* The options: a plain list in the caller's order, each block spaced apart
+     so the eye reads one option at a time rather than a wall. The wrapper is
+     `fam-`-namespaced like the rest of the family: a bare `.opt` is the
+     question dock's flex row, and it would lay the description out beside the
+     option rather than under it. */
+  .dec .fam-list { gap: 11px; margin: 6px 0 8px; }
+  .dec .fam-list .fam-item { align-items: baseline; }
+  .dec .fam-list .fam-sub { white-space: normal; overflow-wrap: anywhere; }
+  .dec .fam-list .fam-opt.win .fam-sub,
+  .dec .fam-list .fam-opt.win .fam-when { color: var(--text); }
+  /* The description an option was given, indented under its own row. */
+  .dec .fam-desc { color: var(--dim); font-size: var(--fs-label); margin: 2px 0 0;
+    padding-left: 15px; overflow-wrap: anywhere; }
+  /* The state the decision was made on, drawn by its shape: a string as
+     prose, an object as its named fields, an array as its own rows. */
+  .dec .st-row { display: grid; grid-template-columns: minmax(0,190px) minmax(0,1fr);
+    gap: 2px 12px; margin: 2px 0; }
+  .dec .st-k { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+    overflow-wrap: anywhere; }
+  .dec .st-v { color: var(--muted); font-size: var(--fs-base); overflow-wrap: anywhere; }
+  .dec .st-v.dim { color: var(--dim); }
+  .dec .st-str { margin: 4px 0 2px; }
+  /* Under a narrow block the key sits above its value: side by side leaves
+     the value too little width and the material turns into a tall ribbon. */
+  @container (max-width: 560px) {
+    .dec .st-row { grid-template-columns: minmax(0,1fr); gap: 0; margin: 4px 0; }
+  }
+  /* The state's fold: one line naming its size, the material under it. */
+  .dec details.fold { margin: 6px 0 2px; }
+  .dec details.fold > summary { list-style: none; cursor: pointer; display: flex;
+    align-items: center; gap: 7px; font-family: var(--mono); font-size: var(--fs-label);
+    color: var(--dim); }
+  .dec details.fold > summary::-webkit-details-marker { display: none; }
+  .dec details.fold > summary:hover { color: var(--muted); }
+  .dec details.fold > summary .arw { width: 11px; height: 11px; flex: 0 0 11px; }
+  .dec details.fold[open] > summary .arw { color: var(--accent); }
+  .dec details.fold .in { padding: 2px 0 0 16px; }
   /* A structured value's disclosure, under the row's own words. */
   .dec details.raw { margin-top: 2px; }
-  .dec > details.raw { margin: 2px 14px 0; }
+  .dec > details.raw { margin: 2px 0 0; }
   .dec details.raw > summary { list-style: none; cursor: pointer; display: flex;
     align-items: center; gap: 5px; font-family: var(--mono); font-size: var(--fs-label);
     color: var(--dim); }
@@ -1891,71 +1907,83 @@ docs: Render the message body into rows.</div>
           </details>
 
           <details class="leaf" open>
-            <summary><svg class="ic gl ok"><use href="#i-decide"/></svg><span class="tn">ask noul - Is this one-line import fix mechanical and reversible?</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <summary><svg class="ic gl ok"><use href="#i-decide"/></svg><span class="tn">Is this one-line import fix mechanical and reversible?</span><span class="fam-chip ok">yes</span><span class="fam-fig">0.93</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
               <div class="dec">
-                <div class="q">Is this one-line import fix mechanical and reversible?</div>
-                <div class="verdict"><span class="num sure">0.93</span><span class="read">yes</span></div>
-                <div class="dist">
-                  <div class="opt win"><div class="oline"><span class="name">yes</span><span class="track"><span class="fill win" style="width:93%"></span></span><span class="p">0.93</span></div><div class="crit">the fix is a single import line, covered by tests</div></div>
-                  <div class="opt"><div class="oline"><span class="name">no</span><span class="track"><span class="fill" style="width:7%"></span></span><span class="p">0.07</span></div><div class="crit">it touches more than the import</div></div>
+                <div class="fam-tag">question</div>
+                <div class="fam-quote"><div class="prose"><p>Is this one-line import fix mechanical and reversible?</p></div></div>
+                <div class="fam-meta answer"><span class="lb">noul</span>0.93<span class="sep">&#183;</span><span class="lb">reads</span>yes</div>
+                <div class="fam-list">
+                  <div class="fam-opt win"><div class="fam-item"><span class="fam-sub">yes</span><span class="fam-when">0.93</span></div><div class="fam-desc">the fix is a single import line, covered by tests</div></div>
+                  <div class="fam-opt"><div class="fam-item"><span class="fam-sub">no</span><span class="fam-when">0.07</span></div><div class="fam-desc">it touches more than the import</div></div>
                 </div>
-                <div class="foot"><span>jev-1.13.0</span><span class="sep">/</span><span>392 in - 20 out</span></div>
+                <details class="fold" open>
+                  <summary><svg class="ic arw"><use href="#i-chev"/></svg>state - 2 fields</summary>
+                  <div class="in">
+                    <div class="st-row"><span class="st-k">claim</span><span class="st-v">the fix is a single import line</span></div>
+                    <div class="st-row"><span class="st-k">evidence</span><span class="st-v">covered by tests</span></div>
+                  </div>
+                </details>
+                <div class="fam-meta"><span class="lb">model</span>jev-1.13.0<span class="sep">&#183;</span><span class="lb">tokens</span>392 in / 20 out</div>
               </div>
             </div>
           </details>
           <details class="leaf" open>
-            <summary><svg class="ic gl ok"><use href="#i-decide"/></svg><span class="tn">ask choice - Which team should handle this ticket?</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <summary><svg class="ic gl ok"><use href="#i-decide"/></svg><span class="tn">Which team should handle this ticket?</span><span class="fam-chip info">pick: payments</span><span class="fam-fig">0.84</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
               <div class="dec">
-                <div class="q">Which team should handle this ticket?</div>
-                <div class="verdict"><span class="read">pick: <b>payments</b> - confidence 0.72</span></div>
-                <div class="dist">
-                  <div class="opt"><div class="oline"><span class="name">frontend</span><span class="track"><span class="fill" style="width:16%"></span></span><span class="p">0.16</span></div><div class="crit">the surface is the web client only</div></div>
-                  <div class="opt win"><div class="oline"><span class="name">payments</span><span class="track"><span class="fill win" style="width:84%"></span></span><span class="p">0.84</span></div><div class="crit">it owns the ledger and the settlement path</div></div>
+                <div class="fam-tag">question</div>
+                <div class="fam-quote"><div class="prose"><p>Which team should handle this ticket?</p></div></div>
+                <div class="fam-meta answer"><span class="lb">pick</span>payments<span class="sep">&#183;</span><span class="lb">confidence</span>0.72</div>
+                <div class="fam-list">
+                  <div class="fam-opt"><div class="fam-item"><span class="fam-sub">frontend</span><span class="fam-when">0.16</span></div><div class="fam-desc">the surface is the web client only</div></div>
+                  <div class="fam-opt win"><div class="fam-item"><span class="fam-sub">payments</span><span class="fam-when">0.84</span></div><div class="fam-desc">it owns the ledger and the settlement path</div></div>
                 </div>
-                <div class="foot"><span>jev-1.13.0</span><span class="sep">/</span><span>476 in - 70 out</span><span class="sep">/</span><span>$0.0000214</span></div>
+                <div class="fam-meta"><span class="lb">model</span>jev-1.13.0<span class="sep">&#183;</span><span class="lb">tokens</span>476 in / 70 out<span class="sep">&#183;</span><span class="lb">cost</span>$0.0000214</div>
               </div>
             </div>
           </details>
           <details class="leaf" open>
-            <summary><svg class="ic gl ok"><use href="#i-decide"/></svg><span class="tn">ask score - How urgent is this ticket?</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <summary><svg class="ic gl ok"><use href="#i-decide"/></svg><span class="tn">How urgent is this ticket?</span><span class="fam-chip plain">score 1.79 of 2</span><span class="fam-fig">conf 0.62</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
               <div class="dec">
-                <div class="q">How urgent is this ticket?</div>
-                <div class="verdict"><span class="num">1.79</span><span class="read">of 2 - between Soon - worth doing this week and Urgent - blocks others right now</span></div>
-                <div class="dist">
-                  <div class="opt"><div class="oline"><span class="name">Routine - no deadline pressure</span><span class="track"><span class="fill" style="width:8%"></span></span><span class="p">0.08</span></div></div>
-                  <div class="opt win"><div class="oline"><span class="name">Soon - worth doing this week</span><span class="track"><span class="fill win" style="width:31%"></span></span><span class="p">0.31</span></div></div>
-                  <div class="opt win"><div class="oline"><span class="name">Urgent - blocks others right now</span><span class="track"><span class="fill win" style="width:61%"></span></span><span class="p">0.61</span></div></div>
+                <div class="fam-tag">question</div>
+                <div class="fam-quote"><div class="prose"><p>How urgent is this ticket?</p></div></div>
+                <div class="fam-meta answer"><span class="lb">score</span>1.79 of 2<span class="sep">&#183;</span><span class="lb">confidence</span>0.62</div>
+                <div class="fam-list">
+                  <div class="fam-opt"><div class="fam-item"><span class="fam-sub">Routine - no deadline pressure</span><span class="fam-when">0.08</span></div></div>
+                  <div class="fam-opt win"><div class="fam-item"><span class="fam-sub">Soon - worth doing this week</span><span class="fam-when">0.31</span></div></div>
+                  <div class="fam-opt win"><div class="fam-item"><span class="fam-sub">Urgent - blocks others right now</span><span class="fam-when">0.61</span></div></div>
                 </div>
-                <div class="foot"><span>jev-1.13.0</span><span class="sep">/</span><span>410 in - 24 out</span></div>
+                <div class="fam-meta"><span class="lb">model</span>jev-1.13.0<span class="sep">&#183;</span><span class="lb">tokens</span>410 in / 24 out</div>
               </div>
             </div>
           </details>
           <details class="leaf" open>
-            <summary><svg class="ic gl ok"><use href="#i-decide"/></svg><span class="tn">ask noul - Should the rename touch the shared module now?</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <summary><svg class="ic gl ok"><use href="#i-decide"/></svg><span class="tn">Should the rename touch the shared module now?</span><span class="fam-chip warn">yes</span><span class="fam-fig">0.52</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
               <div class="dec">
-                <div class="q">Should the rename touch the shared module now?</div>
-                <div class="verdict"><span class="num unsure">0.52</span><span class="read">yes</span></div>
-                <div class="dist">
-                  <div class="opt win"><div class="oline"><span class="name">yes</span><span class="track"><span class="fill win" style="width:52%"></span></span><span class="p">0.52</span></div><div class="crit">renaming later is a second migration</div></div>
-                  <div class="opt"><div class="oline"><span class="name">no</span><span class="track"><span class="fill" style="width:48%"></span></span><span class="p">0.48</span></div><div class="crit">the module's consumers are mid-migration</div></div>
+                <div class="fam-tag">question</div>
+                <div class="fam-quote"><div class="prose"><p>Should the rename touch the shared module now?</p></div></div>
+                <div class="fam-meta answer"><span class="lb">noul</span>0.52<span class="sep">&#183;</span><span class="lb">reads</span>yes</div>
+                <div class="fam-list">
+                  <div class="fam-opt win"><div class="fam-item"><span class="fam-sub">yes</span><span class="fam-when">0.52</span></div><div class="fam-desc">renaming later is a second migration</div></div>
+                  <div class="fam-opt"><div class="fam-item"><span class="fam-sub">no</span><span class="fam-when">0.48</span></div><div class="fam-desc">the module's consumers are mid-migration</div></div>
                 </div>
-                <div class="foot"><span>jev-1.13.0</span><span class="sep">/</span><span>348 in - 20 out</span></div>
+                <div class="fam-meta"><span class="lb">model</span>jev-1.13.0<span class="sep">&#183;</span><span class="lb">tokens</span>348 in / 20 out</div>
               </div>
             </div>
           </details>
           <details class="leaf" open>
-            <summary><svg class="ic gl ok"><use href="#i-decide"/></svg><span class="tn">ask choice - Which team owns `auth.rs`?</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <summary><svg class="ic gl ok"><use href="#i-decide"/></svg><span class="tn">Which team owns `auth.rs`?</span><span class="fam-chip info">pick: billing</span><span class="fam-fig">0.84</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
               <div class="dec">
-                <div class="q">Which team owns `auth.rs`?</div>
-                <div class="verdict"><span class="read">pick: <b>billing</b> - confidence 0.72</span></div>
-                <div class="dist">
-                  <div class="opt"><div class="oline"><span class="name">frontend</span><span class="track"><span class="fill" style="width:16%"></span></span><span class="p">0.16</span></div><div class="crit">the surface is the web client only</div></div>
-                  <div class="opt win"><div class="oline"><span class="name">billing</span><span class="track"><span class="fill win" style="width:84%"></span></span><span class="p">0.84</span></div><div class="crit">owns the ledger and the settlement path</div>
+                <div class="fam-tag">question</div>
+                <div class="fam-quote"><div class="prose"><p>Which team owns <code>auth.rs</code>?</p></div></div>
+                <div class="fam-meta answer"><span class="lb">pick</span>billing<span class="sep">&#183;</span><span class="lb">confidence</span>0.72</div>
+                <div class="fam-list">
+                  <div class="fam-opt"><div class="fam-item"><span class="fam-sub">frontend</span><span class="fam-when">0.16</span></div><div class="fam-desc">the surface is the web client only</div></div>
+                  <div class="fam-opt win"><div class="fam-item"><span class="fam-sub">billing</span><span class="fam-when">0.84</span></div><div class="fam-desc">owns the ledger and the settlement path</div>
                     <details class="raw">
                       <summary><svg class="ic arw"><use href="#i-chev"/></svg>structured value - 2 fields</summary>
                       <pre>{
@@ -1968,7 +1996,7 @@ docs: Render the message body into rows.</div>
                     </details>
                   </div>
                 </div>
-                <div class="foot"><span>jev-1.13.0</span><span class="sep">/</span><span>476 in - 70 out</span><span class="sep">/</span><span>$0.0000214</span></div>
+                <div class="fam-meta"><span class="lb">model</span>jev-1.13.0<span class="sep">&#183;</span><span class="lb">tokens</span>476 in / 70 out<span class="sep">&#183;</span><span class="lb">cost</span>$0.0000214</div>
               </div>
             </div>
           </details>

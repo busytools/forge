@@ -1633,40 +1633,57 @@ details.leaf.running > summary { color: var(--text); }
    summary half, and a task that ended badly is the same line in the bad tone. */
 .term .sum { color: var(--ok); }
 .term .fail { color: var(--bad); }
-/* A systemone decision's block: the question it answered, the answer, its
-   distribution with each option's own description under it, and what it cost.
-   The winner's fill is the shipped teal, which no other rule uses. */
-.dec { border: 1px solid var(--line); border-radius: var(--r); overflow: hidden;
-  background: linear-gradient(180deg, rgba(20,25,38,.42), rgba(13,17,26,.6)); }
-/* The question the call asked, which the row's own title cuts to one line. */
-.dec .q { padding: 10px 14px 0; font-size: var(--fs-label); color: var(--dim); }
-.dec .verdict { display: flex; align-items: baseline; gap: 10px; padding: 10px 14px 8px; }
-.dec .num { font-size: 21px; font-weight: 650; letter-spacing: -.02em; }
-.dec .num.sure { color: var(--ok); }
-.dec .num.unsure { color: var(--warn); }
-.dec .read { font-size: var(--fs-label); color: var(--muted); }
-.dec .read b { color: var(--text); font-weight: 500; }
-.dec .dist { padding: 2px 14px 11px; display: grid; gap: 6px; }
-.dec .opt { display: block; font-size: var(--fs-label); }
-.dec .oline { display: grid; grid-template-columns: minmax(0,150px) minmax(0,1fr) 44px;
-  gap: 10px; align-items: center; }
-/* A score level's name IS its description, so it wraps in full rather than
-   eliding; a choice's short name and its description line under it. */
-.dec .name { color: var(--muted); }
-.dec .crit { color: var(--dim); padding-top: 1px; }
-.dec .opt.win .name { color: var(--text); }
-.dec .track { display: block; height: 7px; border-radius: 99px; background: var(--s3); overflow: hidden; }
-.dec .fill { display: block; height: 100%; border-radius: 99px; background: var(--s2); }
-.dec .fill.win { background: var(--teal); }
-.dec .p { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
-.dec .opt.win .p { color: var(--text); }
-.dec .foot { display: flex; align-items: center; gap: 12px; padding: 8px 14px 10px;
-  border-top: 1px solid var(--line); font-size: 11.5px; color: var(--dim); }
-.dec .foot .sep { opacity: .5; }
+/* A systemone decision's block: the question it answered, the answer as a
+   facts line, the options as a plain list in the order they were given, the
+   material it judged behind one fold, and what it cost along the bottom.
+   Low-key, like the other tools' cards: no box, no big number, no bars, the
+   winner's row the one bright element (Ved, 2026-10-12). The block is the
+   container the state's columns are measured against. */
+.dec { container-type: inline-size; }
+/* The answer, as the other cards state their facts: one run of label and
+   value. */
+.dec .fam-meta.answer { margin: 7px 0 6px; color: var(--muted); }
+/* The options: a plain list in the caller's order, each block spaced apart so
+   the eye reads one option at a time rather than a wall. The wrapper is
+   `fam-`-namespaced like the rest of the family: a bare `.opt` is the
+   question dock's flex row, and it would lay the description out beside the
+   option rather than under it. */
+.dec .fam-list { gap: 11px; margin: 6px 0 8px; }
+.dec .fam-list .fam-item { align-items: baseline; }
+.dec .fam-list .fam-sub { white-space: normal; overflow-wrap: anywhere; }
+.dec .fam-list .fam-opt.win .fam-sub,
+.dec .fam-list .fam-opt.win .fam-when { color: var(--text); }
+/* The description an option was given, indented under its own row. */
+.dec .fam-desc { color: var(--dim); font-size: var(--fs-label); margin: 2px 0 0;
+  padding-left: 15px; overflow-wrap: anywhere; }
+/* The state the decision was made on, drawn by its shape: a string as prose,
+   an object as its named fields, an array as its own rows. */
+.dec .st-row { display: grid; grid-template-columns: minmax(0,190px) minmax(0,1fr);
+  gap: 2px 12px; margin: 2px 0; }
+.dec .st-k { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+  overflow-wrap: anywhere; }
+.dec .st-v { color: var(--muted); font-size: var(--fs-base); overflow-wrap: anywhere; }
+.dec .st-v.dim { color: var(--dim); }
+.dec .st-str { margin: 4px 0 2px; }
+/* Under a narrow block the key sits above its value: side by side leaves the
+   value too little width and the material turns into a tall ribbon. */
+@container (max-width: 560px) {
+  .dec .st-row { grid-template-columns: minmax(0,1fr); gap: 0; margin: 4px 0; }
+}
+/* The state's fold: one line naming its size, the material under it. */
+.dec details.fold { margin: 6px 0 2px; }
+.dec details.fold > summary { list-style: none; cursor: pointer; display: flex;
+  align-items: center; gap: 7px; font-family: var(--mono); font-size: var(--fs-label);
+  color: var(--dim); }
+.dec details.fold > summary::-webkit-details-marker { display: none; }
+.dec details.fold > summary:hover { color: var(--muted); }
+.dec details.fold > summary .arw { width: 11px; height: 11px; flex: 0 0 11px; }
+.dec details.fold[open] > summary .arw { color: var(--accent); }
+.dec details.fold .in { padding: 2px 0 0 16px; }
 /* A structured value's disclosure, under the row's own words: the value in
    full, its chevron turned and accented by the sheet's own open rules. */
 .dec details.raw { margin-top: 2px; }
-.dec > details.raw { margin: 2px 14px 0; }
+.dec > details.raw { margin: 2px 0 0; }
 .dec details.raw > summary { list-style: none; cursor: pointer; display: flex;
   align-items: center; gap: 5px; font-family: var(--mono); font-size: var(--fs-label);
   color: var(--dim); }

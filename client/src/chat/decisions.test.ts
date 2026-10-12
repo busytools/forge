@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { decisionOf } from './decisions';
+import { decisionOf, decisionTitle } from './decisions';
 
 /** A tool result as the wire delivers one: text parts, and whether it failed. */
 function result(text: string, is_error = false) {
@@ -50,6 +50,9 @@ describe('reading the three primitives', () => {
       answer: { kind: 'noul', noul: 0.93 },
       question: { text: 'Is this mechanical?', raw: null },
       criteria: {},
+      state: { kind: 'prose', text: 'a one-line import fix', size: '21 chars' },
+      chips: [{ text: 'yes', tone: 'ok' }],
+      figure: '0.93',
     });
   });
 
@@ -138,6 +141,9 @@ describe('reading the three primitives', () => {
       },
       question: null,
       criteria: {},
+      state: null,
+      chips: [{ text: 'pick: payments', tone: 'info' }],
+      figure: '0.84',
     });
   });
 
@@ -444,5 +450,250 @@ describe('a structured value, read the way the block draws it', () => {
       ],
       confidence: null,
     });
+  });
+});
+
+describe('the state the call judged', () => {
+  // The state is the material the decision was made on, and it went unread
+  // until the picked card: it is the one thing that answers what all was used
+  // in the call, and the longest part of most of them (Ved, 2026-10-12).
+  const answer = (kind: 'noul' | 'choice'): string =>
+    kind === 'noul'
+      ? JSON.stringify({ model: 'm', answer: { type: 'noul', noul: 0.6 } })
+      : JSON.stringify({
+          model: 'm',
+          answer: { type: 'choice', choice: 'a', probabilities: { a: 1 } },
+        });
+
+  it('reads a string state as prose, with the size the fold line names', () => {
+    const decision = decisionOf(
+      'mcp__forge__systemone__ask_noul',
+      { state: 'the ticket moves to the payments team', instructions: 'Which team?' },
+      result(answer('noul')),
+    );
+    expect(decision?.state).toEqual({
+      kind: 'prose',
+      text: 'the ticket moves to the payments team',
+      size: '37 chars',
+    });
+  });
+
+  it('reads an object state as its named fields, a nested value as the count of what it holds', () => {
+    const state = { claim: 'the PR is ready', evidence: { ci: 'green', review: 'passed' } };
+    const decision = decisionOf(
+      'mcp__forge__systemone__ask_noul',
+      { state, instructions: 'Is it ready?' },
+      result(answer('noul')),
+    );
+    expect(decision?.state).toEqual({
+      kind: 'lines',
+      lines: [
+        { key: 'claim', text: 'the PR is ready', depth: 0, dim: false },
+        { key: 'evidence', text: '2 fields', depth: 0, dim: true },
+        { key: 'ci', text: 'green', depth: 1, dim: false },
+        { key: 'review', text: 'passed', depth: 1, dim: false },
+      ],
+      size: '2 fields',
+    });
+  });
+
+  it('reads an array state as its own rows, and a null value as the null it is', () => {
+    const decision = decisionOf(
+      'mcp__forge__systemone__ask_choice',
+      { state: ['a.rs', 'b.rs'], instructions: 'Which file?' },
+      result(answer('choice')),
+    );
+    expect(decision?.state).toEqual({
+      kind: 'lines',
+      lines: [
+        { key: null, text: 'a.rs', depth: 0, dim: false },
+        { key: null, text: 'b.rs', depth: 0, dim: false },
+      ],
+      size: '2 items',
+    });
+
+    const withNull = decisionOf(
+      'mcp__forge__systemone__ask_choice',
+      { state: { claim: null }, instructions: 'Which file?' },
+      result(answer('choice')),
+    );
+    expect(withNull?.state).toEqual({
+      kind: 'lines',
+      lines: [{ key: 'claim', text: 'null', depth: 0, dim: true }],
+      size: '1 field',
+    });
+  });
+
+  it('draws a primitive state as its own word, which has no size to name', () => {
+    // The schema takes any JSON, so a caller can send one; it is drawn rather
+    // than dropped like everything else a call carried.
+    const decision = decisionOf(
+      'mcp__forge__systemone__ask_noul',
+      { state: 3, instructions: 'Which team?' },
+      result(answer('noul')),
+    );
+    expect(decision?.state).toEqual({ kind: 'prose', text: '3', size: null });
+
+    const nulled = decisionOf(
+      'mcp__forge__systemone__ask_noul',
+      { state: null, instructions: 'Which team?' },
+      result(answer('noul')),
+    );
+    expect(nulled?.state, 'a null state is a value the caller sent, not an absent one').toEqual({
+      kind: 'prose',
+      text: 'null',
+      size: null,
+    });
+  });
+
+  it('carries no state at all where the call sent none', () => {
+    const decision = decisionOf(
+      'mcp__forge__systemone__ask_noul',
+      { instructions: 'Which team?' },
+      result(answer('noul')),
+    );
+    expect(decision?.state).toBeNull();
+  });
+});
+
+describe("the distribution in the caller's own order", () => {
+  it('draws the options in the order the criteria were written, a row they never named after them', () => {
+    // The result's own key order is alphabetical and carries nothing; the
+    // order the caller wrote is what the model saw and what a reader
+    // recognises as the options they gave (Ved, 2026-10-12).
+    const text = JSON.stringify({
+      model: 'm',
+      answer: {
+        type: 'choice',
+        choice: 'no mid-flow cue',
+        probabilities: {
+          'spawn-time absence': 0.4,
+          'no mid-flow cue': 0.6,
+          'no visible benefit': 0,
+        },
+      },
+    });
+    const decision = decisionOf(
+      'mcp__forge__systemone__ask_choice',
+      {
+        instructions: 'Which cause?',
+        criteria: {
+          'no visible benefit': 'nobody saw it help',
+          'spawn-time absence': 'never injected',
+        },
+      },
+      result(text),
+    );
+    expect(decision?.answer).toEqual({
+      kind: 'choice',
+      choice: 'no mid-flow cue',
+      probabilities: [
+        { name: 'no visible benefit', value: 0 },
+        { name: 'spawn-time absence', value: 0.4 },
+        { name: 'no mid-flow cue', value: 0.6 },
+      ],
+      confidence: null,
+    });
+  });
+
+  it("keeps a noul's two sides in their own order, which no criteria names", () => {
+    const text = JSON.stringify({ model: 'm', answer: { type: 'noul', noul: 0.4 } });
+    const decision = decisionOf(
+      'mcp__forge__systemone__ask_noul',
+      { instructions: 'Is it?', criteria: { false: 'anything else', true: 'a single line' } },
+      result(text),
+    );
+    expect(decision?.answer).toEqual({ kind: 'noul', noul: 0.4 });
+  });
+});
+
+describe('the answer as the row states it', () => {
+  const chipsOf = (name: string, input: unknown, text: string) =>
+    decisionOf(name, input, result(text));
+
+  it('chips a noul as the word it reads as, toned by how sure it is, the number as the figure', () => {
+    const noul = (value: number) =>
+      chipsOf(
+        'mcp__forge__systemone__ask_noul',
+        { instructions: 'Is it?' },
+        JSON.stringify({ model: 'm', answer: { type: 'noul', noul: value } }),
+      );
+    expect(noul(0.93), 'sure').toMatchObject({
+      chips: [{ text: 'yes', tone: 'ok' }],
+      figure: '0.93',
+    });
+    expect(noul(0.72), 'between, which carries no tone').toMatchObject({
+      chips: [{ text: 'yes', tone: 'plain' }],
+      figure: '0.72',
+    });
+    expect(noul(0.52), 'a coin flip').toMatchObject({
+      chips: [{ text: 'yes', tone: 'warn' }],
+      figure: '0.52',
+    });
+    expect(noul(0.3), 'and the side that lost is still the word it reads as').toMatchObject({
+      chips: [{ text: 'no', tone: 'plain' }],
+      figure: '0.3',
+    });
+  });
+
+  it("chips a choice with its pick, the pick's own probability as the figure", () => {
+    const text = JSON.stringify({
+      model: 'm',
+      answer: {
+        type: 'choice',
+        choice: 'payments',
+        probabilities: { frontend: 0.16, payments: 0.84 },
+      },
+    });
+    expect(chipsOf('mcp__forge__systemone__ask_choice', {}, text)).toMatchObject({
+      chips: [{ text: 'pick: payments', tone: 'info' }],
+      figure: '0.84',
+    });
+
+    const bare = JSON.stringify({ model: 'm', answer: { type: 'choice', choice: 'payments' } });
+    expect(
+      chipsOf('mcp__forge__systemone__ask_choice', {}, bare),
+      'a result with no distribution draws no figure',
+    ).toMatchObject({ chips: [{ text: 'pick: payments', tone: 'info' }], figure: null });
+  });
+
+  it('chips a score with where it landed and its confidence as the figure', () => {
+    const text = JSON.stringify({
+      model: 'm',
+      answer: { type: 'score', score: 2, probabilities: { 0: 0, 1: 0, 2: 1 }, confidence: 1 },
+    });
+    expect(
+      chipsOf('mcp__forge__systemone__ask_score', { criteria: ['low', 'mid', 'high'] }, text),
+    ).toMatchObject({
+      chips: [{ text: 'score 2 of 2', tone: 'plain' }],
+      figure: 'conf 1',
+    });
+
+    const noLevels = JSON.stringify({ model: 'm', answer: { type: 'score', score: 2 } });
+    expect(
+      chipsOf('mcp__forge__systemone__ask_score', {}, noLevels),
+      'no levels to be a score of, and no confidence to state',
+    ).toMatchObject({ chips: [{ text: 'score 2', tone: 'plain' }], figure: null });
+  });
+});
+
+describe("the line a decision's row is titled by", () => {
+  it("is the question's first line, never the tool's name", () => {
+    expect(
+      decisionTitle({ instructions: 'Is this mechanical and reversible?\nAnd nothing else.' }),
+    ).toBe('Is this mechanical and reversible?');
+  });
+
+  it('names a structured question by its own naming field', () => {
+    expect(decisionTitle({ instructions: { question: 'Is the claim green?' } })).toBe(
+      'Is the claim green?',
+    );
+  });
+
+  it("is null where the call named nothing, which is the caller's fallback to take", () => {
+    expect(decisionTitle({})).toBeNull();
+    expect(decisionTitle({ instructions: '   ' })).toBeNull();
+    expect(decisionTitle({ instructions: { 'the ask': 'unnamed' } })).toBeNull();
+    expect(decisionTitle({ instructions: 3 })).toBeNull();
   });
 });

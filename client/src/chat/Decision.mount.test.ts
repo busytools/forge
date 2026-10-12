@@ -20,17 +20,25 @@ afterEach(async () => {
   document.body.innerHTML = '';
 });
 
-const decision = (levels: { name: string; value: number | null }[]): Parsed => ({
+const decision = (over: Partial<Parsed> = {}): Parsed => ({
   model: 'jev-1.13.0',
   usage: null,
   answer: {
     kind: 'score',
     score: 1.5,
-    levels: levels.map((level) => ({ ...level, raw: null })),
+    levels: [
+      { name: 'Soon', value: 0.3, raw: null },
+      { name: 'Soon', value: 0.4, raw: null },
+      { name: 'Urgent', value: 0.3, raw: null },
+    ],
     confidence: null,
   },
   question: null,
   criteria: {},
+  state: null,
+  chips: [{ text: 'score 1.5 of 2', tone: 'plain' }],
+  figure: null,
+  ...over,
 });
 
 describe('the distribution the runtime draws', () => {
@@ -38,26 +46,15 @@ describe('the distribution the runtime draws', () => {
     // The server bounds a criteria list's COUNT only, so two levels may share
     // a name; naming the rows after them throws `each_key_duplicate` here and
     // takes the whole lane down with it.
-    app = mount(Decision, {
-      target: document.body,
-      props: {
-        decision: decision([
-          { name: 'Soon', value: 0.3 },
-          { name: 'Soon', value: 0.4 },
-          { name: 'Urgent', value: 0.3 },
-        ]),
-      },
-    });
+    app = mount(Decision, { target: document.body, props: { decision: decision() } });
     flushSync();
 
-    expect(document.querySelectorAll('.opt')).toHaveLength(3);
+    expect(document.querySelectorAll('.fam-opt')).toHaveLength(3);
   });
 
   it('draws a structured value onto its own open, question and criterion alike', () => {
     const value = { label: 'owns the ledger and the settlement path', files: ['a.rs'] };
-    const parsed: Parsed = {
-      model: 'jev-1.13.0',
-      usage: null,
+    const parsed: Parsed = decision({
       answer: {
         kind: 'choice',
         choice: 'billing',
@@ -71,7 +68,7 @@ describe('the distribution the runtime draws', () => {
       criteria: {
         billing: { text: 'owns the ledger and the settlement path', raw: value },
       },
-    };
+    });
 
     app = mount(Decision, { target: document.body, props: { decision: parsed } });
     flushSync();
@@ -94,6 +91,65 @@ describe('the distribution the runtime draws', () => {
     // carry both words above.
     expect(document.body.textContent ?? '', 'the pretty form, indentation and all').toContain(
       JSON.stringify(value, null, 2),
+    );
+  });
+
+  it('draws the state onto its own open, by the shape it arrived in', () => {
+    const parsed: Parsed = decision({
+      state: {
+        kind: 'lines',
+        lines: [
+          { key: 'claim', text: 'the PR is ready', depth: 0, dim: false },
+          { key: 'evidence', text: '2 fields', depth: 0, dim: true },
+          { key: 'ci', text: 'green', depth: 1, dim: false },
+        ],
+        size: '2 fields',
+      },
+    });
+
+    app = mount(Decision, { target: document.body, props: { decision: parsed } });
+    flushSync();
+    expect(document.body.textContent ?? '', 'closed, the material waits').not.toContain(
+      'the PR is ready',
+    );
+
+    const fold = document.querySelector('details.fold');
+    if (fold instanceof HTMLDetailsElement) {
+      fold.open = true;
+      fold.dispatchEvent(new Event('toggle'));
+    }
+    flushSync();
+
+    expect(document.body.textContent ?? '', 'the fold line names its size').toContain(
+      'state - 2 fields',
+    );
+    expect(document.body.textContent ?? '', 'and the material draws under it').toContain(
+      'the PR is ready',
+    );
+    expect(
+      document.querySelectorAll('.st-row').length,
+      'one row per line the read handed over',
+    ).toBe(3);
+  });
+
+  it('draws a string state as prose under the same fold', () => {
+    const parsed: Parsed = decision({
+      state: { kind: 'prose', text: 'the ticket moves to payments', size: '28 chars' },
+    });
+
+    app = mount(Decision, { target: document.body, props: { decision: parsed } });
+    flushSync();
+
+    const fold = document.querySelector('details.fold');
+    if (fold instanceof HTMLDetailsElement) {
+      fold.open = true;
+      fold.dispatchEvent(new Event('toggle'));
+    }
+    flushSync();
+
+    const quote = document.querySelector('.st-str');
+    expect(quote?.textContent ?? '', 'the material as prose, under its own class').toBe(
+      'the ticket moves to payments',
     );
   });
 });

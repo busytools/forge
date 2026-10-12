@@ -11,7 +11,7 @@
  */
 
 import { languageOf } from './code';
-import { decisionOf, decisionWord, type Decision } from './decisions';
+import { decisionOf, decisionTitle, decisionWord, type Decision } from './decisions';
 import {
   browserVerb,
   isBrowserTool,
@@ -22,7 +22,7 @@ import {
   rowOf,
 } from './families';
 import { forgeCardOf, forgeRowTitle, type ForgeCard } from './forge';
-import { firstLine, headline, stripEscapes, toolName } from './text';
+import { headline, stripEscapes, toolName } from './text';
 
 /** What a call's row opens on. */
 export type CallBody =
@@ -542,15 +542,12 @@ function hunk(old: string, added: string): CallBody[] {
  * this follows.
  */
 export function titleOf(name: string, input: unknown): string {
-  // A decision's row leads with the tool word and the question it was asked:
-  // the tool's raw name reads as plumbing, and the question is the one thing
-  // on the row a reader scans for.
+  // A decision's row IS the question it asked: the tool word reads as plumbing
+  // a reader scans past, and the question is the one thing they scan for
+  // (Ved, 2026-10-12). A call that named nothing keeps the word, which is the
+  // same fallback every other family's row has.
   const word = decisionWord(name);
-  if (word !== null) {
-    const instructions = field(input, 'instructions');
-    const first = instructions === null ? '' : firstLine(instructions).trim();
-    return first === '' ? word : `${word} - ${first}`;
-  }
+  if (word !== null) return decisionTitle(input) ?? word;
   const said = headline(name, input);
   const named = said === name ? toolName(name) : said;
   // **A browser call says `browser`, not the driver's server name.** These
