@@ -327,6 +327,10 @@ pub struct Workspace {
     /// tools in `mcp::browser` ask through it, and the transport registers
     /// the connection that answers into it.
     pub(crate) browser: Arc<crate::browser::BrowserRelay>,
+    /// How many client connections are attached, noted by the transport per
+    /// connection. A document hand-off reads it before claiming an open: the
+    /// terminal is not counted, because it draws no document viewer.
+    pub(crate) attached_clients: std::sync::atomic::AtomicUsize,
     /// The model catalogue: the last fetched feed and what the last check
     /// did. Loaded from its cache at boot, refreshed by
     /// `start_dictate_catalogue` and `Command::DictateCatalogueCheck`, and
@@ -1621,6 +1625,7 @@ impl Workspace {
             dictate_runtime: Mutex::new(crate::dictate::DictateRuntime::default()),
             dictate_device_pick: Mutex::new(None),
             browser: Arc::new(crate::browser::BrowserRelay::new()),
+            attached_clients: std::sync::atomic::AtomicUsize::new(0),
             dictate_catalogue: Mutex::new(crate::catalogue::CatalogueState::default()),
             dictate_install: Mutex::new(crate::install::InstallState::default()),
             plugin_cli: Mutex::new(crate::plugins::PluginCli::real()),
@@ -1741,6 +1746,28 @@ impl Workspace {
     /// the browser hand-off this does not park: the hand-off's tool answers
     /// here with what the read resolved to, and a review the reader leaves
     /// arrives later as its own event. A refused read raises nothing.
+    /// Note a client connection attached, and give it back when it goes.
+    /// The transport's per-connection guard calls these.
+    pub fn note_client_attached(&self) {
+        self.attached_clients.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The counterpart of [`Self::note_client_attached`].
+    pub fn note_client_detached(&self) {
+        self.attached_clients.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Whether any client connection is attached. The terminal is not a
+    /// client here: it draws no document viewer.
+    fn client_attached(&self) -> bool {
+        self.attached_clients.load(std::sync::atomic::Ordering::Relaxed) > 0
+    }
+
+    /// What a hand-off answers when nothing is attached to open the
+    /// document on.
+    pub const NO_VIEWER_CLIENT: &str = "no client is connected, so the document cannot open - the terminal draws no document \
+         viewer";
+
     pub fn hand_off_document(
         &self,
         seat: &SessionSlot,
@@ -1758,11 +1785,17 @@ impl Workspace {
         )
         .map_err(|refusal| refusal.to_string())?;
         let resolved = read.path.to_string_lossy().into_owned();
-        let _ = self.update_sender().send(crate::protocol::SessionUpdate::DocumentHandOff {
-            key: seat.clone(),
-            path: resolved.clone(),
-            reviewable: read.reviewable,
-        });
+        // The open is claimed only where something can draw it: a client is
+        // attached, and the raise landed on a subscriber.
+        let raised = self.client_attached()
+            && self.update_sender().send(crate::protocol::SessionUpdate::DocumentHandOff {
+                key: seat.clone(),
+                path: resolved.clone(),
+                reviewable: read.reviewable,
+            });
+        if !raised {
+            return Err(Self::NO_VIEWER_CLIENT.to_owned());
+        }
         Ok(resolved)
     }
 
@@ -17417,6 +17450,7 @@ provider = "anthropic"
         // The read answers the CANONICAL path (the `/var` -> `/private/var`
         // case on this machine), which is what a viewer deep-links by.
         let expected = cwd.canonicalize().expect("canonical").join("docs/readme.md");
+        ws.note_client_attached();
 
         let resolved =
             ws.hand_off_document(&session_key, "docs/readme.md", true).expect("the hand-off lands");
@@ -17461,6 +17495,55 @@ provider = "anthropic"
                 .all(|update| !matches!(update, SessionUpdate::DocumentHandOff { .. })),
             "a refusal is not a hand-off",
         );
+    }
+
+    /// **A hand-off claims an open only where something can draw it.** With
+    /// no client attached, the raise would cross the fan-out and reach the
+    /// terminal, which draws no document viewer - so the tool refuses with
+    /// the reason instead of answering a path as though a viewer had opened.
+    /// A client attaching (the transport notes each connection) is what
+    /// makes the same hand-off land, and its leaving takes the claim back.
+    #[test]
+    fn a_hand_off_claims_an_open_only_with_a_client_attached() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().to_str().expect("utf8").to_owned();
+        let (ws, mut updates) = Workspace::testing_stub();
+        let (project_root, session_key) = seed_project_and_worker(
+            &ws,
+            "forge",
+            &root,
+            "implementer",
+            "worker-uuid-hand-off-gate",
+            true,
+        );
+        let cwd = project_root.join(".claude/worktrees/implementer");
+        std::fs::create_dir_all(cwd.join("docs")).expect("the worktree");
+        std::fs::write(cwd.join("docs/readme.md"), b"# hi\n").expect("the document");
+
+        let refused = ws
+            .hand_off_document(&session_key, "docs/readme.md", false)
+            .expect_err("no client, so nothing to open on");
+        assert_eq!(refused, Workspace::NO_VIEWER_CLIENT, "the refusal is the named one");
+        assert!(
+            std::iter::from_fn(|| updates.try_recv().ok())
+                .all(|update| !matches!(update, SessionUpdate::DocumentHandOff { .. })),
+            "and nothing was raised at the terminal",
+        );
+
+        ws.note_client_attached();
+        ws.hand_off_document(&session_key, "docs/readme.md", false)
+            .expect("a client attached is what the hand-off waits for");
+        assert!(
+            std::iter::from_fn(|| updates.try_recv().ok())
+                .any(|update| matches!(update, SessionUpdate::DocumentHandOff { .. })),
+            "and now the raise goes out",
+        );
+
+        ws.note_client_detached();
+        let refused = ws
+            .hand_off_document(&session_key, "docs/readme.md", false)
+            .expect_err("the client left, so the open is unclaimed again");
+        assert_eq!(refused, Workspace::NO_VIEWER_CLIENT);
     }
 
     /// **A document deleted between the hand-off and a later open of its

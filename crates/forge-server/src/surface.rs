@@ -199,6 +199,18 @@ impl ViewSurface {
         self.workspace.cli_version()
     }
 
+    /// Register this connection as an attached client for as long as it
+    /// lives, so a document hand-off can tell a viewer exists to open on.
+    /// The transport's per-connection guard calls these two.
+    pub fn client_attached(&self) {
+        self.workspace.note_client_attached();
+    }
+
+    /// The counterpart of [`Self::client_attached`].
+    pub fn client_detached(&self) {
+        self.workspace.note_client_detached();
+    }
+
     /// One document, read out of the seat's own tree for a viewer's route.
     ///
     /// `path` resolves against the session's working directory and

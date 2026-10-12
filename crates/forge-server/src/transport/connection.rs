@@ -129,6 +129,25 @@ struct BrowserRole {
     id: u64,
 }
 
+/// Counts this connection among the attached clients for as long as it
+/// lives, so a document hand-off can tell a viewer exists to open on. A
+/// guard, for the same reason [`Holds`] is one: the count must come back
+/// down however the connection ends, a dropped socket included.
+struct AttachedClient(Arc<ViewSurface>);
+
+impl AttachedClient {
+    fn new(surface: &Arc<ViewSurface>) -> Self {
+        surface.client_attached();
+        Self(Arc::clone(surface))
+    }
+}
+
+impl Drop for AttachedClient {
+    fn drop(&mut self) {
+        self.0.client_detached();
+    }
+}
+
 impl Drop for BrowserRole {
     fn drop(&mut self) {
         self.relay.unregister(self.id);
@@ -208,6 +227,9 @@ async fn drive(socket: &mut WebSocket, state: &Arc<TransportState>) -> anyhow::R
     // the updates that come back. Minted here so the teardown closes the
     // take this connection started and no other.
     let me = mint_connection_id();
+    // This connection is a client that can draw the viewer for as long as it
+    // lives; the guard hands the count back on the way out.
+    let _attached = AttachedClient::new(&state.surface);
     let mut watched: Vec<Subject> = Vec::new();
     // The seats THIS connection is holding, which is not the same list as the
     // seats it watches: every session subscribe holds - a sessionless seat's
