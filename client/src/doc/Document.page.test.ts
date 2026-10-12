@@ -304,6 +304,27 @@ describe('the reviewable document', () => {
     expect(nudge?.text).toContain(`doc:${PATH}`);
   });
 
+  /** **A link inside the block is the link's.** A click landing on an anchor
+   *  navigates; it must not also open the composer under the navigation. */
+  it('leaves a link inside a block alone', () => {
+    drawReviewable({
+      kind: 'landed',
+      document_kind: 'markdown',
+      bytes: enc('# hi\n\nsee [the plan](./plan.md) for more\n'),
+      reviewable: true,
+      content_hash: '42',
+    });
+
+    const link = document.querySelector('.doc-block a');
+    expect(link, 'the markdown link rendered').not.toBeNull();
+    link?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    flushSync();
+    expect(
+      document.querySelector('.doc-compose'),
+      'the block did not open its composer over the link',
+    ).toBeNull();
+  });
+
   /** **Every opened document draws its one door.** A PDF has no comments
    *  and no review, but it still parked a call: the done answers it and is
    *  the way back - the same single verb every state carries. */

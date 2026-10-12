@@ -326,7 +326,13 @@
           role="group"
           tabindex="0"
           aria-label="comment on this part of the document"
-          onclick={() => openComposer(row)}
+          onclick={(event) => {
+            // A link inside the block is the link's: the block is the comment
+            // target, and a click that meant the link must not also open the
+            // composer under the navigation.
+            if (event.target instanceof Element && event.target.closest('a') !== null) return;
+            openComposer(row);
+          }}
           onkeydown={(event) => {
             if (event.key === 'Enter' || event.key === ' ') {
               event.preventDefault();
