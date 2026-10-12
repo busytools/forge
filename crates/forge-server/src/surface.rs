@@ -200,7 +200,9 @@ impl ViewSurface {
 
     /// The conversation the session at `slot` holds, read from its own
     /// transcript on disk: the same read a resume performs, for a view
-    /// that arrived after the session was already running.
+    /// that arrived after the session was already running or one opening a
+    /// seat that is asleep (the id is the live occupant's when there is one,
+    /// and the store's own row otherwise - `transcript_place` resolves it).
     ///
     /// Subscribe first, then call this. The read is the baseline the stream
     /// is applied on top of, so a message may be in both: a view resolves
@@ -233,13 +235,13 @@ impl ViewSurface {
     /// has nothing to draw.
     ///
     /// **This is the surface's read for a view that does not hold its own,
-    /// and the socket stopped being that view.** The transport holds a
-    /// conversation the session task seeds, so it never walks a file on a
-    /// client's request; the terminal keeps its own copy in session state.
-    /// Neither is a reason the verb is wrong - a third view reads through it,
-    /// which is what the surface exists for - and its callers today are the
-    /// surface's own tests and the measurement harness, which is what a
-    /// surface test is for rather than a sign it is unused.
+    /// and the transport reads it only for a seat it holds nothing for.**
+    /// A live seat's conversation is the one the session task seeds, so no
+    /// request walks a file for it; a sleeping one has no task to ask and
+    /// this read is what answers it (`transport::wire::seed_from_transcript`).
+    /// The terminal keeps its own copy in session state. The verb's other
+    /// callers are the surface's own tests and the measurement harness, which
+    /// is what a surface test is for rather than a sign it is unused.
     pub fn conversation(&self, slot: &SessionSlot, cwd_raw: &Path) -> ConversationHistory {
         let Some((session_id, cwd)) = self.transcript_place(slot, cwd_raw) else {
             return ConversationHistory::default();
@@ -284,15 +286,20 @@ impl ViewSurface {
 
     /// The session id and the working directory a transcript read for `slot`
     /// needs, each unmet case recorded as it was met.
+    ///
+    /// **The id is the live occupant's when there is one, and the store's own
+    /// row otherwise.** A sleeping seat still has a session - the one a wake
+    /// resumes - and its transcript is what a view opening on it reads, so a
+    /// read that resolved only pooled sessions drew a sleeping seat empty.
     fn transcript_place(&self, slot: &SessionSlot, cwd_raw: &Path) -> Option<(String, String)> {
-        let Some(session_id) = self.workspace.running_session_id_for(slot) else {
+        let Some(session_id) = self.workspace.transcript_session_id_for(slot) else {
             tracing::debug!(
-                event_name = "conversation_no_pooled_session",
+                event_name = "conversation_no_session",
                 org = slot.org(),
                 project = slot.project(),
                 label = slot.label(),
-                "no session is pooled for this slot, so nothing here can find its \
-                 transcript; drawing the conversation empty",
+                "no session is recorded for this slot - nothing live and no stored id - \
+                 so nothing here can find its transcript; drawing the conversation empty",
             );
             return None;
         };
@@ -521,9 +528,9 @@ mod tests {
         assert!(read.messages.is_empty(), "no recorded cwd reads as empty, not as a stranger's");
     }
 
-    /// The verb reads the slot's own transcript, and a slot with no
-    /// occupant reads as empty: a view arriving before a session connects
-    /// must render an empty conversation, not another session's.
+    /// The verb reads the slot's own transcript, and a slot with no session
+    /// reads as empty: a view arriving before a session exists must render an
+    /// empty conversation, not another session's.
     #[test]
     fn conversation_reads_the_slot_and_not_a_neighbour() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -554,7 +561,7 @@ mod tests {
         assert_eq!(read_a.messages.len(), 2, "each slot reads its own transcript");
         assert_eq!(read_b.messages.len(), 3, "and the neighbour reads its own, not this one");
         let none = surface.conversation(&idle, &cwd);
-        assert!(none.messages.is_empty(), "no occupant reads as empty");
+        assert!(none.messages.is_empty(), "a slot with no session reads as empty");
     }
 
     /// A view drawing an empty conversation with nothing recorded gives a
@@ -582,11 +589,11 @@ mod tests {
         let idle = SessionSlot::lead("TestOrg", "forge");
         let no_session = logged(|| {
             let read = surface.conversation(&idle, Path::new("/tmp"));
-            assert!(read.messages.is_empty(), "a slot with no occupant still reads as empty");
+            assert!(read.messages.is_empty(), "a slot with no session still reads as empty");
         });
         assert!(
-            names(&no_session, "conversation_no_pooled_session", &idle),
-            "the slot with no pooled session is named, and so is what was missing: \
+            names(&no_session, "conversation_no_session", &idle),
+            "the slot with no session at all is named, and so is what was missing: \
              {no_session:?}",
         );
 
@@ -597,7 +604,7 @@ mod tests {
             assert!(read.messages.is_empty(), "an unplaced cwd still reads as empty");
         });
         let read_as_the_other =
-            no_cwd.iter().any(|(_, fields)| fields.contains("conversation_no_pooled_session"));
+            no_cwd.iter().any(|(_, fields)| fields.contains("conversation_no_session"));
         assert!(
             names(&no_cwd, "conversation_cwd_unplaced", &unplaced)
                 && no_cwd.iter().any(|(_, fields)| fields.contains(SESSION_A))

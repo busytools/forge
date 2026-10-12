@@ -452,6 +452,43 @@ describe('the chat column as it draws', () => {
     expect(drawn(), 'a spawning worker drew the refusal').not.toContain('not running');
   });
 
+  it('draws the history a coming-up seat already holds instead of the waking line', () => {
+    // **A seat's history does not wait on the spawn.** The server can answer
+    // the transcript a sleeping seat left, so a page lands while the seat is
+    // still coming up - and a column that held the waking line over it would
+    // make the reader wait again for something already in hand (Ved,
+    // 2026-10-12: "as soon as it has gone, I should fully be landed into the
+    // conversation"). The waking line is for a seat with nothing to draw yet.
+    const server = stub();
+    draw({ waking: true }, server);
+    expect(drawn(), 'precondition: the waking line drew first').toContain('Waking up agent...');
+
+    server.answer([
+      {
+        key: 't1',
+        messages: [
+          {
+            type: 'assistant',
+            message: {
+              id: 'm-1',
+              role: 'assistant',
+              model: 'claude-opus-5',
+              content: [{ type: 'text', text: 'the seat said this before it slept' }],
+            },
+          },
+        ],
+      },
+    ]);
+
+    expect(drawn(), 'the history the page answered with did not draw').toContain(
+      'the seat said this before it slept',
+    );
+    expect(
+      drawn(),
+      'the column held the waking line over a conversation it already had',
+    ).not.toContain('Waking up agent...');
+  });
+
   it('draws a seat that has no session behind it as its own state', () => {
     const server = stub();
     draw({ waking: true, reason: 'no model declared', slot: { ...LEAD, label: 'w1' } }, server);

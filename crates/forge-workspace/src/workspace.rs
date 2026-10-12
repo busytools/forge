@@ -3482,6 +3482,35 @@ impl Workspace {
         self.pool.lock().get(slot).map(|entry| entry.session_id.clone())
     }
 
+    /// The id a transcript read for `slot` is looked up under: the live
+    /// occupant's when this process holds one, and the store's own row -
+    /// the session a wake resumes - otherwise.
+    ///
+    /// **A sleeping seat still has a session.** The store records the id under
+    /// the slot before the child starts and the CLI writes its transcript
+    /// under it, so a sleeping seat's history is readable without a spawn; a
+    /// read that named only pooled sessions drew one empty. `None` for a
+    /// slot with no session at all: nothing live, and no stored id.
+    pub fn transcript_session_id_for(&self, slot: &SessionSlot) -> Option<String> {
+        if let Some(live) = self.running_session_id_for(slot) {
+            return Some(live);
+        }
+        match self.stored_session_id(slot.org(), slot.project(), slot.label()) {
+            Ok(id) => id,
+            Err(source) => {
+                tracing::warn!(
+                    target: "forge_workspace::sessions",
+                    org = slot.org(),
+                    project = slot.project(),
+                    label = slot.label(),
+                    %source,
+                    "reading the session row failed; the seat reads as one with no history",
+                );
+                None
+            }
+        }
+    }
+
     /// Whether an agent is currently pooled for `slot`.
     pub(crate) fn session_is_pooled(&self, slot: &SessionSlot) -> bool {
         self.pool.lock().contains_key(slot)
