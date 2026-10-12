@@ -176,4 +176,50 @@ mod tests {
         assert_eq!(said["error"], "the stack is not there");
         assert_eq!(said["parts"], json!([]));
     }
+
+    /// **The ownership refusal answers at the frame level.** A `browser_ask`
+    /// naming another seat's recorded profile comes back as a
+    /// `browser_answer` carrying the by-name refusal - the enforcement a
+    /// session that never listed the name still meets when it guesses it.
+    /// The refusal lands before any browser is consulted, so this test
+    /// launches nothing.
+    #[tokio::test]
+    async fn an_ask_for_another_seats_profile_is_refused_by_name() {
+        let mut stub = crate::socket::tests::stub().await;
+        let socket = crate::socket::tests::open_connected(&stub).await;
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = crate::browser::StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        // The record the other seat left behind, at the file's own shape.
+        let hunt = paths.profiles.join("hunt");
+        std::fs::create_dir_all(&hunt).expect("the profile dir");
+        std::fs::write(
+            hunt.join("owner.json"),
+            serde_json::to_vec(
+                &json!({ "org": "Other", "project": "forge", "label": "job-hunt" }),
+            )
+            .expect("the record"),
+        )
+        .expect("the record file");
+        let host = Arc::new(BrowserHost::new(paths));
+
+        let ask = json!({
+            "kind": "browser_ask",
+            "id": 9,
+            "seat": { "org": "Busytools", "project": "forge", "label": "lead" },
+            "tool": "browser_navigate",
+            "args": { "url": "https://example.com", "profile": "hunt" },
+        });
+        run(&ask, &socket, &host).await;
+
+        let said = stub.heard_until(|v| v["kind"] == "browser_answer").await;
+        assert_eq!(said["id"], 9);
+        let error = said["error"].as_str().unwrap_or_default();
+        assert!(error.contains("belongs to Other/forge/job-hunt"), "{said}");
+        assert_eq!(said["parts"], json!([]), "a refused ask carries no parts");
+    }
 }

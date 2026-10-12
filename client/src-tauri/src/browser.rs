@@ -1493,8 +1493,11 @@ mod tests {
     /// the call still drives the shared browser.** Afterwards the directory
     /// and the record exist - the name is the seat's from now on - while the
     /// profile's own browser was never started: only a call that NAMES it
-    /// does that. The call itself dies at the launch (no stack is vendored
-    /// in a test), which is past the ensure and is the act under test.
+    /// does that. **No browser is launched by this test**: the shared
+    /// directory is a FILE, so the launch refuses before spawning anything,
+    /// and the call's failure lands past the ensure, which is the act under
+    /// test. A unit test that drives the real launch belongs only in the
+    /// deliberate, ignored live suite.
     #[tokio::test]
     async fn the_auto_profile_is_created_on_the_first_unnamed_reach() {
         let dir = tempfile::tempdir().expect("a temp dir");
@@ -1504,15 +1507,18 @@ mod tests {
             output: dir.path().join("output"),
             profiles: dir.path().join("profiles"),
         };
+        // A file where the shared browser's directory should be: the launch
+        // cannot make its directory, so nothing spawns, and the failure is
+        // past the ensure.
+        std::fs::write(&paths.user_data, b"").expect("a file where the shared dir goes");
         let host = BrowserHost::new(paths.clone());
         let who = seat();
 
         let why = host
             .call(&who, "browser_navigate", json!({ "url": "https://example.com" }))
             .await
-            .expect_err("no browser stack is vendored in a test");
-        reap(&paths.user_data);
-        assert!(why.contains("vendored"), "the call reached the launch: {why}");
+            .expect_err("the shared browser's directory cannot be made");
+        assert!(why.contains("cannot be made"), "the call reached the launch: {why}");
 
         let auto = paths.profiles.join("lead");
         assert_eq!(
@@ -1576,8 +1582,10 @@ mod tests {
     /// the client; the record on disk is what the next run reads, so another
     /// seat naming a recorded profile is refused by name even with no live
     /// entry - the leak this closes, where any seat could adopt any name
-    /// after a restart. The owner itself re-attaches (no reopen), and an
-    /// unreadable record refuses rather than guessing.
+    /// after a restart. An unreadable record refuses rather than guessing.
+    /// **Both refusals land before any browser is consulted**, which is what
+    /// lets this test run without launching anything; the owner's own
+    /// re-attach is the verdict's `Drive` arm, tested in `profiles`.
     #[tokio::test]
     async fn a_recorded_name_stays_its_seats_across_a_restart() {
         let dir = tempfile::tempdir().expect("a temp dir");
@@ -1603,16 +1611,6 @@ mod tests {
             refused.contains("despawned") || refused.contains("browser strip"),
             "the refusal names the two doors that do end it: {refused}",
         );
-
-        // The owner still drives its own name: whatever the call answers, it
-        // is not the refusal, and no re-record happened (a second open would
-        // rewrite the file through the same seat, which this asserts too).
-        let answered = host
-            .call(&owner, "browser_navigate", json!({ "url": "https://example.com", "profile": "hunt" }))
-            .await
-            .expect_err("no browser stack is vendored in a test");
-        reap(&paths.profiles.join("hunt"));
-        assert!(!answered.contains("belongs to"), "the owner is not refused its own name: {answered}");
 
         // A record that cannot be read refuses with its reason.
         std::fs::write(paths.profiles.join("hunt").join(profiles::OWNER_FILE), b"not json")
@@ -1731,32 +1729,6 @@ mod tests {
             .expect_err("another seat's profile");
         assert!(refused.contains("belongs to Other/forge/lead"), "{refused}");
         assert!(refused.contains("raises only its own"), "{refused}");
-    }
-
-    /// Kill the browser a test's own call launched, by the pid the launch
-    /// wrote, and WAIT for it to go. **A unit test may not leave a browser
-    /// behind** - the machine always has one to drive, so a call that
-    /// reaches `browser_for` launches, and a test that ends while its
-    /// browser is still shutting down is one nextest reads as leaky. TERM,
-    /// a bounded wait, then KILL, as the live suite's own `Launched::reap`
-    /// does.
-    fn reap(profile: &std::path::Path) {
-        let Ok(pid) = std::fs::read_to_string(profile.join("browser.pid")) else { return };
-        let Ok(pid) = pid.trim().parse::<u32>() else { return };
-        let alive = || {
-            std::process::Command::new("ps")
-                .args(["-p", &pid.to_string(), "-o", "pid="])
-                .output()
-                .is_ok_and(|out| !String::from_utf8_lossy(&out.stdout).trim().is_empty())
-        };
-        let _ = std::process::Command::new("kill").arg(pid.to_string()).status();
-        for _ in 0..20 {
-            if !alive() {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        }
-        let _ = std::process::Command::new("kill").args(["-9", &pid.to_string()]).status();
     }
 
     /// **The sweep takes the gone seats and keeps the live ones.** A seat in
