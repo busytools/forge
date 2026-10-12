@@ -241,8 +241,6 @@ const NOT_NEWS: readonly string[] = [
   'cron_prompt_appended',
   'slack_message_appended',
   'prompt_queued_while_busy',
-  // The hand-off raises the seat's own viewer; no home row draws one.
-  'document_hand_off',
   // The pile's own: a seat's queued prompts, which the session page draws
   // above its composer and no home row does.
   'prompt_queued',

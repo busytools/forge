@@ -282,6 +282,12 @@ pub fn fleet_news(update: &SessionUpdate) -> FleetNews<'_> {
         | SessionUpdate::SlackDraftResolved { .. }
         | SessionUpdate::BrowserHandOffPending { .. }
         | SessionUpdate::BrowserHandOffResolved { .. }
+        // **A hand-off has to reach the client wherever the reader is.** The
+        // viewer opens on the raise, and the home subscription is the one
+        // every client holds - a seat-keyed raise a reader sitting on the
+        // home never heard drew no viewer at all (measured 2026-10-12, the
+        // e2e). It redraws no row; the arm is what carries it there.
+        | SessionUpdate::DocumentHandOff { .. }
         | SessionUpdate::WorkerStatusChanged { .. }
         // The seat's release has begun: its row says where it is going until
         // the roster lands it asleep or gone. Announced at the start of the
