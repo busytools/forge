@@ -9,7 +9,7 @@
 //!   `mcp__forge__agents__<name>`.
 //! - `documents` - the document hand-off: a session hands the person at a
 //!   client a document that opens in the client's own viewer. Renders as
-//!   `mcp__forge__hand_off_document`.
+//!   `mcp__forge__documents__hand_off`.
 //! - `review` - the review-conversation loop (list / get / reply /
 //!   resolve). Tools render as `mcp__forge__review__<name>`.
 //! - `cron` - the caller's own durable crons.
