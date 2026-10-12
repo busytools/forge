@@ -1,10 +1,13 @@
 //! The issue mirror: rows become issues in the project's own tracker.
 //!
-//! One-way by design. Forge files a row once - an epic as a parent
-//! issue, its tasks as sub-issues, every body carrying an idempotency
-//! marker - and reads issue state back on a slow cadence so a close in
-//! GitHub shows on the board. Nothing here writes back to the tracker:
-//! two-way sync is the support tax of every tool that tried it.
+//! One-way by design, with one write back. Forge files a row once - an
+//! epic as a parent issue, its tasks as sub-issues, every body carrying
+//! an idempotency marker - and reads issue state back on a slow cadence
+//! so a close in GitHub shows on the board. The write back is a close:
+//! when a row ends - completed, its tree closed, or the row gone - its
+//! issue closes too, or every done row leaks an open issue. Everything
+//! else stays one-way: two-way sync is the support tax of every tool
+//! that tried it.
 //!
 //! The real gate is the probe (`gh` present, a repo, issues enabled);
 //! `issues = false` on a project turns it off, and the default is on,
@@ -13,8 +16,8 @@
 use std::path::Path;
 use std::time::SystemTime;
 
-use forge_agent::env::gh_issue::{IssueRef, IssueSupport};
-use forge_primitives::tasks::{LinkKind, TaskId, TaskLink};
+use forge_agent::env::gh_issue::{CloseReason, IssueRef, IssueRow, IssueSupport};
+use forge_primitives::tasks::{LinkKind, TaskId, TaskLink, TaskStatus};
 
 use crate::workspace::Workspace;
 
@@ -31,7 +34,9 @@ pub trait IssueBackend: Send + Sync {
         body: &str,
         parent: Option<u64>,
     ) -> Option<IssueRef>;
-    async fn states(&self, cwd: &Path) -> Vec<(u64, String)>;
+    async fn issues(&self, cwd: &Path) -> Vec<IssueRow>;
+    /// Close one issue with `reason`. Answers whether it closed.
+    async fn close(&self, cwd: &Path, number: u64, reason: CloseReason) -> bool;
 }
 
 /// The real backend: `gh`, run from the project's own directory.
@@ -53,14 +58,27 @@ impl IssueBackend for GhBackend {
         forge_agent::env::gh_issue::create_issue(cwd, title, body, parent).await
     }
 
-    async fn states(&self, cwd: &Path) -> Vec<(u64, String)> {
-        forge_agent::env::gh_issue::list_states(cwd).await
+    async fn issues(&self, cwd: &Path) -> Vec<IssueRow> {
+        forge_agent::env::gh_issue::list_issues(cwd).await
+    }
+
+    async fn close(&self, cwd: &Path, number: u64, reason: CloseReason) -> bool {
+        forge_agent::env::gh_issue::close_issue(cwd, number, reason).await
     }
 }
 
 /// The marker every filed body carries, so a retry can find-before-create.
 pub fn marker(project: &str, id: &TaskId) -> String {
     format!("<!-- forge-task:{project}:{} -->", id.as_str())
+}
+
+/// The task id a body's marker names, when the marker names `project`.
+fn marker_id(project: &str, body: &str) -> Option<TaskId> {
+    let prefix = format!("<!-- forge-task:{project}:");
+    let after = body.find(&prefix)? + prefix.len();
+    let rest = &body[after..];
+    let end = rest.find(" -->")?;
+    Some(TaskId::from(&rest[..end]))
 }
 
 /// The issue link a row already carries, if any.
@@ -112,18 +130,49 @@ impl Workspace {
             }
             // Read state back; a reconcile is metadata, not movement, so
             // it never touches `updated_at`.
-            let states = backend.states(&view.path).await;
-            if states.is_empty() {
+            let issues = backend.issues(&view.path).await;
+            if issues.is_empty() {
                 continue;
             }
             for row in &rows {
                 let Some(link) = issue_link(&row.task) else { continue };
                 let Some(number) = link_number(link) else { continue };
-                let Some((_, state)) = states.iter().find(|(n, _)| *n == number) else { continue };
-                if link.state.as_deref() == Some(state.as_str()) {
+                let Some(issue) = issues.iter().find(|issue| issue.number == number) else {
+                    continue;
+                };
+                if link.state.as_deref() == Some(issue.state.as_str()) {
                     continue;
                 }
-                self.set_link_state(&view.name, &row.task.id, &link.target, state);
+                self.set_link_state(&view.name, &row.task.id, &link.target, &issue.state);
+            }
+            // Close what ended. The marker in the body is the durable
+            // record of a filing, so a row that is gone is still findable
+            // through its issue; without this every done row leaks an
+            // open issue.
+            let archived = self.archived_task_ids(&view.name);
+            for issue in &issues {
+                if issue.state != "open" {
+                    continue;
+                }
+                let Some(id) = marker_id(&view.name, &issue.body) else { continue };
+                let ended = match rows.iter().find(|row| row.task.id == id) {
+                    Some(row) if row.task.status == TaskStatus::Completed => CloseReason::Completed,
+                    // A live row that has not completed keeps its issue.
+                    Some(_) => continue,
+                    // A closed tree's rows live in the archive.
+                    None if archived.contains(&id) => CloseReason::Completed,
+                    // The row is gone: the issue goes with it.
+                    None => CloseReason::NotPlanned,
+                };
+                if !backend.close(&view.path, issue.number, ended).await {
+                    continue;
+                }
+                // The board reads the close now rather than a pass later.
+                if let Some(row) = rows.iter().find(|row| row.task.id == id)
+                    && let Some(link) = issue_link(&row.task)
+                {
+                    self.set_link_state(&view.name, &id, &link.target, "closed");
+                }
             }
         }
     }
@@ -157,6 +206,18 @@ impl Workspace {
         });
     }
 
+    /// The ids of `project`'s archived rows, which is where a completed
+    /// tree's rows end up.
+    fn archived_task_ids(&self, project: &str) -> Vec<TaskId> {
+        let guard = self.db.lock();
+        let Some(db) = guard.as_ref() else { return Vec::new() };
+        crate::store::task_archive::list_for_project(db, project)
+            .unwrap_or_default()
+            .iter()
+            .map(|task| task.id.clone())
+            .collect()
+    }
+
     /// Write one link's read state, without stamping the row as moved.
     pub(crate) fn set_link_state(&self, project: &str, id: &TaskId, target: &str, state: &str) {
         let changed = self.with_tasks_mut(|tasks| {
@@ -186,7 +247,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use forge_primitives::tasks::Task;
+    use forge_primitives::tasks::{By, Task, TaskStatus};
     use tempfile::tempdir;
 
     const PROJECT: &str = "proj";
@@ -200,6 +261,8 @@ mod tests {
         supported: bool,
         files: Mutex<Vec<(String, String, Option<u64>)>>,
         states: Mutex<Vec<(u64, String)>>,
+        bodies: Mutex<Vec<(u64, String)>>,
+        closes: Mutex<Vec<(u64, CloseReason)>>,
     }
 
     #[async_trait::async_trait]
@@ -218,6 +281,9 @@ mod tests {
             let mut files = self.files.lock().expect("lock");
             let number = 100 + files.len() as u64;
             files.push((title.to_owned(), body.to_owned(), parent));
+            // A filed issue is open until something says otherwise.
+            self.states.lock().expect("lock").push((number, "open".to_owned()));
+            self.bodies.lock().expect("lock").push((number, body.to_owned()));
             Some(IssueRef {
                 number,
                 url: format!("https://example.invalid/issues/{number}"),
@@ -225,8 +291,26 @@ mod tests {
             })
         }
 
-        async fn states(&self, _cwd: &Path) -> Vec<(u64, String)> {
-            self.states.lock().expect("lock").clone()
+        async fn issues(&self, _cwd: &Path) -> Vec<IssueRow> {
+            let states = self.states.lock().expect("lock").clone();
+            let bodies = self.bodies.lock().expect("lock").clone();
+            states
+                .iter()
+                .map(|(number, state)| IssueRow {
+                    number: *number,
+                    state: state.clone(),
+                    body: bodies
+                        .iter()
+                        .find(|(at, _)| at == number)
+                        .map(|(_, body)| body.clone())
+                        .unwrap_or_default(),
+                })
+                .collect()
+        }
+
+        async fn close(&self, _cwd: &Path, number: u64, reason: CloseReason) -> bool {
+            self.closes.lock().expect("lock").push((number, reason));
+            true
         }
     }
 
@@ -361,5 +445,121 @@ provider = "anthropic"
         let link = stored[0].links.iter().find(|l| l.kind == LinkKind::Issue).expect("link");
         assert_eq!(link.state.as_deref(), Some("closed"), "the close shows on the board");
         assert_eq!(stored[0].updated_at, before, "and the row did not move");
+    }
+
+    /// Move a row to completed by the same door the tools use.
+    fn complete(ws: &Workspace, id: &str) {
+        ws.update_task(PROJECT, &TaskId::from(id), By::System, |task| {
+            task.status = TaskStatus::Completed;
+        })
+        .expect("move")
+        .expect("the row is there");
+    }
+
+    /// A completed row's issue closes as completed on the next pass, and
+    /// a live row that has not completed keeps its issue.
+    #[tokio::test]
+    async fn a_completed_row_closes_its_issue_once() {
+        let (_dir, ws) = workspace_with_project(true);
+        ws.seed_test_task(row("epic", None));
+        ws.seed_test_task(row("sub-a", Some("epic")));
+        let backend = MockBackend { supported: true, ..Default::default() };
+        ws.issue_pass(&backend, epoch(100)).await;
+        assert!(
+            backend.closes.lock().expect("lock").is_empty(),
+            "nothing has ended, so nothing closes",
+        );
+
+        complete(&ws, "sub-a");
+        ws.issue_pass(&backend, epoch(200)).await;
+        assert_eq!(
+            backend.closes.lock().expect("lock").clone(),
+            vec![(101, CloseReason::Completed)],
+            "the completed row's issue closes; the open epic's does not",
+        );
+        let stored = ws.tasks_for_project(PROJECT);
+        let link = stored
+            .iter()
+            .find(|task| task.id == TaskId::from("sub-a"))
+            .expect("row")
+            .links
+            .iter()
+            .find(|link| link.kind == LinkKind::Issue)
+            .expect("link");
+        assert_eq!(link.state.as_deref(), Some("closed"), "the board reads the close at once");
+
+        *backend.states.lock().expect("lock") =
+            vec![(100, "open".to_owned()), (101, "closed".to_owned())];
+        ws.issue_pass(&backend, epoch(300)).await;
+        assert_eq!(backend.closes.lock().expect("lock").len(), 1, "a closed issue stays closed");
+    }
+
+    /// A root completing archives its tree, and the archived rows' issues
+    /// close as completed - the only way the epic's own issue ever ends.
+    #[tokio::test]
+    async fn a_closed_trees_issues_close_as_completed() {
+        let (_dir, ws) = workspace_with_project(true);
+        ws.seed_test_task(row("epic", None));
+        let backend = MockBackend { supported: true, ..Default::default() };
+        ws.issue_pass(&backend, epoch(100)).await;
+
+        complete(&ws, "epic");
+        assert!(ws.tasks_for_project(PROJECT).is_empty(), "the tree is archived");
+        ws.issue_pass(&backend, epoch(200)).await;
+        assert_eq!(
+            backend.closes.lock().expect("lock").clone(),
+            vec![(100, CloseReason::Completed)],
+        );
+    }
+
+    /// A row that is gone closes its issue as not planned, once.
+    #[tokio::test]
+    async fn a_deleted_rows_issue_closes_as_not_planned() {
+        let (_dir, ws) = workspace_with_project(true);
+        ws.seed_test_task(row("epic", None));
+        ws.seed_test_task(row("sub-a", Some("epic")));
+        let backend = MockBackend { supported: true, ..Default::default() };
+        ws.issue_pass(&backend, epoch(100)).await;
+
+        ws.remove_task_tree(PROJECT, &TaskId::from("epic"));
+        ws.issue_pass(&backend, epoch(200)).await;
+        assert_eq!(
+            backend.closes.lock().expect("lock").clone(),
+            vec![(100, CloseReason::NotPlanned), (101, CloseReason::NotPlanned)],
+            "both rows are gone, so both issues go",
+        );
+
+        *backend.states.lock().expect("lock") =
+            vec![(100, "closed".to_owned()), (101, "closed".to_owned())];
+        ws.issue_pass(&backend, epoch(300)).await;
+        assert_eq!(backend.closes.lock().expect("lock").len(), 2, "and neither closes twice");
+    }
+
+    /// Only this project's markers are candidates: an issue with no marker
+    /// and one naming another project are left alone.
+    #[tokio::test]
+    async fn closes_only_this_projects_marked_issues() {
+        let (_dir, ws) = workspace_with_project(true);
+        ws.seed_test_task(row("epic", None));
+        let backend = MockBackend { supported: true, ..Default::default() };
+        ws.issue_pass(&backend, epoch(100)).await;
+
+        backend.bodies.lock().expect("lock").push((102, "no marker here".to_owned()));
+        backend
+            .bodies
+            .lock()
+            .expect("lock")
+            .push((103, "<!-- forge-task:other:gone -->".to_owned()));
+        backend
+            .states
+            .lock()
+            .expect("lock")
+            .extend([(102, "open".to_owned()), (103, "open".to_owned())]);
+        ws.issue_pass(&backend, epoch(200)).await;
+
+        assert!(
+            backend.closes.lock().expect("lock").is_empty(),
+            "an unmarked issue and another project's marker are not this pass's to close",
+        );
     }
 }
