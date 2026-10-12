@@ -21,15 +21,15 @@ read-only, with no comment affordance anywhere.
 
 ## What it draws
 
-| Region | Shows | Read from |
-|---|---|---|
-| The document | markdown rendered by the chat's own `Prose`; plain text as wrapping text; a PDF in the surface's own viewer; any other kind named as itself | the `document_read` answer: `document_kind` and the bytes |
-| A reviewable document | its own lines, numbered from one, each number a target that opens a composer; a comment waits under the line it is about, drafted until a finish files it | the answer's `threads` and the page's own drafts |
-| Outdated comments | written against an earlier version of this document: their captured lines kept, in their own section - nothing re-anchors them | each thread's anchor `content_hash` against the answer's |
-| The finish | `finish review (n)` files the drafts as one round and draws `review left (R{n})`; a refusal draws the core's own words and keeps the drafts | `submit_review`'s reply |
-| A refusal | the server's sentence as its own line - missing, unreadable, over the ceiling, outside the session's tree, a PDF handed reviewable, a text kind that is not UTF-8 | the `error` naming `document_read` |
-| Opening | `Opening <path>...` while the read is out | the page's own state |
-| Empty | its own line, before any kind is drawn | an answer with zero bytes |
+| Region                | Shows                                                                                                                                                     | Read from                                                 |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| The document          | markdown rendered by the chat's own `Prose`; plain text as wrapping text; a PDF in the surface's own viewer; any other kind named as itself               | the `document_read` answer: `document_kind` and the bytes |
+| A reviewable document | its own lines, numbered from one, each number a target that opens a composer; a comment waits under the line it is about, drafted until a finish files it | the answer's `threads` and the page's own drafts          |
+| Outdated comments     | written against an earlier version of this document: their captured lines kept, in their own section - nothing re-anchors them                            | each thread's anchor `content_hash` against the answer's  |
+| The finish            | `finish review (n)` files the drafts as one round and draws `review left (R{n})`; a refusal draws the core's own words and keeps the drafts               | `submit_review`'s reply                                   |
+| A refusal             | the server's sentence as its own line - missing, unreadable, over the ceiling, outside the session's tree, a text kind that is not UTF-8                  | the `error` naming `document_read`                        |
+| Opening               | `Opening <path>...` while the read is out                                                                                                                 | the page's own state                                      |
+| Empty                 | its own line, before any kind is drawn                                                                                                                    | an answer with zero bytes                                 |
 
 ## The rules
 
@@ -46,8 +46,12 @@ text kind that is not UTF-8 is refused at the READ: decoding it here would
 draw replacement characters as if they were the document.
 
 **A PDF opens read-only, and the reviewable flag on one is refused with the
-reason.** The refusal is the read's, so every door onto a document - the
-hand-off tool, the viewer's own route - refuses with the same sentence. A
+reason.** The refusal is the read's own and happens before any raise: the
+hand-off tool answers with the sentence and nothing opens, and an address
+read back from the URL re-decides `reviewable` false, so the viewer never
+asks - the sentence reaches a reader as the tool's answer and as a raw
+read's error, never as a drawn line, because the kind is the path's
+extension and a `.pdf` path is refused at the hand-off itself. A
 PDF rides the platform's own viewer: WKWebView renders one natively (the
 desktop app; measured), every browser does (Chromium measured), and the
 Android WebView is the one surface with no PDF viewer of its own, where
@@ -109,7 +113,7 @@ the project's reviews.
   width; a failure in that render draws its own line rather than an empty
   page.
 - **Any other kind**: named as itself - `This is a .rs document; the viewer
-  draws markdown, PDFs and text.` - and a name with no extension says that
+draws markdown, PDFs and text.` - and a name with no extension says that
   instead.
 - **No bytes**: `The document is empty.`, before any kind is drawn.
 - **A refusal**: each its own line, straight from the server's sentence.
