@@ -48,11 +48,8 @@ with open(sys.argv[1]) as f:
 | `lsp.jsonl` | LSP | LSP tool invocation against a Rust file in the working dir |
 | `remote_trigger.jsonl` | RemoteTrigger | RemoteTrigger call with a plausible target. Model called ToolSearch first then RemoteTrigger once |
 | `push_notification.jsonl` | PushNotification | PushNotification with title + body. Model called ToolSearch first then PushNotification once |
+| `monitor.jsonl` | Monitor | Single Monitor call after a ToolSearch - a short bounded command (`persistent: false`, 10s timeout). Shows the started ack, the watch's events arriving as `result` frames with `origin: {kind: "task-notification"}`, and the closing `task_notification` |
 | `agent_worktree_posttooluse.jsonl` | PostToolUse hook (Agent tool) | Hook-envelope capture, CLI 2.1.220, not stream-json: one line per PostToolUse input for an isolation:"worktree" Agent call. Keep case carries flat top-level `worktreePath`/`worktreeBranch`; async launch (`async_launched`) names no worktree. Envelope fields marked `<...-not-held>` were not captured verbatim |
-
-### Intentionally skipped
-
-- **`Monitor`** - the Monitor tool is inherently streaming/long-lived (it watches a file or process and emits events). It has no natural exit condition for a single-shot `claude --print` probe - the model gets stuck in the watch loop and the capture never terminates. To capture Monitor's wire shape, either: (a) write a proper scenario in `crates/forge-test-harness/tests/sdk_scenarios_monitor.rs` that drives the harness to send an explicit stop event, or (b) capture from a real forge session that uses Monitor and exits cleanly. Skipping in the upgrade probe set is intentional, not a bug.
 
 Captures from the existing live-test scenarios in `crates/forge-test-harness/baselines/sdk/<PINNED_CLI_VERSION>/` cover the rest of the wire surface (Bash, Read, Write, Edit, AskUserQuestion, Task subagent, MCP, hooks, permissions, workers, worktree, compact, control flows). Use those as reference for tools that already have forge-tui rendering.
 
