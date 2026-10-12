@@ -61,14 +61,15 @@ pub struct BrowserRequest {
     pub reply: oneshot::Sender<Result<Vec<BrowserPart>, String>>,
 }
 
-/// What a role change tells the connection it happened to.
+/// What the relay says to a capable connection besides its asks: where the
+/// role stands, and which seats exist.
 ///
 /// A promotion is told too, because it arrives without an ask to make it
 /// obvious - a holder goes, the next in line is handed the role - and a
 /// client that went on believing it was in line would draw "another client
 /// drives the browser" while its own connection is the one being asked.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RoleNotice {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Notice {
     /// This connection holds the role now, promoted from the waiting line.
     Granted,
     /// This connection held the role and lost it to a force-take. Its
@@ -76,10 +77,16 @@ pub enum RoleNotice {
     /// drop does - so the calls it was carrying fail loudly rather than
     /// half-answering into a role it no longer holds.
     Taken,
+    /// The seats that exist, for the client's profile sweep: sent whole to
+    /// every capable connection, so the client deletes the profiles whose
+    /// seats are gone and nothing else. Whole rather than a delta, because
+    /// the set is authoritative at the moment it is sent and the sweep is
+    /// idempotent.
+    Seats(Vec<SessionSlot>),
 }
 
-/// The registered connection, and the channels its asks and its role notices
-/// go down.
+/// The registered connection, and the channels its asks and its notices go
+/// down.
 #[derive(Debug)]
 struct Client {
     /// The connection that registered. A drop tells the transport which
@@ -87,7 +94,7 @@ struct Client {
     /// first's.
     id: u64,
     to_host: mpsc::UnboundedSender<BrowserRequest>,
-    notices: mpsc::UnboundedSender<RoleNotice>,
+    notices: mpsc::UnboundedSender<Notice>,
 }
 
 /// Who holds the role, and who is in line for it.
@@ -143,7 +150,7 @@ impl BrowserRelay {
         &self,
         id: u64,
         to_host: mpsc::UnboundedSender<BrowserRequest>,
-        notices: mpsc::UnboundedSender<RoleNotice>,
+        notices: mpsc::UnboundedSender<Notice>,
     ) -> bool {
         let mut role = self.lock();
         // The same connection offering again - a later subscribe - replaces
@@ -179,7 +186,7 @@ impl BrowserRelay {
     ///
     /// The claimant must have offered first - a connection that never
     /// declared itself capable has no channel to be asked down, and `false`
-    /// says so. The holder is TOLD ([`RoleNotice::Taken`]), which is what
+    /// says so. The holder is TOLD ([`Notice::Taken`]), which is what
     /// makes its connection stop reading asks: the calls it was carrying
     /// then fail with the relay's own host-gone failure, the same shape a
     /// holder dying has, taken early rather than at its own choosing.
@@ -192,11 +199,24 @@ impl BrowserRelay {
             return false;
         };
         if let Some(displaced) = role.host.take() {
-            let _ = displaced.notices.send(RoleNotice::Taken);
+            let _ = displaced.notices.send(Notice::Taken);
         }
         let claimant = role.waiting.remove(at);
         role.host = Some(claimant);
         true
+    }
+
+    /// Tell every capable connection which seats exist, so each client's
+    /// profile sweep runs. **The host AND the waiting line hear it**: a
+    /// client that does not hold the role still owns profiles on its own
+    /// machine. The set is sent whole rather than as a delta - it is
+    /// authoritative at the moment it is sent, and the sweep is idempotent,
+    /// so a repeat costs nothing and a missed one is corrected by the next.
+    pub fn announce_seats(&self, seats: Vec<SessionSlot>) {
+        let role = self.lock();
+        for client in role.host.iter().chain(role.waiting.iter()) {
+            let _ = client.notices.send(Notice::Seats(seats.clone()));
+        }
     }
 
     /// Give the role back, if `id` holds it - and hand it to whoever is next
@@ -325,7 +345,7 @@ fn promote(role: &mut Role) {
         if next.to_host.is_closed() {
             continue;
         }
-        let _ = next.notices.send(RoleNotice::Granted);
+        let _ = next.notices.send(Notice::Granted);
         tracing::debug!(
             event_name = "browser_host_promoted",
             client = next.id,
@@ -427,7 +447,7 @@ mod tests {
     /// A notices sender whose receiver is gone: the connection registered
     /// and nobody is reading its role notices, which every test but the
     /// force-take's is free to do.
-    fn notices() -> mpsc::UnboundedSender<RoleNotice> {
+    fn notices() -> mpsc::UnboundedSender<Notice> {
         mpsc::unbounded_channel().0
     }
 
@@ -663,7 +683,7 @@ mod tests {
         assert!(first_rx.try_recv().is_err(), "and nothing reaches the old holder");
         assert_eq!(
             first_note_rx.try_recv(),
-            Ok(RoleNotice::Taken),
+            Ok(Notice::Taken),
             "which is told it lost the role",
         );
     }
@@ -710,12 +730,34 @@ mod tests {
 
         assert_eq!(
             second_note_rx.try_recv(),
-            Ok(RoleNotice::Granted),
+            Ok(Notice::Granted),
             "the promotion is said out loud",
         );
         tokio::time::timeout(std::time::Duration::from_secs(5), lands_on(&relay, &mut second_rx))
             .await
             .expect("and the asks arrive with it");
+    }
+
+    /// **A seat announcement reaches the host and everyone waiting.**
+    /// Holding the role is not what decides who owns profiles: a capable
+    /// client in line has its own tree to sweep, and one left out would
+    /// keep a despawned worker's profiles until it happened to be
+    /// promoted.
+    #[tokio::test]
+    async fn a_seat_announcement_reaches_the_host_and_the_waiting_line() {
+        let relay = Arc::new(BrowserRelay::new());
+        let (first, _first_rx) = mpsc::unbounded_channel();
+        let (second, _second_rx) = mpsc::unbounded_channel();
+        let (first_notes, mut first_note_rx) = mpsc::unbounded_channel();
+        let (second_notes, mut second_note_rx) = mpsc::unbounded_channel();
+        assert!(relay.register(1, first, first_notes), "the host");
+        assert!(!relay.register(2, second, second_notes), "a waiter");
+
+        let seats = vec![SessionSlot::lead("TestOrg", "proj")];
+        relay.announce_seats(seats.clone());
+
+        assert_eq!(first_note_rx.try_recv(), Ok(Notice::Seats(seats.clone())), "the host");
+        assert_eq!(second_note_rx.try_recv(), Ok(Notice::Seats(seats)), "and the waiter");
     }
 
     fn handoff(reason: &str) -> HandOff {

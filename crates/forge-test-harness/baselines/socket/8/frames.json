@@ -2,6 +2,7 @@
   "server_message": {
     "BrowserAsk": "browser_ask",
     "BrowserRole": "browser_role",
+    "BrowserSeats": "browser_seats",
     "CommitDiff": "commit_diff",
     "Devices": "devices",
     "Error": "error",

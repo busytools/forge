@@ -13,7 +13,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use forge_primitives::SessionSlot;
 use forge_primitives::browser::BrowserPart;
-use forge_workspace::browser::{BrowserRelay, BrowserRequest, RoleNotice};
+use forge_workspace::browser::{BrowserRelay, BrowserRequest, Notice};
 
 use super::PROTOCOL_VERSION;
 use super::TransportState;
@@ -83,9 +83,9 @@ const HOST_GONE_BY_TAKE: &str = "another client took the browser role before the
 struct Hosting {
     /// The asks the relay routes here, in the order they were made.
     asks: mpsc::UnboundedReceiver<BrowserRequest>,
-    /// What the relay says about the role itself - for now, that a
-    /// force-take took it away.
-    notices: mpsc::UnboundedReceiver<RoleNotice>,
+    /// What the relay says about the role itself - a force-take away, a
+    /// promotion in - and which seats exist, for the client's sweep.
+    notices: mpsc::UnboundedReceiver<Notice>,
     /// The asks sent to the client and not yet answered, by id.
     in_flight: HashMap<u64, InFlight>,
     /// The role itself, given back when this drops, a panic included.
@@ -467,7 +467,7 @@ async fn run_connection(
                     // - not the relay's HOST_GONE, which would say the holder
                     // went away when it was displaced - and the client is told,
                     // because its strip must not go on saying it hosts.
-                    HostingEvent::Notice(RoleNotice::Taken) => {
+                    HostingEvent::Notice(Notice::Taken) => {
                         fail_every_in_flight(hosting, HOST_GONE_BY_TAKE);
                         hosting.take();
                         batch::flush(socket, held.take()).await?;
@@ -479,9 +479,17 @@ async fn run_connection(
                     // drives a browser this connection is now being asked for.
                     // The core's own news goes out first, the same rule every
                     // other send keeps.
-                    HostingEvent::Notice(RoleNotice::Granted) => {
+                    HostingEvent::Notice(Notice::Granted) => {
                         batch::flush(socket, held.take()).await?;
                         send(socket, ServerMessage::BrowserRole { hosting: true }).await?;
+                    }
+                    // **Which seats exist, for the client's profile sweep.**
+                    // Sent whole, on every capable connection: the client
+                    // deletes the profiles of the seats the set no longer
+                    // holds. The core's own news first, as ever.
+                    HostingEvent::Notice(Notice::Seats(seats)) => {
+                        batch::flush(socket, held.take()).await?;
+                        send(socket, ServerMessage::BrowserSeats { seats }).await?;
                     }
                 }
             }
@@ -557,7 +565,7 @@ async fn next_update(
 /// the relay saying the role itself moved.
 enum HostingEvent {
     Ask(BrowserRequest),
-    Notice(RoleNotice),
+    Notice(Notice),
 }
 
 /// The next thing the hosting has for the loop - one future, because both
@@ -677,6 +685,13 @@ async fn handle_client(
             // the role when the holder goes, so nothing has to be declared
             // again for the handover to happen.
             let mut grant_role = false;
+            // The seat set a fresh offer is answered with: the client's
+            // profile sweep reads it, so a capable connection learns which
+            // seats exist the moment it declares - boot, a reconnect, or a
+            // second window. `None` when the store could not be read: no set
+            // is sent, because a client reading "no seats" would delete
+            // every profile it holds.
+            let mut seats: Option<Vec<SessionSlot>> = None;
             if browser && hosting.is_none() {
                 let (offering, held) = Hosting::offer(&state.browser, me);
                 *hosting = Some(offering);
@@ -686,6 +701,7 @@ async fn handle_client(
                 // `false`. Sent last so the subscribe's own answer keeps
                 // being the snapshot.
                 grant_role = held;
+                seats = state.surface.live_seats();
             }
             // Forwarded before the snapshot: they were emitted before it was
             // taken, and the client reads them in the order it receives them.
@@ -780,7 +796,10 @@ async fn handle_client(
                         }
                     }
                     if grant_role {
-                        return send(socket, ServerMessage::BrowserRole { hosting: true }).await;
+                        send(socket, ServerMessage::BrowserRole { hosting: true }).await?;
+                    }
+                    if let Some(seats) = seats {
+                        return send(socket, ServerMessage::BrowserSeats { seats }).await;
                     }
                     Ok(())
                 }
@@ -810,9 +829,14 @@ async fn handle_client(
                     // **The role was taken at register, before the snapshot
                     // could refuse** - so the grant is owed here too, or a
                     // connection that holds the role (and will be sent asks)
-                    // is one the client believes never got it.
+                    // is one the client believes never got it. The seat set
+                    // is the client's sweep to run, so it is owed here as
+                    // well - the offer was made, refused snapshot or not.
                     if grant_role {
-                        return send(socket, ServerMessage::BrowserRole { hosting: true }).await;
+                        send(socket, ServerMessage::BrowserRole { hosting: true }).await?;
+                    }
+                    if let Some(seats) = seats {
+                        return send(socket, ServerMessage::BrowserSeats { seats }).await;
                     }
                     Ok(())
                 }

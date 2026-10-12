@@ -2058,6 +2058,17 @@ pub(crate) fn handle_despawn_worker(
         );
     }
 
+    // **The seat is down, so its browser profiles go with it.** The profiles
+    // live on the client, so the relay tells every browser-capable
+    // connection which seats exist - whole, after teardown, before the
+    // worktree cleanup (which can run for minutes) - and each client's sweep
+    // deletes the ones this despawn ended. A store that cannot answer sends
+    // nothing: a client reading "no seats" would delete every profile it
+    // holds.
+    if let Some(seats) = workspace.live_seats() {
+        workspace.browser_relay().announce_seats(seats);
+    }
+
     // Everything from here runs `git` or walks the tree, and the removal
     // alone can take minutes: inline on a runtime worker it holds the
     // socket's own work for the whole time (#1633), so it goes to the
@@ -5004,6 +5015,71 @@ provider = "anthropic"
             "the despawn announces the release ahead of the removal: {frames:?}",
         );
         assert_eq!(frames[0].1, frames[1].1, "and both name the seat that went");
+    }
+
+    /// **A despawn announces the seats that remain, and nothing at all when
+    /// the store cannot answer.** The client's profile sweep reads the whole
+    /// set: the seat that went is gone from it, and every seat that still
+    /// exists - a project's lead, a persisted worker - stays, so the client
+    /// deletes exactly the gone seat's profiles. A workspace whose store
+    /// cannot be read announces NOTHING: a client reading "no seats" would
+    /// delete every profile it holds.
+    #[tokio::test]
+    async fn a_despawn_announces_the_seat_set() {
+        let (workspace, _rx) = Workspace::testing_stub();
+        let project = ProjectKey::new("forge");
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let db = crate::store::Db::open(&dir.path().join("db.redb")).expect("the store");
+        workspace.attach_store_for_test(db);
+        workspace.seed_test_project("forge", "/tmp/forge-seat-set-test");
+        workspace.seed_test_session_charter(
+            &SessionSlot::new("TestOrg", "forge", "kept"),
+            "a persisted worker",
+            false,
+        );
+        workspace.insert_live_worker(&project, fake_worker_entry("gone", "session-gone"));
+
+        let (to_host, _asks) = tokio::sync::mpsc::unbounded_channel();
+        let (notices, mut heard) = tokio::sync::mpsc::unbounded_channel();
+        assert!(
+            workspace.browser_relay().register(7, to_host, notices),
+            "the only capable connection holds the role",
+        );
+
+        let (tx, resp_rx) = tokio::sync::oneshot::channel();
+        handle_despawn_worker(&workspace, &project, "gone", false, tx);
+        let _ = resp_rx.await.expect("despawn result");
+
+        let notice = heard.recv().await.expect("the seat set is announced");
+        let crate::browser::Notice::Seats(seats) = notice else {
+            panic!("a seat set, got {notice:?}");
+        };
+        let labels: Vec<&str> = seats.iter().map(SessionSlot::label).collect();
+        assert_eq!(
+            labels,
+            vec!["kept", "lead"],
+            "the seat that went is not in the set; the persisted worker and the project's lead \
+             are: {labels:?}",
+        );
+        assert!(
+            seats.iter().all(|seat| seat.org() == "TestOrg" && seat.project() == "forge"),
+            "and each carries its org and project: {seats:?}",
+        );
+
+        // The fail-closed arm: a storeless workspace announces nothing.
+        let (bare, _bare_rx) = Workspace::testing_stub();
+        let bare_project = ProjectKey::new("forge");
+        bare.insert_live_worker(&bare_project, fake_worker_entry("gone", "session-gone"));
+        let (to_host, _asks) = tokio::sync::mpsc::unbounded_channel();
+        let (notices, mut heard) = tokio::sync::mpsc::unbounded_channel();
+        assert!(bare.browser_relay().register(8, to_host, notices), "capable");
+        let (tx, resp_rx) = tokio::sync::oneshot::channel();
+        handle_despawn_worker(&bare, &bare_project, "gone", false, tx);
+        let _ = resp_rx.await.expect("despawn result");
+        assert!(
+            heard.try_recv().is_err(),
+            "an unreadable store sends no set - a client reading none would sweep everything",
+        );
     }
 
     /// Regression: closing ONE worker must NOT cascade to the others.

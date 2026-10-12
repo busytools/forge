@@ -5758,6 +5758,68 @@ impl Workspace {
 
     // ---- Live workers (project-internal child-agent coordination) ----
 
+    /// Every seat that exists right now: each configured project's lead, and
+    /// every worker the store holds - running or not, because a durable
+    /// worker's seat exists until it is despawned.
+    ///
+    /// The browser-profile sweep reads this: a profile whose owning seat is
+    /// not here is an orphan and goes. Two rules hold it safe, since an
+    /// under-reported set deletes a seat's saved logins:
+    ///
+    /// - **It errs toward INCLUSION**: a seat wrongly present leaves one
+    ///   profile to the next sweep, while a seat wrongly absent would take
+    ///   logins.
+    /// - **It fails closed**: `None` when the store cannot be read, so no
+    ///   caller can mistake an unread store for "no seats exist" and sweep
+    ///   everything. Nothing sends a set it could not read.
+    pub fn live_seats(&self) -> Option<Vec<forge_primitives::SessionSlot>> {
+        use std::collections::BTreeSet;
+
+        let views = self.list_projects();
+        let stored = {
+            let guard = self.db.lock();
+            let db = guard.as_ref()?;
+            match crate::store::sessions::worker_row_index(db) {
+                Ok(rows) => rows,
+                Err(error) => {
+                    tracing::warn!(
+                        target: "forge_workspace::workspace",
+                        %error,
+                        "listing the persisted workers for the seat set failed, so no seat set \
+                         is answered",
+                    );
+                    return None;
+                }
+            }
+        };
+        let mut triples: BTreeSet<(String, String, String)> = BTreeSet::new();
+        for view in &views {
+            triples.insert((
+                view.org.clone(),
+                view.name.clone(),
+                String::from(forge_primitives::LEAD_LABEL),
+            ));
+        }
+        for row in stored {
+            if row.label != forge_primitives::LEAD_LABEL {
+                triples.insert((row.org, row.project, row.label));
+            }
+        }
+        for view in &views {
+            for worker in self.list_live_workers(&view.key) {
+                triples.insert((view.org.clone(), view.name.clone(), worker.label));
+            }
+        }
+        Some(
+            triples
+                .into_iter()
+                .map(|(org, project, label)| {
+                    forge_primitives::SessionSlot::new(org, project, label)
+                })
+                .collect(),
+        )
+    }
+
     /// Snapshot the live workers for `project_key`. Returns an empty
     /// Vec when no workers exist (rather than `None`) so the TUI tree-
     /// child render can branch only on `is_empty`.
