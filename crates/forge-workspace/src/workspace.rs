@@ -17478,7 +17478,9 @@ provider = "anthropic"
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path().to_str().expect("utf8").to_owned();
         let (ws, _updates) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
-        ws.install_db_for_test(crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"));
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
         let (project_root, session_key) = seed_project_and_worker(
             &ws,
             "forge",
