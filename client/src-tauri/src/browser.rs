@@ -605,9 +605,14 @@ impl BrowserHost {
     /// The named profiles this host holds, by name, for its own strip. A
     /// profile whose driver died but whose name is still held is
     /// listed as not running rather than dropped: the name is owned until it
-    /// is released, and a row that vanished would read as released.
+    /// is deleted, and a row that vanished would read as gone.
+    ///
+    /// **The listing is served FOR A SEAT.** A session's view - which is the
+    /// seat's page - is its own rows plus the ownerless legacy ones, and
+    /// another seat's profile is not even listed to it. No seat is the
+    /// person's own door and answers every row.
     #[cfg(desktop)]
-    pub async fn profiles(&self) -> Vec<ProfileRow> {
+    pub async fn profiles(&self, seat: Option<&Seat>) -> Vec<ProfileRow> {
         let named = self.named.lock().await;
         let mut rows: Vec<ProfileRow> = Vec::new();
         for (name, entry) in named.iter() {
@@ -623,8 +628,9 @@ impl BrowserHost {
         drop(named);
         // **A closed profile is still a profile.** Its entry goes on close
         // while its files stay - the logins a person means to delete - so a
-        // directory with no entry is listed too, ownerless and not running,
-        // or the one act that removes it has nothing to be reached from.
+        // directory with no entry is listed too, not running, its owner read
+        // from the record; one with no readable record is ownerless, which is
+        // also what the sweep will read it as.
         if let Ok(paths) = self.paths.clone()
             && let Ok(entries) = std::fs::read_dir(&paths.profiles)
         {
@@ -639,12 +645,21 @@ impl BrowserHost {
                 {
                     continue;
                 }
+                let dir = paths.profiles.join(&name);
+                let owner = match profiles::owner_of(&dir) {
+                    Ok(Some(owner)) => owner.to_string(),
+                    Ok(None) | Err(_) => String::new(),
+                };
                 // A window can be up over a closed profile - the strip's own
                 // show launches one without an entry - so the predicate is
                 // still asked, on the directory itself.
-                let windowed = chromium::windowed(&paths.profiles.join(&name)).await;
-                rows.push(ProfileRow { name, owner: String::new(), running: false, windowed });
+                let windowed = chromium::windowed(&dir).await;
+                rows.push(ProfileRow { name, owner, running: false, windowed });
             }
+        }
+        if let Some(seat) = seat {
+            let mine = seat.to_string();
+            rows.retain(|row| row.owner == mine || row.owner.is_empty());
         }
         rows.sort_by(|a, b| a.name.cmp(&b.name));
         rows
@@ -653,7 +668,7 @@ impl BrowserHost {
     /// The phone holds no named profiles: an empty list is the honest answer,
     /// not an error - "none" is a state.
     #[cfg(target_os = "android")]
-    pub async fn profiles(&self) -> Vec<ProfileRow> {
+    pub async fn profiles(&self, _seat: Option<&Seat>) -> Vec<ProfileRow> {
         Vec::new()
     }
 
@@ -969,7 +984,11 @@ pub struct ProfileRow {
     pub windowed: bool,
 }
 
-/// The named profiles this host holds, for its own browser strip.
+/// The named profiles this host holds, for a page's own browser strip.
+///
+/// **Served per seat**: the page passes the seat it draws for, and the host
+/// answers that seat's rows plus the ownerless ones - another seat's rows are
+/// not visible to it. No seat is the person's own door and answers every row.
 ///
 /// The profiles are the CLIENT's own state - it owns the drivers - so this is
 /// the client reading itself, not a server read; the strip needs no new view
@@ -977,8 +996,9 @@ pub struct ProfileRow {
 #[tauri::command]
 pub async fn browser_profiles(
     host: tauri::State<'_, Arc<BrowserHost>>,
+    seat: Option<Seat>,
 ) -> Result<Vec<ProfileRow>, String> {
-    Ok(host.profiles().await)
+    Ok(host.profiles(seat.as_ref()).await)
 }
 
 /// Whether a profile's browser is up as a window, for the strip's show/hide
@@ -1086,7 +1106,7 @@ mod tests {
         std::fs::create_dir_all(&named.dir).expect("the profile dir");
         std::fs::write(named.dir.join("windowed"), b"").expect("the profile marker");
         host.named.lock().await.insert("hunt".to_owned(), Arc::new(named));
-        let rows = host.profiles().await;
+        let rows = host.profiles(None).await;
         let row = rows.iter().find(|row| row.name == "hunt").expect("the row");
         assert!(
             !row.windowed,
@@ -1167,7 +1187,7 @@ mod tests {
     async fn a_fresh_host_holds_no_profiles() {
         let host =
             BrowserHost::unavailable("the app's data directory cannot be resolved".to_owned());
-        assert!(host.profiles().await.is_empty());
+        assert!(host.profiles(None).await.is_empty());
     }
 
     /// **The derivation `resolve` makes, apart from the handle.** Everything
@@ -1613,10 +1633,47 @@ mod tests {
         std::fs::create_dir_all(paths.profiles.join("hunt")).expect("the files");
         // A file where a profile would be is not one.
         std::fs::write(paths.profiles.join("stray.txt"), b"").expect("a stray file");
-        let rows = host.profiles().await;
+        let rows = host.profiles(None).await;
         let row = rows.iter().find(|row| row.name == "hunt").expect("the closed profile's row");
-        assert_eq!(row.owner, "", "nobody owns a closed profile");
+        assert_eq!(row.owner, "", "a directory with no record is ownerless");
         assert!(!row.running, "and nothing is running behind it");
         assert!(!rows.iter().any(|row| row.name == "stray.txt"), "a file is not a profile",);
+    }
+
+    /// **The listing is served per seat.** A seat's read answers its own rows
+    /// and the ownerless ones and nothing else - another seat's profile is
+    /// not even listed to it - while the person's door (no seat) answers
+    /// every row, and a closed profile keeps the owner its record names.
+    #[tokio::test]
+    async fn the_listing_is_served_for_its_seat() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let host = BrowserHost::new(paths.clone());
+        let mine = seat();
+        let other = Seat { org: "Other".to_owned(), ..seat() };
+        Named::open(mine.clone(), "hunt", &paths).expect("mine");
+        Named::open(other, "scout", &paths).expect("theirs");
+        std::fs::create_dir_all(paths.profiles.join("legacy")).expect("a legacy dir");
+
+        let rows = host.profiles(Some(&mine)).await;
+        let names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
+        assert_eq!(names, vec!["hunt", "legacy"], "own rows and ownerless ones: {names:?}");
+        let legacy = rows.iter().find(|row| row.name == "legacy").expect("the legacy row");
+        assert_eq!(legacy.owner, "", "a legacy dir reads ownerless, and stays deletable");
+
+        let all = host.profiles(None).await;
+        let names: Vec<&str> = all.iter().map(|row| row.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["hunt", "legacy", "scout"],
+            "the person's door answers every row: {names:?}",
+        );
+        let scout = all.iter().find(|row| row.name == "scout").expect("the other seat's row");
+        assert_eq!(scout.owner, "Other/forge/lead", "a closed profile keeps its record's owner");
     }
 }
