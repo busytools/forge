@@ -35,7 +35,7 @@
     lineCounts,
     rowSide,
     synthesizeFileDiff,
-    treeOf,
+    treeRows,
   } from './diff';
   import { ageOf, authorName, canvasLine, statusName, threadsInScope, turnRound } from './view';
   import { captureContext, type ComposedComment } from './write';
@@ -105,7 +105,7 @@
 
   const scopeLayer = $derived(scopeCommit === null ? layer : (fetched.get(scopeCommit) ?? null));
   const scopeFiles = $derived(scopeLayer === null ? [] : filesOf(scopeLayer));
-  const tree = $derived(treeOf(scopeFiles));
+  const tree = $derived(treeRows(scopeFiles, closedDirs));
   const scoped = $derived(threadsInScope(threads, scopeCommit));
 
   /** The socket's own state, which is when a dropped ask is worth repeating. */
@@ -640,16 +640,22 @@
 
 <nav class="rv-files" aria-label="files in this scope">
   <h2 class="rv-h">Files <span class="rv-n">{scopeFiles.length}</span></h2>
-  {#each tree as [dir, files] (dir)}
-    {#if dir}
-      <button type="button" class="rv-dir" onclick={() => toggle(closedDirs, dir)}>
-        <span class="rv-arw" class:open={!closedDirs.has(dir)}>&#9656;</span>
-        <span class="rv-dirpath">{dir}/</span>
-        <span class="rv-dircount">{files.length}</span>
+  {#each tree as row (row.kind + ':' + row.path)}
+    {#if row.kind === 'dir'}
+      <button
+        type="button"
+        class="rv-dir"
+        style="--d:{row.depth}"
+        aria-expanded={!closedDirs.has(row.path)}
+        onclick={() => toggle(closedDirs, row.path)}
+      >
+        <span class="rv-arw" class:open={!closedDirs.has(row.path)}>&#9656;</span>
+        <span class="rv-dirname">{row.name}/</span>
+        <span class="rv-dircount">{row.count}</span>
       </button>
-    {/if}
-    {#if !dir || !closedDirs.has(dir)}
-      {#each files as file (file.path)}
+    {:else}
+      {@const file = row.file}
+      {#if file !== null}
         {@const at = lineCounts(file)}
         {@const mine = scoped.filter(
           (thread) => thread.anchor.path === file.path && canvasLine(thread) !== null,
@@ -658,18 +664,20 @@
           type="button"
           class="rv-frow"
           class:renamed={file.oldPath !== null}
+          style="--d:{row.depth}"
+          title={row.path}
           onclick={() => jumpTo(file.path)}
         >
-          <span class="rv-fpath">{file.path.split('/').pop()}</span>
+          <span class="rv-fpath">{row.name}</span>
           <span class="rv-fstat">
-            <span class="rv-plus">+{at.plus}</span>
-            <span class="rv-minus">-{at.minus}</span>
+            {#if at.plus > 0}<span class="rv-plus">+{at.plus}</span>{/if}
+            {#if at.minus > 0}<span class="rv-minus">-{at.minus}</span>{/if}
           </span>
           <span class="rv-fcount">
             {#if mine.length}<span class="rv-ccnum">{mine.length}</span>{/if}
           </span>
         </button>
-      {/each}
+      {/if}
     {/if}
   {/each}
 </nav>

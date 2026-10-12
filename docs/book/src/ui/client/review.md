@@ -26,7 +26,7 @@ file tree, and the diff with the threads on their lines.
 | Header   | the back link to the seat, `Review`, the branch, the round count, and the loop's state - `N replies to read`, in the warn tone while any thread waits on the reader, and `N open` | the record's `work.branch`, and the two review halves              |
 | Tabs     | `Conversation` and `Files changed`, with the commit count                                                                                                                         | the record's git chain                                             |
 | Scope    | the scope on screen, a stepper, the keys, and the unified/split picker                                                                                                            | the record's git chain (the commit list)                           |
-| Tree     | one file per row, its counts, and how many threads it carries                                                                                                                     | the scope's diff, and the threads in that scope                    |
+| Tree     | the scope's files as their own hierarchy - a row per directory and per file, folders before files, indented by depth; a directory carries the files beneath it                    | the scope's diff, and the threads in that scope                    |
 | Canvas   | the scope's files as diffs, with each thread inserted under its own line and the composer under the line a comment is being written on                                            | the scope's diff, the threads, and the server's landing per thread |
 | Outdated | every thread whose code could not be placed, drawn against the lines captured when the comment was written                                                                        | the threads half                                                   |
 | Rounds   | newest first: the round's number, its age, its tally by state, its summary, and each member thread                                                                                | the rounds half                                                    |
@@ -60,6 +60,13 @@ dozens of commits, and every reader of a record, the terminal included,
 would pay their content on every read for a scope only this page draws. An
 ask the socket did not take is asked again, so a scope opened while the
 connection was down recovers rather than reading for ever.
+
+**The tree draws the scope as its own structure**, not a flat list of paths:
+one row per directory and per file, folders before files at every level,
+indented by depth, and a directory's row carries every file beneath it -
+which is what its collapsed row hides. A file states a side of its change
+only where it has one, so a file with no removals carries no `-0`, and each
+row carries its full path as its hover title.
 
 **The canvas draws what is on screen.** The sections are virtualised over
 files - the browser holds the two or three a reader can see and the rest

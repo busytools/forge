@@ -92,17 +92,23 @@
   .rv-mode span.on { color: var(--text); background: var(--s2); }
 
   /* ---------- the diff half: the tree, then the canvas ---------- */
-  .rv-body { display: grid; grid-template-columns: 264px minmax(0, 1fr); gap: 18px; }
+  .rv-body { display: grid; grid-template-columns: 296px minmax(0, 1fr); gap: 18px; }
   .rv-files h2 { display: flex; gap: 8px; align-items: baseline; margin-bottom: 6px;
     font-size: var(--fs-label); font-weight: 700; letter-spacing: .12em;
     text-transform: uppercase; color: var(--dim); }
-  .rv-dir { display: flex; align-items: baseline; gap: 6px; padding: 6px 6px 3px; }
-  .rv-dirpath { font-family: var(--mono); font-size: var(--fs-label); color: var(--text);
+  /* The tree draws the scope's own hierarchy: a row per directory and per
+     file, indented by depth (--d, set per row), folders before files. */
+  .rv-dir { display: flex; align-items: baseline; gap: 6px;
+    padding: 6px 6px 3px calc(4px + var(--d, 0) * 12px); }
+  .rv-arw { flex: none; width: 9px; text-align: center; font-size: 10px; color: var(--dim);
+    transition: transform .12s ease; }
+  .rv-arw.open { transform: rotate(90deg); }
+  .rv-dirname { font-family: var(--mono); font-size: var(--fs-label); color: var(--text);
     font-weight: 500; }
   .rv-dircount { margin-left: auto; font-family: var(--mono); font-size: var(--fs-label);
     color: var(--dim); }
-  .rv-frow { display: grid; grid-template-columns: minmax(0, 1fr) 62px 26px; gap: 6px;
-    align-items: baseline; padding: 3px 8px 3px 16px; border-radius: 7px; }
+  .rv-frow { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 6px;
+    align-items: baseline; padding: 3px 8px 3px calc(19px + var(--d, 0) * 12px); border-radius: 7px; }
   .rv-frow.here { background: rgba(27,33,48,.5); }
   .rv-fpath { font-family: var(--mono); font-size: var(--fs-label); color: var(--text); }
   .rv-fstat { font-family: var(--mono); font-size: var(--fs-label); text-align: right; }
@@ -254,33 +260,41 @@
   <div class="rv-body">
     <nav class="rv-files" aria-label="files in this scope">
       <h2>Files <span class="n">17</span></h2>
-      <div class="rv-dir">
+      <div class="rv-dir" style="--d:0">
         <span class="rv-arw open">&#9656;</span>
-        <span class="rv-dirpath">client/src/review/</span><span class="rv-dircount">3</span>
+        <span class="rv-dirname">client/</span><span class="rv-dircount">8</span>
       </div>
-      <div class="rv-frow here">
+      <div class="rv-dir" style="--d:1">
+        <span class="rv-arw open">&#9656;</span>
+        <span class="rv-dirname">src/</span><span class="rv-dircount">5</span>
+      </div>
+      <div class="rv-dir" style="--d:2">
+        <span class="rv-arw open">&#9656;</span>
+        <span class="rv-dirname">review/</span><span class="rv-dircount">3</span>
+      </div>
+      <div class="rv-frow here" style="--d:3">
         <span class="rv-fpath">Review.svelte</span>
-        <span class="rv-fstat"><span class="rv-plus">+400</span> <span class="rv-minus">-0</span></span>
+        <span class="rv-fstat"><span class="rv-plus">+400</span></span>
         <span><span class="rv-ccnum">1</span></span>
       </div>
-      <div class="rv-frow">
+      <div class="rv-frow" style="--d:3">
         <span class="rv-fpath">view.ts</span>
-        <span class="rv-fstat"><span class="rv-plus">+125</span> <span class="rv-minus">-0</span></span>
+        <span class="rv-fstat"><span class="rv-plus">+125</span></span>
       </div>
-      <div class="rv-frow">
+      <div class="rv-frow" style="--d:3">
         <span class="rv-fpath">view.test.ts</span>
-        <span class="rv-fstat"><span class="rv-plus">+165</span> <span class="rv-minus">-0</span></span>
+        <span class="rv-fstat"><span class="rv-plus">+165</span></span>
       </div>
-      <div class="rv-dir">
+      <div class="rv-dir" style="--d:2">
         <span class="rv-arw open">&#9656;</span>
-        <span class="rv-dirpath">client/src/session/</span><span class="rv-dircount">2</span>
+        <span class="rv-dirname">session/</span><span class="rv-dircount">2</span>
       </div>
-      <div class="rv-frow">
+      <div class="rv-frow" style="--d:3">
         <span class="rv-fpath">wire.ts</span>
-        <span class="rv-fstat"><span class="rv-plus">+163</span> <span class="rv-minus">-1</span></span>
+        <span class="rv-fstat"><span class="rv-plus">+163</span></span>
         <span><span class="rv-ccnum">1</span></span>
       </div>
-      <div class="rv-frow">
+      <div class="rv-frow" style="--d:3">
         <span class="rv-fpath">wire.test.ts</span>
         <span class="rv-fstat"><span class="rv-plus">+92</span> <span class="rv-minus">-1</span></span>
       </div>

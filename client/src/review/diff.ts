@@ -26,20 +26,71 @@ export function lineCounts(file: DiffFileRecord): { plus: number; minus: number 
   return { plus, minus };
 }
 
+/** One row of the tree in draw order: a directory, then what is beneath it,
+ *  with a closed directory keeping its row and no subtree. The pairs are
+ *  nullable rather than a discriminated union because the template reads
+ *  them through the lint's type resolution, which does not narrow a union
+ *  across an if. */
+export interface TreeRow {
+  depth: number;
+  kind: 'dir' | 'file';
+  name: string;
+  path: string;
+  /** Files beneath, on a directory row; null on a file. */
+  count: number | null;
+  /** The record, on a file row; null on a directory. */
+  file: DiffFileRecord | null;
+}
+
+interface TreeNode {
+  dirs: Map<string, TreeNode>;
+  files: DiffFileRecord[];
+}
+
 /**
- * The file list as a tree: one entry per directory prefix in the order the
- * files arrive, '' for the repository root.
+ * The scope's files as their own tree: a row per directory and per file,
+ * folders before files at every level and alphabetical within each, indented
+ * by depth. A directory row names its basename and carries every file
+ * beneath it - what a collapsed row is hiding.
  */
-export function treeOf(files: DiffFileRecord[]): [string, DiffFileRecord[]][] {
-  const groups = new Map<string, DiffFileRecord[]>();
+export function treeRows(files: DiffFileRecord[], closed: ReadonlySet<string>): TreeRow[] {
+  const root: TreeNode = { dirs: new Map(), files: [] };
+  const base = (path: string): string => path.slice(path.lastIndexOf('/') + 1);
   for (const file of files) {
-    const cut = file.path.lastIndexOf('/');
-    const dir = cut === -1 ? '' : file.path.slice(0, cut);
-    const held = groups.get(dir);
-    if (held === undefined) groups.set(dir, [file]);
-    else held.push(file);
+    const parts = file.path.split('/');
+    parts.pop();
+    let at = root;
+    let prefix = '';
+    for (const part of parts) {
+      prefix = prefix === '' ? part : `${prefix}/${part}`;
+      let next = at.dirs.get(part);
+      if (next === undefined) {
+        next = { dirs: new Map(), files: [] };
+        at.dirs.set(part, next);
+      }
+      at = next;
+    }
+    at.files.push(file);
   }
-  return [...groups];
+  const byName = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+  const countOf = (node: TreeNode): number => {
+    let total = node.files.length;
+    for (const child of node.dirs.values()) total += countOf(child);
+    return total;
+  };
+  const rows: TreeRow[] = [];
+  const descend = (node: TreeNode, depth: number, prefix: string): void => {
+    for (const [name, child] of [...node.dirs.entries()].sort(([a], [b]) => byName(a, b))) {
+      const path = prefix === '' ? name : `${prefix}/${name}`;
+      rows.push({ depth, kind: 'dir', name, path, count: countOf(child), file: null });
+      if (!closed.has(path)) descend(child, depth + 1, path);
+    }
+    for (const file of [...node.files].sort((a, b) => byName(base(a.path), base(b.path)))) {
+      rows.push({ depth, kind: 'file', name: base(file.path), path: file.path, count: null, file });
+    }
+  };
+  descend(root, 0, '');
+  return rows;
 }
 
 /**

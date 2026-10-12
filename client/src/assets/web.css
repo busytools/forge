@@ -127,6 +127,8 @@ html::-webkit-scrollbar-thumb:active,
      whose content is long. */
   --cols: 13px minmax(0, 22rem) minmax(0, 20rem) minmax(0, 1fr) 74px;
   --pad: 16px;
+  /* The tree row's depth, set per row from the markup; 0 is the root. */
+  --d: 0;
 }
 
 html, body { height: 100%; }
@@ -3048,7 +3050,7 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 
 /* The tree holds the width its longest path needs and no more; everything
    else is the diff's. */
-.review .rv-body { display: grid; grid-template-columns: minmax(0, 248px) minmax(0, 1fr);
+.review .rv-body { display: grid; grid-template-columns: minmax(0, 296px) minmax(0, 1fr);
   gap: 14px; flex: 1; min-height: 0; }
 .review .rv-files { overflow-y: auto; min-height: 0; padding: 0 2px 12px;
   scrollbar-gutter: stable; }
@@ -3071,17 +3073,28 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .review .rv-files::-webkit-scrollbar-thumb:hover,
 .review .rv-menu::-webkit-scrollbar-thumb:hover { background: var(--line); }
 
-/* The file tree. A directory reads as itself - the path in the page's own
-   text at a step less weight than a file's - rather than as a ghost. */
+/* The file tree. It draws the scope's own hierarchy - a row per directory
+   and per file, indented by depth with folders before files at every level -
+   rather than a flat list of full-path headings, which reads as neither one
+   at 56 files. A directory names its basename and carries the files beneath
+   it, which is what its collapsed row is hiding. */
 .review .rv-dir { display: flex; align-items: baseline; gap: 6px; width: 100%; text-align: left;
-  background: none; border: 0; padding: 5px 6px 2px; cursor: pointer; font: inherit; }
-.review .rv-dirpath { font-family: var(--mono); font-size: var(--fs-label); color: var(--text);
+  background: none; border: 0; padding: 5px 6px 2px calc(4px + var(--d, 0) * 12px);
+  cursor: pointer; font: inherit; }
+.review .rv-arw { flex: none; width: 9px; text-align: center; font-size: 10px; color: var(--dim);
+  transition: transform .12s ease; }
+.review .rv-arw.open { transform: rotate(90deg); }
+.review .rv-dirname { font-family: var(--mono); font-size: var(--fs-label); color: var(--text);
   font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; }
 .review .rv-dircount { margin-left: auto; font-family: var(--mono); font-size: var(--fs-label);
   color: var(--dim); }
-.review .rv-frow { display: grid; grid-template-columns: minmax(0, 1fr) 62px 26px; gap: 6px;
-  align-items: baseline; width: 100%; padding: 3px 8px 3px 16px; border-radius: 7px;
+/* The stats and the badge size to their own content rather than a reserved
+   62px: a fixed column costs every row the widest row's width, which is what
+   turned long names into stubs at depth. */
+.review .rv-frow { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 6px;
+  align-items: baseline; width: 100%;
+  padding: 3px 8px 3px calc(19px + var(--d, 0) * 12px); border-radius: 7px;
   background: none; border: 0; font: inherit; text-align: left; cursor: pointer;
   text-decoration: none; color: inherit; }
 .review .rv-frow:hover { background: rgba(27,33,48,.5); }
