@@ -127,11 +127,20 @@ pub(crate) struct ReviewActivity {
 
 /// The reviewer-facing one-line summary a worker's review turn produces:
 /// `worker addressed review #N - A replied, B resolved, C open. Open /diff.`
-/// `open` is the review's current open-comment count after the turn.
-pub(crate) fn notice_message(number: u32, replied: usize, resolved: usize, open: usize) -> String {
+/// `open` is the review's current open-comment count after the turn. `doc`
+/// is true for a document's scope, whose door is the viewer rather than the
+/// diff overlay - a doc scope never loads into the overlay at all.
+pub(crate) fn notice_message(
+    number: u32,
+    replied: usize,
+    resolved: usize,
+    open: usize,
+    doc: bool,
+) -> String {
+    let door = if doc { "Open the document." } else { "Open /diff." };
     format!(
         "worker addressed review #{number} - {replied} replied, {resolved} resolved, \
-         {open} open. Open /diff."
+         {open} open. {door}"
     )
 }
 
@@ -735,9 +744,18 @@ mod tests {
     #[test]
     fn notice_message_reads_as_a_tally_line() {
         assert_eq!(
-            notice_message(3, 2, 1, 4),
+            notice_message(3, 2, 1, 4, false),
             "worker addressed review #3 - 2 replied, 1 resolved, 4 open. Open /diff.",
         );
+    }
+
+    /// A document's review names the viewer as its door; `/diff` carries no
+    /// doc scope, so pointing there would send the reader nowhere.
+    #[test]
+    fn notice_message_for_a_document_names_the_viewer() {
+        let message = notice_message(1, 1, 0, 1, true);
+        assert!(message.contains("Open the document."), "{message}");
+        assert!(!message.contains("/diff"), "{message}");
     }
 
     use crate::mcp::review::facade::{MockReviewFacade, ScopeError};

@@ -657,8 +657,13 @@ impl Workspace {
             // Branch-wide, not per-review: the reviewer's badge counts every
             // answer still owed a look on the branch they are on.
             let waiting = threads.iter().filter(|t| t.awaits_reviewer()).count();
-            let message =
-                crate::mcp::review::notice_message(summary.number, replied, resolved, summary.open);
+            let message = crate::mcp::review::notice_message(
+                summary.number,
+                replied,
+                resolved,
+                summary.open,
+                forge_primitives::review::is_doc_scope(&branch),
+            );
             messages.push(((project, branch), waiting, message));
         }
 
