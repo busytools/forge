@@ -37,7 +37,7 @@ import {
   taskRows,
   untilOf,
 } from './view';
-import { reviewsFrom, sessionFrom, type SessionRecord } from './wire';
+import { diffFrom, gitFrom, reviewsFrom, sessionFrom, type SessionRecord } from './wire';
 
 const record: SessionRecord = sessionFrom(session);
 
@@ -1454,6 +1454,50 @@ describe('the review rows the strip draws', () => {
     status,
     created_at: '2026-01-01T00:00:00Z',
     updated_at: '2026-01-01T00:00:00Z',
+  });
+
+  /**
+   * The fixture's record with its branch-ahead layer stated, so a case can
+   * take the seat's own changes away: `clean` is a branch level with its
+   * default, anything else the wire's own layer value. Both reads state it -
+   * a clean branch has nothing ahead in the git read either.
+   */
+  const withBranch = (branchAhead: unknown): SessionRecord => ({
+    ...record,
+    diff: diffFrom({ worktree: 'clean', branch_ahead: branchAhead, truncated: false }),
+    git: gitFrom({ default_branch: 'main', worktree: null, ahead: null }),
+  });
+
+  it("draws the row only while there is something under review: a thread, or the branch's own changes", () => {
+    // Ved's 1.1.9 report: the row drew on a seat with nothing on it - a
+    // landed read is not the same as something to review. What the row
+    // opens is the review page, so it keys on what that page holds: the
+    // threads, and the branch's own committed changes.
+    expect(
+      reviewRows(withBranch('clean')),
+      'a clean branch with nothing filed has nothing behind the door',
+    ).toBeNull();
+    expect(
+      reviewRows(withBranch('scan_failed')),
+      'a read that failed is not a clean branch: the page draws the failure',
+    ).toEqual([]);
+    expect(
+      reviewRows(withThreads('read', [])),
+      'the fixture branch carries a commit ahead: the door to review it stands',
+    ).toEqual([]);
+    expect(
+      reviewRows({
+        ...withBranch('clean'),
+        reviews: reviewsFrom({
+          threads: {
+            outcome: 'read',
+            value: [thread('answered', 'Addressed', { Agent: { label: 'w1' } }, 7)],
+          },
+          reviews: { outcome: 'read', value: [] },
+        }),
+      })?.map((row) => row.id),
+      'threads on committed code draw even when the branch itself is clean',
+    ).toEqual(['answered']);
   });
 
   it('leads with what waits on the reviewer, and draws nothing for a read that never landed', () => {

@@ -1,7 +1,7 @@
 <script lang="ts">
   import Icon from '../components/Icon.svelte';
   import { review } from './review.svelte';
-  import { panelStyle } from './strip-panel';
+  import { panelStyle, portal } from './strip-panel';
 
   /**
    * The review row in the strip above the composer: what this seat's branch
@@ -9,7 +9,9 @@
    *
    * **The strip is how the page is reached**, not only its URL: the row says
    * how many answers wait to be read - the live fact a reviewer is looking
-   * for - and the panel lists the threads and opens the page.
+   * for - and the panel lists the threads and opens the page. It draws only
+   * while the page has something behind it: a thread, or the branch's own
+   * changes.
    */
   let open = $state(false);
   /** Where this seat's review lives, handed in by the page that owns the seat. */
@@ -53,6 +55,9 @@
   function release(event?: FocusEvent) {
     if (event === undefined) {
       if (segEl !== null && segEl.matches(':hover')) return;
+      // The panel is portaled to the body (`use:portal`), so moving off the
+      // segment into the panel is not a departure.
+      if (listEl !== null && listEl.matches(':hover')) return;
       const active = document.activeElement;
       const onRow =
         segEl !== null && listEl !== null && active instanceof Node && listEl.contains(active);
@@ -61,7 +66,14 @@
       return;
     }
     const next = event.relatedTarget ?? document.activeElement;
-    if (segEl !== null && next instanceof Node && segEl.contains(next)) return;
+    // The panel is portaled to the body (`use:portal`), so focus moving INTO
+    // it is not a departure - the segment can no longer contain it.
+    if (
+      next instanceof Node &&
+      ((segEl !== null && segEl.contains(next)) || (listEl !== null && listEl.contains(next)))
+    ) {
+      return;
+    }
     arm();
   }
 
@@ -142,6 +154,7 @@
         class="sg-list"
         bind:this={listEl}
         style={limits}
+        use:portal
         role="presentation"
         onpointerenter={(event) => {
           if (hovering(event)) hold();
