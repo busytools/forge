@@ -266,12 +266,13 @@ to the model as `mcp__forge__<group>__<tool>`, with nine groups today:
 `agents`, `browser`, `documents`, `review`, `cron`, `tasks`, `gotify`,
 `slack` and `systemone`.
 
-`browser` and `documents` are the exceptions to the render pattern,
-crossing unprefixed. The browser's tools are upstream
-`@playwright/mcp`'s own - `mcp__forge__browser_navigate`, not
-`mcp__forge__browser__navigate` - which is what keeps a prompt written
-against a Playwright MCP server resolving here unchanged; the hand-off
-tool crosses the same way, `mcp__forge__hand_off_document`.
+`browser` is the exception to the render pattern, crossing unprefixed:
+its tools are upstream `@playwright/mcp`'s own -
+`mcp__forge__browser_navigate`, not `mcp__forge__browser__navigate` -
+which is what keeps a prompt written against a Playwright MCP server
+resolving here unchanged. Every other group renders in full, the
+document hand-off included: `documents__hand_off` crosses as
+`mcp__forge__documents__hand_off`.
 
 `browser`, `documents`, `review`, `cron`, `tasks`, `gotify` and `slack`
 are registered for every session; `systemone` joins them when
