@@ -276,9 +276,18 @@ impl BrowserHost {
             }
             #[cfg(desktop)]
             {
+                let paths = self.paths.clone()?;
+                // **The same fallback attach uses.** The live map holds this
+                // run's entries; a restart leaves it empty while the record
+                // still names the seat - so resolving from the map alone
+                // would answer the owner "no profile named ... is open to
+                // this session" and lock it out of its own profile.
                 let owner = {
                     let named = self.named.lock().await;
-                    named.get(&name).map(|entry| entry.owner.clone())
+                    match named.get(&name).map(|entry| entry.owner.clone()) {
+                        Some(owner) => Some(owner),
+                        None => profiles::owner_of(&paths.profiles.join(&name))?,
+                    }
                 };
                 return match owner {
                     Some(owner) if &owner == seat => self.delete(&name).await.map(|()| {
@@ -1759,6 +1768,51 @@ mod tests {
             .collect::<String>();
         assert!(text.contains("deleted the 'hunt' profile"), "{text}");
         assert!(!paths.profiles.join("hunt").exists(), "the tree went");
+    }
+
+    /// **A restart does not lock the owner out of its own delete.** The live
+    /// map is empty after one while the record still names the seat, so the
+    /// tool resolves the owner the way attach does - from the record - and
+    /// the seat deletes its own profile instead of being told nothing is
+    /// open to it.
+    #[tokio::test]
+    async fn the_owner_deletes_its_own_recorded_profile_after_a_restart() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let owner = seat();
+        Named::open(owner.clone(), "hunt", &paths).expect("the open");
+        Named::open(owner.clone(), "scout", &paths).expect("the other's record");
+        // The client restarted: a fresh host, an empty map, the records alone.
+        let host = BrowserHost::new(paths.clone());
+
+        let parts = host
+            .call(&owner, "browser_profile_delete", json!({ "name": "hunt" }))
+            .await
+            .expect("the record says the seat owns it");
+        let text = parts
+            .iter()
+            .map(|part| match part {
+                driver::ReplyPart::Text { text } => text.clone(),
+                driver::ReplyPart::Image { .. } => String::new(),
+            })
+            .collect::<String>();
+        assert!(text.contains("deleted the 'hunt' profile"), "{text}");
+        assert!(!paths.profiles.join("hunt").exists(), "and the tree went");
+
+        // Another seat against a record that is not its own: refused BY
+        // NAME, not with "nothing is open to this session".
+        let other = Seat { org: "Other".to_owned(), ..seat() };
+        let refused = host
+            .call(&other, "browser_profile_delete", json!({ "name": "scout" }))
+            .await
+            .expect_err("another seat's record");
+        assert!(refused.contains("belongs to Busytools/forge/lead"), "{refused}");
+        assert!(paths.profiles.join("scout").exists(), "and nothing was removed");
     }
 
     /// **A closed profile is still a row**: its directory is listed with no
