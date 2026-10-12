@@ -278,6 +278,36 @@ impl Fleet {
         label: &str,
         rows: &[&str],
     ) -> Result<(), FixtureError> {
+        let slot = self.write_transcript(org, project, label, rows)?;
+        self.workspace.seed_test_running_session_id(&slot, SEEDED_SESSION);
+        Ok(())
+    }
+
+    /// [`Self::seed_transcript`] for a seat nothing is running behind: the id
+    /// lives in the store's own row - which is what a wake resumes, and the
+    /// other place a transcript read is looked up by - and no live entry
+    /// names it.
+    pub fn seed_asleep_transcript(
+        &self,
+        org: &str,
+        project: &str,
+        label: &str,
+        rows: &[&str],
+    ) -> Result<(), FixtureError> {
+        let slot = self.write_transcript(org, project, label, rows)?;
+        self.workspace.seed_test_stored_session_id(&slot, SEEDED_SESSION);
+        Ok(())
+    }
+
+    /// The row file at the path the CLI would have written it to, with the
+    /// seat resolved; which of the two id sources names it is the caller's.
+    fn write_transcript(
+        &self,
+        org: &str,
+        project: &str,
+        label: &str,
+        rows: &[&str],
+    ) -> Result<SessionSlot, FixtureError> {
         let slot = if label == "lead" {
             SessionSlot::lead(org, project)
         } else {
@@ -290,22 +320,24 @@ impl Fleet {
         let key = forge_workspace::userdata::catalog::scan::project_key_for_directory(Some(&cwd));
         let dir = self.config_dir.join("projects").join(key);
         std::fs::create_dir_all(&dir)?;
-        self.workspace.seed_test_running_session_id(&slot, SEEDED_SESSION);
         std::fs::write(dir.join(format!("{SEEDED_SESSION}.jsonl")), rows.join("\n"))?;
-        Ok(())
+        Ok(slot)
     }
 
     /// Hold the seat's conversation on `state`, read from the transcript a
     /// fixture just seeded.
     ///
-    /// **The transport no longer reads a transcript**, so a fixture that wants
-    /// a seat to answer with one has to put it there: it reads the transcript
-    /// RAW - the shape a `Connected` carries and a replay answers with - and
-    /// lets the conversation convert it, which is the state a `Connected`
-    /// would have left. Not through `ViewSurface::conversation`, which
-    /// converts the task notices on the way out: a fixture built on the
-    /// converted shape would exercise something production never seeds from,
-    /// so a defect in the seed's own conversion could not be seen here.
+    /// **This is the window a `Connected` carries**, put there by hand: a
+    /// fixture that wants a seat to answer with a conversation the transport
+    /// is HANDED holds it this way, rather than leaning on the transport's
+    /// own read of the file - which is a sleeping seat's path, and firing it
+    /// here would make every held-window test pass through the other source.
+    /// So it reads the transcript RAW - the shape a `Connected` carries and a
+    /// replay answers with - and lets the conversation convert it. Not
+    /// through `ViewSurface::conversation`, which converts the task notices
+    /// on the way out: a fixture built on the converted shape would exercise
+    /// something production never seeds from, so a defect in the seed's own
+    /// conversion could not be seen here.
     ///
     /// The dispatch flag is NOT seeded here: it is the workspace's, raised by
     /// the session task's fold, and a fixture that wants it says so through

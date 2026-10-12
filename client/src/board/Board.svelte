@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from 'svelte';
   import { hrefForSlot } from '../routes';
   import { isBoardRefusal, type ServiceReport } from '../wire/fleet';
   import type { HomeWire, TaskStatus } from '../wire/home';
@@ -7,7 +8,7 @@
   import Picker from './Picker.svelte';
   import TaskDrawer from './TaskDrawer.svelte';
   import { applyMoves, boardView, landed } from './view';
-  import type { BoardCardView, PendingMove } from './view';
+  import type { BoardCardView, LaneView, PendingMove } from './view';
 
   /**
    * One project's board, opened as a takeover: a slim top bar with back and
@@ -43,6 +44,49 @@
    */
   let moved = $state<Record<string, PendingMove>>({});
   const lanes = $derived(applyMoves(view.lanes, moved));
+
+  /** How many rows each grown group draws before it folds. */
+  const FOLD_LIMITS: Partial<Record<TaskStatus, number>> = {
+    completed: 5,
+    failed: 5,
+    canceled: 5,
+    // The Backlog folds larger than the finished groups: the queue's order is
+    // the lead's dispatch order, and the top of it is what stays in view.
+    pending: 10,
+  };
+
+  /** The folds the reader opened, by lane. */
+  let openFolds = $state<Partial<Record<TaskStatus, boolean>>>({});
+
+  /**
+   * The lanes as drawn: a grown group holds its tail back - the finished
+   * groups draw their five most recently finished rows, by `updated_at`, so a
+   * late finish shows whatever its rank; the Backlog draws the queue's own
+   * head - plus any card the reader is placing right now, because a drop into
+   * the folded group lands at once like every other move.
+   */
+  const drawnLanes = $derived.by(() =>
+    lanes.map((lane) => {
+      const limit = FOLD_LIMITS[lane.key];
+      if (limit === undefined || openFolds[lane.key] === true || lane.cards.length <= limit) {
+        return lane;
+      }
+      const kept =
+        lane.key === 'pending'
+          ? lane.cards.slice(0, limit)
+          : [...lane.cards].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, limit);
+      const shown = new Set(kept.map((card) => card.id));
+      const cards = lane.cards.filter((card) => shown.has(card.id) || moved[card.id] !== undefined);
+      return { ...lane, cards };
+    }),
+  );
+
+  /** Whether a lane's group is past its limit, so its fold control draws. */
+  function folds(lane: LaneView): boolean {
+    const limit = FOLD_LIMITS[lane.key];
+    return limit !== undefined && lane.count > limit;
+  }
+
   /** The project's seats, for the owner picker: the label that may hold a row. */
   const seats = $derived(
     wire.agents
@@ -386,15 +430,34 @@
 
   /**
    * The reader's jump: a card named by a pill comes into view, takes the
-   * focus, and flashes so the eye lands with it.
+   * focus, and flashes so the eye lands with it. A jump aimed at a card the
+   * fold is holding back opens the fold first - a door onto a folded row
+   * must not die on a missing element.
    */
-  function jumpTo(id: string): void {
-    const el = boardEl?.querySelector<HTMLElement>(`.b-card[data-id="${id}"]`);
+  async function jumpTo(id: string): Promise<void> {
+    let el = boardEl?.querySelector<HTMLElement>(`.b-card[data-id="${id}"]`);
+    if (el === undefined || el === null) {
+      const lane = foldedLaneOf(id);
+      if (lane === null) return;
+      openFolds[lane] = true;
+      await tick();
+      el = boardEl?.querySelector<HTMLElement>(`.b-card[data-id="${id}"]`);
+    }
     if (el === undefined || el === null) return;
     el.scrollIntoView({ behavior: 'auto', block: 'nearest', inline: 'nearest' });
     el.focus();
     el.classList.add('b-flash');
     window.setTimeout(() => el.classList.remove('b-flash'), 1500);
+  }
+
+  /** The folded group holding a row the fold is keeping off the page, or null. */
+  function foldedLaneOf(id: string): TaskStatus | null {
+    for (const held of lanes) {
+      if (!held.cards.some((card) => card.id === id)) continue;
+      const drawn = drawnLanes.find((entry) => entry.key === held.key)?.cards ?? [];
+      return drawn.some((card) => card.id === id) ? null : held.key;
+    }
+    return null;
   }
 
   /**
@@ -593,7 +656,7 @@
     {/if}
 
     <div class="b-lanes">
-      {#each lanes as lane (lane.key)}
+      {#each drawnLanes as lane (lane.key)}
         <section
           class="b-lane b-lane-{lane.key}"
           class:drop={dropLane === lane.key}
@@ -654,7 +717,7 @@
                     class="b-chip blue b-epic-pill"
                     aria-label="jump to {row.epic}"
                     onclick={() => {
-                      if (row.epicId !== null) jumpTo(row.epicId);
+                      if (row.epicId !== null) void jumpTo(row.epicId);
                     }}>&#8627; {row.epic}</button
                   >
                 {/if}
@@ -709,6 +772,17 @@
               </div>
             </article>
           {/each}
+          {#if folds(lane)}
+            <!-- Under the last card: a control at the lane's head is passed
+                 before the reader knows rows are held back. -->
+            <button
+              type="button"
+              class="b-fold"
+              aria-expanded={openFolds[lane.key] === true}
+              onclick={() => (openFolds[lane.key] = openFolds[lane.key] !== true)}
+              >{openFolds[lane.key] === true ? 'show less' : `show all (${lane.count})`}</button
+            >
+          {/if}
         </section>
       {/each}
     </div>
@@ -767,7 +841,7 @@
       onjump={(id: string) => {
         jumping = true;
         closeDrawer();
-        jumpTo(id);
+        void jumpTo(id);
       }}
     />
   {/if}

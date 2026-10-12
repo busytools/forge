@@ -364,6 +364,18 @@ pub enum ServerMessage {
         threads: Vec<forge_primitives::review::ReviewThread>,
         reviews: Vec<forge_primitives::ReviewSet>,
     },
+    /// The seats that exist right now, for a browser-capable client's
+    /// profile sweep.
+    ///
+    /// Sent to every capable connection whenever one declares and whenever a
+    /// worker despawns: the client deletes the named profiles whose owning
+    /// seat is not in the set - its own seat's profiles and the shared
+    /// browser are untouched - so a despawned worker's profiles do not
+    /// outlive it. Whole rather than a delta: the set is authoritative at
+    /// the moment it is sent and the sweep that reads it is idempotent.
+    BrowserSeats {
+        seats: Vec<SessionSlot>,
+    },
 }
 
 /// What the client draws with, from `forge.toml` by way of the server.
@@ -401,6 +413,26 @@ impl ClientSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The seats frame a capable client is sent for its profile sweep: the
+    /// live set crosses whole, a seat keeping the three names a slot is.
+    #[test]
+    fn a_browser_seats_frame_carries_the_live_set() {
+        let sent = ServerMessage::BrowserSeats {
+            seats: vec![
+                SessionSlot::lead("TestOrg", "proj"),
+                SessionSlot::worker("TestOrg", "proj", "w1"),
+            ],
+        };
+        let json = serde_json::to_string(&sent).expect("encode");
+        assert!(json.contains("\"kind\":\"browser_seats\""), "{json}");
+        let ServerMessage::BrowserSeats { seats } = serde_json::from_str(&json).expect("decode")
+        else {
+            panic!("{json} decoded into another message")
+        };
+        assert_eq!(seats.len(), 2, "the whole set crosses");
+        assert_eq!(seats[1].label(), "w1", "a seat is the slot's three names");
+    }
 
     /// The ask a browser tool call makes, and the answer the host sends back.
     ///

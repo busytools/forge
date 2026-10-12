@@ -375,7 +375,7 @@ export function boardView(wire: HomeWire, org: string, project: string): BoardVi
     read: {
       onYou: fleet?.waiting_on_user ?? 0,
       rows: row.rows.length,
-      running: lanes[0]?.count ?? 0,
+      running: lanes.find((lane) => lane.key === 'in_progress')?.count ?? 0,
     },
     lanes,
     waiting,

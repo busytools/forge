@@ -64,6 +64,7 @@ function untouched(): Connection {
     onBrowserAsk: refuse,
     browserRole: refuse,
     onBrowserRole: refuse,
+    onProfilesChanged: refuse,
     takeBrowserRole: refuse,
     onMessage: refuse,
     onStatus: refuse,
@@ -87,6 +88,7 @@ function browserIdle(): Connection {
   return {
     browserRole: () => false,
     onBrowserRole: () => () => {},
+    onProfilesChanged: () => () => {},
     takeBrowserRole: () => {},
   } as unknown as Connection;
 }

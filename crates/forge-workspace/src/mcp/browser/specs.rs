@@ -744,12 +744,12 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
         },
         // **Answered by the client's host, not the driver**: a profile's
         // delete never drives a page, so this one addition rides the relay
-        // and stops at the host. It is a session's own door - only the
-        // profile this session opened can go through it; the person's
-        // wider door is the browser strip.
+        // and stops at the host. It is a seat's own door - only the profile
+        // this seat opened can go through it; the person's wider door is the
+        // browser strip.
         ToolSpec {
             name: "browser_profile_delete",
-            description: "Delete one of this session's own browser profiles, removing its saved logins, cookies and sessions for good. Only the profile this session opened can be deleted; the shared browser and another session's profiles are refused.",
+            description: "Delete one of this seat's own browser profiles, removing its saved logins, cookies and sessions for good. Only a profile this seat opened can be deleted; the shared browser and another seat's profiles are refused.",
             schema: json!({
                 "$schema": "https://json-schema.org/draft/2020-12/schema",
                 "type": "object",
@@ -778,12 +778,14 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
         }
         let description = if spec.name == "browser_hand_off" {
             "Name of the browser profile to raise for the person. Omit to raise the browser's \
-             own profile."
+             own profile. Only this seat's own profile can be raised; another seat's is refused."
         } else {
             "Name of the browser profile to drive. **Omit it to use the browser's own \
-                profile**, which is the right choice unless the work genuinely needs its own \
-                logins; a named profile is owned by the session that first names it, and another \
-                session naming it is refused until it is released."
+                profile**, the one every seat shares. A named profile belongs to the SEAT that \
+                first names it - another seat naming it is refused - and a seat's own profile, \
+                named after its project and label, is created on its first reach for the browser \
+                that names \
+                no profile."
         };
         properties
             .insert("profile".to_owned(), json!({ "type": "string", "description": description }));

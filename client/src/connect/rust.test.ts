@@ -61,7 +61,9 @@ async function opened(state: State = OPEN): Promise<Connection> {
     return Promise.resolve(undefined);
   });
   const connection = connectRust('ws://127.0.0.1:7777/socket');
-  await vi.waitFor(() => expect(handlers.size).toBe(5));
+  // Six: the connection, the frames, the refusals, the role, the asks, and
+  // the sweep notices.
+  await vi.waitFor(() => expect(handlers.size).toBe(6));
   await vi.waitFor(() =>
     expect(invoke).toHaveBeenCalledWith('client_connect', { url: 'ws://127.0.0.1:7777/socket' }),
   );
@@ -223,7 +225,7 @@ describe("the connection's own facts", () => {
       return Promise.resolve(undefined);
     });
     const connection = connectRust('ws://127.0.0.1:7777/socket');
-    await vi.waitFor(() => expect(handlers.size).toBe(5));
+    await vi.waitFor(() => expect(handlers.size).toBe(6));
     const moves: string[] = [];
     connection.onStatus((next) => moves.push(next));
     status = 'open';

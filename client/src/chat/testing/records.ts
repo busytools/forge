@@ -49,6 +49,8 @@ export function clear(): void {
   records.length = 0;
   pins.length = 0;
   layout.reads = 0;
+  boxes.container = 0;
+  boxes.items = [];
 }
 
 /** The last pair the list was handed. */
@@ -108,6 +110,28 @@ export function setMeasured(total: number, height: number): void {
   element.height = total;
   element.viewport = height;
   element.offset = 0;
+}
+
+/**
+ * The list's own BOXES, which is what a column reads to tell a drawn row from
+ * a reserved slot: the container's height it has committed to, and each item's
+ * placed offset and drawn height.
+ *
+ * jsdom performs no layout, so a real list's boxes are absent there and every
+ * read comes back zero - the one shape in which a reserved slot and a drawn
+ * row are indistinguishable. `boxes` is how a test says which is which: the
+ * stub's items and container report these numbers instead, read live, exactly
+ * as `layOut` does for the rows' rects.
+ */
+export const boxes: { container: number; items: { top: number; height: number }[] } = {
+  container: 0,
+  items: [],
+};
+
+/** Set what the container and its items measure, cleared with the suite's records. */
+export function measured(container: number, items: { top: number; height: number }[]): void {
+  boxes.container = container;
+  boxes.items = items;
 }
 
 /** What the element reports, when the list's model is to read differently. */

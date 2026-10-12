@@ -712,6 +712,14 @@ impl Workspace {
         );
     }
 
+    /// Record `session_id` as the store's row for `key` with nothing live
+    /// behind it: the seat a wake resumes, whose transcript is the last
+    /// session it ran. Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn seed_test_stored_session_id(&self, key: &SessionSlot, session_id: &str) {
+        self.record_session_id(key.org(), key.project(), key.label(), session_id);
+    }
+
     #[cfg(any(test, feature = "testing"))]
     pub fn seed_test_usage(&self, account: &str, snapshot: forge_primitives::usage::UsageSnapshot) {
         self.accounts.set_usage(&AccountKey(account.to_owned()), snapshot);
@@ -839,6 +847,15 @@ impl Workspace {
             true,
             None,
         );
+    }
+
+    /// Attach a store to the stub. Every other testing constructor leaves
+    /// `db` as `None` so nothing touches the real machine store; this one
+    /// opens the caller's own redb, for the tests that read persisted rows
+    /// (the worker-seat set, the launchpad's labels). Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn attach_store_for_test(&self, db: crate::store::Db) {
+        *self.db.lock() = Some(db);
     }
 
     /// Write a session row for `slot` carrying `charter`, bypassing a

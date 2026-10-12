@@ -352,10 +352,10 @@ describe('a systemone decision on its row', () => {
     instructions: 'Is this mechanical and reversible?\nAnd nothing else.',
   };
 
-  it('names the row with the tool word and the question', () => {
+  it('names the row with the question alone, never the tool word', () => {
     const leaf = leafOf('t1', 'mcp__forge__systemone__ask_noul', asked, answered(NOUL));
-    expect(leaf.title, 'the tool word, then the first line of the question').toBe(
-      'ask noul - Is this mechanical and reversible?',
+    expect(leaf.title, 'the question is the subject, and the row is cut to one line').toBe(
+      'Is this mechanical and reversible?',
     );
     expect(leaf.decision !== null, 'and the result parses onto the row').toBe(true);
   });

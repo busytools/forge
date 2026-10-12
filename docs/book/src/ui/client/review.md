@@ -177,12 +177,14 @@ reviewed on this branch yet.`; threads drafted with no round filed says how
 ## The strip's row
 
 The seat's own page carries the door: the strip above its composer draws a
-review row once the record holds a review read - `N to read` while any
-thread waits on the reviewer, the thread count otherwise, and `review` on a
-branch with none - and its hover panel lists `open review`, then each thread
-by its file and line with its state and the turn a reader would be reading.
-A read that has not landed draws no row at all, which is the same
-distinction the page keeps between "nothing filed" and "not yet read".
+review row while there is something to review - a thread, or the branch's
+own changes against its base - labelled `N to read` while any thread waits
+on the reviewer, the thread count otherwise, and `review` on a branch with
+nothing filed. Its hover panel lists `open review`, then each thread by its
+file and line with its state and the turn a reader would be reading. A read
+that has not landed draws no row at all, and neither does a seat with
+nothing filed and nothing changed: the row is the door to the page, so it
+stands on what the page holds.
 
 ## The two widths
 

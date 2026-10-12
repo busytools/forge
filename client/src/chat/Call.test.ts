@@ -339,7 +339,7 @@ describe('the row one call draws', () => {
           id: 'toolu_decide',
           row: { kind: 'systemone' },
           name: 'mcp__forge__systemone__ask_noul',
-          title: 'ask noul - Is this mechanical?',
+          title: 'Is this mechanical?',
           command: null,
           status: 'completed',
           note: null,
@@ -356,6 +356,9 @@ describe('the row one call draws', () => {
             answer: { kind: 'noul', noul: 0.93 },
             question: null,
             criteria: {},
+            state: null,
+            chips: [{ text: 'yes', tone: 'ok' }],
+            figure: '0.93',
           },
           forge: null,
           skill: null,
@@ -366,8 +369,57 @@ describe('the row one call draws', () => {
     }).body;
 
     expect(drawn, 'the block draws').toContain('class="dec"');
-    expect(drawn, 'with the answer as its number').toContain('0.93');
+    expect(drawn, 'with the answer as its facts line').toContain(
+      '<span class="lb">noul</span>0.93',
+    );
     expect(drawn, 'and the raw result box no longer draws').not.toContain('class="term"');
+  });
+
+  it('states a decision on its closed row: the word it reads as, the number beside it', () => {
+    // The row used to say only the tool word and the question, so a reader
+    // scanning closed rows could not see what any of them decided.
+    const leaf: ToolLeaf = {
+      id: 'toolu_decide',
+      row: { kind: 'systemone' },
+      name: 'mcp__forge__systemone__ask_choice',
+      title: 'Which team owns this ticket?',
+      command: null,
+      status: 'completed',
+      backgrounded: false,
+      note: null,
+      body: [],
+      mutation: null,
+      decision: {
+        model: 'jev-1.13.0',
+        usage: null,
+        answer: {
+          kind: 'choice',
+          choice: 'payments',
+          probabilities: [{ name: 'payments', value: 0.84 }],
+          confidence: null,
+        },
+        question: { text: 'Which team owns this ticket?', raw: null },
+        criteria: {},
+        state: null,
+        chips: [{ text: 'pick: payments', tone: 'info' }],
+        figure: '0.84',
+      },
+      forge: null,
+      skill: null,
+      image: null,
+      imageNote: null,
+    };
+    const drawn = render(Call, { props: { k: 'toolu_decide', call: leaf } }).body;
+
+    expect(drawn, 'the chip carries the answer').toContain(
+      '<span class="fam-chip info">pick: payments</span>',
+    );
+    expect(drawn, 'and the figure its number').toContain('<span class="fam-fig">0.84</span>');
+
+    const failed = render(Call, {
+      props: { k: 'toolu_decide', call: { ...leaf, status: 'failed' } },
+    }).body;
+    expect(failed, 'a failed call draws no answer it does not have').not.toContain('fam-chip');
   });
 });
 

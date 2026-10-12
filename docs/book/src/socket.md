@@ -198,11 +198,14 @@ ask again, not that the conversation is over.
 
 **A cursor below the held window is the exception, and it is answered either
 way.** Past its oldest frame the window stops, and the page is read from the
-session's own transcript on disk, so a client can walk arbitrarily far back.
-Where that read cannot answer - no file, a file whose rows no longer line up
-with the session's numbering, one that would take more than the read's cap -
-the answer IS the empty page, and what it ends is the history, not the seat.
-An `error` still means ask again.
+session's own transcript on disk by the ROW the page above stopped at: the
+transcript's own bytes, because the frames the CLI streams and never writes
+sit between the window's rows and no arithmetic lines the two numberings up,
+so a walk from any cursor converges on the same descending chain of rows.
+Where that read cannot answer - no file, a row the file does not carry, one
+further from the file's end than the read's cap reaches - the answer IS the
+empty page, and what it ends is the history, not the seat. An `error` still
+means ask again.
 
 **A turn can carry a frame the CLI did not send.** A backgrounded task's
 ending reaches a transcript as a row of its own, and a row that opens no turn
@@ -223,16 +226,22 @@ conversation into one. It is carried because a live session does name its
 turns, and what a client does with it is its own business - the cursor is a
 position and is the one handle that always names a turn.
 
-**The boundary between turns is the server's, and it is the only part of
-the fold that crosses.** How a run of tool calls groups within a turn is a
-drawing decision; where one turn ends and the next begins is what the
-paging contract is built on, so a page can never hand over half a turn.
+**The boundary between turns is the server's where a page has one, and it is
+the only part of the fold that crosses.** How a run of tool calls groups
+within a turn is a drawing decision; where one turn ends and the next begins
+is what the paging contract is built on, so a page above the window's floor
+never hands over half a turn. **A page below that floor can carry a stretch
+inside a turn** - a running turn's older rows are exactly that - and the
+server keeps what a fold needs to read it: a page never opens on a tool
+result without the call that produced it, and a running turn is the whole of
+what a late-attaching view can reach when the session never ends one.
 
-**The cursor is a position, not an index.** Echo it back as `before` and
-do not take it apart: it names the message the page's first turn opens on,
-and what it is made of is the server's business. `null` means there is
-nothing above the page it came with, and that is where a walk backwards
-ends.
+**The cursor is a position, not an index.** Echo it back as `before` and do
+not take it apart: above the window's floor it names the message the page's
+first turn opens on, below it names the row the page stopped at by the byte
+that row starts at, and what either is made of is the server's business.
+`null` means there is nothing above the page it came with, and that is where
+a walk backwards ends.
 
 **`devices`** - the inputs FORGE's machine can record from, and the
 `[dictate] device` pin, for the terminal's own picker. **Asked on demand
@@ -441,6 +450,16 @@ content_hash, threads, reviews}`** - in answer to `document_read`: the
   the role away (`browser_take_role`, above). A client's own browser row
   reads it to say which client drives - before this frame, "could host" and
   "does host" looked the same from the client's side.
+- **`browser_seats {seats}`** - the seats that exist (every project's lead,
+  plus every worker the store holds, running or not), sent to every
+  browser-capable connection: as it declares, and again after a worker
+  despawns. **It is for the client's profile sweep** - the client deletes
+  the named browser profiles whose owning seat is not in the set, so a
+  despawned worker's profiles do not outlive it - and the set crosses WHOLE
+  rather than as a delta: it is authoritative at the moment it is sent, and
+  the sweep that reads it is idempotent. A store that cannot be read sends
+  no set at all, because a client reading "no seats" would delete every
+  profile it holds.
 - **`error {what, why}`** - `what` failed and `why`, in the core's own
   words.
 
@@ -573,9 +592,10 @@ turn carries the CLI's own several. **A client folds both with one rule of
 its own** - how a run of tool calls groups, the labels it draws and the
 tail it shows - and the two meet with nothing to reconcile about their
 shape, because the frames are the same shape on either side. The one thing
-the server keeps is the turn boundary, which is what stops a page handing
-over half a turn; where a turn BEGINS is a fact about the session, and how
-its work is drawn is not. Neither view is short of a token for the fold:
+the server keeps is the turn boundary where a page has one - and, below the
+window's floor, the call a result belongs to, so a page never opens on a
+result whose call it does not carry; where a turn BEGINS is a fact about the
+session, and how its work is drawn is not. Neither view is short of a token for the fold:
 both draw a turn's estimate as the sum of the deltas, so the two agree on
 the number where they differ in frames. **What can differ is the id, and
 only for the forged frame below.**

@@ -4753,14 +4753,16 @@ describe('the dock', () => {
   });
 
   /** **The window, not an overlay** (Ved, 2026-10-07): Open raises the
-   * person's own browser over the profile the agents drive. */
+   * person's own browser over the profile the agents drive - and the raise
+   * carries the ASKING SEAT, which the shell checks against the profile's
+   * record before it raises anything. */
   it('opens the browser window', async () => {
     vi.mocked(showBrowser).mockResolvedValueOnce(null);
     open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
 
     action('Open browser').click();
     await vi.waitFor(() =>
-      expect(showBrowser, 'the raise the approval is for').toHaveBeenCalledWith('job-hunt'),
+      expect(showBrowser, 'the raise the approval is for').toHaveBeenCalledWith('job-hunt', SLOT),
     );
   });
 

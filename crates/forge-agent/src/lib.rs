@@ -61,23 +61,21 @@ pub fn session_history(
 /// numbering from the file's when the frames the CLI never wrote are in it.
 pub use userdata::catalog::scan::has_a_transcript_row;
 
-/// The span of a session's transcript that ends below `ends_before`, for a
+/// The rows of a session's transcript that sit strictly before `below`, for a
 /// paging read that has walked below the window a conversation is kept in.
 ///
-/// [`session_history`] is the whole file and answers what a session IS;
-/// this is a window of it and answers what a page needs. `anchors` are rows
-/// the caller's held conversation still carries together with the indices
-/// the session gives them, which is what lets the read find the span without
-/// walking the file from its start.
-pub fn transcript_span(
+/// [`session_history`] is the whole file and answers what a session IS; this
+/// is a page of it and answers what a page needs. `below` is the row the page
+/// above stopped at - the id it carries and, once a read has seen it, the byte
+/// it starts at - and `None` reads the file's own newest rows, which is the
+/// walk's first ask on a window that holds no row to name.
+pub fn transcript_rows(
     config_dir: &std::path::Path,
     session_id: &str,
     cwd: &str,
-    anchors: &[forge_primitives::TranscriptAnchor],
-    cursor: usize,
-    rowless: &[usize],
+    below: Option<&forge_primitives::TranscriptAnchor>,
     rows: usize,
 ) -> Option<forge_primitives::TranscriptSpan> {
     let dir = if cwd.is_empty() { None } else { Some(cwd) };
-    userdata::catalog::scan::read_span(config_dir, session_id, dir, anchors, cursor, rowless, rows)
+    userdata::catalog::scan::read_rows(config_dir, session_id, dir, below, rows)
 }

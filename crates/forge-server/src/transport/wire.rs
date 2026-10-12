@@ -39,7 +39,7 @@ use crate::file_index::FileIndex;
 use crate::surface::{AgentRow, PendingAsk, ViewSurface};
 use crate::transcript::{Rendered, TaskEnding, TurnSpan};
 use crate::transport::TransportState;
-use crate::transport::conversation::Held;
+use crate::transport::conversation::{Conversation, Held};
 use crate::transport::envelope::Subject;
 use crate::work::{WorkState, git_work_view, work_from_scan};
 
@@ -705,8 +705,14 @@ fn resolution_wire(anchor: &ReviewAnchor, files: &[FileContent]) -> ThreadResolu
 /// **The messages, not the units.** How a run of tool calls groups inside a
 /// turn is a drawing decision, so it belongs to whoever draws; what crosses is
 /// the turn's own boundary, and that stays here because the paging contract is
-/// built on it - `more` asks for turns, the cursor is a turn, and a page that
-/// split one would leave a client stitching half a turn to the other half.
+/// built on it - `more` asks for turns, and a page above the window's floor
+/// cuts on them rather than leaving a client to stitch half a turn to half.
+///
+/// **Below that floor a page can carry a stretch inside a turn**, which is
+/// what a running turn's older rows are: a session whose life is one unended
+/// turn has no boundary to cut on, and its rows reach a late-attaching view
+/// only in runs. What a client is owed there is the pair: a page never opens
+/// on a tool result without the call that produced it.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct TurnWire {
@@ -922,11 +928,11 @@ pub fn page(
     //
     // **In the conversation's numbering rather than the held list's.**
     // `dropped` is what the cap has taken off the front: a cursor written
-    // before a drop still names the message it meant, and one resolving below
-    // the floor names a turn this seat has let go - answered from the empty
-    // page above it rather than from a window the client did not ask for. A
-    // cursor no turn opens at, or one this server did not write, keeps the
-    // fallback it always had.
+    // before a drop still names the message it meant. A cursor below the
+    // floor never arrives here - the `more` walk answers those from the
+    // transcript - and one landing under it is the empty page above rather
+    // than a window the client did not ask for. A cursor no turn opens at, or
+    // one this server did not write, keeps the fallback it always had.
     let ends_at = match before.and_then(|cursor| cursor.parse::<usize>().ok()) {
         None => ranges.len(),
         Some(named) => match named.checked_sub(dropped) {
@@ -971,22 +977,40 @@ pub fn page(
 /// client reads that as the end of the history rather than as a delay.
 const REPLAY_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
 
-/// The seat's conversation, asking the session task for it when the stream
-/// has not seeded one.
+/// The seat's conversation, answering from its own transcript when the
+/// stream holds none, and asking the session task for it when there is one
+/// to ask.
 ///
-/// **The seed comes from the task that produces the conversation, never from
-/// a second walk of the transcript.** The fold holds `Connected` for every
-/// seat that starts or resumes while this transport runs; for a seat whose
-/// connect it missed - a session already running when the transport started -
-/// it asks the task, which is handed the history at connect and emits every
-/// frame after it, so what it hands back is in one order with the frames
-/// around it.
+/// **A seat has two sources of history and each answers what it alone can.**
+/// The session task's own window is the truer copy - it carries every frame
+/// the session emitted, including the `Result` frames no transcript row
+/// carries - and it is what a replay hands back for a seat already running.
+/// The transcript on disk is what a seat LEFT: a sleeping seat has no task
+/// to replay from, and waiting for the spawn to carry the same history back
+/// would make a page opening on it wait seconds for something already
+/// written (measured live 2026-10-12: ~2.6s for a history on disk).
+///
+/// So the file goes first, because reading it costs no wait, and the replay
+/// still goes out beside it: a live session's copy REPLACES the seeded one
+/// through [`crate::transport::conversation::Reseed::Replay`], so nothing a
+/// sleeping read could not see is lost once the session is up. A seat whose
+/// file holds nothing yet - a fresh session that has not spoken - falls to
+/// the replay alone, which is the wait below.
 ///
 /// No lock is held across the wait, and two callers on two cold seats do not
 /// serialise: each waits on its own seat's arrival, and the notice only says
 /// that some seat was seeded.
 pub async fn conversation_for(state: &TransportState, slot: &SessionSlot) -> Option<Arc<Held>> {
     if let Some(held) = state.conversations.get(slot) {
+        return Some(held);
+    }
+    if let Some(held) = seed_from_transcript(state, slot).await {
+        // **A live session's window is the truer copy** and this is how it
+        // lands: the task answers `HistoryReplayed` with the frames it holds,
+        // which reseeds the seat over what the file seeded. A seat with
+        // nothing running has nothing to replay from, and the dispatch's
+        // refusal there is the ordinary answer.
+        let _ = state.surface.dispatch(Command::ReplayConversation { key: slot.clone() });
         return Some(held);
     }
     let deadline = std::time::Instant::now() + REPLAY_WAIT;
@@ -1023,6 +1047,26 @@ pub async fn conversation_for(state: &TransportState, slot: &SessionSlot) -> Opt
         );
     }
     held
+}
+
+/// The conversation the seat's transcript holds, for a seat this transport
+/// holds nothing for.
+///
+/// **This is the read a resume performs** (`session_history`), so what it
+/// seeds is what a `Connected` would bring - only sooner, because the file
+/// is already written. `None` when the seat records no session at all, or
+/// its file holds nothing yet: a seat that has never run has no history, and
+/// an empty conversation would claim exactly that.
+async fn seed_from_transcript(state: &TransportState, slot: &SessionSlot) -> Option<Arc<Held>> {
+    let surface = Arc::clone(&state.surface);
+    let seat = slot.clone();
+    let read =
+        tokio::task::spawn_blocking(move || surface.conversation(&seat, Path::new(""))).await;
+    let read = read.ok()?;
+    if read.messages.is_empty() {
+        return None;
+    }
+    Some(state.conversations.insert(slot, Conversation::new(read.messages, read.compaction_count)))
 }
 
 /// How many of a conversation's newest turns a subscribe carries.

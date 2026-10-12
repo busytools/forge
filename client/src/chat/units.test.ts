@@ -2833,3 +2833,36 @@ describe('the rate-limit windows', () => {
     expect(kinds(units)).toEqual(['text']);
   });
 });
+
+describe('a page seam that re-serves a result', () => {
+  /**
+   * **A result whose call is in another row draws nothing.**
+   *
+   * A page below the window's floor can re-serve the window's own oldest
+   * result run into its tail - the server steps its seam past result rows so
+   * a call and its answer stay in one page - and the copy stays invisible
+   * because of THIS rule: the fold pairs a result to its call within the row
+   * it folds, and one with no call to attach to is drawn nowhere. The seam
+   * leans on it, so pin it: a fold change that drew an unpaired result would
+   * surface the re-serve as a second row.
+   */
+  it('pairs a result with its call, and draws an unpaired result nowhere', () => {
+    const [group] = fold([
+      said([{ type: 'tool_use', id: 'tu_pair', name: 'Read', input: { file_path: '/x/read.rs' } }]),
+      heard([result('tu_pair', 'the whole file, as the tool said it')]),
+    ]);
+    expect(
+      callsOf(group).map((call) => call.leaf.id),
+      'the call is the row the pair folds to',
+    ).toEqual(['tu_pair']);
+    expect(
+      callsOf(group)[0]
+        ?.leaf.body.map((piece) => (piece.kind === 'text' ? piece.text : ''))
+        .join(''),
+      'and the answer rides it',
+    ).toContain('the whole file, as the tool said it');
+
+    const stray = fold([heard([result('tu_elsewhere', 'answering a call in another row')])]);
+    expect(kinds(stray), 'an unpaired result is drawn nowhere at all').toEqual([]);
+  });
+});

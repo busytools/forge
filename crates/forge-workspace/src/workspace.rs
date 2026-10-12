@@ -3524,6 +3524,35 @@ impl Workspace {
         self.pool.lock().get(slot).map(|entry| entry.session_id.clone())
     }
 
+    /// The id a transcript read for `slot` is looked up under: the live
+    /// occupant's when this process holds one, and the store's own row -
+    /// the session a wake resumes - otherwise.
+    ///
+    /// **A sleeping seat still has a session.** The store records the id under
+    /// the slot before the child starts and the CLI writes its transcript
+    /// under it, so a sleeping seat's history is readable without a spawn; a
+    /// read that named only pooled sessions drew one empty. `None` for a
+    /// slot with no session at all: nothing live, and no stored id.
+    pub fn transcript_session_id_for(&self, slot: &SessionSlot) -> Option<String> {
+        if let Some(live) = self.running_session_id_for(slot) {
+            return Some(live);
+        }
+        match self.stored_session_id(slot.org(), slot.project(), slot.label()) {
+            Ok(id) => id,
+            Err(source) => {
+                tracing::warn!(
+                    target: "forge_workspace::sessions",
+                    org = slot.org(),
+                    project = slot.project(),
+                    label = slot.label(),
+                    %source,
+                    "reading the session row failed; the seat reads as one with no history",
+                );
+                None
+            }
+        }
+    }
+
     /// Whether an agent is currently pooled for `slot`.
     pub(crate) fn session_is_pooled(&self, slot: &SessionSlot) -> bool {
         self.pool.lock().contains_key(slot)
@@ -5798,6 +5827,68 @@ impl Workspace {
     }
 
     // ---- Live workers (project-internal child-agent coordination) ----
+
+    /// Every seat that exists right now: each configured project's lead, and
+    /// every worker the store holds - running or not, because a durable
+    /// worker's seat exists until it is despawned.
+    ///
+    /// The browser-profile sweep reads this: a profile whose owning seat is
+    /// not here is an orphan and goes. Two rules hold it safe, since an
+    /// under-reported set deletes a seat's saved logins:
+    ///
+    /// - **It errs toward INCLUSION**: a seat wrongly present leaves one
+    ///   profile to the next sweep, while a seat wrongly absent would take
+    ///   logins.
+    /// - **It fails closed**: `None` when the store cannot be read, so no
+    ///   caller can mistake an unread store for "no seats exist" and sweep
+    ///   everything. Nothing sends a set it could not read.
+    pub fn live_seats(&self) -> Option<Vec<forge_primitives::SessionSlot>> {
+        use std::collections::BTreeSet;
+
+        let views = self.list_projects();
+        let stored = {
+            let guard = self.db.lock();
+            let db = guard.as_ref()?;
+            match crate::store::sessions::worker_row_index(db) {
+                Ok(rows) => rows,
+                Err(error) => {
+                    tracing::warn!(
+                        target: "forge_workspace::workspace",
+                        %error,
+                        "listing the persisted workers for the seat set failed, so no seat set \
+                         is answered",
+                    );
+                    return None;
+                }
+            }
+        };
+        let mut triples: BTreeSet<(String, String, String)> = BTreeSet::new();
+        for view in &views {
+            triples.insert((
+                view.org.clone(),
+                view.name.clone(),
+                String::from(forge_primitives::LEAD_LABEL),
+            ));
+        }
+        for row in stored {
+            if row.label != forge_primitives::LEAD_LABEL {
+                triples.insert((row.org, row.project, row.label));
+            }
+        }
+        for view in &views {
+            for worker in self.list_live_workers(&view.key) {
+                triples.insert((view.org.clone(), view.name.clone(), worker.label));
+            }
+        }
+        Some(
+            triples
+                .into_iter()
+                .map(|(org, project, label)| {
+                    forge_primitives::SessionSlot::new(org, project, label)
+                })
+                .collect(),
+        )
+    }
 
     /// Snapshot the live workers for `project_key`. Returns an empty
     /// Vec when no workers exist (rather than `None`) so the TUI tree-

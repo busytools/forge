@@ -85,7 +85,16 @@ describe('the shell command names', () => {
     expect(core.invoke, 'the module under test is the mocked shell').toBe(invoke);
     invoke.mockResolvedValueOnce([]);
     await listProfiles();
-    expect(invoke, 'the profiles read').toHaveBeenLastCalledWith('browser_profiles');
+    expect(invoke, 'the profiles read').toHaveBeenLastCalledWith('browser_profiles', {
+      seat: null,
+    });
+
+    // **The listing is served FOR A SEAT**: the page passes the seat it
+    // draws for, so the shell answers that seat's rows alone.
+    const seat = { org: 'Busytools', project: 'forge', label: 'lead' };
+    invoke.mockResolvedValueOnce([]);
+    await listProfiles(seat);
+    expect(invoke, 'a seat rides the read').toHaveBeenLastCalledWith('browser_profiles', { seat });
 
     await closeProfile('hunt');
     expect(invoke, "the person's close").toHaveBeenLastCalledWith('browser_profile_close', {
@@ -93,11 +102,24 @@ describe('the shell command names', () => {
     });
 
     await showBrowser();
-    expect(invoke, 'the raise').toHaveBeenLastCalledWith('browser_show', { profile: null });
+    expect(invoke, 'the raise').toHaveBeenLastCalledWith('browser_show', {
+      profile: null,
+      seat: null,
+    });
 
     await showBrowser('hunt');
     expect(invoke, 'a named raise names its profile').toHaveBeenLastCalledWith('browser_show', {
       profile: 'hunt',
+      seat: null,
+    });
+
+    // **The hand-off's raise carries the asking seat**: the shell refuses a
+    // profile another seat owns, so a session cannot surface a browser
+    // holding someone else's logins.
+    await showBrowser('hunt', seat);
+    expect(invoke, "a hand-off's raise carries its seat").toHaveBeenLastCalledWith('browser_show', {
+      profile: 'hunt',
+      seat,
     });
 
     await hideBrowser();

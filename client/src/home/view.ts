@@ -582,14 +582,20 @@ export function band(wire: HomeWire, address: string): BandCard[] {
   // The address is the client's own: it connected to this forge, so it is
   // the read of where this page is served from. Drawn as `host:port` rather
   // than the socket URL it is held as, which is what a reader recognises.
+  //
+  // **The server card is the third way in**, with dictation and extensions:
+  // the whole card opens the connect screen, so pointing the client at
+  // another forge - a scratch stack, a second machine - needs no relaunch
+  // (Ved, 2026-10-12: "rename that web to server... make that entire box
+  // clickable, just like how Dictation and Extensions are").
   return [
     gatewayCard,
     {
-      title: 'web',
+      title: 'server',
       tone: 'ready',
       value: displayAddress(address),
-      detail: 'this page',
-      href: null,
+      detail: 'connect elsewhere',
+      href: hrefFor({ name: 'connect' }),
     },
     dictation,
     accounts,

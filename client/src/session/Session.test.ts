@@ -40,6 +40,7 @@ function untouched(): Connection {
     onBrowserAsk: refuse,
     browserRole: refuse,
     onBrowserRole: refuse,
+    onProfilesChanged: refuse,
     takeBrowserRole: refuse,
     onMessage: refuse,
     onStatus: refuse,

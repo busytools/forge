@@ -42,29 +42,25 @@
     slot = null,
     capable = canHost(),
   }: {
-    connection: Pick<Connection, 'browserRole' | 'onBrowserRole' | 'takeBrowserRole'>;
+    connection: Pick<
+      Connection,
+      'browserRole' | 'onBrowserRole' | 'takeBrowserRole' | 'onProfilesChanged'
+    >;
     slot?: SessionSlot | null;
     capable?: boolean;
   } = $props();
 
   let open = $state(false);
-  /** The strip's own snapshot: read at mount and when the list opens, not per frame. */
+  /**
+   * The strip's own snapshot: read at mount and when the list opens, not per
+   * frame. **The shell serves it FOR A SEAT** - this page's slot - so the
+   * rows are already the ones this seat may see (its own, plus the
+   * ownerless legacy ones the host has not swept yet); no page-side filter
+   * could hide a name the host answered.
+   */
   let profiles = $state<ProfileRow[]>([]);
-  /**
-   * This seat's own key, in the shell's own join: a profile row's `owner` IS
-   * the owning seat's `org/project/label` (the shell's `Seat` display), so the
-   * list can say what THIS slot holds rather than what the client holds.
-   */
+  /** This seat's own key, in the shell's own join, for the empty line. */
   const mine = $derived(slot === null ? null : `${slot.org}/${slot.project}/${slot.label}`);
-  /**
-   * The rows this slot reads: its own, or all of them where there is no slot
-   * - **and every ownerless row**, which is a closed profile the person can
-   * still delete. An entryless profile belongs to no seat, so a filter by
-   * seat alone would hide the one place its logins can be removed from.
-   */
-  const shown = $derived(
-    mine === null ? profiles : profiles.filter((row) => row.owner === mine || row.owner === ''),
-  );
   /**
    * The row whose delete is confirming, and the row a delete is running for:
    * Shape A - the confirm happens in the row itself (Ved's pick, 2026-10-11).
@@ -74,11 +70,18 @@
   /** Every row a delete is running for: deletes on different rows overlap,
    *  and one completing must not clear another's mark. */
   let deleting = new SvelteSet<string>();
+  /**
+   * The last delete's own outcome, drawn in place of the row that went:
+   * "deleted" is a status a click owes the person, not a silence where the
+   * row used to be. Cleared when the panel closes or reopens, so it cannot
+   * be read as news about a later state.
+   */
+  let outcome = $state<string | null>(null);
   /** Whether the SHARED browser is up as a window: its row's button says hide
    *  where it is, and the collapsed row marks it without opening. */
   let sharedUp = $state(false);
   /** Whether any of the lines this slot reads is up as a window. */
-  const anyUp = $derived(sharedUp || shown.some((row) => row.windowed));
+  const anyUp = $derived(sharedUp || profiles.some((row) => row.windowed));
   /** Whether the browser has been driven this session up - Ved's activity mark. */
   let used = $state(false);
   /**
@@ -118,6 +121,14 @@
   $effect(() => connection.onBrowserRole((now) => (hosting = now)));
 
   /**
+   * **The host swept.** A seat despawned, or the live-seat set arrived and
+   * rows went with it; the sweep runs in the shell, so this is the only
+   * word the page gets. Every notice re-reads - the panel open or not, the
+   * resting count is a claim about the same rows.
+   */
+  $effect(() => connection.onProfilesChanged(() => void readProfiles()));
+
+  /**
    * What each read was issued as, so a read that lands after a newer one -
    * or after a failed raise - cannot write over what came later.
    */
@@ -130,7 +141,7 @@
   async function readProfiles(): Promise<void> {
     const token = (readToken += 1);
     try {
-      const rows = await listProfiles();
+      const rows = await listProfiles(slot);
       if (token !== readToken) return;
       profiles = rows;
       read = 'ready';
@@ -189,14 +200,17 @@
     if (leaving !== null) clearTimeout(leaving);
     leaving = null;
     open = true;
+    outcome = null;
     void readProfiles();
   }
 
   /** Every door that closes the list takes an unconfirmed delete with it: a
-   *  confirm left armed behind a closed panel is a click waiting to happen. */
+   *  confirm left armed behind a closed panel is a click waiting to happen -
+   *  and a delete's outcome with it, so a reopening starts clean. */
   function shut(): void {
     open = false;
     armed = null;
+    outcome = null;
   }
 
   function arm(): void {
@@ -301,20 +315,29 @@
    * keeps the last count, which something did measure.
    */
   const count = $derived(
-    shown.length > 0 || read === 'ready'
-      ? `${shown.length} profile${shown.length === 1 ? '' : 's'}`
+    profiles.length > 0 || read === 'ready'
+      ? `${profiles.length} profile${profiles.length === 1 ? '' : 's'}`
       : read === 'loading'
         ? '…'
         : 'count unknown',
   );
 
   // A pointer landing outside the segment closes the list, the same one look
-  // every other popover on the page takes.
+  // every other popover on the page takes. **The panel counts as inside**:
+  // it is PORTALED to the body, so it is not a descendant of the segment -
+  // and without this check every pointerdown on one of its own controls
+  // closed the panel before the click could land, which is how the delete
+  // control came to work by keyboard alone.
   $effect(() => {
     if (!open) return;
     const away = (event: PointerEvent): void => {
       const at = event.target;
-      if (at instanceof Node && segEl !== null && segEl.contains(at)) return;
+      if (
+        at instanceof Node &&
+        ((segEl !== null && segEl.contains(at)) || (panelEl !== null && panelEl.contains(at)))
+      ) {
+        return;
+      }
       shut();
     };
     document.addEventListener('pointerdown', away);
@@ -422,15 +445,36 @@
    * the name goes, and the files go with them.
    *
    * The row says it is deleting while the shell works - a delete waits out a
-   * call in flight rather than refusing - and the why line answers a
-   * refusal, the same shape close keeps.
+   * call in flight rather than refusing - and the outcome line says what
+   * happened: the deleted profile by name, or the shell's own words for a
+   * refusal. Either way the click draws its status; the panel does not just
+   * close on it.
    */
   function del(row: ProfileRow): void {
+    // **Focus goes back to the toggle BEFORE the confirm unmounts.** The
+    // confirm holds focus as the delete starts, and a webview that fires
+    // focusout when the focused element is removed (Chromium, WebView2,
+    // Android WebView - macOS WKWebView does not) would otherwise read the
+    // reader as having left the panel: `release` arms the close, and ~120ms
+    // later `shut()` takes the outcome line - or a refusal's words - off
+    // the screen before they are read. jsdom fires no blur on removal, so
+    // no test can see that webview behaviour; what is pinned is this
+    // function's own contract: the toggle holds focus by the time `armed`
+    // clears.
+    //
+    // `pointed` takes the focus as a press settling rather than a reader
+    // opening the panel: `focusIn`'s open would start a re-read whose
+    // landing clears `why`, wiping a refusal's line this same call is about
+    // to draw.
+    pointed = true;
+    toToggle();
     armed = null;
+    outcome = null;
     deleting.add(row.name);
     void deleteProfile(row.name).then(
       () => {
         deleting.delete(row.name);
+        outcome = `deleted the '${row.name}' profile and its saved logins`;
         void readProfiles();
       },
       (error: unknown) => {
@@ -540,7 +584,7 @@
         {/if}
       </div>
 
-      {#each shown as row (row.name)}
+      {#each profiles as row (row.name)}
         {#if armed === row.name}
           <!-- **The confirm happens in the row itself** (Ved's pick,
                2026-10-11): the warning takes the row's own text line and the
@@ -589,7 +633,11 @@
                  this row is where they go. -->
             <span class="tx">
               {row.owner === '' ? 'closed · its logins are still here' : row.owner}
-              {row.running || row.owner === '' ? '' : ' · its driver is gone'}
+              {row.running || row.owner === ''
+                ? ''
+                : row.opened
+                  ? ' · its driver is gone'
+                  : ' · not opened yet'}
             </span>
             <!-- **The row's own door to its own browser**, the shared row's
                  show one level down: this profile's window over this
@@ -632,11 +680,19 @@
           </div>
         {/if}
       {/each}
+      <!-- **A delete's outcome is drawn, not implied by a row going.** The
+           deleted line names what went; a refusal is the shell's own words
+           in the bad tone. The empty line stands aside for both, so the
+           panel never says "nothing here" under the outcome that explains
+           why. -->
+      {#if outcome !== null}
+        <div class="bz-it"><span class="tx ok">{outcome}</span></div>
+      {/if}
       {#if read === 'loading'}
         <div class="bz-it"><span class="tx">reading the profiles…</span></div>
       {:else if read === 'failed'}
         <div class="bz-it"><span class="tx bad">{why}</span></div>
-      {:else if shown.length === 0}
+      {:else if profiles.length === 0 && outcome === null}
         <div class="bz-it">
           <span class="tx"
             >{mine === null ? 'no named profiles yet' : 'no profiles for this session'}</span

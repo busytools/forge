@@ -251,6 +251,7 @@ census!(ServerMessage,
         Devices struct, CommitDiff struct, Reply struct, BrowserRole struct, Error struct,
         BrowserAsk struct,
         DocumentRead struct,
+        BrowserSeats struct,
     ],
     server_message_census, SERVER_MESSAGE_VARIANTS);
 

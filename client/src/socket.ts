@@ -173,6 +173,15 @@ export interface Connection {
   /** Hear each change of the role. Answers a function that stops listening. */
   onBrowserRole(fn: (hosting: boolean) => void): () => void;
   /**
+   * Hear that the host swept its named profiles - a seat's despawn or a
+   * live-seat set arriving emptied rows - so a strip that is open re-reads.
+   *
+   * The sweep is the host's own act, which is why this is a notice and not
+   * a frame: no page runs a sweep. The web build has no host to sweep, so
+   * its own never fires.
+   */
+  onProfilesChanged(fn: () => void): () => void;
+  /**
    * Take the browser role from whoever holds it.
    *
    * The claimant must have declared itself capable, which a shell with a
@@ -302,6 +311,9 @@ export function connect(url: string): Connection {
    */
   let browserRole = false;
   const roleListeners = new Set<(hosting: boolean) => void>();
+  /** The sweep notices this connection will never raise (no host lives on
+   *  the web side); kept so the interface is implemented, not faked. */
+  const profilesListeners = new Set<() => void>();
   const pending = new Map<
     number,
     { resolve: (body: unknown) => void; reject: (why: Error) => void }
@@ -778,6 +790,12 @@ export function connect(url: string): Connection {
     onBrowserRole(fn) {
       roleListeners.add(fn);
       return () => roleListeners.delete(fn);
+    },
+    onProfilesChanged(fn) {
+      // No host, no sweep: the web build's own listener is kept for the
+      // interface's sake and never fires.
+      profilesListeners.add(fn);
+      return () => profilesListeners.delete(fn);
     },
     takeBrowserRole() {
       // A click while the socket is down is dropped with a record rather than

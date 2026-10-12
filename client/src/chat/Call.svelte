@@ -261,6 +261,9 @@
   /** The card the chips and figure draw from: none while the row says it failed. */
   const forge = $derived(failed ? null : (call.forge ?? null));
 
+  /** The decision the row's own words draw from, under the same rule. */
+  const decided = $derived(failed ? null : call.decision);
+
   /**
    * A failed forge call's own reason, as the row's tail: the first line of the
    * error the fold unwrapped, with the detail left to the body that keeps it.
@@ -407,6 +410,15 @@
       {/each}
       {#if forge.figure !== null}
         <span class="fam-fig">{forge.figure}</span>
+      {/if}
+    {:else if decided !== null}
+      <!-- A decision's row carries its answer the same way: the word it reads
+           as, the number beside it, so a closed row states the decision. -->
+      {#each decided.chips as chip, at (at)}
+        <span class="fam-chip {chip.tone}">{chip.text}</span>
+      {/each}
+      {#if decided.figure !== null}
+        <span class="fam-fig">{decided.figure}</span>
       {/if}
     {/if}
     {#if rowTail !== null}

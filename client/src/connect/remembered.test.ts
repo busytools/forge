@@ -1,6 +1,30 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { rememberedAddress, rememberAddress } from './remembered';
+import { rememberedAddress, rememberAddress, serverParameter } from './remembered';
+
+describe('the server a launch names', () => {
+  /**
+   * **The parameter is how a client is opened already pointed at a forge**:
+   * the door pre-fills from it and the launch tries it, so a scratch stack
+   * needs no typed address. It outranks the remembered one, because it is
+   * this launch's own instruction.
+   */
+  it('reads the server parameter, and nothing when there is none', () => {
+    expect(serverParameter('?server=127.0.0.1:8795'), 'a bare host:port reads').toBe(
+      '127.0.0.1:8795',
+    );
+    expect(serverParameter('?server=ws://127.0.0.1:8795/socket'), 'a full URL reads').toBe(
+      'ws://127.0.0.1:8795/socket',
+    );
+    expect(serverParameter('?server=%20127.0.0.1:8795%20'), 'whitespace is trimmed').toBe(
+      '127.0.0.1:8795',
+    );
+    expect(serverParameter(''), 'nothing named').toBeNull();
+    expect(serverParameter('?other=1'), 'another parameter is not this one').toBeNull();
+    expect(serverParameter('?server='), 'an empty value names nothing').toBeNull();
+    expect(serverParameter('?server=   '), 'blank whitespace names nothing too').toBeNull();
+  });
+});
 
 /**
  * A webview whose store refuses every call, by throwing on it rather than

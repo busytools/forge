@@ -35,6 +35,13 @@ in the field and the failure already on it, rather than blank. A failed
 launch is not forgotten, either: the address stays remembered, because
 that is the one the reader is about to correct.
 
+**A launch may also name a server outright.** `?server=<address>` - a bare
+`host:port`, or a full `ws://` URL - pre-fills the field and is tried at
+launch, which is how a client is opened already pointed at one forge: a
+scratch stack, a second machine. It outranks the remembered address, and
+the URL keeps the parameter - moving it to `/connect` would drop the one
+thing a reload re-prefills from.
+
 **A launch moves the page only from the root**, so a deep link is the one
 place it takes the connection and leaves the route alone. That makes this
 screen reachable three ways: a first launch, a launch that did not answer,
