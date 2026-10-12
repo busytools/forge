@@ -837,6 +837,31 @@ mod tests {
         }
     }
 
+    /// A document hand-off has to reach the client wherever the reader is:
+    /// the viewer opens on the raise, and the home subscription is the one
+    /// every client holds. A reader sitting on the home never heard the
+    /// seat-keyed raise until the redraw arm carried it (measured in the
+    /// e2e, 2026-10-12), so this pins the arm by name - dropping it leaves
+    /// the home silent and the viewer unraised.
+    #[test]
+    fn a_document_hand_off_reaches_home_and_its_seat() {
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        let update = SessionUpdate::DocumentHandOff {
+            key: seat.clone(),
+            path: "/proj/docs/plan.md".to_owned(),
+            reviewable: true,
+        };
+        assert!(
+            fleet_news(&update).any(),
+            "admitted by the redraw arm, not by the wildcard: {update:?}",
+        );
+        assert!(Subject::Home.covers(&update), "so the home is sent it: {update:?}");
+        assert!(
+            Subject::Session(seat.clone()).covers(&update),
+            "and the seat it routes on is sent it too: {update:?}",
+        );
+    }
+
     /// A section push reaches the subscribers the section belongs to: home,
     /// which draws the project row, and the seat the update routes on.
     ///
