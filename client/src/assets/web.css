@@ -1523,10 +1523,12 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
   background: color-mix(in srgb, var(--bad) 12%, transparent); }
 .bz-list .bz-take.bz-del.confirm { color: var(--bg); background: var(--bad);
   border-color: var(--bad); font-weight: 600; }
-/* The row's own line WRAPS for a warning: it is nowrap for the owner text it
-   usually carries, and the confirm's copy is longer than that - truncated,
-   the warning loses exactly the words it exists for. */
+/* The row's own line WRAPS for the tones: it is nowrap for the owner text it
+   usually carries, and a warning, a refusal or a delete's outcome is longer
+   than that - truncated, each loses exactly the words it exists for. */
 .bz-list .bz-it .tx.warn { color: var(--warn); white-space: normal; }
+.bz-list .bz-it .tx.bad { color: var(--bad); white-space: normal; }
+.bz-list .bz-it .tx.ok { color: var(--ok); white-space: normal; }
 @media (pointer: coarse) { .bz-seg .bz-tog, .bz-list .bz-it, .bz-list .bz-take { min-height: 44px; } }
 
 /* A narrow window compacts the panel: the same rows, tighter, and never

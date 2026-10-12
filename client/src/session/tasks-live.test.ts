@@ -95,6 +95,7 @@ function quiet(): Connection {
     onBrowserAsk: () => () => {},
     browserRole: () => false,
     onBrowserRole: () => () => {},
+    onProfilesChanged: () => () => {},
     takeBrowserRole: () => {},
     onMessage: () => () => {},
     onStatus: () => () => {},

@@ -52,6 +52,7 @@
     // mounts; without these this page throws before any state can be read.
     browserRole: () => false,
     onBrowserRole: () => () => {},
+    onProfilesChanged: () => () => {},
     takeBrowserRole: () => {},
   } as unknown as ComposerConnection;
 

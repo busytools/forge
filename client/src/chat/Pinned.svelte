@@ -46,7 +46,10 @@
     slot = null,
   }: {
     info: TurnInfo | null;
-    connection: Pick<Connection, 'browserRole' | 'onBrowserRole' | 'takeBrowserRole'>;
+    connection: Pick<
+      Connection,
+      'browserRole' | 'onBrowserRole' | 'onProfilesChanged' | 'takeBrowserRole'
+    >;
     slot?: SessionSlot | null;
   } = $props();
 

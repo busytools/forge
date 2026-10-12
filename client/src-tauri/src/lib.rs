@@ -59,6 +59,7 @@ mod commands {
                     }
                     ClientEvent::Role { hosting } => app.emit("client://role", hosting),
                     ClientEvent::Asks { inflight } => app.emit("client://asks", inflight),
+                    ClientEvent::Profiles => app.emit("client://profiles", ()),
                 };
             }
         });

@@ -125,10 +125,11 @@ export type ComposerConnection = Pick<
   | 'subscribe'
   | 'unsubscribe'
   | 'refresh'
-  // The strip lane's browser segment reads these three, and the lane lives in
+  // The strip lane's browser segment reads these four, and the lane lives in
   // this surface now - so the composer needs them to draw its own strip.
   | 'browserRole'
   | 'onBrowserRole'
+  | 'onProfilesChanged'
   | 'takeBrowserRole'
 >;
 

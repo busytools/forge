@@ -157,6 +157,11 @@ pub struct BrowserHost {
     /// name), so the map exists only where profiles do.
     #[cfg(desktop)]
     named: Mutex<HashMap<String, Arc<Named>>>,
+    /// The seats whose auto-profile refusal this run has already told a
+    /// session about: the create is retried on every unnamed call, and the
+    /// note belongs on the first one, not on each.
+    #[cfg(desktop)]
+    auto_refused: Mutex<std::collections::HashSet<Seat>>,
     /// Whether any session has driven this client's browser since it came up,
     /// which the strip's row marks (Ved, 2026-10-07).
     used: std::sync::atomic::AtomicBool,
@@ -177,6 +182,8 @@ impl BrowserHost {
             shared: Mutex::new(None),
             #[cfg(desktop)]
             named: Mutex::new(HashMap::new()),
+            #[cfg(desktop)]
+            auto_refused: Mutex::new(std::collections::HashSet::new()),
             used: std::sync::atomic::AtomicBool::new(false),
             #[cfg(target_os = "android")]
             engine: None,
@@ -205,6 +212,8 @@ impl BrowserHost {
             shared: Mutex::new(None),
             #[cfg(desktop)]
             named: Mutex::new(HashMap::new()),
+            #[cfg(desktop)]
+            auto_refused: Mutex::new(std::collections::HashSet::new()),
             used: std::sync::atomic::AtomicBool::new(false),
             #[cfg(target_os = "android")]
             engine: None,
@@ -267,9 +276,18 @@ impl BrowserHost {
             }
             #[cfg(desktop)]
             {
+                let paths = self.paths.clone()?;
+                // **The same fallback attach uses.** The live map holds this
+                // run's entries; a restart leaves it empty while the record
+                // still names the seat - so resolving from the map alone
+                // would answer the owner "no profile named ... is open to
+                // this session" and lock it out of its own profile.
                 let owner = {
                     let named = self.named.lock().await;
-                    named.get(&name).map(|entry| entry.owner.clone())
+                    match named.get(&name).map(|entry| entry.owner.clone()) {
+                        Some(owner) => Some(owner),
+                        None => profiles::owner_of(&paths.profiles.join(&name))?,
+                    }
                 };
                 return match owner {
                     Some(owner) if &owner == seat => self.delete(&name).await.map(|()| {
@@ -313,6 +331,13 @@ impl BrowserHost {
             let cli = driver::cli_path(&paths.stack);
             return match profile {
                 None => {
+                    // **The seat's auto profile is ensured on its first
+                    // unnamed reach**, before anything is driven: the record
+                    // is what keeps the name the seat's across restarts. The
+                    // call itself still targets the shared browser - the
+                    // ensure never changes it - and a refused create is said
+                    // once on the answer below.
+                    let auto = self.ensure_auto_profile(seat).await;
                     let active = self.browser_for(&paths.user_data).await?;
                     // **The browser has been driven**, which the strip's row
                     // draws: a session's call is the only way a browser of this
@@ -341,7 +366,15 @@ impl BrowserHost {
                         outcome.is_err(),
                     )
                     .await;
-                    outcome
+                    match outcome {
+                        Ok(mut parts) => {
+                            if let Err(why) = auto {
+                                self.note_auto_failure(seat, why, &mut parts).await;
+                            }
+                            Ok(parts)
+                        }
+                        Err(why) => Err(why),
+                    }
                 }
                 Some(name) => {
                     let named = self.named_profile(seat, &name).await?;
@@ -581,9 +614,14 @@ impl BrowserHost {
     /// The named profiles this host holds, by name, for its own strip. A
     /// profile whose driver died but whose name is still held is
     /// listed as not running rather than dropped: the name is owned until it
-    /// is released, and a row that vanished would read as released.
+    /// is deleted, and a row that vanished would read as gone.
+    ///
+    /// **The listing is served FOR A SEAT.** A session's view - which is the
+    /// seat's page - is its own rows plus the ownerless legacy ones, and
+    /// another seat's profile is not even listed to it. No seat is the
+    /// person's own door and answers every row.
     #[cfg(desktop)]
-    pub async fn profiles(&self) -> Vec<ProfileRow> {
+    pub async fn profiles(&self, seat: Option<&Seat>) -> Vec<ProfileRow> {
         let named = self.named.lock().await;
         let mut rows: Vec<ProfileRow> = Vec::new();
         for (name, entry) in named.iter() {
@@ -591,6 +629,7 @@ impl BrowserHost {
                 name: name.clone(),
                 owner: entry.owner.to_string(),
                 running: entry.profile.is_alive(),
+                opened: chromium::ever_opened(&entry.dir),
                 // The same predicate `show` keeps: the marker alone reads a
                 // window that an X-close already took down.
                 windowed: chromium::windowed(&entry.dir).await,
@@ -599,8 +638,9 @@ impl BrowserHost {
         drop(named);
         // **A closed profile is still a profile.** Its entry goes on close
         // while its files stay - the logins a person means to delete - so a
-        // directory with no entry is listed too, ownerless and not running,
-        // or the one act that removes it has nothing to be reached from.
+        // directory with no entry is listed too, not running, its owner read
+        // from the record; one with no readable record is ownerless, which is
+        // also what the sweep will read it as.
         if let Ok(paths) = self.paths.clone()
             && let Ok(entries) = std::fs::read_dir(&paths.profiles)
         {
@@ -615,12 +655,22 @@ impl BrowserHost {
                 {
                     continue;
                 }
+                let dir = paths.profiles.join(&name);
+                let owner = match profiles::owner_of(&dir) {
+                    Ok(Some(owner)) => owner.to_string(),
+                    Ok(None) | Err(_) => String::new(),
+                };
                 // A window can be up over a closed profile - the strip's own
                 // show launches one without an entry - so the predicate is
                 // still asked, on the directory itself.
-                let windowed = chromium::windowed(&paths.profiles.join(&name)).await;
-                rows.push(ProfileRow { name, owner: String::new(), running: false, windowed });
+                let windowed = chromium::windowed(&dir).await;
+                let opened = chromium::ever_opened(&dir);
+                rows.push(ProfileRow { name, owner, running: false, opened, windowed });
             }
+        }
+        if let Some(seat) = seat {
+            let mine = seat.to_string();
+            rows.retain(|row| row.owner == mine || row.owner.is_empty());
         }
         rows.sort_by(|a, b| a.name.cmp(&b.name));
         rows
@@ -629,7 +679,15 @@ impl BrowserHost {
     /// The phone holds no named profiles: an empty list is the honest answer,
     /// not an error - "none" is a state.
     #[cfg(target_os = "android")]
-    pub async fn profiles(&self) -> Vec<ProfileRow> {
+    pub async fn profiles(&self, _seat: Option<&Seat>) -> Vec<ProfileRow> {
+        Vec::new()
+    }
+
+    /// The phone holds no named profiles, so a sweep has nothing to delete -
+    /// and it still exists, because the seat frame's handler is shared with
+    /// the desktop.
+    #[cfg(target_os = "android")]
+    pub async fn sweep(&self, _live: &[Seat]) -> Vec<String> {
         Vec::new()
     }
 
@@ -670,17 +728,29 @@ impl BrowserHost {
     /// window is raised over its own browser, on its own page, which is what
     /// a CAPTCHA hand-off on a named profile needs.
     ///
+    /// **A hand-off raises only the profile of the seat that asked.** The
+    /// dock passes the asking seat down, and another seat's name is refused
+    /// where the name resolves to a browser; the person's own show carries no
+    /// seat and reaches any of them.
+    ///
     /// Serialized with every other launch, so a show racing a first call
     /// cannot leave two browsers on one profile. This is the client's own
     /// act and answers the core nothing: the hand-off's answer is Done or
     /// Not now, and never the window itself.
     #[cfg(desktop)]
-    pub async fn show(&self, profile: Option<&str>) -> Result<chromium::ActivePort, String> {
+    pub async fn show(
+        &self,
+        profile: Option<&str>,
+        seat: Option<&Seat>,
+    ) -> Result<chromium::ActivePort, String> {
         let paths = self.paths.clone()?;
         let dir = match profile {
             Some(name) => {
                 if let Some(refusal) = profiles::name_refusal(name) {
                     return Err(refusal);
+                }
+                if let Some(seat) = seat {
+                    profiles::raise_refusal(name, &paths.profiles.join(name), seat)?;
                 }
                 paths.profiles.join(name)
             }
@@ -695,7 +765,7 @@ impl BrowserHost {
     /// page full-screen over the client, one slim bar, Back and hardware Back
     /// the door).
     #[cfg(target_os = "android")]
-    pub async fn show(&self, profile: Option<&str>) -> Result<(), String> {
+    pub async fn show(&self, profile: Option<&str>, _seat: Option<&Seat>) -> Result<(), String> {
         self.paths.clone()?;
         if let Some(name) = profile {
             return Err(phone_profile_refusal(name));
@@ -770,6 +840,91 @@ impl BrowserHost {
         profile
     }
 
+    /// Delete every named profile whose owning seat `live` does not hold -
+    /// and every legacy directory, which no seat holds by definition.
+    /// Answers the names that went.
+    ///
+    /// **The sweep is idempotent**, so it may run on every capable connect
+    /// and after every despawn: the server sends the seats that exist, the
+    /// client deletes what is no longer any of theirs. The record is read
+    /// once, immediately before the delete - not atomically with it: a name
+    /// adopted in the instant between the two keeps its profile until the
+    /// NEXT sweep (single-user, in-process; the idempotence is the
+    /// correction, not a lock). The delete is the same act the UI's own is -
+    /// a call in flight is waited out. A failure is logged and leaves the
+    /// profile; the sweep never half-deletes.
+    #[cfg(desktop)]
+    pub async fn sweep(&self, live: &[Seat]) -> Vec<String> {
+        let Ok(paths) = self.paths.clone() else { return Vec::new() };
+        let Ok(entries) = std::fs::read_dir(&paths.profiles) else { return Vec::new() };
+        let mut names: Vec<String> = entries
+            .flatten()
+            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+            .filter_map(|entry| entry.file_name().to_str().map(str::to_owned))
+            .filter(|name| profiles::name_refusal(name).is_none())
+            .collect();
+        names.sort();
+        let mut gone = Vec::new();
+        for name in names {
+            let dir = paths.profiles.join(&name);
+            // The record, as it stands just before the delete: a live
+            // seat's profile - owned before the frame - is kept, and
+            // everything else (another seat's, legacy, or an unreadable
+            // record) goes.
+            match profiles::owner_of(&dir) {
+                Ok(Some(owner)) if live.contains(&owner) => continue,
+                Ok(_) | Err(_) => {}
+            }
+            match self.delete(&name).await {
+                Ok(()) => gone.push(name),
+                Err(why) => {
+                    tauri_plugin_log::log::warn!(
+                        "a sweep of the browser profiles could not delete one (event_name \
+                         browser_profile_sweep_failed, profile {name}, {why})"
+                    );
+                }
+            }
+        }
+        gone
+    }
+
+    /// The seat's own profile, named after the seat, ensured on the seat's
+    /// first reach for the browser that names no profile.
+    ///
+    /// **The call that creates it still drives the shared browser** - "the
+    /// unnamed shared browser stays exactly as it is" - so this reserves the
+    /// seat's own name and gives its logins somewhere to start, it does not
+    /// change a call's target. A name another seat holds is refused with the
+    /// reason and never suffixed: a name that means "this seat" must not
+    /// silently mean something else, and the caller falls back to the shared
+    /// browser.
+    #[cfg(desktop)]
+    async fn ensure_auto_profile(&self, seat: &Seat) -> Result<(), String> {
+        self.named_profile(seat, &auto_name(seat)).await.map(|_| ())
+    }
+
+    /// Say a failed auto create once per seat per run. The create is retried
+    /// on every unnamed call, so a note on each would be noise; the refusal
+    /// is a fact about the seat's environment rather than forge's health, so
+    /// the answer carries it once and the retries stay quiet.
+    #[cfg(desktop)]
+    async fn note_auto_failure(&self, seat: &Seat, why: String, parts: &mut Vec<ReplyPart>) {
+        if !self.auto_refused.lock().await.insert(seat.clone()) {
+            return;
+        }
+        tauri_plugin_log::log::debug!(
+            "a seat's auto browser profile was not created (event_name \
+             browser_auto_profile_refused, seat {seat}, {why})"
+        );
+        parts.push(ReplyPart::Text {
+            text: format!(
+                "Note: this seat's browser profile '{}' could not be created - {why}. This call \
+                 drove the shared browser.",
+                auto_name(seat),
+            ),
+        });
+    }
+
     /// The named profile under `name`, opened when it is not there.
     ///
     /// The map's lock is held across an open, so two sessions naming one fresh
@@ -777,6 +932,11 @@ impl BrowserHost {
     /// and owns it, and the second is refused by the same rule as any other
     /// attach. A profile whose driver died between calls needs nothing here -
     /// its next call rebuilds the driver over the saved files.
+    ///
+    /// **The owner record is read when no live entry holds the name**, so a
+    /// client restart cannot turn another seat's profile into an open name:
+    /// the record on disk is what the verdict answers from. An unreadable
+    /// record refuses the name rather than guessing an owner.
     #[cfg(desktop)]
     async fn named_profile(&self, seat: &Seat, name: &str) -> Result<Arc<Named>, String> {
         if let Some(refusal) = profiles::name_refusal(name) {
@@ -784,25 +944,68 @@ impl BrowserHost {
         }
         let paths = self.paths.clone()?;
         let mut named = self.named.lock().await;
-        let held = named.get(name).map(|entry| &entry.owner);
-        match profiles::verdict(name, seat, held) {
+        let held = match named.get(name) {
+            Some(entry) => Some(entry.owner.clone()),
+            None => profiles::owner_of(&paths.profiles.join(name))?,
+        };
+        match profiles::verdict(name, seat, held.as_ref()) {
             profiles::Verdict::Refuse(refusal) => Err(refusal),
-            profiles::Verdict::Drive => {
-                let Some(entry) = named.get(name).map(Arc::clone) else {
-                    return Err(format!("the profile '{name}' went away while it was read"));
-                };
-                Ok(entry)
-            }
+            // **The record outlives the entry.** A restart leaves the map
+            // empty while the record still names the seat, so the owner's
+            // first call re-opens its own name over the same directory
+            // rather than being answered as if it had gone away.
+            profiles::Verdict::Drive => match named.get(name).map(Arc::clone) {
+                Some(entry) => Ok(entry),
+                None => {
+                    let fresh = Arc::new(Named::open(seat.clone(), name, &paths)?);
+                    named.insert(name.to_owned(), Arc::clone(&fresh));
+                    Ok(fresh)
+                }
+            },
             profiles::Verdict::Open => {
                 // The browser and its driver wait for the profile's first
                 // CALL: opening the name here costs nothing, and a session
                 // that names a profile and never drives it holds neither.
-                let fresh = Arc::new(Named::open(seat.clone(), name, &paths));
+                let fresh = Arc::new(Named::open(seat.clone(), name, &paths)?);
                 named.insert(name.to_owned(), Arc::clone(&fresh));
                 Ok(fresh)
             }
         }
     }
+}
+
+/// The name a seat's own profile takes: its project and label folded into
+/// the profile charset.
+///
+/// **The label alone is not unique.** Every project's lead carries `lead`,
+/// and two workers in different projects may share a label, so a
+/// label-only name would let the first seat to reach the browser hold it
+/// against every other seat of that label for good - "every seat gets one"
+/// false for all but one. The project qualifies it.
+///
+/// **And the project name is not the profile charset** - it may carry a
+/// space or reach past the length cap - so every character outside the
+/// charset folds to a dash and the result is capped at the name bound
+/// ("my app" plus label `lead` becomes `my-app-lead`). The promise is that
+/// every seat GETS one, so the derivation must always produce a name the
+/// registry accepts; a fold that still cannot is the create's own refusal
+/// and the once-per-seat note, the last resort rather than the path. The
+/// collision refusal stays the backstop for a hand-made name that takes an
+/// auto name first.
+#[cfg(desktop)]
+fn auto_name(seat: &Seat) -> String {
+    let mut folded = String::with_capacity(seat.project.len() + seat.label.len() + 1);
+    for ch in seat.project.chars().chain(std::iter::once('-')).chain(seat.label.chars()) {
+        folded.push(if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+            ch
+        } else {
+            '-'
+        });
+    }
+    // The registry's own bound; a name past it is refused there, so the
+    // tail is dropped rather than the whole derivation.
+    folded.truncate(64);
+    folded
 }
 
 /// Why a named profile cannot be used on the phone yet. One sentence, and
@@ -861,13 +1064,16 @@ pub async fn browser_call(
 
 /// Bring the browser up visibly, for a hand-off's Open. Answers nothing to
 /// the core: the window is the client's act, and Done or Not now is the
-/// answer.
+/// answer. `seat` is the asking session's, when a hand-off is what raises
+/// the window - the dock passes it - and `None` is the person's own show,
+/// which reaches any profile.
 #[tauri::command]
 pub async fn browser_show(
     host: tauri::State<'_, Arc<BrowserHost>>,
     profile: Option<String>,
+    seat: Option<Seat>,
 ) -> Result<(), String> {
-    host.show(profile.as_deref()).await.map(|_| ())
+    host.show(profile.as_deref(), seat.as_ref()).await.map(|_| ())
 }
 
 /// Take the hand-off's window back down; the next agent call relaunches that
@@ -895,12 +1101,23 @@ pub struct ProfileRow {
     pub owner: String,
     /// Whether its driver is still there to answer.
     pub running: bool,
+    /// Whether its browser has EVER run: a launched Chromium leaves its own
+    /// state in the data directory, while a profile carrying only the
+    /// seat's record has never been opened. **The difference is what the
+    /// row's second line says** - "its driver is gone" over a profile that
+    /// never had one reads as a fault where "not opened yet" is the truth
+    /// (Ved, 2026-10-12).
+    pub opened: bool,
     /// Whether its browser is up as a WINDOW right now: the strip's button
     /// says hide where it is, and show where it is not.
     pub windowed: bool,
 }
 
-/// The named profiles this host holds, for its own browser strip.
+/// The named profiles this host holds, for a page's own browser strip.
+///
+/// **Served per seat**: the page passes the seat it draws for, and the host
+/// answers that seat's rows plus the ownerless ones - another seat's rows are
+/// not visible to it. No seat is the person's own door and answers every row.
 ///
 /// The profiles are the CLIENT's own state - it owns the drivers - so this is
 /// the client reading itself, not a server read; the strip needs no new view
@@ -908,8 +1125,9 @@ pub struct ProfileRow {
 #[tauri::command]
 pub async fn browser_profiles(
     host: tauri::State<'_, Arc<BrowserHost>>,
+    seat: Option<Seat>,
 ) -> Result<Vec<ProfileRow>, String> {
-    Ok(host.profiles().await)
+    Ok(host.profiles(seat.as_ref()).await)
 }
 
 /// Whether a profile's browser is up as a window, for the strip's show/hide
@@ -1013,11 +1231,11 @@ mod tests {
             "a marker with nothing answering is not a window - the shared line keeps show's rule",
         );
 
-        let named = Named::open(seat(), "hunt", &paths);
+        let named = Named::open(seat(), "hunt", &paths).expect("the open");
         std::fs::create_dir_all(&named.dir).expect("the profile dir");
         std::fs::write(named.dir.join("windowed"), b"").expect("the profile marker");
         host.named.lock().await.insert("hunt".to_owned(), Arc::new(named));
-        let rows = host.profiles().await;
+        let rows = host.profiles(None).await;
         let row = rows.iter().find(|row| row.name == "hunt").expect("the row");
         assert!(
             !row.windowed,
@@ -1098,7 +1316,7 @@ mod tests {
     async fn a_fresh_host_holds_no_profiles() {
         let host =
             BrowserHost::unavailable("the app's data directory cannot be resolved".to_owned());
-        assert!(host.profiles().await.is_empty());
+        assert!(host.profiles(None).await.is_empty());
     }
 
     /// **The derivation `resolve` makes, apart from the handle.** Everything
@@ -1192,7 +1410,7 @@ mod tests {
             profiles: dir.path().join("profiles"),
         };
         let host = BrowserHost::new(paths.clone());
-        let named = Named::open(seat(), "hunt", &paths);
+        let named = Named::open(seat(), "hunt", &paths).expect("the open");
         std::fs::create_dir_all(&named.dir).expect("the profile dir");
         std::fs::write(named.dir.join("Cookies"), b"the logins").expect("some data");
         host.named.lock().await.insert("hunt".to_owned(), Arc::new(named));
@@ -1248,7 +1466,7 @@ mod tests {
             profiles: dir.path().join("profiles"),
         };
         let host = Arc::new(BrowserHost::new(paths.clone()));
-        let named = Arc::new(Named::open(seat(), "hunt", &paths));
+        let named = Arc::new(Named::open(seat(), "hunt", &paths).expect("the open"));
         std::fs::create_dir_all(&named.dir).expect("the profile dir");
         let calls = named.profile.call_lock().await;
         host.named.lock().await.insert("hunt".to_owned(), Arc::clone(&named));
@@ -1339,6 +1557,219 @@ mod tests {
         assert!(!profile_dir.exists(), "and the tree goes");
     }
 
+    /// **The auto profile is created on the seat's first unnamed reach, and
+    /// the call still drives the shared browser.** Afterwards the directory
+    /// and the record exist - the name is the seat's from now on - while the
+    /// profile's own browser was never started: only a call that NAMES it
+    /// does that. **No browser is launched by this test**: the shared
+    /// directory is a FILE, so the launch refuses before spawning anything,
+    /// and the call's failure lands past the ensure, which is the act under
+    /// test. A unit test that drives the real launch belongs only in the
+    /// deliberate, ignored live suite.
+    #[tokio::test]
+    async fn the_auto_profile_is_created_on_the_first_unnamed_reach() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        // A file where the shared browser's directory should be: the launch
+        // cannot make its directory, so nothing spawns, and the failure is
+        // past the ensure.
+        std::fs::write(&paths.user_data, b"").expect("a file where the shared dir goes");
+        let host = BrowserHost::new(paths.clone());
+        let who = seat();
+
+        let why = host
+            .call(&who, "browser_navigate", json!({ "url": "https://example.com" }))
+            .await
+            .expect_err("the shared browser's directory cannot be made");
+        assert!(why.contains("cannot be made"), "the call reached the launch: {why}");
+
+        let auto = paths.profiles.join("forge-lead");
+        assert_eq!(
+            profiles::owner_of(&auto),
+            Ok(Some(who)),
+            "the seat's own name is recorded, its project qualifying its label",
+        );
+        assert!(
+            !auto.join("DevToolsActivePort").exists(),
+            "and nothing was driven through it - the browser waits for a call that names it",
+        );
+    }
+
+    /// **Two leads, two projects, two auto profiles.** Every lead carries
+    /// the label `lead`, so a label-only name would let the first project's
+    /// lead hold it against every other lead for good - "every seat gets
+    /// one" true for all but one. The auto name qualifies by project, so
+    /// each lead gets its own and neither is refused.
+    #[tokio::test]
+    async fn two_leads_in_different_projects_each_get_their_auto_profile() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let host = BrowserHost::new(paths.clone());
+        let one =
+            Seat { org: "Org".to_owned(), project: "one".to_owned(), label: "lead".to_owned() };
+        let two =
+            Seat { org: "Org".to_owned(), project: "two".to_owned(), label: "lead".to_owned() };
+
+        host.ensure_auto_profile(&one).await.expect("the first lead's own");
+        host.ensure_auto_profile(&two).await.expect("the second lead's own, not a collision");
+
+        assert_eq!(
+            profiles::owner_of(&paths.profiles.join("one-lead")),
+            Ok(Some(one)),
+            "the first project's lead owns one-lead",
+        );
+        assert_eq!(
+            profiles::owner_of(&paths.profiles.join("two-lead")),
+            Ok(Some(two)),
+            "and the second's owns two-lead, rather than being refused the first's name",
+        );
+    }
+
+    /// **A project name that is not the profile charset still gets its seat
+    /// an auto profile.** "my app" carries a space, which the registry
+    /// refuses, so the derived name folds it - `my-app-lead` - rather than
+    /// the seat never getting one and quietly riding the shared browser.
+    #[tokio::test]
+    async fn a_project_name_outside_the_charset_folds_into_the_auto_name() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let host = BrowserHost::new(paths.clone());
+        let who =
+            Seat { org: "Org".to_owned(), project: "my app".to_owned(), label: "lead".to_owned() };
+
+        host.ensure_auto_profile(&who).await.expect("the folded name is a profile");
+        assert_eq!(
+            profiles::owner_of(&paths.profiles.join("my-app-lead")),
+            Ok(Some(who)),
+            "the space folded to a dash and the profile was recorded",
+        );
+    }
+
+    /// **A taken auto name is refused with the reason, never suffixed**, and
+    /// the refusal is said once per seat - the create is retried on every
+    /// unnamed call, and a note on each would be noise.
+    #[tokio::test]
+    async fn a_taken_auto_name_is_refused_without_a_suffix_or_a_repeated_note() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let other = Seat { org: "Other".to_owned(), ..seat() };
+        Named::open(other.clone(), "forge-lead", &paths).expect("the other seat's profile");
+        let host = BrowserHost::new(paths.clone());
+        let who = seat();
+
+        let why =
+            host.ensure_auto_profile(&who).await.expect_err("the name belongs to another seat");
+        assert!(why.contains("belongs to Other/forge/lead"), "{why}");
+        let dirs: Vec<String> = std::fs::read_dir(&paths.profiles)
+            .expect("the profiles root")
+            .flatten()
+            .filter_map(|entry| entry.file_name().to_str().map(str::to_owned))
+            .collect();
+        assert_eq!(dirs, vec!["forge-lead".to_owned()], "no silent suffix: {dirs:?}");
+        assert_eq!(
+            profiles::owner_of(&paths.profiles.join("forge-lead")),
+            Ok(Some(other)),
+            "and the name did not change hands",
+        );
+
+        let mut parts = vec![ReplyPart::Text { text: "navigated".to_owned() }];
+        host.note_auto_failure(&who, why.clone(), &mut parts).await;
+        assert_eq!(parts.len(), 2, "the first failure rides the answer");
+        let said = match &parts[1] {
+            ReplyPart::Text { text } => text.clone(),
+            ReplyPart::Image { .. } => panic!("the note is text"),
+        };
+        assert!(said.contains("could not be created"), "{said}");
+        host.note_auto_failure(&who, why, &mut parts).await;
+        assert_eq!(parts.len(), 2, "the retry is quiet - the seat has been told");
+    }
+
+    /// **A restart does not free the name.** The in-memory lease dies with
+    /// the client; the record on disk is what the next run reads, so another
+    /// seat naming a recorded profile is refused by name even with no live
+    /// entry - the leak this closes, where any seat could adopt any name
+    /// after a restart. An unreadable record refuses rather than guessing.
+    /// **Both refusals land before any browser is consulted**, which is what
+    /// lets this test run without launching anything; the owner's own
+    /// re-attach is the verdict's `Drive` arm, tested in `profiles`.
+    #[tokio::test]
+    async fn a_recorded_name_stays_its_seats_across_a_restart() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let owner = seat();
+        // The first run: the seat names the profile, which records the owner.
+        Named::open(owner.clone(), "hunt", &paths).expect("the open");
+        // The client restarted: a fresh host, an empty map, the record alone.
+        let host = BrowserHost::new(paths.clone());
+
+        let other = Seat { org: "Other".to_owned(), ..seat() };
+        let refused = host
+            .call(
+                &other,
+                "browser_navigate",
+                json!({ "url": "https://example.com", "profile": "hunt" }),
+            )
+            .await
+            .expect_err("another seat's recorded profile");
+        assert!(refused.contains("belongs to Busytools/forge/lead"), "{refused}");
+        assert!(
+            refused.contains("despawned") || refused.contains("browser strip"),
+            "the refusal names the two doors that do end it: {refused}",
+        );
+
+        // **The owner re-attaches.** The record outlives the entry: the
+        // owner's first naming after the restart opens the SAME directory
+        // again rather than being answered as if the name had gone away.
+        // The op is the name resolution, not a call: a call would launch,
+        // and a unit test launches nothing.
+        let reattached = host.named_profile(&owner, "hunt").await.expect("the owner re-attaches");
+        assert_eq!(reattached.owner, owner, "and the entry is the owner's own");
+        assert_eq!(
+            profiles::owner_of(&paths.profiles.join("hunt")),
+            Ok(Some(owner.clone())),
+            "over the same record, not a new one",
+        );
+
+        // A record that cannot be read refuses with its reason.
+        std::fs::write(paths.profiles.join("hunt").join(profiles::OWNER_FILE), b"not json")
+            .expect("a tampered record");
+        let broken = BrowserHost::new(paths.clone());
+        let refused = broken
+            .call(
+                &owner,
+                "browser_navigate",
+                json!({ "url": "https://example.com", "profile": "hunt" }),
+            )
+            .await
+            .expect_err("an unreadable record refuses");
+        assert!(refused.contains("cannot be read"), "{refused}");
+    }
+
     /// **A session deletes only the profile it owns**, and the shared
     /// browser is never a delete target: each refusal names what to do
     /// instead.
@@ -1352,7 +1783,7 @@ mod tests {
             profiles: dir.path().join("profiles"),
         };
         let host = BrowserHost::new(paths.clone());
-        let named = Named::open(seat(), "hunt", &paths);
+        let named = Named::open(seat(), "hunt", &paths).expect("the open");
         std::fs::create_dir_all(&named.dir).expect("the profile dir");
         host.named.lock().await.insert("hunt".to_owned(), Arc::new(named));
 
@@ -1394,6 +1825,51 @@ mod tests {
         assert!(!paths.profiles.join("hunt").exists(), "the tree went");
     }
 
+    /// **A restart does not lock the owner out of its own delete.** The live
+    /// map is empty after one while the record still names the seat, so the
+    /// tool resolves the owner the way attach does - from the record - and
+    /// the seat deletes its own profile instead of being told nothing is
+    /// open to it.
+    #[tokio::test]
+    async fn the_owner_deletes_its_own_recorded_profile_after_a_restart() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let owner = seat();
+        Named::open(owner.clone(), "hunt", &paths).expect("the open");
+        Named::open(owner.clone(), "scout", &paths).expect("the other's record");
+        // The client restarted: a fresh host, an empty map, the records alone.
+        let host = BrowserHost::new(paths.clone());
+
+        let parts = host
+            .call(&owner, "browser_profile_delete", json!({ "name": "hunt" }))
+            .await
+            .expect("the record says the seat owns it");
+        let text = parts
+            .iter()
+            .map(|part| match part {
+                driver::ReplyPart::Text { text } => text.clone(),
+                driver::ReplyPart::Image { .. } => String::new(),
+            })
+            .collect::<String>();
+        assert!(text.contains("deleted the 'hunt' profile"), "{text}");
+        assert!(!paths.profiles.join("hunt").exists(), "and the tree went");
+
+        // Another seat against a record that is not its own: refused BY
+        // NAME, not with "nothing is open to this session".
+        let other = Seat { org: "Other".to_owned(), ..seat() };
+        let refused = host
+            .call(&other, "browser_profile_delete", json!({ "name": "scout" }))
+            .await
+            .expect_err("another seat's record");
+        assert!(refused.contains("belongs to Busytools/forge/lead"), "{refused}");
+        assert!(paths.profiles.join("scout").exists(), "and nothing was removed");
+    }
+
     /// **A closed profile is still a row**: its directory is listed with no
     /// owner and no driver, or the one act that removes its logins has
     /// nothing to be reached from.
@@ -1410,10 +1886,175 @@ mod tests {
         std::fs::create_dir_all(paths.profiles.join("hunt")).expect("the files");
         // A file where a profile would be is not one.
         std::fs::write(paths.profiles.join("stray.txt"), b"").expect("a stray file");
-        let rows = host.profiles().await;
+        let rows = host.profiles(None).await;
         let row = rows.iter().find(|row| row.name == "hunt").expect("the closed profile's row");
-        assert_eq!(row.owner, "", "nobody owns a closed profile");
+        assert_eq!(row.owner, "", "a directory with no record is ownerless");
         assert!(!row.running, "and nothing is running behind it");
         assert!(!rows.iter().any(|row| row.name == "stray.txt"), "a file is not a profile",);
+    }
+
+    /// **A hand-off raises only the asking seat's own profile's window.**
+    /// The dock passes the seat down with the raise, and another seat's name
+    /// is refused BEFORE anything launches - which is what lets this test
+    /// run without a browser on the machine. The owner's own raise and the
+    /// person's seatless one are `raise_refusal`'s own arms, tested there:
+    /// driving them through `show` here would launch, and a unit test may
+    /// not put a process (or a window) on the machine.
+    #[tokio::test]
+    async fn a_hand_off_raises_only_the_asking_seats_profile() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let host = BrowserHost::new(paths.clone());
+        let mine = seat();
+        let other = Seat { org: "Other".to_owned(), ..seat() };
+        Named::open(other, "scout", &paths).expect("the other seat's profile");
+        Named::open(mine.clone(), "hunt", &paths).expect("mine");
+
+        let refused =
+            host.show(Some("scout"), Some(&mine)).await.expect_err("another seat's profile");
+        assert!(refused.contains("belongs to Other/forge/lead"), "{refused}");
+        assert!(refused.contains("raises only its own"), "{refused}");
+    }
+
+    /// **The sweep takes the gone seats and keeps the live ones.** A seat in
+    /// the set survives, a seat out of it goes, a legacy directory (no
+    /// record) goes, the shared directory is not a profile and stays, and a
+    /// second run has nothing left to do. A delete that fails leaves its
+    /// profile and does not stop the sweep from finishing the rest.
+    #[tokio::test]
+    async fn the_sweep_takes_the_gone_seats_and_keeps_the_live_ones() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let host = BrowserHost::new(paths.clone());
+        let live = seat();
+        let gone = Seat { org: "Gone".to_owned(), ..seat() };
+        Named::open(live.clone(), "kept", &paths).expect("the live seat's profile");
+        Named::open(gone, "swept", &paths).expect("the gone seat's profile");
+        std::fs::create_dir_all(paths.profiles.join("legacy")).expect("a legacy dir");
+        std::fs::create_dir_all(&paths.user_data).expect("the shared dir");
+
+        let deleted = host.sweep(std::slice::from_ref(&live)).await;
+        assert_eq!(deleted, vec!["legacy".to_owned(), "swept".to_owned()], "{deleted:?}");
+        assert!(paths.profiles.join("kept").exists(), "a live seat's profile survives");
+        assert_eq!(
+            profiles::owner_of(&paths.profiles.join("kept")),
+            Ok(Some(live.clone())),
+            "with its record",
+        );
+        assert!(!paths.profiles.join("legacy").exists(), "a legacy dir is nobody's and goes");
+        assert!(!paths.profiles.join("swept").exists(), "a gone seat's profile goes");
+        assert!(paths.user_data.exists(), "the shared directory is not a profile");
+        assert!(host.sweep(&[live]).await.is_empty(), "the second sweep has nothing to do");
+    }
+
+    /// A sweep delete that fails is logged and leaves the profile standing -
+    /// and the sweep goes on: the next name still goes.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_sweep_delete_that_fails_leaves_the_profile_and_the_sweep_continues() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let host = BrowserHost::new(paths.clone());
+        let gone = Seat { org: "Gone".to_owned(), ..seat() };
+        Named::open(gone.clone(), "stuck", &paths).expect("the stuck profile");
+        Named::open(gone, "after", &paths).expect("the next profile");
+        // The root cannot be written, so the two directories cannot be
+        // unlinked; the sweep must report the failures and stop nowhere.
+        let root = paths.profiles.clone();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o500))
+            .expect("a read-only root");
+        let deleted = host.sweep(std::slice::from_ref(&seat())).await;
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
+            .expect("writable again");
+
+        assert!(deleted.is_empty(), "nothing could be deleted: {deleted:?}");
+        assert!(paths.profiles.join("stuck").exists(), "the failure left the profile");
+        assert!(
+            paths.profiles.join("after").exists(),
+            "the sweep reached the next name instead of stopping",
+        );
+    }
+
+    /// **A never-opened profile is not one whose driver is gone.** The row
+    /// carries which: a freshly recorded profile has no Chromium state in
+    /// its directory, so the strip can say "not opened yet" rather than
+    /// implying a driver that was there and left.
+    #[tokio::test]
+    async fn a_fresh_profile_lists_as_never_opened() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let host = BrowserHost::new(paths.clone());
+        let named = Named::open(seat(), "hunt", &paths).expect("the open");
+        host.named.lock().await.insert("hunt".to_owned(), Arc::new(named));
+
+        let rows = host.profiles(None).await;
+        let row = rows.iter().find(|row| row.name == "hunt").expect("the row");
+        assert!(!row.opened, "a record-only directory has never been launched");
+        assert!(!row.running, "and nothing is running behind it");
+
+        // A launch writes Chromium's own state beside the record.
+        std::fs::write(paths.profiles.join("hunt").join("Local State"), b"").expect("the state");
+        let rows = host.profiles(None).await;
+        let row = rows.iter().find(|row| row.name == "hunt").expect("the row");
+        assert!(row.opened, "a launched Chromium leaves its own state in the directory");
+    }
+
+    /// **The listing is served per seat.** A seat's read answers its own rows
+    /// and the ownerless ones and nothing else - another seat's profile is
+    /// not even listed to it - while the person's door (no seat) answers
+    /// every row, and a closed profile keeps the owner its record names.
+    #[tokio::test]
+    async fn the_listing_is_served_for_its_seat() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let host = BrowserHost::new(paths.clone());
+        let mine = seat();
+        let other = Seat { org: "Other".to_owned(), ..seat() };
+        Named::open(mine.clone(), "hunt", &paths).expect("mine");
+        Named::open(other, "scout", &paths).expect("theirs");
+        std::fs::create_dir_all(paths.profiles.join("legacy")).expect("a legacy dir");
+
+        let rows = host.profiles(Some(&mine)).await;
+        let names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
+        assert_eq!(names, vec!["hunt", "legacy"], "own rows and ownerless ones: {names:?}");
+        let legacy = rows.iter().find(|row| row.name == "legacy").expect("the legacy row");
+        assert_eq!(legacy.owner, "", "a legacy dir reads ownerless, and stays deletable");
+
+        let all = host.profiles(None).await;
+        let names: Vec<&str> = all.iter().map(|row| row.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["hunt", "legacy", "scout"],
+            "the person's door answers every row: {names:?}",
+        );
+        let scout = all.iter().find(|row| row.name == "scout").expect("the other seat's row");
+        assert_eq!(scout.owner, "Other/forge/lead", "a closed profile keeps its record's owner");
     }
 }

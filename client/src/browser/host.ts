@@ -17,6 +17,7 @@ import type { InvokeArgs } from '@tauri-apps/api/core';
 
 import type { BrowserAnswer, BrowserAnswerPart, BrowserAsk } from '../protocol';
 import type { Connection } from '../socket';
+import type { SessionSlot } from '../wire/types';
 
 /** One part as the shell returns it: an image's bytes are base64 there. */
 import { callDown, callUp } from './inflight.svelte';
@@ -157,11 +158,14 @@ async function defaultInvoke(_command: 'browser_call', request: InvokeArgs): Pro
  * A dock that claimed a window was up over a raise that never happened
  * would have the person press Done and tell the session they acted.
  */
-export async function showBrowser(profile: string | null = null): Promise<string | null> {
+export async function showBrowser(
+  profile: string | null = null,
+  seat: SessionSlot | null = null,
+): Promise<string | null> {
   if (!canHost()) return 'this page is not the client';
   try {
     const { invoke } = await import('@tauri-apps/api/core');
-    await invoke('browser_show', { profile });
+    await invoke('browser_show', { profile, seat });
     return null;
   } catch (why) {
     return whyText(why);
@@ -242,6 +246,10 @@ export interface ProfileRow {
   owner: string;
   /** Whether its driver is still there to answer. */
   running: boolean;
+  /** Whether its browser has ever run: a fresh record-only profile has
+   *  never been opened, which the row's second line says rather than
+   *  implying a driver that was there and left. */
+  opened: boolean;
   /** Whether its browser is up as a WINDOW right now: the row's button says
    *  hide where it is, and show where it is not. */
   windowed: boolean;
@@ -250,11 +258,16 @@ export interface ProfileRow {
 /**
  * The named profiles this client holds, for its own strip.
  *
+ * **Served per seat**: the page passes the seat it draws for and the shell
+ * answers that seat's rows - another seat's profiles are not listed to it.
+ * `null` is the person's own door (a page holding no seat), which answers
+ * every row.
+ *
  * The profiles are the client's own state - it owns the drivers - so this is
  * the client reading itself, and a page outside the shell holds none.
  */
-export async function listProfiles(): Promise<ProfileRow[]> {
+export async function listProfiles(seat: SessionSlot | null = null): Promise<ProfileRow[]> {
   if (!canHost()) return [];
   const { invoke } = await import('@tauri-apps/api/core');
-  return await invoke<ProfileRow[]>('browser_profiles');
+  return await invoke<ProfileRow[]>('browser_profiles', { seat });
 }

@@ -575,8 +575,10 @@
     const id = ask.request.id;
     // **The hand-off's own profile, when it named one**: the window comes up
     // over THAT profile's browser, on THAT profile's page - the CAPTCHA
-    // lands in the session the person needs to act in.
-    void showBrowser(ask.request.profile).then((why) => {
+    // lands in the session the person needs to act in. **The asking seat
+    // rides the raise**: the shell refuses a profile another seat owns, so a
+    // hand-off cannot surface a browser holding someone else's logins.
+    void showBrowser(ask.request.profile, slot).then((why) => {
       if (why !== null) {
         raiseFailedFor = id;
         raiseWhy = why;

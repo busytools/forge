@@ -1146,6 +1146,7 @@ function drivable(refusedAtFirst = false): Driveable {
     onBrowserAsk: () => () => {},
     browserRole: () => false,
     onBrowserRole: () => () => {},
+    onProfilesChanged: () => () => {},
     takeBrowserRole: () => {},
     onMessage: (fn) => {
       listeners.add(fn);

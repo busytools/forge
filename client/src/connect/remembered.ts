@@ -18,6 +18,25 @@ import { report } from '../socket';
 /** Where the webview keeps it. */
 const KEY = 'forge.address';
 
+/** Where a launch names a server, on the app's own URL. */
+const PARAM = 'server';
+
+/**
+ * The address a launch names, or `null` when none does.
+ *
+ * **The door pre-fills from it**, so an app can be opened already pointed at
+ * a server - a scratch forge, a second machine - without typing:
+ * `?server=127.0.0.1:8795`, or a full ws:// URL. A parameter is an
+ * instruction for THIS launch, so it outranks the address the app would
+ * otherwise open on. Nothing here validates the value: the door's own submit
+ * does, and a bad address belongs in the door's refusal rather than dropped
+ * in silence.
+ */
+export function serverParameter(search: string): string | null {
+  const value = new URLSearchParams(search).get(PARAM)?.trim() ?? '';
+  return value === '' ? null : value;
+}
+
 /**
  * The webview's own store, or `null` where there is not one.
  *

@@ -400,6 +400,16 @@ was asked for.
   the role away (`browser_take_role`, above). A client's own browser row
   reads it to say which client drives - before this frame, "could host" and
   "does host" looked the same from the client's side.
+- **`browser_seats {seats}`** - the seats that exist (every project's lead,
+  plus every worker the store holds, running or not), sent to every
+  browser-capable connection: as it declares, and again after a worker
+  despawns. **It is for the client's profile sweep** - the client deletes
+  the named browser profiles whose owning seat is not in the set, so a
+  despawned worker's profiles do not outlive it - and the set crosses WHOLE
+  rather than as a delta: it is authoritative at the moment it is sent, and
+  the sweep that reads it is idempotent. A store that cannot be read sends
+  no set at all, because a client reading "no seats" would delete every
+  profile it holds.
 - **`error {what, why}`** - `what` failed and `why`, in the core's own
   words.
 

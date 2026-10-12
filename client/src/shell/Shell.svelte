@@ -4,7 +4,7 @@
   import Sprite from '../components/Sprite.svelte';
   import { DEFAULT_ADDRESS, displayAddress, type Attempt } from '../connect/attempt';
   import { boot } from '../connect/boot';
-  import { rememberedAddress } from '../connect/remembered';
+  import { rememberedAddress, serverParameter } from '../connect/remembered';
   import { watchHome, type HomeRead } from '../home/live';
   import { skewMessage, subjectKey, type Skew } from '../protocol';
   import { hrefFor, parseRoute, type Route } from '../routes';
@@ -22,12 +22,15 @@
   const opened = parseRoute(location.pathname);
   const onDoor = opened.name === 'home';
   // Read once, at launch. The address the app opens on is also the one the
-  // door's field carries, whether or not there was one to open on.
+  // door's field carries, whether or not there was one to open on. **A
+  // `?server=` parameter is THIS launch's instruction** - an app opened
+  // already pointed at a forge - so it outranks the remembered address.
   const remembered = rememberedAddress();
+  const named = serverParameter(location.search);
 
   let route = $state<Route>(onDoor ? { name: 'connect' } : opened);
   let settings = $state<ClientSettings>(DEFAULT_SETTINGS);
-  let address = $state(remembered ?? DEFAULT_ADDRESS);
+  let address = $state(named ?? remembered ?? DEFAULT_ADDRESS);
   let home = $state<HomeRead>({ wire: null, refused: null, report: null });
   // Raw, so the connection is handed around as the object it is rather than
   // as a reactive proxy of it.
@@ -41,10 +44,10 @@
    */
   let skew = $state<Skew | null>(null);
   let failure = $state<Extract<Attempt, { ok: false }> | null>(null);
-  // A remembered address is a claim that something answered there once, so it
-  // is tried before there is a page to draw - a door drawn over an attempt in
-  // flight offers a second Connect over a socket already opening.
-  let booting = $state(onDoor && remembered !== null);
+  // A named or remembered address is a claim that something is there to try,
+  // so it is tried before there is a page to draw - a door drawn over an
+  // attempt in flight offers a second Connect over a socket already opening.
+  let booting = $state(onDoor && (named ?? remembered) !== null);
   /**
    * Whether a read has landed since the connection last opened.
    *
@@ -57,8 +60,10 @@
   let settled = $state(false);
 
   onMount(() => {
-    // Nothing to open on, so the door, at the URL that names it.
-    if (onDoor && remembered === null) {
+    // Nothing to open on, so the door, at the URL that names it. **A named
+    // server keeps its URL**: the parameter is what a reload re-prefills
+    // from, and moving the URL to `/connect` would drop it.
+    if (onDoor && remembered === null && named === null) {
       history.replaceState(null, '', hrefFor({ name: 'connect' }));
     }
     void open();
@@ -79,7 +84,8 @@
   async function open() {
     // What a connection taken while this is in flight is measured against.
     const held = connection;
-    const launched = await boot(opened, remembered);
+    // The parameter first, then the memory: both are this launch's target.
+    const launched = await boot(opened, named ?? remembered);
     booting = false;
     if (connection !== held) {
       // A submit is a person acting on what is in front of them and a launch is

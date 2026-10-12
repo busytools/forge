@@ -2239,6 +2239,14 @@ async fn a_role_declare_leaves_no_watch_behind() {
         matches!(next_server(&mut page).await, ServerMessage::BrowserRole { hosting: true }),
         "precondition: the page's own subscribe took the role",
     );
+    // **The seat set rides the same declare.** A capable connection is
+    // answered with the seats that exist, so its host can sweep its
+    // profiles; the frame arrives after the grant and before the declare's
+    // own answer below.
+    assert!(
+        matches!(next_server(&mut page).await, ServerMessage::BrowserSeats { .. }),
+        "precondition: a capable subscribe is answered with the seat set too",
+    );
 
     // The declare, as the take-role control puts it on the wire.
     send_wire(
@@ -4653,13 +4661,16 @@ async fn a_subscribe_from_a_client_that_predates_v6_is_answered() {
 ///
 /// A connection forwards the core's news as well as the asks, so a test that
 /// reads once and expects an ask is claiming an ordering nothing here gives -
-/// and the role's own frame (the grant a capable declare is answered with)
-/// arrives between the snapshot and the first ask.
+/// the role's own frame (the grant a capable declare is answered with) and
+/// the seat set (the sweep a capable declare is answered with) both arrive
+/// between the snapshot and the first ask.
 async fn browser_ask(socket: &mut Client) -> (u64, SessionSlot, String, serde_json::Value) {
     loop {
         match next_server(socket).await {
             ServerMessage::BrowserAsk { id, seat, tool, args } => return (id, seat, tool, args),
-            ServerMessage::Update { .. } | ServerMessage::BrowserRole { .. } => {}
+            ServerMessage::Update { .. }
+            | ServerMessage::BrowserRole { .. }
+            | ServerMessage::BrowserSeats { .. } => {}
             other => panic!("a browser ask was expected and {other:?} arrived"),
         }
     }

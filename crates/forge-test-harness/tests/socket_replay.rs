@@ -249,7 +249,7 @@ census!(ServerMessage,
     [
         Greeting struct, Snapshot struct, Update struct, Page struct,
         Devices struct, CommitDiff struct, Reply struct, BrowserRole struct, Error struct,
-        BrowserAsk struct,
+        BrowserAsk struct, BrowserSeats struct,
     ],
     server_message_census, SERVER_MESSAGE_VARIANTS);
 

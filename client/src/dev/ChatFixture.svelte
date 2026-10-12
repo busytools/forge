@@ -110,6 +110,7 @@
       // without these the whole strip throws on the /fixture route.
       browserRole: () => false,
       onBrowserRole: () => () => undefined,
+      onProfilesChanged: () => () => undefined,
       takeBrowserRole: () => undefined,
       onStatus: () => () => undefined,
       store: () => undefined,

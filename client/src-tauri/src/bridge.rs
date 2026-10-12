@@ -77,6 +77,9 @@ pub enum ClientEvent {
     Role { hosting: bool },
     /// How many asks are in flight right now, for the strip's ring.
     Asks { inflight: usize },
+    /// The seat sweep deleted at least one profile, so a strip that is open
+    /// re-reads its rows.
+    Profiles,
 }
 
 /// One subject the page watches: its own subject, how many page readers hold
@@ -525,11 +528,14 @@ impl Bridge {
                 self.acted(refresh);
             }
             "browser_ask" => self.answer_ask(&message),
+            "browser_seats" => self.seats_changed(&message),
             // Consumed here alone, each provably unusable by the page: a
             // reply is `dispatch`'s own answer, correlated by id in
             // `socket.rs`; the role's consumer is `onBrowserRole`, fed by the
-            // event above; and an ask answered by the page is the defect this
-            // move removes - the desktop page registers no handler for one.
+            // event above; an ask answered by the page is the defect this
+            // move removes - the desktop page registers no handler for one;
+            // and a seat set is the HOST's to sweep against, which no page
+            // can do.
             "reply" | "browser_role" => {}
             _ => self.forward(&message),
         }
@@ -566,6 +572,34 @@ impl Bridge {
         }
         drop(state);
         self.emit(ClientEvent::Inbound(message.clone()));
+    }
+
+    /// **The server's seat set: sweep this client's profiles against it.**
+    /// Off the message loop - a sweep deletes directories and waits out
+    /// in-flight calls - and the page is told only that the rows moved, so a
+    /// strip that is open re-reads. A frame whose seats do not parse is NOT
+    /// swept against: a half-read set would delete a live seat's profiles.
+    fn seats_changed(self: &Arc<Self>, message: &Value) {
+        let Some(host) = self.host.clone() else { return };
+        let Some(rows) = message.get("seats").cloned() else { return };
+        let Ok(seats) = serde_json::from_value::<Vec<crate::browser::profiles::Seat>>(rows) else {
+            tauri_plugin_log::log::warn!(
+                "a browser_seats frame did not parse, so nothing was swept (event_name \
+                 browser_seats_unreadable)"
+            );
+            return;
+        };
+        let events = self.events.clone();
+        tokio::spawn(async move {
+            let gone = host.sweep(&seats).await;
+            if !gone.is_empty() {
+                tauri_plugin_log::log::info!(
+                    "the browser profiles of gone seats were deleted (event_name \
+                     browser_profiles_swept, profiles {gone:?})"
+                );
+                let _ = events.send(ClientEvent::Profiles);
+            }
+        });
     }
 
     /// Answer one ask here, on its own task: the page is not consulted, and
@@ -891,6 +925,70 @@ mod tests {
             matches!(bridge.lock().records.read(key), Some(Err("no session there"))),
             "the record holds the refusal for the reconcile too"
         );
+    }
+
+    /// **A seat set sweeps the host and tells the page the rows moved.** The
+    /// profiles of seats the set does not hold go, the live seat's stays,
+    /// and the frame itself never reaches the page - its consumer is the
+    /// host, which no page can run.
+    #[tokio::test]
+    async fn a_seat_set_sweeps_the_profiles_and_tells_the_page() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = crate::browser::StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let host = Arc::new(BrowserHost::new(paths.clone()));
+        let live = json!({ "org": "Busytools", "project": "forge", "label": "lead" });
+        let gone = json!({ "org": "Gone", "project": "forge", "label": "w1" });
+        for (seat, name) in [(&live, "kept"), (&gone, "swept")] {
+            let profile_dir = paths.profiles.join(name);
+            std::fs::create_dir_all(&profile_dir).expect("the profile dir");
+            std::fs::write(
+                profile_dir.join("owner.json"),
+                serde_json::to_vec(seat).expect("the record"),
+            )
+            .expect("the record file");
+        }
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let bridge = Bridge::new(Some(host), tx);
+
+        sent(&bridge, json!({ "kind": "browser_seats", "seats": [live] }));
+
+        let _ = event(&mut rx, |event| matches!(event, ClientEvent::Profiles)).await;
+        assert!(paths.profiles.join("kept").exists(), "the live seat's profile stays");
+        assert!(!paths.profiles.join("swept").exists(), "the gone seat's profile went");
+    }
+
+    /// **A seat set that does not parse sweeps NOTHING.** A half-read set
+    /// would delete a live seat's profiles, so an unreadable frame is a
+    /// warned no-op rather than a sweep over whatever happened to parse.
+    #[tokio::test]
+    async fn an_unreadable_seat_set_sweeps_nothing() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = crate::browser::StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let host = Arc::new(BrowserHost::new(paths.clone()));
+        let gone = paths.profiles.join("swept");
+        std::fs::create_dir_all(&gone).expect("a legacy profile dir");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let bridge = Bridge::new(Some(host), tx);
+
+        // One row that could be a seat and one that cannot: the frame is a
+        // set or it is nothing.
+        sent(
+            &bridge,
+            json!({ "kind": "browser_seats", "seats": [{ "org": "Gone" }, { "org": 7 }] }),
+        );
+
+        assert!(rx.try_recv().is_err(), "nothing is reported to the page");
+        assert!(gone.exists(), "and nothing was swept - not even the dir that would go");
     }
 
     /// An ask is answered by this process, counted for the ring, and the page

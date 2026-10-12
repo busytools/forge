@@ -819,6 +819,14 @@ pub fn launched_windowed(profile: &Path) -> bool {
     windowed_marker(profile).is_file()
 }
 
+/// Whether this profile has EVER been launched: a launched Chromium writes
+/// its own state into the data directory, while a profile carrying only the
+/// seat's record has never been opened. The strip's row says which - "its
+/// driver is gone" over a profile that never had one reads as a fault.
+pub fn ever_opened(profile: &Path) -> bool {
+    profile.join("Local State").is_file()
+}
+
 /// Whether a WINDOW is really up on `profile`: the headed marker AND a live
 /// launch answering as this profile's own AND a page left to carry.
 ///
