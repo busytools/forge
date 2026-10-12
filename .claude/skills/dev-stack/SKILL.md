@@ -107,9 +107,10 @@ history is the record.
      $STACK/forge.log`.
    - `script -q /dev/null /bin/sh $STACK/boot.sh < /dev/null &`
    - **Launch it `nohup`-detached, never bare `&`**: a background job started
-     inside a tool call dies with that call's process group (measured: a
-     scratch vanished ~27s in and another stack took its port). A
-     `launch.sh` wrapping this line as `nohup script -q ... &` held.
+     inside a tool call can die with that call's process group (measured: a
+     scratch was gone ~30s after its launch call returned and another stack
+     took its ports; a detached launch held). Wrap this line as `nohup script
+     -q ... > $STACK/boot.out 2>&1 &` from a `launch.sh`.
    - **The HOME redirect is mandatory, not optional**: the durable store
      resolves under `HOME`, so without it the scratch forge points at the
      real `db.redb`, fails redb's exclusive lock, and boots degraded with no
@@ -209,9 +210,9 @@ history is the record.
    read bound (the other stack's listeners) and the handshake answers you
    with ANOTHER stack's roster. **lsof the pair before booting, and again
    immediately before driving it** - another stack can take the pair in
-   between (measured 2026-10-12: a scratch lost both ports that way and moved
-   to 8792/8789). Take the next one; a bind-failure line is a collision to fix the pair for, not
-   to investigate. One pair per stack.
+   between (measured 2026-10-12: a scratch lost both ports that way and
+   moved to 8792/8789). Take the next one; a bind-failure line is a
+   collision to fix the pair for, not to investigate. One pair per stack.
 5. `[web]` is refused by name; scratch configs use `[server]` + `[client]`.
 6. A fresh config dir has no trust record; the CLI then ignores the project's
    permission-allow entries and says so with the exact remedy
