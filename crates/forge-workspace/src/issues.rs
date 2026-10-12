@@ -286,6 +286,7 @@ mod tests {
         states: Mutex<Vec<(u64, String)>>,
         bodies: Mutex<Vec<(u64, String)>>,
         closes: Mutex<Vec<(u64, CloseReason)>>,
+        refuse: Mutex<bool>,
     }
 
     #[async_trait::async_trait]
@@ -333,7 +334,7 @@ mod tests {
 
         async fn close(&self, _cwd: &Path, number: u64, reason: CloseReason) -> bool {
             self.closes.lock().expect("lock").push((number, reason));
-            true
+            !*self.refuse.lock().expect("lock")
         }
     }
 
@@ -561,6 +562,40 @@ provider = "anthropic"
             vec![(100, CloseReason::Completed), (101, CloseReason::NotPlanned)],
             "the epic's issue is completed and the canceled child's is not planned",
         );
+    }
+
+    /// A close the backend refuses writes nothing, and the next pass
+    /// asks again.
+    #[tokio::test]
+    async fn a_refused_close_writes_nothing_and_retries() {
+        let (_dir, ws) = workspace_with_project(true);
+        ws.seed_test_task(row("epic", None));
+        ws.seed_test_task(row("sub-a", Some("epic")));
+        let backend = MockBackend { supported: true, ..Default::default() };
+        ws.issue_pass(&backend, epoch(100)).await;
+
+        move_to(&ws, "sub-a", TaskStatus::Completed);
+        *backend.refuse.lock().expect("lock") = true;
+        ws.issue_pass(&backend, epoch(200)).await;
+        assert_eq!(backend.closes.lock().expect("lock").len(), 1, "the close was attempted");
+        let stored = ws.tasks_for_project(PROJECT);
+        let link = stored
+            .iter()
+            .find(|task| task.id == TaskId::from("sub-a"))
+            .expect("row")
+            .links
+            .iter()
+            .find(|link| link.kind == LinkKind::Issue)
+            .expect("link");
+        assert_eq!(
+            link.state.as_deref(),
+            Some("open"),
+            "a refused close writes nothing to the link",
+        );
+
+        *backend.refuse.lock().expect("lock") = false;
+        ws.issue_pass(&backend, epoch(300)).await;
+        assert_eq!(backend.closes.lock().expect("lock").len(), 2, "and the next pass asks again");
     }
 
     /// A store that cannot be read is not an empty one: the close step
