@@ -307,6 +307,53 @@ describe('the reviewable document', () => {
     expect(inline[0]?.textContent).toContain('from before');
   });
 
+  /**
+   * **The drift is written back where it is drawn.** A diff's overlay ages
+   * its drifted threads in the store as it re-anchors them; a document has
+   * no overlay, so the viewer is the view that does it - the review record
+   * must read what the reader sees. Resolved and already-outdated comments
+   * stay as they are, the same guard the overlay keeps.
+   */
+  it('ages a drifted thread in the store while drawing it', () => {
+    const drifted = (id: string, status: string) => ({
+      id,
+      anchor: {
+        path: PATH,
+        side: 'New',
+        line: 2,
+        content_hash: '41',
+        context: ['^ old line'],
+        base_ref: `doc:${PATH}`,
+      },
+      comments: [{ author: 'User', text: 'from before', at: 'x', review_id: null }],
+      status,
+      created_at: 'x',
+      updated_at: 'x',
+      commit: null,
+    });
+    const page = drawReviewable({
+      kind: 'landed',
+      document_kind: 'markdown',
+      bytes: enc('# hi\nline two\nline three'),
+      reviewable: true,
+      content_hash: '42',
+      threads: [
+        drifted('d1', 'Open'),
+        drifted('d2', 'Addressed'),
+        drifted('d3', 'Resolved'),
+        drifted('d4', 'Outdated'),
+      ],
+    });
+
+    const aged = (page.sent as Record<string, Record<string, unknown>>[])
+      .filter((command) => 'set_review_thread_status' in command)
+      .map((command) => command['set_review_thread_status']);
+    expect(aged).toEqual([
+      { project: SLOT.project, branch: `doc:${PATH}`, thread_id: 'd1', status: 'Outdated' },
+      { project: SLOT.project, branch: `doc:${PATH}`, thread_id: 'd2', status: 'Outdated' },
+    ]);
+  });
+
   /** The line view with a composer open, through axe: every line target
    *  carries its own name, and the field is labelled. */
   it('draws the comment affordance with no axe violations', async () => {

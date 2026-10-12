@@ -20,7 +20,7 @@
   import Prose from '../chat/Prose.svelte';
   import type { DocumentKind } from '../protocol';
   import { authorName } from '../review/view';
-  import { submitCommand, upsertCommand } from '../review/write';
+  import { statusCommand, submitCommand, upsertCommand } from '../review/write';
   import type { SessionSlot } from '../wire/types';
   import {
     addDraft,
@@ -94,6 +94,24 @@
   const hashed = $derived(held.contentHash ?? '');
   const placed = $derived(placedThreads(held.threads, hashed));
   const outdated = $derived(threadsAgainstAnotherVersion(held.threads, hashed));
+
+  /**
+   * The drift is written back where it is drawn: a diff's overlay ages a
+   * drifted code thread as it re-anchors it, and this viewer is the
+   * overlay's counterpart for a document, so the review record reads what
+   * the reader sees. Resolved and already-outdated comments are left alone.
+   */
+  $effect(() => {
+    if (!held.reviewable || held.path === null) return;
+    for (const thread of outdated) {
+      if (thread.status !== 'open' && thread.status !== 'addressed') continue;
+      void connection
+        ?.dispatch(statusCommand(slot, scope, thread.id, 'Outdated'))
+        ?.catch((why: unknown) => {
+          report('a comment could not be aged', why);
+        });
+    }
+  });
 
   /** The line a composer is open on, and what is typed into it. */
   let composing = $state<number | null>(null);
