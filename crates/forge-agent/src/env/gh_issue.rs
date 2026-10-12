@@ -136,12 +136,25 @@ pub async fn create_issue(
 
 /// Every issue with its state and body: the state so a close in GitHub
 /// shows on the board, the body so an issue whose row is gone is found.
+///
+/// Open issues are read with their bodies - the marker is what the close
+/// step matches - and closed ones without, the reconcile needing only
+/// their state. Each read is a page walk to exhaustion under a ceiling
+/// far above any tracker this runs against: `--limit` bounds the walk,
+/// not the result, and a small cap silently hides the oldest rows from
+/// both the reconcile and the close.
 pub async fn list_issues(cwd: &Path) -> Vec<IssueRow> {
-    let Some(output) = gh_output(
-        cwd,
-        &["issue", "list", "--state", "all", "--limit", "200", "--json", "number,state,body"],
-    )
-    .await
+    let mut rows = gh_issues(cwd, "open", true).await;
+    rows.extend(gh_issues(cwd, "closed", false).await);
+    rows
+}
+
+async fn gh_issues(cwd: &Path, state: &str, bodies: bool) -> Vec<IssueRow> {
+    const CEILING: &str = "5000";
+    let fields = if bodies { "number,state,body" } else { "number,state" };
+    let Some(output) =
+        gh_output(cwd, &["issue", "list", "--state", state, "--limit", CEILING, "--json", fields])
+            .await
     else {
         return Vec::new();
     };
