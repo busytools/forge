@@ -451,6 +451,23 @@
    * close on it.
    */
   function del(row: ProfileRow): void {
+    // **Focus goes back to the toggle BEFORE the confirm unmounts.** The
+    // confirm holds focus as the delete starts, and a webview that fires
+    // focusout when the focused element is removed (Chromium, WebView2,
+    // Android WebView - macOS WKWebView does not) would otherwise read the
+    // reader as having left the panel: `release` arms the close, and ~120ms
+    // later `shut()` takes the outcome line - or a refusal's words - off
+    // the screen before they are read. jsdom fires no blur on removal, so
+    // no test can see that webview behaviour; what is pinned is this
+    // function's own contract: the toggle holds focus by the time `armed`
+    // clears.
+    //
+    // `pointed` takes the focus as a press settling rather than a reader
+    // opening the panel: `focusIn`'s open would start a re-read whose
+    // landing clears `why`, wiping a refusal's line this same call is about
+    // to draw.
+    pointed = true;
+    toToggle();
     armed = null;
     outcome = null;
     deleting.add(row.name);

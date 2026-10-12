@@ -422,6 +422,37 @@ describe('the browser segment', () => {
     shown.stop();
   });
 
+  it('returns focus to the toggle before the confirm unmounts', async () => {
+    // **The webview behaviour this protects against cannot be pinned here.**
+    // A focusout fired because the focused element was REMOVED is
+    // Chromium/WebView2/Android's; jsdom fires none. What this test pins is
+    // the fix's own contract: the toggle holds focus by the time `armed`
+    // clears, so a webview that does fire the event sees the reader still
+    // on the toggle - `release`'s guard - and keeps the panel, and the
+    // outcome line it is about to draw, up.
+    vi.mocked(deleteProfile).mockImplementation(() => Promise.resolve(undefined));
+    vi.mocked(listProfiles).mockResolvedValue([
+      { name: 'hunt', owner: 'Busytools/forge/lead', running: true, windowed: false },
+    ]);
+    const shown = show(false, true);
+    click(shown.target.querySelector('.bz-tog'));
+    await vi.waitFor(() => expect(shownText(shown.target)).toContain('hunt'));
+
+    click(list(shown.target)?.querySelector('.bz-del'));
+    // The confirm takes focus on the tick after the arming click.
+    await vi.waitFor(() => {
+      expect(
+        document.activeElement?.textContent?.trim(),
+        'arming the confirm put focus on its Keep',
+      ).toBe('keep');
+    });
+    click(list(shown.target)?.querySelector('.bz-del.confirm'));
+    expect(document.activeElement, 'the toggle holds focus before the confirm unmounts').toBe(
+      shown.target.querySelector('.bz-tog'),
+    );
+    shown.stop();
+  });
+
   it('draws the delete outcome and stands the empty line aside for it', async () => {
     // The shell answers at once: an earlier test left a gated implementation
     // in place, and `mockClear` in `afterEach` clears calls, not those.
