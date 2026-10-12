@@ -251,33 +251,28 @@ impl ViewSurface {
         }
     }
 
-    /// The span of `slot`'s transcript that ends below `ends_before`, for a
+    /// The rows of `slot`'s transcript that sit strictly before `below`, for a
     /// paging read that has walked below the held window's floor.
     ///
-    /// **The session's numbering, and a bounded read.** `anchors` are rows the
-    /// caller's held window still carries - an id a transcript row names, with
-    /// the index the session gives it - which is what lets the read find the
-    /// span without walking the file from its start; the first the file holds
-    /// is the one used. `None` when the transcript cannot answer: no session
-    /// for the slot, no file, or a file that no longer lines up with the
-    /// session's own numbering.
-    pub fn transcript_span(
+    /// **A bounded row read.** `below` is the row the page above stopped at -
+    /// the id it carries and, once a read has seen it, the byte it starts at -
+    /// and `None` reads the file's own newest rows, which is what a walk asks
+    /// for on a window that holds no row to name. `None` when the transcript
+    /// cannot answer: no session for the slot, no file, or an anchor the file
+    /// does not carry.
+    pub fn transcript_rows(
         &self,
         slot: &SessionSlot,
         cwd_raw: &Path,
-        anchors: &[forge_primitives::TranscriptAnchor],
-        cursor: usize,
-        rowless: &[usize],
+        below: Option<&forge_primitives::TranscriptAnchor>,
         rows: usize,
     ) -> Option<forge_primitives::TranscriptSpan> {
         let (session_id, cwd) = self.transcript_place(slot, cwd_raw)?;
-        forge_workspace::transcript_span(
+        forge_workspace::transcript_rows(
             self.workspace.config_dir(),
             &session_id,
             &cwd,
-            anchors,
-            cursor,
-            rowless,
+            below,
             rows,
         )
     }

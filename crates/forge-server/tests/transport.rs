@@ -4183,15 +4183,19 @@ async fn a_more_below_the_floor_is_answered_from_the_transcript() {
     let held = state.conversations.get(&lead_seat()).expect("the seat is held");
     let dropped = held.lock().dropped();
     assert_eq!(dropped, 5_200 - 4_000, "precondition: the window dropped its oldest rows");
-    assert_eq!(
-        held.lock().without_rows().len(),
-        0,
+    assert!(
+        held.lock().messages().iter().all(forge_workspace::has_a_transcript_row),
         "precondition: the held copy came from the transcript, so every frame has a row",
     );
 
-    // A cursor two turns below the floor - a client holding pages from before
-    // a drop asks from one. The socket is on the server whose state holds the
-    // conversation above, which is the one thing this test cannot get wrong.
+    // A cursor below the floor - a client holding pages from before a drop
+    // asks from one. **It is answered from the window's own oldest row rather
+    // than from the exact frame it names**: the frames the CLI streams and
+    // never writes sit between the window's rows, so the two numberings cannot
+    // be lined up by arithmetic, and a page that starts at the window's front
+    // errs toward serving a row twice rather than toward skipping one. The
+    // socket is on the server whose state holds the conversation above, which
+    // is the one thing this test cannot get wrong.
     let mut socket = connect(&url).await;
     let asked: usize = 5_200 - 4_000 - 4;
     send(
@@ -4222,19 +4226,21 @@ async fn a_more_below_the_floor_is_answered_from_the_transcript() {
         .collect();
     assert_eq!(
         texts,
-        vec!["turn 1192", "turn 1193", "turn 1194", "turn 1195"],
-        "the turns directly above the cursor the client asked with",
+        vec!["turn 1196", "turn 1197", "turn 1198", "turn 1199"],
+        "the turns directly below the window's own front, which is where a page below the floor \
+         starts",
     );
-    assert_eq!(
-        cursor.as_deref(),
-        Some("1192"),
-        "and a cursor below that one, so the walk carries on rather than restarting or stopping",
+    let cursor = cursor.expect("a cursor below that one, so the walk carries on");
+    assert!(
+        cursor.starts_with("r:"),
+        "and it is a row cursor - the byte the page stopped at - rather than a frame number: \
+         {cursor}",
     );
 
     // The walk, one page down: the client asks with the cursor it was handed.
     send(
         &mut socket,
-        ClientMessage::More { conversation: lead_seat(), before: cursor.clone(), turns: 4 },
+        ClientMessage::More { conversation: lead_seat(), before: Some(cursor.clone()), turns: 4 },
     )
     .await;
     let ServerMessage::Page { turns: below, cursor: next, .. } = page_answer(&mut socket).await
@@ -4242,18 +4248,39 @@ async fn a_more_below_the_floor_is_answered_from_the_transcript() {
         panic!("the page below is answered too");
     };
     assert_eq!(below.len(), 4, "the walk serves the page below the one before it");
-    assert_eq!(next.as_deref(), Some("1188"), "and hands back the cursor below it");
+    let below_texts: Vec<String> = below
+        .iter()
+        .map(|turn| {
+            turn.messages
+                .first()
+                .and_then(|frame| frame["message"]["content"][0]["text"].as_str())
+                .unwrap_or_default()
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(
+        below_texts,
+        vec!["turn 1192", "turn 1193", "turn 1194", "turn 1195"],
+        "the turns directly above the row the page stopped at",
+    );
+    let next = next.expect("and a cursor below it");
+    assert!(next.starts_with("r:"), "a row cursor too: {next}");
+    assert_ne!(next, cursor, "descending rather than repeating");
 
-    // And the floor of the transcript: a cursor at its very first frame has
-    // nothing above it, which is the one page that ends the walk.
+    // And the floor of the transcript: the cursor naming the file's own first
+    // row has nothing above it, which is the one page that ends the walk.
     send(
         &mut socket,
-        ClientMessage::More { conversation: lead_seat(), before: Some("0".to_owned()), turns: 4 },
+        ClientMessage::More {
+            conversation: lead_seat(),
+            before: Some("r:0:u0".to_owned()),
+            turns: 4,
+        },
     )
     .await;
     let ServerMessage::Page { turns: none, cursor: end, .. } = page_answer(&mut socket).await
     else {
-        panic!("a cursor at the transcript's first frame is still answered with a page");
+        panic!("a cursor at the transcript's first row is still answered with a page");
     };
     assert!(none.is_empty(), "with nothing above it");
     assert!(end.is_none(), "and no cursor, which is what stops a client asking");
@@ -4323,6 +4350,227 @@ async fn a_more_below_the_floor_is_answered_from_the_transcript() {
             page.len(),
         );
     }
+}
+
+/// One frame, decoded from the shape the wire carries it in.
+fn a_frame(row: &serde_json::Value) -> forge_primitives::Message {
+    serde_json::from_value(row.clone()).expect("a frame")
+}
+
+/// The user row that opens a turn.
+fn a_turn_row(uuid: &str, text: &str) -> serde_json::Value {
+    serde_json::json!({
+        "type": "user",
+        "uuid": uuid,
+        "session_id": "s1",
+        "message": {"role": "user", "content": text},
+    })
+}
+
+/// An assistant row that opens no turn of its own.
+fn a_text_row(uuid: &str, text: &str) -> serde_json::Value {
+    serde_json::json!({
+        "type": "assistant",
+        "uuid": uuid,
+        "session_id": "s1",
+        "message": {
+            "id": format!("m-{uuid}"),
+            "role": "assistant",
+            "model": "claude-opus-5",
+            "content": [{"type": "text", "text": text}],
+        },
+    })
+}
+
+/// An assistant row calling a tool, which opens no turn.
+fn a_calling_row(uuid: &str, block: usize) -> serde_json::Value {
+    serde_json::json!({
+        "type": "assistant",
+        "uuid": uuid,
+        "session_id": "s1",
+        "message": {
+            "id": format!("m{block}"),
+            "role": "assistant",
+            "model": "claude-opus-5",
+            "content": [{
+                "type": "tool_use",
+                "id": format!("tu{block}"),
+                "name": "Bash",
+                "input": {"command": "ls"},
+            }],
+        },
+    })
+}
+
+/// The user row carrying a call's result, which opens no turn either.
+fn an_answering_row(uuid: &str, block: usize) -> serde_json::Value {
+    serde_json::json!({
+        "type": "user",
+        "uuid": uuid,
+        "session_id": "s1",
+        "message": {
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": format!("tu{block}"),
+                "content": "ok",
+            }],
+        },
+    })
+}
+
+/// One thinking-token frame: a frame the CLI streams and never writes a row
+/// for, so a copy holding it counts a frame no transcript row carries.
+fn a_tick_frame(uuid: &str) -> serde_json::Value {
+    serde_json::json!({
+        "type": "system",
+        "subtype": "thinking_tokens",
+        "estimated_tokens": 50,
+        "estimated_tokens_delta": 50,
+        "uuid": uuid,
+        "session_id": "s1",
+    })
+}
+
+/// **A walk pages back through a running turn's own head.**
+///
+/// A view attaching mid-turn is handed the window and nothing older, and on a
+/// busy seat that window is a COUNT cut inside the running turn: the frames
+/// between its front and the turn's first message are the turn's older
+/// history, held by the transcript as rows and held by nothing else. This
+/// walks that history: the newest page's cursor, then down the dropped rows
+/// page by page, across the turn's own opening row into the turn before it,
+/// and out at the file's own first row.
+///
+/// **The fixture carries the shape a live window has**: thinking-token frames
+/// interleaved with the turn's rows (the CLI streams them and writes no row),
+/// enough of them that the count cut lands on a tick and the window's first
+/// row sits a frame or two past its front - the numbering the frame-rank span
+/// read could not line up, whose divergence answered the walk `history-end`.
+#[tokio::test]
+async fn a_walk_pages_back_through_a_running_turn_to_its_first_message() {
+    // One finished turn, then a running one: its opening row, then work pairs
+    // with two thinking-token frames before each - [tick, tick, call, result].
+    const BLOCKS: usize = 1_300;
+
+    let (url, fleet, state) = a_server_with_state().await;
+    fleet.start("TestOrg", "proj").expect("a live lead session");
+    let mut rows: Vec<serde_json::Value> = vec![
+        a_turn_row("turn0-user", "turn 0"),
+        a_text_row("turn0-answer", "answer 0"),
+        a_turn_row("running-open", "the running turn"),
+    ];
+    let mut history: Vec<forge_primitives::Message> = rows.iter().map(a_frame).collect();
+    for block in 0..BLOCKS {
+        history.push(a_frame(&a_tick_frame(&format!("t{block}-0"))));
+        history.push(a_frame(&a_tick_frame(&format!("t{block}-1"))));
+        let call = a_calling_row(&format!("call{block}"), block);
+        let result = an_answering_row(&format!("result{block}"), block);
+        history.push(a_frame(&call));
+        history.push(a_frame(&result));
+        rows.push(call);
+        rows.push(result);
+    }
+
+    // The transcript holds the conversation's ROWS and none of its ticks, and
+    // the seat holds the conversation the wire carried - the state a replay of
+    // a busy seat's own frames leaves.
+    let rows_json: Vec<String> = rows.iter().map(serde_json::Value::to_string).collect();
+    let lines: Vec<&str> = rows_json.iter().map(String::as_str).collect();
+    fleet.seed_transcript("TestOrg", "proj", "lead", &lines).expect("the session's transcript");
+    state
+        .conversations
+        .insert(&lead_seat(), forge_server::transport::conversation::Conversation::new(history, 0));
+
+    // **Preconditions, and they are the live shape**: the window is the newest
+    // 4,000 frames, its front is a thinking-token frame (the count cut landed
+    // on one), and the first row it carries sits two frames above that front.
+    let held = state.conversations.get(&lead_seat()).expect("the seat is held");
+    {
+        let held = held.lock();
+        assert_eq!(held.dropped(), 1_203, "precondition: the window dropped the head of the turn");
+        assert!(
+            matches!(held.messages()[0], forge_primitives::Message::ThinkingTokens { .. }),
+            "precondition: the count cut landed on a thinking-token frame",
+        );
+        assert!(
+            !forge_workspace::has_a_transcript_row(&held.messages()[0]),
+            "precondition: which is a frame no transcript row carries",
+        );
+        assert_eq!(held.messages().len(), 4_000, "precondition: the window is the cap's frames");
+    }
+
+    let mut socket = connect(&url).await;
+
+    // The newest page, as a client's refresh asks for it: the window as one
+    // turn, whose cursor is the window's own front.
+    send(&mut socket, ClientMessage::More { conversation: lead_seat(), before: None, turns: 20 })
+        .await;
+    let ServerMessage::Page { turns: newest, cursor, .. } = page_answer(&mut socket).await else {
+        panic!("the newest page is answered");
+    };
+    assert_eq!(newest.len(), 1, "the window is one running turn");
+    assert_eq!(newest[0].messages.len(), 4_000, "carrying every frame the seat holds");
+    assert_eq!(cursor.as_deref(), Some("1203"), "and the cursor above it names the window's front");
+
+    // The walk: every page below the floor, taken with the cursor the page
+    // before it handed back, until a page ends the history.
+    let mut asked = cursor;
+    let mut served: Vec<Vec<String>> = Vec::new();
+    while let Some(cursor) = asked.clone() {
+        send(
+            &mut socket,
+            ClientMessage::More {
+                conversation: lead_seat(),
+                before: Some(cursor.clone()),
+                turns: 4,
+            },
+        )
+        .await;
+        let answer = page_answer(&mut socket).await;
+        if let ServerMessage::Error { what, why, .. } = &answer {
+            panic!("the walk's page below {cursor} was refused: {what}: {why}");
+        }
+        let ServerMessage::Page { turns: page, cursor: next, .. } = answer else {
+            panic!("the walk's page below {cursor} is answered with a page");
+        };
+        assert!(
+            !page.is_empty(),
+            "a page below the floor carries the turn's older rows rather than nothing \
+             (asked with {cursor})",
+        );
+        served.push(
+            page.iter()
+                .flat_map(|turn| turn.messages.iter())
+                .map(|frame| frame["uuid"].as_str().unwrap_or_default().to_owned())
+                .collect(),
+        );
+        assert!(served.len() < 100, "the walk reaches the file's own first row");
+        asked = next;
+    }
+
+    // **Every row below the window's front, once, in conversation order.**
+    // Each page is a run of the conversation's own order, and the pages arrive
+    // newest first - so reading the pages backward and concatenating is the
+    // whole span the window dropped, with nothing skipped and nothing served
+    // twice. That span is the running turn's head, then the turn before it.
+    let mut expected: Vec<String> =
+        vec!["turn0-user".to_owned(), "turn0-answer".to_owned(), "running-open".to_owned()];
+    for block in 0..300 {
+        expected.push(format!("call{block}"));
+        expected.push(format!("result{block}"));
+    }
+    let mut ordered: Vec<String> = Vec::new();
+    for page in served.iter().rev() {
+        ordered.extend(page.iter().cloned());
+    }
+    assert!(served.len() > 1, "the walk chained below the floor rather than ending on one page");
+    assert_eq!(
+        ordered, expected,
+        "the walk serves every row the window dropped, in order, across the running turn's own \
+         opening row into the turn before it",
+    );
+    assert_eq!(asked, None, "and ends at the file's own first row");
 }
 
 /// **A client built before v6 still reaches this server, and this is what a

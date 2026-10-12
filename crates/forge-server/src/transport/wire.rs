@@ -701,8 +701,14 @@ fn resolution_wire(anchor: &ReviewAnchor, files: &[FileContent]) -> ThreadResolu
 /// **The messages, not the units.** How a run of tool calls groups inside a
 /// turn is a drawing decision, so it belongs to whoever draws; what crosses is
 /// the turn's own boundary, and that stays here because the paging contract is
-/// built on it - `more` asks for turns, the cursor is a turn, and a page that
-/// split one would leave a client stitching half a turn to the other half.
+/// built on it - `more` asks for turns, and a page above the window's floor
+/// cuts on them rather than leaving a client to stitch half a turn to half.
+///
+/// **Below that floor a page can carry a stretch inside a turn**, which is
+/// what a running turn's older rows are: a session whose life is one unended
+/// turn has no boundary to cut on, and its rows reach a late-attaching view
+/// only in runs. What a client is owed there is the pair: a page never opens
+/// on a tool result without the call that produced it.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct TurnWire {

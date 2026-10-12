@@ -178,45 +178,37 @@ pub struct ConversationHistory {
 /// A span of a session's transcript, read for a page below the window a
 /// conversation is kept in.
 ///
-/// The frames carry the session's own numbering: [`Self::first`] is the index
-/// the session gives [`Self::messages`]' first frame, so a page cut from the
-/// span continues the numbering the held window's cursors are written in
-/// rather than starting a sequence of its own.
+/// **The rows stand on their own coordinates.** A page below the window's
+/// floor is a running turn's older rows, and the conversation's frame
+/// numbering cannot say where they are: a window whose front is a cut inside a
+/// running turn holds frames the CLI streamed and never wrote, so a numbering
+/// counting them cannot be lined up against the file's rows with arithmetic.
+/// Each row's own byte is the coordinate that needs no numbering, and a page
+/// cut on those carries the byte its oldest row starts at.
 #[derive(Debug, Default)]
 pub struct TranscriptSpan {
-    /// The session-absolute index of [`Self::messages`]' first frame.
-    pub first: usize,
-    /// The frames, in conversation order, each below the index the read was
-    /// asked to end at.
+    /// The rows, in conversation order, each older than the boundary the read
+    /// was asked to end at.
     pub messages: Vec<Message>,
-    /// Whether the read reached the transcript's own first frame, so nothing
+    /// The byte each row of [`Self::messages`] starts at, aligned with it.
+    pub offsets: Vec<u64>,
+    /// Whether the read reached the transcript's own first row, so nothing
     /// sits above this span.
     pub exhausted: bool,
-    /// The byte each frame of [`Self::messages`] starts at, aligned with it,
-    /// so a caller holding a cursor into the span can hand the row below it
-    /// back as a [`TranscriptAnchor`] the next read seeks to.
-    pub offsets: Vec<u64>,
-    /// The session's own index for each frame of [`Self::messages`], aligned
-    /// with it: the rows a transcript holds are not consecutive frames when
-    /// the live stream sent frames the file never wrote, so a page cut here
-    /// needs the number each row carries rather than its position.
-    pub frames: Vec<usize>,
 }
 
 /// Where a transcript read stopped, for the read below it.
 ///
-/// A walk down a transcript hands this back as the next read's anchor: with
+/// A walk down a transcript hands this back as the next read's boundary: with
 /// the byte [`Self::offset`] known the read seeks rather than searches, and
 /// the row id beside it is what says the file is still the one that was read -
-/// a resumed or rewritten transcript carries a different row there, which
-/// sends the read back to searching for the anchor by id, and to the empty
+/// a resumed or rewritten transcript carries a different row at that byte,
+/// which sends the read back to searching for the row by id, and to the empty
 /// page when nothing lines up either way.
 #[derive(Debug, Default, Clone)]
 pub struct TranscriptAnchor {
-    /// The id of the row a read's window ends at.
+    /// The id of the row a read's window ends at, when the row carries one.
     pub row: String,
-    /// The session-absolute index that row sits at.
-    pub index: usize,
     /// The byte that row starts at, when a read has seen it.
     pub offset: Option<u64>,
 }
