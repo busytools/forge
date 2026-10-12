@@ -644,14 +644,20 @@ fn session_transcript(
 }
 
 /// How many bytes of a transcript one paging pass reads before growing, and
-/// how far it may grow before the transcript stops answering pages.
+/// how wide a single window it takes may be.
 ///
 /// **A page below the window's floor lies near the file's END**: the floor is
 /// the oldest frame the window still holds, so the turns above it are the
 /// newest rows of a file the session is still writing - some 4,000 rows, a
 /// few hundred KB at the rows a transcript writes. The step is what a cold
-/// session pays for its first paging request, and the cap is where the
-/// transcript is treated as unreadable for paging rather than read whole.
+/// session pays for its first paging request.
+///
+/// **The cap bounds one WINDOW, not the pass.** A read that comes up short
+/// doubles and reads again, so a walk that reaches the cap has read the
+/// windows under it as well - up to about twice this, and the anchor search
+/// pays the same. What is capped is therefore how far a single window reaches,
+/// and past it the transcript is treated as unreadable for paging rather than
+/// read whole.
 pub const SPAN_STEP_BYTES: u64 = 1024 * 1024;
 pub const SPAN_CAP_BYTES: u64 = 64 * 1024 * 1024;
 
@@ -665,65 +671,79 @@ pub const SPAN_CAP_BYTES: u64 = 64 * 1024 * 1024;
 /// converting a window's rows for turns nothing reads.
 pub const SPAN_ROWS_PER_TURN: usize = 150;
 
-/// Read the span of `session_id`'s transcript that ends below `ends_before`,
-/// located against a row the caller's own conversation holds.
+/// How many rows past a page's own count a cut may step back over, so that it
+/// does not open on a result without its call.
 ///
-/// **Bounded by construction.** The read takes a tail window of the file,
-/// grows it only while the span it needs is not inside the window it took,
-/// and never reads past [`SPAN_CAP_BYTES`]; what it returns is the newest
-/// `rows_wanted` rows of that span, so a window's rows are converted for a
-/// page and not for the window. `anchors` are rows the caller's own
-/// conversation still holds - the id a transcript row names each by, the
-/// session-absolute index it sits at, and, once a read has seen one, the byte
-/// it starts at: together they turn a window's rows into the session's
-/// numbering without a walk from the file's start, which on a long transcript
-/// is the whole file. The first anchor the file carries is the one used, so a
-/// caller that cannot tell which of its rows the file has - a frame forge
-/// forged is in no transcript - can hand over several.
+/// A call and its results are adjacent rows in every transcript measured, so
+/// one step is the ordinary case; the room is a short run of them - parallel
+/// calls written as several result frames - and a run longer than this ends
+/// the step rather than growing the page without bound.
+const ROWS_PAST_CUT: usize = 8;
+
+/// Whether a row carries a tool result: the kind of row a cut may not land on,
+/// because the call it answers sits just above it in the page below.
+fn carries_a_result(row: &SessionMessage) -> bool {
+    row.kind == forge_primitives::SessionMessageKind::User
+        && row.message.get("content").and_then(Value::as_array).is_some_and(|blocks| {
+            blocks
+                .iter()
+                .any(|block| block.get("type").and_then(Value::as_str) == Some("tool_result"))
+        })
+}
+
+/// Read the rows of `session_id`'s transcript that sit strictly before
+/// `below`, newest first, up to `rows_wanted` of them.
 ///
-/// `None` when the transcript cannot answer for this session: no file, none
-/// of the anchors in it, an anchor whose numbering does not reach back to the
-/// file's own first frame, or a span that would need more than the cap.
-pub fn read_span(
+/// **Row-level, on the file's own coordinates.** A page below a window's floor
+/// is a running turn's older rows, and the conversation's frame numbering
+/// cannot say where they are: a window whose front is a count cut inside a
+/// running turn holds frames the CLI streamed and never wrote - thinking-token
+/// frames among them - so a numbering that counted those frames cannot be
+/// lined up against the file's rows with arithmetic. A row's own byte needs no
+/// numbering, so the read works in bytes from an anchor: the row the page
+/// above handed back as its cursor, or the file's own end when the walk's
+/// first ask names none.
+///
+/// **Bounded by construction.** The read takes a window of the file, grows it
+/// only while the rows it needs are not inside the window it took, and never
+/// reads past [`SPAN_CAP_BYTES`]. `None` when the transcript cannot answer for
+/// this session: no file, an anchor the file does not carry, an anchor
+/// further from the file's end than the cap reaches, or a window that could
+/// not be read. The caller answers all of them as the end of the history,
+/// which is what a page this read cannot vouch for deserves.
+pub fn read_rows(
     config_dir: &Path,
     session_id: &str,
     directory: Option<&str>,
-    anchors: &[forge_primitives::TranscriptAnchor],
-    cursor: usize,
-    rowless: &[usize],
+    below: Option<&forge_primitives::TranscriptAnchor>,
     rows_wanted: usize,
 ) -> Option<forge_primitives::TranscriptSpan> {
-    read_span_with(
+    read_rows_with(
         config_dir,
         session_id,
         directory,
-        anchors,
-        cursor,
-        rowless,
+        below,
         rows_wanted,
         SPAN_STEP_BYTES,
         SPAN_CAP_BYTES,
     )
 }
 
-/// [`read_span`] with the page's own budget in the caller's hands, so the
-/// growth, the cap and the returned rows can be driven by a test without a
+/// [`read_rows`] with the page's own budget in the caller's hands, so the
+/// growth, the cap and the search bound can be driven by a test without a
 /// transcript of the size the production budget is written for.
-fn read_span_with(
+fn read_rows_with(
     config_dir: &Path,
     session_id: &str,
     directory: Option<&str>,
-    anchors: &[forge_primitives::TranscriptAnchor],
-    cursor: usize,
-    rowless: &[usize],
+    below: Option<&forge_primitives::TranscriptAnchor>,
     rows_wanted: usize,
     step: u64,
     cap: u64,
 ) -> Option<forge_primitives::TranscriptSpan> {
-    let first = anchors.iter().find(|at| !at.row.is_empty())?;
-    // A cursor at the session's first frame has nothing above it: the page
-    // above the beginning is the empty one.
-    if !is_valid_uuid(session_id) || cursor == 0 {
+    // The id names the file, so anything but a uuid is a path this refuses
+    // rather than resolves.
+    if !is_valid_uuid(session_id) {
         return None;
     }
     let path = session_transcript(config_dir, session_id, directory)?;
@@ -744,16 +764,25 @@ fn read_span_with(
     if len == 0 {
         return None;
     }
-    let ceiling = len.min(cap);
+    // **Where the read ends.** A named anchor places the window's end at its
+    // own row, so the rows read are the ones strictly older than it; no
+    // anchor means the file's end, whose rows are the newest the session
+    // wrote - the walk's first ask on a window that holds no row to name.
+    let end = match below {
+        None => len,
+        Some(anchor) => resolve_anchor(&mut file, session_id, len, anchor, step, cap)?,
+    };
+
+    // **The rows, walked backward from the end.** A window holds the rows just
+    // below the byte it ends at; one that comes up short grows rather than
+    // walking the file from its start, which on a long transcript is the whole
+    // file. The windows meet on row boundaries, so no row is read twice.
+    let mut kept: Vec<(SessionMessage, u64)> = Vec::new();
     let mut take = step.min(len).max(1);
-    // **Where the window ends.** A walk down a transcript hands the row its
-    // last page stopped at back as the anchor, and when that anchor carries
-    // the byte it sits at, the read seeks rather than searches: the window
-    // ends there and its rows are the ones just below. The file's own end is
-    // where a walk's first page, or a walk whose anchor moved, reads from.
-    let mut end = first.offset.filter(|at| *at <= len);
+    let mut at = end;
+    let mut reached_start = false;
+    let mut file_first: Option<u64> = None;
     loop {
-        let at = end.unwrap_or(len);
         let window = match window_ending(&mut file, at, take) {
             Ok(window) => window,
             Err(err) => {
@@ -767,60 +796,120 @@ fn read_span_with(
                 return None;
             }
         };
-        let rows = window_rows(&window);
-        let read = match end {
-            // **The verify, and the invalidation path.** The row at the
-            // anchored byte is read and named: a transcript that was resumed
-            // or rewritten carries something else there, and the read then
-            // searches for the anchor by id from the file's end - which is
-            // also what answers when that search cannot line up.
-            Some(_) if row_at(&mut file, at).is_some_and(|row| row.uuid == first.row) => {
-                anchored_span(&rows, first.index, rowless, cursor, rows_wanted, window.from)
-            }
-            Some(_) => {
-                end = None;
-                continue;
-            }
-            None => locating_span(&rows, anchors, rowless, cursor, rows_wanted, window.from),
-        };
-        match read {
-            SpanRead::Found { rows, frames, exhausted } => {
-                let (rows, offsets) = rows.into_iter().unzip();
-                return Some(forge_primitives::TranscriptSpan {
-                    first: frames.first().copied().unwrap_or_default(),
-                    messages: messages_from_rows(rows, session_id),
-                    exhausted,
-                    offsets,
-                    frames,
-                });
-            }
-            // The span is not inside this window: take a bigger one, until
-            // the cap says this transcript is not answering pages.
-            SpanRead::Grow if take < ceiling => take = (take * 2).min(ceiling),
-            SpanRead::Grow => {
-                tracing::warn!(
-                    event_name = "span_read_cap_reached",
-                    %session_id,
-                    read = take,
-                    len,
-                    cap,
-                    "the span is not inside the window read and the cap is reached; the page is \
-                     answered empty",
-                );
-                return None;
-            }
-            SpanRead::Diverged(why) => {
-                tracing::warn!(
-                    event_name = "span_read_diverged",
-                    %session_id,
-                    path = %path.display(),
-                    why,
-                    "the transcript does not line up with the session's own conversation; the \
-                     page is answered empty",
-                );
-                return None;
-            }
+        let rows: Vec<(SessionMessage, u64)> =
+            window_rows(&window).into_iter().filter(|(_, offset)| *offset < at).collect();
+        let next_at = rows.first().map(|(_, offset)| *offset);
+        if window.from == 0 {
+            reached_start = true;
+            file_first = next_at;
         }
+        // **The count, plus the room a cut steps over.** A cut may land among
+        // result rows, and the rows it steps past are deferred to the page
+        // below rather than dropped, so a little room past the count is read.
+        let wanted = rows_wanted.saturating_add(ROWS_PAST_CUT);
+        let room = wanted.saturating_sub(kept.len());
+        let mut fresh = rows;
+        if fresh.len() > room {
+            // The ones nearest the boundary: a page is the newest of the older
+            // rows, so what does not fit is left for the page below.
+            fresh = fresh.split_off(fresh.len() - room);
+        }
+        let mut merged = fresh;
+        merged.append(&mut kept);
+        kept = merged;
+        if kept.len() >= rows_wanted || window.from == 0 || take >= cap {
+            break;
+        }
+        take = (take * 2).min(cap);
+        at = next_at.unwrap_or(window.from);
+        if at == 0 {
+            break;
+        }
+    }
+
+    // The page's own count: the room read past it was the cut's, and what the
+    // cut did not need is not served.
+    let over = kept.len().saturating_sub(rows_wanted);
+    kept.drain(..over);
+    // **A page never opens on a result without its call.** The span's oldest
+    // row is where the page below stops, so a cut landing among result rows
+    // would hand the fold a result whose call it does not carry - drawn with
+    // its output nowhere. Those leading result rows are deferred instead: the
+    // page below is cut from the call that produced them, which is older, and
+    // serves them with it. Nothing is dropped - the row already read is simply
+    // the page below's to carry - and a run longer than the room ends the step
+    // rather than shortening the page without bound.
+    let deferred = kept
+        .iter()
+        .position(|(row, _)| !carries_a_result(row))
+        .map_or(0, |at| at.min(ROWS_PAST_CUT));
+    kept.drain(..deferred);
+    // The span runs to the history's start when the read reached the file's
+    // own beginning AND the span's oldest row is the first row it found there:
+    // a window that reached the start and held no row older than the boundary
+    // has nothing left to serve either.
+    let exhausted = reached_start
+        && file_first.is_none_or(|first| kept.first().is_none_or(|(_, offset)| *offset == first));
+
+    let mut messages = Vec::with_capacity(kept.len());
+    let mut offsets = Vec::with_capacity(kept.len());
+    for (row, offset) in kept {
+        // **One row at a time**, so a row the synthesizer cannot decode is
+        // dropped with its own byte rather than shifting every byte after it.
+        if let Some(message) = messages_from_rows(vec![row], session_id).into_iter().next() {
+            messages.push(message);
+            offsets.push(offset);
+        }
+    }
+    Some(forge_primitives::TranscriptSpan { messages, offsets, exhausted })
+}
+
+/// Where a read's window ends for a named anchor: the byte its row starts at,
+/// seeking when the cursor carries a byte and searching from the file's end
+/// when it does not.
+///
+/// `None` when the anchor cannot be placed - a row the file does not carry, or
+/// one further from the end than [`SPAN_CAP_BYTES`] reaches - which the caller
+/// answers as the end of the history.
+fn resolve_anchor(
+    file: &mut fs::File,
+    session_id: &str,
+    len: u64,
+    anchor: &forge_primitives::TranscriptAnchor,
+    step: u64,
+    cap: u64,
+) -> Option<u64> {
+    if let Some(offset) = anchor.offset.filter(|offset| *offset <= len) {
+        // The verify: a resumed or rewritten transcript carries something else
+        // at the byte, and the search below is what answers that.
+        if anchor.row.is_empty() || row_at(file, offset).is_some_and(|row| row.uuid == anchor.row) {
+            return Some(offset);
+        }
+    }
+    if anchor.row.is_empty() {
+        return None;
+    }
+    let mut take = step.min(len).max(1);
+    loop {
+        let window = window_ending(file, len, take).ok()?;
+        if let Some((_, offset)) =
+            window_rows(&window).into_iter().find(|(row, _)| row.uuid == anchor.row)
+        {
+            return Some(offset);
+        }
+        if take >= cap || take >= len {
+            tracing::warn!(
+                event_name = "span_read_anchor_unreached",
+                %session_id,
+                row = %anchor.row,
+                len,
+                cap,
+                "the anchor row is further from the file's end than the cap reaches; the page is \
+                 answered empty",
+            );
+            return None;
+        }
+        take = (take * 2).min(cap);
     }
 }
 
@@ -891,151 +980,6 @@ fn session_row(line: &str) -> Option<SessionMessage> {
     }
     let value = serde_json::from_str::<Value>(line).ok()?;
     transcript_row(&value).map(|(row, _)| row)
-}
-
-/// What a window of a transcript says about the span a page asked for.
-enum SpanRead {
-    Found { rows: Vec<(SessionMessage, u64)>, frames: Vec<usize>, exhausted: bool },
-    Grow,
-    Diverged(&'static str),
-}
-
-/// How many frames that carry no transcript row sit at or below `frame`.
-fn rowless_at_or_below(rowless: &[usize], frame: usize) -> usize {
-    rowless.partition_point(|at| *at <= frame)
-}
-
-/// How many transcript rows sit at or below `frame`: every frame but those
-/// carrying no row.
-fn rows_at_or_below(rowless: &[usize], frame: usize) -> usize {
-    frame + 1 - rowless_at_or_below(rowless, frame)
-}
-
-/// The frame index of the row whose rank among the file's rows is `rank`.
-///
-/// **Exact, and by search rather than by steps.** The map is monotone, so a
-/// binary search converges whatever shape the rowless frames take - a
-/// clustered run matters to an iterated guess and not here. `None` when no
-/// frame carries that rank, which is a rowless position asked for as a row.
-fn frame_of_rank(rowless: &[usize], rank: usize, ceiling: usize) -> Option<usize> {
-    // The rank-th row sits at least `rank - 1` frames in, and no further than
-    // that plus every frame carrying no row.
-    let mut lo = rank.saturating_sub(1);
-    let mut hi = rank.saturating_sub(1).saturating_add(rowless.len()).min(ceiling);
-    while lo < hi {
-        let mid = lo + (hi - lo) / 2;
-        if rows_at_or_below(rowless, mid) < rank {
-            lo = mid + 1;
-        } else {
-            hi = mid;
-        }
-    }
-    (rows_at_or_below(rowless, lo) == rank).then_some(lo)
-}
-
-/// The span a window holds for a page ending below the frame `cursor` names.
-///
-/// **One convention, frames both ways.** The cursor arrives as a frame index
-/// in the session's own numbering and the span's `first` leaves as one, so
-/// what the caller cuts is numbered where its cursors live. What the file
-/// cannot say - which frames carry no row - arrives as `rowless`, the
-/// positions the copy that asked has already counted; without them a row
-/// count would be read as a frame count and the page would step over one row
-/// for each of them.
-///
-/// `at` is the anchor's position among the window's rows: the row itself on
-/// the locating path, and one past the window's end on the anchored one,
-/// whose window stops at that row's byte. `from` is the byte the window
-/// starts at, so only a window that reaches the file's start can say the
-/// span is the history's own beginning.
-fn span_in_window(
-    rows: &[(SessionMessage, u64)],
-    at: usize,
-    anchor: usize,
-    rowless: &[usize],
-    cursor: usize,
-    rows_wanted: usize,
-    from: u64,
-) -> SpanRead {
-    let anchor_rank = rows_at_or_below(rowless, anchor);
-    let Some(above) = anchor_rank.checked_sub(1) else {
-        return SpanRead::Diverged("the anchor sits above the file's own first frame");
-    };
-    // A window that reaches the file's start holds every row above the
-    // anchor, and their count is what the ranks say it is.
-    if from == 0 && above != at {
-        return SpanRead::Diverged("the file's first row is not the session's first");
-    }
-    // The rows strictly below the cursor, and so the rows between the cursor
-    // and the anchor: what the page does not serve.
-    let below_cursor = cursor - rowless_at_or_below(rowless, cursor.saturating_sub(1));
-    let skip = above.saturating_sub(below_cursor);
-    // A window that holds no row strictly below the cursor has nothing to
-    // serve: growing reaches one that does.
-    if skip >= at {
-        return SpanRead::Grow;
-    }
-    let cut = at - skip;
-    let kept = cut.saturating_sub(rows_wanted);
-    // A basis the window does not line up with: the rows above the anchor
-    // cannot account for the rank this asks for.
-    let Some(rank) = anchor_rank.checked_sub(at - kept) else {
-        return SpanRead::Diverged("the rows below the cursor do not line up with the file's own");
-    };
-    let Some(mut frame) = frame_of_rank(rowless, rank, anchor) else {
-        return SpanRead::Diverged("the rows below the cursor do not line up with the file's own");
-    };
-    // Each row's own number, walked up from the first: a frame the transcript
-    // never wrote is stepped over, so the numbers are not the positions.
-    let mut frames = Vec::with_capacity(cut - kept);
-    for _ in kept..cut {
-        frames.push(frame);
-        frame += 1;
-        while rowless_at_or_below(rowless, frame) > rowless_at_or_below(rowless, frame - 1) {
-            frame += 1;
-        }
-    }
-    SpanRead::Found {
-        rows: rows[kept..cut].to_vec(),
-        frames,
-        // The span is the file's own beginning only when the window reached
-        // it and nothing was trimmed off the span's front.
-        exhausted: from == 0 && kept == 0 && rank == 1,
-    }
-}
-
-/// The span a window found by searching for an anchor's own row holds.
-///
-/// The first of the caller's anchors the file carries is the one used: a
-/// frame forge forged carries an id no transcript row has, and a caller that
-/// cannot tell which of its rows the file holds hands over several.
-fn locating_span(
-    rows: &[(SessionMessage, u64)],
-    anchors: &[forge_primitives::TranscriptAnchor],
-    rowless: &[usize],
-    cursor: usize,
-    rows_wanted: usize,
-    from: u64,
-) -> SpanRead {
-    let Some((at, anchor)) = anchors.iter().find_map(|anchor| {
-        rows.iter().position(|(row, _)| row.uuid == anchor.row).map(|at| (at, anchor))
-    }) else {
-        return SpanRead::Grow;
-    };
-    span_in_window(rows, at, anchor.index, rowless, cursor, rows_wanted, from)
-}
-
-/// The span a window ending at an anchor's own byte holds, which holds none
-/// of that row: the anchor sits one past the window's end.
-fn anchored_span(
-    rows: &[(SessionMessage, u64)],
-    anchor: usize,
-    rowless: &[usize],
-    cursor: usize,
-    rows_wanted: usize,
-    from: u64,
-) -> SpanRead {
-    span_in_window(rows, rows.len(), anchor, rowless, cursor, rows_wanted, from)
 }
 
 // ---------------------------------------------------------------------------
@@ -2379,9 +2323,9 @@ mod tests {
     }
 
     /// An anchor on a row the file carries, without a byte: what a caller
-    /// holding the row but not the position reads by.
-    fn anchored(row: &str, index: usize) -> Vec<forge_primitives::TranscriptAnchor> {
-        vec![forge_primitives::TranscriptAnchor { row: row.to_owned(), index, offset: None }]
+    /// holding the row but not its position reads by.
+    fn anchored(row: &str) -> forge_primitives::TranscriptAnchor {
+        forge_primitives::TranscriptAnchor { row: row.to_owned(), offset: None }
     }
 
     /// The words a frame carries, for a span whose rows are its turns' names.
@@ -2399,14 +2343,65 @@ mod tests {
             .unwrap_or_default()
     }
 
-    /// **A resumed read seeks where a locating read searches.** Handed the
-    /// byte its anchor row starts at, the read takes the window ending there
-    /// and needs nothing above it; without it, the read has to find the row,
-    /// which a window too small to reach it cannot do.
+    /// The read's rows, in the words the file wrote them with.
+    fn words(span: &forge_primitives::TranscriptSpan) -> Vec<String> {
+        span.messages.iter().map(said).collect()
+    }
+
+    /// **A page reads the rows just below its anchor, down to the file's
+    /// start.** The anchor names the row the page above stopped at; the rows
+    /// the read serves are the ones strictly older than it, and the file's own
+    /// first row is where the span says the history ends.
     #[test]
-    fn a_span_read_seeks_when_it_is_given_the_rows_byte() {
+    fn a_row_read_serves_the_rows_below_its_anchor() {
+        let config = tempfile::tempdir().unwrap();
+        let cwd = "/Users/me/Projects/playground";
+        let dir = project_dir_for(config.path(), cwd);
+        fs::create_dir_all(&dir).unwrap();
+        let session = "550e8400-e29b-41d4-a716-446655440000";
+        write_session_jsonl(&dir, session, &a_transcript(40));
+
+        let span = read_rows(config.path(), session, Some(cwd), Some(&anchored("u30")), 100)
+            .expect("the transcript has rows below the anchor");
+
+        assert!(span.exhausted, "the read reached the file's own first row");
+        assert_eq!(span.messages.len(), 30, "every row below the anchor, and none above");
+        assert_eq!(span.messages.len(), span.offsets.len(), "each row with the byte it starts at");
+        let expected: Vec<String> = (0..30).map(|at| format!("turn {at}")).collect();
+        assert_eq!(words(&span), expected, "in conversation order");
+
+        // A page asks for its own budget of rows and gets the NEWEST of the
+        // older rows: what does not fit is left for the page below it.
+        let trimmed = read_rows(config.path(), session, Some(cwd), Some(&anchored("u30")), 5)
+            .expect("a span the budget trims");
+        assert_eq!(
+            words(&trimmed),
+            (25..30).map(|at| format!("turn {at}")).collect::<Vec<_>>(),
+            "the page's own rows and no more, taken nearest the anchor",
+        );
+        assert!(!trimmed.exhausted, "which is not the file's start");
+
+        // And the walk's first ask, on a window that holds no row to name: the
+        // file's own newest rows.
+        let newest = read_rows(config.path(), session, Some(cwd), None, 5)
+            .expect("the file answers with its newest rows");
+        assert_eq!(
+            words(&newest),
+            (35..40).map(|at| format!("turn {at}")).collect::<Vec<_>>(),
+            "the newest rows the session wrote",
+        );
+        assert!(!newest.exhausted, "with more above them");
+    }
+
+    /// **A chained read seeks where a locating read searches.** Given the byte
+    /// its anchor row starts at, the read takes the window ending there; given
+    /// only the id, it has to find the row, which a window too small to reach
+    /// it cannot do - and the walk's first page is the one that pays for the
+    /// search.
+    #[test]
+    fn a_row_read_seeks_when_its_anchor_carries_a_byte() {
         // A cap of a couple of hundred bytes: two rows or so, which is not
-        // where the anchor 29 rows back is.
+        // where an anchor twenty rows back is.
         const SMALL: u64 = 200;
         let config = tempfile::tempdir().unwrap();
         let cwd = "/Users/me/Projects/playground";
@@ -2415,25 +2410,33 @@ mod tests {
         let session = "550e8400-e29b-41d4-a716-446655440000";
         write_session_jsonl(&dir, session, &a_transcript(40));
 
-        let located =
-            read_span(config.path(), session, Some(cwd), &anchored("u30", 30), 30, &[], 100)
-                .expect("the first read locates the anchor");
-        let last = located.messages.len() - 1;
-        let resume = vec![forge_primitives::TranscriptAnchor {
-            row: "u29".to_owned(),
-            index: located.first + last,
-            offset: located.offsets.get(last).copied(),
-        }];
-        assert_eq!(resume[0].index, 29, "precondition: the anchor is the span's own last row");
+        let located = read_rows(config.path(), session, Some(cwd), Some(&anchored("u30")), 100)
+            .expect("the first read locates the anchor");
+        let oldest = located.offsets.first().copied().expect("the span's oldest row byte");
+        let oldest_row = said(located.messages.first().expect("a first"));
+        assert_eq!(oldest_row, "turn 0", "precondition: the span ran to the file's first row");
 
+        // The page below the span's own start: the next read is handed that
+        // row's byte, and reads below it - which is nothing, because the span
+        // held the file's start.
+        let resume =
+            forge_primitives::TranscriptAnchor { row: "u0".to_owned(), offset: Some(oldest) };
+        let chained =
+            read_rows_with(config.path(), session, Some(cwd), Some(&resume), 100, SMALL, SMALL)
+                .expect("the resumed read seeks to the row's byte");
+        assert!(chained.messages.is_empty(), "nothing sits below the file's first row");
+        assert!(chained.exhausted, "and the read says so");
+
+        // The same anchor without its byte cannot be reached inside the cap:
+        // the search starts at the file's end and this cap does not reach
+        // twenty rows back, so the read answers nothing rather than a page it
+        // cannot vouch for.
         assert!(
-            read_span_with(
+            read_rows_with(
                 config.path(),
                 session,
                 Some(cwd),
-                &anchored("u29", 29),
-                29,
-                &[],
+                Some(&anchored("u0")),
                 100,
                 SMALL,
                 SMALL,
@@ -2441,24 +2444,133 @@ mod tests {
             .is_none(),
             "a locating read whose window cannot reach its anchor answers nothing",
         );
-        let resumed =
-            read_span_with(config.path(), session, Some(cwd), &resume, 29, &[], 100, SMALL, SMALL)
-                .expect("the resumed read seeks to the row and reads the rows just below it");
-        assert!(resumed.first < 29, "the span is below the anchor");
+
+        // And a chained read with a byte serves the rows just below it with no
+        // search at all: under the same unreachably small cap, the read seeks
+        // rather than searches and answers a short page with a cursor instead
+        // of nothing.
+        let chained = read_rows_with(
+            config.path(),
+            session,
+            Some(cwd),
+            Some(&forge_primitives::TranscriptAnchor {
+                row: "u20".to_owned(),
+                offset: located.offsets.get(20).copied(),
+            }),
+            100,
+            SMALL,
+            SMALL,
+        )
+        .expect("the chained read seeks to the row's byte");
+        assert!(!chained.messages.is_empty(), "and answers the rows the byte reaches");
         assert_eq!(
-            said(resumed.messages.last().expect("a last")),
-            "turn 28",
-            "and its newest row is the one just under the anchor",
+            said(chained.messages.last().expect("a last")),
+            "turn 19",
+            "the newest row below the anchor",
+        );
+        assert!(!chained.exhausted, "with the file's start still above it");
+    }
+
+    /// A transcript of `pairs` tool calls, each an assistant row calling and
+    /// the user row carrying its result.
+    fn a_called_transcript(pairs: usize) -> String {
+        use std::fmt::Write as _;
+        let mut out = String::new();
+        for at in 0..pairs {
+            let _ = writeln!(
+                out,
+                "{{\"type\":\"assistant\",\"uuid\":\"call{at}\",\"session_id\":\"s1\",\
+                 \"message\":{{\"id\":\"m{at}\",\"role\":\"assistant\",\"model\":\"claude-opus-5\",\
+                 \"content\":[{{\"type\":\"tool_use\",\
+                 \"id\":\"tu{at}\",\"name\":\"Bash\",\"input\":{{\"command\":\"ls\"}}}}]}}}}"
+            );
+            let _ = writeln!(
+                out,
+                "{{\"type\":\"user\",\"uuid\":\"result{at}\",\"session_id\":\"s1\",\
+                 \"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\
+                 \"tool_use_id\":\"tu{at}\",\"content\":\"ok\"}}]}}}}"
+            );
+        }
+        out
+    }
+
+    /// The ids of a span's rows, for a transcript whose rows each carry one.
+    fn ids(span: &forge_primitives::TranscriptSpan) -> Vec<String> {
+        span.messages
+            .iter()
+            .map(|message| match message {
+                forge_primitives::Message::Assistant { uuid: Some(uuid), .. }
+                | forge_primitives::Message::User { uuid: Some(uuid), .. }
+                | forge_primitives::Message::StopHookSummary { uuid, .. }
+                | forge_primitives::Message::CompactBoundary { uuid, .. } => uuid.clone(),
+                other => panic!("every row of this transcript carries an id: {other:?}"),
+            })
+            .collect()
+    }
+
+    /// **A page never opens on a result without its call.** The rows a page
+    /// keeps are the newest of the older rows, so a cut can land among result
+    /// rows - and those are deferred to the page below, which is cut from the
+    /// call that produced them. Nothing is dropped: the result the cut stepped
+    /// past is carried with its call.
+    #[test]
+    fn a_row_read_defers_leading_results_to_the_page_below() {
+        let config = tempfile::tempdir().unwrap();
+        let cwd = "/Users/me/Projects/playground";
+        let dir = project_dir_for(config.path(), cwd);
+        fs::create_dir_all(&dir).unwrap();
+        let session = "550e8400-e29b-41d4-a716-446655440000";
+        write_session_jsonl(&dir, session, &a_called_transcript(20));
+
+        // Three rows below the anchor land mid-pair, and the cut's room reaches
+        // past that: the page opens on a CALL - the leading result rows are
+        // deferred - and closes on the newest pair below the anchor.
+        let span = read_rows(config.path(), session, Some(cwd), Some(&anchored("call10")), 3)
+            .expect("a span below the anchor");
+        assert_eq!(
+            ids(&span),
+            vec!["call9", "result9"],
+            "the page opens on the call the cut stepped back to, rather than on a result without \
+             its call",
+        );
+
+        // **The walk down, page after page.** Every page opens on a call, and
+        // together they serve every row below the anchor exactly once, in
+        // order - the rows a cut stepped past are the page below's newest.
+        let mut seen: Vec<String> = Vec::new();
+        let mut anchor = Some(anchored("call10"));
+        let mut pages = 0_usize;
+        while let Some(at) = anchor {
+            let span = read_rows(config.path(), session, Some(cwd), Some(&at), 3).expect("a page");
+            let page = ids(&span);
+            assert!(
+                page.first().is_some_and(|id| id.starts_with("call")),
+                "every page below the floor opens on a call, never on a bare result: {page:?}",
+            );
+            assert!(page.len() <= 3, "and carries the rows it was asked for: {page:?}");
+            seen.extend(page.clone());
+            pages += 1;
+            assert!(pages < 40, "the walk reaches the file's first row");
+            anchor = (!span.exhausted).then(|| forge_primitives::TranscriptAnchor {
+                row: page[0].clone(),
+                offset: span.offsets.first().copied(),
+            });
+        }
+        let expected: Vec<String> =
+            (0..10).rev().flat_map(|at| [format!("call{at}"), format!("result{at}")]).collect();
+        assert_eq!(
+            seen, expected,
+            "the whole span below the anchor, once each, newest page first, with every result \
+             served beside the call that produced it",
         );
     }
 
-    /// **A stale byte does not answer with a stale span.** The anchor's byte
+    /// **A stale byte does not answer with a stale page.** The anchor's byte
     /// is verified before it is believed: a transcript rewritten under a walk
-    /// carries another row there, and the read falls back to searching for the
-    /// anchor by id - which is the read a caller with no byte at all gets, so
-    /// the two must answer alike.
+    /// carries another row at that byte, and the read falls back to searching
+    /// for the anchor by id - so both routes answer the rows the id names.
     #[test]
-    fn a_span_read_falls_back_when_the_anchors_byte_moved() {
+    fn a_row_read_falls_back_when_the_anchors_byte_moved() {
         let config = tempfile::tempdir().unwrap();
         let cwd = "/Users/me/Projects/playground";
         let dir = project_dir_for(config.path(), cwd);
@@ -2466,16 +2578,14 @@ mod tests {
         let session = "550e8400-e29b-41d4-a716-446655440000";
         write_session_jsonl(&dir, session, &a_transcript(40));
 
-        let located =
-            read_span(config.path(), session, Some(cwd), &anchored("u30", 30), 30, &[], 100)
-                .expect("the first read locates the anchor");
+        let located = read_rows(config.path(), session, Some(cwd), Some(&anchored("u30")), 100)
+            .expect("the first read locates the anchor");
         let last = located.messages.len() - 1;
-        let resume = vec![forge_primitives::TranscriptAnchor {
+        let resume = forge_primitives::TranscriptAnchor {
             row: "u29".to_owned(),
-            index: located.first + last,
             offset: located.offsets.get(last).copied(),
-        }];
-        assert!(resume[0].offset.is_some(), "precondition: the span gave the row its byte");
+        };
+        assert!(resume.offset.is_some(), "precondition: the span gave the row its byte");
 
         // A row prepended: every byte below it moved, so the anchored byte no
         // longer holds the row it was read for.
@@ -2486,47 +2596,15 @@ mod tests {
         );
         write_session_jsonl(&dir, session, &prepended);
 
-        let stale =
-            read_span_with(config.path(), session, Some(cwd), &resume, 29, &[], 100, 4096, 4096);
-        let located_again = read_span_with(
-            config.path(),
-            session,
-            Some(cwd),
-            &anchored("u29", 29),
-            29,
-            &[],
-            100,
-            4096,
-            4096,
-        );
+        let stale = read_rows(config.path(), session, Some(cwd), Some(&resume), 100);
+        let located_again =
+            read_rows(config.path(), session, Some(cwd), Some(&anchored("u29")), 100);
         assert_eq!(
-            stale.map(|span| span.messages.len()),
-            located_again.map(|span| span.messages.len()),
-            "a stale byte answers exactly as the read that never had one: this file was \
-             rewritten under the walk, so the anchor's row sits at another index and both refuse \
-             it rather than serving rows the numbering does not name",
+            stale.map(|span| words(&span)),
+            located_again.map(|span| words(&span)),
+            "a stale byte answers exactly as the read that never had one: the anchor's row is \
+             found again by its id, so the page below it is the page below it",
         );
-    }
-
-    /// **The two maps are inverses, clustered or alternating.** The frame of a
-    /// rank and the rank of a frame agree for every row whatever shape the
-    /// frames with no row take; a contiguous run of them is the case an
-    /// iterated guess misses and a search does not.
-    #[test]
-    fn the_row_and_frame_maps_are_inverses() {
-        for rowless in [vec![1, 3, 5, 7, 9, 11], vec![4, 5, 6, 7, 8, 9, 20, 21], vec![0, 1, 2]] {
-            for frame in 0..40_usize {
-                if rowless.contains(&frame) {
-                    continue;
-                }
-                let rank = rows_at_or_below(&rowless, frame);
-                assert_eq!(
-                    frame_of_rank(&rowless, rank, 39),
-                    Some(frame),
-                    "the frame of that row's rank, over {rowless:?}",
-                );
-            }
-        }
     }
 
     /// **A sub-agent's frame has no transcript row.** The file's rule drops
@@ -2548,10 +2626,10 @@ mod tests {
     }
 
     /// The one row rule's forks reach a span: a queued prompt's attachment row
-    /// is hoisted into the block a view reads it as, and a hook summary is the
+    /// is hoisted into the block a view reads it as, and a boundary row is the
     /// frame it is - not skipped, and not flattened into something else.
     #[test]
-    fn a_span_read_types_the_rows_the_conversion_has_forks_for() {
+    fn a_row_read_types_the_rows_the_conversion_has_forks_for() {
         let config = tempfile::tempdir().unwrap();
         let cwd = "/Users/me/Projects/playground";
         let dir = project_dir_for(config.path(), cwd);
@@ -2570,10 +2648,10 @@ mod tests {
         );
         write_session_jsonl(&dir, session, &body);
 
-        let span = read_span(config.path(), session, Some(cwd), &anchored("u2", 3), 3, &[], 100)
+        let span = read_rows(config.path(), session, Some(cwd), Some(&anchored("u2")), 100)
             .expect("a span over the forks");
 
-        assert_eq!(span.first, 0, "every row the read kept is below the anchor");
+        assert!(span.exhausted, "every row the read kept is below the anchor");
         assert_eq!(span.messages.len(), 3, "the attachment's row is a frame, not a skip");
         assert!(
             matches!(
@@ -2591,102 +2669,12 @@ mod tests {
         );
     }
 
-    /// **A copy whose basis the file does not have is not answered.** When a
-    /// window reaches the file's start, the rows above the anchor are counted
-    /// and the ranks must agree with them: a copy that counted frames with no
-    /// row where the file has none describes a numbering this transcript
-    /// cannot be numbered in, and the page is answered empty rather than cut
-    /// from rows that do not line up.
+    /// **The read is a window, not the file.** The rows are found in a tail
+    /// window, and it grows only while the rows asked for are not inside it,
+    /// so the transcript's older megabytes are not read for a page that lands
+    /// inside the first window.
     #[test]
-    fn a_span_read_refuses_a_basis_the_file_does_not_have() {
-        let config = tempfile::tempdir().unwrap();
-        let cwd = "/Users/me/Projects/playground";
-        let dir = project_dir_for(config.path(), cwd);
-        fs::create_dir_all(&dir).unwrap();
-        let session = "550e8400-e29b-41d4-a716-446655440000";
-        write_session_jsonl(&dir, session, &a_transcript(4));
-
-        // The anchor's own index, as the copy counts it, is five: four rows
-        // above a first frame, and one more frame the file does not have. The
-        // ranks and the rows above the anchor disagree, and the read refuses
-        // - where without that check it would serve rows the copy's numbering
-        // gives frames [1, 2], which are not theirs.
-        assert!(
-            read_span(config.path(), session, Some(cwd), &anchored("u3", 5), 3, &[5], 100)
-                .is_none(),
-            "a copy whose counted frames the file does not have answers nothing",
-        );
-        assert!(
-            read_span(config.path(), session, Some(cwd), &anchored("u3", 3), 3, &[], 100).is_some(),
-            "while the same read over the file's own numbering answers the span",
-        );
-    }
-
-    /// **A window that begins on the row just below the cursor grows.** Its
-    /// rows are all at or above the cursor, so it holds nothing to serve - and
-    /// answering that as an empty span would hand the client a cursor it
-    /// cannot use, ending the history where it merely stopped. The window
-    /// that holds the row below the cursor is one step away.
-    #[test]
-    fn a_span_read_grows_when_the_window_begins_below_the_cursor() {
-        let config = tempfile::tempdir().unwrap();
-        let cwd = "/Users/me/Projects/playground";
-        let dir = project_dir_for(config.path(), cwd);
-        fs::create_dir_all(&dir).unwrap();
-        let session = "550e8400-e29b-41d4-a716-446655440000";
-        let body = a_transcript(40);
-        write_session_jsonl(&dir, session, &body);
-        let len = body.len() as u64;
-        // The window begins exactly where the tenth row does: its first byte
-        // is that row's, and the anchor thirty rows in sits twenty rows along
-        // it - the same count as the rows between the cursor and the anchor.
-        let step = len - a_transcript(10).len() as u64;
-
-        let span = read_span_with(
-            config.path(),
-            session,
-            Some(cwd),
-            &anchored("u30", 30),
-            10,
-            &[],
-            100,
-            step,
-            len,
-        )
-        .expect("the read grows to a window that holds the rows below the cursor");
-
-        assert!(!span.messages.is_empty(), "an empty span here would end the walk");
-        assert_eq!(span.first, 0, "the span is the rows the cursor asked for");
-        assert_eq!(span.messages.len(), 10, "every row below the cursor, none above it");
-        assert_eq!(said(span.messages.last().expect("a last")), "turn 9");
-    }
-
-    /// The span a page below the window asks for: every row below the cursor,
-    /// in the session's own numbering, with the caller's anchor turning the
-    /// window's rows into that numbering.
-    #[test]
-    fn a_span_read_serves_the_rows_below_the_cursor() {
-        let config = tempfile::tempdir().unwrap();
-        let cwd = "/Users/me/Projects/playground";
-        let dir = project_dir_for(config.path(), cwd);
-        fs::create_dir_all(&dir).unwrap();
-        let session = "550e8400-e29b-41d4-a716-446655440000";
-        write_session_jsonl(&dir, session, &a_transcript(40));
-
-        let span = read_span(config.path(), session, Some(cwd), &anchored("u30", 30), 30, &[], 100)
-            .expect("the transcript has a span below the cursor");
-
-        assert_eq!(span.first, 0, "the read reached the transcript's first frame");
-        assert!(span.exhausted, "and says nothing sits above it");
-        assert_eq!(span.messages.len(), 30, "every frame below the cursor, and none above");
-    }
-
-    /// **The read is a window, not the file.** The span is found in a tail
-    /// window and the window grows only while the span is not inside it, so a
-    /// request that lands inside the first window is answered without reading
-    /// the transcript's older megabytes.
-    #[test]
-    fn a_span_read_grows_its_window_only_while_the_span_is_outside_it() {
+    fn a_row_read_grows_its_window_only_while_the_rows_are_outside_it() {
         let config = tempfile::tempdir().unwrap();
         let cwd = "/Users/me/Projects/playground";
         let dir = project_dir_for(config.path(), cwd);
@@ -2696,79 +2684,41 @@ mod tests {
         write_session_jsonl(&dir, session, &body);
         let len = body.len() as u64;
 
-        // A window of a third of the file cannot hold the anchor at row 30, so
-        // the read grows - and it grows to the window that holds the span, not
-        // to the file's start: the span's own start says how far it read.
-        let grown = read_span_with(
-            config.path(),
-            session,
-            Some(cwd),
-            &anchored("u30", 30),
-            30,
-            &[],
-            100,
-            // A tenth of the file holds the last four rows and not the anchor
-            // thirty rows in: the read has to grow to reach it.
-            len / 10,
-            len,
-        )
-        .expect("the read grows to hold the span");
-        assert!(
-            len / 10 < len / 3,
-            "precondition: the step is smaller than the rows between the window and the anchor",
-        );
-        assert!(grown.first > 0, "the read did not walk the transcript from its start");
-        assert!(!grown.exhausted, "and does not claim to have reached it");
+        // A file's worth of cap, a tenth of it a step: the first window holds
+        // the newest rows and not the thirty a page asked for, so the read
+        // grows - and the page it answers is the one budgeted, not the window.
+        let grown = read_rows_with(config.path(), session, Some(cwd), None, 30, len / 10, len)
+            .expect("the read grows to hold the page");
+        assert_eq!(grown.messages.len(), 30, "the page's own rows and no more");
         assert_eq!(
-            said(&grown.messages[0]),
-            format!("turn {}", grown.first),
-            "the span starts where the window did",
+            said(grown.messages.first().expect("a first")),
+            "turn 10",
+            "taken nearest the boundary",
         );
-        assert_eq!(said(grown.messages.last().unwrap()), "turn 29", "and ends at the cursor");
-        assert_eq!(grown.messages.len(), 30 - grown.first, "carrying every frame below it");
+        assert!(!grown.exhausted, "which is not the file's start");
 
-        // And the rows a page asks for are what come back: a read asked for
-        // five rows of a thirty-row span gets the newest five, not the span.
-        let trimmed = read_span_with(
-            config.path(),
-            session,
-            Some(cwd),
-            &anchored("u30", 30),
-            30,
-            &[],
-            5,
-            len,
-            len,
-        )
-        .expect("a span the budget trims");
-        assert_eq!(trimmed.messages.len(), 5, "the page's own rows and no more");
-        assert_eq!(trimmed.first, 25, "and the span starts where the budget reaches");
-        assert!(!trimmed.exhausted, "which is not the transcript's start");
-
-        // And the cap is where the read stops: an anchor deeper than the cap
-        // reaches answers nothing rather than the read walking to it.
+        // And the cap is where the search stops: an anchor further from the
+        // end than the cap reaches answers nothing rather than a long read.
         assert!(
-            read_span_with(
+            read_rows_with(
                 config.path(),
                 session,
                 Some(cwd),
-                &anchored("u5", 5),
-                5,
-                &[],
+                Some(&anchored("u5")),
                 100,
                 len / 5,
                 len / 5,
             )
             .is_none(),
-            "a span the cap cannot reach is not answered by reading further",
+            "an anchor the cap cannot reach is not answered by reading further",
         );
     }
 
-    /// A transcript that no longer lines up with the session's numbering is
-    /// not a transcript a page can be cut from: the read says so rather than
-    /// serving rows at indices the client's cursors do not name.
+    /// An anchor the file does not carry is a page the read cannot vouch for:
+    /// the search finds no such row and the answer is nothing, which the
+    /// caller draws as the end of the history.
     #[test]
-    fn a_span_read_refuses_an_anchor_its_rows_do_not_carry() {
+    fn a_row_read_refuses_an_anchor_the_file_does_not_carry() {
         let config = tempfile::tempdir().unwrap();
         let cwd = "/Users/me/Projects/playground";
         let dir = project_dir_for(config.path(), cwd);
@@ -2777,22 +2727,15 @@ mod tests {
         write_session_jsonl(&dir, session, &a_transcript(40));
 
         assert!(
-            read_span(config.path(), session, Some(cwd), &anchored("nowhere", 30), 30, &[], 100)
-                .is_none(),
-            "an anchor the file does not carry is a file that does not line up",
-        );
-        assert!(
-            read_span(config.path(), session, Some(cwd), &anchored("u30", 300), 30, &[], 100)
-                .is_none(),
-            "and one whose index leaves the file's own first frame above it is the same",
+            read_rows(config.path(), session, Some(cwd), Some(&anchored("nowhere")), 100).is_none(),
+            "an anchor the file does not carry answers nothing",
         );
     }
 
-    /// The cases a page cannot be answered from at all: no file for the
-    /// session, and a cursor at the very start, which is a page with nothing
-    /// above it by definition.
+    /// No file for the session is no page: the read answers nothing rather
+    /// than an empty span a caller could read as the end of a history.
     #[test]
-    fn a_span_read_answers_nothing_without_a_transcript() {
+    fn a_row_read_answers_nothing_without_a_transcript() {
         let config = tempfile::tempdir().unwrap();
         let cwd = "/Users/me/Projects/playground";
         let dir = project_dir_for(config.path(), cwd);
@@ -2800,13 +2743,17 @@ mod tests {
         let session = "550e8400-e29b-41d4-a716-446655440000";
 
         assert!(
-            read_span(config.path(), session, Some(cwd), &anchored("u1", 1), 1, &[], 100).is_none(),
+            read_rows(config.path(), session, Some(cwd), Some(&anchored("u1")), 100).is_none(),
             "no file for the session is no span",
         );
-        write_session_jsonl(&dir, session, &a_transcript(40));
+        write_session_jsonl(&dir, session, "");
         assert!(
-            read_span(config.path(), session, Some(cwd), &anchored("u1", 1), 0, &[], 100).is_none(),
-            "a cursor at the transcript's first frame has nothing above it to read",
+            read_rows(config.path(), session, Some(cwd), None, 100).is_none(),
+            "and an empty file is none either",
+        );
+        assert!(
+            read_rows(config.path(), "../escape", Some(cwd), None, 100).is_none(),
+            "and an id that is not a uuid names a path this refuses rather than resolves",
         );
     }
 }

@@ -701,8 +701,14 @@ fn resolution_wire(anchor: &ReviewAnchor, files: &[FileContent]) -> ThreadResolu
 /// **The messages, not the units.** How a run of tool calls groups inside a
 /// turn is a drawing decision, so it belongs to whoever draws; what crosses is
 /// the turn's own boundary, and that stays here because the paging contract is
-/// built on it - `more` asks for turns, the cursor is a turn, and a page that
-/// split one would leave a client stitching half a turn to the other half.
+/// built on it - `more` asks for turns, and a page above the window's floor
+/// cuts on them rather than leaving a client to stitch half a turn to half.
+///
+/// **Below that floor a page can carry a stretch inside a turn**, which is
+/// what a running turn's older rows are: a session whose life is one unended
+/// turn has no boundary to cut on, and its rows reach a late-attaching view
+/// only in runs. What a client is owed there is the pair: a page never opens
+/// on a tool result without the call that produced it.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct TurnWire {
@@ -918,11 +924,11 @@ pub fn page(
     //
     // **In the conversation's numbering rather than the held list's.**
     // `dropped` is what the cap has taken off the front: a cursor written
-    // before a drop still names the message it meant, and one resolving below
-    // the floor names a turn this seat has let go - answered from the empty
-    // page above it rather than from a window the client did not ask for. A
-    // cursor no turn opens at, or one this server did not write, keeps the
-    // fallback it always had.
+    // before a drop still names the message it meant. A cursor below the
+    // floor never arrives here - the `more` walk answers those from the
+    // transcript - and one landing under it is the empty page above rather
+    // than a window the client did not ask for. A cursor no turn opens at, or
+    // one this server did not write, keeps the fallback it always had.
     let ends_at = match before.and_then(|cursor| cursor.parse::<usize>().ok()) {
         None => ranges.len(),
         Some(named) => match named.checked_sub(dropped) {
