@@ -18,45 +18,74 @@
 //! browser again, and it would also collide with whichever
 //! browser-automation tooling already holds the conventional ports (the
 //! user's own Brave is on 9222).
+//!
+//! **One launch shape: a real window, born out of sight.** The browser runs
+//! as the person's own installed build (never headless), started with
+//! `--no-startup-window` so nothing appears at launch, and the host then
+//! creates the window the profile keeps - a session drives it with the page
+//! fully alive, and a hand-off's Open only moves it into view. That is what
+//! makes the page a session prepared the same page the person acts on. The
+//! moves themselves are [`window`]'s; this module is the lifecycle around
+//! them. Measured 2026-10-12, the facts the shape rests on:
+//!
+//! - a plain headed launch shows its window and takes the front within ~1.5 s
+//!   (`--no-startup-window` is what avoids that);
+//! - `--window-position` is clamped by the window server onto the screen, so
+//!   a launch cannot place its own window;
+//! - a minimized window's page goes hidden and its animation frames stop,
+//!   which wedges the driver's clicks (a 5 s timeout, `force` included) -
+//!   so minimize is never the hide;
+//! - a NORMAL window moved clear of every screen keeps its page visible and
+//!   fully drivable, and the window server keeps ~40x40 points of it on
+//!   screen whatever its size (the engine's own minimum window is 500x375,
+//!   larger than that margin, so shrinking cannot remove it) - the hide's
+//!   residual, named in the design;
+//! - a window created `background` in a `--no-startup-window` browser never
+//!   surfaces on its own, and the driver works in it unchanged.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use serde_json::json;
+
+use super::window;
+
 /// How long a launch is given to write its port file and answer.
 const LAUNCH_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// How long the window moves are given before they are given up on: a
+/// browser that answers on its port but not on its own devtools endpoint is
+/// a browser the host will not wedge on.
+const WINDOW_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Where a raise puts the window: on screen, near the top-left the window
+/// server itself chooses for a fresh window, with the size it already has.
+const RAISE_AT: (i64, i64) = (40, 60);
+
+/// Where the hide asks the window to go: off every screen. The window server
+/// clamps this to the nearest corner it allows, which is the point - the ask
+/// names no screen size, so the same value works on any display setup.
+const OUT_OF_SIGHT: (i64, i64) = (100_000, 100_000);
 
 /// The argument list one launch runs with.
 ///
 /// `profile` is the browser's own directory, which is what carries logins,
-/// cookies and the HTTP cache across everything. `headed` is the hand-off's
-/// own window: the default is **headless** - the browser is seen only when
-/// the person says Open - and the headed launch is the same launch without
-/// that flag, against the person's installed browser when one is there (Ved,
-/// 2026-10-07: it must look like a real browser, not an automation tool).
+/// cookies and the HTTP cache across everything. There is one launch shape
+/// and it is the person's own browser (Ved, 2026-10-07: it must look like a
+/// real browser, not an automation tool) - never `--headless`, whose
+/// `HeadlessChrome` brand and blanked client hints were why a UA mask
+/// existed at all. That mask retired with the headless launch (2026-10-12):
+/// a real build presents its real UA and its real hints, which is a better
+/// posture than any mask.
 ///
-/// `page` is the tab the launch opens on: **the page the sessions were
-/// driving**, carried across the relaunch Open makes, because a person who
-/// pressed Open to act on a page must not land on a blank one. `None` for a
-/// cold launch, which opens `about:blank` (a browser with no tab makes the
-/// first navigation depend on the driver inventing one).
-///
-/// `user_agent` is the mask's own half - the UA a headless launch presents,
-/// from [`masked_user_agent`] - and `None` for a headed launch, which
-/// presents the browser's real one.
-///
-/// **The mask rides the launch because this is the only place it can.** A
-/// driven browser reports `navigator.webdriver` true and brands its UA
-/// `HeadlessChrome`, and a server reads both; the flag leaves the engine's
-/// own webdriver getter reporting false, and the UA pair fixes the string
-/// and the header together. See `masked_user_agent` for why the UA cannot
-/// come from the driver instead.
-pub fn launch_args(
-    profile: &Path,
-    headed: bool,
-    page: Option<&str>,
-    user_agent: Option<&str>,
-) -> Vec<String> {
-    let mut args = vec![
+/// **`--no-startup-window` is what keeps the launch invisible**: with no
+/// window flag the browser opens its 1200x988 default and takes the front
+/// within ~1.5 s (measured). Started without one, it holds no page and shows
+/// nothing until the host creates the window itself, which it does
+/// background-born and moved off every screen before any driver can reach
+/// the browser.
+pub fn launch_args(profile: &Path) -> Vec<String> {
+    vec![
         // Let the browser choose, and read the choice from its port file:
         // handed a number it writes no file, which is a browser nothing can
         // find again.
@@ -66,30 +95,17 @@ pub fn launch_args(
         // webdriver getter then reports false, which is what a real browser
         // reports - no page patch, nothing for a page to notice.
         "--disable-blink-features=AutomationControlled".to_owned(),
-    ];
-    if !headed {
-        args.push("--headless".to_owned());
-    } else {
-        // **The X closes the window, not the browser** (measured on Brave,
-        // 2026-10-07): Chrome's own automation keep-alive, so the process
-        // and the agents' CDP connection survive a person closing the
-        // window. The tab dies with its window; the next call re-navigates.
-        args.push("--keep-alive-for-test".to_owned());
-    }
-    if let Some(user_agent) = user_agent {
-        args.push(format!("--user-agent={user_agent}"));
-        // **Chromium blanks a page's client hints when the UA is overridden**
-        // (measured on Brave 155: without this, `sec-ch-ua` goes empty on
-        // every request). Switched off, the override fixes the UA string and
-        // leaves the real `sec-ch-ua` and `sec-ch-ua-platform` beside it.
-        // This is the one `--disable-features` switch a launch carries.
-        args.push("--disable-features=UACHOverrideBlank".to_owned());
-    }
-    args.extend([
+        // Where the engine honours it, the person's own X on the raised
+        // window leaves the browser serving (measured on an older Brave: the
+        // X takes the process down instead; the next call recovers either
+        // way, on the page the last raise carried).
+        "--keep-alive-for-test".to_owned(),
+        // The window is the host's own, born hidden: see above.
+        "--no-startup-window".to_owned(),
         // **Never the OS keychain.** This profile is forge's own and holds
         // nothing worth a keychain entry, while reaching for one raises a
         // system dialog naming the browser's own Safe Storage - once per ask
-        // - that nobody is sitting in front of a headless browser to answer,
+        // - that nobody is sitting in front of an unseen browser to answer,
         // and that spams whoever is at the machine. The mock store keeps the
         // same shape with a key that goes nowhere.
         "--use-mock-keychain".to_owned(),
@@ -97,230 +113,7 @@ pub fn launch_args(
         // A first-run flow is a dialog nothing can see and nothing answers.
         "--no-first-run".to_owned(),
         "--no-default-browser-check".to_owned(),
-    ]);
-    args.push(page.unwrap_or("about:blank").to_owned());
-    args
-}
-
-/// How long the browser is given to answer `--version` before the mask is
-/// given up on for this launch.
-const VERSION_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// The user agent a headless launch presents: the browser's own, with the
-/// headless brand removed.
-///
-/// **It cannot come from the driver**, which is where the initial script
-/// rides: measured, the driver's own `--user-agent` is inert over a
-/// `--cdp-endpoint` connection, and the header is what a site's server
-/// reads, so the launch's own switch is the one route to it.
-///
-/// The version is read from the binary rather than spelled out here, because
-/// the reduced UA freezes the platform and the version's last three
-/// components: a real build reports `Chrome/<major>.0.0.0` whatever its full
-/// version is, so the major - all `--version` is parsed for - is the only
-/// part that moves across browser updates. A version that cannot be read
-/// leaves the UA unmasked and says so; it is not a reason to refuse the
-/// launch.
-pub async fn masked_user_agent(binary: &Path) -> Result<String, String> {
-    let said = version_said(binary).await?;
-    reduced_user_agent(&said).ok_or_else(|| format!("the version line did not name one: {said:?}"))
-}
-
-/// What one `--version` run printed.
-async fn version_said(binary: &Path) -> Result<String, String> {
-    let answer = tokio::time::timeout(
-        VERSION_TIMEOUT,
-        tokio::process::Command::new(binary).arg("--version").output(),
-    )
-    .await
-    .map_err(|_| format!("--version did not answer within {} s", VERSION_TIMEOUT.as_secs()))?
-    .map_err(|why| format!("--version could not be run: {why}"))?;
-    Ok(String::from_utf8_lossy(&answer.stdout).into_owned())
-}
-
-/// The version token of a `--version` line (`Brave Browser 155.1.97.56`,
-/// `Google Chrome 155.0.1234.56`), or `None` for a line naming none.
-fn version_line(said: &str) -> Option<&str> {
-    let named = said.lines().next()?.split_whitespace().last()?;
-    let major = named.split('.').next()?;
-    if !named.contains('.') || major.is_empty() || !major.chars().all(|c| c.is_ascii_digit()) {
-        return None;
-    }
-    Some(named)
-}
-
-/// The reduced user agent for a browser's `--version` line.
-///
-/// The platform and the version's tail are Chromium's frozen ones - a real
-/// macOS build reports `Macintosh; Intel Mac OS X 10_15_7` and
-/// `Chrome/<major>.0.0.0` - which is what the launched browser's own UA was
-/// measured to carry. macOS is the platform this client ships on; a second
-/// one brings its own string here.
-///
-/// **A version line is read by shape, and a future one whose last token is a
-/// different dotted number would build a well-formed but wrong UA without
-/// saying so** - the price of not spelling the string out here, paid only if
-/// a browser ever prints something other than `<name> <version>`.
-fn reduced_user_agent(said: &str) -> Option<String> {
-    let major = version_line(said)?.split('.').next()?;
-    Some(format!(
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) \
-         Chrome/{major}.0.0.0 Safari/537.36"
-    ))
-}
-
-/// What one page reads about the browser, as the driver's capture snippet
-/// answers it.
-///
-/// **The source values are the page's own**: the low-entropy hints stay real
-/// under the launch's UA override (measured), while `blanked` records that
-/// the high-entropy five came back empty - the state this rebuild repairs.
-#[derive(Debug, Clone, PartialEq, serde::Deserialize, serde::Serialize)]
-pub struct HintCapture {
-    /// The UA string the page itself reads - the masked one, which the
-    /// rebuild presents unchanged.
-    pub user_agent: String,
-    /// The real brand list, served verbatim.
-    pub brands: Vec<HintBrand>,
-    pub platform: String,
-    pub mobile: bool,
-    /// Whether all five high-entropy hints came back empty. `false` means the
-    /// browser reports its own (an unmasked launch) and nothing should be
-    /// rebuilt over them.
-    pub blanked: bool,
-    /// Why the read itself failed, when it did: a failed read is not a
-    /// verdict, and the fields beside it carry nothing usable.
-    #[serde(default)]
-    pub error: Option<String>,
-    /// The version the ATTACHED browser reports for itself, read from the
-    /// driver's own browser object (`153.0.8010.12`) - not from any page,
-    /// and not the machine's binary, which a hand-built launch need not be.
-    /// It is what every Chromium build but Brave reports in its hints.
-    #[serde(default)]
-    pub browser_version: String,
-}
-
-/// One client-hint brand, as the page lists it.
-#[derive(Debug, Clone, PartialEq, serde::Deserialize, serde::Serialize)]
-pub struct HintBrand {
-    pub brand: String,
-    pub version: String,
-}
-
-/// The full version a UA string carries, or `None` for a string that names
-/// none.
-fn user_agent_version(user_agent: &str) -> Option<&str> {
-    let at = user_agent.find("Chrome/")? + "Chrome/".len();
-    let rest = &user_agent[at..];
-    let end = rest.find(' ').unwrap_or(rest.len());
-    let version = &rest[..end];
-    (!version.is_empty()).then_some(version)
-}
-
-/// The machine's own half of the rebuild: facts about the OS that no page can
-/// observe.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HintMachine {
-    /// The macOS product version (`26.5.2`), the client hints'
-    /// `platformVersion`.
-    pub platform_version: String,
-    /// Chromium's own architecture name (`arm`, `x86`).
-    pub architecture: &'static str,
-    /// The client's own pointer width, which its browser shares.
-    pub bitness: String,
-}
-
-/// The client-hint metadata the launch's UA override blanks, rebuilt from the
-/// capture's values plus the machine's.
-///
-/// **The version is the browser's own, and which one that is depends on the
-/// browser** (measured): Brave freezes the version it reports everywhere, so
-/// its hints read the frozen `<major>.0.0.0` its UA string carries
-/// (155.1.97.56 presents and reads `155.0.0.0`); Chrome and other Chromium
-/// builds freeze only the string and report the true build version in their
-/// hints (Chrome for Testing 153 reads `153.0.8010.12` beside a `153.0.0.0`
-/// string), so they take the version the attached browser reports for
-/// itself. Each real brand carries the browser's own version; the grease
-/// entry - the one brand whose major is not the browser's - always carries
-/// its own fake major with the frozen `.0.0.0` tail.
-///
-/// `None` for a capture that cannot support a truthful rebuild: an unmasked
-/// launch reads the five for real, and rebuilding over them would replace
-/// the browser's own values with derived ones; a capture with no brands read
-/// no document; a version that is missing, or a UA string naming none on the
-/// arm that needs it, is a half-claim.
-pub fn user_agent_metadata(
-    capture: &HintCapture,
-    machine: &HintMachine,
-) -> Option<serde_json::Value> {
-    if !capture.blanked || capture.brands.is_empty() {
-        return None;
-    }
-    let version = if capture.brands.iter().any(|brand| brand.brand == "Brave") {
-        user_agent_version(&capture.user_agent)?
-    } else {
-        let reported = capture.browser_version.trim();
-        (!reported.is_empty()).then_some(reported)?
-    };
-    let browser_major = version.split('.').next()?;
-    let full_version_list: Vec<serde_json::Value> = capture
-        .brands
-        .iter()
-        .map(|brand| {
-            let greasey = brand.version != browser_major;
-            let full =
-                if greasey { format!("{}.0.0.0", brand.version) } else { version.to_owned() };
-            serde_json::json!({ "brand": brand.brand, "version": full })
-        })
-        .collect();
-    Some(serde_json::json!({
-        "brands": capture.brands,
-        "fullVersionList": full_version_list,
-        "fullVersion": version,
-        "platform": capture.platform,
-        "platformVersion": machine.platform_version,
-        "architecture": machine.architecture,
-        "model": "",
-        "mobile": capture.mobile,
-        "bitness": machine.bitness,
-        "wow64": false,
-    }))
-}
-
-/// Chromium's own architecture name for a `std::env::consts::ARCH` value:
-/// `arm` on Apple Silicon (measured: what the browser reports), `x86` on
-/// Intel. `None` for an architecture nothing here has measured.
-pub fn client_hint_architecture(arch: &str) -> Option<&'static str> {
-    match arch {
-        "aarch64" | "arm" => Some("arm"),
-        "x86_64" | "x86" => Some("x86"),
-        _ => None,
-    }
-}
-
-/// The macOS product version (`26.5.2`), which is the client hints'
-/// `platformVersion` and **not** the kernel's own Darwin release: measured,
-/// `sw_vers -ProductVersion` and the browser's read agree, and the kernel
-/// version would say `25.5.0` for the same machine.
-pub async fn platform_version() -> Result<String, String> {
-    let answer = tokio::time::timeout(
-        VERSION_TIMEOUT,
-        tokio::process::Command::new("sw_vers").arg("-productVersion").output(),
-    )
-    .await
-    .map_err(|_| format!("sw_vers did not answer within {} s", VERSION_TIMEOUT.as_secs()))?
-    .map_err(|why| format!("sw_vers could not be run: {why}"))?;
-    let said = String::from_utf8_lossy(&answer.stdout);
-    product_version(&said).ok_or_else(|| format!("sw_vers named no version: {said:?}"))
-}
-
-/// The version line `sw_vers -productVersion` prints - dotted, all-numeric -
-/// or `None` for anything else.
-fn product_version(said: &str) -> Option<String> {
-    let line = said.lines().next()?.trim();
-    let dotted = line.contains('.')
-        && line.split('.').all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()));
-    dotted.then(|| line.to_owned())
+    ]
 }
 
 /// Make the profile start fresh for the launch about to happen: the clean
@@ -577,27 +370,28 @@ fn whole_body_len(answer: &[u8]) -> Option<usize> {
 /// binary, bounded so a chatty failure cannot grow without end.
 const STDERR_TAIL: usize = 4096;
 
-/// Launch the browser against `profile`, and answer once it is answering on
-/// its port.
+/// Launch the browser against `profile`, and answer once its hidden window is
+/// ready.
 ///
 /// Detached on purpose: the child is left running when this drops - its
 /// stdout goes nowhere a client reads, and its lifetime is the machine's, not
 /// the client run's.
 ///
-/// **Headless by default.** The agents drive it invisibly, and the only
-/// visible surface is the hand-off's window: `show` raises the same browser
-/// over the same profile, so the person is dropped into the very browser the
-/// sessions drive rather than a second one.
-pub async fn launch(binary: &Path, profile: &Path) -> Result<ActivePort, String> {
-    launch_with(binary, profile, false, None).await
-}
-
-/// The same launch with `headed` asked for - and, when the relaunch is Open's,
-/// the page the sessions were driving, so the window opens on it.
-pub async fn launch_with(
+/// **Nothing appears and nothing takes the front.** The browser comes up with
+/// `--no-startup-window`; the host then creates the profile's own window
+/// through the browser's devtools endpoint - born `background`, so it never
+/// surfaces by itself - and moves it clear of every screen before returning.
+/// The move is a hard ordering, not a nicety: measured, the driver's work
+/// surfaces the window at its CURRENT bounds, so a window still at its birth
+/// point would appear mid-screen at the person the moment a session drove it.
+///
+/// `page` is what the window opens on: **the page the last raise carried**,
+/// so a person pressing Open after a window was taken down (the X, where the
+/// keep-alive does not hold) lands on the page they were last looking at
+/// rather than a blank one. `None` opens `about:blank`.
+pub async fn launch(
     binary: &Path,
     profile: &Path,
-    headed: bool,
     page: Option<&str>,
 ) -> Result<ActivePort, String> {
     if !binary.is_file() {
@@ -612,45 +406,15 @@ pub async fn launch_with(
     // profile.
     let _guard = LaunchLock::acquire(profile).await?;
     if let Some(active) = verified(profile).await {
-        // **Only a launch that already has a window is a headed answer.** A
-        // headed relaunch that waited behind another host's headless launch
-        // would otherwise answer Ok with no window and no marker written -
-        // and Open's whole promise is the window. The live launch is closed
-        // first: it holds the profile, and a bare fall-through would spawn
-        // onto it. The adopt itself stays for the launches a headed one can
-        // honestly attach to (and for every headless ask), which is what
-        // keeps a relaunch that waited from spawning onto a locked profile.
-        if !headed || launched_windowed(profile) {
-            return Ok(active);
-        }
-        close_under_lock(profile, active.port).await;
+        return Ok(active);
     }
     // A launch about to happen owns the wires: an older port file would be
     // read as this one's, and an older pid names a process this launch is not.
     forget_launch(profile);
     fresh_session(profile);
 
-    // Only a headless launch needs the UA: a headed one presents the
-    // browser's real user agent already. Read here rather than earlier, so
-    // a launch that adopts the running browser pays nothing for it.
-    let user_agent = if headed {
-        None
-    } else {
-        match masked_user_agent(binary).await {
-            Ok(user_agent) => Some(user_agent),
-            Err(why) => {
-                // A launch without the mask must not be a silent one.
-                tauri_plugin_log::log::warn!(
-                    "the headless user agent is unmasked (event_name browser_mask_user_agent): \
-                     {why}"
-                );
-                None
-            }
-        }
-    };
-
     let mut command = tokio::process::Command::new(binary);
-    for arg in launch_args(profile, headed, page, user_agent.as_deref()) {
+    for arg in launch_args(profile) {
         command.arg(arg);
     }
     command
@@ -665,8 +429,7 @@ pub async fn launch_with(
     // The id before the handle goes: the browser is meant to outlive this
     // call, and this process reaps nothing it did not spawn as its own work -
     // but a caller that must reap it needs the id, and the handle is what
-    // carries it. It is written down only once the launch ANSWERS, so a file
-    // never names a browser that never came up.
+    // carries it.
     let pid = child.id();
     let tail = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
     if let Some(mut stderr) = child.stderr.take() {
@@ -690,36 +453,14 @@ pub async fn launch_with(
     drop(child);
 
     let deadline = tokio::time::Instant::now() + LAUNCH_TIMEOUT;
-    loop {
+    let active = loop {
         if let Some(active) = verified(profile).await {
+            // The id is written down only once the launch ANSWERS, so a file
+            // never names a browser that never came up.
             if let Some(pid) = pid {
                 let _ = std::fs::write(pid_file(profile), pid.to_string());
             }
-            // Written only now, with the browser answering: `show` reads it as
-            // "a window is up", and a marker for a launch that failed is a
-            // claim nobody can check. It carries the page the launch opened
-            // on, so an Open after the person closed the window reopens that
-            // page rather than a blank one.
-            //
-            // **A marker that cannot be written is a scratch-window risk, and
-            // the absence is the headless signal**: the hint mask reads this
-            // marker to keep off a headed launch. A headed browser's own
-            // hints read real, so the mask itself would stand down - but the
-            // capture runs first, through a scratch context, and that can
-            // raise a window at the person. Nothing here can fail toward
-            // safety - no file looks exactly like a headless launch - so the
-            // failure is named; the launch goes on, because a window is what
-            // the person asked for.
-            if headed && let Err(why) = std::fs::write(windowed_marker(profile), page.unwrap_or(""))
-            {
-                tauri_plugin_log::log::warn!(
-                    "the headed launch's window marker could not be written (event_name \
-                     browser_windowed_marker): the hint mask may take this window for a headless \
-                     launch and read the capture through a scratch context, which can raise a \
-                     window at the person: {why}"
-                );
-            }
-            return Ok(ActivePort { pid, ..active });
+            break active;
         }
         if tokio::time::Instant::now() >= deadline {
             // The child is ours and it never answered: kill it here, so a
@@ -743,16 +484,96 @@ pub async fn launch_with(
             ));
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    // The window, born hidden and moved clear of every screen BEFORE this
+    // returns. A browser that answered on its port but could not get its
+    // window is killed rather than left behind: a process nothing can raise
+    // is not a launch.
+    if let Err(why) = birth_hidden_window(&active, page).await {
+        if let Some(pid) = pid {
+            kill_pid(pid, true).await;
+        }
+        forget_launch(profile);
+        return Err(why);
     }
+    // **The profile's browser has a window**, which the raise path reads
+    // before it moves anything: a live launch without this marker is the
+    // headless shape a build before this one left behind, and [`show`] closes
+    // it rather than raising at a window that is not there.
+    if let Err(why) = std::fs::write(born_marker(profile), b"") {
+        tauri_plugin_log::log::warn!(
+            "the window's birth marker could not be written (event_name browser_window_born, \
+             profile {}): a raise will take this launch for the older headless shape and relaunch \
+             it: {why}",
+            profile.display(),
+        );
+    }
+    Ok(ActivePort { pid, ..active })
 }
 
 /// The browser to talk to: the one already running on `profile`, launched if
-/// there is none.
-pub async fn ensure(binary: &Path, profile: &Path) -> Result<ActivePort, String> {
+/// there is none. `page` is only consulted by the launch.
+pub async fn ensure(
+    binary: &Path,
+    profile: &Path,
+    page: Option<&str>,
+) -> Result<ActivePort, String> {
     if let Some(active) = verified(profile).await {
         return Ok(active);
     }
-    launch(binary, profile).await
+    launch(binary, profile, page).await
+}
+
+/// Create the window a launch keeps, born `background` so it never surfaces
+/// by itself, and move it clear of every screen before anything can drive it.
+async fn birth_hidden_window(active: &ActivePort, page: Option<&str>) -> Result<(), String> {
+    let answer = tokio::time::timeout(WINDOW_TIMEOUT, async {
+        let mut cdp = window::Cdp::connect(active.port, &active.path).await?;
+        let created = cdp
+            .call(
+                "Target.createTarget",
+                json!({
+                    "url": page.unwrap_or("about:blank"),
+                    "newWindow": true,
+                    "background": true,
+                }),
+                None,
+            )
+            .await?;
+        let target = created
+            .get("targetId")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("the browser created a window but named no target for it")?
+            .to_owned();
+        let attached = cdp
+            .call("Target.attachToTarget", json!({ "targetId": target, "flatten": true }), None)
+            .await?;
+        let session = attached
+            .get("sessionId")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("the browser refused the session for its own window")?
+            .to_owned();
+        let page = window::Page { target, session };
+        window::move_to(&page, &mut cdp, OUT_OF_SIGHT.0, OUT_OF_SIGHT.1).await
+    })
+    .await
+    .map_err(|_| {
+        format!("the browser's window did not come up within {} s", WINDOW_TIMEOUT.as_secs())
+    })?;
+    answer.map_err(|why| format!("the browser's window could not be made: {why}"))
+}
+
+/// Move a live launch's window clear of every screen - the hide an answer and
+/// the strip's lower both use, best-effort: a window that cannot be moved is
+/// named, and the marker still comes down.
+async fn move_out_of_sight(active: &ActivePort) -> Result<(), String> {
+    tokio::time::timeout(WINDOW_TIMEOUT, async {
+        let mut cdp = window::Cdp::connect(active.port, &active.path).await?;
+        let page = cdp.page().await?;
+        window::move_to(&page, &mut cdp, OUT_OF_SIGHT.0, OUT_OF_SIGHT.1).await
+    })
+    .await
+    .map_err(|_| format!("the window did not move within {} s", WINDOW_TIMEOUT.as_secs()))?
 }
 
 /// The launch this profile names, when the port really answers AS that
@@ -807,14 +628,22 @@ fn browser_binary_from(candidates: &[&str]) -> Result<PathBuf, String> {
         .to_owned())
 }
 
-/// The marker a headed launch leaves in the profile: the port file says
-/// nothing about a window, and this is what makes "is a window up"
-/// answerable.
+/// The marker a launch leaves once its window exists: the port file says
+/// nothing about a window, and this is what tells "the launch this new code
+/// made" from "a headless launch a build before it left running".
+fn born_marker(profile: &Path) -> PathBuf {
+    profile.join("has-window")
+}
+
+/// The marker a RAISE leaves, carrying the page it showed: the port file says
+/// nothing about what the person can see, and this is what makes "is the
+/// window up" answerable - the strip's show/hide button toggles on it, and
+/// [`hide`] takes it down while the browser stays.
 fn windowed_marker(profile: &Path) -> PathBuf {
     profile.join("windowed")
 }
 
-/// Whether the running launch is the headed one.
+/// Whether the running launch is the raised one.
 pub fn launched_windowed(profile: &Path) -> bool {
     windowed_marker(profile).is_file()
 }
@@ -827,14 +656,14 @@ pub fn ever_opened(profile: &Path) -> bool {
     profile.join("Local State").is_file()
 }
 
-/// Whether a WINDOW is really up on `profile`: the headed marker AND a live
-/// launch answering as this profile's own AND a page left to carry.
+/// Whether the window is really UP on `profile`: the raise's marker AND a
+/// live launch answering as this profile's own AND a page left to carry.
 ///
 /// **The marker alone lied once** (Ved, 2026-10-07, live): he closed the
 /// window with the X, the process survived with the marker still set, and
-/// the next Open concluded a window was up and raised nothing. `show` keeps
-/// this same predicate, and everything that SPEAKS for a window - the
-/// strip's window-open mark and its hide label - must keep it too.
+/// the next Open concluded a window was up and raised nothing. Everything
+/// that SPEAKS for a window - the strip's window-open mark and its hide
+/// label - must keep this predicate.
 pub async fn windowed(profile: &Path) -> bool {
     if !launched_windowed(profile) {
         return false;
@@ -845,91 +674,112 @@ pub async fn windowed(profile: &Path) -> bool {
     page_url(active.port).await.is_some()
 }
 
-/// The page the last headed launch opened on, when it carried one: the
-/// fallback an Open uses once the person has closed the window (the tab goes
-/// with it, so there is no live page left to read).
+/// The page the last raise carried, when it carried one: what a launch after
+/// the window went (the engine took it down with the X) opens on, so the
+/// person lands where they were rather than on a blank tab.
 fn windowed_page(profile: &Path) -> Option<String> {
     let carried = std::fs::read_to_string(windowed_marker(profile)).ok()?;
     let carried = carried.trim();
     (!carried.is_empty()).then(|| carried.to_owned())
 }
 
-/// Bring the running browser's window to the front. `open` on the app bundle
-/// activates an app that is already running; a failure here is not the
-/// raise's failure - the window is up either way.
-fn activate(binary: &Path) {
-    let Some(bundle) = app_bundle(binary) else { return };
-    let _ = std::process::Command::new("open").arg(bundle).spawn();
-}
-
-/// The `.app` bundle a browser binary lives in, from its
-/// `.../Contents/MacOS/<name>` path; `None` for a binary outside one.
-fn app_bundle(binary: &Path) -> Option<PathBuf> {
-    binary
-        .ancestors()
-        .find(|at| at.extension().is_some_and(|ext| ext == "app"))
-        .map(Path::to_path_buf)
-}
-
-/// Bring the browser up VISIBLY, for a hand-off's Open or the strip's show:
-/// the person's own installed browser, over the same profile the agents
-/// drive, **opened on the page the sessions were driving**.
+/// Bring the browser's window into view, for a hand-off's Open or the strip's
+/// show: the profile's own window over the same browser the sessions drive,
+/// **the very page they prepared**.
 ///
-/// **A window is a launch flag, not something a running browser can be
-/// told**, so the running launch is closed and the same profile is
-/// relaunched headed. The relaunch is a fresh browser, so the page is
-/// carried across explicitly - Chromium's own session restore is guesswork,
-/// and a person who pressed Open to act on the session's page (a CAPTCHA,
-/// say) must not land on a blank tab. The cost of the relaunch: open driver
-/// transports die with the old browser and rebuild on the next call, and the
-/// profile keeps logins and cookies.
+/// **Nothing is relaunched and nothing is closed.** The window exists from
+/// the profile's first call, born hidden; the raise is two moves on it - on
+/// screen, then brought to the front - so the page's DOM state, the fills a
+/// session typed into it and every tab beside it are the same ones the
+/// session left. A browser with no launch at all comes up first (hidden, on
+/// the page the last raise carried) and is then raised: that is the one path
+/// where a raise launches anything, and it is the path a person takes after
+/// the engine took the window down (the X, where the keep-alive does not
+/// hold).
 ///
-/// **A window with a page in it is the only thing answered as it is.** The
-/// headed marker alone lied once (Ved, 2026-10-07, live): he closed the
-/// window with the X, the process survived on Chrome's keep-alive with the
-/// marker still set, and the next Open concluded a window was up and raised
-/// nothing. A window the person closed holds no tab - measured: the targets
-/// empty with the window - so "a window is up" means marker AND a page.
+/// The marker, written only here, carries the page the raise showed. It means
+/// "the window is up" - what the strip's button toggles on - and [`hide`]
+/// takes it down.
 pub async fn show(binary: &Path, profile: &Path) -> Result<ActivePort, String> {
-    if launched_windowed(profile)
+    // **A launch from before the window model has no window to raise** - a
+    // headless browser an upgraded client adopted. It is closed, once, and
+    // the new shape comes up on the page the last raise carried; every raise
+    // after that finds a window.
+    if !born_marker(profile).is_file()
         && let Some(active) = verified(profile).await
-        && page_url(active.port).await.is_some()
     {
-        // **A window already up is BROUGHT FORWARD, not answered as it is.**
-        // The dock's word is "raise", and the early return alone made a
-        // second Open a silent no-op - measured live, 2026-10-07.
-        activate(binary);
-        return Ok(active);
+        let _guard = LaunchLock::acquire(profile).await?;
+        close_under_lock(profile, active.port).await;
     }
-    let page = match read_active_port(profile) {
-        Some(active) => {
-            // The live tab first; the last carried page otherwise - a window
-            // the person closed took its tab with it, and reopening on the
-            // page they were looking at is the recovery the X-close needs.
-            let page = page_url(active.port).await.or_else(|| windowed_page(profile));
-            close(profile, active.port).await;
-            page
-        }
-        None => windowed_page(profile),
-    };
-    launch_with(binary, profile, true, page.as_deref()).await
+    let active = ensure(binary, profile, windowed_page(profile).as_deref()).await?;
+    let raised = tokio::time::timeout(WINDOW_TIMEOUT, async {
+        let mut cdp = window::Cdp::connect(active.port, &active.path).await?;
+        let page = cdp.page().await?;
+        window::bring_forward(&page, &mut cdp, RAISE_AT.0, RAISE_AT.1).await
+    })
+    .await
+    .map_err(|_| {
+        format!("the window did not come forward within {} s", WINDOW_TIMEOUT.as_secs())
+    })?;
+    raised.map_err(|why| format!("the window could not be raised: {why}"))?;
+    let carried = page_url(active.port).await.unwrap_or_default();
+    if let Err(why) = std::fs::write(windowed_marker(profile), carried) {
+        // Not fatal - the window IS up - but the strip reads the marker as
+        // "the window is up", so a launch whose marker cannot be written
+        // shows a button that offers show where hide is the honest word.
+        tauri_plugin_log::log::warn!(
+            "the raised window's marker could not be written (event_name \
+             browser_windowed_marker, profile {}): {why}",
+            profile.display(),
+        );
+    }
+    Ok(active)
 }
 
-/// Take the window back down: the browser is closed, and the next agent call
-/// relaunches it headless over the same profile. The hand-off is NOT answered
-/// by this - Done or Not now is - so a person who closes the window and walks
-/// away leaves the session parked exactly as it was.
+/// Take the window back out of the person's sight: **the browser, its tabs
+/// and its page all stay**, so the next call drives the same browser and the
+/// next raise shows the same page. The hand-off is NOT answered by this -
+/// Done or Not now is - so a person who lowers the window and walks away
+/// leaves the session parked exactly as it was.
 pub async fn hide(profile: &Path) {
+    if let Some(active) = verified(profile).await
+        && let Err(why) = move_out_of_sight(&active).await
+    {
+        tauri_plugin_log::log::warn!(
+            "the window could not be moved out of sight (event_name browser_window_hide_failed, \
+             profile {}): {why}",
+            profile.display(),
+        );
+    }
+    // The marker comes down whatever happened: it means "the window is up",
+    // and after a lower it is not. A stale one would have the strip offer
+    // hide over a window nobody can see.
+    let _ = std::fs::remove_file(windowed_marker(profile));
+}
+
+/// The real close, under the launch lock a caller already holds: a delete
+/// takes the lock across its whole act, and a close that re-took it would
+/// spin the launch deadline against its own holder.
+#[cfg(desktop)]
+pub(super) async fn close_held_launch(profile: &Path) {
     if let Some(active) = read_active_port(profile) {
-        close(profile, active.port).await;
+        close_under_lock(profile, active.port).await;
     }
 }
 
-/// [`hide`] under the launch lock a caller already holds: a delete takes the
-/// lock across its whole act, and a close that re-took it would spin the
-/// launch deadline against its own holder.
-#[cfg(desktop)]
-pub(super) async fn hide_under_lock(profile: &Path) {
+/// Close the browser on `profile` for real - the profile's own close verb.
+/// **An answer never comes here**: Done and Not now use [`hide`], which moves
+/// the window out of sight and leaves everything running. This is the door
+/// that ends the run - close, delete, the sweep - and the next call relaunches
+/// over the same directory.
+pub async fn close(profile: &Path) {
+    // **The launch lock, so a close cannot eat a launch in flight.** An
+    // unlocked closer reads "not answering" for a browser coming up, forgets
+    // its port file, and that launch then kills the browser it just started
+    // at its own deadline. The take is bounded like every other; a lock that
+    // cannot be taken at all leaves the close running - no launch can be in
+    // flight behind a lock nobody could take.
+    let _guard = LaunchLock::acquire(profile).await;
     if let Some(active) = read_active_port(profile) {
         close_under_lock(profile, active.port).await;
     }
@@ -948,19 +798,10 @@ pub(super) async fn hide_under_lock(profile: &Path) {
 /// after the port answers AS this profile's launch**: a port the launch let go
 /// and something else took over is a stranger, and the wires go without a
 /// kill.
-async fn close(profile: &Path, port: u16) {
-    // **The launch lock, so a close cannot eat a launch in flight.** An
-    // unlocked closer reads "not answering" for a browser coming up, forgets
-    // its port file, and that launch then kills the browser it just started
-    // at its own deadline. The take is bounded like every other; a lock that
-    // cannot be taken at all leaves the close running - no launch can be in
-    // flight behind a lock nobody could take.
-    let _guard = LaunchLock::acquire(profile).await;
-    close_under_lock(profile, port).await
-}
-
-/// The close body, for callers that already hold the launch lock (a launch's
-/// own headed relaunch closes the launch it found under its own guard).
+///
+/// Callers already hold the launch lock: a delete takes it across its whole
+/// act, and a close that re-took it would spin the launch deadline against
+/// its own holder.
 async fn close_under_lock(profile: &Path, port: u16) {
     if !answers_as(profile, port).await {
         // **A young port file is a launch coming up**: the file exists 14-125
@@ -1041,6 +882,7 @@ fn forget_launch(profile: &Path) {
     let _ = std::fs::remove_file(profile.join("DevToolsActivePort"));
     let _ = std::fs::remove_file(pid_file(profile));
     let _ = std::fs::remove_file(windowed_marker(profile));
+    let _ = std::fs::remove_file(born_marker(profile));
 }
 
 /// Whether the port file is young enough to belong to a launch still coming
@@ -1111,20 +953,42 @@ mod tests {
     /// inventing one), runs **headless** (nothing appears on the person's
     /// screen until a hand-off's Open raises the window), and **never reaches
     /// for the OS keychain**: that dialog is raised at whoever is at the
-    /// machine, once per ask, and a headless browser has nobody to answer it.
+    /// machine, once per ask, and a browser whose window nobody is looking at
+    /// has nobody to answer it.
     ///
-    /// **And an Open's relaunch opens on the session's page**, not a blank
-    /// tab: the page rides as the launch's own argument.
+    /// **And nothing appears at launch**: no `--headless` (the browser is the
+    /// person's own, with its real UA and real client hints - the mask that
+    /// used to ride a headless launch retired with it), and
+    /// `--no-startup-window`, so the browser holds no page and shows nothing
+    /// until the host creates the profile's window itself.
     #[test]
-    fn a_launch_lets_the_browser_choose_its_port_and_carries_its_profile_and_a_page() {
-        let args = launch_args(Path::new("/tmp/forge-profile"), false, None, None);
+    fn a_launch_asks_for_port_zero_and_shows_nothing_until_the_host_says_so() {
+        let args = launch_args(Path::new("/tmp/forge-profile"));
         assert!(
             args.contains(&"--remote-debugging-port=0".to_owned()),
             "the port is the browser's choice, read back from its own file: {args:?}",
         );
         assert!(args.contains(&"--user-data-dir=/tmp/forge-profile".to_owned()), "{args:?}");
-        assert!(args.contains(&"--headless".to_owned()), "{args:?}");
-        assert_eq!(args.last().map(String::as_str), Some("about:blank"), "{args:?}");
+        assert!(
+            !args.contains(&"--headless".to_owned()),
+            "every launch is the person's own real browser: {args:?}",
+        );
+        assert!(
+            args.contains(&"--no-startup-window".to_owned()),
+            "the browser starts with no window; the host creates one, born hidden: {args:?}",
+        );
+        assert!(
+            !args.iter().any(|arg| arg.starts_with("--user-agent=")),
+            "no UA mask: a real launch presents the browser's real user agent: {args:?}",
+        );
+        assert!(
+            !args.iter().any(|arg| arg.starts_with("--disable-features=")),
+            "and no client-hint switch - nothing overrides the UA, so nothing blanks them: {args:?}",
+        );
+        assert!(
+            !args.iter().any(|arg| arg.starts_with("http") || arg.ends_with(":blank")),
+            "no page rides the command line: the window opens on what the host asks for: {args:?}",
+        );
         assert!(
             args.contains(&"--use-mock-keychain".to_owned()),
             "a launch that can raise Chromium Safe Storage's dialog is a launch that spams the \
@@ -1134,113 +998,22 @@ mod tests {
             args.contains(&"--password-store=basic".to_owned()),
             "and the store behind the mock is the plain one: {args:?}",
         );
-
-        let carried =
-            launch_args(Path::new("/tmp/forge-profile"), true, Some("https://example.com/x"), None);
-        assert_eq!(
-            carried.last().map(String::as_str),
-            Some("https://example.com/x"),
-            "Open's relaunch opens on the page the sessions were driving: {carried:?}",
+        assert!(
+            args.contains(&"--keep-alive-for-test".to_owned()),
+            "where the engine honours it, a person's X leaves the browser serving: {args:?}",
+        );
+        assert!(
+            args.contains(&"--disable-blink-features=AutomationControlled".to_owned()),
+            "and the webdriver tell is switched off at the engine, as a real browser reports it: \
+             {args:?}",
         );
     }
 
-    /// **The headed launch survives its own window closing** (measured on
-    /// Brave): `--keep-alive-for-test` is Chrome's own automation switch for
-    /// it, and the X must not take the agents' browser down with the window.
+    /// The page a raise carried rides its marker: a launch after the window
+    /// went (the engine took it down with the X) opens on it, and an empty or
+    /// missing marker is a launch that opens blank.
     #[test]
-    fn a_headed_launch_drops_headless_and_keeps_the_browser_alive() {
-        let headless = launch_args(Path::new("/tmp/forge-profile"), false, None, None);
-        let headed = launch_args(Path::new("/tmp/forge-profile"), true, None, None);
-        assert!(headless.contains(&"--headless".to_owned()), "{headless:?}");
-        assert!(!headed.contains(&"--headless".to_owned()), "{headed:?}");
-        assert!(
-            headed.contains(&"--keep-alive-for-test".to_owned()),
-            "a window close must leave the browser serving: {headed:?}",
-        );
-        assert!(
-            !headless.contains(&"--keep-alive-for-test".to_owned()),
-            "the headless launch has no window to keep it alive past: {headless:?}",
-        );
-    }
-
-    /// **The webdriver tell is switched off on both launches.** Measured
-    /// through the real driver: with the flag, `navigator.webdriver` reads
-    /// false from the engine's own native getter - no page patch, so nothing
-    /// for a page to notice - and the headed launch needs it exactly as the
-    /// headless one does.
-    #[test]
-    fn a_launch_switches_the_automation_tell_off() {
-        for headed in [false, true] {
-            let args = launch_args(Path::new("/tmp/forge-profile"), headed, None, None);
-            assert!(
-                args.contains(&"--disable-blink-features=AutomationControlled".to_owned()),
-                "webdriver must read false from the engine itself (headed: {headed}): {args:?}",
-            );
-        }
-    }
-
-    /// **The headless UA mask: the browser's own string, and the client
-    /// hints kept.** Measured: the UA override alone blanks `sec-ch-ua` on
-    /// every request, and the pair leaves the real hints beside the clean
-    /// string. A headed launch passes none of it - its UA is the real one -
-    /// and an unmasked launch (the version unreadable) adds nothing either.
-    #[test]
-    fn a_headless_launch_presents_the_masked_user_agent() {
-        let user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 \
-                          (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36";
-        let headless = launch_args(Path::new("/tmp/forge-profile"), false, None, Some(user_agent));
-        assert!(
-            headless.contains(&format!("--user-agent={user_agent}")),
-            "the header a server reads is fixed by the launch's own switch: {headless:?}",
-        );
-        assert!(
-            headless.contains(&"--disable-features=UACHOverrideBlank".to_owned()),
-            "without it the override blanks the client hints: {headless:?}",
-        );
-        assert_eq!(headless.last().map(String::as_str), Some("about:blank"), "{headless:?}");
-
-        let carried =
-            launch_args(Path::new("/tmp/forge-profile"), true, Some("https://example.com"), None);
-        assert!(
-            !carried.iter().any(|arg| arg.starts_with("--user-agent=")),
-            "a headed launch presents the browser's real user agent: {carried:?}",
-        );
-        assert!(!carried.iter().any(|arg| arg.starts_with("--disable-features=")), "{carried:?}",);
-
-        let unmasked = launch_args(Path::new("/tmp/forge-profile"), false, None, None);
-        assert!(
-            !unmasked.iter().any(|arg| arg.starts_with("--user-agent=")),
-            "a launch whose version could not be read adds nothing: {unmasked:?}",
-        );
-    }
-
-    /// The reduced UA is built from the browser's own version line, with
-    /// Chromium's frozen platform and version tail - the string the launched
-    /// browser's own UA was measured to carry on this machine.
-    #[test]
-    fn the_masked_user_agent_is_built_from_the_browsers_own_version() {
-        let expected = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 \
-                        (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36";
-        assert_eq!(reduced_user_agent("Brave Browser 155.1.97.56\n").as_deref(), Some(expected),);
-        assert_eq!(
-            reduced_user_agent("Google Chrome 156.0.1234.56\n"),
-            Some(
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, \
-                 like Gecko) Chrome/156.0.0.0 Safari/537.36"
-                    .to_owned(),
-            ),
-        );
-
-        for gibberish in ["", "\n", "not a version\n", "Brave Browser x.y.z\n", "155\n"] {
-            assert_eq!(reduced_user_agent(gibberish), None, "{gibberish:?} names no version");
-        }
-    }
-
-    /// The page a closed window's Open reopens on: the last headed launch
-    /// carries it in the marker, and an empty or missing marker is a launch
-    /// that opened blank.
-    #[test]
-    fn the_marker_carries_the_page_a_closed_window_reopens_on() {
+    fn the_marker_carries_the_page_a_lost_window_reopens_on() {
         let dir = tempfile::tempdir().expect("a temp dir");
         assert_eq!(windowed_page(dir.path()), None, "no marker, no page");
 
@@ -1248,11 +1021,11 @@ mod tests {
         assert_eq!(
             windowed_page(dir.path()),
             Some("https://example.com/x".to_owned()),
-            "the page the launch carried rides the marker",
+            "the page the raise showed rides the marker",
         );
 
         std::fs::write(windowed_marker(dir.path()), b"").expect("a blank marker");
-        assert_eq!(windowed_page(dir.path()), None, "a blank launch reopens blank");
+        assert_eq!(windowed_page(dir.path()), None, "a blank raise reopens blank");
     }
 
     /// A fake devtools endpoint for the windowed predicate: `/json/version`
@@ -1459,7 +1232,7 @@ mod tests {
         std::fs::write(dir.path().join("DevToolsActivePort"), b"9544\n/devtools/browser/young\n")
             .expect("a young port file");
         let started = tokio::time::Instant::now();
-        close(dir.path(), 9544).await;
+        close_under_lock(dir.path(), 9544).await;
         let waited = started.elapsed();
         assert!(
             waited >= LAUNCH_TIMEOUT,
@@ -1485,86 +1258,13 @@ mod tests {
             .expect("the file's time moves back");
         drop(handle);
         let started = tokio::time::Instant::now();
-        close(dir.path(), 9544).await;
+        close_under_lock(dir.path(), 9544).await;
         assert!(
             started.elapsed() < Duration::from_secs(2),
             "an old dead file is not waited on: {:?}",
             started.elapsed(),
         );
         assert!(!file.exists(), "an old dead port file is forgotten");
-    }
-
-    /// **Close takes the launch lock**: a close racing a launch waits it out
-    /// rather than reading "not answering" for a browser mid-launch.
-    ///
-    /// **An OLD port file, so the young-port wait cannot stand in for the
-    /// lock**: without the take the close reads "not answering", forgets the
-    /// file and finishes in one probe - which is what the timeout below
-    /// catches. (With a young file the wait alone keeps the close busy past
-    /// the window, and the assertion passes for the wrong reason.)
-    #[tokio::test(start_paused = true)]
-    async fn a_close_waits_for_a_launch_in_flight() {
-        let dir = tempfile::tempdir().expect("a temp dir");
-        let file = dir.path().join("DevToolsActivePort");
-        std::fs::write(&file, b"9544\n/devtools/browser/x\n").expect("a port file");
-        let old = std::time::SystemTime::now() - LAUNCH_TIMEOUT - Duration::from_secs(60);
-        let handle = std::fs::OpenOptions::new().write(true).open(&file).expect("the file");
-        handle
-            .set_times(std::fs::FileTimes::new().set_modified(old))
-            .expect("the file's time moves back");
-        drop(handle);
-
-        let held = LaunchLock::acquire(dir.path()).await.expect("the lock a launch holds");
-        let mut closing = tokio::spawn({
-            let path = dir.path().to_path_buf();
-            async move { close(&path, 9544).await }
-        });
-        let finished_while_held =
-            tokio::time::timeout(Duration::from_secs(1), &mut closing).await.is_ok();
-        assert!(
-            !finished_while_held,
-            "the close must WAIT on the launch lock - it finished while a launch held it",
-        );
-        drop(held);
-        closing.await.expect("the close task");
-    }
-
-    /// **The close HOLDS the launch lock through its body**, not only while
-    /// acquiring: the reconcile below it is exactly the window a second
-    /// launch would slip into - and a close that acquired and let go
-    /// immediately reopens the very race the take exists for.
-    ///
-    /// The young port file is the window made observable: the body waits on
-    /// it, and the lock must stay contended for as long as that wait runs.
-    #[tokio::test(start_paused = true)]
-    async fn a_close_holds_the_launch_lock_through_its_body() {
-        let dir = tempfile::tempdir().expect("a temp dir");
-        std::fs::write(dir.path().join("DevToolsActivePort"), b"9544\n/devtools/browser/x\n")
-            .expect("a young port file");
-
-        let held = LaunchLock::acquire(dir.path()).await.expect("the lock a launch holds");
-        let closing = tokio::spawn({
-            let path = dir.path().to_path_buf();
-            async move { close(&path, 9544).await }
-        });
-        tokio::task::yield_now().await;
-        tokio::task::yield_now().await;
-        assert!(!closing.is_finished(), "the close waits for the lock a launch holds");
-
-        drop(held);
-        let mut contended = false;
-        for _ in 0..50 {
-            if matches!(try_lock(dir.path()), Locked::Contended) {
-                contended = true;
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        assert!(
-            contended,
-            "the close holds the launch lock through its body - a launch cannot slip in mid-close",
-        );
-        closing.await.expect("the close task");
     }
 
     /// A lock file that cannot be used answers why rather than looping: a
@@ -1579,18 +1279,6 @@ mod tests {
             matches!(refused, Err(ref why) if why.contains("launch.lock")),
             "the refusal names the file it could not take",
         );
-    }
-
-    /// The bundle a browser binary lives in, which is what activation opens:
-    /// Brave's binary is under its `.app`, and a path outside one leaves
-    /// nothing to bring forward.
-    #[test]
-    fn a_browser_binary_resolves_to_its_app_bundle() {
-        assert_eq!(
-            app_bundle(Path::new("/Applications/Brave Browser.app/Contents/MacOS/Brave Browser")),
-            Some(PathBuf::from("/Applications/Brave Browser.app")),
-        );
-        assert_eq!(app_bundle(Path::new("/tmp/plain-binary")), None);
     }
 
     /// The answer's own `Content-Length` is what says it is complete, since
@@ -1631,173 +1319,5 @@ mod tests {
         let refused = browser_binary_from(&[missing.to_str().expect("a path")])
             .expect_err("nothing there to drive");
         assert!(refused.contains("Brave"), "the refusal names what to install: {refused}");
-    }
-
-    /// The version a UA string carries is its own token, reduced or full:
-    /// both a `Chrome/` and a `HeadlessChrome/` string name one.
-    #[test]
-    fn the_version_a_ua_string_carries_is_its_own_token() {
-        let reduced = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 \
-                       (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36";
-        assert_eq!(user_agent_version(reduced), Some("155.0.0.0"));
-
-        let headless = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 \
-                        (KHTML, like Gecko) HeadlessChrome/153.0.8010.12 Safari/537.36";
-        assert_eq!(user_agent_version(headless), Some("153.0.8010.12"));
-
-        assert_eq!(user_agent_version("Chrome/155.0.0.0"), Some("155.0.0.0"));
-        assert_eq!(user_agent_version("no browser here"), None, "no token, no version");
-        assert_eq!(user_agent_version("Chrome/"), None, "an empty token is no version");
-    }
-
-    /// The machine facts the tests rebuild with.
-    fn machine() -> HintMachine {
-        HintMachine {
-            platform_version: "26.5.2".to_owned(),
-            architecture: "arm",
-            bitness: "64".to_owned(),
-        }
-    }
-
-    /// The masked reduced UA the launch presents, which the capture reads.
-    const MASKED_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
-                             AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36";
-
-    /// **The rebuild is the exact list the browser reports without the
-    /// override, on both arms** (measured): Brave 155.1.97.56 headless reads
-    /// the frozen `155.0.0.0` everywhere, string and hints alike, while
-    /// Chrome for Testing 153 freezes only the string and reads its true
-    /// build version `153.0.8010.12` - so the version comes from the string
-    /// for Brave and from the version the attached browser reports for
-    /// itself everywhere else. The grease entry carries its own fake major
-    /// with the frozen tail on both.
-    #[test]
-    fn the_rebuilt_metadata_is_what_the_browser_reports() {
-        let brave = HintCapture {
-            user_agent: MASKED_UA.to_owned(),
-            brands: vec![
-                HintBrand { brand: "Brave".to_owned(), version: "155".to_owned() },
-                HintBrand { brand: "Chromium".to_owned(), version: "155".to_owned() },
-                HintBrand { brand: "Not(A:Brand".to_owned(), version: "24".to_owned() },
-            ],
-            platform: "macOS".to_owned(),
-            mobile: false,
-            blanked: true,
-            error: None,
-            // What Brave's browser object reports; the Brave arm never reads
-            // it, its version being the string's frozen one.
-            browser_version: "155.0.8059.40".to_owned(),
-        };
-        let metadata = user_agent_metadata(&brave, &machine()).expect("the capture rebuilds");
-        assert_eq!(
-            metadata,
-            serde_json::json!({
-                "brands": [
-                    { "brand": "Brave", "version": "155" },
-                    { "brand": "Chromium", "version": "155" },
-                    { "brand": "Not(A:Brand", "version": "24" },
-                ],
-                "fullVersionList": [
-                    { "brand": "Brave", "version": "155.0.0.0" },
-                    { "brand": "Chromium", "version": "155.0.0.0" },
-                    { "brand": "Not(A:Brand", "version": "24.0.0.0" },
-                ],
-                "fullVersion": "155.0.0.0",
-                "platform": "macOS",
-                "platformVersion": "26.5.2",
-                "architecture": "arm",
-                "model": "",
-                "mobile": false,
-                "bitness": "64",
-                "wow64": false,
-            }),
-            "Brave's hints read the frozen version its string carries: {metadata}",
-        );
-
-        // The Chrome arm: the string is frozen the same way, but the hints
-        // read the version the browser reports for itself.
-        let chrome = HintCapture {
-            user_agent: MASKED_UA.to_owned(),
-            brands: vec![
-                HintBrand { brand: "Chromium".to_owned(), version: "153".to_owned() },
-                HintBrand { brand: "Not_A Brand".to_owned(), version: "8".to_owned() },
-            ],
-            browser_version: "153.0.8010.12".to_owned(),
-            ..brave.clone()
-        };
-        let metadata = user_agent_metadata(&chrome, &machine()).expect("the capture rebuilds");
-        assert_eq!(
-            metadata["fullVersion"],
-            serde_json::json!("153.0.8010.12"),
-            "a non-Brave build reports its true build version: {metadata}",
-        );
-        assert_eq!(
-            metadata["fullVersionList"],
-            serde_json::json!([
-                { "brand": "Chromium", "version": "153.0.8010.12" },
-                { "brand": "Not_A Brand", "version": "8.0.0.0" },
-            ]),
-            "the real brand carries the build version, the grease entry its own frozen major: \
-             {metadata}",
-        );
-
-        // **A capture that cannot support a truthful rebuild answers None**
-        // rather than a half-claim: a browser already reading the five for
-        // real (an unmasked launch - derived values must not replace them),
-        // no brands, a string naming no version on the arm that needs it, or
-        // a non-Brave browser that reported no version of its own.
-        let real = HintCapture { blanked: false, ..brave.clone() };
-        assert_eq!(
-            user_agent_metadata(&real, &machine()),
-            None,
-            "a browser reporting its own high-entropy hints is left exactly as it is",
-        );
-        let brandless = HintCapture { brands: Vec::new(), ..brave.clone() };
-        assert_eq!(user_agent_metadata(&brandless, &machine()), None);
-        let versionless = HintCapture { user_agent: "no version in here".to_owned(), ..brave };
-        assert_eq!(user_agent_metadata(&versionless, &machine()), None);
-        let unreported = HintCapture { browser_version: String::new(), ..chrome };
-        assert_eq!(
-            user_agent_metadata(&unreported, &machine()),
-            None,
-            "a non-Brave browser reporting no version is a half-claim",
-        );
-    }
-
-    /// The `--version` line's token, which both the reduced UA and the full
-    /// build version are read out of.
-    #[test]
-    fn a_version_line_is_read_by_shape() {
-        assert_eq!(version_line("Brave Browser 155.1.97.56\n"), Some("155.1.97.56"));
-        assert_eq!(version_line("Google Chrome 155.0.1234.56\n"), Some("155.0.1234.56"));
-
-        for gibberish in ["", "\n", "not a version\n", "Brave Browser x.y.z\n", "155\n"] {
-            assert_eq!(version_line(gibberish), None, "{gibberish:?} names no version");
-        }
-    }
-
-    /// The architecture mapping: the names Chromium reports, and `None` for
-    /// anything unmeasured rather than a guess.
-    #[test]
-    fn the_architecture_mapping_names_what_chromium_reports() {
-        assert_eq!(client_hint_architecture("aarch64"), Some("arm"));
-        assert_eq!(client_hint_architecture("x86_64"), Some("x86"));
-        assert_eq!(
-            client_hint_architecture("riscv64"),
-            None,
-            "an unmeasured architecture is no claim at all",
-        );
-    }
-
-    /// `sw_vers -productVersion`'s answer, by shape: a dotted all-numeric
-    /// version, and anything else is a version that cannot be claimed.
-    #[test]
-    fn the_product_version_is_read_by_shape() {
-        assert_eq!(product_version("26.5.2\n"), Some("26.5.2".to_owned()));
-        assert_eq!(product_version("15.6\n"), Some("15.6".to_owned()));
-
-        for gibberish in ["", "\n", "not a version\n", "26\n", "26..5\n", "26.5.2beta\n"] {
-            assert_eq!(product_version(gibberish), None, "{gibberish:?} names no version");
-        }
     }
 }
