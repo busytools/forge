@@ -12,9 +12,11 @@
 //! tree - so there is nothing a project could withhold. Every state the read
 //! can refuse is the call's failure, with the read's own sentence in it.
 
+use std::fmt::Write as _;
 use std::sync::Arc;
 
 use forge_primitives::SessionSlot;
+use forge_primitives::review::doc_scope_ref;
 use forge_sdk::mcp::server::McpServerBuilder;
 use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput, ToolOutputBlock};
 use serde_json::Value;
@@ -130,11 +132,17 @@ impl HandOffTool {
             Some(other) => return Err(format!("`reviewable` is true or false, not {other}")),
         };
         let resolved = self.facade.hand_off(&self.slot, path, reviewable).await?;
-        Ok(format!(
-            "The document is open in the reader's viewer at {resolved}. If the reader leaves \
-             review comments, they arrive later as a review left; this answer is the open, not \
-             the finish."
-        ))
+        let mut answer = format!("The document is open in the reader's viewer at {resolved}.");
+        if reviewable {
+            let _ = write!(
+                answer,
+                " A review the reader leaves arrives later, filed under the document's own \
+                 scope, {}; read it back with review__list and pass that scope.",
+                doc_scope_ref(&resolved),
+            );
+        }
+        answer.push_str(" This answer is the open, not the finish.");
+        Ok(answer)
     }
 }
 
@@ -198,6 +206,29 @@ mod tests {
         assert!(out.is_error, "{:?}", out.blocks);
         let text = crate::mcp::test_support::block_text(&out.blocks[0]);
         assert!(text.contains("outside the session's tree"), "{text}");
+    }
+
+    /// A reviewable hand-off names the scope a review will be filed
+    /// under, so the agent can read the review back without a failed call
+    /// first; a read-only hand-off names nothing, because nothing can be
+    /// filed.
+    #[tokio::test]
+    async fn a_reviewable_hand_offs_answer_names_the_scope() {
+        let mock = Arc::new(MockDocumentFacade::new());
+        *mock.answer.lock() = Ok("/proj/docs/readme.md".to_owned());
+        let tool = tool(Arc::clone(&mock) as Arc<dyn DocumentFacade>);
+
+        let reviewable = tool
+            .call(ToolInput { value: json!({ "path": "docs/readme.md", "reviewable": true }) })
+            .await;
+        assert!(!reviewable.is_error, "{:?}", reviewable.blocks);
+        let text = crate::mcp::test_support::block_text(&reviewable.blocks[0]);
+        assert!(text.contains("doc:/proj/docs/readme.md"), "the answer names the scope: {text}");
+
+        let read_only = tool.call(ToolInput { value: json!({ "path": "docs/readme.md" }) }).await;
+        assert!(!read_only.is_error, "{:?}", read_only.blocks);
+        let text = crate::mcp::test_support::block_text(&read_only.blocks[0]);
+        assert!(!text.contains("doc:"), "a read-only hand-off names no scope: {text}");
     }
 
     /// `reviewable` is off unless asked for: everything the agent did not

@@ -291,15 +291,21 @@ fn rfc3339_now() -> String {
 async fn scope_or_error(
     facade: &Arc<dyn ReviewFacade>,
     slot: &SessionSlot,
+    scope: Option<&str>,
 ) -> Result<ReviewScope, ToolOutput> {
-    facade.resolve_scope(slot).await.map_err(|err| tool_error(err.message()))
+    facade.resolve_scope(slot, scope).await.map_err(|err| tool_error(err.message()))
 }
 
 /// `review__list` - the submitted reviews on the caller's (project,
-/// branch). No args.
+/// branch), or on an explicit `scope`.
 pub(crate) struct ReviewList {
     pub(crate) facade: Arc<dyn ReviewFacade>,
     pub(crate) slot: SessionSlot,
+}
+
+#[derive(Deserialize)]
+struct ListArgs {
+    scope: Option<String>,
 }
 
 #[async_trait::async_trait]
@@ -315,19 +321,32 @@ impl Tool for ReviewList {
          tally of its comments (open / addressed / resolved / outdated). \
          Start here when you get a 'review #N ready' nudge, then call \
          review__get with a review_id to read the individual comments. \
-         Takes no arguments."
+         Pass `scope` to address a review filed elsewhere: one left on a \
+         document hand-off is filed under the document's own scope, \
+         doc:<resolved path>, which the hand-off answer names."
     }
 
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
-            "properties": {},
+            "properties": {
+                "scope": {
+                    "type": "string",
+                    "description": "Address a scope other than your branch; a document's \
+                                    review is filed under doc:<resolved path>, which the \
+                                    hand-off that opened it names.",
+                },
+            },
             "additionalProperties": false,
         })
     }
 
-    async fn call(&self, _input: ToolInput) -> ToolOutput {
-        let scope = match scope_or_error(&self.facade, &self.slot).await {
+    async fn call(&self, input: ToolInput) -> ToolOutput {
+        let args: ListArgs = match serde_json::from_value(input.value) {
+            Ok(a) => a,
+            Err(err) => return tool_error(format!("invalid arguments: {err}")),
+        };
+        let scope = match scope_or_error(&self.facade, &self.slot, args.scope.as_deref()).await {
             Ok(s) => s,
             Err(out) => return out,
         };
@@ -381,6 +400,7 @@ pub(crate) struct ReviewGet {
 #[derive(Deserialize)]
 struct GetArgs {
     review_id: String,
+    scope: Option<String>,
 }
 
 #[async_trait::async_trait]
@@ -398,7 +418,9 @@ impl Tool for ReviewGet {
          'you' is the reviewer, otherwise a worker reply). Prefer the \
          `context` code snippet over the line number to locate the spot - \
          a comment may be scoped to a commit whose line no longer matches \
-         your working tree. Pass the review_id from review__list."
+         your working tree. Pass the review_id from review__list, plus \
+         `scope` for a review filed under a document's scope rather than \
+         your branch."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -408,6 +430,12 @@ impl Tool for ReviewGet {
                 "review_id": {
                     "type": "string",
                     "description": "The review_id from review__list.",
+                },
+                "scope": {
+                    "type": "string",
+                    "description": "A scope other than your branch; a document's review is \
+                                    filed under doc:<resolved path>, which the hand-off \
+                                    that opened it names.",
                 },
             },
             "required": ["review_id"],
@@ -420,7 +448,7 @@ impl Tool for ReviewGet {
             Ok(a) => a,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
-        let scope = match scope_or_error(&self.facade, &self.slot).await {
+        let scope = match scope_or_error(&self.facade, &self.slot, args.scope.as_deref()).await {
             Ok(s) => s,
             Err(out) => return out,
         };
@@ -446,6 +474,7 @@ pub(crate) struct ReviewReply {
 struct ReplyArgs {
     comment_id: String,
     text: String,
+    scope: Option<String>,
 }
 
 #[async_trait::async_trait]
@@ -462,7 +491,9 @@ impl Tool for ReviewReply {
          the comment_id from review__get. Returns the comment's new status \
          alongside the file, line and side it is anchored to. \
          Reply per comment, then use review__resolve for the ones you \
-         consider done, or leave them addressed for the reviewer to resolve."
+         consider done, or leave them addressed for the reviewer to resolve. \
+         For a review filed under a document's scope rather than your \
+         branch, pass `scope`."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -477,6 +508,12 @@ impl Tool for ReviewReply {
                     "type": "string",
                     "description": "Your reply, addressed to the reviewer.",
                 },
+                "scope": {
+                    "type": "string",
+                    "description": "A scope other than your branch; a document's review is \
+                                    filed under doc:<resolved path>, which the hand-off \
+                                    that opened it names.",
+                },
             },
             "required": ["comment_id", "text"],
             "additionalProperties": false,
@@ -488,7 +525,7 @@ impl Tool for ReviewReply {
             Ok(a) => a,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
-        let scope = match scope_or_error(&self.facade, &self.slot).await {
+        let scope = match scope_or_error(&self.facade, &self.slot, args.scope.as_deref()).await {
             Ok(s) => s,
             Err(out) => return out,
         };
@@ -508,6 +545,7 @@ pub(crate) struct ReviewResolve {
 #[derive(Deserialize)]
 struct ResolveArgs {
     comment_id: String,
+    scope: Option<String>,
 }
 
 #[async_trait::async_trait]
@@ -522,7 +560,8 @@ impl Tool for ReviewResolve {
          resolve; or leave a comment addressed and let the reviewer resolve \
          it themselves. Pass the comment_id from review__get. Returns the \
          comment's new status alongside the file, line and side it is \
-         anchored to."
+         anchored to. For a review filed under a document's scope rather \
+         than your branch, pass `scope`."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -532,6 +571,12 @@ impl Tool for ReviewResolve {
                 "comment_id": {
                     "type": "string",
                     "description": "The comment_id from review__get.",
+                },
+                "scope": {
+                    "type": "string",
+                    "description": "A scope other than your branch; a document's review is \
+                                    filed under doc:<resolved path>, which the hand-off \
+                                    that opened it names.",
                 },
             },
             "required": ["comment_id"],
@@ -544,7 +589,7 @@ impl Tool for ReviewResolve {
             Ok(a) => a,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
-        let scope = match scope_or_error(&self.facade, &self.slot).await {
+        let scope = match scope_or_error(&self.facade, &self.slot, args.scope.as_deref()).await {
             Ok(s) => s,
             Err(out) => return out,
         };
@@ -947,6 +992,50 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(text_of(&out)).expect("json");
         assert_eq!(parsed["status"], "resolved");
         assert_eq!(*mock.resolve_calls.lock(), vec!["c2".to_owned()]);
+    }
+
+    /// The read-back for a document's review: `scope` on any of the four
+    /// tools addresses that scope instead of the caller's branch, so a
+    /// review filed under `doc:<path>` is listable, readable, answerable
+    /// and resolvable from the session that wrote the document.
+    #[tokio::test]
+    async fn the_scope_argument_addresses_all_four_tools() {
+        let mock = Arc::new(MockReviewFacade::new());
+        *mock.detail.lock() = Some(ReviewDetail {
+            review_id: "r1".to_owned(),
+            number: 1,
+            summary: None,
+            comments: Vec::new(),
+        });
+        let facade: Arc<dyn ReviewFacade> = mock.clone();
+        let scope = "doc:/proj/plan.md";
+
+        let outputs = vec![
+            ReviewList { facade: Arc::clone(&facade), slot: caller_slot() }
+                .call(ToolInput { value: serde_json::json!({ "scope": scope }) })
+                .await,
+            ReviewGet { facade: Arc::clone(&facade), slot: caller_slot() }
+                .call(ToolInput {
+                    value: serde_json::json!({ "review_id": "r1", "scope": scope }),
+                })
+                .await,
+            ReviewReply { facade: Arc::clone(&facade), slot: caller_slot() }
+                .call(ToolInput {
+                    value: serde_json::json!({ "comment_id": "c1", "text": "done", "scope": scope }),
+                })
+                .await,
+            ReviewResolve { facade: Arc::clone(&facade), slot: caller_slot() }
+                .call(ToolInput { value: serde_json::json!({ "comment_id": "c2", "scope": scope }) })
+                .await,
+        ];
+        for out in &outputs {
+            assert!(!out.is_error, "{:?}", out.blocks);
+        }
+        assert_eq!(
+            mock.scopes_seen.lock().as_slice(),
+            [scope, scope, scope, scope],
+            "every tool addressed the explicit scope rather than the caller's branch",
+        );
     }
 
     #[tokio::test]
