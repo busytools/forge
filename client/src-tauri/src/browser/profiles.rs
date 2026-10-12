@@ -7,13 +7,15 @@
 //! profile's page, which an isolated context inside one shared browser can
 //! never do: Chromium gives such a context no window presence at all.
 //!
-//! **Ownership rides the session that opened it.** The first session to name a
-//! profile owns it; another session naming it is refused with the owner's
-//! name, until the owner releases it. The browser's own profile carries no
-//! name and no owner: every session shares it.
+//! **Ownership rides the seat that opened it, and it is recorded.** The first
+//! call naming a profile records its seat in `owner.json` inside the profile's
+//! own directory, so the name stays that seat's across a client restart;
+//! another seat naming it is refused by name. Only a delete or the sweeps on
+//! despawn/connect end it. The browser's own profile carries no name and no
+//! owner: every seat shares it.
 
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde::Deserialize;
@@ -236,10 +238,48 @@ impl Named {
     /// The owner, the data directory, and the driver a named profile is
     /// opened with. **Neither the driver nor the browser is started here**: a
     /// session that names a profile and then drives it pays for both once,
-    /// and one that names it and stops pays nothing.
-    pub(super) fn open(owner: Seat, name: &str, paths: &StackPaths) -> Self {
-        Self { owner, profile: Profile::new(), dir: paths.profiles.join(name) }
+    /// and one that names it and stops pays nothing. The ownership record IS
+    /// written here: the name is answered for from disk from the next read
+    /// on, so a restart cannot turn it into an open name.
+    pub(super) fn open(owner: Seat, name: &str, paths: &StackPaths) -> Result<Self, String> {
+        let dir = paths.profiles.join(name);
+        record_owner(&dir, &owner)?;
+        Ok(Self { owner, profile: Profile::new(), dir })
     }
+}
+
+/// The file inside a profile's directory that records the seat it belongs to.
+/// Absent means the directory predates ownership: a legacy orphan the sweep
+/// takes.
+pub(super) const OWNER_FILE: &str = "owner.json";
+
+/// Record the seat a profile belongs to, beside the profile's own files so
+/// the name, the logins and the owner travel together. Creates the directory,
+/// which the owner file lives in.
+pub(super) fn record_owner(dir: &Path, seat: &Seat) -> Result<(), String> {
+    std::fs::create_dir_all(dir)
+        .map_err(|why| format!("the profile's directory cannot be made: {why}"))?;
+    let body = serde_json::to_vec(seat)
+        .map_err(|why| format!("the profile's ownership record cannot be written: {why}"))?;
+    std::fs::write(dir.join(OWNER_FILE), body)
+        .map_err(|why| format!("the profile's ownership record cannot be written: {why}"))
+}
+
+/// The seat recorded as this profile's owner. `Ok(None)` is a directory with
+/// no record - a legacy profile, owned by nobody - and `Err` is a record that
+/// cannot be read: the name refuses on that rather than guessing an owner,
+/// and the sweep reads it as ownerless and takes it.
+pub(super) fn owner_of(dir: &Path) -> Result<Option<Seat>, String> {
+    let body = match std::fs::read(dir.join(OWNER_FILE)) {
+        Ok(body) => body,
+        Err(why) if why.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(why) => {
+            return Err(format!("the profile's ownership record cannot be read: {why}"));
+        }
+    };
+    serde_json::from_slice::<Seat>(&body)
+        .map(Some)
+        .map_err(|why| format!("the profile's ownership record cannot be read: {why}"))
 }
 
 /// What a session naming a profile gets.
@@ -280,8 +320,8 @@ pub(super) fn verdict(name: &str, seat: &Seat, held: Option<&Seat>) -> Verdict {
         None => Verdict::Open,
         Some(owner) if owner == seat => Verdict::Drive,
         Some(owner) => Verdict::Refuse(format!(
-            "the profile '{name}' belongs to {owner}; another session attaches to it only \
-             after it is released"
+            "the profile '{name}' belongs to {owner}; it goes when that seat is despawned, \
+             or from the browser strip"
         )),
     }
 }
@@ -345,13 +385,47 @@ mod tests {
 
     /// A named profile's browser lives on its own directory, under the
     /// profiles root and never on the shared profile's: the directory is what
-    /// carries that profile's logins.
+    /// carries that profile's logins. **And opening records the seat**: the
+    /// name is answered for from disk from the next client on.
     #[test]
-    fn a_named_profile_gets_its_own_browser_directory() {
-        let paths = paths("/data/browser");
-        let named = Named::open(seat("job-hunt"), "hunt", &paths);
-        assert_eq!(named.dir, PathBuf::from("/data/browser/profiles/hunt"));
+    fn a_named_profile_gets_its_own_browser_directory_and_records_its_seat() {
+        let root = tempfile::tempdir().expect("a temp dir");
+        let paths = paths(root.path().to_str().expect("a path"));
+        let named = Named::open(seat("job-hunt"), "hunt", &paths).expect("the open");
+        assert_eq!(named.dir, paths.profiles.join("hunt"));
         assert_ne!(named.dir, paths.user_data, "never the shared profile's directory");
+        assert_eq!(
+            owner_of(&named.dir),
+            Ok(Some(seat("job-hunt"))),
+            "the seat that opened the name is what the directory records",
+        );
+    }
+
+    /// **The record survives the client run and is the authority after it.**
+    /// A written record reads back as the same seat; a directory without one
+    /// is a legacy profile owned by nobody; and a record that cannot be read
+    /// is an error rather than a guess - the name refuses on it and the sweep
+    /// takes it as ownerless.
+    #[test]
+    fn an_owner_record_round_trips_and_absence_is_ownerless() {
+        let root = tempfile::tempdir().expect("a temp dir");
+        let dir = root.path().join("profiles").join("hunt");
+        let owner = seat("job-hunt");
+
+        assert_eq!(owner_of(&dir), Ok(None), "no directory is a legacy profile, owned by nobody");
+
+        record_owner(&dir, &owner).expect("the record");
+        assert_eq!(owner_of(&dir), Ok(Some(owner.clone())), "the seat reads back");
+
+        std::fs::write(dir.join(OWNER_FILE), b"not json").expect("a tampered record");
+        let why = owner_of(&dir).expect_err("an unreadable record is an error, not a guess");
+        assert!(why.contains("cannot be read"), "{why}");
+
+        // A directory with files but no record is legacy, not corrupt.
+        let legacy = root.path().join("profiles").join("old");
+        std::fs::create_dir_all(&legacy).expect("the legacy dir");
+        std::fs::write(legacy.join("Cookies"), b"the logins").expect("legacy files");
+        assert_eq!(owner_of(&legacy), Ok(None), "files without a record predate ownership");
     }
 
     /// The seat prints as the slot it is, which is what a refusal says.

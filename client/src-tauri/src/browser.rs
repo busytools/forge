@@ -777,6 +777,11 @@ impl BrowserHost {
     /// and owns it, and the second is refused by the same rule as any other
     /// attach. A profile whose driver died between calls needs nothing here -
     /// its next call rebuilds the driver over the saved files.
+    ///
+    /// **The owner record is read when no live entry holds the name**, so a
+    /// client restart cannot turn another seat's profile into an open name:
+    /// the record on disk is what the verdict answers from. An unreadable
+    /// record refuses the name rather than guessing an owner.
     #[cfg(desktop)]
     async fn named_profile(&self, seat: &Seat, name: &str) -> Result<Arc<Named>, String> {
         if let Some(refusal) = profiles::name_refusal(name) {
@@ -784,8 +789,11 @@ impl BrowserHost {
         }
         let paths = self.paths.clone()?;
         let mut named = self.named.lock().await;
-        let held = named.get(name).map(|entry| &entry.owner);
-        match profiles::verdict(name, seat, held) {
+        let held = match named.get(name) {
+            Some(entry) => Some(entry.owner.clone()),
+            None => profiles::owner_of(&paths.profiles.join(name))?,
+        };
+        match profiles::verdict(name, seat, held.as_ref()) {
             profiles::Verdict::Refuse(refusal) => Err(refusal),
             profiles::Verdict::Drive => {
                 let Some(entry) = named.get(name).map(Arc::clone) else {
@@ -797,7 +805,7 @@ impl BrowserHost {
                 // The browser and its driver wait for the profile's first
                 // CALL: opening the name here costs nothing, and a session
                 // that names a profile and never drives it holds neither.
-                let fresh = Arc::new(Named::open(seat.clone(), name, &paths));
+                let fresh = Arc::new(Named::open(seat.clone(), name, &paths)?);
                 named.insert(name.to_owned(), Arc::clone(&fresh));
                 Ok(fresh)
             }
@@ -1013,7 +1021,7 @@ mod tests {
             "a marker with nothing answering is not a window - the shared line keeps show's rule",
         );
 
-        let named = Named::open(seat(), "hunt", &paths);
+        let named = Named::open(seat(), "hunt", &paths).expect("the open");
         std::fs::create_dir_all(&named.dir).expect("the profile dir");
         std::fs::write(named.dir.join("windowed"), b"").expect("the profile marker");
         host.named.lock().await.insert("hunt".to_owned(), Arc::new(named));
@@ -1192,7 +1200,7 @@ mod tests {
             profiles: dir.path().join("profiles"),
         };
         let host = BrowserHost::new(paths.clone());
-        let named = Named::open(seat(), "hunt", &paths);
+        let named = Named::open(seat(), "hunt", &paths).expect("the open");
         std::fs::create_dir_all(&named.dir).expect("the profile dir");
         std::fs::write(named.dir.join("Cookies"), b"the logins").expect("some data");
         host.named.lock().await.insert("hunt".to_owned(), Arc::new(named));
@@ -1248,7 +1256,7 @@ mod tests {
             profiles: dir.path().join("profiles"),
         };
         let host = Arc::new(BrowserHost::new(paths.clone()));
-        let named = Arc::new(Named::open(seat(), "hunt", &paths));
+        let named = Arc::new(Named::open(seat(), "hunt", &paths).expect("the open"));
         std::fs::create_dir_all(&named.dir).expect("the profile dir");
         let calls = named.profile.call_lock().await;
         host.named.lock().await.insert("hunt".to_owned(), Arc::clone(&named));
@@ -1339,6 +1347,58 @@ mod tests {
         assert!(!profile_dir.exists(), "and the tree goes");
     }
 
+    /// **A restart does not free the name.** The in-memory lease dies with
+    /// the client; the record on disk is what the next run reads, so another
+    /// seat naming a recorded profile is refused by name even with no live
+    /// entry - the leak this closes, where any seat could adopt any name
+    /// after a restart. The owner itself re-attaches (no reopen), and an
+    /// unreadable record refuses rather than guessing.
+    #[tokio::test]
+    async fn a_recorded_name_stays_its_seats_across_a_restart() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let owner = seat();
+        // The first run: the seat names the profile, which records the owner.
+        Named::open(owner.clone(), "hunt", &paths).expect("the open");
+        // The client restarted: a fresh host, an empty map, the record alone.
+        let host = BrowserHost::new(paths.clone());
+
+        let other = Seat { org: "Other".to_owned(), ..seat() };
+        let refused = host
+            .call(&other, "browser_navigate", json!({ "url": "https://example.com", "profile": "hunt" }))
+            .await
+            .expect_err("another seat's recorded profile");
+        assert!(refused.contains("belongs to Busytools/forge/lead"), "{refused}");
+        assert!(
+            refused.contains("despawned") || refused.contains("browser strip"),
+            "the refusal names the two doors that do end it: {refused}",
+        );
+
+        // The owner still drives its own name: whatever the call answers, it
+        // is not the refusal, and no re-record happened (a second open would
+        // rewrite the file through the same seat, which this asserts too).
+        let answered = host
+            .call(&owner, "browser_navigate", json!({ "url": "https://example.com", "profile": "hunt" }))
+            .await
+            .expect_err("no browser stack is vendored in a test");
+        assert!(!answered.contains("belongs to"), "the owner is not refused its own name: {answered}");
+
+        // A record that cannot be read refuses with its reason.
+        std::fs::write(paths.profiles.join("hunt").join(profiles::OWNER_FILE), b"not json")
+            .expect("a tampered record");
+        let broken = BrowserHost::new(paths.clone());
+        let refused = broken
+            .call(&owner, "browser_navigate", json!({ "url": "https://example.com", "profile": "hunt" }))
+            .await
+            .expect_err("an unreadable record refuses");
+        assert!(refused.contains("cannot be read"), "{refused}");
+    }
+
     /// **A session deletes only the profile it owns**, and the shared
     /// browser is never a delete target: each refusal names what to do
     /// instead.
@@ -1352,7 +1412,7 @@ mod tests {
             profiles: dir.path().join("profiles"),
         };
         let host = BrowserHost::new(paths.clone());
-        let named = Named::open(seat(), "hunt", &paths);
+        let named = Named::open(seat(), "hunt", &paths).expect("the open");
         std::fs::create_dir_all(&named.dir).expect("the profile dir");
         host.named.lock().await.insert("hunt".to_owned(), Arc::new(named));
 
