@@ -1896,6 +1896,54 @@ mod tests {
     use super::*;
     use crate::work::WorkCache;
 
+    /// **The transport is what makes a hand-off's open claimable.** The
+    /// per-connection guard is the only thing that moves the attached count,
+    /// so a regression that skipped it would refuse every hand-off with
+    /// NO_VIEWER_CLIENT - and only a live run would catch it. The guard's
+    /// whole life is pinned here: no connection refuses with the reason, an
+    /// attached one claims the open, and its drop takes the claim back.
+    #[tokio::test]
+    async fn an_attached_connection_is_what_a_hand_off_claims_its_open_on() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fleet = crate::testing::Fleet::in_dir(dir.path(), &[("TestOrg", &["proj"])])
+            .expect("the fleet builds");
+        let root = dir.path().join("proj");
+        std::fs::create_dir_all(root.join("docs")).expect("the project tree");
+        std::fs::write(root.join("docs/readme.md"), b"# hi\n").expect("the document");
+
+        let state = TransportState {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            client: forge_primitives::ClientConfig::default(),
+            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+        };
+        // The raise needs a subscriber to land on; a connection's own stream
+        // stands in for one.
+        let _updates = state.surface.subscribe_client(false);
+        let seat = SessionSlot::lead("TestOrg", "proj");
+
+        let refused = fleet
+            .workspace()
+            .hand_off_document(&seat, "docs/readme.md", false)
+            .expect_err("no connection, so nothing to open on");
+        assert_eq!(refused, forge_workspace::Workspace::NO_VIEWER_CLIENT);
+
+        let attached = AttachedClient::new(&state.surface);
+        fleet
+            .workspace()
+            .hand_off_document(&seat, "docs/readme.md", false)
+            .expect("an attached connection claims the open");
+
+        drop(attached);
+        let refused = fleet
+            .workspace()
+            .hand_off_document(&seat, "docs/readme.md", false)
+            .expect_err("the connection went, so the claim goes with it");
+        assert_eq!(refused, forge_workspace::Workspace::NO_VIEWER_CLIENT);
+    }
+
     /// Escalating from observing to answering opens a new stream - and what
     /// the old one had queued is handed back rather than dropped. The queue is
     /// not only about the subject just asked for: it can hold news about a
