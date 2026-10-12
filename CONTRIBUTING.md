@@ -25,7 +25,8 @@ check (`client-android-warnings`),
 per feature set (with and without `--all-features`),
 `cargo nextest run --workspace --all-features`,
 `cargo test --doc --workspace --all-features`, and
-`cargo doc --workspace --no-deps --all-features`, all with
+`cargo doc --workspace --no-deps --all-features
+--document-private-items`, all with
 `RUSTFLAGS=-D warnings` on the clippy, test, doctest and doc steps. That
 flag covers the build each step drives, and rustdoc compiles a doctest on
 its own, so it does not deny warnings inside one. This is CI's set minus
