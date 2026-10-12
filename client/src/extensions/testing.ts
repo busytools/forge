@@ -191,6 +191,7 @@ export function fakePage(read: ExtensionsRead): FakePage {
     onBrowserAsk: refused,
     browserRole: refused,
     onBrowserRole: refused,
+    onProfilesChanged: refused,
     takeBrowserRole: refused,
     store: refused,
     settings: refused,

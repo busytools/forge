@@ -69,6 +69,7 @@ function stub() {
     settings: () => null,
     browserRole: () => false,
     onBrowserRole: () => () => undefined,
+    onProfilesChanged: () => () => undefined,
     status: () => (open ? ('open' as const) : ('closed' as const)),
     close: () => undefined,
   } as unknown as Connection;

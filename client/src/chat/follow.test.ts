@@ -154,6 +154,7 @@ function stub() {
     // role as it draws; override is never pressed here.
     browserRole: () => false,
     onBrowserRole: () => () => undefined,
+    onProfilesChanged: () => () => undefined,
     takeBrowserRole: () => undefined,
     store: () => undefined,
     settings: () => null,

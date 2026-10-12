@@ -72,6 +72,7 @@ function stub() {
     // here and stays out.
     browserRole: () => false,
     onBrowserRole: () => () => undefined,
+    onProfilesChanged: () => () => undefined,
     takeBrowserRole: () => undefined,
     store: (what: Parameters<Connection['store']>[0]) => stores.get(what),
     settings: () => null,

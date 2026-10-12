@@ -18,6 +18,7 @@ function untouched(): Connection {
   return {
     browserRole: () => false,
     onBrowserRole: () => () => {},
+    onProfilesChanged: () => () => {},
     takeBrowserRole: () => {},
   } as unknown as Connection;
 }

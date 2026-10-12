@@ -98,6 +98,9 @@ class RustConnection implements Connection {
   private readonly listeners = new Set<(message: ServerMessage) => void>();
   private readonly statuses = new Set<(status: ConnectionStatus) => void>();
   private readonly roles = new Set<(hosting: boolean) => void>();
+  /** The strip's re-reads after the host swept its profiles: the sweep runs
+   *  in the Rust half, and this is how a page learns its rows moved. */
+  private readonly swept = new Set<() => void>();
   /**
    * The ask handler, kept for the interface's own sake: on the desktop no
    * ask reaches this page at all - the Rust half answers them - so nothing
@@ -133,6 +136,11 @@ class RustConnection implements Connection {
     );
     this.stops.push(
       await listen<number>('client://asks', (event) => this.asksMoved(event.payload)),
+    );
+    this.stops.push(
+      await listen('client://profiles', () => {
+        for (const hear of this.swept) hear();
+      }),
     );
     await invoke('client_connect', { url });
     this.beat = setInterval(() => {
@@ -342,6 +350,13 @@ class RustConnection implements Connection {
     this.roles.add(fn);
     return () => {
       this.roles.delete(fn);
+    };
+  }
+
+  onProfilesChanged(fn: () => void): () => void {
+    this.swept.add(fn);
+    return () => {
+      this.swept.delete(fn);
     };
   }
 

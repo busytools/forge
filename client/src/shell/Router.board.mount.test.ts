@@ -46,6 +46,7 @@ function recording(sent: Record<string, unknown>[]): { connection: Connection } 
     onBrowserAsk: refuse,
     browserRole: refuse,
     onBrowserRole: refuse,
+    onProfilesChanged: refuse,
     takeBrowserRole: refuse,
     onMessage: refuse,
     onStatus: refuse,

@@ -210,6 +210,7 @@ export interface Wire {
     | 'refresh'
     | 'browserRole'
     | 'onBrowserRole'
+    | 'onProfilesChanged'
     | 'takeBrowserRole'
   >;
   /** Say something to every composer attached, as the server would. */
@@ -255,9 +256,11 @@ export function wire(settings: ClientSettings = DEFAULT_SETTINGS): Wire {
       },
       store: (what) => stores.get(what),
       // The strip lane's browser segment, which registers a role listener and
-      // reads the role as it draws; these tests never press its override.
+      // reads the role as it draws; these tests never press its override, and
+      // nothing here sweeps a profile.
       browserRole: () => false,
       onBrowserRole: () => () => {},
+      onProfilesChanged: () => () => {},
       takeBrowserRole: () => {},
       // The take's own three: a page that starts one streams frames here,
       // and the fixtures answer as a live socket does.

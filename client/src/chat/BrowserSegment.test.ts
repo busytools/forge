@@ -53,6 +53,7 @@ vi.mock('../browser/host', async (importOriginal) => {
  */
 function fakeConnection(hosting = false) {
   const hearers = new Set<(now: boolean) => void>();
+  const swept = new Set<() => void>();
   let role = hosting;
   const taken = vi.fn();
   const connection = {
@@ -60,6 +61,10 @@ function fakeConnection(hosting = false) {
     onBrowserRole: (fn: (now: boolean) => void) => {
       hearers.add(fn);
       return () => hearers.delete(fn);
+    },
+    onProfilesChanged: (fn: () => void) => {
+      swept.add(fn);
+      return () => swept.delete(fn);
     },
     takeBrowserRole: taken,
   } as unknown as Connection;
@@ -69,6 +74,10 @@ function fakeConnection(hosting = false) {
     flip: (now: boolean) => {
       role = now;
       for (const hear of hearers) hear(now);
+    },
+    /** The host saying it swept; every open strip re-reads. */
+    swept: () => {
+      for (const hear of swept) hear();
     },
     taken,
   };
@@ -364,12 +373,95 @@ describe('the browser segment', () => {
       'the row reports the work while the shell waits out whatever it waits',
     ).toContain('deleting...');
 
-    // The delete answered: the read that lands finds the row gone.
+    // The delete answered: the outcome names what went, and the row itself
+    // falls away with the files.
     vi.mocked(listProfiles).mockResolvedValue([]);
     gate.finish?.();
     await vi.waitFor(() => {
-      expect(shownText(shown.target), 'and the row falls away with the files').not.toContain(
-        'hunt',
+      expect(shownText(shown.target), 'the outcome says what went').toContain(
+        "deleted the 'hunt' profile",
+      );
+    });
+    expect(
+      list(shown.target)?.querySelector('.bz-del'),
+      'and the row itself falls away with the files',
+    ).toBeNull();
+    shown.stop();
+  });
+
+  it('keeps the panel open under a pointer inside it and lets the delete land', async () => {
+    vi.mocked(listProfiles).mockResolvedValue([
+      { name: 'hunt', owner: 'Busytools/forge/lead', running: true, windowed: false },
+    ]);
+    const shown = show(false, true);
+    click(shown.target.querySelector('.bz-tog'));
+    await vi.waitFor(() => expect(shownText(shown.target)).toContain('hunt'));
+
+    /**
+     * **A real pointer's press, which the plain `.click()` helper never
+     * sends.** The panel is PORTALED to the body, and the leave guard used
+     * to close it on any pointerdown outside the SEGMENT - so live, every
+     * one of its controls unmounted under the press while these tests
+     * stayed green.
+     */
+    const press = (el: Element | null | undefined): void => {
+      if (!(el instanceof HTMLElement)) throw new Error('nothing to press');
+      el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+      flushSync();
+    };
+
+    press(list(shown.target)?.querySelector('.bz-del'));
+    expect(list(shown.target), 'the panel stays under the press').not.toBeNull();
+    click(list(shown.target)?.querySelector('.bz-del'));
+    expect(shownText(shown.target), 'and the confirm is armed').toContain(
+      'its logins and cookies go with it',
+    );
+    press(list(shown.target)?.querySelector('.bz-del.confirm'));
+    click(list(shown.target)?.querySelector('.bz-del.confirm'));
+    expect(deleteProfile, 'the delete ran').toHaveBeenCalledWith('hunt');
+    shown.stop();
+  });
+
+  it('draws the delete outcome and stands the empty line aside for it', async () => {
+    // The shell answers at once: an earlier test left a gated implementation
+    // in place, and `mockClear` in `afterEach` clears calls, not those.
+    vi.mocked(deleteProfile).mockImplementation(() => Promise.resolve(undefined));
+    vi.mocked(listProfiles).mockResolvedValue([
+      { name: 'hunt', owner: 'Busytools/forge/lead', running: true, windowed: false },
+    ]);
+    const shown = show(false, true);
+    click(shown.target.querySelector('.bz-tog'));
+    await vi.waitFor(() => expect(shownText(shown.target)).toContain('hunt'));
+
+    click(list(shown.target)?.querySelector('.bz-del'));
+    click(list(shown.target)?.querySelector('.bz-del.confirm'));
+    vi.mocked(listProfiles).mockResolvedValue([]);
+    await vi.waitFor(() => {
+      expect(shownText(shown.target), 'the outcome names what went').toContain(
+        "deleted the 'hunt' profile",
+      );
+    });
+    expect(
+      shownText(shown.target),
+      'and the empty line stands aside - the outcome explains the emptiness',
+    ).not.toContain('no named profiles yet');
+    shown.stop();
+  });
+
+  it('re-reads when the host says it swept', async () => {
+    vi.mocked(listProfiles).mockResolvedValue([
+      { name: 'hunt', owner: 'Busytools/forge/lead', running: true, windowed: false },
+    ]);
+    const shown = show(false, true);
+    await vi.waitFor(() => expect(shownText(shown.target)).toContain('1 profile'));
+
+    // A seat despawned in the core and the shell swept; the notice is the
+    // only word the page gets, and the resting count must follow it.
+    vi.mocked(listProfiles).mockResolvedValue([]);
+    shown.swept();
+    await vi.waitFor(() => {
+      expect(shown.target.querySelector('.bz-tog .n')?.textContent, 'the count followed').toBe(
+        '0 profiles',
       );
     });
     shown.stop();
@@ -426,14 +518,23 @@ describe('the browser segment', () => {
       expect(marks(), 'both rows report the work at once').toBe(2);
     });
 
-    // The first delete answers: its row falls away with the re-read, and the
-    // second row's mark must survive the first's completion.
+    // The first delete answers: its ROW falls away with the re-read - the
+    // outcome line that names it stays, which is the status the click is
+    // owed - and the second row's mark must survive the first's completion.
     vi.mocked(listProfiles).mockResolvedValue([
       { name: 'scout', owner: 'Busytools/forge/lead', running: true, windowed: false },
     ]);
     gates.hunt?.();
     await vi.waitFor(() => {
-      expect(shownText(shown.target), 'the first row falls away').not.toContain('hunt');
+      expect(
+        [...(list(shown.target)?.querySelectorAll('.bz-it') ?? [])].some(
+          (it) => it.querySelector('.nm')?.textContent === 'hunt',
+        ),
+        'the first row falls away',
+      ).toBe(false);
+      expect(shownText(shown.target), 'and its outcome names what went').toContain(
+        "deleted the 'hunt' profile",
+      );
       expect(marks(), "and the second row's mark is still there").toBe(1);
     });
 
@@ -717,26 +818,31 @@ describe('the browser segment', () => {
 
   /** **The list is this slot's own**: another slot's profile is not this
    *  seat's business, and the count is the slot's, not the client's. */
-  it("lists only this slot's own profiles, with the slot's count", async () => {
+  it('reads for its own slot and draws what the shell serves', async () => {
+    // **The shell filters, the page does not filter again.** The read must
+    // carry this page's seat - that is what makes another seat's profile
+    // unreachable here - and the rows drawn are the ones the shell served.
     vi.mocked(listProfiles).mockResolvedValue([
       { name: 'mine', owner: 'Org/proj/me', running: true, windowed: false },
-      { name: 'theirs', owner: 'Org/proj/other', running: true, windowed: false },
     ]);
     const shown = show(false, true, { org: 'Org', project: 'proj', label: 'me' });
     await vi.waitFor(() => {
+      expect(listProfiles, 'the read carries this seat').toHaveBeenCalledWith({
+        org: 'Org',
+        project: 'proj',
+        label: 'me',
+      });
+    });
+    await vi.waitFor(() => {
       expect(
         shown.target.querySelector('.bz-tog .n')?.textContent,
-        "the count is this slot's own",
+        'the count is what the shell served',
       ).toBe('1 profile');
     });
     click(shown.target.querySelector('.bz-tog'));
     await vi.waitFor(() => {
       expect(shownText(shown.target), "this slot's profile is listed").toContain('mine');
     });
-    expect(
-      shownText(shown.target),
-      "another slot's profile is not this slot's business",
-    ).not.toContain('theirs');
     shown.stop();
   });
 

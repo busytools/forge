@@ -46,6 +46,7 @@ function fakeConnection() {
     onBrowserAsk: () => () => {},
     browserRole: () => false,
     onBrowserRole: () => () => {},
+    onProfilesChanged: () => () => {},
     takeBrowserRole: () => {},
     onMessage(fn) {
       messages.add(fn);
