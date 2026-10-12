@@ -17463,6 +17463,81 @@ provider = "anthropic"
         );
     }
 
+    /// **A document deleted between the hand-off and a later open of its
+    /// stable address refuses as missing - and its threads still read, with
+    /// their captured lines.** The store was never about the file: deleting
+    /// the document cannot touch what was written against it, which is what
+    /// keeps a thread reachable from the review record after the file it
+    /// reviewed is gone.
+    #[test]
+    fn a_deleted_document_refuses_and_its_threads_still_read() {
+        use forge_primitives::review::{
+            ReviewAnchor, ReviewAuthor, ReviewComment, ReviewSide, ReviewStatus, ReviewThread,
+        };
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().to_str().expect("utf8").to_owned();
+        let (ws, _updates) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.install_db_for_test(crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"));
+        let (project_root, session_key) = seed_project_and_worker(
+            &ws,
+            "forge",
+            &root,
+            "implementer",
+            "worker-uuid-hand-off-deleted",
+            true,
+        );
+        let cwd = project_root.join(".claude/worktrees/implementer");
+        std::fs::create_dir_all(cwd.join("docs")).expect("the worktree");
+        let document = cwd.join("docs/plan.md");
+        std::fs::write(&document, b"# plan\n").expect("the document");
+        let resolved = cwd.canonicalize().expect("canonical").join("docs/plan.md");
+        let scope = forge_primitives::review::doc_scope_ref(&resolved.to_string_lossy());
+        assert!(
+            ws.upsert_review_thread(
+                "forge",
+                &scope,
+                ReviewThread {
+                    id: "d1".to_owned(),
+                    anchor: ReviewAnchor {
+                        path: resolved.to_string_lossy().into_owned(),
+                        side: ReviewSide::New,
+                        line: 1,
+                        content_hash: 7,
+                        context: vec!["# plan".to_owned()],
+                        base_ref: scope.clone(),
+                    },
+                    comments: vec![ReviewComment {
+                        author: ReviewAuthor::User,
+                        text: "one line, please".to_owned(),
+                        at: String::new(),
+                        review_id: None,
+                    }],
+                    status: ReviewStatus::Open,
+                    created_at: String::new(),
+                    updated_at: String::new(),
+                    commit: None,
+                },
+            ),
+            "the thread was stored",
+        );
+
+        std::fs::remove_file(&document).expect("the deletion");
+
+        let refused = ws
+            .hand_off_document(&session_key, "docs/plan.md", false)
+            .expect_err("the stable address now refuses");
+        assert!(refused.contains("no document at"), "and says what it met: {refused}");
+
+        let threads = ws.load_review_threads("forge", &scope).expect("the scope still reads");
+        assert_eq!(threads.len(), 1, "the deletion cannot touch the document's threads");
+        assert_eq!(
+            threads[0].anchor.context,
+            vec!["# plan".to_owned()],
+            "with their captured lines kept",
+        );
+    }
+
     /// The project-root arm answers LEADS ONLY. `seed_project_and_worker`
     /// cannot show this: its slot names no loaded project, so
     /// `project_for_slot` misses and BOTH arms fall through to the
