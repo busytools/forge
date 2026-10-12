@@ -139,49 +139,80 @@ pub async fn create_issue(
 ///
 /// Open issues are read with their bodies - the marker is what the close
 /// step matches - and closed ones without, the reconcile needing only
-/// their state. Each read is a page walk to exhaustion under a ceiling
-/// far above any tracker this runs against: `--limit` bounds the walk,
-/// not the result, and a small cap silently hides the oldest rows from
-/// both the reconcile and the close.
+/// their state. `--limit` is the fetch ceiling (gh pages 100 at a time
+/// up to it) and it sits far above any tracker this runs against; a walk
+/// that reaches it, or one that fetches nothing, warns, because both
+/// would otherwise hide rows from the reconcile and the close.
 pub async fn list_issues(cwd: &Path) -> Vec<IssueRow> {
     let mut rows = gh_issues(cwd, "open", true).await;
     rows.extend(gh_issues(cwd, "closed", false).await);
     rows
 }
 
+/// How many rows one walk may fetch. Far above any tracker this runs
+/// against; a walk that reaches it may be hiding rows.
+const WALK_CEILING: usize = 5000;
+
 async fn gh_issues(cwd: &Path, state: &str, bodies: bool) -> Vec<IssueRow> {
-    const CEILING: &str = "5000";
-    let fields = if bodies { "number,state,body" } else { "number,state" };
-    let Some(output) =
-        gh_output(cwd, &["issue", "list", "--state", state, "--limit", CEILING, "--json", fields])
-            .await
-    else {
-        return Vec::new();
-    };
-    if !output.status.success() {
-        return Vec::new();
+    match walk_issues(cwd, state, bodies).await {
+        Some(rows) if rows.len() >= WALK_CEILING => {
+            tracing::warn!(
+                target: crate::logging::targets::ENV_GIT,
+                event_name = "issue_walk_truncated",
+                state = %state,
+                fetched = rows.len(),
+                ceiling = WALK_CEILING,
+                "the issue walk stopped at its fetch ceiling; rows past it are unread this pass",
+            );
+            rows
+        }
+        Some(rows) => rows,
+        None => {
+            // A walk that fetched nothing reads as an empty tracker to
+            // the mirror, so the silence is broken here: gh could not be
+            // run, or the walk was killed at the timeout its own log
+            // names.
+            tracing::warn!(
+                target: crate::logging::targets::ENV_GIT,
+                event_name = "issue_walk_failed",
+                state = %state,
+                fetched = 0usize,
+                "the issue walk fetched nothing; the mirror's closes and reconcile skip this pass",
+            );
+            Vec::new()
+        }
     }
-    let parsed: serde_json::Value = match serde_json::from_slice(&output.stdout) {
-        Ok(parsed) => parsed,
-        Err(_) => return Vec::new(),
-    };
-    parsed
-        .as_array()
-        .map(|rows| {
-            rows.iter()
-                .filter_map(|row| {
-                    let number = row.get("number")?.as_u64()?;
-                    let state = row.get("state")?.as_str()?.to_ascii_lowercase();
-                    let body = row
-                        .get("body")
-                        .and_then(|body| body.as_str())
-                        .unwrap_or_default()
-                        .to_owned();
-                    Some(IssueRow { number, state, body })
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+}
+
+async fn walk_issues(cwd: &Path, state: &str, bodies: bool) -> Option<Vec<IssueRow>> {
+    let fields = if bodies { "number,state,body" } else { "number,state" };
+    let ceiling = WALK_CEILING.to_string();
+    let output =
+        gh_output(cwd, &["issue", "list", "--state", state, "--limit", &ceiling, "--json", fields])
+            .await?;
+    if !output.status.success() {
+        return None;
+    }
+    let parsed: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    Some(
+        parsed
+            .as_array()
+            .map(|rows| {
+                rows.iter()
+                    .filter_map(|row| {
+                        let number = row.get("number")?.as_u64()?;
+                        let state = row.get("state")?.as_str()?.to_ascii_lowercase();
+                        let body = row
+                            .get("body")
+                            .and_then(|body| body.as_str())
+                            .unwrap_or_default()
+                            .to_owned();
+                        Some(IssueRow { number, state, body })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+    )
 }
 
 /// Close one issue. Answers whether it closed: a failed close (already
