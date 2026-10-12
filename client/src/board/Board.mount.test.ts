@@ -1364,6 +1364,19 @@ describe("the failed and canceled groups' folds", () => {
     ]);
   });
 
+  /** And an empty lane draws its empty self: count zero, no control. */
+  it('draws the empty lanes with no fold control', () => {
+    summon(wireWith([row(task('r1', 'live', 'in_progress'))]));
+    for (const key of ['pending', 'failed', 'canceled'] as const) {
+      const empty = document.querySelector(laneOf(key));
+      expect(empty, `the ${key} lane went missing`).not.toBeNull();
+      expect(empty?.querySelector('.b-count')?.textContent?.trim(), `the ${key} lane's count`).toBe(
+        '0',
+      );
+      expect(empty?.querySelector('.b-fold'), `an empty ${key} lane offered a fold`).toBeNull();
+    }
+  });
+
   /** A group at its limit draws whole: nothing folds, and no control offers to open nothing. */
   it('draws a group at its limit whole, with no fold control', () => {
     summon(
@@ -1375,6 +1388,48 @@ describe("the failed and canceled groups' folds", () => {
     expect(document.querySelectorAll(`${laneOf('failed')} .b-card`)).toHaveLength(5);
     expect(document.querySelectorAll(`${laneOf('canceled')} .b-card`)).toHaveLength(5);
     expect(document.querySelector('.b-fold'), 'a whole group offered a fold').toBeNull();
+  });
+
+  /**
+   * **The folds are per lane.** The open state is the reader's own
+   * bookkeeping for each group, not one switch for the board: opening one
+   * leaves every other grown group folded, and opening a second leaves the
+   * first open.
+   */
+  it('opens one group without touching the others', () => {
+    summon(
+      wireWith([
+        ...Array.from({ length: 6 }, (_, i) => ended(`f${i + 1}`, 'failed', 100 + i, i + 1)),
+        ...Array.from({ length: 6 }, (_, i) => ended(`x${i + 1}`, 'canceled', 100 + i, i + 1)),
+      ]),
+    );
+
+    const foldOf = (key: TaskStatus): HTMLButtonElement => {
+      const button = document.querySelector<HTMLButtonElement>(`${laneOf(key)} .b-fold`);
+      if (button === null) throw new Error(`the ${key} group drew no fold control`);
+      return button;
+    };
+
+    foldOf('failed').click();
+    flushSync();
+    expect(drawnIn('failed'), 'the pressed group did not open').toHaveLength(6);
+    expect(foldOf('failed').textContent?.trim(), 'the open group offers the close').toBe(
+      'show less',
+    );
+    expect(drawnIn('canceled'), 'opening one group opened another').toHaveLength(5);
+    expect(
+      foldOf('canceled').textContent?.trim(),
+      'the untouched group stopped naming its count',
+    ).toBe('show all (6)');
+    expect(
+      foldOf('canceled').getAttribute('aria-expanded'),
+      'the untouched group reads as open',
+    ).toBe('false');
+
+    foldOf('canceled').click();
+    flushSync();
+    expect(drawnIn('canceled'), 'the second group did not open').toHaveLength(6);
+    expect(drawnIn('failed'), 'opening the second group folded the first').toHaveLength(6);
   });
 
   /**
