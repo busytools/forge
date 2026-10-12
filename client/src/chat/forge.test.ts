@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+
 import { describe, expect, it } from 'vitest';
 
 import { forgeCardOf, forgeRowTitle, type ForgeCard } from './forge';
@@ -193,6 +195,134 @@ describe('the tasks card', () => {
       pairsOf(card).map((pair) => pair[0]),
       'and the detail is not repeated in the meta line',
     ).not.toContain('detail');
+  });
+
+  it('names a claim by the subject the echo carries, with the state it took', () => {
+    // A claim's echo is the record itself, the same one an update reads, so
+    // the row draws the task as it now stands. No patch line: the input named
+    // only the row, and the claim moved fields the record already shows.
+    const card = forgeCardOf(
+      'mcp__forge__tasks__claim',
+      // Claimed by epic, the input that could be mistaken for a patch: the
+      // row a claim was asked for is not a field it moved.
+      { epic: 't-5' },
+      result(JSON.stringify(RECORD)),
+    );
+    expect(card?.title, 'titled by the subject, not the tool').toBe(RECORD.subject);
+    expect(card?.chips, 'the state the claim took').toEqual([
+      { text: 'in progress', tone: 'info' },
+    ]);
+    expect(card?.figure, "the owner is the figure at the row's right").toBe('owner lead');
+    expect(
+      pairsOf(card).map((pair) => pair[0]),
+      "the record's own facts, and no changed line",
+    ).toEqual(['owner', 'estimate', 'updated']);
+  });
+
+  it('names a wait by what it waits on, and labels the words the caller left', () => {
+    const card = forgeCardOf(
+      'mcp__forge__tasks__wait',
+      { id: 't-1', kind: 'dependency', detail: 'the board read has to land first', on: 't-9' },
+      result(JSON.stringify({ ...RECORD, status: 'waiting', detail: 'One agents family.' })),
+    );
+    expect(card?.title).toBe(RECORD.subject);
+    expect(card?.chips, 'a wait has one state word, and it is what it waits on').toEqual([
+      { text: 'on t-9', tone: 'warn' },
+    ]);
+    expect(card?.figure).toBe('owner lead');
+    expect(card?.pieces[0], "the task's own words, as every record card draws them").toEqual({
+      kind: 'quote',
+      text: 'One agents family.',
+    });
+    expect(card?.pieces[1], "the wait's words, labelled apart from them").toEqual({
+      kind: 'tag',
+      text: 'the wait',
+    });
+    expect(card?.pieces[2]).toEqual({
+      kind: 'quote',
+      text: 'the board read has to land first',
+    });
+    expect(pairsOf(card), "the record's own facts, under the words").toEqual([
+      ['owner', 'lead'],
+      ['estimate', '2h'],
+      ['updated', expect.stringMatching(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/)],
+    ]);
+  });
+
+  it("spells each wait kind in the board's own words", () => {
+    // The board's own three phrases, so one wait is not described two ways.
+    const chips = (input: Record<string, unknown>) => {
+      const card = forgeCardOf(
+        'mcp__forge__tasks__wait',
+        input,
+        result(JSON.stringify({ ...RECORD, status: 'waiting' })),
+      );
+      return card?.chips;
+    };
+    expect(chips({ id: 't-1', kind: 'decision' }), "a decision is the reader's to make").toEqual([
+      { text: 'waiting on you', tone: 'warn' },
+    ]);
+    expect(chips({ id: 't-1', kind: 'resource' })).toEqual([
+      { text: 'waiting on a resource', tone: 'warn' },
+    ]);
+    expect(chips({ id: 't-1', kind: 'dependency' }), 'a blocker none named').toEqual([
+      { text: 'on another row', tone: 'warn' },
+    ]);
+  });
+
+  it('draws the record own state word when a wait kind is unreadable', () => {
+    // A field the page cannot read must keep the RECORD's state, not a
+    // constant: the status here is not the wait's own, so a hardcoded
+    // "waiting" would be this test's failure rather than a pass.
+    const card = forgeCardOf(
+      'mcp__forge__tasks__wait',
+      { id: 't-1' },
+      result(JSON.stringify({ ...RECORD, status: 'blocked' })),
+    );
+    expect(card?.chips, 'the record state, the way the family spells it').toEqual([
+      { text: 'blocked', tone: 'warn' },
+    ]);
+  });
+
+  it('spells its wait words the way the board spells them', () => {
+    // One wait, one reading: the chat's chips must be the board's own
+    // (client/src/board/view.ts), and this reads that arm out of its source so
+    // the two cannot drift apart again. The dependency arm is a template and is
+    // read BOTH ways - with a blocker and with the board's own fallback phrase -
+    // so neither half is a value this side substituted in.
+    const board = readFileSync(new URL('../board/view.ts', import.meta.url), 'utf8');
+    const arm = board.slice(board.indexOf('if (task.waiting_on !== null)'));
+    const labels = [
+      ...arm.slice(0, arm.indexOf('if (marks.')).matchAll(/label: (?:'([^']*)'|`([^`]*)`)/g),
+    ].map((found) => found[1] ?? found[2] ?? '');
+    expect(labels.length, 'the board arm was found and read').toBe(4);
+    // Labels in reading order: the verify gate, a decision, the dependency
+    // template, a resource. The verify gate is the board's own case - this tool
+    // never sends a verification wait - so the chat is held to the decision arm.
+    const template = labels[2] ?? '';
+    const withBlocker = template.replace(/\$\{[^}]*\}/g, 't-9');
+    const withoutBlocker = template.replace(/\$\{[^}]*\?\?\s*'([^']*)'\}/g, '$1');
+    expect(withoutBlocker, "the board's own fallback phrase, read rather than assumed").not.toBe(
+      template,
+    );
+    const chatWord = (input: Record<string, unknown>): string => {
+      const card = forgeCardOf(
+        'mcp__forge__tasks__wait',
+        input,
+        result(JSON.stringify({ ...RECORD, status: 'waiting' })),
+      );
+      return card?.chips?.[0]?.text ?? '';
+    };
+    expect(chatWord({ id: 't-1', kind: 'decision' }), "the board's decision word").toBe(labels[1]);
+    expect(
+      chatWord({ id: 't-1', kind: 'dependency', on: 't-9' }),
+      "the board's dependency word, with a blocker",
+    ).toBe(withBlocker);
+    expect(
+      chatWord({ id: 't-1', kind: 'dependency' }),
+      "the board's dependency word, with its own fallback",
+    ).toBe(withoutBlocker);
+    expect(chatWord({ id: 't-1', kind: 'resource' }), "the board's resource word").toBe(labels[3]);
   });
 
   it('names a delete by the removed subject and counts the subtasks that went', () => {

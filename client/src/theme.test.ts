@@ -54,6 +54,7 @@ describe('the palette', () => {
       '--fs-label',
       '--fs-title',
       '--ins',
+      '--d',
     ];
     // The stacks arrive beside the palette rather than inside it, from
     // `[client] font` through `fontStack`.

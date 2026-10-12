@@ -96,7 +96,12 @@ async fn snapshot_until(
     for _ in 0..200 {
         send(
             socket,
-            ClientMessage::Subscribe { what: subject.clone(), answering: true, browser: false },
+            ClientMessage::Subscribe {
+                what: subject.clone(),
+                answering: true,
+                browser: false,
+                declare: false,
+            },
         )
         .await;
         let (_, data, _) = snapshot_answering(socket).await;
@@ -136,6 +141,12 @@ async fn wait_for_the_server_to_notice(fleet: &Fleet, attached: usize) -> bool {
 async fn send(socket: &mut Client, message: ClientMessage) {
     let text = serde_json::to_string(&message).expect("encode");
     socket.send(Message::Text(text.into())).await.expect("send");
+}
+
+/// One frame as JSON rather than through the typed enum, for the shapes the
+/// wire itself is the contract for: the keys a client writes by hand.
+async fn send_wire(socket: &mut Client, frame: serde_json::Value) {
+    socket.send(Message::Text(frame.to_string().into())).await.expect("send");
 }
 
 /// The server's next message, or `None` if it said nothing inside `ms`.
@@ -244,7 +255,12 @@ async fn a_subscribe_is_answered_with_that_subjects_snapshot() {
     let mut socket = connected().await;
     send(
         &mut socket,
-        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: false },
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: true,
+            browser: false,
+            declare: false,
+        },
     )
     .await;
 
@@ -269,7 +285,12 @@ async fn showing_a_seat_that_spent_a_mark_re_sends_the_home_the_connection_holds
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: false },
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: true,
+            browser: false,
+            declare: false,
+        },
     )
     .await;
     let (subject, ..) = snapshot_answering(&mut socket).await;
@@ -298,6 +319,7 @@ async fn showing_a_seat_that_spent_a_mark_re_sends_the_home_the_connection_holds
             what: Subject::Session(lead_seat()),
             answering: true,
             browser: false,
+            declare: false,
         },
     )
     .await;
@@ -331,7 +353,12 @@ async fn showing_a_seat_that_spent_a_failure_mark_re_sends_the_home() {
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: false },
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: true,
+            browser: false,
+            declare: false,
+        },
     )
     .await;
     let (subject, ..) = snapshot_answering(&mut socket).await;
@@ -343,6 +370,7 @@ async fn showing_a_seat_that_spent_a_failure_mark_re_sends_the_home() {
             what: Subject::Session(lead_seat()),
             answering: true,
             browser: false,
+            declare: false,
         },
     )
     .await;
@@ -373,7 +401,12 @@ async fn showing_a_seat_with_nothing_to_spend_leaves_the_home_alone() {
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: false },
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: true,
+            browser: false,
+            declare: false,
+        },
     )
     .await;
     let (subject, ..) = snapshot_answering(&mut socket).await;
@@ -385,6 +418,7 @@ async fn showing_a_seat_with_nothing_to_spend_leaves_the_home_alone() {
             what: Subject::Session(lead_seat()),
             answering: true,
             browser: false,
+            declare: false,
         },
     )
     .await;
@@ -460,6 +494,7 @@ async fn a_take_is_heard_by_its_own_connection_and_no_other() {
             what: Subject::Session(lead_seat()),
             answering: true,
             browser: false,
+            declare: false,
         },
     )
     .await;
@@ -471,6 +506,7 @@ async fn a_take_is_heard_by_its_own_connection_and_no_other() {
             what: Subject::Session(lead_seat()),
             answering: true,
             browser: false,
+            declare: false,
         },
     )
     .await;
@@ -553,6 +589,7 @@ async fn a_second_take_on_another_seat_is_refused_for_one_connection() {
                 what: Subject::Session(seat),
                 answering: true,
                 browser: false,
+                declare: false,
             },
         )
         .await;
@@ -632,6 +669,7 @@ async fn a_second_take_on_another_seat_is_refused_for_one_connection() {
             what: Subject::Session(lead_seat()),
             answering: true,
             browser: false,
+            declare: false,
         },
     )
     .await;
@@ -671,6 +709,7 @@ async fn a_refused_clients_frames_never_land_in_the_holders_take() {
             what: Subject::Session(lead_seat()),
             answering: true,
             browser: false,
+            declare: false,
         },
     )
     .await;
@@ -701,6 +740,7 @@ async fn a_refused_clients_frames_never_land_in_the_holders_take() {
             what: Subject::Session(lead_seat()),
             answering: true,
             browser: false,
+            declare: false,
         },
     )
     .await;
@@ -789,6 +829,7 @@ async fn a_clients_frames_feed_the_take_it_started() {
             what: Subject::Session(lead_seat()),
             answering: true,
             browser: false,
+            declare: false,
         },
     )
     .await;
@@ -842,7 +883,11 @@ async fn a_frame_lands_in_the_read_aloud_recording() {
     let _models = fleet.arm_dictation(&lead_seat()).expect("dictation arms without weights");
     let mut socket = connect(&url).await;
     for what in [Subject::Session(lead_seat()), Subject::DictateModels] {
-        send(&mut socket, ClientMessage::Subscribe { what, answering: true, browser: false }).await;
+        send(
+            &mut socket,
+            ClientMessage::Subscribe { what, answering: true, browser: false, declare: false },
+        )
+        .await;
         let _ = snapshot_answering(&mut socket).await;
     }
 
@@ -904,6 +949,7 @@ async fn a_dropped_connection_frees_the_seat_for_the_next_take() {
             what: Subject::Session(lead_seat()),
             answering: true,
             browser: false,
+            declare: false,
         },
     )
     .await;
@@ -949,6 +995,7 @@ async fn a_dropped_connection_frees_the_seat_for_the_next_take() {
             what: Subject::Session(lead_seat()),
             answering: true,
             browser: false,
+            declare: false,
         },
     )
     .await;
@@ -992,6 +1039,7 @@ async fn a_refused_restart_leaves_the_live_take_to_the_disconnect() {
             what: Subject::Session(lead_seat()),
             answering: true,
             browser: false,
+            declare: false,
         },
     )
     .await;
@@ -1058,6 +1106,7 @@ async fn a_refused_restart_leaves_the_live_take_to_the_disconnect() {
             what: Subject::Session(lead_seat()),
             answering: true,
             browser: false,
+            declare: false,
         },
     )
     .await;
@@ -1097,6 +1146,7 @@ async fn a_take_ending_reaches_its_connection_with_the_seat_unsubscribed() {
             what: Subject::Session(lead_seat()),
             answering: true,
             browser: false,
+            declare: false,
         },
     )
     .await;
@@ -1209,6 +1259,7 @@ async fn take_after_take_on_one_seat_leaves_it_free_for_the_next_client() {
             what: Subject::Session(lead_seat()),
             answering: true,
             browser: false,
+            declare: false,
         },
     )
     .await;
@@ -1302,6 +1353,7 @@ async fn take_after_take_on_one_seat_leaves_it_free_for_the_next_client() {
             what: Subject::Session(lead_seat()),
             answering: true,
             browser: false,
+            declare: false,
         },
     )
     .await;
@@ -1512,7 +1564,11 @@ fn a_reading_past_the_gate() -> ContextUsage {
 /// and handed back beside it.
 async fn a_page_on(url: &str, what: Subject) -> (Client, serde_json::Value) {
     let mut socket = connect(url).await;
-    send(&mut socket, ClientMessage::Subscribe { what, answering: true, browser: false }).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe { what, answering: true, browser: false, declare: false },
+    )
+    .await;
     let (_, data, _) = snapshot_answering(&mut socket).await;
     (socket, data)
 }
@@ -1539,6 +1595,7 @@ async fn a_seat_a_client_opens_with_no_usage_asks_the_core_for_one() {
             what: Subject::Session(lead_seat()),
             answering: true,
             browser: false,
+            declare: false,
         },
     )
     .await;
@@ -1580,6 +1637,7 @@ async fn a_seat_that_already_reports_usage_is_not_asked_again() {
             what: Subject::Session(lead_seat()),
             answering: true,
             browser: false,
+            declare: false,
         },
     )
     .await;
@@ -1619,6 +1677,7 @@ async fn a_seat_a_client_opens_with_no_mcp_snapshot_asks_the_core_for_one() {
             what: Subject::Session(lead_seat()),
             answering: true,
             browser: false,
+            declare: false,
         },
     )
     .await;
@@ -1658,6 +1717,7 @@ async fn a_seat_that_already_reports_an_mcp_snapshot_is_not_asked_again() {
             what: Subject::Session(lead_seat()),
             answering: true,
             browser: false,
+            declare: false,
         },
     )
     .await;
@@ -2046,7 +2106,12 @@ async fn a_client_declares_answering_on_a_subscribe_and_not_on_its_first_word() 
 
     send(
         &mut socket,
-        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: false },
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: true,
+            browser: false,
+            declare: false,
+        },
     )
     .await;
     snapshot_answering(&mut socket).await;
@@ -2074,6 +2139,7 @@ async fn a_dropped_connection_lets_go_of_the_seats_it_attached() {
                 what: Subject::Session(lead_seat()),
                 answering: true,
                 browser: false,
+                declare: false,
             },
         )
         .await;
@@ -2117,7 +2183,12 @@ async fn a_dropped_connection_lets_go_of_the_seats_it_attached() {
     for _ in 0..200 {
         send(
             &mut fresh,
-            ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: false },
+            ClientMessage::Subscribe {
+                what: Subject::Home,
+                answering: true,
+                browser: false,
+                declare: false,
+            },
         )
         .await;
         let (_, data, _) = snapshot_answering(&mut fresh).await;
@@ -2135,6 +2206,116 @@ async fn a_dropped_connection_lets_go_of_the_seats_it_attached() {
     );
 }
 
+/// **A role declare watches nothing, so nothing is left behind for it.** The
+/// client re-declares its browser capability with one extra subscribe against
+/// the subject it is claiming the role on; the server answers it like any
+/// subscribe, but it takes no watch entry and no attachment. The client never
+/// counts the declare, so nothing on that side ever gives it back - and a
+/// declared seat stayed counted as watched for the life of the connection,
+/// its unwatched-completion mark never arming.
+#[tokio::test]
+async fn a_role_declare_leaves_no_watch_behind() {
+    let (url, fleet) = a_server().await;
+    fleet.install_agent("TestOrg", "proj", "lead");
+    let seat = serde_json::to_value(Subject::Session(lead_seat())).expect("a seat encodes");
+
+    // **The frames are the wire's own, not the typed enum's**: the `declare`
+    // key is what both clients write by hand, and this test is where the
+    // server is held to reading it.
+    let mut page = connect(&url).await;
+    send_wire(
+        &mut page,
+        serde_json::json!({ "kind": "subscribe", "what": seat, "answering": true, "browser": true }),
+    )
+    .await;
+    let (subject, ..) = snapshot_answering(&mut page).await;
+    assert_eq!(subject, Subject::Session(lead_seat()), "precondition: the page holds the seat");
+    // The page's subscribe carries the browser capability, so the role is
+    // granted after its snapshot - it is this connection's already, so the
+    // declare below says nothing new about the role.
+    assert!(
+        matches!(next_server(&mut page).await, ServerMessage::BrowserRole { hosting: true }),
+        "precondition: the page's own subscribe took the role",
+    );
+
+    // The declare, as the take-role control puts it on the wire.
+    send_wire(
+        &mut page,
+        serde_json::json!({
+            "kind": "subscribe",
+            "what": seat,
+            "answering": true,
+            "browser": true,
+            "declare": true,
+        }),
+    )
+    .await;
+    let (subject, ..) = snapshot_answering(&mut page).await;
+    assert_eq!(
+        subject,
+        Subject::Session(lead_seat()),
+        "the declare is answered with its subject's snapshot like any subscribe",
+    );
+
+    // The page leaves the seat: one unsubscribe, one entry given back.
+    send_wire(&mut page, serde_json::json!({ "kind": "unsubscribe", "what": seat })).await;
+    // A turnstile, because an unsubscribe is answered by silence: this
+    // connection's messages are handled in order, so a snapshot arriving for
+    // the ask below proves the seat was let go before the turn beneath is
+    // emitted.
+    send_wire(
+        &mut page,
+        serde_json::json!({ "kind": "subscribe", "what": "home", "answering": true, "browser": false }),
+    )
+    .await;
+    let (subject, ..) = snapshot_answering(&mut page).await;
+    assert_eq!(subject, Subject::Home, "the turnstile ask is answered");
+
+    // A turn now finishes with nobody showing the seat, so it has to mark it.
+    fleet.emit(SessionUpdate::ChatAppended {
+        key: lead_seat(),
+        msg: serde_json::from_value(serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 1,
+            "duration_api_ms": 1,
+            "is_error": false,
+            "num_turns": 1,
+            "session_id": "s",
+        }))
+        .expect("parse a result message"),
+        origin: None,
+    });
+
+    // The fold is the transport's own task, so the mark lands a scheduling hop
+    // after the emit. Polling is honest because the property IS "eventually",
+    // and it is bounded so a fold that never runs fails this test rather than
+    // hanging it.
+    let mut fresh = connect(&url).await;
+    let mut marked = false;
+    let mut last = 0;
+    for _ in 0..200 {
+        send_wire(
+            &mut fresh,
+            serde_json::json!({ "kind": "subscribe", "what": "home", "answering": true, "browser": false }),
+        )
+        .await;
+        let (_, data, _) = snapshot_answering(&mut fresh).await;
+        let unseen = data["unseen"].as_array().expect("the home carries the marks");
+        if unseen.iter().any(|slot| slot["label"] == "lead" && slot["project"] == "proj") {
+            marked = true;
+            break;
+        }
+        last = unseen.len();
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        marked,
+        "the seat the declare left behind is unlooked again: a declare that takes a watch entry \
+         outlives the page that made it, and its completions never mark; marks seen: {last}",
+    );
+}
+
 /// A turn that finishes while nobody is showing the seat leaves a mark, and
 /// the mark is exactly the fact a client cannot reconstruct: a transcript says
 /// the turn ended, never that it ended unwatched. It rides the home snapshot,
@@ -2149,7 +2330,12 @@ async fn a_turn_that_finished_unwatched_marks_its_row() {
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: false },
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: true,
+            browser: false,
+            declare: false,
+        },
     )
     .await;
     snapshot_answering(&mut socket).await;
@@ -2421,6 +2607,7 @@ async fn a_subscribe_for_a_seat_that_is_not_there_names_it_in_words() {
             what: Subject::Session(SessionSlot::for_label("Nowhere", "nothing", Some("lead"))),
             answering: true,
             browser: true,
+            declare: false,
         },
     )
     .await;
@@ -2643,6 +2830,7 @@ async fn a_held_seats_moved_tree_reaches_the_client() {
             what: Subject::Session(lead_seat()),
             answering: true,
             browser: false,
+            declare: false,
         },
     )
     .await;
@@ -2679,6 +2867,7 @@ async fn a_held_seats_moved_tree_reaches_the_client() {
             what: Subject::Session(lead_seat()),
             answering: true,
             browser: false,
+            declare: false,
         },
     )
     .await;
@@ -2743,6 +2932,7 @@ async fn a_refused_subscribe_leaves_another_connections_hold_alone() {
             what: Subject::Session(lead_seat()),
             answering: true,
             browser: false,
+            declare: false,
         },
     )
     .await;
@@ -2773,6 +2963,7 @@ async fn a_refused_subscribe_leaves_another_connections_hold_alone() {
             what: Subject::Session(lead_seat()),
             answering: true,
             browser: false,
+            declare: false,
         },
     )
     .await;
@@ -2903,6 +3094,7 @@ async fn a_snapshot_carries_the_row_the_hold_read() {
             what: Subject::Session(lead_seat()),
             answering: true,
             browser: false,
+            declare: false,
         },
     )
     .await;
@@ -2936,6 +3128,7 @@ fn a_repo(dir: &std::path::Path) {
     git(&["init", "-q", "-b", "work"]);
     git(&["config", "user.email", "test@example.test"]);
     git(&["config", "user.name", "test"]);
+    git(&["config", "commit.gpgsign", "false"]);
     std::fs::write(dir.join("kept.txt"), "one").expect("write");
     git(&["add", "."]);
     git(&["commit", "-qm", "first"]);
@@ -2948,7 +3141,12 @@ async fn a_subscriber_hears_the_update_it_asked_for_and_not_another_seats() {
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: false },
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: true,
+            browser: false,
+            declare: false,
+        },
     )
     .await;
     snapshot_answering(&mut socket).await;
@@ -3012,7 +3210,12 @@ async fn a_subscriber_hears_the_update_it_asked_for_and_not_another_seats() {
     });
     send(
         &mut socket,
-        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: false },
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: true,
+            browser: false,
+            declare: false,
+        },
     )
     .await;
     let (_, _, passed) = snapshot_answering(&mut socket).await;
@@ -3040,6 +3243,7 @@ async fn a_burst_leaves_a_connection_in_one_batch_whole_and_in_order() {
             what: Subject::Session(lead_seat()),
             answering: false,
             browser: false,
+            declare: false,
         },
     )
     .await;
@@ -3105,7 +3309,12 @@ async fn a_batch_waiting_when_a_client_asks_goes_out_ahead_of_the_answer() {
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: false },
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: true,
+            browser: false,
+            declare: false,
+        },
     )
     .await;
     snapshot_answering(&mut socket).await;
@@ -3121,7 +3330,12 @@ async fn a_batch_waiting_when_a_client_asks_goes_out_ahead_of_the_answer() {
     }
     send(
         &mut socket,
-        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: false },
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: true,
+            browser: false,
+            declare: false,
+        },
     )
     .await;
 
@@ -3188,6 +3402,7 @@ async fn a_run_of_token_appends_reaches_a_client_as_one_update() {
             what: Subject::Session(lead_seat()),
             answering: false,
             browser: false,
+            declare: false,
         },
     )
     .await;
@@ -3260,6 +3475,7 @@ async fn two_sockets_on_one_seat_both_hear_it() {
                 what: Subject::Session(lead_seat()),
                 answering: true,
                 browser: false,
+                declare: false,
             },
         )
         .await;
@@ -3306,6 +3522,7 @@ async fn one_unsubscribe_leaves_the_seats_other_subscription() {
                 what: Subject::Session(lead_seat()),
                 answering: false,
                 browser: false,
+                declare: false,
             },
         )
         .await;
@@ -3342,7 +3559,12 @@ async fn a_dropped_socket_leaves_no_subscription_behind() {
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: false },
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: true,
+            browser: false,
+            declare: false,
+        },
     )
     .await;
     snapshot_answering(&mut socket).await;
@@ -3387,6 +3609,7 @@ async fn a_delivery_is_sent_as_a_frame_and_then_as_its_typed_update() {
             what: Subject::Session(lead_seat()),
             answering: false,
             browser: false,
+            declare: false,
         },
     )
     .await;
@@ -3446,6 +3669,7 @@ async fn a_delivery_to_another_seat_draws_nothing_on_this_one() {
             what: Subject::Session(lead_seat()),
             answering: false,
             browser: false,
+            declare: false,
         },
     )
     .await;
@@ -3511,6 +3735,7 @@ async fn a_prompt_a_client_sends_draws_for_every_client_on_that_seat() {
                 what: Subject::Session(lead_seat()),
                 answering: true,
                 browser: false,
+                declare: false,
             },
         )
         .await;
@@ -3698,7 +3923,12 @@ async fn a_thinking_turn_reaches_a_client_watching_its_seat_frame_for_frame() {
     // the home for its whole life, and the page holds the seat it draws.
     send(
         &mut watched,
-        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: false },
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: true,
+            browser: false,
+            declare: false,
+        },
     )
     .await;
     snapshot_answering(&mut watched).await;
@@ -3708,6 +3938,7 @@ async fn a_thinking_turn_reaches_a_client_watching_its_seat_frame_for_frame() {
             what: Subject::Session(lead_seat()),
             answering: true,
             browser: false,
+            declare: false,
         },
     )
     .await;
@@ -3724,7 +3955,12 @@ async fn a_thinking_turn_reaches_a_client_watching_its_seat_frame_for_frame() {
     let mut home_only = connect(&url).await;
     send(
         &mut home_only,
-        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: false },
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: true,
+            browser: false,
+            declare: false,
+        },
     )
     .await;
     snapshot_answering(&mut home_only).await;
@@ -3847,6 +4083,7 @@ async fn a_prompt_the_core_refuses_draws_nothing() {
             what: Subject::Session(lead_seat()),
             answering: true,
             browser: false,
+            declare: false,
         },
     )
     .await;
@@ -4159,7 +4396,12 @@ async fn a_capable_client_is_sent_the_asks_and_its_answer_comes_back() {
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: true,
+            browser: true,
+            declare: false,
+        },
     )
     .await;
     let (_, _, _) = snapshot_answering(&mut socket).await;
@@ -4188,7 +4430,12 @@ async fn an_answers_image_rides_its_own_binary_frame() {
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: true,
+            browser: true,
+            declare: false,
+        },
     )
     .await;
     let (_, _, _) = snapshot_answering(&mut socket).await;
@@ -4232,7 +4479,12 @@ async fn a_second_capable_client_does_not_take_the_role() {
     let mut first = connect(&url).await;
     send(
         &mut first,
-        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: true,
+            browser: true,
+            declare: false,
+        },
     )
     .await;
     let (_, _, _) = snapshot_answering(&mut first).await;
@@ -4240,7 +4492,12 @@ async fn a_second_capable_client_does_not_take_the_role() {
     let mut second = connect(&url).await;
     send(
         &mut second,
-        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: true,
+            browser: true,
+            declare: false,
+        },
     )
     .await;
     let (_, _, _) = snapshot_answering(&mut second).await;
@@ -4276,7 +4533,12 @@ async fn a_force_take_moves_the_role_and_tells_the_holder() {
     let mut first = connect(&url).await;
     send(
         &mut first,
-        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: true,
+            browser: true,
+            declare: false,
+        },
     )
     .await;
     let first_hello = loop {
@@ -4292,7 +4554,12 @@ async fn a_force_take_moves_the_role_and_tells_the_holder() {
     let mut second = connect(&url).await;
     send(
         &mut second,
-        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: true,
+            browser: true,
+            declare: false,
+        },
     )
     .await;
     let second_hello = loop {
@@ -4345,7 +4612,12 @@ async fn a_force_take_moves_the_role_and_tells_the_holder() {
     // channel) cannot get past.
     send(
         &mut first,
-        ClientMessage::Subscribe { what: Subject::Home, answering: false, browser: false },
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: false,
+            browser: false,
+            declare: false,
+        },
     )
     .await;
     let (subject, _, _) = snapshot_answering(&mut first).await;
@@ -4376,7 +4648,12 @@ async fn a_promoted_waiter_is_told_on_its_own_socket() {
     let mut first = connect(&url).await;
     send(
         &mut first,
-        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: true,
+            browser: true,
+            declare: false,
+        },
     )
     .await;
     let (_, _, _) = snapshot_answering(&mut first).await;
@@ -4384,7 +4661,12 @@ async fn a_promoted_waiter_is_told_on_its_own_socket() {
     let mut second = connect(&url).await;
     send(
         &mut second,
-        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: true,
+            browser: true,
+            declare: false,
+        },
     )
     .await;
     let (_, _, _) = snapshot_answering(&mut second).await;
@@ -4428,7 +4710,12 @@ async fn an_ask_in_flight_fails_when_a_take_moves_the_role() {
     let mut first = connect(&url).await;
     send(
         &mut first,
-        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: true,
+            browser: true,
+            declare: false,
+        },
     )
     .await;
     let (_, _, _) = snapshot_answering(&mut first).await;
@@ -4436,7 +4723,12 @@ async fn an_ask_in_flight_fails_when_a_take_moves_the_role() {
     let mut second = connect(&url).await;
     send(
         &mut second,
-        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: true,
+            browser: true,
+            declare: false,
+        },
     )
     .await;
     let (_, _, _) = snapshot_answering(&mut second).await;
@@ -4467,7 +4759,12 @@ async fn an_image_waiting_ask_fails_naming_the_take() {
     let mut first = connect(&url).await;
     send(
         &mut first,
-        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: true,
+            browser: true,
+            declare: false,
+        },
     )
     .await;
     let (_, _, _) = snapshot_answering(&mut first).await;
@@ -4475,7 +4772,12 @@ async fn an_image_waiting_ask_fails_naming_the_take() {
     let mut second = connect(&url).await;
     send(
         &mut second,
-        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: true,
+            browser: true,
+            declare: false,
+        },
     )
     .await;
     let (_, _, _) = snapshot_answering(&mut second).await;
@@ -4515,7 +4817,12 @@ async fn an_ask_in_flight_fails_when_the_holder_drops() {
     let mut first = connect(&url).await;
     send(
         &mut first,
-        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: true,
+            browser: true,
+            declare: false,
+        },
     )
     .await;
     let (_, _, _) = snapshot_answering(&mut first).await;
@@ -4535,7 +4842,12 @@ async fn an_ask_in_flight_fails_when_the_holder_drops() {
     let mut second = connect(&url).await;
     send(
         &mut second,
-        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: true,
+            browser: true,
+            declare: false,
+        },
     )
     .await;
     let (_, _, _) = snapshot_answering(&mut second).await;
@@ -4560,7 +4872,12 @@ async fn a_stray_or_repeated_answer_cannot_settle_an_ask() {
     let mut first = connect(&url).await;
     send(
         &mut first,
-        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: true,
+            browser: true,
+            declare: false,
+        },
     )
     .await;
     let (_, _, _) = snapshot_answering(&mut first).await;
@@ -4568,7 +4885,12 @@ async fn a_stray_or_repeated_answer_cannot_settle_an_ask() {
     let mut second = connect(&url).await;
     send(
         &mut second,
-        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: true,
+            browser: true,
+            declare: false,
+        },
     )
     .await;
     let (_, _, _) = snapshot_answering(&mut second).await;
@@ -4631,7 +4953,12 @@ async fn the_transports_relay_is_the_workspaces_own() {
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: true,
+            browser: true,
+            declare: false,
+        },
     )
     .await;
     let (_, _, _) = snapshot_answering(&mut socket).await;
@@ -4665,7 +4992,12 @@ async fn an_image_frame_before_its_answer_fails_the_ask() {
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: true,
+            browser: true,
+            declare: false,
+        },
     )
     .await;
     let (_, _, _) = snapshot_answering(&mut socket).await;
@@ -4697,7 +5029,12 @@ async fn a_refused_image_frame_fails_every_ask_waiting_for_one() {
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: true,
+            browser: true,
+            declare: false,
+        },
     )
     .await;
     let (_, _, _) = snapshot_answering(&mut socket).await;
@@ -4755,7 +5092,12 @@ async fn an_image_one_byte_past_the_cap_is_refused_and_the_connection_survives()
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: true,
+            browser: true,
+            declare: false,
+        },
     )
     .await;
     let (_, _, _) = snapshot_answering(&mut socket).await;
@@ -4813,7 +5155,12 @@ async fn a_dictation_refusal_does_not_fail_an_image_waiting_ask() {
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: true,
+            browser: true,
+            declare: false,
+        },
     )
     .await;
     let (_, _, _) = snapshot_answering(&mut socket).await;
@@ -4861,7 +5208,12 @@ async fn two_asks_in_flight_are_settled_by_their_own_answers() {
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: true,
+            browser: true,
+            declare: false,
+        },
     )
     .await;
     let (_, _, _) = snapshot_answering(&mut socket).await;
@@ -4899,7 +5251,12 @@ async fn two_images_of_one_answer_are_filled_in_their_own_order() {
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: true,
+            browser: true,
+            declare: false,
+        },
     )
     .await;
     let (_, _, _) = snapshot_answering(&mut socket).await;
@@ -4964,7 +5321,12 @@ async fn a_second_capable_client_takes_the_role_when_its_holder_goes() {
     let mut first = connect(&url).await;
     send(
         &mut first,
-        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: true,
+            browser: true,
+            declare: false,
+        },
     )
     .await;
     let (_, _, _) = snapshot_answering(&mut first).await;
@@ -4982,7 +5344,12 @@ async fn a_second_capable_client_takes_the_role_when_its_holder_goes() {
     let mut second = connect(&url).await;
     send(
         &mut second,
-        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: true,
+            browser: true,
+            declare: false,
+        },
     )
     .await;
     let (_, _, _) = snapshot_answering(&mut second).await;
@@ -5008,7 +5375,12 @@ async fn a_waiting_capable_client_takes_the_role_when_the_holder_goes() {
     let mut first = connect(&url).await;
     send(
         &mut first,
-        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: true,
+            browser: true,
+            declare: false,
+        },
     )
     .await;
     let (_, _, _) = snapshot_answering(&mut first).await;
@@ -5018,7 +5390,12 @@ async fn a_waiting_capable_client_takes_the_role_when_the_holder_goes() {
     let mut second = connect(&url).await;
     send(
         &mut second,
-        ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: true },
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: true,
+            browser: true,
+            declare: false,
+        },
     )
     .await;
     let (_, _, _) = snapshot_answering(&mut second).await;

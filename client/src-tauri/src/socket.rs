@@ -90,6 +90,7 @@ impl Held {
                 "what": self.what,
                 "answering": self.answering,
                 "browser": self.browser,
+                "declare": false,
             })
             .to_string()
             .into(),
@@ -160,6 +161,10 @@ enum Outbound {
         turns: u64,
     },
     Devices,
+    CommitDiff {
+        session: Value,
+        sha: String,
+    },
     /// One document read: the seat whose tree the path resolves against,
     /// the path, and whether the hand-off flagged it reviewable. The answer
     /// arrives as a plain server frame, so this half forwards and forgets.
@@ -220,7 +225,9 @@ impl Socket {
     /// declare that went through `subscribe` would raise the Held count with
     /// no reader behind it, and every reconnect from then on would re-ask a
     /// surplus - a released seat asked for forever (`socket.ts`'s `declare`
-    /// asks the same way, through `askFor`).
+    /// asks the same way, through `askFor`). **The frame says it is a
+    /// declare**, which is what keeps the server's own bookkeeping out of it
+    /// too: the client cannot give back what it never counted.
     pub fn declare(&self, what: Value, answering: bool) {
         let _ = self.tx.send(Outbound::Declare { what, answering });
     }
@@ -233,6 +240,11 @@ impl Socket {
     /// The dictation devices, answered by a `devices` frame.
     pub fn devices(&self) {
         let _ = self.tx.send(Outbound::Devices);
+    }
+
+    /// One commit's own diff, answered by a `commit_diff` frame.
+    pub fn commit_diff(&self, session: Value, sha: String) {
+        let _ = self.tx.send(Outbound::CommitDiff { session, sha });
     }
 
     /// One document read: the seat whose tree the path resolves against,
@@ -350,6 +362,7 @@ fn apply_offline(next: Outbound, held: &mut Vec<Held>, awaiting: &mut Vec<String
         }
         Outbound::More { .. }
         | Outbound::Devices
+        | Outbound::CommitDiff { .. }
         | Outbound::DocumentRead { .. }
         | Outbound::Answer { .. }
         | Outbound::TakeRole
@@ -480,6 +493,7 @@ async fn run(
                                             "what": what,
                                             "answering": answering,
                                             "browser": true,
+                                            "declare": true,
                                         })
                                         .to_string()
                                         .into(),
@@ -505,6 +519,15 @@ async fn run(
                         }
                         Outbound::Devices => {
                             let _ = writer.send(Message::Text(json!({ "kind": "devices" }).to_string().into())).await;
+                        }
+                        Outbound::CommitDiff { session, sha } => {
+                            let _ = writer
+                                .send(Message::Text(
+                                    json!({ "kind": "commit_diff", "session": session, "sha": sha })
+                                        .to_string()
+                                        .into(),
+                                ))
+                                .await;
                         }
                         Outbound::DocumentRead { session, path, reviewable } => {
                             let _ = writer

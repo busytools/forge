@@ -1,5 +1,5 @@
 //! The issue mirror's process half: probe a repo, create an issue, list
-//! what exists.
+//! what exists, close one.
 //!
 //! Same spawn hygiene as the PR lookup beside it (`git_command` scrubs
 //! the git directory vars; a timeout kills the child): `gh` is invoked
@@ -34,6 +34,33 @@ pub struct IssueRef {
     pub number: u64,
     pub url: String,
     pub state: String,
+}
+
+/// One issue in a listing: number and state for the board's reconcile,
+/// the body for the filing marker a gone row is found through.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IssueRow {
+    pub number: u64,
+    pub state: String,
+    pub body: String,
+}
+
+/// Why the mirror closes an issue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloseReason {
+    /// The row completed, or its tree closed.
+    Completed,
+    /// The row is gone.
+    NotPlanned,
+}
+
+impl CloseReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::NotPlanned => "not planned",
+        }
+    }
 }
 
 async fn gh_output(cwd: &Path, args: &[&str]) -> Option<Output> {
@@ -107,34 +134,109 @@ pub async fn create_issue(
     Some(IssueRef { number, url, state: "open".to_owned() })
 }
 
-/// Every issue's `(number, state)`, so a close in GitHub shows on the
-/// board.
-pub async fn list_states(cwd: &Path) -> Vec<(u64, String)> {
-    let Some(output) = gh_output(
-        cwd,
-        &["issue", "list", "--state", "all", "--limit", "200", "--json", "number,state"],
-    )
-    .await
-    else {
-        return Vec::new();
-    };
-    if !output.status.success() {
-        return Vec::new();
+/// Every issue with its state and body: the state so a close in GitHub
+/// shows on the board, the body so an issue whose row is gone is found.
+///
+/// Open issues are read with their bodies - the marker is what the close
+/// step matches - and closed ones without, the reconcile needing only
+/// their state. `--limit` is the fetch ceiling (gh pages 100 at a time
+/// up to it) and it sits far above any tracker this runs against; a walk
+/// that reaches it, or one that fetches nothing, warns, because both
+/// would otherwise hide rows from the reconcile and the close.
+pub async fn list_issues(cwd: &Path) -> Vec<IssueRow> {
+    let mut rows = gh_issues(cwd, "open", true).await;
+    rows.extend(gh_issues(cwd, "closed", false).await);
+    rows
+}
+
+/// How many rows one walk may fetch. Far above any tracker this runs
+/// against; a walk that reaches it may be hiding rows.
+const WALK_CEILING: usize = 5000;
+
+async fn gh_issues(cwd: &Path, state: &str, bodies: bool) -> Vec<IssueRow> {
+    match walk_issues(cwd, state, bodies).await {
+        Some(rows) if rows.len() >= WALK_CEILING => {
+            tracing::warn!(
+                target: crate::logging::targets::ENV_GIT,
+                event_name = "issue_walk_truncated",
+                state = %state,
+                fetched = rows.len(),
+                ceiling = WALK_CEILING,
+                "the issue walk stopped at its fetch ceiling; rows past it are unread this pass",
+            );
+            rows
+        }
+        Some(rows) => rows,
+        None => {
+            // A walk that fetched nothing reads as an empty tracker to
+            // the mirror, so the silence is broken here: gh could not be
+            // run, or the walk was killed at the timeout its own log
+            // names.
+            tracing::warn!(
+                target: crate::logging::targets::ENV_GIT,
+                event_name = "issue_walk_failed",
+                state = %state,
+                fetched = 0usize,
+                "the issue walk fetched nothing; the mirror's closes and reconcile skip this pass",
+            );
+            Vec::new()
+        }
     }
-    let parsed: serde_json::Value = match serde_json::from_slice(&output.stdout) {
-        Ok(parsed) => parsed,
-        Err(_) => return Vec::new(),
+}
+
+async fn walk_issues(cwd: &Path, state: &str, bodies: bool) -> Option<Vec<IssueRow>> {
+    let fields = if bodies { "number,state,body" } else { "number,state" };
+    let ceiling = WALK_CEILING.to_string();
+    let output =
+        gh_output(cwd, &["issue", "list", "--state", state, "--limit", &ceiling, "--json", fields])
+            .await?;
+    if !output.status.success() {
+        return None;
+    }
+    let parsed: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    Some(
+        parsed
+            .as_array()
+            .map(|rows| {
+                rows.iter()
+                    .filter_map(|row| {
+                        let number = row.get("number")?.as_u64()?;
+                        let state = row.get("state")?.as_str()?.to_ascii_lowercase();
+                        let body = row
+                            .get("body")
+                            .and_then(|body| body.as_str())
+                            .unwrap_or_default()
+                            .to_owned();
+                        Some(IssueRow { number, state, body })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+    )
+}
+
+/// Close one issue. Answers whether it closed: a failed close (already
+/// closed, auth, network) is a non-event for the caller's next pass.
+pub async fn close_issue(cwd: &Path, number: u64, reason: CloseReason) -> bool {
+    let number = number.to_string();
+    let Some(output) =
+        gh_output(cwd, &["issue", "close", &number, "--reason", reason.as_str()]).await
+    else {
+        return false;
     };
-    parsed
-        .as_array()
-        .map(|rows| {
-            rows.iter()
-                .filter_map(|row| {
-                    let number = row.get("number")?.as_u64()?;
-                    let state = row.get("state")?.as_str()?.to_ascii_lowercase();
-                    Some((number, state))
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+    output.status.success()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The CLI's own words, which are not the REST API's (`state_reason`
+    /// spells it `not_planned`): a wrong token makes every close fail
+    /// silently.
+    #[test]
+    fn close_reasons_are_the_cli_own_strings() {
+        assert_eq!(CloseReason::Completed.as_str(), "completed");
+        assert_eq!(CloseReason::NotPlanned.as_str(), "not planned");
+    }
 }

@@ -3125,6 +3125,7 @@ provider = "anthropic"
         run_git(repo.path(), &["init", "-q"]);
         run_git(repo.path(), &["config", "user.email", "t@example.com"]);
         run_git(repo.path(), &["config", "user.name", "Test"]);
+        run_git(repo.path(), &["config", "commit.gpgsign", "false"]);
         std::fs::write(repo.path().join("README.md"), "seed").expect("write seed");
         run_git(repo.path(), &["add", "."]);
         run_git(repo.path(), &["commit", "-q", "-m", "init"]);
@@ -4197,6 +4198,7 @@ provider = "anthropic"
         run_git(repo.path(), &["init", "-q"]);
         run_git(repo.path(), &["config", "user.email", "t@example.com"]);
         run_git(repo.path(), &["config", "user.name", "Test"]);
+        run_git(repo.path(), &["config", "commit.gpgsign", "false"]);
         std::fs::write(repo.path().join("README.md"), "seed").expect("write seed");
         run_git(repo.path(), &["add", "."]);
         run_git(repo.path(), &["commit", "-q", "-m", "init"]);
@@ -5397,6 +5399,7 @@ provider = "anthropic"
         run_git(repo.path(), &["init", "-q"]);
         run_git(repo.path(), &["config", "user.email", "t@example.com"]);
         run_git(repo.path(), &["config", "user.name", "Test"]);
+        run_git(repo.path(), &["config", "commit.gpgsign", "false"]);
         std::fs::write(repo.path().join("README.md"), "seed").expect("write seed");
         run_git(repo.path(), &["add", "."]);
         run_git(repo.path(), &["commit", "-q", "-m", "init"]);
@@ -5450,6 +5453,7 @@ provider = "anthropic"
         let (workspace, project_key, wt, repo, config) = git_despawn_fixture(label);
         let source = tempdir().expect("submodule source tempdir");
         run_git(source.path(), &["init", "-q"]);
+        run_git(source.path(), &["config", "commit.gpgsign", "false"]);
         std::fs::write(source.path().join("sub.txt"), "submodule seed").expect("write seed");
         run_git(source.path(), &["add", "."]);
         run_git(

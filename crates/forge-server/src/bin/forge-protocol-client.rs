@@ -19,6 +19,7 @@
 //! subscribe home
 //! subscribe session Busytools/forge/lead
 //! more Busytools/forge/lead 10
+//! commit_diff Busytools/forge/lead 4f6870839
 //! command {"prompt": {"key": {"org": "Busytools", "project": "forge", "label": "lead"}, "text": "hello", "attachments": []}}
 //! ask {"submit_review": {"project": "forge", "branch": "main", "summary": null, "thread_ids": [], "origin": {"org": "Busytools", "project": "forge", "label": "lead"}}}
 //! ```
@@ -120,9 +121,12 @@ fn parse_line(line: &str, reply_to: &mut u64) -> anyhow::Result<ClientMessage> {
         // This instrument drives the socket the way a view does, so it
         // declares itself able to answer: a client that cannot show a prompt
         // must not be counted as one, but this one walks the reply path.
-        "subscribe" => {
-            Ok(ClientMessage::Subscribe { what: subject(rest)?, answering: true, browser: false })
-        }
+        "subscribe" => Ok(ClientMessage::Subscribe {
+            what: subject(rest)?,
+            answering: true,
+            browser: false,
+            declare: false,
+        }),
         "unsubscribe" => Ok(ClientMessage::Unsubscribe { what: subject(rest)? }),
         "more" => {
             let mut parts = rest.split_whitespace();
@@ -136,6 +140,19 @@ fn parse_line(line: &str, reply_to: &mut u64) -> anyhow::Result<ClientMessage> {
             Ok(ClientMessage::More { conversation, before: None, turns })
         }
         "devices" => Ok(ClientMessage::Devices),
+        "commit_diff" => {
+            let mut parts = rest.split_whitespace();
+            let Some(seat) = parts.next() else {
+                anyhow::bail!("`commit_diff` wants a session subject and a sha");
+            };
+            let Subject::Session(session) = subject(&format!("session {seat}"))? else {
+                anyhow::bail!("`commit_diff` wants a session subject");
+            };
+            let Some(sha) = parts.next() else {
+                anyhow::bail!("`commit_diff` wants a sha");
+            };
+            Ok(ClientMessage::CommitDiff { session, sha: sha.to_owned() })
+        }
         "command" | "ask" => {
             let command: Command = serde_json::from_str(rest)?;
             let asked = if verb == "ask" {

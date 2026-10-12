@@ -255,6 +255,16 @@ export type ClientMessage =
        * shows up as a session's tool call failing, not as the client's.
        */
       browser: boolean;
+      /**
+       * Whether this frame is the role DECLARE: the re-statement of the
+       * browser capability a client makes as it claims the role.
+       *
+       * The server answers it with the subject's snapshot like any
+       * subscribe, but holds NOTHING for it - no watch entry, no
+       * attachment, no seat hold - because the client never counts it and
+       * so would never give one back.
+       */
+      declare: boolean;
     }
   | { kind: 'unsubscribe'; what: Subject }
   | { kind: 'command'; command: Command; reply_to: number | null }
@@ -268,6 +278,15 @@ export type ClientMessage =
    * `devices` message or an `error` naming it, and those are its only two.
    */
   | { kind: 'devices' }
+  /**
+   * One commit's own diff, for a review page's commit scopes.
+   *
+   * On demand rather than carried on the record: a branch can hold dozens of
+   * commits, and every reader of a record - the terminal included - would
+   * pay their content on every read for a scope only one page draws. The
+   * answer is a `commit_diff` message or an `error` naming it.
+   */
+  | { kind: 'commit_diff'; session: SessionSlot; sha: string }
   /**
    * Ask for one document out of a seat's own tree, for a viewer's route.
    *
@@ -345,6 +364,12 @@ export type ServerMessage =
    * current input is wrong from its first pick onward.
    */
   | { kind: 'devices'; devices: DictateDevice[]; configured: string | null }
+  /**
+   * The answer to `commit_diff`: one commit's own bounded diff, in the same
+   * layer shape the record's content read carries, so both scopes draw
+   * through one parse.
+   */
+  | { kind: 'commit_diff'; sha: string; files: unknown; truncated: boolean }
   /**
    * One document, as the read answered: the seat it was read for, the
    * resolved absolute path, the detected kind, the bytes base64, and the

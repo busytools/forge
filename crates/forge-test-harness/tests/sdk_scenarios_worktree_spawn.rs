@@ -42,6 +42,7 @@ fn init_seed_repo(dir: &std::path::Path) {
     run(&["init", "--initial-branch=main"]);
     run(&["config", "user.email", "harness@forge.test"]);
     run(&["config", "user.name", "forge-harness"]);
+    run(&["config", "commit.gpgsign", "false"]);
     std::fs::write(dir.join("seed.txt"), "seed\n").expect("write seed.txt");
     run(&["add", "seed.txt"]);
     run(&["commit", "-m", "seed"]);

@@ -143,6 +143,17 @@ mod commands {
         bridge.devices()
     }
 
+    /// One commit's own diff; false means no socket is open and no answer is
+    /// coming.
+    #[tauri::command]
+    pub fn client_commit_diff(
+        bridge: tauri::State<'_, Arc<Bridge>>,
+        session: Value,
+        sha: String,
+    ) -> bool {
+        bridge.commit_diff(&session, &sha)
+    }
+
     /// One document read; false means no socket is open and no answer is
     /// coming. The answer is a `document_read` frame or an error, read from
     /// the page's own frame stream.
@@ -216,6 +227,7 @@ pub fn run() {
             commands::client_frame,
             commands::client_devices,
             commands::client_read_document,
+            commands::client_commit_diff,
             commands::client_take_role,
             commands::client_heartbeat,
             commands::client_close
@@ -257,6 +269,7 @@ pub fn run() {
             commands::client_frame,
             commands::client_devices,
             commands::client_read_document,
+            commands::client_commit_diff,
             commands::client_take_role,
             commands::client_heartbeat,
             commands::client_close

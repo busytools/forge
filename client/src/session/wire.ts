@@ -190,6 +190,92 @@ export interface ComposerState {
   sign_in: unknown;
 }
 
+/**
+ * One of the seat's review reads: the records, or why they could not be read.
+ * The two halves fail apart on the server, so neither is collapsed here, and an
+ * outcome this build cannot name is kept as it arrived rather than folded into
+ * a failure it is not.
+ */
+export type ReadWire<T> =
+  | { outcome: 'read'; value: T }
+  | { outcome: 'failed'; value: string }
+  | { outcome: 'unknown'; value: unknown };
+
+/** Which side of the diff a thread is anchored to. */
+export type ReviewSideRecord = 'old' | 'new' | { unknown: string };
+
+/** A thread's lifecycle state. */
+export type ReviewStatusRecord =
+  'open' | 'addressed' | 'resolved' | 'outdated' | { unknown: string };
+
+/** Who wrote a review turn: the reviewer, an agent by label, or a shape this
+ *  build cannot name - kept raw so the row can draw it plainly. */
+export type ReviewAuthorRecord =
+  { kind: 'user' } | { kind: 'agent'; label: string } | { kind: 'unknown'; raw: unknown };
+
+/** Where a thread is anchored, as the record carries it: a durable location
+ *  the resolver re-reads against a fresh scan, not a rendered position. */
+export interface ReviewAnchorRecord {
+  path: string;
+  side: ReviewSideRecord;
+  line: number;
+  /** The line's FNV-1a hash, as decimal digits: a full u64 has no exact
+   *  JSON number in JS, so the wire carries it as a string and the page
+   *  echoes it back verbatim on a reply. */
+  content_hash: string;
+  context: string[];
+  base_ref: string;
+}
+
+/** One turn in a thread. `review_id` is the round that sealed it, when one has. */
+export interface ReviewTurnRecord {
+  author: ReviewAuthorRecord;
+  text: string;
+  at: string;
+  review_id: string | null;
+}
+
+/** Why an anchor could not be placed, in the resolver's own words. */
+export type ReviewOutdatedReasonRecord = 'gone' | { ambiguous: { matches: number } };
+
+/**
+ * Where a thread's anchor sits in the content the record ships: the server
+ * resolved it because this side has no working tree to re-scan. `null` on a
+ * thread means this read carries no landing - a commit-scoped thread's own
+ * diff is immutable, so its recorded line is already settled.
+ */
+export type ReviewResolutionRecord =
+  | { state: 'placed'; line: number; moved_from: number | null }
+  | { state: 'outdated'; reason: ReviewOutdatedReasonRecord }
+  | { state: 'unknown'; raw: string };
+
+/** A thread: its anchor, its turns and its state. `commit` scopes it to one
+ *  commit's diff; `null` is the whole-branch scope. */
+export interface ReviewThreadRecord {
+  id: string;
+  anchor: ReviewAnchorRecord;
+  comments: ReviewTurnRecord[];
+  status: ReviewStatusRecord;
+  created_at: string;
+  updated_at: string;
+  commit: string | null;
+  resolution: ReviewResolutionRecord | null;
+}
+
+/** One submitted round, as the reviewer sealed it. */
+export interface ReviewSetRecord {
+  id: string;
+  number: number;
+  summary: string | null;
+  created_at: string;
+}
+
+/** The seat's review reads, each with its own failure. */
+export interface ReviewsRecord {
+  threads: ReadWire<ReviewThreadRecord[]>;
+  reviews: ReadWire<ReviewSetRecord[]>;
+}
+
 /** One session, as this shell reads it. */
 export interface SessionRecord {
   slot: SessionSlot;
@@ -245,6 +331,12 @@ export interface SessionRecord {
   pr: { number: number; url: string; draft: boolean } | null;
   /** The issues that pull request closes. */
   closes: { number: number; url: string }[];
+  /** The seat's review threads and submitted rounds, each half with its own
+   *  read outcome - the review page's rounds half. */
+  reviews: ReviewsRecord;
+  /** The working tree's bounded content, which the review page's canvas
+   *  draws and its threads' landings were resolved against. */
+  diff: DiffRecord;
 }
 
 /** How git classified one file's change, as the wire spells it. */
@@ -471,6 +563,8 @@ export function sessionFrom(data: unknown): SessionRecord {
     git: gitFrom(held['git']),
     pr: prFrom(held['pr']),
     closes: issuesFrom(held['closes']),
+    reviews: reviewsFrom(held['reviews']),
+    diff: diffFrom(held['diff']),
   };
 }
 
@@ -496,6 +590,127 @@ function queuedFrom(value: unknown): QueuedPromptRow[] {
     if (uuid === null || words === null) return [];
     return [{ uuid, source: text(held['source']) ?? 'forge', text: words }];
   });
+}
+
+/** One half of the reviews read, narrowed at the boundary: a named outcome
+ *  carries its records, `failed` its reason, and anything else is kept whole
+ *  so a reader can be shown it rather than told it is a failure. */
+function readWireFrom<T>(value: unknown, parse: (records: unknown[]) => T[]): ReadWire<T[]> {
+  const held = record(value);
+  if (held['outcome'] === 'read') return { outcome: 'read', value: parse(list(held['value'])) };
+  if (held['outcome'] === 'failed') {
+    return { outcome: 'failed', value: text(held['value']) ?? 'the read failed' };
+  }
+  // An absent half is named rather than carried as `undefined`: "answered
+  // undefined" is not a thing a reader can act on.
+  return { outcome: 'unknown', value: text(held['outcome']) ?? 'absent' };
+}
+
+function reviewAuthorFrom(value: unknown): ReviewAuthorRecord {
+  if (value === 'User') return { kind: 'user' };
+  const agent = record(record(value)['Agent']);
+  const label = text(agent['label']);
+  if (label !== null) return { kind: 'agent', label };
+  return { kind: 'unknown', raw: value };
+}
+
+function reviewSideFrom(value: unknown): ReviewSideRecord {
+  if (value === 'Old') return 'old';
+  if (value === 'New') return 'new';
+  return { unknown: typeof value === 'string' ? value : 'unnamed' };
+}
+
+function reviewStatusFrom(value: unknown): ReviewStatusRecord {
+  switch (value) {
+    case 'Open':
+      return 'open';
+    case 'Addressed':
+      return 'addressed';
+    case 'Resolved':
+      return 'resolved';
+    case 'Outdated':
+      return 'outdated';
+    default:
+      return { unknown: typeof value === 'string' ? value : 'unnamed' };
+  }
+}
+
+export function reviewThreadFrom(entry: unknown): ReviewThreadRecord {
+  const held = record(entry);
+  const anchor = record(held['anchor']);
+  return {
+    id: text(held['id']) ?? '',
+    anchor: {
+      path: text(anchor['path']) ?? '',
+      side: reviewSideFrom(anchor['side']),
+      line: number(anchor['line']) ?? 0,
+      // Digits, or a number from a server that predates the digits form;
+      // either way it crosses back verbatim rather than through a double.
+      content_hash:
+        text(anchor['content_hash']) ??
+        (number(anchor['content_hash']) === null ? '0' : String(anchor['content_hash'])),
+      // Context is captured code lines; a non-string entry is not a line.
+      context: list(anchor['context']).flatMap((line) => text(line) ?? []),
+      base_ref: text(anchor['base_ref']) ?? '',
+    },
+    comments: list(held['comments']).map((turn) => {
+      const comment = record(turn);
+      return {
+        author: reviewAuthorFrom(comment['author']),
+        text: text(comment['text']) ?? '',
+        at: text(comment['at']) ?? '',
+        review_id: text(comment['review_id']),
+      };
+    }),
+    status: reviewStatusFrom(held['status']),
+    created_at: text(held['created_at']) ?? '',
+    updated_at: text(held['updated_at']) ?? '',
+    commit: text(held['commit']),
+    resolution: reviewResolutionFrom(held['resolution']),
+  };
+}
+
+function reviewResolutionFrom(value: unknown): ReviewResolutionRecord | null {
+  if (value === null || value === undefined) return null;
+  const held = record(value);
+  if (held['state'] === 'placed') {
+    return {
+      state: 'placed',
+      line: number(held['line']) ?? 0,
+      moved_from: number(held['moved_from']),
+    };
+  }
+  if (held['state'] === 'outdated') {
+    const reason = held['reason'];
+    const ambiguous = record(reason)['ambiguous'];
+    if (ambiguous !== undefined && ambiguous !== null) {
+      return {
+        state: 'outdated',
+        reason: { ambiguous: { matches: number(record(ambiguous)['matches']) ?? 0 } },
+      };
+    }
+    if (reason === 'gone') return { state: 'outdated', reason: 'gone' };
+    return { state: 'unknown', raw: 'outdated without a reason this build knows' };
+  }
+  return { state: 'unknown', raw: typeof held['state'] === 'string' ? held['state'] : 'absent' };
+}
+
+export function reviewSetFrom(entry: unknown): ReviewSetRecord {
+  const held = record(entry);
+  return {
+    id: text(held['id']) ?? '',
+    number: number(held['number']) ?? 0,
+    summary: text(held['summary']),
+    created_at: text(held['created_at']) ?? '',
+  };
+}
+
+export function reviewsFrom(value: unknown): ReviewsRecord {
+  const held = record(value);
+  return {
+    threads: readWireFrom(held['threads'], (records) => records.map(reviewThreadFrom)),
+    reviews: readWireFrom(held['reviews'], (records) => records.map(reviewSetFrom)),
+  };
 }
 
 function mcpFrom(value: unknown): McpServers | null {
@@ -775,6 +990,112 @@ function gitStatsFrom(value: unknown): GitStatsRecord | null {
 }
 
 const GATES: WorkState['gate'][] = ['in_repo', 'not_a_repository', 'gone', 'scanner_failed'];
+
+/** How one content layer answered: nothing changed, its files, a scan that
+ *  could not read the tree, or a state this build cannot name. */
+export type DiffLayerRecord =
+  | { state: 'clean' }
+  | { state: 'populated'; files: DiffFileRecord[] }
+  | { state: 'scan_failed' }
+  | { state: 'unknown'; raw: string };
+
+/** A diff line's kind, as the crate spells it. */
+export type DiffLineKindRecord = 'context' | 'added' | 'removed';
+
+/** One rendered diff line: its kind, its text with no marker, and its per-side
+ *  line numbers. */
+export interface DiffLineRecord {
+  kind: DiffLineKindRecord;
+  text: string;
+  oldLine: number | null;
+  newLine: number | null;
+}
+
+/** One hunk: the two side ranges, and the lines between them. */
+export interface DiffHunkRecord {
+  oldStart: number;
+  oldCount: number;
+  newStart: number;
+  newCount: number;
+  lines: DiffLineRecord[];
+}
+
+/** One changed file's bounded content, as the record's diff carries it. */
+export interface DiffFileRecord {
+  path: string;
+  oldPath: string | null;
+  status: FileStatusWire;
+  binary: boolean;
+  submodule: boolean;
+  truncated: boolean;
+  hunks: DiffHunkRecord[];
+}
+
+/** The working tree's bounded content: the uncommitted layer, the branch's
+ *  own, and whether the read withheld anything. */
+export interface DiffRecord {
+  worktree: DiffLayerRecord;
+  branchAhead: DiffLayerRecord;
+  truncated: boolean;
+}
+
+const LINE_KINDS: DiffLineKindRecord[] = ['context', 'added', 'removed'];
+
+/**
+ * An absent content key is named rather than folded into an empty layer: a
+ * `clean` this build invented and a clean git reported draw the same "no
+ * changes" and mean different things.
+ */
+export function diffLayerFrom(value: unknown): DiffLayerRecord {
+  if (value === 'clean') return { state: 'clean' };
+  if (value === 'scan_failed') return { state: 'scan_failed' };
+  const held = record(value);
+  const populated = held['populated'];
+  if (populated !== undefined)
+    return { state: 'populated', files: list(populated).map(diffFileFrom) };
+  return { state: 'unknown', raw: typeof value === 'string' ? value : 'absent' };
+}
+
+function diffFileFrom(entry: unknown): DiffFileRecord {
+  const held = record(entry);
+  return {
+    path: text(held['path']) ?? '',
+    oldPath: text(held['old_path']),
+    status: narrow(held['status'], FILE_STATUSES, 'modified'),
+    binary: held['binary'] === true,
+    submodule: held['submodule'] === true,
+    truncated: held['truncated'] === true,
+    hunks: list(held['hunks']).map((raw) => {
+      const hunk = record(raw);
+      return {
+        oldStart: number(hunk['old_start']) ?? 0,
+        oldCount: number(hunk['old_count']) ?? 0,
+        newStart: number(hunk['new_start']) ?? 0,
+        newCount: number(hunk['new_count']) ?? 0,
+        lines: list(hunk['lines']).map((raw) => {
+          const line = record(raw);
+          return {
+            // The crate's three kinds are pinned by the socket contract; a
+            // fourth read as context loses only its marker, not its text.
+            kind: narrow(line['kind'], LINE_KINDS, 'context'),
+            text: text(line['text']) ?? '',
+            oldLine: number(line['old_line']),
+            newLine: number(line['new_line']),
+          };
+        }),
+      };
+    }),
+  };
+}
+
+export function diffFrom(value: unknown): DiffRecord {
+  const held = record(value);
+  return {
+    worktree: diffLayerFrom(held['worktree']),
+    branchAhead: diffLayerFrom(held['branch_ahead']),
+    truncated: held['truncated'] === true,
+  };
+}
 
 export function workFrom(value: unknown): WorkState {
   const held = record(value);

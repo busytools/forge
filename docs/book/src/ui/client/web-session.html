@@ -1487,11 +1487,11 @@
              take `.skewed` (amber) when the protocols disagree. -->
         <div class="v">
           <span class="vt">server v1.0.116+4fc4b3873</span>
-          <span class="vs">&#183; socket v6</span>
+          <span class="vs">&#183; socket v8</span>
         </div>
         <div class="v">
           <span class="vt">client v1.0.116+65c8a7695</span>
-          <span class="vs">&#183; socket v6</span>
+          <span class="vs">&#183; socket v8</span>
         </div>
         <div class="v">claude v2.1.280 <span class="up">&#8594; v2.1.286</span></div>
       </div>
@@ -1866,6 +1866,27 @@ docs: Render the message body into rows.</div>
             <summary><svg class="ic gl ok"><use href="#i-tasks"/></svg><span class="tn">Wire the review notice into the chat</span><span class="fam-chip info">in progress</span><span class="fam-fig">owner lead</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
               <div class="fam-meta"><span class="lb">changed</span>status<span class="sep">&#183;</span><span class="lb">owner</span>lead<span class="sep">&#183;</span><span class="lb">estimate</span>2h<span class="sep">&#183;</span><span class="lb">updated</span>2026-10-06 09:30</div>
+            </div>
+          </details>
+          <!-- A claim reads as the record it took: the same shape as an
+               update minus the patch line, because its input named the row
+               and not fields it moved. -->
+          <details class="leaf">
+            <summary><svg class="ic gl ok"><use href="#i-tasks"/></svg><span class="tn">Wire the review notice into the chat</span><span class="fam-chip info">in progress</span><span class="fam-fig">owner tool-cards</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="fam-meta"><span class="lb">owner</span>tool-cards<span class="sep">&#183;</span><span class="lb">estimate</span>2h<span class="sep">&#183;</span><span class="lb">updated</span>2026-10-11 21:50</div>
+            </div>
+          </details>
+          <!-- A wait: one state chip naming what it waits on, in the board's
+               own words, and the caller's words under the label that parts
+               them from the task's own. -->
+          <details class="leaf">
+            <summary><svg class="ic gl ok"><use href="#i-tasks"/></svg><span class="tn">Draft the cron card copy</span><span class="fam-chip warn">on t-11</span><span class="fam-fig">owner tool-cards</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="fam-quote"><div class="prose"><p>One agents family.</p></div></div>
+              <div class="fam-tag">the wait</div>
+              <div class="fam-quote"><div class="prose"><p>the board read has to land first</p></div></div>
+              <div class="fam-meta"><span class="lb">owner</span>tool-cards<span class="sep">&#183;</span><span class="lb">estimate</span>2h<span class="sep">&#183;</span><span class="lb">updated</span>2026-10-11 21:50</div>
             </div>
           </details>
 
@@ -2578,7 +2599,19 @@ branch main, nothing to commit</div>
               <svg class="ic"><use href="#i-git"/></svg>
               web-home-layout &#183; 3 commits &#183; PR #1203 &#183; dirty</button>
           </span>
-          <!-- The tasks row, seventh: the seat's own slice of the set - a
+          <!-- The review row, seventh: this seat's branch under review - the
+               answers waiting to be read on the toggle, the thread count
+               otherwise - and the hover panel lists `open review` as its
+               door onto the page, then each thread by its file and line with
+               its state. A read that has not landed draws no row at all,
+               which is the same distinction the page keeps. Drawn CLOSED
+               here, like its siblings. -->
+          <span class="sg-seg">
+            <button type="button" class="sg-tog">
+              <svg class="ic"><use href="#i-review"/></svg>
+              2 threads</button>
+          </span>
+          <!-- The tasks row, eighth: the seat's own slice of the set - a
                lead's top-level board, a worker's own rows, the terminal's
                own scoping - how much of it is done on the toggle, a mark per
                state in the open list, a running row leading with its active
@@ -2590,7 +2623,7 @@ branch main, nothing to commit</div>
               <svg class="ic"><use href="#i-tasks"/></svg>
               1 of 3</button>
           </span>
-          <!-- The monitors row, eighth: the commands this session is
+          <!-- The monitors row, ninth: the commands this session is
                watching. A monitor's call draws in the chat as the call row
                it is; this row is the live watcher's surface - and the tail
                under a monitor stays uncarried, because a tail is read off

@@ -223,6 +223,7 @@ describe('the connection', () => {
       what: HOME,
       answering: true,
       browser: false,
+      declare: false,
     });
 
     // Off unless said otherwise, so a read-only client cannot hang a turn.
@@ -233,6 +234,7 @@ describe('the connection', () => {
       what: 'usage',
       answering: false,
       browser: false,
+      declare: false,
     });
   });
 
@@ -255,6 +257,7 @@ describe('the connection', () => {
       what: HOME,
       answering: false,
       browser: false,
+      declare: false,
     });
   });
 
@@ -601,6 +604,7 @@ describe('the connection', () => {
       what: HOME,
       answering: false,
       browser: false,
+      declare: false,
     });
     // And the store is still holding what it had while the server answers.
     expect(conn.store(HOME)?.snapshot()).toEqual({ projects: ['a'] });
@@ -637,6 +641,7 @@ describe('the connection', () => {
       what: HOME,
       answering: true,
       browser: false,
+      declare: false,
     });
 
     // One entry is left, so exactly one re-ask: a second would mean the count
@@ -1026,6 +1031,7 @@ describe('the browser role', () => {
       what: HOME,
       answering: false,
       browser: true,
+      declare: false,
     });
 
     server.drop();
@@ -1035,6 +1041,7 @@ describe('the browser role', () => {
       what: HOME,
       answering: false,
       browser: true,
+      declare: false,
     });
   });
 
@@ -1219,9 +1226,13 @@ describe('the browser role', () => {
 
     conn.takeBrowserRole();
     await until(() => server.received.length === 3, 'the declare and the claim');
-    expect(server.received[1], 'the declare goes first, carrying the capability').toMatchObject({
+    expect(
+      server.received[1],
+      'the declare goes first, carrying the capability and saying it is a declare',
+    ).toMatchObject({
       kind: 'subscribe',
       browser: true,
+      declare: true,
     });
     expect(server.received[2], 'and the claim follows it').toEqual({ kind: 'browser_take_role' });
   });

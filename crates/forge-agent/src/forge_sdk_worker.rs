@@ -2982,6 +2982,7 @@ mod tests {
         run(&["init", "-q"]);
         run(&["config", "user.email", "t@example.com"]);
         run(&["config", "user.name", "Test"]);
+        run(&["config", "commit.gpgsign", "false"]);
         std::fs::write(dir.path().join("seed.txt"), "seed").expect("write seed");
         run(&["add", "."]);
         run(&["commit", "-q", "-m", "init"]);

@@ -90,6 +90,7 @@ function quiet(): Connection {
     dispatch: () => null,
     more: () => false,
     devices: () => false,
+    commitDiff: () => false,
     frame: () => false,
     onBrowserAsk: () => () => {},
     browserRole: () => false,

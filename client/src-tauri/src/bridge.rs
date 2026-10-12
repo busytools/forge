@@ -326,6 +326,19 @@ impl Bridge {
         true
     }
 
+    /// One commit's own diff. False means no socket is open and no answer is
+    /// coming; the answer lands on the page's own `onMessage`.
+    pub fn commit_diff(&self, session: &Value, sha: &str) -> bool {
+        let state = self.lock();
+        if state.status != "open" {
+            return false;
+        }
+        if let Some(socket) = &state.socket {
+            socket.commit_diff(session.clone(), sha.to_owned());
+        }
+        true
+    }
+
     /// One document read for a viewer's route. False means no socket is
     /// open and no answer is coming; the answer lands in the page's own
     /// frame stream, where the route reads it.
@@ -1017,6 +1030,29 @@ mod tests {
         let _ = server.heard_until(|v| v["kind"] == "unsubscribe").await;
         let again = server.heard_until(|v| v["kind"] == "subscribe").await;
         assert_eq!(again["what"], json!("home"), "the home is re-read, not copied");
+    }
+
+    /// **The take-role declare says it is a declare.** The server counts a
+    /// plain subscribe as a watch the connection has to give back, and the
+    /// client never counts the declare - so without the flag the seat stayed
+    /// counted as watched for the life of the connection, its completion mark
+    /// never arming.
+    #[tokio::test]
+    async fn a_take_declares_the_capability_as_a_declare() {
+        let mut server = stub().await;
+        let (bridge, _rx) = bridge();
+        bridge.connect(server.url.clone());
+        connected(&bridge).await;
+        bridge.subscribe(seat(), false, false);
+        let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
+
+        bridge.take_role();
+
+        let declare = server.heard_until(|v| v["kind"] == "subscribe").await;
+        assert_eq!(declare["what"], seat(), "the declare rides the first-held subject");
+        assert_eq!(declare["browser"], true, "carrying the capability it re-states");
+        assert_eq!(declare["declare"], true, "and saying it is a declare, which holds nothing");
+        let _ = server.heard_until(|v| v["kind"] == "browser_take_role").await;
     }
 
     /// The page's own `refresh` re-declares the held declaration too - the

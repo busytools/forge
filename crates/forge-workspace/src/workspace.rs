@@ -15708,6 +15708,7 @@ provider = "anthropic"
         run_git_in(project.path(), &["init", "-q"]);
         run_git_in(project.path(), &["config", "user.email", "t@example.com"]);
         run_git_in(project.path(), &["config", "user.name", "Test"]);
+        run_git_in(project.path(), &["config", "commit.gpgsign", "false"]);
         std::fs::write(project.path().join("README.md"), "seed").expect("write seed");
         run_git_in(project.path(), &["add", "."]);
         run_git_in(project.path(), &["commit", "-q", "-m", "init"]);
@@ -16034,6 +16035,7 @@ provider = "anthropic"
         run_git_in(project.path(), &["init", "-q"]);
         run_git_in(project.path(), &["config", "user.email", "t@example.com"]);
         run_git_in(project.path(), &["config", "user.name", "Test"]);
+        run_git_in(project.path(), &["config", "commit.gpgsign", "false"]);
         std::fs::write(project.path().join("README.md"), "seed").expect("write seed");
         run_git_in(project.path(), &["add", "."]);
         run_git_in(project.path(), &["commit", "-q", "-m", "init"]);

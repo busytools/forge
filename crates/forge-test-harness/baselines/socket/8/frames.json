@@ -2,6 +2,7 @@
   "server_message": {
     "BrowserAsk": "browser_ask",
     "BrowserRole": "browser_role",
+    "CommitDiff": "commit_diff",
     "Devices": "devices",
     "DocumentRead": "document_read",
     "Error": "error",
@@ -166,6 +167,7 @@
     "BrowserAnswer": "browser_answer",
     "BrowserTakeRole": "browser_take_role",
     "Command": "command",
+    "CommitDiff": "commit_diff",
     "Devices": "devices",
     "DocumentRead": "document_read",
     "More": "more",
@@ -245,6 +247,39 @@
         "subtype",
         "type",
         "uuid"
+      ]
+    },
+    "CommitDiff": {
+      "": [
+        "files",
+        "kind",
+        "sha",
+        "truncated"
+      ],
+      "/files": [
+        "populated"
+      ],
+      "/files/populated[]": [
+        "binary",
+        "hunks",
+        "old_path",
+        "path",
+        "status",
+        "submodule",
+        "truncated"
+      ],
+      "/files/populated[]/hunks[]": [
+        "lines",
+        "new_count",
+        "new_start",
+        "old_count",
+        "old_start"
+      ],
+      "/files/populated[]/hunks[]/lines[]": [
+        "kind",
+        "new_line",
+        "old_line",
+        "text"
       ]
     },
     "Devices": {
@@ -847,6 +882,7 @@
       "": [
         "answering",
         "browser",
+        "declare",
         "kind",
         "what"
       ]
