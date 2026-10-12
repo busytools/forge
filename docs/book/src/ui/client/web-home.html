@@ -546,6 +546,11 @@
     .fleet .dot.off { background: var(--dim); }
     .fleet .dot.warn { background: var(--warn); }
     .fleet .dot.bad { background: var(--bad); }
+    /* The sheet's narrow step for the fleet, carried at the same 900. */
+    @media (max-width: 900px) {
+      .fleet-row { grid-template-columns: 22px minmax(0, 1fr) auto; row-gap: 8px; }
+      .fleet-where, .fleet-when, .fleet-seats, .fleet-counts, .fleet-misses, .fleet-open { grid-column: 2 / -1; }
+    }
   </style>
 
   <ul class="fleet">
