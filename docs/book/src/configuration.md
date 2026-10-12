@@ -39,18 +39,18 @@ Everything else is optional.
 An array of tables. At least one is required, or the load fails with
 `no [[orgs]] entries in forge.toml`.
 
-| Key | Type | Required | Notes |
-|---|---|---|---|
-| `name` | string | yes | Must be unique across orgs. |
-| `accounts` | array of strings | yes | Each entry must match an `[[accounts]]` `display_name`. |
-| `fallback_accounts` | array of strings | no | Accounts the walk reaches after the pinned ones. Absent means none. |
-| `projects` | array of tables | yes | Written as `[[orgs.projects]]`. An org with none fails the load. |
+| Key                 | Type             | Required | Notes                                                               |
+| ------------------- | ---------------- | -------- | ------------------------------------------------------------------- |
+| `name`              | string           | yes      | Must be unique across orgs.                                         |
+| `accounts`          | array of strings | yes      | Each entry must match an `[[accounts]]` `display_name`.             |
+| `fallback_accounts` | array of strings | no       | Accounts the walk reaches after the pinned ones. Absent means none. |
+| `projects`          | array of tables  | yes      | Written as `[[orgs.projects]]`. An org with none fails the load.    |
 
 `accounts` is the account subset every project in this org may spawn
 under. Rules enforced at load:
 
 - An empty list (`accounts = []`) fails with `has an empty
-  accounts = [] list`.
+accounts = [] list`.
 - A name that matches no `[[accounts]]` entry fails, and the error
   lists the valid names.
 
@@ -64,7 +64,7 @@ in both lists; it is then a primary only. See [the launchpad's chip
 description](./ui/launchpad.md) for the walk order.
 
 `accounts` and `fallback_accounts` must also agree on any env that
-changes the *shape* of a request, not only where it is sent. A child's
+changes the _shape_ of a request, not only where it is sent. A child's
 env is frozen when its session spawns and the gateway never respawns
 it, so after a rotation the next account is handed a request shaped for
 the account the session started on. The live example is
@@ -76,11 +76,11 @@ onto OpenRouter, with a restart the only way out.
 
 ## `[[orgs.projects]]`
 
-| Key | Type | Required | Default | Notes |
-|---|---|---|---|---|
-| `name` | string | yes | | Must be unique across *all* orgs, not just within one. |
-| `path` | string | yes | | A leading `~/` is expanded to the home directory. The un-expanded string is kept for display. |
-| `auto_start` | bool | no | `false` | When true, the project's lead session spawns at forge launch. Any number of projects may set it. |
+| Key          | Type   | Required | Default | Notes                                                                                            |
+| ------------ | ------ | -------- | ------- | ------------------------------------------------------------------------------------------------ |
+| `name`       | string | yes      |         | Must be unique across _all_ orgs, not just within one.                                           |
+| `path`       | string | yes      |         | A leading `~/` is expanded to the home directory. The un-expanded string is kept for display.    |
+| `auto_start` | bool   | no       | `false` | When true, the project's lead session spawns at forge launch. Any number of projects may set it. |
 
 Project names are the argument `forge <PROJECT>` takes, and the key
 per-project settings hang off.
@@ -90,16 +90,16 @@ per-project settings hang off.
 An array of tables. At least one is required, or the load fails with
 `no [[accounts]] entries in forge.toml`.
 
-| Key | Type | Required | Default | Notes |
-|---|---|---|---|---|
-| `display_name` | string | yes | | Must be unique. This is the name orgs reference. |
-| `provider` | string | yes | | One of `"anthropic"`, `"codex"`, `"openrouter"`, `"zai"`. Decides how the account is probed and how its usage reads. |
-| `token` | string | yes | | The credential the gateway forwards, mapped onto the provider's own variable at spawn. Trimmed once at load. |
-| `base_url` | string | no | | The upstream base for base-url providers (`"codex"`, `"openrouter"`, `"zai"`); required for them and validated per provider. An `"anthropic"` account may omit it - the gateway constant is its upstream. |
-| `models` | list of strings | yes | | The canonical model names the account serves. Selection and the route's model gate match against this list; an empty list fails the load (`AccountModelsRequired`). |
-| `model_slugs` | table | no | `{}` | Canonical name -> upstream spelling, only where they differ. Every slug key must be in `models`, or the load fails (`AccountSlugUndeclared`). |
-| `model_aliases` | table | no | `{}` | Written as `[accounts.model_aliases]`. Canonical name -> the other names a request may arrive under for that model. Every key must be in `models`, or the load fails (`AccountAliasUndeclared`); an empty list fails (`AccountAliasEmpty`). |
-| `env` | table | no | `{}` | Written as `[accounts.env]`. Provider-behaviour extras only - timeouts, context caps, fallback switches. Gateway keys (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`) declared here or in the global `[env]` layer are dropped at load and warned about: the flat `base_url` and `token` keys own them, and forge reads the account's endpoint and credential from those. |
+| Key             | Type            | Required | Default | Notes                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| --------------- | --------------- | -------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `display_name`  | string          | yes      |         | Must be unique. This is the name orgs reference.                                                                                                                                                                                                                                                                                                                                                                         |
+| `provider`      | string          | yes      |         | One of `"anthropic"`, `"codex"`, `"openrouter"`, `"zai"`. Decides how the account is probed and how its usage reads.                                                                                                                                                                                                                                                                                                     |
+| `token`         | string          | yes      |         | The credential the gateway forwards, mapped onto the provider's own variable at spawn. Trimmed once at load.                                                                                                                                                                                                                                                                                                             |
+| `base_url`      | string          | no       |         | The upstream base for base-url providers (`"codex"`, `"openrouter"`, `"zai"`); required for them and validated per provider. An `"anthropic"` account may omit it - the gateway constant is its upstream.                                                                                                                                                                                                                |
+| `models`        | list of strings | yes      |         | The canonical model names the account serves. Selection and the route's model gate match against this list; an empty list fails the load (`AccountModelsRequired`).                                                                                                                                                                                                                                                      |
+| `model_slugs`   | table           | no       | `{}`    | Canonical name -> upstream spelling, only where they differ. Every slug key must be in `models`, or the load fails (`AccountSlugUndeclared`).                                                                                                                                                                                                                                                                            |
+| `model_aliases` | table           | no       | `{}`    | Written as `[accounts.model_aliases]`. Canonical name -> the other names a request may arrive under for that model. Every key must be in `models`, or the load fails (`AccountAliasUndeclared`); an empty list fails (`AccountAliasEmpty`).                                                                                                                                                                              |
+| `env`           | table           | no       | `{}`    | Written as `[accounts.env]`. Provider-behaviour extras only - timeouts, context caps, fallback switches. Gateway keys (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`) declared here or in the global `[env]` layer are dropped at load and warned about: the flat `base_url` and `token` keys own them, and forge reads the account's endpoint and credential from those. |
 
 All accounts share one `claude` config directory, so MCP servers,
 plugins and settings are declared once for every account; what varies
@@ -168,14 +168,14 @@ entry, beside `name`, `path` and `auto_start`. The entry rejects
 unknown fields, so a mistyped key fails the load loudly instead of
 quietly applying nothing.
 
-| Key | Type | Default | Notes |
-|---|---|---|---|
-| `env` | table | `{}` | Written as `[orgs.projects.env]` directly under the entry, or inline as `env = { ... }`. The block form attaches to the MOST RECENT `[[orgs.projects]]` header - place it directly under its own entry, before the next header, or it lands on a different project. |
-| `env_file` | string | none | Path to a `KEY=value` file whose entries join this project's env. |
-| `issues` | boolean | `true` | File this project's task rows as issues in its own tracker (github today, through `gh`), an epic as a parent issue and its tasks as sub-issues, and close an issue when its row ends: completed, its tree archived, or the row gone. The real gate is the probe: no `gh`, no repo, or issues disabled all file nothing. `false` opts the project out. |
-| `max_workers` | integer | `2` | Cap on this project's concurrently live dynamic workers. The count is per project: workers live in other projects neither consume this project's budget nor raise its cap. A spawn over the cap errors instead of queuing; despawning a worker frees its slot. Workers restored by the boot or lead-reconnect respawn of persisted rows are exempt, but still count toward the cap once live. `0` disables dynamic spawns for the project. |
-| `permission_mode` | string | `auto` | Stamps the CLI's permission mode onto every session this project spawns, overriding the session default. Absent means `auto`, not the session default, so a project's sessions run one mode however its org's accounts rotate. |
-| `model` | string | | The project's model. Fills the CLI's model slots at spawn (`ANTHROPIC_DEFAULT_HAIKU_MODEL`, `_OPUS_MODEL`, `_SONNET_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`, `CLAUDE_CODE_SUBAGENT_MODEL` all carry it) and is the session default a `/model` change overrides. Must be declared by at least one account in the org, or the load fails - a model no account serves would otherwise stamp every slot and 503 each session's first request. Required: the walk that picks a session's account matches on the model an account serves, so a project without one is refused at spawn. |
+| Key               | Type    | Default | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| ----------------- | ------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `env`             | table   | `{}`    | Written as `[orgs.projects.env]` directly under the entry, or inline as `env = { ... }`. The block form attaches to the MOST RECENT `[[orgs.projects]]` header - place it directly under its own entry, before the next header, or it lands on a different project.                                                                                                                                                                                                                                                                                                            |
+| `env_file`        | string  | none    | Path to a `KEY=value` file whose entries join this project's env.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `issues`          | boolean | `true`  | File this project's task rows as issues in its own tracker (github today, through `gh`), an epic as a parent issue and its tasks as sub-issues, and close an issue when its row ends: completed, its tree archived, or the row gone. The real gate is the probe: no `gh`, no repo, or issues disabled all file nothing. `false` opts the project out.                                                                                                                                                                                                                          |
+| `max_workers`     | integer | `2`     | Cap on this project's concurrently live dynamic workers. The count is per project: workers live in other projects neither consume this project's budget nor raise its cap. A spawn over the cap errors instead of queuing; despawning a worker frees its slot. Workers restored by the boot or lead-reconnect respawn of persisted rows are exempt, but still count toward the cap once live. `0` disables dynamic spawns for the project.                                                                                                                                     |
+| `permission_mode` | string  | `auto`  | Stamps the CLI's permission mode onto every session this project spawns, overriding the session default. Absent means `auto`, not the session default, so a project's sessions run one mode however its org's accounts rotate.                                                                                                                                                                                                                                                                                                                                                 |
+| `model`           | string  |         | The project's model. Fills the CLI's model slots at spawn (`ANTHROPIC_DEFAULT_HAIKU_MODEL`, `_OPUS_MODEL`, `_SONNET_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`, `CLAUDE_CODE_SUBAGENT_MODEL` all carry it) and is the session default a `/model` change overrides. Must be declared by at least one account in the org, or the load fails - a model no account serves would otherwise stamp every slot and 503 each session's first request. Required: the walk that picks a session's account matches on the model an account serves, so a project without one is refused at spawn. |
 
 `permission_mode` stamps a permission mode onto every session the
 project spawns, overriding the launcher's per-session default. A project
@@ -189,8 +189,6 @@ fails the load listing them. The mode the session actually runs is what
 the CLI reports back on connect, and the `/mode` picker offers
 `bypassPermissions` only on sessions launched into it; the CLI refuses a
 mid-session switch to bypass.
-
-
 
 ### `env_file`
 
@@ -214,12 +212,12 @@ The inline `env` table on the project entry wins over `env_file` per key.
 The inference listener that spawns resolving to a project are pointed
 at.
 
-| Key | Type | Default | Notes |
-|---|---|---|---|
-| `port` | integer | `8787` | The port the gateway's listener binds on `127.0.0.1`. There is no fallback to an OS-assigned port: if the port is taken, the gateway fails to start and preflight stays shut, because every session's base URL names this port and a silent drift would point children at an address nothing serves. `0` fails the load outright (`GatewayPortInvalid`) for the same reason - it reads as "pick one for me". |
-| `streak_count` | integer | `5` | How many consecutive 429s from one account fire a rotation. `0` fails the load outright (`GatewayRotationInvalid`) - it would silently disable the streak. |
-| `streak_window_secs` | integer | `60` | The window the 429 streak is counted over, in seconds. `0` fails the load outright (`GatewayRotationInvalid`). |
-| `no_reset_cooldown_secs` | integer | `60` | The cooldown applied when neither the failing response nor the account's own usage probe reports a reset time, in seconds. `0` fails the load outright (`GatewayRotationInvalid`). |
+| Key                      | Type    | Default | Notes                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ------------------------ | ------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `port`                   | integer | `8787`  | The port the gateway's listener binds on `127.0.0.1`. There is no fallback to an OS-assigned port: if the port is taken, the gateway fails to start and preflight stays shut, because every session's base URL names this port and a silent drift would point children at an address nothing serves. `0` fails the load outright (`GatewayPortInvalid`) for the same reason - it reads as "pick one for me". |
+| `streak_count`           | integer | `5`     | How many consecutive 429s from one account fire a rotation. `0` fails the load outright (`GatewayRotationInvalid`) - it would silently disable the streak.                                                                                                                                                                                                                                                   |
+| `streak_window_secs`     | integer | `60`    | The window the 429 streak is counted over, in seconds. `0` fails the load outright (`GatewayRotationInvalid`).                                                                                                                                                                                                                                                                                               |
+| `no_reset_cooldown_secs` | integer | `60`    | The cooldown applied when neither the failing response nor the account's own usage probe reports a reset time, in seconds. `0` fails the load outright (`GatewayRotationInvalid`).                                                                                                                                                                                                                           |
 
 ## Environment layering
 
@@ -256,7 +254,7 @@ context caps, fallback switches. A base-url or credential key declared
 in an env layer is dropped at load, so it can reach neither the child
 nor the pool the usage probe and the forward leg read: the flat keys
 own them. Setting `ANTHROPIC_BASE_URL` or `ANTHROPIC_AUTH_TOKEN` at the
-*project* layer instead desynchronises forge's own accounting, because
+_project_ layer instead desynchronises forge's own accounting, because
 the usage probe, plan detection and the `/gateway` view all read the
 account map.
 
@@ -313,21 +311,21 @@ frontmost app, and is downgraded to a dock bounce when it is.
 Optional. Absent means dictation is off, which is also what an explicit
 `enabled = false` means.
 
-| Key | Type | Default | Notes |
-|---|---|---|---|
-| `enabled` | boolean | `false` | Off unless asked for. Turning it on costs a 3.07 GB model download the first time and holds about 1.8 GB of resident memory for the run. |
-| `models_dir` | string | platform cache dir | Where the model files live. `~` is expanded. |
-| `transcribe_model` | string | none | The model the transcribing role runs, by the runtime's own variant name. Set, it wins over every runtime pick and refuses an activation for that role; absent leaves the role to the last pick made on this machine, else the compiled default. |
-| `cleanup_model` | string | none | The same for the cleanup role. Inert while `normalizer = false`. |
-| `device` | string | system default | Input the TERMINAL records from, by device id rather than name. A client that captures its own audio picks on its own machine and never reads this. |
-| `language` | string | autodetect | Spoken language hint. |
-| `normalizer` | boolean | `true` | Rewrite recognition output into clean text. Off halves the download and skips a pass per utterance. |
-| `max_capture_minutes` | integer | `30` | Upper bound on one recording. A capture reserves memory eagerly, about 110 MiB at the default. |
-| `bind` | string | `right_cmd` | The push-to-talk key: `right_cmd`, `left_cmd` or `off`. On Linux and Windows the cmd equivalent is the right/left Control key. |
-| `mode` | string | `auto` | How press/release maps onto recording: `auto` infers from timing (a quick tap toggles, a hold transcribes on release), `toggle` starts on a press and stops on the next press, `hold` records while held and always transcribes on release. |
-| `styling` | string | `semi_formal` | The register a take's cleanup rewrites into: `casual`, `semi_casual`, `semi_formal` or `formal`. A client reads this as the value its panel starts on and resets to. |
-| `structure` | string | `prose` | Whether the cleanup may return a bulleted list: `prose` or `lists`. |
-| `context` | string | `general` | What the words are being written for: `general` or `email`. `email` may return multi-line text. |
+| Key                   | Type    | Default            | Notes                                                                                                                                                                                                                                           |
+| --------------------- | ------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`             | boolean | `false`            | Off unless asked for. Turning it on costs a 3.07 GB model download the first time and holds about 1.8 GB of resident memory for the run.                                                                                                        |
+| `models_dir`          | string  | platform cache dir | Where the model files live. `~` is expanded.                                                                                                                                                                                                    |
+| `transcribe_model`    | string  | none               | The model the transcribing role runs, by the runtime's own variant name. Set, it wins over every runtime pick and refuses an activation for that role; absent leaves the role to the last pick made on this machine, else the compiled default. |
+| `cleanup_model`       | string  | none               | The same for the cleanup role. Inert while `normalizer = false`.                                                                                                                                                                                |
+| `device`              | string  | system default     | Input the TERMINAL records from, by device id rather than name. A client that captures its own audio picks on its own machine and never reads this.                                                                                             |
+| `language`            | string  | autodetect         | Spoken language hint.                                                                                                                                                                                                                           |
+| `normalizer`          | boolean | `true`             | Rewrite recognition output into clean text. Off halves the download and skips a pass per utterance.                                                                                                                                             |
+| `max_capture_minutes` | integer | `30`               | Upper bound on one recording. A capture reserves memory eagerly, about 110 MiB at the default.                                                                                                                                                  |
+| `bind`                | string  | `right_cmd`        | The push-to-talk key: `right_cmd`, `left_cmd` or `off`. On Linux and Windows the cmd equivalent is the right/left Control key.                                                                                                                  |
+| `mode`                | string  | `auto`             | How press/release maps onto recording: `auto` infers from timing (a quick tap toggles, a hold transcribes on release), `toggle` starts on a press and stops on the next press, `hold` records while held and always transcribes on release.     |
+| `styling`             | string  | `semi_formal`      | The register a take's cleanup rewrites into: `casual`, `semi_casual`, `semi_formal` or `formal`. A client reads this as the value its panel starts on and resets to.                                                                            |
+| `structure`           | string  | `prose`            | Whether the cleanup may return a bulleted list: `prose` or `lists`.                                                                                                                                                                             |
+| `context`             | string  | `general`          | What the words are being written for: `general` or `email`. `email` may return multi-line text.                                                                                                                                                 |
 
 An unrecognised key here fails the load rather than being ignored: a
 mistyped `models_dir` would otherwise fetch three gigabytes to the
@@ -390,10 +388,10 @@ one verified.
 
 Optional. Absent means the Gotify integration stays dormant.
 
-| Key | Type | Required | Notes |
-|---|---|---|---|
-| `url` | string | yes | Gotify server URL. |
-| `client_token` | string | yes | Token for the receive stream and the application lookup. |
+| Key            | Type   | Required | Notes                                                    |
+| -------------- | ------ | -------- | -------------------------------------------------------- |
+| `url`          | string | yes      | Gotify server URL.                                       |
+| `client_token` | string | yes      | Token for the receive stream and the application lookup. |
 
 Both are mandatory once the section is present; neither has a default.
 
@@ -403,13 +401,13 @@ Optional. Absent or `enabled = false` means the decision tools
 (`systemone__ask_noul`, `systemone__ask_choice`, `systemone__ask_score`)
 are not injected into any session.
 
-| Key | Type | Required | Notes |
-|---|---|---|---|
-| `enabled` | boolean | no | Defaults to `true`. `false` keeps the section (and the key) without injecting the tools. |
-| `base_url` | string | yes | The endpoint's base. forge appends `/v1/systemone`, or `/systemone` when the base already ends in `/v1`. |
-| `api_key` | string | no | Sent as a bearer token when set; omit it for keyless local hosts such as Ollama. |
-| `model` | string | yes | The model every call asks, e.g. `jev-latest`. |
-| `timeout_ms` | integer | no | Per-request timeout in milliseconds; defaults to 30000. |
+| Key          | Type    | Required | Notes                                                                                                    |
+| ------------ | ------- | -------- | -------------------------------------------------------------------------------------------------------- |
+| `enabled`    | boolean | no       | Defaults to `true`. `false` keeps the section (and the key) without injecting the tools.                 |
+| `base_url`   | string  | yes      | The endpoint's base. forge appends `/v1/systemone`, or `/systemone` when the base already ends in `/v1`. |
+| `api_key`    | string  | no       | Sent as a bearer token when set; omit it for keyless local hosts such as Ollama.                         |
+| `model`      | string  | yes      | The model every call asks, e.g. `jev-latest`.                                                            |
+| `timeout_ms` | integer | no       | Per-request timeout in milliseconds; defaults to 30000.                                                  |
 
 `base_url` and `model` are mandatory once the section is enabled; a
 missing one refuses the load naming the key - the message reads
@@ -434,13 +432,13 @@ headroom.
 Optional, and repeatable: one entry per Slack workspace. Absent or empty
 means the Slack connector stays dormant.
 
-| Key | Type | Default | Notes |
-|---|---|---|---|
-| `workspace` | string | none | Label for this workspace, distinct per entry. It addresses the workspace in `slack__list`. |
-| `token` | string | none | User token, `xoxp-...`. |
-| `poll_seconds` | integer | `5` | Sweep interval for this workspace's conversations, in seconds. |
-| `dm_poll_seconds` | integer | `75` | Sweep interval for the DM class, in seconds. It covers every DM in the workspace rather than a list, so it costs one history call per DM per pass whatever the subscription count, and it is swept on its own slower clock. |
-| `thread_idle_days` | integer | `14` | Drop a followed thread with nothing new for this many days. A thread that quiet is resolved in practice, whatever its parent's age. |
+| Key                | Type    | Default | Notes                                                                                                                                                                                                                       |
+| ------------------ | ------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `workspace`        | string  | none    | Label for this workspace, distinct per entry. It addresses the workspace in `slack__list`.                                                                                                                                  |
+| `token`            | string  | none    | User token, `xoxp-...`.                                                                                                                                                                                                     |
+| `poll_seconds`     | integer | `5`     | Sweep interval for this workspace's conversations, in seconds.                                                                                                                                                              |
+| `dm_poll_seconds`  | integer | `75`    | Sweep interval for the DM class, in seconds. It covers every DM in the workspace rather than a list, so it costs one history call per DM per pass whatever the subscription count, and it is swept on its own slower clock. |
+| `thread_idle_days` | integer | `14`    | Drop a followed thread with nothing new for this many days. A thread that quiet is resolved in practice, whatever its parent's age.                                                                                         |
 
 `workspace` and `token` are mandatory once an entry is present. Three
 mistakes fail the load rather than booting a connector that cannot work:
@@ -462,8 +460,8 @@ explicit `auto_update = false` means. Manual updates from the plugins
 pane (`u`, or the per-plugin Update action) are not affected by this
 section.
 
-| Key | Type | Default | Notes |
-|---|---|---|---|
+| Key           | Type    | Default | Notes                                                                                                                                                              |
+| ------------- | ------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `auto_update` | boolean | `false` | Update every installed plugin once at forge boot. The switch alone governs. Off unless asked for: an auto-applied update can break a load-bearing session mid-day. |
 
 When the run fires, the plugins pane reports what updated, from which
@@ -483,11 +481,11 @@ being ignored. Keys an older forge read here (`trusted_marketplaces`,
 Optional. Absent leaves the defaults, which are the values below. These
 govern the task board's chase and its clocks.
 
-| Key | Type | Default | Notes |
-|---|---|---|---|
-| `stale_hours` | integer | `4` | The no-movement window: a row with no update for this long draws the `no movement` mark, a ready row with no owner this long asks the lead once, and a dependency or resource wait this long does too. The estimate is what arms the chase for a row that has one; this is the fallback for rows that have none. |
-| `escalate_at` | number | `1.5` | The multiplier on a row's estimate at which the chase tells the LEAD - once - that the row is past its estimate. The escalation is authority: rescope, reassign, take over, or restate the expectation. |
-| `chase` | boolean | `true` | Whether the chase runs at all. `false` leaves the board's marks and silences every message - the estimate nudge, the escalation, and the queue and wait reports. |
+| Key           | Type    | Default | Notes                                                                                                                                                                                                                                                                                                            |
+| ------------- | ------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `stale_hours` | integer | `4`     | The no-movement window: a row with no update for this long draws the `no movement` mark, a ready row with no owner this long asks the lead once, and a dependency or resource wait this long does too. The estimate is what arms the chase for a row that has one; this is the fallback for rows that have none. |
+| `escalate_at` | number  | `1.5`   | The multiplier on a row's estimate at which the chase tells the LEAD - once - that the row is past its estimate. The escalation is authority: rescope, reassign, take over, or restate the expectation.                                                                                                          |
+| `chase`       | boolean | `true`  | Whether the chase runs at all. `false` leaves the board's marks and silences every message - the estimate nudge, the escalation, and the queue and wait reports.                                                                                                                                                 |
 
 ## `[server]`
 
@@ -495,11 +493,11 @@ The socket: one WebSocket served from the process that already owns the
 sessions, so a client costs a listener rather than a second scheduler.
 On by default, so a restart leaves it serving.
 
-| Key | Type | Default | Notes |
-|---|---|---|---|
-| `enabled` | boolean | `true` | Whether the server starts with forge. `false` is the opt-out, and the TUI is identical either way. |
-| `port` | integer | `8790` | The port the server binds on `bind`, and a client is pointed at it by hand. `0` fails the load outright (`ServerPortInvalid`), and so does the gateway's own port (`ServerPortTakenByGateway`) - two listeners cannot share one. Neither check runs while the socket is disabled: a stale port on a section that never binds cannot stop the boot. |
-| `bind` | IP address | `127.0.0.1` | The interface the server listens on. Loopback by default: reaching it from another machine means naming that machine's interface here, usually the WireGuard address. **forge is reached over loopback or a private network and is never exposed publicly.** That is the whole reason the socket carries no authentication - the private network is what the access control stands on, not a proxy to be added in front of a public bind. |
+| Key       | Type       | Default     | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| --------- | ---------- | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enabled` | boolean    | `true`      | Whether the server starts with forge. `false` is the opt-out, and the TUI is identical either way.                                                                                                                                                                                                                                                                                                                                        |
+| `port`    | integer    | `8790`      | The port the server binds on `bind`, and a client is pointed at it by hand. `0` fails the load outright (`ServerPortInvalid`), and so does the gateway's own port (`ServerPortTakenByGateway`) - two listeners cannot share one. Neither check runs while the socket is disabled: a stale port on a section that never binds cannot stop the boot.                                                                                        |
+| `bind`    | IP address | `127.0.0.1` | The interface the server listens on. Loopback by default: reaching it from another machine means naming that machine's interface here, usually the WireGuard address. **forge is reached over loopback or a private network and is never exposed publicly.** That is the whole reason the socket carries no authentication - the private network is what the access control stands on, not a proxy to be added in front of a public bind. |
 
 The server starts no subsystem of its own - no cron scheduler, no
 connector, no second gateway - so the cost of a client is the listener
@@ -515,20 +513,20 @@ forge; the TUI is not downstream of the socket.
 Which of the sets forge ships a client draws with. Absent means every
 name unset, which is the built-in.
 
-| Key | Type | Default | Notes |
-|---|---|---|---|
-| `mark` | string | unset, drawing panes | The mark a client draws, by name: `panes`, `klin`, `lanes`, `f_slab`, `split`, `spine`, `grid`, `clamp`, `strike`, `nest`, `chamfer`, `tally` or `stencil_f`. A fixed set rather than a file path, so every option is one forge has drawn. |
-| `theme` | string | unset, drawing dark | The palette, by name. `dark` is the only one shipped so far; a second is its own pass, since every state colour needs a treatment that stays legible on the new background. |
-| `font` | string | unset, drawing Fira Code for prose and code alike | The typeface, by name. Fira Code is vendored, bundled with the client and licensed OFL 1.1; `system` is the opt-out to the stacks the OS already has. `--ui` and `--mono` come from here rather than from the stylesheet, so this is the only place a typeface is chosen. |
+| Key     | Type   | Default                                           | Notes                                                                                                                                                                                                                                                                     |
+| ------- | ------ | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mark`  | string | unset, drawing panes                              | The mark a client draws, by name: `panes`, `klin`, `lanes`, `f_slab`, `split`, `spine`, `grid`, `clamp`, `strike`, `nest`, `chamfer`, `tally` or `stencil_f`. A fixed set rather than a file path, so every option is one forge has drawn.                                |
+| `theme` | string | unset, drawing dark                               | The palette, by name. `dark` is the only one shipped so far; a second is its own pass, since every state colour needs a treatment that stays legible on the new background.                                                                                               |
+| `font`  | string | unset, drawing Fira Code for prose and code alike | The typeface, by name. Fira Code is vendored, bundled with the client and licensed OFL 1.1; `system` is the opt-out to the stacks the OS already has. `--ui` and `--mono` come from here rather than from the stylesheet, so this is the only place a typeface is chosen. |
 
 ## `[documents]`
 
 The ceiling on one document a session hands the reader through
 `hand_off_document`. Absent means the default.
 
-| Key | Type | Default | Notes |
-|---|---|---|---|
-| `max_size_mib` | integer | `10` | The largest document the viewer opens, in MiB, between `1` and `190`. A read over it is refused naming the size, before any bytes are read. `0` fails the load: a ceiling of nothing would refuse every document, which reads as a bug rather than a choice. A value past `190` fails the load too: a document crosses the socket base64-encoded and the desktop client's frame cap is 256 MiB, so a larger ceiling would read and raise and then die at the client. |
+| Key            | Type    | Default | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| -------------- | ------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `max_size_mib` | integer | `10`    | The largest document the viewer opens, in MiB, between `1` and `190`. A read over it is refused naming the size, before any bytes are read. `0` fails the load: a ceiling of nothing would refuse every document, which reads as a bug rather than a choice. A value past `190` fails the load too: a document crosses the socket base64-encoded and the desktop client's frame cap is 256 MiB, so a larger ceiling would read and raise and then die at the client. |
 
 A row's motion is not configurable. Each view animates its own: the
 TUI's spinner styles name glyph cycles, which is a terminal idiom a
