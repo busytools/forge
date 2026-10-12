@@ -2,7 +2,7 @@
 
 The viewer a handed document opens on: markdown, a PDF or plain text, drawn
 in the client's own viewer rather than in the conversation. An agent hands a
-document with `hand_off_document` and the hand-off arrives as an **ask** in
+document with `documents__hand_off` and the hand-off arrives as an **ask** in
 the composer's dock - the document's resolved path, and two verbs, **Open**
 and **Not now**. Open lands on the viewer's own address; a link back to the
 document - a review thread's deep link, an address kept - reopens it exactly
@@ -24,16 +24,17 @@ affordance anywhere.
 
 ## What it draws
 
-| Region                | Shows                                                                                                                                                                                        | Read from                                                                                                                    |
-| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| The ask               | the dock's card: `document hand-off`, the resolved path, **Open** and **Not now**                                                                                                            | the `document_hand_off_pending` update (and the seat's `pending_asks` read, for a client that attached while the ask waited) |
-| The document          | markdown rendered by the chat's own renderer; plain text as text; a PDF in the surface's own viewer; any other kind named as itself                                                          | the `document_read` answer: `document_kind` and the bytes                                                                    |
-| A reviewable document | its top-level blocks, each one a comment target: hover (or focus) marks the block, a press opens the composer under it                                                                       | the answer's `threads` and the page's own drafts                                                                             |
-| Outdated comments     | written against an earlier version of this document: their captured lines kept, in their own section - nothing re-anchors them                                                               | each thread's anchor `content_hash` against the answer's                                                                     |
-| The done              | `done (n)` files the drafts as one round, draws `done - review left (R{n})`, and releases the parked hand-off with what was filed; a refusal draws the core's own words and keeps the drafts | `submit_review`'s reply, then `answer_document_hand_off`                                                                     |
-| A refusal             | the server's sentence as its own line - missing, unreadable, over the ceiling, outside the session's tree, a text kind that is not UTF-8                                                     | the `error` naming `document_read`                                                                                           |
-| Opening               | `Opening <path>...` while the read is out                                                                                                                                                    | the page's own state                                                                                                         |
-| Empty                 | its own line, before any kind is drawn                                                                                                                                                       | an answer with zero bytes                                                                                                    |
+| Region                | Shows                                                                                                                                                                                                                                                       | Read from                                                                                                                    |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| The ask               | the dock's card: `document hand-off`, the resolved path, **Open** and **Not now**                                                                                                                                                                           | the `document_hand_off_pending` update (and the seat's `pending_asks` read, for a client that attached while the ask waited) |
+| The document          | markdown rendered by the chat's own renderer; plain text as text; a PDF in the surface's own viewer; any other kind named as itself                                                                                                                         | the `document_read` answer: `document_kind` and the bytes                                                                    |
+| A reviewable document | its top-level blocks, each one a comment target: hover (or focus) marks the block, a press opens the composer under it                                                                                                                                      | the answer's `threads` and the page's own drafts                                                                             |
+| Outdated comments     | written against an earlier version of this document: their captured lines kept, in their own section - nothing re-anchors them                                                                                                                              | each thread's anchor `content_hash` against the answer's                                                                     |
+| The done              | the one door, in every state: `done (n)` files the drafts as one round, pushes the review-ready line into the chat, releases the parked hand-off with what was filed, and returns to the session; a refusal draws the core's own words and keeps the drafts | `submit_review`'s reply, then `answer_document_hand_off`                                                                     |
+| The chat line         | `Review #N ready - address it via the review MCP (review__list, with the scope doc:<path>)`, the terminal's own nudge                                                                                                                                       | the page's own dispatch after the finish                                                                                     |
+| A refusal             | the server's sentence as its own line - missing, unreadable, over the ceiling, outside the session's tree, a text kind that is not UTF-8                                                                                                                    | the `error` naming `document_read`                                                                                           |
+| Opening               | `Opening <path>...` while the read is out                                                                                                                                                                                                                   | the page's own state                                                                                                         |
+| Empty                 | its own line, before any kind is drawn                                                                                                                                                                                                                      | an answer with zero bytes                                                                                                    |
 
 ## The rules
 
@@ -92,16 +93,30 @@ their done files them.
 submits the drafted threads as one round through the same command a code
 review uses, under the document's scope (`doc:<path>`), stamped with the
 asking seat as the origin - and then answers the parked call with the review
-that landed. A refusal files nothing and answers nothing: the call stays
-parked, the drafts stay where they were, and the refusal's words are what
-the page draws.
+that landed. **The terminal's own drop is the model**: the same one line it
+pushes into the session, `Review #N ready - address it via the review MCP`,
+goes into the chat here, with the document's scope named in it - so the
+reader sees the drop in the conversation and the agent hears it. Then the
+page returns to the session the reader came through: the done is the one
+door, and the chat line is the confirmation. A refusal files nothing and
+answers nothing: the call stays parked, the drafts stay where they were, and
+the refusal's words are what the page draws.
 
 ## The states the page can be in
 
 - **The ask waiting**: the dock's card, ahead of the other prompts the way
   the seat's own read orders them; a resolution from another view clears it.
+  The seat's own mark is the ask's too - the rail reads it as needs-you
+  ("a hand-off is waiting"), and the seat's activity mark is Attention
+  while it waits, exactly like a permission or a question.
 - **Markdown**: rendered with the chat's renderer - raw HTML never reaches
-  the page - and the same `.prose` rules the conversation draws with.
+  the page - and the same `.prose` rules the conversation draws with, on
+  the sheet below.
+- **The sheet**: the document rests on the app like a page on a desk - one
+  panel at a comfortable measure, a hairline over every section, the
+  reading scale of the drawing beside this page. The space around it is the
+  desk, and the PDF state is the one exception (the platform's viewer takes
+  the window).
 - **A reviewable markdown or text document**: the rendered blocks instead,
   every block a focusable comment target, with its comments placed under
   their blocks and its drafts under theirs.
@@ -143,18 +158,23 @@ draws markdown, PDFs and text.` - and a name with no extension says that
 - The ask's card is the dock's own machinery: the same `pending_asks` read,
   the same parked/resolved pair, and the same command-bus answer a browser
   hand-off rides.
+- The call's own chat row draws under the **documents** family - the name's
+  first segment is the family, so `mcp__forge__documents__hand_off` gets
+  its glyph and its row line like every other forge tool.
 - The page's own classes are `doc-*` under a `.doc` scope - a new component
   takes its own stem rather than reusing a bare name the sheet already
   styles.
 
 ## The widths
 
-The viewer takes the whole column it is given: a centred reading measure was
-tried and read as wasted space on a wide screen (Ved, the look), so the
-page's padding is all that keeps the text off the edges. At 430 the column
-still holds, long unbroken tokens wrap (`anywhere`), and the PDF embeds at
-the column's own width - the sheet has no sideways scroller and this page
-brings none.
+**The sheet** (Ved, the look, chosen over the full-bleed page): the
+document sits on the app as a page on a desk - one panel capped at 940px,
+centred, and the space around it is the desk rather than emptiness. The
+reading scale is the drawing's: headings at 30/19/16, body at 15/1.72, a
+hairline above every section. The PDF is the one full-bleed state: the
+platform's viewer takes the window down to the done row. At 430 the panel
+takes the page's padding, long unbroken tokens wrap (`anywhere`) - the sheet
+has no sideways scroller and this page brings none.
 
 ## Touch
 
@@ -162,5 +182,5 @@ Every control the page carries takes the 44px target under
 `@media (pointer: coarse)`: a rendered block (the comment target itself),
 the composer's comment and cancel pair, and the done button. Nothing lives
 on hover alone - the block's own press opens the composer, and the keyboard
-reaches it with a focus and Enter - and the plain and PDF states carry no
-controls at all (the platform PDF viewer's chrome is the viewer's own).
+reaches it with a focus and Enter - and the read-only states carry only the
+one done (the platform PDF viewer's own chrome is the viewer's).

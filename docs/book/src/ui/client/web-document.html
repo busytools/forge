@@ -77,8 +77,43 @@
         padding: 30px 40px 64px;
       }
       .doc {
-        max-width: 860px;
+        max-width: none;
+        margin: 0;
+      }
+      /* the sheet: the document rests on the app like a page on a desk (Ved,
+         the look, chosen over the full-bleed page) - one panel at a reading
+         measure, a hairline over every section, the desk around it */
+      .doc-body {
+        max-width: 940px;
         margin: 0 auto;
+        background: var(--s1);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 52px 60px 44px;
+      }
+      .doc-body h1 {
+        font-size: 30px;
+        line-height: 1.25;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+        margin: 0 0 18px;
+      }
+      .doc-body h2 {
+        font-size: 19px;
+        font-weight: 600;
+        margin: 38px 0 12px;
+        padding-top: 22px;
+        border-top: 1px solid var(--line);
+      }
+      .doc-body h3 {
+        font-size: 16px;
+        font-weight: 600;
+        margin: 26px 0 8px;
+      }
+      .doc-body p,
+      .doc-body li {
+        font-size: 15px;
+        line-height: 1.72;
       }
       .pending {
         color: var(--muted);
@@ -210,7 +245,7 @@
 
       /* the states below the measure, each in its own frame */
       .strip {
-        max-width: 860px;
+        max-width: 960px;
         margin: 40px auto 0;
         padding-top: 18px;
         border-top: 1px solid var(--line);
@@ -419,7 +454,8 @@ max_size_mib = 10</pre>
           </table>
           <hr />
           <p>
-            The viewer takes the whole column it is given, and a plain-text
+            The document sits on the app as a page on a desk: one panel at a
+            reading measure, a hairline over every section, and a plain-text
             document wraps inside it - the sheet has no sideways scroller
             anywhere.
           </p>
