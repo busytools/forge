@@ -51,8 +51,8 @@ open; pressing the control draws every row and it reads `show less`, and a
 group at or under its limit draws whole with no control. A card the reader is
 dropping into a folded group stays drawn while the core's answer is in
 flight, and a jump aimed at a folded row - an epic pill, a row page's task
-list - opens the fold and lands on it. In progress never folds: it is the live
-work.
+list - opens the fold and lands on it. In progress and Waiting never fold: they
+are the live work.
 
 ### A card
 
