@@ -98,8 +98,9 @@ pub fn read(
 /// The canonical target of `path` under `root`. A missing file has no
 /// canonical path, so its PARENT is canonicalized instead - what keeps the
 /// prefix check honest for a path whose directory is a symlink out. A path
-/// that canonicalizes neither way is returned as joined, which the caller's
-/// existence check then refuses.
+/// that canonicalizes neither way is collapsed LEXICALLY before the prefix
+/// check, so a `..` climbing past the root is still an escape when the chain
+/// it climbs through is not on disk.
 fn resolve(root: &Path, path: &str) -> PathBuf {
     let joined = root.join(path);
     if let Ok(full) = joined.canonicalize() {
@@ -107,10 +108,26 @@ fn resolve(root: &Path, path: &str) -> PathBuf {
     }
     match (joined.parent(), joined.file_name()) {
         (Some(parent), Some(name)) => {
-            parent.canonicalize().map(|parent| parent.join(name)).unwrap_or(joined)
+            parent.canonicalize().map_or_else(|_| lexical(&joined), |parent| parent.join(name))
         }
-        _ => joined,
+        _ => lexical(&joined),
     }
+}
+
+/// `path` with `.` dropped and `..` popped, filesystem untouched. Popping
+/// past the root is a no-op, as it is for the OS.
+fn lexical(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for part in path.components() {
+        match part {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 /// The kind by extension, lowercased; an extension the list does not know
@@ -258,6 +275,30 @@ mod tests {
             );
             assert!(refusal.to_string().contains(&probe), "the refusal names {probe}: {refusal}");
         }
+    }
+
+    /// A `..` walk whose target does not exist is still an ESCAPE, not a
+    /// missing document: with no parent chain to canonicalize, the climb is
+    /// decided lexically, so the refusal names the boundary rather than a
+    /// file that was never there. A missing document INSIDE the tree keeps
+    /// reading missing, parents absent or not - the control.
+    #[test]
+    fn an_escape_through_a_missing_parent_chain_refuses_as_outside_the_tree() {
+        let dir = fixture();
+        let root = dir.path().canonicalize().expect("canonical");
+        let cwd = root.join("tree");
+        std::fs::create_dir_all(&cwd).expect("the session tree");
+
+        let refusal = read(&cwd, "../../etc/hosts", false, CEILING)
+            .expect_err("climbing out never reads, existing or not");
+        assert!(
+            matches!(refusal, DocumentRefusal::OutsideTheTree { .. }),
+            "the boundary is the refusal: {refusal:?}",
+        );
+
+        let refusal = read(&cwd, "gone/deeper/missing.md", false, CEILING)
+            .expect_err("a missing document inside the tree still reads missing");
+        assert!(matches!(refusal, DocumentRefusal::Missing { .. }), "{refusal:?}");
     }
 
     /// A file the process cannot read is a refusal with the reason, not a
