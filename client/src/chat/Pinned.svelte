@@ -4,6 +4,7 @@
   import McpSegment from './McpSegment.svelte';
   import MonitorsSegment from './MonitorsSegment.svelte';
   import ProcessesSegment from './ProcessesSegment.svelte';
+  import ReviewSegment from './ReviewSegment.svelte';
   import SchedulesSegment from './SchedulesSegment.svelte';
   import Strip from './Strip.svelte';
   import BrowserSegment from './BrowserSegment.svelte';
@@ -14,6 +15,7 @@
   import { mcp } from './mcp.svelte';
   import { monitors } from './monitors.svelte';
   import { processes } from './processes.svelte';
+  import { review } from './review.svelte';
   import { schedules } from './schedules.svelte';
   import { subagents } from './subagents.svelte';
   import { tasks } from './tasks.svelte';
@@ -56,6 +58,7 @@
       mcp.anything() ||
       git.anything() ||
       tasks.anything() ||
+      review.anything() ||
       monitors.anything(),
   );
 </script>
@@ -68,7 +71,9 @@
       {#if info !== null}<Strip {info} />{/if}
       <span class="sg-fill"
         ><BrowserSegment {connection} {slot} /><SubagentSegment /><ProcessesSegment
-        /><ConnectorsSegment /><SchedulesSegment /><McpSegment /><GitSegment /><TasksSegment
+        /><ConnectorsSegment /><SchedulesSegment /><McpSegment /><GitSegment /><ReviewSegment
+          href={slot === null ? null : hrefFor({ name: 'review', slot })}
+        /><TasksSegment
           href={slot === null
             ? null
             : hrefFor({ name: 'board', org: slot.org, project: slot.project })}

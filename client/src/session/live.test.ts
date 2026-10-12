@@ -1141,6 +1141,7 @@ function drivable(refusedAtFirst = false): Driveable {
     },
     more: () => false,
     devices: () => false,
+    commitDiff: () => false,
     frame: () => false,
     onBrowserAsk: () => () => {},
     browserRole: () => false,

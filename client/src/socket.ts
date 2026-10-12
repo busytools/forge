@@ -123,6 +123,13 @@ export interface Connection {
    */
   devices(): boolean;
   /**
+   * Ask for one commit's own diff, for a review page's commit scopes.
+   *
+   * Answered by a `commit_diff` message on `onMessage` or an `error` naming
+   * it; `false` means the socket was not open and no answer is coming.
+   */
+  commitDiff(session: SessionSlot, sha: string): boolean;
+  /**
    * Send one binary frame: dictation audio, and nothing else the socket
    * carries.
    *
@@ -438,10 +445,12 @@ export function connect(url: string): Connection {
         if (message.what === 'subscribe') refuse(message.why);
         else report(`the server refused a ${message.what}`, message.why);
         return;
-      // `page` is the conversation's, and `devices` is the picker's: a surface
-      // that draws one reads it from `onMessage`.
+      // `page` is the conversation's, `devices` the picker's and
+      // `commit_diff` the review canvas': a surface that draws one reads it
+      // from `onMessage`.
       case 'page':
       case 'devices':
+      case 'commit_diff':
         return;
       // An ask is answered here rather than handed to a page: the handler is
       // the shell's, and the answer has to go back under the ask's own id.
@@ -721,6 +730,11 @@ export function connect(url: string): Connection {
     devices() {
       if (!isOpen()) return false;
       sendNow({ kind: 'devices' });
+      return true;
+    },
+    commitDiff(session, sha) {
+      if (!isOpen()) return false;
+      sendNow({ kind: 'commit_diff', session, sha });
       return true;
     },
     frame(bytes) {

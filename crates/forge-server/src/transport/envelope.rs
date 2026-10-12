@@ -6,8 +6,10 @@
 //! adding a variant is compatible and renaming one is not.
 
 use forge_primitives::browser::BrowserPart;
+use forge_primitives::git_diff::LayerState;
 use forge_primitives::{ClientConfig, SessionSlot};
 use forge_workspace::DictateAxes;
+use forge_workspace::env::git_diff::content::FileContent;
 use serde::{Deserialize, Serialize};
 
 use crate::live::fleet_news;
@@ -175,6 +177,16 @@ pub enum ClientMessage {
         before: Option<String>,
         turns: u32,
     },
+    /// One commit's own diff, for the review canvas' commit scopes.
+    ///
+    /// Asked on demand rather than carried on the record: a branch can
+    /// hold dozens of commits, and every reader of a record - the terminal
+    /// included - would pay their content on every read for a scope only
+    /// one page draws.
+    CommitDiff {
+        session: SessionSlot,
+        sha: String,
+    },
     /// The inputs forge can record from, and the `[dictate] device` pin.
     ///
     /// Asked on demand rather than subscribed: the walk opens the microphone
@@ -248,6 +260,22 @@ pub enum ServerMessage {
         /// the rest of the run and rides the home snapshot's `dictate.device`,
         /// so this is not what is in force once anything has picked.
         configured: Option<String>,
+    },
+    /// The answer to `commit_diff`: one commit's own bounded diff, in the
+    /// same layer shape the record's content read carries, so a client
+    /// draws both scopes through one parse.
+    ///
+    /// **A `sha` git cannot read is the scan's own `scan_failed` layer, not
+    /// an `error`** - the diff-viewer contract keeps a read that answered
+    /// something apart from a read that could not run, and the client draws
+    /// the state as itself. Only a seat forge holds no session for is an
+    /// `error` naming `commit_diff`.
+    CommitDiff {
+        sha: String,
+        files: LayerState<Vec<FileContent>>,
+        /// Something was withheld for the read's budget, the flag the
+        /// record's own content read carries.
+        truncated: bool,
     },
     /// The answer to a `Command` that carried a `reply_to`, including a
     /// refusal, so a client awaiting one is never left watching a channel

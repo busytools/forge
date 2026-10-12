@@ -143,6 +143,17 @@ mod commands {
         bridge.devices()
     }
 
+    /// One commit's own diff; false means no socket is open and no answer is
+    /// coming.
+    #[tauri::command]
+    pub fn client_commit_diff(
+        bridge: tauri::State<'_, Arc<Bridge>>,
+        session: Value,
+        sha: String,
+    ) -> bool {
+        bridge.commit_diff(&session, &sha)
+    }
+
     #[tauri::command]
     pub fn client_take_role(bridge: tauri::State<'_, Arc<Bridge>>) {
         bridge.take_role();
@@ -202,6 +213,7 @@ pub fn run() {
             commands::client_dispatch,
             commands::client_frame,
             commands::client_devices,
+            commands::client_commit_diff,
             commands::client_take_role,
             commands::client_heartbeat,
             commands::client_close
@@ -242,6 +254,7 @@ pub fn run() {
             commands::client_dispatch,
             commands::client_frame,
             commands::client_devices,
+            commands::client_commit_diff,
             commands::client_take_role,
             commands::client_heartbeat,
             commands::client_close

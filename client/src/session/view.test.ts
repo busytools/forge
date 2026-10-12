@@ -28,6 +28,7 @@ import {
   railGroups,
   railMark,
   rankOf,
+  reviewRows,
   type RailGroup,
   type RailProject,
   seatConnectorRows,
@@ -36,7 +37,7 @@ import {
   taskRows,
   untilOf,
 } from './view';
-import { sessionFrom, type SessionRecord } from './wire';
+import { reviewsFrom, sessionFrom, type SessionRecord } from './wire';
 
 const record: SessionRecord = sessionFrom(session);
 
@@ -1423,6 +1424,71 @@ describe('the dictation overrides', () => {
       Object.hasOwn(held, 'dictate_overrides'),
       'the record must not carry a field nothing reads',
     ).toBe(false);
+  });
+});
+
+describe('the review rows the strip draws', () => {
+  /** The fixture's record with a hand-built threads read laid over it. */
+  const withThreads = (outcome: string, threads: unknown[] | string): SessionRecord => ({
+    ...record,
+    reviews: reviewsFrom({
+      threads:
+        outcome === 'read'
+          ? { outcome: 'read', value: threads }
+          : { outcome: outcome, value: threads },
+      reviews: { outcome: 'read', value: [] },
+    }),
+  });
+
+  const thread = (id: string, status: string, author: unknown, line: number): unknown => ({
+    id,
+    anchor: {
+      path: 'src/a.rs',
+      side: 'New',
+      line,
+      content_hash: '1',
+      context: [],
+      base_ref: 'main',
+    },
+    comments: [{ author, text: `${id} words`, at: '2026-01-01T00:00:00Z' }],
+    status,
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  });
+
+  it('leads with what waits on the reviewer, and draws nothing for a read that never landed', () => {
+    // The plausible regression is drawing the row for an unreadable or
+    // failed half: the strip would claim the branch is clean exactly when
+    // nobody knows, which a reviewer reads as "nothing to do".
+    expect(reviewRows(null), 'no record at all').toBeNull();
+    expect(reviewRows(withThreads('failed', 'boom')), 'a failed threads read').toBeNull();
+    expect(
+      reviewRows(withThreads('reticulating', [])),
+      'an outcome this build cannot name',
+    ).toBeNull();
+
+    const rows = reviewRows(
+      withThreads('read', [
+        thread('open-one', 'Open', 'User', 4),
+        thread('answered', 'Addressed', { Agent: { label: 'w1' } }, 7),
+        thread('mine-again', 'Addressed', 'User', 9),
+      ]),
+    );
+    expect(
+      rows?.map((row) => row.id),
+      'the waiting thread leads, the rest keep their order',
+    ).toEqual(['answered', 'open-one', 'mine-again']);
+    expect(rows?.[0]?.waiting).toBe(true);
+    expect(rows?.[0]?.state, "the state reads in the strip's own spelling").toBe('addressed');
+    expect(rows?.[0]?.where).toBe('a.rs · line 7');
+    expect(rows?.[0]?.words, 'the row reads the turn a reader would be reading').toBe(
+      'answered words',
+    );
+    expect(rows?.[1]?.waiting, 'a reviewer turn last is not waiting').toBe(false);
+    expect(
+      reviewRows(withThreads('read', [])),
+      'a branch with neither threads nor failures',
+    ).toEqual([]);
   });
 });
 

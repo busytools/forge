@@ -17,12 +17,16 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Result;
+use forge_primitives::git_diff::LayerState;
 use forge_primitives::plugins::{PluginUpdateRun, PluginsInventorySnapshot};
-use forge_primitives::review::{ReviewSet, ReviewThread};
+use forge_primitives::review::{ReviewAnchor, ReviewSet, ReviewThread};
 use forge_primitives::runtime::{AvailableAgent, AvailableCommand, MonitorRecord};
 use forge_primitives::slack::SlackSubscription;
 use forge_primitives::{ContentBlock, GotifySubscription, Message, SessionSlot, UserEnvelope};
-use forge_workspace::env::git_diff::content::{DiffContent, scan as scan_content};
+use forge_workspace::env::git_diff::content::{DiffContent, FileContent, scan as scan_content};
+use forge_workspace::env::git_diff::resolver::{
+    AnchorPlacement, OutdatedReason, place_anchor_in_content,
+};
 use forge_workspace::env::processes::ProcessSnapshot;
 use forge_workspace::{
     AccountLoadingRow, Command, GatewayOrgView, McpServers, ProjectView, WorkerEntry,
@@ -595,8 +599,100 @@ pub struct ConversationWire {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct ReviewsWire {
-    pub threads: ReadWire<Vec<ReviewThread>>,
+    pub threads: ReadWire<Vec<ReviewedThreadWire>>,
     pub reviews: ReadWire<Vec<ReviewSet>>,
+}
+
+/// One review thread as a record carries it: the stored thread, and where
+/// its anchor sits in the content the record ships beside it.
+///
+/// **The landing is resolved here because only the server can resolve
+/// it.** A client draws the bounded content it is sent and has no working
+/// tree to re-scan; the terminal's own resolver is the one answer to
+/// whether an anchor still lands, so the record carries that answer
+/// rather than a second implementation deriving one a language away.
+///
+/// `resolution` is `None` when this read has no landing to report: a
+/// thread anchored to a commit's own scope (a commit's diff is immutable,
+/// so its recorded line is settled by construction, and the record's
+/// content is not the numbering that line was written in), or one whose
+/// branch layer the scan could not read.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ReviewedThreadWire {
+    #[serde(flatten)]
+    pub thread: ReviewThread,
+    pub resolution: Option<ThreadResolutionWire>,
+}
+
+/// Where an anchor sits, as a view draws it: the line in the anchor's own
+/// side's numbering, or why it could not be placed.
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum ThreadResolutionWire {
+    /// Placed, at `line`. `moved_from` is the recorded line when the
+    /// anchor no longer sits where it was written.
+    Placed { line: u32, moved_from: Option<u32> },
+    /// Not placed, for `reason`.
+    Outdated { reason: OutdatedReasonWire },
+}
+
+/// The resolver's own reason, crossing as data rather than as prose.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutdatedReasonWire {
+    Gone,
+    Ambiguous { matches: usize },
+}
+
+/// Every thread with its landing against `content` - the same content the
+/// record ships, so a page draws a thread where this answer says.
+///
+/// **Only a thread numbered against this diff's own base is placed.** A
+/// whole-diff anchor records the base it was written against, and a
+/// terminal overlay opened against another target writes line numbers that
+/// address unrelated code here (its own scope filter refuses exactly that:
+/// "line numbers against another base would anchor onto unrelated code"). A
+/// thread from another base answers `None` - no landing - which the page
+/// draws as itself rather than parking it on a guess.
+fn reviewed_threads(
+    threads: Vec<ReviewThread>,
+    content: &DiffContent,
+    default_branch: Option<&str>,
+) -> Vec<ReviewedThreadWire> {
+    let files = match &content.branch_ahead {
+        LayerState::Populated(files) => Some(files.as_slice()),
+        LayerState::Clean | LayerState::ScanFailed => None,
+    };
+    threads
+        .into_iter()
+        .map(|thread| {
+            let home_base = default_branch == Some(thread.anchor.base_ref.as_str());
+            let resolution = match (&thread.commit, files) {
+                (None, Some(files)) if home_base => Some(resolution_wire(&thread.anchor, files)),
+                _ => None,
+            };
+            ReviewedThreadWire { thread, resolution }
+        })
+        .collect()
+}
+
+/// One anchor placed against the bounded content the record carries. The
+/// line number is trusted: the branch-ahead layer is the numbering an
+/// all-changes comment was written in, the same trust the terminal's
+/// overlay extends to its own home scope.
+fn resolution_wire(anchor: &ReviewAnchor, files: &[FileContent]) -> ThreadResolutionWire {
+    match place_anchor_in_content(anchor, files, true) {
+        AnchorPlacement::Placed { line, moved_from } => {
+            ThreadResolutionWire::Placed { line, moved_from }
+        }
+        AnchorPlacement::Outdated(reason) => ThreadResolutionWire::Outdated {
+            reason: match reason {
+                OutdatedReason::Gone => OutdatedReasonWire::Gone,
+                OutdatedReason::Ambiguous { matches } => OutdatedReasonWire::Ambiguous { matches },
+            },
+        },
+    }
 }
 
 /// One turn, as a page carries it: the key the server named it by, and the
@@ -1305,7 +1401,9 @@ async fn session(
             turn_in_flight: header.turn_in_flight,
         },
         reviews: ReviewsWire {
-            threads: ReadWire::from(reviews.threads),
+            threads: ReadWire::from(reviews.threads.map(|threads| {
+                reviewed_threads(threads, &diff, held.diff.default_branch.as_deref())
+            })),
             reviews: ReadWire::from(reviews.reviews),
         },
         state: SessionStateWire {
@@ -2413,6 +2511,113 @@ mod tests {
         assert!(
             ahead.iter().any(|file| file["path"] == "branch.txt"),
             "and the branch's own commit is there: {encoded}",
+        );
+    }
+
+    /// The record resolves each all-changes thread against the content it
+    /// ships, and leaves a commit-scoped thread unresolved.
+    ///
+    /// The landing rides the read because a client has no working tree to
+    /// re-scan; a commit's diff is immutable, so a thread anchored to one
+    /// is settled by construction and this content is not its numbering.
+    ///
+    /// **A thread written against another base is refused the landing too**:
+    /// its line numbers belong to a diff this record does not carry, and a
+    /// placement would be a guess (the terminal's own scope filter refuses
+    /// exactly that).
+    #[tokio::test]
+    async fn the_record_carries_each_threads_landing() {
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        fleet.start("TestOrg", "proj").expect("the project starts");
+        let seat = fixture_seat();
+        let surface = fleet.surface();
+        let repo = tempfile::tempdir().expect("a repository directory");
+        fixture_repo(repo.path());
+        let diff = forge_workspace::env::git_diff::scan(repo.path(), None).await;
+        surface.store_work_snapshot(
+            &seat,
+            forge_workspace::work::WorkSnapshot {
+                diff,
+                cwd: repo.path().to_owned(),
+                read_at: std::time::Instant::now(),
+            },
+        );
+        let thread = |id: &str,
+                      text: &str,
+                      commit: Option<&str>,
+                      base: &str|
+         -> forge_primitives::review::ReviewThread {
+            forge_primitives::review::ReviewThread {
+                id: id.to_owned(),
+                anchor: forge_primitives::review::ReviewAnchor {
+                    path: "branch.txt".to_owned(),
+                    side: forge_primitives::review::ReviewSide::New,
+                    line: 1,
+                    content_hash: forge_workspace::env::git_diff::resolver::anchor_hash(text),
+                    context: Vec::new(),
+                    base_ref: base.to_owned(),
+                },
+                comments: vec![forge_primitives::review::ReviewComment {
+                    author: forge_primitives::review::ReviewAuthor::User,
+                    text: "c".to_owned(),
+                    at: "2026-01-01T00:00:00Z".to_owned(),
+                    review_id: None,
+                }],
+                status: forge_primitives::review::ReviewStatus::Open,
+                created_at: "2026-01-01T00:00:00Z".to_owned(),
+                updated_at: "2026-01-01T00:00:00Z".to_owned(),
+                commit: commit.map(str::to_owned),
+            }
+        };
+        for (id, text, commit, base) in [
+            ("placed", "committed on the branch", None, "main"),
+            ("gone", "a line the branch does not carry", None, "main"),
+            ("scoped", "committed on the branch", Some("abc123"), "main"),
+            ("other-base", "committed on the branch", None, "HEAD"),
+        ] {
+            assert!(
+                fleet.workspace().upsert_review_thread(
+                    "proj",
+                    "worktree-pr",
+                    thread(id, text, commit, base),
+                ),
+                "the {id} thread stores",
+            );
+        }
+        let state = TransportState {
+            surface,
+            work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            client: forge_primitives::ClientConfig::default(),
+            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+        };
+
+        let encoded = encode_subject(&state, &Subject::Session(seat)).await.expect("encode");
+
+        let threads =
+            encoded["reviews"]["threads"]["value"].as_array().expect("the threads read answered");
+        let of = |id: &str| threads.iter().find(|held| held["id"] == id).expect(id);
+        assert_eq!(
+            of("placed")["resolution"],
+            serde_json::json!({"state": "placed", "line": 1, "moved_from": null}),
+            "an anchored line still carrying its text lands where it was written: {encoded}",
+        );
+        assert_eq!(
+            of("gone")["resolution"],
+            serde_json::json!({"state": "outdated", "reason": "gone"}),
+            "code the branch no longer carries is outdated, in the resolver's own words",
+        );
+        assert_eq!(
+            of("scoped")["resolution"],
+            serde_json::Value::Null,
+            "a commit-scoped thread has no landing against the record's content",
+        );
+        assert_eq!(
+            of("other-base")["resolution"],
+            serde_json::Value::Null,
+            "nor has one numbered against another base, whose lines address other code here",
         );
     }
 

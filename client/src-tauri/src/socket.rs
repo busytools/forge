@@ -161,6 +161,10 @@ enum Outbound {
         turns: u64,
     },
     Devices,
+    CommitDiff {
+        session: Value,
+        sha: String,
+    },
     Dispatch {
         command: Value,
         reply: Option<u64>,
@@ -228,6 +232,11 @@ impl Socket {
     /// The dictation devices, answered by a `devices` frame.
     pub fn devices(&self) {
         let _ = self.tx.send(Outbound::Devices);
+    }
+
+    /// One commit's own diff, answered by a `commit_diff` frame.
+    pub fn commit_diff(&self, session: Value, sha: String) {
+        let _ = self.tx.send(Outbound::CommitDiff { session, sha });
     }
 
     /// Send one command. With `reply` the call awaits the core's reply
@@ -336,6 +345,7 @@ fn apply_offline(next: Outbound, held: &mut Vec<Held>, awaiting: &mut Vec<String
         }
         Outbound::More { .. }
         | Outbound::Devices
+        | Outbound::CommitDiff { .. }
         | Outbound::Answer { .. }
         | Outbound::TakeRole
         | Outbound::Binary(_)
@@ -491,6 +501,15 @@ async fn run(
                         }
                         Outbound::Devices => {
                             let _ = writer.send(Message::Text(json!({ "kind": "devices" }).to_string().into())).await;
+                        }
+                        Outbound::CommitDiff { session, sha } => {
+                            let _ = writer
+                                .send(Message::Text(
+                                    json!({ "kind": "commit_diff", "session": session, "sha": sha })
+                                        .to_string()
+                                        .into(),
+                                ))
+                                .await;
                         }
                         Outbound::Dispatch { command, reply, sent, replied } => {
                             let ok = writer

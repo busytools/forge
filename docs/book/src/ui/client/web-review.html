@@ -1,0 +1,464 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>forge &middot; review</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  /* The same token set the client ships (theme.ts), so the drawing is held
+     against the real page rather than against a lookalike. */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130; --line:#222a3c;
+    --ctl:#516590; --text:#c9d1d9; --muted:#8f98a8; --dim:#788294;
+    --accent:#f47600; --ok:#82c76b; --warn:#c9a13b; --bad:#e0683e;
+    --ui: "Fira Code", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "Fira Code", ui-monospace, Menlo, monospace;
+    --r: 10px;
+    --fs-prose: 15.5px; --fs-base: 15.5px;
+    --fs-data: 14px; --fs-label: 12.5px; --fs-title: 18px;
+  }
+  html, body { height: 100%; }
+  body {
+    background:
+      radial-gradient(1100px 520px at 8% -12%, rgba(244,118,0,.07), transparent 60%),
+      radial-gradient(900px 460px at 96% 108%, rgba(91,156,248,.05), transparent 62%),
+      var(--bg);
+    color: var(--text); font-family: var(--ui); font-size: 15.5px; line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: none; margin: 0 auto; padding: 30px 40px 64px; }
+  header.top { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
+    padding-bottom: 18px; margin-bottom: 18px; border-bottom: 1px solid var(--line); }
+  .back { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim);
+    text-decoration: none; }
+  h1 { font-size: var(--fs-title); font-weight: 650; letter-spacing: -.01em; }
+  .facts { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
+  .facts .sep { color: var(--line); margin: 0 7px; }
+  .loop { margin-left: auto; font-family: var(--mono); font-size: var(--fs-data);
+    color: var(--warn); }
+  .half { font-size: var(--fs-base); color: var(--muted); margin: 4px 0; }
+  .pending { color: var(--muted); font-size: var(--fs-base); margin-top: 12vh;
+    text-align: center; }
+  /* A specimen's caption: which state of the page is being drawn. */
+  .fig { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+    padding: 26px 0 8px; }
+
+  .group { margin: 18px 0 8px; }
+  .group h2 { display: flex; gap: 8px; align-items: baseline; margin-bottom: 6px;
+    font-size: var(--fs-label); font-weight: 700; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--dim); }
+  .n { font-family: var(--mono); letter-spacing: 0; }
+  .empty { font-size: var(--fs-base); color: var(--dim); margin: 2px 0 8px; }
+
+  /* ---------- the tab line, with the scope control on it ---------- */
+  .rv-tabs { display: flex; align-items: center; gap: 2px; padding: 0 0 6px; }
+  .rv-tabs .tab { font-size: var(--fs-base); color: var(--dim); background: none;
+    border: 0; border-bottom: 2px solid transparent; padding: 5px 12px 6px; }
+  .rv-tabs .tab.on { color: var(--text); border-bottom-color: var(--accent); }
+  .rv-tn { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+  .rv-scope { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+  .rv-scope-btn { display: flex; align-items: baseline; gap: 8px;
+    background: var(--s1); border: 1px solid var(--line); border-radius: 8px;
+    padding: 4px 10px; }
+  .rv-scope-lb { font-size: var(--fs-label); font-weight: 700; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--dim); }
+  .rv-scope-now { font-family: var(--mono); font-size: var(--fs-data); color: var(--text); }
+  .rv-scope-sub { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+  .rv-step { display: flex; }
+  .rv-step span { font-family: var(--mono); font-size: var(--fs-data); color: var(--muted);
+    border: 1px solid var(--line); padding: 3px 9px; }
+  .rv-step span:first-child { border-radius: 8px 0 0 8px; }
+  .rv-step span:last-child { border-radius: 0 8px 8px 0; border-left: 0; }
+  .rv-keys { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+  .rv-hint { display: flex; align-items: center; gap: 7px; padding: 2px 2px 10px;
+    font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+  .rv-hint .sep { color: var(--line); margin: 0 2px; }
+  .rv-hint kbd { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
+    background: var(--s1); border: 1px solid var(--line); border-bottom-width: 2px;
+    border-radius: 5px; padding: 1px 6px; line-height: 1.4; }
+  .rv-arw { display: inline-block; color: var(--dim); }
+  .rv-arw.open { transform: rotate(90deg); color: var(--accent); }
+  .rv-fold { background: none; border: 0; padding: 0 2px 0 0; display: flex;
+    align-items: center; }
+  .rv-mode { display: flex; border: 1px solid var(--line); border-radius: 99px;
+    overflow: hidden; }
+  .rv-mode span { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+    padding: 3px 11px; }
+  .rv-mode span + span { border-left: 1px solid var(--line); }
+  .rv-mode span.on { color: var(--text); background: var(--s2); }
+
+  /* ---------- the diff half: the tree, then the canvas ---------- */
+  .rv-body { display: grid; grid-template-columns: 296px minmax(0, 1fr); gap: 18px; }
+  .rv-files h2 { display: flex; gap: 8px; align-items: baseline; margin-bottom: 6px;
+    font-size: var(--fs-label); font-weight: 700; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--dim); }
+  /* The tree draws the scope's own hierarchy: a row per directory and per
+     file, indented by depth (--d, set per row), folders before files. */
+  .rv-dir { display: flex; align-items: baseline; gap: 6px;
+    padding: 6px 6px 3px calc(4px + var(--d, 0) * 12px); }
+  .rv-arw { flex: none; width: 9px; text-align: center; font-size: 10px; color: var(--dim);
+    transition: transform .12s ease; }
+  .rv-arw.open { transform: rotate(90deg); }
+  .rv-dirname { font-family: var(--mono); font-size: var(--fs-label); color: var(--text);
+    font-weight: 500; }
+  .rv-dircount { margin-left: auto; font-family: var(--mono); font-size: var(--fs-label);
+    color: var(--dim); }
+  .rv-frow { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 6px;
+    align-items: baseline; padding: 3px 8px 3px calc(19px + var(--d, 0) * 12px); border-radius: 7px; }
+  .rv-frow.here { background: rgba(27,33,48,.5); }
+  .rv-fpath { font-family: var(--mono); font-size: var(--fs-label); color: var(--text); }
+  .rv-fstat { font-family: var(--mono); font-size: var(--fs-label); text-align: right; }
+  .rv-plus { color: var(--ok); }
+  .rv-minus { color: var(--bad); }
+  .rv-ccnum { font-family: var(--mono); font-size: var(--fs-label); color: var(--text);
+    border: 1px solid var(--line); border-radius: 99px; padding: 0 6px; }
+
+  .rv-filehead { display: flex; align-items: center; gap: 10px; padding: 6px 10px;
+    background: var(--s1); border: 1px solid var(--line); border-bottom: 0;
+    border-radius: 9px 9px 0 0; }
+  .rv-path { font-family: var(--mono); font-size: var(--fs-data); color: var(--text); }
+  .rv-tally { margin-left: auto; }
+  .rv-cc { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
+    border: 1px solid var(--line); border-radius: 99px; padding: 0 8px; }
+
+  table.rv-diff { width: 100%; table-layout: fixed; border-collapse: collapse;
+    border: 1px solid var(--line); border-top: 0; border-radius: 0 0 9px 9px;
+    overflow: hidden; font-family: var(--mono); font-size: var(--fs-label); }
+  .rv-diff td { padding: 1px 8px; white-space: pre-wrap; vertical-align: top; }
+  .rv-diff .num { width: 1%; min-width: 40px; text-align: right; color: var(--dim);
+    border-left: 1px solid var(--line); }
+  .rv-diff .hunk { background: var(--s2); color: var(--dim); }
+  .rv-diff .add { background: #101d0d; }
+  .rv-diff .del { background: #241110; }
+  .rv-diff .ln-add { background: #16240f; }
+  .rv-diff .ln-del { background: #331916; }
+  .rv-diff .gap { color: var(--dim); }
+
+  .rv-insert td { padding: 0; background: var(--s1); }
+  .rv-inline { padding: 3px 10px 6px; }
+  .rv-thread { border: 1px solid var(--line); border-radius: var(--r); background: var(--s2);
+    padding: 8px 10px 9px; }
+  .rv-tops { display: flex; align-items: center; gap: 8px; font-family: var(--mono);
+    font-size: var(--fs-label); color: var(--dim); }
+  .rv-mk { width: 10px; height: 10px; flex: 0 0 10px; }
+  .rv-mk.open { border-radius: 50%; background: var(--accent); }
+  .rv-mk.addressed { background: var(--warn); clip-path: polygon(50% 3%, 97% 95%, 3% 95%); }
+  .state { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
+    border: 1px solid var(--line); border-radius: 99px; padding: 0 8px; }
+  .state.open { color: var(--text); border-color: var(--ctl); }
+  .state.addressed { color: var(--warn); border-color: rgba(201,161,59,.4); }
+  .state.resolved { color: var(--ok); border-color: rgba(130,199,107,.35); }
+  .state.outdated { color: var(--dim); }
+  .where { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rv-acts { display: flex; gap: 8px; padding-top: 6px; }
+  .rv-a { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
+    border: 1px solid var(--line); border-radius: 6px; padding: 2px 9px; }
+  .rv-a.on { color: var(--bg); background: var(--accent); border-color: var(--accent); }
+  .rv-txarea { display: block; width: 100%; background: var(--s1); color: var(--text);
+    border: 1px solid var(--ctl); border-radius: 7px; font-family: var(--ui);
+    font-size: var(--fs-base); padding: 6px 8px; min-height: 46px; }
+
+  /* ---------- the conversation half ---------- */
+  .round { border: 1px solid var(--line); border-radius: var(--r); background: var(--s1);
+    padding: 9px 11px 10px; margin-bottom: 10px; }
+  .heads { display: flex; align-items: baseline; gap: 9px; }
+  .rn { font-family: var(--mono); font-size: var(--fs-base); font-weight: 600;
+    color: var(--accent); }
+  .age { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+  .tally { margin-left: auto; display: flex; gap: 6px; }
+  .chip { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
+    border: 1px solid var(--line); border-radius: 99px; padding: 0 8px; }
+  .chip.addressed { color: var(--warn); border-color: rgba(201,161,59,.4); }
+  .chip.outdated { color: var(--dim); }
+  .summary { font-size: var(--fs-base); color: var(--muted); margin: 6px 0 2px; }
+
+  .thread { border-top: 1px solid rgba(34,42,60,.55); margin-top: 8px; padding-top: 8px; }
+  .thread:first-of-type { border-top: 0; margin-top: 4px; padding-top: 4px; }
+  .thread.parked { border: 1px solid rgba(120,130,148,.35); border-radius: var(--r);
+    padding: 9px 11px 10px; margin: 0 0 10px; background: var(--s1); }
+
+  .captured { margin: 7px 0; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--s2); overflow: hidden; }
+  .caphead { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+    padding: 4px 10px; border-bottom: 1px solid var(--line); }
+  .captured pre { margin: 0; padding: 6px 10px; font-family: var(--mono);
+    font-size: var(--fs-label); color: var(--muted); white-space: pre-wrap;
+    overflow-wrap: anywhere; }
+
+  .turn { border-left: 1px solid var(--line); padding: 2px 0 2px 10px; margin: 7px 0; }
+  .turn.you { border-left-color: var(--accent); }
+  .who { display: flex; gap: 8px; font-family: var(--mono); font-size: var(--fs-label);
+    color: var(--dim); }
+  .turn.you .who { color: var(--muted); }
+  .tag { color: var(--dim); }
+  .words { margin: 1px 0 0; font-size: var(--fs-base); color: var(--muted);
+    overflow-wrap: anywhere; max-width: 72ch; }
+  .turn.you .words { color: var(--text); }
+
+  .rv-quiet { font-size: var(--fs-base); color: var(--dim); padding: 0 2px 8px; }
+  .rv-finishrow { display: flex; gap: 9px; align-items: center; }
+  .rv-summary { flex: 1; background: var(--s1); color: var(--dim); border: 1px solid var(--line);
+    border-radius: 8px; font-family: var(--ui); font-size: var(--fs-base); padding: 6px 9px; }
+  .rv-finish { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim);
+    background: var(--s3); border: 0; border-radius: 8px; padding: 6px 14px; }
+
+  /* The page's own threshold: below it the tree and the canvas stack and
+     the page becomes one scrolling column, so the drawing follows at the
+     same width the page does. */
+  @media (max-width: 980px) {
+    .wrap { height: auto; }
+    .rv-body { grid-template-columns: minmax(0, 1fr); }
+    .rv-scope { margin-left: 0; width: 100%; }
+    .rv-hint { display: none; }
+  }
+  @media (max-width: 760px) { .wrap { padding: 18px 16px 56px; } }
+</style>
+</head>
+<body>
+<main class="wrap">
+  <header class="top">
+    <a class="back" href="#">&#8249; lead</a>
+    <h1>Review</h1>
+    <span class="facts">work/review-page<span class="sep">&#183;</span>1 round</span>
+    <span class="loop">1 reply to read<span class="sep">&#183;</span>1 open</span>
+  </header>
+
+  <div class="fig">the Files changed half, all changes: the tree, the diff, a thread on its line, the composer</div>
+
+  <nav class="rv-tabs" aria-label="review sections">
+    <span class="tab">Conversation</span>
+    <span class="tab on">Files changed <span class="rv-tn">8</span></span>
+    <span class="rv-scope">
+      <span class="rv-scope-btn">
+        <span class="rv-scope-lb">Scope</span>
+        <span class="rv-scope-now">All changes</span>
+        <span class="rv-scope-sub">8 commits</span>
+      </span>
+      <span class="rv-step"><span>&#8249;</span><span>&#8250;</span></span>
+    </span>
+    <span class="rv-mode"><span>unified</span><span class="on">split</span></span>
+  </nav>
+
+  <!-- The keys, where they act: the arrows a hand reaches for, and the one
+       pointer gesture the canvas carries. The brackets the scope also
+       accepts are not advertised beside them. -->
+  <p class="rv-hint">
+    <kbd>&#8592;</kbd><kbd>&#8594;</kbd> step commits
+    <span class="sep">&#183;</span>
+    <kbd>a</kbd> all changes
+    <span class="sep">&#183;</span>
+    <kbd>j</kbd> pick a commit
+    <span class="sep">&#183;</span>
+    click any line to comment
+  </p>
+
+  <div class="rv-body">
+    <nav class="rv-files" aria-label="files in this scope">
+      <h2>Files <span class="n">17</span></h2>
+      <div class="rv-dir" style="--d:0">
+        <span class="rv-arw open">&#9656;</span>
+        <span class="rv-dirname">client/</span><span class="rv-dircount">8</span>
+      </div>
+      <div class="rv-dir" style="--d:1">
+        <span class="rv-arw open">&#9656;</span>
+        <span class="rv-dirname">src/</span><span class="rv-dircount">5</span>
+      </div>
+      <div class="rv-dir" style="--d:2">
+        <span class="rv-arw open">&#9656;</span>
+        <span class="rv-dirname">review/</span><span class="rv-dircount">3</span>
+      </div>
+      <div class="rv-frow here" style="--d:3">
+        <span class="rv-fpath">Review.svelte</span>
+        <span class="rv-fstat"><span class="rv-plus">+400</span></span>
+        <span><span class="rv-ccnum">1</span></span>
+      </div>
+      <div class="rv-frow" style="--d:3">
+        <span class="rv-fpath">view.ts</span>
+        <span class="rv-fstat"><span class="rv-plus">+125</span></span>
+      </div>
+      <div class="rv-frow" style="--d:3">
+        <span class="rv-fpath">view.test.ts</span>
+        <span class="rv-fstat"><span class="rv-plus">+165</span></span>
+      </div>
+      <div class="rv-dir" style="--d:2">
+        <span class="rv-arw open">&#9656;</span>
+        <span class="rv-dirname">session/</span><span class="rv-dircount">2</span>
+      </div>
+      <div class="rv-frow" style="--d:3">
+        <span class="rv-fpath">wire.ts</span>
+        <span class="rv-fstat"><span class="rv-plus">+163</span></span>
+        <span><span class="rv-ccnum">1</span></span>
+      </div>
+      <div class="rv-frow" style="--d:3">
+        <span class="rv-fpath">wire.test.ts</span>
+        <span class="rv-fstat"><span class="rv-plus">+92</span> <span class="rv-minus">-1</span></span>
+      </div>
+    </nav>
+
+    <main class="rv-canvas">
+      <section class="rv-file">
+        <div class="rv-filehead">
+          <button type="button" class="rv-fold" aria-expanded="true" aria-label="collapse this file">
+            <span class="rv-arw open">&#9656;</span>
+          </button>
+          <span class="rv-path">client/src/session/wire.ts</span>
+          <span class="rv-tally"><span class="rv-cc">1 thread</span></span>
+        </div>
+        <table class="rv-diff">
+          <colgroup>
+            <col style="width: 46px"><col style="width: 38%">
+            <col style="width: 46px"><col>
+          </colgroup>
+          <tbody>
+            <tr><td class="hunk" colspan="4">@@ -189,6 +189,7 @@</td></tr>
+            <tr>
+              <td class="num">190</td><td>  sign_in: unknown;</td>
+              <td class="num">190</td><td>  sign_in: unknown;</td>
+            </tr>
+            <tr>
+              <td class="num ln-add">&nbsp;</td><td class="add">&nbsp;</td>
+              <td class="num ln-add">191</td><td class="add">  /** Whether this seat's</td>
+            </tr>
+            <tr>
+              <td class="num ln-add">&nbsp;</td><td class="add">&nbsp;</td>
+              <td class="num ln-add">192</td><td class="add">   *  rides the snapshot. */</td>
+            </tr>
+            <tr class="rv-insert">
+              <td colspan="4">
+                <div class="rv-inline">
+                  <article class="rv-thread">
+                    <div class="rv-tops">
+                      <span class="rv-mk open"></span>
+                      <span class="state open">open</span>
+                      <span class="where">wire.ts &#183; line 199</span>
+                    </div>
+                    <div class="turn you">
+                      <div class="who">you</div>
+                      <p class="words">This read is the page's whole input; say so on the type.</p>
+                    </div>
+                    <div class="rv-acts">
+                      <span class="rv-a">respond</span>
+                      <span class="rv-a">resolve</span>
+                    </div>
+                  </article>
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td class="num">&nbsp;</td><td class="gap">&nbsp;</td>
+              <td class="num">194</td><td>  export type ReadWire&lt;T&gt; =</td>
+            </tr>
+            <tr>
+              <td class="num">&nbsp;</td><td class="gap">&nbsp;</td>
+              <td class="num">195</td><td>    | { outcome: 'read'; value: T }</td>
+            </tr>
+            <tr class="rv-insert">
+              <td colspan="4">
+                <div class="rv-inline">
+                  <article class="rv-thread">
+                    <div class="rv-tops">
+                      <span class="where">client/src/session/wire.ts &#183; line 199</span>
+                    </div>
+                    <span class="rv-txarea">Comment on this line...</span>
+                    <div class="rv-acts">
+                      <span class="rv-a on">comment</span>
+                      <span class="rv-a">cancel</span>
+                    </div>
+                  </article>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+    </main>
+  </div>
+
+  <div class="fig">the Conversation half: what cannot be placed, the rounds, and the finish</div>
+
+  <section class="group">
+    <h2>Outdated <span class="n">1</span></h2>
+    <article class="thread parked">
+      <div class="heads">
+        <span class="state outdated">outdated</span>
+        <span class="where">client/src/session/wire.ts &#183; line 199</span>
+      </div>
+      <div class="captured">
+        <div class="caphead">captured when the comment was written</div>
+        <pre>export type ReadWire&lt;T&gt; =
+  | { outcome: 'read'; value: T }
+  | { outcome: 'failed'; value: string }</pre>
+      </div>
+      <div class="turn you">
+        <div class="who">you</div>
+        <p class="words">The unknown-outcome arm needs to survive the parse - a read that answered something is not a failed one.</p>
+      </div>
+    </article>
+  </section>
+
+  <section class="group">
+    <h2>Rounds <span class="n">newest first</span></h2>
+    <article class="round">
+      <div class="heads">
+        <span class="rn">R1</span>
+        <span class="age">3m</span>
+        <span class="tally">
+          <span class="chip">1 open</span>
+          <span class="chip addressed">1 addressed</span>
+          <span class="chip outdated">1 outdated</span>
+        </span>
+      </div>
+      <p class="summary">First pass: the signature and the doc comment.</p>
+
+      <div class="thread">
+        <div class="heads">
+          <span class="state addressed">addressed</span>
+          <span class="where">client/src/review/Review.svelte &#183; line 74</span>
+        </div>
+        <div class="turn you">
+          <div class="who">you <span class="tag">R1</span></div>
+          <p class="words">The header says Review but the seat it belongs to is only in the back link. Name the seat here too?</p>
+        </div>
+        <div class="turn">
+          <div class="who">implementer</div>
+          <p class="words">Named it - the header now carries the branch beside the title.</p>
+        </div>
+        <div class="rv-acts">
+          <span class="rv-a">respond</span>
+          <span class="rv-a">resolve</span>
+        </div>
+      </div>
+
+      <div class="thread">
+        <div class="heads">
+          <span class="state open">open</span>
+          <span class="where">client/src/review/view.ts &#183; line 54</span>
+        </div>
+        <div class="turn you">
+          <div class="who">you <span class="tag">R1</span></div>
+          <p class="words">This counts waits and opens; should it also say how many rounds are unsettled?</p>
+        </div>
+        <div class="rv-acts">
+          <span class="rv-a">respond</span>
+          <span class="rv-a">resolve</span>
+        </div>
+      </div>
+    </article>
+  </section>
+
+  <section class="group">
+    <h2>Finish</h2>
+    <p class="rv-quiet">Comments written on the diff file into the next round when you finish the review.</p>
+    <div class="rv-finishrow">
+      <span class="rv-summary">summary (optional)</span>
+      <span class="rv-finish">finish review (1)</span>
+    </div>
+  </section>
+</main>
+</body>
+</html>

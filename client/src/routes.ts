@@ -23,6 +23,9 @@ export type Route =
    * nothing of any other project appears on it.
    */
   | { name: 'board'; org: string; project: string }
+  /** The seat's review: its rounds, their threads and the loop's state. A
+   *  sub-path of the seat, because the seat is what the review is keyed to. */
+  | { name: 'review'; slot: SessionSlot }
   /** A development route: the home drawn from the fixture, with no server. */
   | { name: 'fixture' }
   | { name: 'notFound' };
@@ -46,6 +49,13 @@ export function parseRoute(path: string): Route {
       slot: { org: decode(org), project: decode(project), label: decode(label) },
     };
   }
+  if (segments.length === 5 && segments[0] === 'session' && segments[4] === 'review') {
+    const [, org, project, label] = segments as [string, string, string, string, string];
+    return {
+      name: 'review',
+      slot: { org: decode(org), project: decode(project), label: decode(label) },
+    };
+  }
   return { name: 'notFound' };
 }
 
@@ -66,6 +76,8 @@ export function hrefFor(route: Route): string {
       return `/board/${encode(route.org)}/${encode(route.project)}`;
     case 'session':
       return `/session/${encode(route.slot.org)}/${encode(route.slot.project)}/${encode(route.slot.label)}`;
+    case 'review':
+      return `/session/${encode(route.slot.org)}/${encode(route.slot.project)}/${encode(route.slot.label)}/review`;
     case 'notFound':
       return '/';
   }
@@ -91,6 +103,11 @@ export function titleFor(route: Route): string {
   if (route.name === 'models') return 'forge \u{b7} models';
   if (route.name === 'extensions') return 'forge \u{b7} extensions';
   if (route.name === 'board') return `forge \u{b7} ${route.project}`;
+  if (route.name === 'review') {
+    const { project, label } = route.slot;
+    const seat = label === 'lead' ? project : `${project} \u{b7} ${label}`;
+    return `${seat} \u{b7} review`;
+  }
   if (route.name !== 'session') return 'forge';
   const { project, label } = route.slot;
   return label === 'lead' ? project : `${project} \u{b7} ${label}`;

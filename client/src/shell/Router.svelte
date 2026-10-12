@@ -10,6 +10,7 @@
   import Home from '../home/Home.svelte';
   import type { HomeRead } from '../home/live';
   import Models from '../models/Models.svelte';
+  import Review from '../review/Review.svelte';
   import { titleFor, type Route } from '../routes';
   import Session from '../session/Session.svelte';
   import type { Connection } from '../socket';
@@ -159,6 +160,15 @@
          only input is its URL. -->
     <Connect {settings} initialAddress={address} launchFailure={failure} {notice} {onconnect} />
   {/if}
+{:else if route.name === 'review'}
+  {#if connection !== null}
+    <!-- The page subscribes the seat itself, as the models page subscribes its
+         own subject: its states (a refused seat, the two halves failing apart,
+         nothing filed) belong to it and nothing outside it draws them. -->
+    <Review {connection} slot={route.slot} />
+  {:else}
+    <Connect {settings} initialAddress={address} launchFailure={failure} {notice} {onconnect} />
+  {/if}
 {:else if route.name === 'models'}
   {#if connection !== null}
     <!-- The page subscribes the catalogue itself and reads the connection
@@ -188,7 +198,8 @@
   <main class="wrap">
     <p class="pending">
       That is not a page forge serves. The home is at <a href="/">/</a>, a session at
-      <code>/session/&lt;org&gt;/&lt;project&gt;/&lt;label&gt;</code>, and the models at
+      <code>/session/&lt;org&gt;/&lt;project&gt;/&lt;label&gt;</code>, its review at
+      <code>/session/&lt;org&gt;/&lt;project&gt;/&lt;label&gt;/review</code>, and the models at
       <code>/models</code>.
     </p>
   </main>

@@ -51,14 +51,74 @@ pub struct ReviewComment {
 /// positional index against a fresh diff scan on every overlay open;
 /// `content_hash` + `context` let the resolver re-anchor a moved line
 /// or flag it `Outdated`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct ReviewAnchor {
     pub path: String,
     pub side: ReviewSide,
     pub line: u32,
+    /// The anchored line's hash, as a full u64.
+    ///
+    /// It crosses as decimal digits rather than a JSON number, which is
+    /// the convention protobuf's JSON mapping gives its 64-bit fields: the
+    /// web client reads a thread's hash and re-sends it on every reply,
+    /// and JS numbers are doubles - exact only to 2^53 - so a number form
+    /// would come back rounded and silently anchor the thread elsewhere.
+    /// The deserializer still accepts a number, which is what blobs
+    /// written before this change hold.
+    #[serde(deserialize_with = "u64_from_number_or_string")]
     pub content_hash: u64,
     pub context: Vec<String>,
     pub base_ref: String,
+}
+
+/// Hand-written for one field's sake: `content_hash` goes out as digits,
+/// and `serde`'s `serialize_with` would hand the helper a `&u64` - a
+/// signature the pedantic lints refuse, and this project carries no
+/// suppression for it. The deserializer stays derived above.
+impl Serialize for ReviewAnchor {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        #[derive(Serialize)]
+        struct Wire<'a> {
+            path: &'a str,
+            side: ReviewSide,
+            line: u32,
+            content_hash: String,
+            context: &'a [String],
+            base_ref: &'a str,
+        }
+        Wire {
+            path: &self.path,
+            side: self.side,
+            line: self.line,
+            content_hash: self.content_hash.to_string(),
+            context: &self.context,
+            base_ref: &self.base_ref,
+        }
+        .serialize(serializer)
+    }
+}
+
+/// Accept a u64 as a JSON number or as its decimal string; anything else is
+/// refused rather than rounded.
+fn u64_from_number_or_string<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum Either {
+        Number(u64),
+        Digits(String),
+    }
+    match Either::deserialize(deserializer)? {
+        Either::Number(value) => Ok(value),
+        Either::Digits(digits) => digits
+            .parse()
+            .map_err(|_| serde::de::Error::custom(format!("`{digits}` is not a u64 in decimal"))),
+    }
 }
 
 /// A persisted review thread: an anchor plus its comment chain and
@@ -133,6 +193,42 @@ pub struct ReviewSet {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The anchor's hash crosses as decimal digits, and a JSON number is
+    /// still accepted - which is what blobs written before the digits form
+    /// hold - while anything else is refused rather than rounded: a hash
+    /// silently wrong anchors a thread to someone else's line.
+    #[test]
+    fn an_anchor_hash_crosses_as_decimal_digits() {
+        let mut thread = sample_thread();
+        thread.anchor.content_hash = u64::MAX;
+        let encoded = serde_json::to_value(&thread).expect("encodes");
+        assert_eq!(
+            encoded["anchor"]["content_hash"],
+            serde_json::json!("18446744073709551615"),
+            "serialization is the digits, which JS can carry exactly",
+        );
+        let round_tripped: ReviewThread =
+            serde_json::from_value(encoded.clone()).expect("digits decode");
+        assert_eq!(round_tripped.anchor.content_hash, u64::MAX);
+
+        let mut legacy = encoded.clone();
+        legacy["anchor"]["content_hash"] = serde_json::json!(u64::MAX);
+        let decoded: ReviewThread =
+            serde_json::from_value(legacy).expect("a stored number still decodes");
+        assert_eq!(
+            decoded.anchor.content_hash,
+            u64::MAX,
+            "so blobs written before the digits form need no migration",
+        );
+
+        let mut bad = encoded;
+        bad["anchor"]["content_hash"] = serde_json::json!("twelve");
+        assert!(
+            serde_json::from_value::<ReviewThread>(bad).is_err(),
+            "a non-decimal string is refused rather than rounded",
+        );
+    }
 
     fn sample_thread() -> ReviewThread {
         ReviewThread {

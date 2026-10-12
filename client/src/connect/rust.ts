@@ -309,6 +309,14 @@ class RustConnection implements Connection {
     return true;
   }
 
+  commitDiff(session: SessionSlot, sha: string): boolean {
+    if (this.state !== 'open') return false;
+    void invoke('client_commit_diff', { session, sha }).catch((why: unknown) => {
+      report("an ask for a commit's diff could not reach the shell", why);
+    });
+    return true;
+  }
+
   frame(bytes: Uint8Array): boolean {
     if (this.state !== 'open') return false;
     // A take's frames cross as a plain number array: the invoke payload is

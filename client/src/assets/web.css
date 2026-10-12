@@ -5,6 +5,16 @@
    one place to change, and a second copy of a row, a mark or a palette is
    the defect rule 21 names. */
 
+/* The two upstream stylesheets the app themes over: highlight.js's syntax
+   colours (restated in forge's tokens for the review canvas) and the diff
+   viewer's structural styles. Imported HERE rather than from the modules
+   that use them - a stylesheet imported from a module the test runner
+   processes is a `.css` request it hands to Node's own loader, which has no
+   `.css` format at all - and the app's styling is assembled in this one
+   file anyway. */
+@import 'highlight.js/styles/github-dark.css';
+@import '@git-diff-view/svelte/styles/diff-view.css';
+
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 /* One focus treatment, on every control the sheet can reach: an accent ring
@@ -117,6 +127,8 @@ html::-webkit-scrollbar-thumb:active,
      whose content is long. */
   --cols: 13px minmax(0, 22rem) minmax(0, 20rem) minmax(0, 1fr) 74px;
   --pad: 16px;
+  /* The tree row's depth, set per row from the markup; 0 is the root. */
+  --d: 0;
 }
 
 html, body { height: 100%; }
@@ -3079,6 +3091,234 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
   .models .role, .models .side { flex-basis: 100%; }
   .models .cand { flex-wrap: wrap; }
   .models .cand .col { flex-basis: 100%; }
+}
+
+/* ---------- the review page ----------
+   Scoped to `.review` for the models block's reason: `.state`, `.empty` and
+   `.turn` are short names the sheet already carries, and a bare rule here
+   would reach the surface that owns them. The page's own pieces live in its
+   component; these are the two the sheet owns because every page draws
+   them. */
+
+.review .pending { color: var(--muted); font-size: var(--fs-base); margin-top: 12vh;
+  text-align: center; }
+
+/* ---------- the review canvas ----------
+   The diff half's pieces. They live in the sheet rather than in the
+   component because the thread cards and the composer are rows this page
+   builds as DOM (the viewer redraws its own rows, so a card is inserted
+   after the anchored line's). Svelte's scoped styles do not reach
+   generated nodes, and one set of rules over both is the point. */
+
+/* The tree holds the width its longest path needs and no more; everything
+   else is the diff's. */
+.review .rv-body { display: grid; grid-template-columns: minmax(0, 296px) minmax(0, 1fr);
+  gap: 14px; flex: 1; min-height: 0; }
+.review .rv-files { overflow-y: auto; min-height: 0; padding: 0 2px 12px;
+  scrollbar-gutter: stable; }
+/* The list draws its own scroll viewport, so the scroll rules go on THAT
+   element and the wrapper only holds its states. */
+.review .rv-canvas { display: flex; flex-direction: column; min-height: 0;
+  overflow: hidden; }
+.review .rv-canvas-list { flex: 1; min-height: 0; overflow-y: auto;
+  overflow-x: hidden; padding: 0 0 40px; scrollbar-gutter: stable; }
+.review .rv-canvas-list::-webkit-scrollbar,
+.review .rv-files::-webkit-scrollbar,
+.review .rv-menu::-webkit-scrollbar { width: 8px; }
+.review .rv-canvas-list::-webkit-scrollbar-track,
+.review .rv-files::-webkit-scrollbar-track,
+.review .rv-menu::-webkit-scrollbar-track { background: transparent; }
+.review .rv-canvas-list::-webkit-scrollbar-thumb,
+.review .rv-files::-webkit-scrollbar-thumb,
+.review .rv-menu::-webkit-scrollbar-thumb { background: var(--s3); border-radius: 99px; }
+.review .rv-canvas-list::-webkit-scrollbar-thumb:hover,
+.review .rv-files::-webkit-scrollbar-thumb:hover,
+.review .rv-menu::-webkit-scrollbar-thumb:hover { background: var(--line); }
+
+/* The file tree. It draws the scope's own hierarchy - a row per directory
+   and per file, indented by depth with folders before files at every level -
+   rather than a flat list of full-path headings, which reads as neither one
+   at 56 files. A directory names its basename and carries the files beneath
+   it, which is what its collapsed row is hiding. */
+.review .rv-dir { display: flex; align-items: baseline; gap: 6px; width: 100%; text-align: left;
+  background: none; border: 0; padding: 5px 6px 2px calc(4px + var(--d, 0) * 12px);
+  cursor: pointer; font: inherit; }
+.review .rv-arw { flex: none; width: 9px; text-align: center; font-size: 10px; color: var(--dim);
+  transition: transform .12s ease; }
+.review .rv-arw.open { transform: rotate(90deg); }
+.review .rv-dirname { font-family: var(--mono); font-size: var(--fs-label); color: var(--text);
+  font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.review .rv-dircount { margin-left: auto; font-family: var(--mono); font-size: var(--fs-label);
+  color: var(--dim); }
+/* The stats and the badge size to their own content rather than a reserved
+   62px: a fixed column costs every row the widest row's width, which is what
+   turned long names into stubs at depth. */
+.review .rv-frow { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 6px;
+  align-items: baseline; width: 100%;
+  padding: 3px 8px 3px calc(19px + var(--d, 0) * 12px); border-radius: 7px;
+  background: none; border: 0; font: inherit; text-align: left; cursor: pointer;
+  text-decoration: none; color: inherit; }
+.review .rv-frow:hover { background: rgba(27,33,48,.5); }
+.review .rv-fpath { font-family: var(--mono); font-size: var(--fs-label); color: var(--text);
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.review .rv-frow.renamed .rv-fpath { color: var(--muted); }
+.review .rv-fstat { font-family: var(--mono); font-size: var(--fs-label); text-align: right;
+  white-space: nowrap; }
+.review .rv-fcount { text-align: right; }
+.review .rv-plus { color: var(--ok); }
+.review .rv-minus { color: var(--bad); }
+
+/* One file in the canvas. */
+.review .rv-file { margin-bottom: 16px; }
+.review .rv-filehead { display: flex; align-items: center; gap: 10px; padding: 6px 10px;
+  background: var(--s1); border: 1px solid var(--line); border-bottom: 0;
+  border-radius: 9px 9px 0 0; }
+.review .rv-fold { background: none; border: 0; padding: 0 2px 0 0; cursor: pointer;
+  display: flex; align-items: center; }
+.review .rv-path { font-family: var(--mono); font-size: var(--fs-data); color: var(--text);
+  overflow-wrap: anywhere; }
+.review .rv-from { color: var(--dim); }
+.review .rv-tally { margin-left: auto; display: flex; gap: 8px; }
+.review .rv-file .diff-table-scroll-container { overflow-x: hidden; }
+
+/* The `+` a line carries: a real button on the number cell, revealed under
+   the pointer or on focus - a keyboard finds it, and a touch screen has no
+   pointer to arrive with, so there it rests visible (the coarse block). */
+.review .rv-add-host { position: relative; }
+.review .rv-add { position: absolute; inset: 0; display: flex; align-items: center;
+  justify-content: center; background: none; border: 0; cursor: pointer;
+  color: var(--accent); font-weight: 700; opacity: 0; padding: 0; }
+.review tr.diff-line:hover .rv-add { opacity: 1; }
+.review .rv-add:focus-visible { opacity: 1; outline: 1px solid var(--accent); }
+
+/* Our own row: one cell across the table, the card inside it. */
+.review .rv-insert-cell { padding: 0 !important; background: var(--s1); }
+.review .rv-inline { padding: 3px 10px 6px; }
+
+/* The thread card. */
+.review .rv-thread { border: 1px solid var(--line); border-radius: var(--r);
+  background: var(--s1); padding: 8px 10px 9px; margin: 8px 0; }
+.review .rv-thread.compact { margin: 0; background: var(--s2); }
+.review .rv-tops { display: flex; align-items: center; gap: 8px; font-family: var(--mono);
+  font-size: var(--fs-label); color: var(--dim); }
+.review .rv-where { min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.review .rv-moved { flex: none; color: var(--warn); }
+.review .rv-why { font-family: var(--mono); font-size: var(--fs-label); color: var(--warn);
+  padding: 2px 0 0; }
+.review .rv-acts { display: flex; gap: 8px; padding-top: 6px; align-items: center; }
+.review .rv-a { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
+  background: none; border: 1px solid var(--line); border-radius: 6px; padding: 2px 9px;
+  cursor: pointer; }
+.review .rv-a:hover { color: var(--text); border-color: var(--ctl); }
+.review .rv-a.on { color: var(--bg); background: var(--accent); border-color: var(--accent); }
+.review .rv-a.on:hover { background: var(--hot); }
+.review .rv-a:disabled { opacity: .45; cursor: default; }
+.review .rv-reply { padding-top: 6px; }
+.review .rv-txarea { width: 100%; box-sizing: border-box; background: var(--s1);
+  color: var(--text); border: 1px solid var(--line); border-radius: 7px;
+  font-family: var(--ui); font-size: var(--fs-base); padding: 6px 8px; resize: vertical; }
+.review .rv-txarea:focus { outline: none; border-color: var(--ctl); }
+.review .rv-cc { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
+  border: 1px solid var(--line); border-radius: 99px; padding: 0 8px; }
+
+/* A resolved thread collapses to one line in the canvas. */
+.review .rv-marker { display: flex; align-items: center; gap: 9px; margin: 0;
+  padding: 5px 10px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--s1); font-family: var(--mono); font-size: var(--fs-label);
+  color: var(--dim); }
+.review .rv-mk-word { color: var(--muted); flex: none; }
+.review .rv-mk-first { min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+
+/* The four state marks: the sheet's shapes, the sheet's tones. */
+.review .rv-mk { width: 10px; height: 10px; flex: 0 0 10px; }
+.review .rv-mk.open { border-radius: 50%; background: var(--accent); }
+.review .rv-mk.addressed { background: var(--warn);
+  clip-path: polygon(50% 3%, 97% 95%, 3% 95%); }
+.review .rv-mk.resolved { border-radius: 50%; background: var(--ok); }
+.review .rv-mk.outdated { border: 1.4px solid var(--dim); border-radius: 50%; }
+.review .rv-st { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
+  border: 1px solid var(--line); border-radius: 99px; padding: 0 8px; flex: none; }
+.review .rv-st.open { color: var(--text); border-color: var(--ctl); }
+.review .rv-st.addressed { color: var(--warn); border-color: rgba(201,161,59,.4); }
+.review .rv-st.resolved { color: var(--ok); border-color: rgba(130,199,107,.35); }
+.review .rv-st.outdated { color: var(--dim); }
+.review .rv-quiet { font-size: var(--fs-base); color: var(--dim); padding: 0 2px 8px; }
+
+/* The viewer's own palette, restated in forge's tokens. The values ride the
+   inner `.diff-style-root` (the theme block sets them there), so the rule
+   reaches the same element rather than inheriting into it. */
+.review .diff-tailwindcss-wrapper[data-theme='dark'] .diff-style-root {
+  --diff-border--: var(--line);
+  --diff-add-content--: #101d0d;
+  --diff-del-content--: #241110;
+  --diff-add-content-highlight--: #234a1c;
+  --diff-del-content-highlight--: #5a2a1e;
+  --diff-add-lineNumber--: #16240f;
+  --diff-del-lineNumber--: #331916;
+  --diff-hunk-content--: var(--s2);
+  --diff-hunk-lineNumber--: var(--s3);
+  --diff-hunk-lineNumber-hover--: var(--accent);
+  --diff-hunk-content-color--: var(--dim);
+  --diff-plain-content--: var(--bg);
+  --diff-expand-content--: var(--s1);
+  --diff-plain-lineNumber--: var(--s1);
+  --diff-expand-lineNumber--: var(--s1);
+  --diff-plain-lineNumber-color--: var(--dim);
+  --diff-expand-lineNumber-color--: var(--dim);
+  --diff-empty-content--: var(--s1);
+  --diff-add-widget--: var(--accent);
+  --diff-add-widget-color--: var(--bg);
+  --diff-view-dark: var(--text);
+}
+.review .diff-tailwindcss-wrapper[data-theme='dark'],
+.review .diff-tailwindcss-wrapper[data-theme='dark'] pre,
+.review .diff-tailwindcss-wrapper[data-theme='dark'] code { font-family: var(--mono); }
+
+/* Its syntax tokens are hljs classes, so the syntax theme is a CSS override
+   rather than a highlighter swap. */
+.review .diff-tailwindcss-wrapper[data-theme='dark'] .hljs-keyword,
+.review .diff-tailwindcss-wrapper[data-theme='dark'] .hljs-doctag,
+.review .diff-tailwindcss-wrapper[data-theme='dark'] .hljs-type,
+.review .diff-tailwindcss-wrapper[data-theme='dark'] .hljs-template-tag,
+.review .diff-tailwindcss-wrapper[data-theme='dark'] .hljs-template-variable { color: var(--violet); }
+.review .diff-tailwindcss-wrapper[data-theme='dark'] .hljs-title,
+.review .diff-tailwindcss-wrapper[data-theme='dark'] .hljs-title.class_,
+.review .diff-tailwindcss-wrapper[data-theme='dark'] .hljs-title.function_ { color: var(--blue); }
+.review .diff-tailwindcss-wrapper[data-theme='dark'] .hljs-attr,
+.review .diff-tailwindcss-wrapper[data-theme='dark'] .hljs-attribute,
+.review .diff-tailwindcss-wrapper[data-theme='dark'] .hljs-literal,
+.review .diff-tailwindcss-wrapper[data-theme='dark'] .hljs-meta,
+.review .diff-tailwindcss-wrapper[data-theme='dark'] .hljs-number { color: var(--hot); }
+.review .diff-tailwindcss-wrapper[data-theme='dark'] .hljs-regexp,
+.review .diff-tailwindcss-wrapper[data-theme='dark'] .hljs-string { color: var(--ok); }
+.review .diff-tailwindcss-wrapper[data-theme='dark'] .hljs-built_in,
+.review .diff-tailwindcss-wrapper[data-theme='dark'] .hljs-symbol { color: var(--teal); }
+.review .diff-tailwindcss-wrapper[data-theme='dark'] .hljs-comment,
+.review .diff-tailwindcss-wrapper[data-theme='dark'] .hljs-code,
+.review .diff-tailwindcss-wrapper[data-theme='dark'] .hljs-formula { color: var(--dim); }
+
+@media (max-width: 980px) {
+  /* The tree and the diff stack; the page is the one scroller, so every
+     pane lets its content through. */
+  .review .rv-body { grid-template-columns: minmax(0, 1fr); }
+  .review .rv-canvas,
+  .review .rv-canvas-list,
+  .review .rv-files { overflow: visible; }
+}
+
+@media (pointer: coarse) {
+  /* Every control a finger reaches takes a real target, the way back and
+     the canvas's doors and buttons alike. */
+  .review .back { min-height: 44px; display: inline-flex; align-items: center; }
+  .review .rv-a { min-height: 44px; padding: 0 14px; }
+  .review .rv-frow, .review .rv-dir { padding-top: 10px; padding-bottom: 10px; }
+  /* No pointer to arrive with: the line's `+` rests visible so a tap can
+     find it. */
+  .review .rv-add { opacity: 1; color: var(--dim); }
+  .review .rv-add-host { min-width: 44px; }
 }
 
 /* ---------- the chevron arrives with the pointer ----------

@@ -155,8 +155,10 @@ describe('the salvage copies', () => {
     // now declares, so the page is one token richer: the count moving is the
     // sweep's reach moving, which is exactly what this assertion is for. 172
     // before the extensions page's drawing landed, which declares the whole
-    // palette in its own `:root` like every other page.
-    expect(compared, 'the sweep no longer reaches the same tokens').toBe(188);
+    // palette in its own `:root` like every other page, and the review
+    // drawing's thirteen add to that: the two sums add, so this is the
+    // merged tree's count rather than either branch's alone.
+    expect(compared, 'the sweep no longer reaches the same tokens').toBe(201);
   });
 
   /**
@@ -229,8 +231,9 @@ describe('the salvage copies', () => {
     expect(drifts, 'drawings name stacks the app does not ship').toEqual([]);
     // 22 before the board page landed; it states the shipped stacks in its
     // `:root` like every drawing does. 24 before the extensions page's
-    // drawing, which declares both stacks the same way.
-    expect(compared, 'the sweep no longer reaches every stack').toBe(26);
+    // drawing, which declares both stacks the same way, and the review
+    // drawing's two add to both: this is the merged tree's count.
+    expect(compared, 'the sweep no longer reaches every stack').toBe(28);
   });
 });
 
