@@ -26,7 +26,7 @@ reader doing anything.
 | Top bar | `back`, the project's name with its own read (`N waiting on you`, `N rows`, `N running`), `done` | the route and the snapshot |
 | Seats | one chip per seat this project holds, linking to its session page; a card dropped on one assigns it | `agents` filtered to the project |
 | Waiting on you | the rows whose wait is a decision: the verify gate (`approve`, a words box, `send back`) or a worker's question (an answer box). A root whose children are not all done draws the count and the send-back instead of `approve`, because a row closes only when its children do | `waiting_on` with `kind: decision`, and the row's `rollup` |
-| Lanes | every card, in its state's lane | `projects[].rows` |
+| Lanes | every card, in its state's lane, with the completed group folded to its five most recent | `projects[].rows` |
 | Create | a subject box, an epic picker and `+ add`, which files the row at the queue's end | `task_create` |
 
 ## The lanes
@@ -37,6 +37,17 @@ a missing state: **Backlog** (pending), **Waiting**, **In progress**,
 started leads, then the lane that wants the reader, then the work. A lane is
 a name, its count and a rule, with its cards under it - no box around the
 column - and the lanes wrap to a second row rather than scroll sideways.
+
+**The completed group folds.** A finished row accumulates for the life of the
+project, so the completed lane is the one that grows without bound: it draws
+the five most recently finished rows - by when they last moved, whatever their
+place in the lane - and holds the rest behind a `show all (N)` control under
+the last card. `N` is the lane's true count, which the head carries whether or
+not the group is open; pressing the control draws every finished row and it
+reads `show less`, and a group of five or fewer draws whole with no control. A
+card the reader is dropping into the folded lane stays drawn while the core's
+answer is in flight, and a jump aimed at a folded row - an epic pill, a row
+page's task list - opens the fold and lands on it.
 
 ### A card
 

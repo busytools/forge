@@ -95,6 +95,11 @@
   .b-lane-nm { font-size: 12.5px; font-weight: 600; color: var(--muted); letter-spacing: .01em; }
   .b-count { font-family: var(--mono); font-size: 12.5px; color: var(--dim); }
   .b-rule { flex: 1; height: 1px; background: var(--line); }
+  /* the completed group's fold, under the last card */
+  .b-fold { display: block; width: 100%; margin-top: 10px; text-align: left;
+    font-family: var(--mono); font-size: 12.5px; color: var(--muted);
+    background: transparent; border: 0; border-radius: 10px; padding: 9px 12px; cursor: pointer; }
+  .b-fold:hover { background: var(--s2); color: var(--text); }
 
   /* cards: three lines, the surface step is the elevation, no border */
   .b-card { background: var(--s2); border-radius: 13px; padding: 15px 16px 14px; cursor: grab; }
@@ -394,7 +399,7 @@
     </section>
 
     <section class="b-lane" data-state="completed">
-      <div class="b-cap"><span class="b-lane-nm">Completed</span><span class="b-count">1</span><span class="b-rule"></span></div>
+      <div class="b-cap"><span class="b-lane-nm">Completed</span><span class="b-count">6</span><span class="b-rule"></span></div>
       <article class="b-card epic">
         <div class="b-row1">
           <span class="b-mark b-done"><svg class="ic" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg></span>
@@ -419,6 +424,67 @@
           <span class="b-acts"><button class="b-pick">forge &#9662;</button></span>
         </div>
       </article>
+      <article class="b-card">
+        <div class="b-row1">
+          <span class="b-mark b-done"><svg class="ic" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg></span>
+          <span class="b-sub settled"><span class="b-line">the lanes wrap at 430</span></span>
+        </div>
+        <div class="b-meta">
+          <span class="b-owner"><span class="b-ava">S</span>steward</span>
+          <span class="b-chips"></span>
+        </div>
+        <div class="b-last">
+          <span class="b-prog"><span class="b-time">worked 3h</span></span>
+          <span class="b-wrote">wrote 2d ago</span>
+          <span class="b-acts"><button class="b-pick">steward &#9662;</button></span>
+        </div>
+      </article>
+      <article class="b-card">
+        <div class="b-row1">
+          <span class="b-mark b-done"><svg class="ic" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg></span>
+          <span class="b-sub settled"><span class="b-line">the strip answers a question</span></span>
+        </div>
+        <div class="b-meta">
+          <span class="b-owner"><span class="b-ava">A</span>asker</span>
+          <span class="b-chips"></span>
+        </div>
+        <div class="b-last">
+          <span class="b-prog"><span class="b-time">worked 1h</span></span>
+          <span class="b-wrote">wrote 2d ago</span>
+          <span class="b-acts"><button class="b-pick">asker &#9662;</button></span>
+        </div>
+      </article>
+      <article class="b-card">
+        <div class="b-row1">
+          <span class="b-mark b-done"><svg class="ic" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg></span>
+          <span class="b-sub settled"><span class="b-line">the owner picker opens on the card</span></span>
+        </div>
+        <div class="b-meta">
+          <span class="b-owner"><span class="b-ava">H</span>hand</span>
+          <span class="b-chips"></span>
+        </div>
+        <div class="b-last">
+          <span class="b-prog"><span class="b-time">worked 40m</span></span>
+          <span class="b-wrote">wrote 1d ago</span>
+          <span class="b-acts"><button class="b-pick">hand &#9662;</button></span>
+        </div>
+      </article>
+      <article class="b-card">
+        <div class="b-row1">
+          <span class="b-mark b-done"><svg class="ic" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg></span>
+          <span class="b-sub settled"><span class="b-line">the drawing is held against the page</span></span>
+        </div>
+        <div class="b-meta">
+          <span class="b-owner"><span class="b-ava">F</span>forge</span>
+          <span class="b-chips"></span>
+        </div>
+        <div class="b-last">
+          <span class="b-prog"><span class="b-time">worked 20m</span></span>
+          <span class="b-wrote">wrote 12h ago</span>
+          <span class="b-acts"><button class="b-pick">forge &#9662;</button></span>
+        </div>
+      </article>
+      <button class="b-fold" aria-expanded="false">show all (6)</button>
     </section>
 
     <section class="b-lane" data-state="failed">
