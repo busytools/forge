@@ -924,11 +924,11 @@ pub fn page(
     //
     // **In the conversation's numbering rather than the held list's.**
     // `dropped` is what the cap has taken off the front: a cursor written
-    // before a drop still names the message it meant, and one resolving below
-    // the floor names a turn this seat has let go - answered from the empty
-    // page above it rather than from a window the client did not ask for. A
-    // cursor no turn opens at, or one this server did not write, keeps the
-    // fallback it always had.
+    // before a drop still names the message it meant. A cursor below the
+    // floor never arrives here - the `more` walk answers those from the
+    // transcript - and one landing under it is the empty page above rather
+    // than a window the client did not ask for. A cursor no turn opens at, or
+    // one this server did not write, keeps the fallback it always had.
     let ends_at = match before.and_then(|cursor| cursor.parse::<usize>().ok()) {
         None => ranges.len(),
         Some(named) => match named.checked_sub(dropped) {

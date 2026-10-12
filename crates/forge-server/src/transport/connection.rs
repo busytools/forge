@@ -1530,7 +1530,13 @@ fn row_cursor_of(offset: u64, row: &str) -> String {
 fn boundary_of(
     held: &crate::transport::conversation::Conversation,
 ) -> Option<forge_primitives::TranscriptAnchor> {
-    let mut rows = held.messages().iter().filter(|message| row_id(message).is_some());
+    // **Only frames the file carries.** What the seat holds is not what the
+    // file holds: a delivery row was forged here and written nowhere, and a
+    // sub-agent's frames are dropped by the row rule at the read. Naming
+    // either answers the file nothing, and nothing reads as the end of the
+    // history - so the walk steps past every such frame to the first the file
+    // can hand back, and names nothing at all when the window holds none.
+    let mut rows = held.messages().iter().filter(|message| held.has_a_row(message));
     let mut anchor = rows.next()?;
     while carries_a_result(anchor) {
         let Some(next) = rows.next() else {
@@ -2525,6 +2531,146 @@ mod tests {
             turn_texts(&below).last().map(String::as_str),
             Some(format!("turn {}", oldest - 1).as_str()),
             "and the page below ends on the turn directly beneath where the first began",
+        );
+    }
+
+    /// A sub-agent's frame: a row inside a `Task` call, which the file counts
+    /// no row for and the row rule drops.
+    fn subagent_frame(at: usize) -> forge_primitives::Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "assistant",
+            "uuid": format!("sub{at}"),
+            "parent_tool_use_id": "toolu_dispatch",
+            "session_id": "s1",
+            "message": {
+                "id": format!("msub{at}"),
+                "role": "assistant",
+                "model": "claude-opus-5",
+                "content": [{"type": "text", "text": format!("inside the sub-agent {at}")}],
+            },
+        }))
+        .expect("an assistant frame")
+    }
+
+    /// **A window front the file cannot name still pages.**
+    ///
+    /// The walk names the file one row - its boundary - and two kinds of frame
+    /// carry an id the file has no row for: a row the transport FORGED for
+    /// display (a delivery), and a sub-agent's frame, which the row rule drops
+    /// at the read. Naming either used to answer the read nothing, and nothing
+    /// reads as the end of the history: a silent gap, on exactly the windows
+    /// this walk exists for - a forged delivery row IS a turn opener, so the
+    /// count cut lands on one, and a running turn streaming sub-agent work
+    /// leaves sub-agent frames at its front.
+    #[tokio::test]
+    async fn a_window_front_the_file_cannot_name_still_pages() {
+        let dir = tempfile::tempdir().expect("a config dir of its own");
+        let fleet =
+            crate::testing::Fleet::in_dir(dir.path(), &[("TestOrg", &["proj"])]).expect("a fleet");
+        fleet.start("TestOrg", "proj").expect("a live lead session");
+        let seat = SessionSlot::lead("TestOrg", "proj");
+
+        // **Arm one: a forged row at the front, and a real row just under it.**
+        // The seed is sized so the count cut's next landing is the frame right
+        // after it (measured: the cut parks on the newest turn, then steps in
+        // thousands), and the forged row is appended onto that landing - what
+        // a delivery arriving mid-turn does in production.
+        let mut frames = live_frames(2_600);
+        frames.extend((0..999).map(result_frame));
+        let conversations = crate::transport::conversation::Conversations::new();
+        conversations.insert(&seat, crate::transport::conversation::Conversation::new(frames, 0));
+        conversations.apply(&SessionUpdate::CronPromptAppended {
+            key: seat.clone(),
+            text: "the cron fired".to_owned(),
+            uuid: "cap-cron".to_owned(),
+            cron_id: "c1".to_owned(),
+            description: None,
+        });
+        let following = resulting_row(9_999);
+        conversations.apply(&SessionUpdate::ChatAppended {
+            key: seat.clone(),
+            msg: following.clone(),
+            origin: None,
+        });
+        for at in 0..5_000_usize {
+            let window = conversations.get(&seat).expect("the seat is held");
+            if row_id(window.lock().messages().first().expect("a front")).as_deref()
+                == Some("cap-cron")
+            {
+                break;
+            }
+            drop(window);
+            conversations.apply(&SessionUpdate::ChatAppended {
+                key: seat.clone(),
+                msg: result_frame(at),
+                origin: None,
+            });
+        }
+        let held = conversations.get(&seat).expect("the seat is held");
+        let window = held.lock();
+        assert_eq!(
+            row_id(window.messages().first().expect("a front")).as_deref(),
+            Some("cap-cron"),
+            "precondition: the count cut landed on the forged row",
+        );
+        let boundary = boundary_of(&window).expect("the window carries a row the file has");
+        assert_eq!(
+            boundary.row, "result9999",
+            "the forged row is passed over for the first row under it the file carries",
+        );
+        drop(window);
+
+        // And the read answers a page from that boundary rather than the empty
+        // one: the walk does not end where the file simply could not be asked.
+        let rows = transcript_rows(2_600);
+        let mut rows = rows;
+        rows.push(serde_json::to_string(&following).expect("the following row as a line"));
+        fleet
+            .seed_transcript(
+                "TestOrg",
+                "proj",
+                "lead",
+                &rows.iter().map(String::as_str).collect::<Vec<_>>(),
+            )
+            .expect("the session's transcript");
+        let state = TransportState {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(conversations),
+            live: Mutex::new(crate::live::Live::new()),
+            client: forge_primitives::ClientConfig::default(),
+            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+        };
+        let cwd = state.surface.roster().cwd_for(&seat).expect("the seat's own directory");
+        let BelowFloor::Page(page) = rows_below_floor(&state, &seat, &cwd, Some(boundary), 4).await
+        else {
+            panic!("the transcript answers a page below a front it was named a real row for")
+        };
+        assert!(!page.turns.is_empty(), "and the page is not the empty one");
+
+        // **Arm two: a sub-agent frame at the front, the running turn's own
+        // shape.** A window holding no row the file carries names nothing, and
+        // the read answers with the file's own newest rows - not the empty
+        // page a failed search would hand back as the end of the history.
+        let mut frames = live_frames(2_600);
+        frames.extend((0..5_400).map(subagent_frame));
+        let held = crate::transport::conversation::Held::new(
+            crate::transport::conversation::Conversation::new(frames, 0),
+        );
+        let window = held.lock();
+        let front = window.messages().first().expect("a front");
+        assert!(
+            row_id(front).is_some_and(|id| id.starts_with("sub")),
+            "precondition: the count cut landed inside the sub-agent run",
+        );
+        assert!(
+            !forge_workspace::has_a_transcript_row(front),
+            "precondition: which the file counts no row for",
+        );
+        assert!(
+            boundary_of(&window).is_none(),
+            "and the boundary passes over every such frame, naming nothing to the file: {:?}",
+            boundary_of(&window),
         );
     }
 

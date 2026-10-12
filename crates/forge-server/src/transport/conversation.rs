@@ -121,7 +121,10 @@ pub struct Conversation {
     /// **A forged row is a frame no transcript has**, and nothing about its
     /// shape says so - it is a user row like the prompt it draws. Only the
     /// site that forged it knows, which is why the set lives here rather than
-    /// in the row rule.
+    /// in the row rule. [`Conversation::has_a_row`] is what reads it: a walk
+    /// below the window names this seat's oldest row TO THE FILE, and naming
+    /// one the file never wrote answers the read nothing - which reads as the
+    /// end of the history.
     forged: std::collections::HashSet<String>,
 }
 
@@ -214,13 +217,28 @@ impl Conversation {
     ///
     /// **Forged rows are frames the file counts no row for**, and nothing
     /// about their shape says so - a delivery row is a user row like the
-    /// prompt it draws. So the seat keeps their ids, and a page below the
-    /// floor counts the frames they were in.
+    /// prompt it draws. So the seat keeps their ids, and [`Self::has_a_row`]
+    /// answers with them: a walk below the floor names the seat's oldest row
+    /// to the file, and one the file never wrote answers nothing.
     pub fn append_forged(&mut self, message: Message) {
         if let Some(id) = frame_id(&message) {
             self.forged.insert(id.to_owned());
         }
         self.push(message);
+    }
+
+    /// Whether a transcript row carries `message`: the kinds the row rule
+    /// reads, and nothing this transport forged for display.
+    ///
+    /// **The seat's own answer, because half of it is the seat's.** The rule
+    /// knows the kinds a file writes; only the seat knows which of its own
+    /// rows it minted, and a forged row is a user row like the prompt it
+    /// draws. A walk below the window needs both halves: naming the file a row
+    /// it does not carry answers the read nothing, which a client draws as the
+    /// end of the history.
+    pub fn has_a_row(&self, message: &Message) -> bool {
+        forge_workspace::has_a_transcript_row(message)
+            && !frame_id(message).is_some_and(|id| self.forged.contains(id))
     }
 
     fn push(&mut self, message: Message) {
@@ -563,8 +581,8 @@ impl Conversations {
                     && let Some(held) = self.get(slot)
                 {
                     // Forged for display, and in no transcript: the seat has
-                    // to know, because a page below the floor numbers the
-                    // frames the file never wrote.
+                    // to know, so a walk below the floor never names one to
+                    // the file as the row it stopped at.
                     held.lock().append_forged(msg);
                 }
             }
