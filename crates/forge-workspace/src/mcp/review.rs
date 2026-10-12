@@ -758,7 +758,7 @@ mod tests {
         assert!(!message.contains("/diff"), "{message}");
     }
 
-    use crate::mcp::review::facade::{MockReviewFacade, ScopeError};
+    use crate::mcp::review::facade::{MockReviewFacade, ProdReviewFacade, ScopeError};
 
     fn caller_slot() -> SessionSlot {
         SessionSlot::from_str_for_test("caller")
@@ -1064,6 +1064,94 @@ mod tests {
         let out = tool.call(ToolInput { value: serde_json::json!({ "comment_id": "c1" }) }).await;
         assert!(out.is_error, "missing 'text' is an error");
         assert!(text_of(&out).to_lowercase().contains("invalid"));
+    }
+
+    /// The document read-back loop, asserted by OUTCOME: with the
+    /// document's scope as the only address, the four tools list, read,
+    /// reply and resolve the review the viewer filed, and the STORE is
+    /// what must show it - the terminal status on disk, not a tool call
+    /// having appeared.
+    #[tokio::test]
+    async fn a_documents_review_reads_back_by_its_scope_to_a_resolved_thread() {
+        use crate::workspace::Workspace;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = crate::config::LoadedConfig::empty_for_test();
+        config.projects.push(crate::config::LoadedProject {
+            name: "myproj".to_owned(),
+            path: dir.path().to_path_buf(),
+            display_path: dir.path().to_string_lossy().into_owned(),
+            org: "TestOrg".to_owned(),
+            accounts: Vec::new(),
+            fallback_accounts: Vec::new(),
+            auto_start: false,
+            model: None,
+            env: std::collections::HashMap::new(),
+            max_workers: None,
+            issues: true,
+            permission_mode: forge_primitives::permission::PermissionMode::Auto,
+        });
+        let (ws, _rx) = Workspace::testing_stub_with_config(dir.path().to_path_buf(), config)
+            .expect("the stub config is well-formed");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+
+        // The viewer's side: a comment on a line of the document, filed
+        // as one review under the document's own scope.
+        let scope = "doc:/proj/plan.md";
+        let mut t = thread("a", None, ReviewStatus::Open);
+        t.anchor.base_ref = scope.to_owned();
+        assert!(ws.upsert_review_thread("myproj", scope, t), "the thread lands");
+        let reviewer = SessionSlot::from_str_for_test("reviewer-uuid");
+        ws.submit_review("myproj", scope, Some("overview".to_owned()), &["a".to_owned()], reviewer)
+            .expect("the review is sealed");
+
+        // The agent's side, through the real tools over the real store.
+        let facade: Arc<dyn ReviewFacade> = ProdReviewFacade::from_arc(&ws);
+        let slot = SessionSlot::lead("TestOrg", "myproj");
+
+        let list = ReviewList { facade: Arc::clone(&facade), slot: slot.clone() }
+            .call(ToolInput { value: serde_json::json!({ "scope": scope }) })
+            .await;
+        assert!(!list.is_error, "{:?}", list.blocks);
+        let rows: serde_json::Value = serde_json::from_str(text_of(&list)).expect("list json");
+        let review_id = rows[0]["review_id"].as_str().expect("a review id").to_owned();
+
+        let get = ReviewGet { facade: Arc::clone(&facade), slot: slot.clone() }
+            .call(ToolInput {
+                value: serde_json::json!({ "review_id": review_id, "scope": scope }),
+            })
+            .await;
+        assert!(!get.is_error, "{:?}", get.blocks);
+        let detail: serde_json::Value = serde_json::from_str(text_of(&get)).expect("get json");
+        let comment_id =
+            detail["comments"][0]["comment_id"].as_str().expect("a comment id").to_owned();
+        assert_eq!(detail["comments"][0]["status"], "open", "the viewer's comment starts open");
+
+        let reply = ReviewReply { facade: Arc::clone(&facade), slot: slot.clone() }
+            .call(ToolInput {
+                value: serde_json::json!({ "comment_id": comment_id, "text": "done", "scope": scope }),
+            })
+            .await;
+        assert!(!reply.is_error, "{:?}", reply.blocks);
+        let echoed: serde_json::Value = serde_json::from_str(text_of(&reply)).expect("reply json");
+        assert_eq!(echoed["status"], "addressed", "a reply flips the comment");
+
+        let resolve = ReviewResolve { facade: Arc::clone(&facade), slot }
+            .call(ToolInput {
+                value: serde_json::json!({ "comment_id": comment_id, "scope": scope }),
+            })
+            .await;
+        assert!(!resolve.is_error, "{:?}", resolve.blocks);
+
+        // The outcome, read from the store where it landed.
+        let stored = ws.load_review_threads("myproj", scope).expect("threads read back");
+        assert_eq!(
+            stored[0].status,
+            ReviewStatus::Resolved,
+            "the stored thread is the assertion; a call that failed cannot read as resolved",
+        );
     }
 
     #[test]
