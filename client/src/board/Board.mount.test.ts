@@ -1079,6 +1079,14 @@ describe("the completed group's fold", () => {
     flushSync();
     expect(drawn(), 'the toggle did not fold back').toEqual(['c1', 'c4', 'c5', 'c6', 'c7']);
 
+    // Under the last card, where a reader scrolling the group meets it: a
+    // control at the lane's head is passed before they know rows are held back.
+    const walk = [...document.querySelectorAll<HTMLElement>(`${lane} .b-card, ${lane} .b-fold`)];
+    expect(
+      walk.at(-1)?.classList.contains('b-fold'),
+      'the fold control is not under the last card',
+    ).toBe(true);
+
     expect(await violationsOf(document.body.innerHTML)).toEqual([]);
   });
 

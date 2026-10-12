@@ -649,15 +649,6 @@
             <span class="b-lane-nm">{lane.name}</span>
             <span class="b-count">{lane.count}</span>
             <span class="b-rule"></span>
-            {#if lane.key === 'completed' && lane.count > COMPLETED_SHOWN}
-              <button
-                type="button"
-                class="b-fold"
-                aria-expanded={showCompleted}
-                onclick={() => (showCompleted = !showCompleted)}
-                >{showCompleted ? 'show less' : `show all (${lane.count})`}</button
-              >
-            {/if}
           </div>
           {#each lane.cards as row (row.id)}
             <!-- The card itself is the interaction: it takes the pointer for a
@@ -764,6 +755,17 @@
               </div>
             </article>
           {/each}
+          {#if lane.key === 'completed' && lane.count > COMPLETED_SHOWN}
+            <!-- Under the last card: a control at the lane's head is passed
+                 before the reader knows rows are held back. -->
+            <button
+              type="button"
+              class="b-fold"
+              aria-expanded={showCompleted}
+              onclick={() => (showCompleted = !showCompleted)}
+              >{showCompleted ? 'show less' : `show all (${lane.count})`}</button
+            >
+          {/if}
         </section>
       {/each}
     </div>
