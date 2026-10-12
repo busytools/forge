@@ -821,6 +821,52 @@ impl BrowserHost {
         profile
     }
 
+    /// Delete every named profile whose owning seat `live` does not hold -
+    /// and every legacy directory, which no seat holds by definition.
+    /// Answers the names that went.
+    ///
+    /// **The sweep is idempotent**, so it may run on every capable connect
+    /// and after every despawn: the server sends the seats that exist, the
+    /// client deletes what is no longer any of theirs. The record is re-read
+    /// at the delete's own moment, so a name adopted between the frame and
+    /// the delete is kept rather than raced, and the delete is the same act
+    /// the UI's own is - a call in flight is waited out. A failure is logged
+    /// and leaves the profile; the sweep never half-deletes.
+    #[cfg(desktop)]
+    pub async fn sweep(&self, live: &[Seat]) -> Vec<String> {
+        let Ok(paths) = self.paths.clone() else { return Vec::new() };
+        let Ok(entries) = std::fs::read_dir(&paths.profiles) else { return Vec::new() };
+        let mut names: Vec<String> = entries
+            .flatten()
+            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+            .filter_map(|entry| entry.file_name().to_str().map(str::to_owned))
+            .filter(|name| profiles::name_refusal(name).is_none())
+            .collect();
+        names.sort();
+        let mut gone = Vec::new();
+        for name in names {
+            let dir = paths.profiles.join(&name);
+            // The record read IS the delete's own moment: a live seat's
+            // profile - adopted since the frame, or owned before it - is
+            // kept, and everything else (another seat's, legacy, or an
+            // unreadable record) goes.
+            match profiles::owner_of(&dir) {
+                Ok(Some(owner)) if live.contains(&owner) => continue,
+                Ok(_) | Err(_) => {}
+            }
+            match self.delete(&name).await {
+                Ok(()) => gone.push(name),
+                Err(why) => {
+                    tauri_plugin_log::log::warn!(
+                        "a sweep of the browser profiles could not delete one (event_name \
+                         browser_profile_sweep_failed, profile {name}, {why})"
+                    );
+                }
+            }
+        }
+        gone
+    }
+
     /// The seat's own profile, named after the seat, ensured on the seat's
     /// first reach for the browser that names no profile.
     ///
@@ -1688,13 +1734,100 @@ mod tests {
     }
 
     /// Kill the browser a test's own call launched, by the pid the launch
-    /// wrote. **A unit test may not leave a browser behind** - the machine
-    /// always has one to drive, so a call that reaches `browser_for`
-    /// launches, and the routine suite would leak a process per run.
+    /// wrote, and WAIT for it to go. **A unit test may not leave a browser
+    /// behind** - the machine always has one to drive, so a call that
+    /// reaches `browser_for` launches, and a test that ends while its
+    /// browser is still shutting down is one nextest reads as leaky. TERM,
+    /// a bounded wait, then KILL, as the live suite's own `Launched::reap`
+    /// does.
     fn reap(profile: &std::path::Path) {
         let Ok(pid) = std::fs::read_to_string(profile.join("browser.pid")) else { return };
-        let Ok(pid) = pid.trim().parse::<i32>() else { return };
-        let _ = std::process::Command::new("kill").args(["-TERM", &pid.to_string()]).status();
+        let Ok(pid) = pid.trim().parse::<u32>() else { return };
+        let alive = || {
+            std::process::Command::new("ps")
+                .args(["-p", &pid.to_string(), "-o", "pid="])
+                .output()
+                .is_ok_and(|out| !String::from_utf8_lossy(&out.stdout).trim().is_empty())
+        };
+        let _ = std::process::Command::new("kill").arg(pid.to_string()).status();
+        for _ in 0..20 {
+            if !alive() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let _ = std::process::Command::new("kill").args(["-9", &pid.to_string()]).status();
+    }
+
+    /// **The sweep takes the gone seats and keeps the live ones.** A seat in
+    /// the set survives, a seat out of it goes, a legacy directory (no
+    /// record) goes, the shared directory is not a profile and stays, and a
+    /// second run has nothing left to do. A delete that fails leaves its
+    /// profile and does not stop the sweep from finishing the rest.
+    #[tokio::test]
+    async fn the_sweep_takes_the_gone_seats_and_keeps_the_live_ones() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let host = BrowserHost::new(paths.clone());
+        let live = seat();
+        let gone = Seat { org: "Gone".to_owned(), ..seat() };
+        Named::open(live.clone(), "kept", &paths).expect("the live seat's profile");
+        Named::open(gone, "swept", &paths).expect("the gone seat's profile");
+        std::fs::create_dir_all(paths.profiles.join("legacy")).expect("a legacy dir");
+        std::fs::create_dir_all(&paths.user_data).expect("the shared dir");
+
+        let deleted = host.sweep(std::slice::from_ref(&live)).await;
+        assert_eq!(deleted, vec!["legacy".to_owned(), "swept".to_owned()], "{deleted:?}");
+        assert!(paths.profiles.join("kept").exists(), "a live seat's profile survives");
+        assert_eq!(
+            profiles::owner_of(&paths.profiles.join("kept")),
+            Ok(Some(live.clone())),
+            "with its record",
+        );
+        assert!(!paths.profiles.join("legacy").exists(), "a legacy dir is nobody's and goes");
+        assert!(!paths.profiles.join("swept").exists(), "a gone seat's profile goes");
+        assert!(paths.user_data.exists(), "the shared directory is not a profile");
+        assert!(host.sweep(&[live]).await.is_empty(), "the second sweep has nothing to do");
+    }
+
+    /// A sweep delete that fails is logged and leaves the profile standing -
+    /// and the sweep goes on: the next name still goes.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_sweep_delete_that_fails_leaves_the_profile_and_the_sweep_continues() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let host = BrowserHost::new(paths.clone());
+        let gone = Seat { org: "Gone".to_owned(), ..seat() };
+        Named::open(gone.clone(), "stuck", &paths).expect("the stuck profile");
+        Named::open(gone, "after", &paths).expect("the next profile");
+        // The root cannot be written, so the two directories cannot be
+        // unlinked; the sweep must report the failures and stop nowhere.
+        let root = paths.profiles.clone();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o500))
+            .expect("a read-only root");
+        let deleted = host.sweep(std::slice::from_ref(&seat())).await;
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
+            .expect("writable again");
+
+        assert!(deleted.is_empty(), "nothing could be deleted: {deleted:?}");
+        assert!(paths.profiles.join("stuck").exists(), "the failure left the profile");
+        assert!(
+            paths.profiles.join("after").exists(),
+            "the sweep reached the next name instead of stopping",
+        );
     }
 
     /// **The listing is served per seat.** A seat's read answers its own rows
