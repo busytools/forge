@@ -8,7 +8,7 @@
   import Picker from './Picker.svelte';
   import TaskDrawer from './TaskDrawer.svelte';
   import { applyMoves, boardView, landed } from './view';
-  import type { BoardCardView, PendingMove } from './view';
+  import type { BoardCardView, LaneView, PendingMove } from './view';
 
   /**
    * One project's board, opened as a takeover: a slim top bar with back and
@@ -45,34 +45,48 @@
   let moved = $state<Record<string, PendingMove>>({});
   const lanes = $derived(applyMoves(view.lanes, moved));
 
-  /** How many finished rows draw before the completed group folds. */
-  const COMPLETED_SHOWN = 5;
+  /** How many rows each grown group draws before it folds. */
+  const FOLD_LIMITS: Partial<Record<TaskStatus, number>> = {
+    completed: 5,
+    failed: 5,
+    canceled: 5,
+    // The Backlog folds larger than the finished groups: the queue's order is
+    // the lead's dispatch order, and the top of it is what stays in view.
+    pending: 10,
+  };
 
-  /** Whether the reader opened the completed group's fold. */
-  let showCompleted = $state(false);
+  /** The folds the reader opened, by lane. */
+  let openFolds = $state<Partial<Record<TaskStatus, boolean>>>({});
 
   /**
-   * The lanes as drawn: the completed group folds to the five most recently
-   * finished rows - by `updated_at`, so a late finish shows whatever its rank -
-   * plus any card the reader is placing right now, because a drop into the
-   * folded lane lands at once like every other move.
+   * The lanes as drawn: a grown group holds its tail back - the finished
+   * groups draw their five most recently finished rows, by `updated_at`, so a
+   * late finish shows whatever its rank; the Backlog draws the queue's own
+   * head - plus any card the reader is placing right now, because a drop into
+   * the folded group lands at once like every other move.
    */
-  const drawnLanes = $derived.by(() => {
-    const completed = lanes.find((lane) => lane.key === 'completed');
-    if (showCompleted || completed === undefined || completed.cards.length <= COMPLETED_SHOWN) {
-      return lanes;
-    }
-    const recent = new Set(
-      [...completed.cards]
-        .sort((a, b) => b.updatedAt - a.updatedAt)
-        .slice(0, COMPLETED_SHOWN)
-        .map((card) => card.id),
-    );
-    const cards = completed.cards.filter(
-      (card) => recent.has(card.id) || moved[card.id] !== undefined,
-    );
-    return lanes.map((lane) => (lane.key === 'completed' ? { ...lane, cards } : lane));
-  });
+  const drawnLanes = $derived.by(() =>
+    lanes.map((lane) => {
+      const limit = FOLD_LIMITS[lane.key];
+      if (limit === undefined || openFolds[lane.key] === true || lane.cards.length <= limit) {
+        return lane;
+      }
+      const kept =
+        lane.key === 'pending'
+          ? lane.cards.slice(0, limit)
+          : [...lane.cards].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, limit);
+      const shown = new Set(kept.map((card) => card.id));
+      const cards = lane.cards.filter((card) => shown.has(card.id) || moved[card.id] !== undefined);
+      return { ...lane, cards };
+    }),
+  );
+
+  /** Whether a lane's group is past its limit, so its fold control draws. */
+  function folds(lane: LaneView): boolean {
+    const limit = FOLD_LIMITS[lane.key];
+    return limit !== undefined && lane.count > limit;
+  }
+
   /** The project's seats, for the owner picker: the label that may hold a row. */
   const seats = $derived(
     wire.agents
@@ -417,14 +431,15 @@
   /**
    * The reader's jump: a card named by a pill comes into view, takes the
    * focus, and flashes so the eye lands with it. A jump aimed at a card the
-   * fold is holding back opens the fold first - a door onto a finished row
+   * fold is holding back opens the fold first - a door onto a folded row
    * must not die on a missing element.
    */
   async function jumpTo(id: string): Promise<void> {
     let el = boardEl?.querySelector<HTMLElement>(`.b-card[data-id="${id}"]`);
     if (el === undefined || el === null) {
-      if (!foldedOut(id)) return;
-      showCompleted = true;
+      const lane = foldedLaneOf(id);
+      if (lane === null) return;
+      openFolds[lane] = true;
       await tick();
       el = boardEl?.querySelector<HTMLElement>(`.b-card[data-id="${id}"]`);
     }
@@ -435,12 +450,14 @@
     window.setTimeout(() => el.classList.remove('b-flash'), 1500);
   }
 
-  /** Whether the completed lane holds a row the fold is keeping off the page. */
-  function foldedOut(id: string): boolean {
-    const held = lanes.find((entry) => entry.key === 'completed');
-    if (held === undefined || !held.cards.some((card) => card.id === id)) return false;
-    const drawn = drawnLanes.find((entry) => entry.key === 'completed')?.cards ?? [];
-    return !drawn.some((card) => card.id === id);
+  /** The folded group holding a row the fold is keeping off the page, or null. */
+  function foldedLaneOf(id: string): TaskStatus | null {
+    for (const held of lanes) {
+      if (!held.cards.some((card) => card.id === id)) continue;
+      const drawn = drawnLanes.find((entry) => entry.key === held.key)?.cards ?? [];
+      return drawn.some((card) => card.id === id) ? null : held.key;
+    }
+    return null;
   }
 
   /**
@@ -755,15 +772,15 @@
               </div>
             </article>
           {/each}
-          {#if lane.key === 'completed' && lane.count > COMPLETED_SHOWN}
+          {#if folds(lane)}
             <!-- Under the last card: a control at the lane's head is passed
                  before the reader knows rows are held back. -->
             <button
               type="button"
               class="b-fold"
-              aria-expanded={showCompleted}
-              onclick={() => (showCompleted = !showCompleted)}
-              >{showCompleted ? 'show less' : `show all (${lane.count})`}</button
+              aria-expanded={openFolds[lane.key] === true}
+              onclick={() => (openFolds[lane.key] = openFolds[lane.key] !== true)}
+              >{openFolds[lane.key] === true ? 'show less' : `show all (${lane.count})`}</button
             >
           {/if}
         </section>
