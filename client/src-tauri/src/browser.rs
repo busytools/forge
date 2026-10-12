@@ -972,17 +972,38 @@ impl BrowserHost {
     }
 }
 
-/// The name a seat's own profile takes: its label qualified by its project.
+/// The name a seat's own profile takes: its project and label folded into
+/// the profile charset.
 ///
 /// **The label alone is not unique.** Every project's lead carries `lead`,
 /// and two workers in different projects may share a label, so a
 /// label-only name would let the first seat to reach the browser hold it
 /// against every other seat of that label for good - "every seat gets one"
-/// false for all but one. The project qualifies it; a hand-made name or a
-/// same-named project in another org is the collision refusal's own job.
+/// false for all but one. The project qualifies it.
+///
+/// **And the project name is not the profile charset** - it may carry a
+/// space or reach past the length cap - so every character outside the
+/// charset folds to a dash and the result is capped at the name bound
+/// ("my app" plus label `lead` becomes `my-app-lead`). The promise is that
+/// every seat GETS one, so the derivation must always produce a name the
+/// registry accepts; a fold that still cannot is the create's own refusal
+/// and the once-per-seat note, the last resort rather than the path. The
+/// collision refusal stays the backstop for a hand-made name that takes an
+/// auto name first.
 #[cfg(desktop)]
 fn auto_name(seat: &Seat) -> String {
-    format!("{}-{}", seat.project, seat.label)
+    let mut folded = String::with_capacity(seat.project.len() + seat.label.len() + 1);
+    for ch in seat.project.chars().chain(std::iter::once('-')).chain(seat.label.chars()) {
+        folded.push(if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+            ch
+        } else {
+            '-'
+        });
+    }
+    // The registry's own bound; a name past it is refused there, so the
+    // tail is dropped rather than the whole derivation.
+    folded.truncate(64);
+    folded
 }
 
 /// Why a named profile cannot be used on the phone yet. One sentence, and
@@ -1602,6 +1623,31 @@ mod tests {
             profiles::owner_of(&paths.profiles.join("two-lead")),
             Ok(Some(two)),
             "and the second's owns two-lead, rather than being refused the first's name",
+        );
+    }
+
+    /// **A project name that is not the profile charset still gets its seat
+    /// an auto profile.** "my app" carries a space, which the registry
+    /// refuses, so the derived name folds it - `my-app-lead` - rather than
+    /// the seat never getting one and quietly riding the shared browser.
+    #[tokio::test]
+    async fn a_project_name_outside_the_charset_folds_into_the_auto_name() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let host = BrowserHost::new(paths.clone());
+        let who =
+            Seat { org: "Org".to_owned(), project: "my app".to_owned(), label: "lead".to_owned() };
+
+        host.ensure_auto_profile(&who).await.expect("the folded name is a profile");
+        assert_eq!(
+            profiles::owner_of(&paths.profiles.join("my-app-lead")),
+            Ok(Some(who)),
+            "the space folded to a dash and the profile was recorded",
         );
     }
 
