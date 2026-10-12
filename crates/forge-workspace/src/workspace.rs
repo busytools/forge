@@ -1738,14 +1738,6 @@ impl Workspace {
         self.config.document_max_bytes
     }
 
-    /// Hand one document to the reader: read it out of `seat`'s own tree,
-    /// raise it at the clients drawing that seat, and answer the resolved
-    /// absolute path.
-    ///
-    /// **The raise is the open, and nothing waits on the reader.** Unlike
-    /// the browser hand-off this does not park: the hand-off's tool answers
-    /// here with what the read resolved to, and a review the reader leaves
-    /// arrives later as its own event. A refused read raises nothing.
     /// Note a client connection attached, and give it back when it goes.
     /// The transport's per-connection guard calls these.
     pub fn note_client_attached(&self) {
@@ -1768,6 +1760,16 @@ impl Workspace {
     pub const NO_VIEWER_CLIENT: &str = "no client is connected, so the document cannot open - the terminal draws no document \
          viewer";
 
+    /// Hand one document to the reader: read it out of `seat`'s own tree,
+    /// raise it at the clients drawing that seat, and answer the resolved
+    /// absolute path.
+    ///
+    /// **The raise is the open, and nothing waits on the reader.** Unlike
+    /// the browser hand-off this does not park: the hand-off's tool answers
+    /// here with what the read resolved to, and a review the reader leaves
+    /// arrives later as its own event. A refused read raises nothing, and a
+    /// forge with no client attached refuses with [`Self::NO_VIEWER_CLIENT`]
+    /// rather than claiming an open nothing drew.
     pub fn hand_off_document(
         &self,
         seat: &SessionSlot,
