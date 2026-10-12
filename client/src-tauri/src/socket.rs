@@ -835,29 +835,33 @@ pub(crate) mod tests {
         let _ = socket;
     }
 
-    /// **A frame past tungstenite's 16 MiB default is delivered, not refused.**
-    /// A seat's whole conversation snapshot crosses as ONE frame, and the
-    /// kdp-test seat's is 16.4 MiB - the default frame cap killed the socket
-    /// on every reconnect, which is the app's "Reading the conversation..." /
-    /// "Reconnecting" loop.
+    /// **A frame past both of tungstenite's defaults is delivered, not
+    /// refused.** A seat's whole conversation snapshot crosses as ONE frame,
+    /// and the kdp-test seat's is 16.4 MiB - past the 16 MiB frame default,
+    /// which killed the socket on every reconnect (the app's "Reading the
+    /// conversation..." / "Reconnecting" loop). Sized past the 64 MiB message
+    /// default too, so both caps the connect sets are load-bearing here.
     #[tokio::test]
-    async fn carries_a_frame_over_the_old_sixteen_mib_cap() {
+    async fn carries_a_frame_past_the_old_default_caps() {
         let stub = stub().await;
         let (socket, mut rx) = connected(&stub).await;
-        let blob = "x".repeat(17 * 1024 * 1024);
+        let blob = "x".repeat(70 * 1024 * 1024);
         let snapshot = json!({ "kind": "snapshot", "subject": "home", "data": { "blob": blob } });
         stub.say.send(snapshot.clone()).expect("the stub broadcasts");
-        loop {
-            match next_event(&mut rx).await {
-                SocketEvent::Message(value) => {
-                    assert_eq!(value, snapshot, "the whole frame arrives intact");
-                    break;
-                }
-                // The production failure, named: the read that refuses the
-                // frame is what killed the socket.
-                SocketEvent::Malformed(why) => panic!("the frame was refused: {why}"),
-                _ => {}
+        // A frame this size takes seconds to serialize, cross and parse, so
+        // it gets its own bound - the shared two seconds fit the small ones.
+        let event = tokio::time::timeout(Duration::from_secs(15), rx.recv())
+            .await
+            .expect("the oversized frame within the bound")
+            .expect("the socket still feeding");
+        match event {
+            SocketEvent::Message(value) => {
+                assert_eq!(value, snapshot, "the whole frame arrives intact");
             }
+            // The production failure, named: the read that refuses the
+            // frame is what killed the socket.
+            SocketEvent::Malformed(why) => panic!("the frame was refused: {why}"),
+            other => panic!("a message expected, got {other:?}"),
         }
         let _ = socket;
     }
