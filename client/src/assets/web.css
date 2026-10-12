@@ -3624,13 +3624,13 @@ details[open] > summary .arw { opacity: 1; }
   border-radius: var(--r); padding: 8px 10px; font-family: var(--ui);
   font-size: var(--fs-base); }
 .doc .doc-compose-acts { display: flex; gap: 8px; justify-content: flex-end; }
-.doc .doc-comment-btn, .doc-cancel-btn, .doc-finish-btn {
+.doc .doc-comment-btn, .doc .doc-cancel-btn, .doc .doc-finish-btn {
   font-family: var(--mono); font-size: var(--fs-label); border-radius: 9px;
   padding: 6px 12px; cursor: pointer; border: 1px solid var(--line);
   background: var(--s1); color: var(--muted); }
-.doc .doc-comment-btn:not(:disabled):hover, .doc-finish-btn:not(:disabled):hover {
+.doc .doc-comment-btn:not(:disabled):hover, .doc .doc-finish-btn:not(:disabled):hover {
   color: var(--text); border-color: var(--ctl); }
-.doc .doc-comment-btn:disabled, .doc-finish-btn:disabled { color: var(--dim); cursor: default; }
+.doc .doc-comment-btn:disabled, .doc .doc-finish-btn:disabled { color: var(--dim); cursor: default; }
 /* Comments written against an earlier version: their captured lines kept,
    the same shape the code review's parked section draws. */
 .doc .doc-stale { margin: 24px 0 8px; border-top: 1px solid var(--line); padding-top: 14px; }
