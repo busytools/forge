@@ -157,6 +157,11 @@ pub struct BrowserHost {
     /// name), so the map exists only where profiles do.
     #[cfg(desktop)]
     named: Mutex<HashMap<String, Arc<Named>>>,
+    /// The seats whose auto-profile refusal this run has already told a
+    /// session about: the create is retried on every unnamed call, and the
+    /// note belongs on the first one, not on each.
+    #[cfg(desktop)]
+    auto_refused: Mutex<std::collections::HashSet<Seat>>,
     /// Whether any session has driven this client's browser since it came up,
     /// which the strip's row marks (Ved, 2026-10-07).
     used: std::sync::atomic::AtomicBool,
@@ -177,6 +182,8 @@ impl BrowserHost {
             shared: Mutex::new(None),
             #[cfg(desktop)]
             named: Mutex::new(HashMap::new()),
+            #[cfg(desktop)]
+            auto_refused: Mutex::new(std::collections::HashSet::new()),
             used: std::sync::atomic::AtomicBool::new(false),
             #[cfg(target_os = "android")]
             engine: None,
@@ -205,6 +212,8 @@ impl BrowserHost {
             shared: Mutex::new(None),
             #[cfg(desktop)]
             named: Mutex::new(HashMap::new()),
+            #[cfg(desktop)]
+            auto_refused: Mutex::new(std::collections::HashSet::new()),
             used: std::sync::atomic::AtomicBool::new(false),
             #[cfg(target_os = "android")]
             engine: None,
@@ -313,6 +322,13 @@ impl BrowserHost {
             let cli = driver::cli_path(&paths.stack);
             return match profile {
                 None => {
+                    // **The seat's auto profile is ensured on its first
+                    // unnamed reach**, before anything is driven: the record
+                    // is what keeps the name the seat's across restarts. The
+                    // call itself still targets the shared browser - the
+                    // ensure never changes it - and a refused create is said
+                    // once on the answer below.
+                    let auto = self.ensure_auto_profile(seat).await;
                     let active = self.browser_for(&paths.user_data).await?;
                     // **The browser has been driven**, which the strip's row
                     // draws: a session's call is the only way a browser of this
@@ -341,7 +357,15 @@ impl BrowserHost {
                         outcome.is_err(),
                     )
                     .await;
-                    outcome
+                    match outcome {
+                        Ok(mut parts) => {
+                            if let Err(why) = auto {
+                                self.note_auto_failure(seat, why, &mut parts).await;
+                            }
+                            Ok(parts)
+                        }
+                        Err(why) => Err(why),
+                    }
                 }
                 Some(name) => {
                     let named = self.named_profile(seat, &name).await?;
@@ -768,6 +792,43 @@ impl BrowserHost {
         let profile = Arc::new(Profile::new());
         *shared = Some(Arc::clone(&profile));
         profile
+    }
+
+    /// The seat's own profile, named after the seat, ensured on the seat's
+    /// first reach for the browser that names no profile.
+    ///
+    /// **The call that creates it still drives the shared browser** - "the
+    /// unnamed shared browser stays exactly as it is" - so this reserves the
+    /// seat's own name and gives its logins somewhere to start, it does not
+    /// change a call's target. A name another seat holds is refused with the
+    /// reason and never suffixed: a name that means "this seat" must not
+    /// silently mean something else, and the caller falls back to the shared
+    /// browser.
+    #[cfg(desktop)]
+    async fn ensure_auto_profile(&self, seat: &Seat) -> Result<(), String> {
+        self.named_profile(seat, &seat.label).await.map(|_| ())
+    }
+
+    /// Say a failed auto create once per seat per run. The create is retried
+    /// on every unnamed call, so a note on each would be noise; the refusal
+    /// is a fact about the seat's environment rather than forge's health, so
+    /// the answer carries it once and the retries stay quiet.
+    #[cfg(desktop)]
+    async fn note_auto_failure(&self, seat: &Seat, why: String, parts: &mut Vec<ReplyPart>) {
+        if !self.auto_refused.lock().await.insert(seat.clone()) {
+            return;
+        }
+        tauri_plugin_log::log::debug!(
+            "a seat's auto browser profile was not created (event_name \
+             browser_auto_profile_refused, seat {seat}, {why})"
+        );
+        parts.push(ReplyPart::Text {
+            text: format!(
+                "Note: this seat's browser profile '{}' could not be created - {why}. This call \
+                 drove the shared browser.",
+                seat.label,
+            ),
+        });
     }
 
     /// The named profile under `name`, opened when it is not there.
@@ -1345,6 +1406,88 @@ mod tests {
             "the delete waited {waited:?} on the launch lock it already holds",
         );
         assert!(!profile_dir.exists(), "and the tree goes");
+    }
+
+    /// **The auto profile is created on the seat's first unnamed reach, and
+    /// the call still drives the shared browser.** Afterwards the directory
+    /// and the record exist - the name is the seat's from now on - while the
+    /// profile's own browser was never started: only a call that NAMES it
+    /// does that. The call itself dies at the launch (no stack is vendored
+    /// in a test), which is past the ensure and is the act under test.
+    #[tokio::test]
+    async fn the_auto_profile_is_created_on_the_first_unnamed_reach() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let host = BrowserHost::new(paths.clone());
+        let who = seat();
+
+        let why = host
+            .call(&who, "browser_navigate", json!({ "url": "https://example.com" }))
+            .await
+            .expect_err("no browser stack is vendored in a test");
+        assert!(why.contains("vendored"), "the call reached the launch: {why}");
+
+        let auto = paths.profiles.join("lead");
+        assert_eq!(
+            profiles::owner_of(&auto),
+            Ok(Some(who)),
+            "the seat's own name is recorded under its label",
+        );
+        assert!(
+            !auto.join("DevToolsActivePort").exists(),
+            "and nothing was driven through it - the browser waits for a call that names it",
+        );
+    }
+
+    /// **A taken auto name is refused with the reason, never suffixed**, and
+    /// the refusal is said once per seat - the create is retried on every
+    /// unnamed call, and a note on each would be noise.
+    #[tokio::test]
+    async fn a_taken_auto_name_is_refused_without_a_suffix_or_a_repeated_note() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let other = Seat { org: "Other".to_owned(), ..seat() };
+        Named::open(other.clone(), "lead", &paths).expect("the other seat's profile");
+        let host = BrowserHost::new(paths.clone());
+        let who = seat();
+
+        let why = host
+            .ensure_auto_profile(&who)
+            .await
+            .expect_err("the name belongs to another seat");
+        assert!(why.contains("belongs to Other/forge/lead"), "{why}");
+        let dirs: Vec<String> = std::fs::read_dir(&paths.profiles)
+            .expect("the profiles root")
+            .flatten()
+            .filter_map(|entry| entry.file_name().to_str().map(str::to_owned))
+            .collect();
+        assert_eq!(dirs, vec!["lead".to_owned()], "no silent suffix: {dirs:?}");
+        assert_eq!(
+            profiles::owner_of(&paths.profiles.join("lead")),
+            Ok(Some(other)),
+            "and the name did not change hands",
+        );
+
+        let mut parts = vec![ReplyPart::Text { text: "navigated".to_owned() }];
+        host.note_auto_failure(&who, why.clone(), &mut parts).await;
+        assert_eq!(parts.len(), 2, "the first failure rides the answer");
+        let said = match &parts[1] {
+            ReplyPart::Text { text } => text.clone(),
+            ReplyPart::Image { .. } => panic!("the note is text"),
+        };
+        assert!(said.contains("could not be created"), "{said}");
+        host.note_auto_failure(&who, why, &mut parts).await;
+        assert_eq!(parts.len(), 2, "the retry is quiet - the seat has been told");
     }
 
     /// **A restart does not free the name.** The in-memory lease dies with

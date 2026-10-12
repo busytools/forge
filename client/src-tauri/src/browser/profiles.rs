@@ -15,7 +15,7 @@
 //! owner: every seat shares it.
 
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use serde::Deserialize;
@@ -28,7 +28,7 @@ use super::custom;
 use super::driver::{Driver, ReplyPart};
 
 /// The session a browser ask is made for, as the ask carries it.
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Hash, serde::Serialize)]
 pub struct Seat {
     pub org: String,
     pub project: String,
