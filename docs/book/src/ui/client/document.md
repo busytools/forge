@@ -31,7 +31,7 @@ affordance anywhere.
 | A reviewable document | its top-level blocks, each one a comment target: hover (or focus) marks the block, a press opens the composer under it                                                                                                                                      | the answer's `threads` and the page's own drafts                                                                             |
 | Outdated comments     | written against an earlier version of this document: their captured lines kept, in their own section - nothing re-anchors them                                                                                                                              | each thread's anchor `content_hash` against the answer's                                                                     |
 | The done              | the one door, in every state: `done (n)` files the drafts as one round, pushes the review-ready line into the chat, releases the parked hand-off with what was filed, and returns to the session; a refusal draws the core's own words and keeps the drafts | `submit_review`'s reply, then `answer_document_hand_off`                                                                     |
-| The chat line         | `Review #N ready - address it via the review MCP (review__list, with the scope doc:<path>)`, the terminal's own nudge                                                                                                                                       | the page's own dispatch after the finish                                                                                     |
+| The chat line         | `Review #N ready on the document - address it via the review MCP (review__list, with the scope doc:<path>)`, the terminal's own nudge                                                                                                                       | the page's own dispatch after the finish                                                                                     |
 | A refusal             | the server's sentence as its own line - missing, unreadable, over the ceiling, outside the session's tree, a text kind that is not UTF-8                                                                                                                    | the `error` naming `document_read`                                                                                           |
 | Opening               | `Opening <path>...` while the read is out                                                                                                                                                                                                                   | the page's own state                                                                                                         |
 | Empty                 | its own line, before any kind is drawn                                                                                                                                                                                                                      | an answer with zero bytes                                                                                                    |
@@ -94,9 +94,9 @@ submits the drafted threads as one round through the same command a code
 review uses, under the document's scope (`doc:<path>`), stamped with the
 asking seat as the origin - and then answers the parked call with the review
 that landed. **The terminal's own drop is the model**: the same one line it
-pushes into the session, `Review #N ready - address it via the review MCP`,
-goes into the chat here, with the document's scope named in it - so the
-reader sees the drop in the conversation and the agent hears it. Then the
+pushes into the session, `Review #N ready on the document - address it via
+the review MCP`, goes into the chat here, with the document's scope named -
+so the reader sees the drop in the conversation and the agent hears it. Then the
 page returns to the session the reader came through: the done is the one
 door, and the chat line is the confirmation. A refusal files nothing and
 answers nothing: the call stays parked, the drafts stay where they were, and
@@ -138,7 +138,9 @@ the refusal's words are what the page draws.
 draws markdown, PDFs and text.` - and a name with no extension says that
   instead.
 - **No bytes**: `The document is empty.`, before any kind is drawn.
-- **A refusal**: each its own line, straight from the server's sentence.
+- **A refusal**: each its own line, straight from the server's sentence -
+  and the one door still draws: a refused read returns like any other
+  state, answering a parked hand-off on the way out.
 - **A read that could not be sent**: the connection is down, in the page's
   own words - a silence that reads as still loading is worse.
 - **A connection that dropped mid-read**: the reopen asks again rather than
