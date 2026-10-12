@@ -11,6 +11,35 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+/// A parked hand-off as the read surface carries it: the id an answer
+/// names, the resolved path the viewer opens at, and the reviewable flag.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DocumentHandOffAsk {
+    pub id: uuid::Uuid,
+    pub path: String,
+    pub reviewable: bool,
+}
+
+/// How a document hand-off ended, as the reader's answer and the parked
+/// call's release: the same three endings a browser hand-off has, with
+/// `Done` carrying what the finish filed.
+///
+/// **The parked call answers on `Done`, not on the open.** The reader
+/// accepts, reads and comments, and the finish is what releases the call -
+/// so the agent learns what the reading produced, and a reader who never
+/// accepts releases it with `NotNow` instead.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DocumentHandOffEnding {
+    /// The reader finished. `review_id` names the review the finish filed
+    /// under the document's scope, absent when nothing was commented.
+    Done { review_id: Option<String> },
+    /// The reader chose not to open it.
+    NotNow,
+    /// The call's waiter went away before any answer.
+    Abandoned,
+}
+
 /// What a document is, as far as the read can tell - by extension, not by
 /// sniffing the bytes.
 ///

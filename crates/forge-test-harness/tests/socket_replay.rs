@@ -291,7 +291,7 @@ census!(SessionUpdate,
         DictateStarted struct, DictateLevel struct, DictateTranscribing struct,
         DictateProgress struct, DictateEnded struct, FatalError struct,
         DictateModelsChanged struct,
-        DocumentHandOff struct,
+        DocumentHandOffPending struct, DocumentHandOffResolved struct,
     ],
     session_update_census, SESSION_UPDATE_VARIANTS);
 
@@ -302,6 +302,7 @@ census!(Command,
         NewSession struct,
         ResumeSession struct, RespondPermission struct, RespondSlackPost struct,
         RespondBrowserHandOff struct,
+        AnswerDocumentHandOff struct,
         RespondQuestion struct, SetDictateOverride struct, ResetDictateOverrides struct,
         SetDictateDevice struct, DictateCatalogueCheck struct, DictateInstall struct,
         DictateActivate struct, DictateDeactivate struct, DictateBench struct,
@@ -1002,18 +1003,33 @@ fn frames_record() -> Value {
             }),
         }),
     );
-    // **The document hand-off's raise, whose fields a viewer opens by.** A
-    // rename here - the path a route addresses, or the flag deciding whether
-    // comments are offered - moves no census line and would leave the raise
-    // drawn as a blank, so the sample is what makes the next such rename a
-    // record change.
+    // **The document hand-off's ask, whose fields a viewer opens by and
+    // answers by.** A rename here - the id an answer names, the path a
+    // route addresses, or the flag deciding whether comments are offered -
+    // moves no census line and would leave the ask drawn as a blank, so the
+    // sample is what makes the next such rename a record change.
     payload_sampled.insert(
-        "DocumentHandOff".to_owned(),
+        "DocumentHandOffPending".to_owned(),
         shape_of(&ServerMessage::Update {
-            update: Box::new(SessionUpdate::DocumentHandOff {
+            update: Box::new(SessionUpdate::DocumentHandOffPending {
                 key: seat.clone(),
+                id: uuid::Uuid::new_v4(),
                 path: "/proj/docs/readme.md".to_owned(),
                 reviewable: true,
+            }),
+        }),
+    );
+    // The ask's resolution: a view that did not answer it closes on the id,
+    // and the ending says what happened, so both ride the sample.
+    payload_sampled.insert(
+        "DocumentHandOffResolved".to_owned(),
+        shape_of(&ServerMessage::Update {
+            update: Box::new(SessionUpdate::DocumentHandOffResolved {
+                key: seat.clone(),
+                id: uuid::Uuid::new_v4(),
+                ending: forge_primitives::document::DocumentHandOffEnding::Done {
+                    review_id: Some("r-1".to_owned()),
+                },
             }),
         }),
     );

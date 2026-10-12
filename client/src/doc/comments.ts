@@ -16,6 +16,7 @@
  * comments on the first with it.
  */
 
+import { renderProseBlocks } from '../chat/prose';
 import type { ReviewThreadRecord } from '../session/wire';
 import type { ThreadPayload } from '../review/write';
 
@@ -25,9 +26,56 @@ export interface DocLine {
   text: string;
 }
 
-/** How many lines are captured on each side of an anchor, the crate's own
- *  `CONTEXT_RADIUS`. */
-const CONTEXT_RADIUS = 3;
+/** One comment target of the viewer: a rendered markdown block, or a raw
+ *  line of a plain-text document. */
+export interface DocRow {
+  /** 1-based first source line - the line a comment anchors on. */
+  line: number;
+  /** 1-based last source line, inclusive: the row's own span. */
+  end: number;
+  /** The row's source lines, as a comment's captured context, capped. */
+  context: string[];
+  /** The rendered HTML for a markdown row; null draws the raw line. */
+  html: string | null;
+  /** The raw text of a text row, drawn escaped; '' on markdown rows. */
+  text: string;
+}
+
+/** How many of a row's source lines a comment captures. A block can be long
+ *  and the captured lines are read again in the outdated section, so they
+ *  are capped - the row's FIRST line is always among them, because that is
+ *  the line the anchor names. */
+const CONTEXT_CAP = 12;
+
+/**
+ * The document as its comment targets.
+ *
+ * **A markdown document's rows are its rendered blocks**, because that is
+ * what a reader points at: each block carries the source lines it came from,
+ * and a comment anchors to the block's first. A plain-text document has no
+ * blocks, so its rows are its own lines, drawn as the text they are.
+ */
+export function rowsOf(text: string, kind: 'markdown' | 'text'): DocRow[] {
+  const lines = linesOf(text);
+  if (kind === 'text') {
+    return lines.map((line) => ({
+      line: line.number,
+      end: line.number,
+      context: [line.text],
+      html: null,
+      text: line.text,
+    }));
+  }
+  return renderProseBlocks(text).map((block) => ({
+    line: block.line,
+    end: block.end,
+    context: lines
+      .slice(block.line - 1, Math.min(block.end, block.line - 1 + CONTEXT_CAP))
+      .map((held) => held.text),
+    html: block.html,
+    text: '',
+  }));
+}
 
 /** The scope the store keys a document's threads under - the crate's
  *  `doc_scope_ref`, spelled here for the client half. */
@@ -42,22 +90,6 @@ export function linesOf(text: string): DocLine[] {
   const parts = text.split('\n');
   if (parts.length > 1 && parts[parts.length - 1] === '') parts.pop();
   return parts.map((line, at) => ({ number: at + 1, text: line }));
-}
-
-/** Up to `radius` lines on each side of `line`, excluding it, clamped at
- *  the document's edges - the crate's `capture_context`, over the whole
- *  document rather than a hunk. */
-export function contextAround(lines: DocLine[], line: number, radius = CONTEXT_RADIUS): string[] {
-  const index = line - 1;
-  const start = Math.max(0, index - radius);
-  const end = Math.min(lines.length, index + radius + 1);
-  const captured: string[] = [];
-  for (let at = start; at < end; at += 1) {
-    if (at === index) continue;
-    const held = lines[at];
-    if (held !== undefined) captured.push(held.text);
-  }
-  return captured;
 }
 
 /** The threads still written against this exact document. */

@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { ServerMessage } from '../protocol';
 import type { ConnectionStatus } from '../socket';
 import type { SessionSlot } from '../wire/types';
-import { watchDocument, watchDocumentHandOffs, type DocumentConnection } from './live';
+import { watchDocument, type DocumentConnection } from './live';
 
 /**
  * The watchers are lazy stores: their start runs on the FIRST subscriber,
@@ -195,56 +195,5 @@ describe('the document read', () => {
     socket.reopen();
 
     expect(socket.reads).toHaveLength(2);
-  });
-});
-
-describe('the hand-off raise', () => {
-  it('opens the viewer at the raised document', () => {
-    const socket = fakeSocket();
-    const raised: { slot: SessionSlot; path: string; reviewable: boolean }[] = [];
-    watchDocumentHandOffs(socket.connection, (raise) => raised.push(raise));
-
-    socket.emit({
-      kind: 'update',
-      update: {
-        document_hand_off: { key: LEAD, path: '/proj/docs/plan.md', reviewable: true },
-      },
-    });
-
-    expect(raised).toEqual([{ slot: LEAD, path: '/proj/docs/plan.md', reviewable: true }]);
-  });
-
-  it('raises the newest document when two land in a row', () => {
-    const socket = fakeSocket();
-    const raised: string[] = [];
-    watchDocumentHandOffs(socket.connection, (raise) => raised.push(raise.path));
-
-    socket.emit({
-      kind: 'update',
-      update: { document_hand_off: { key: LEAD, path: '/proj/a.md', reviewable: false } },
-    });
-    socket.emit({
-      kind: 'update',
-      update: { document_hand_off: { key: LEAD, path: '/proj/b.md', reviewable: false } },
-    });
-
-    expect(raised, 'the viewer moves to the newest, in order').toEqual([
-      '/proj/a.md',
-      '/proj/b.md',
-    ]);
-  });
-
-  it('ignores every other update', () => {
-    const socket = fakeSocket();
-    const raised: unknown[] = [];
-    watchDocumentHandOffs(socket.connection, (raise) => raised.push(raise));
-
-    socket.emit({ kind: 'update', update: 'catalog_loaded' });
-    socket.emit({
-      kind: 'update',
-      update: { browser_hand_off_pending: { key: LEAD, handoff: {} } },
-    });
-
-    expect(raised).toEqual([]);
   });
 });

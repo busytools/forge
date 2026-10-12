@@ -299,6 +299,19 @@ export const HANDLERS: Record<string, Apply> = {
 
   browser_hand_off_pending: (held, payload) => parked(held, 'browser_hand_off', payload['handoff']),
 
+  document_hand_off_pending: (held, payload) => parked(held, 'document_hand_off', payload),
+
+  document_hand_off_resolved: (held, payload) => {
+    // Same shape as the browser hand-off's: the ask left the core's registry
+    // - finished in whichever view, declined, or its asking session gone -
+    // and its own id is what clears a parked one this view never answered.
+    const id = text(payload['id']);
+    if (id === null) return held;
+    const pending_asks = held.pending_asks.filter((ask) => askKey(ask) !== `doc:${id}`);
+    if (pending_asks.length === held.pending_asks.length) return held;
+    return { ...held, pending_asks };
+  },
+
   browser_hand_off_resolved: (held, payload) => {
     // Same shape as the draft's: the hand-off left the core's registry -
     // answered in whichever view, or its asking session gone - and its own id
@@ -415,9 +428,6 @@ export const IGNORED: readonly string[] = [
   'catalog_loaded',
   'cli_version_changed',
   'cron_prompt_appended',
-  // The hand-off opens the viewer route, which is a surface's own listener
-  // rather than a field of this record.
-  'document_hand_off',
   'dictate_availability',
   'dictate_device_pin',
   // The models page reads the catalogue through its own subject; a
@@ -563,7 +573,8 @@ function parked(held: SessionRecord, kind: string, request: unknown): SessionRec
   if (key !== null && held.pending_asks.some((waiting) => askKey(waiting) === key)) return held;
   // The kinds held in the core's own registries rather than in the session's
   // pending set lead, the way the core's read orders them.
-  const leads = (name: unknown): boolean => name === 'slack_draft' || name === 'browser_hand_off';
+  const leads = (name: unknown): boolean =>
+    name === 'slack_draft' || name === 'browser_hand_off' || name === 'document_hand_off';
   if (!leads(kind)) {
     return { ...held, pending_asks: [...held.pending_asks, ask] };
   }
@@ -579,9 +590,9 @@ function parked(held: SessionRecord, kind: string, request: unknown): SessionRec
 /**
  * The key an ask is held under: the call, and the round for a question - one
  * tool call carries a whole batch and advances the index, so the id alone
- * would fold two rounds of it into one. A draft and a browser hand-off are
- * each answered by their own id and name no call. `null` for an ask with
- * nothing either could be read from.
+ * would fold two rounds of it into one. A draft and a hand-off are each
+ * answered by their own id and name no call. `null` for an ask with nothing
+ * either could be read from.
  */
 function askKey(ask: unknown): string | null {
   const kind = record(ask)['kind'];
@@ -593,6 +604,10 @@ function askKey(ask: unknown): string | null {
   if (kind === 'browser_hand_off') {
     const id = text(request['id']);
     return id === null ? null : `handoff:${id}`;
+  }
+  if (kind === 'document_hand_off') {
+    const id = text(request['id']);
+    return id === null ? null : `doc:${id}`;
   }
   const id = text(record(request['tool_call'])['tool_call_id']);
   if (id === null) return null;

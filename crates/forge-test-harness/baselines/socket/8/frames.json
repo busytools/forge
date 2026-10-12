@@ -38,7 +38,8 @@
     "DictateStarted": "dictate_started",
     "DictateTranscribing": "dictate_transcribing",
     "DispatchesChanged": "dispatches_changed",
-    "DocumentHandOff": "document_hand_off",
+    "DocumentHandOffPending": "document_hand_off_pending",
+    "DocumentHandOffResolved": "document_hand_off_resolved",
     "FatalError": "fatal_error",
     "FileIndexChanged": "file_index_changed",
     "ForgeAccountIdentity": "forge_account_identity",
@@ -100,6 +101,7 @@
     "Usage": "usage"
   },
   "command": {
+    "AnswerDocumentHandOff": "answer_document_hand_off",
     "Cancel": "cancel",
     "CancelQueuedPrompt": "cancel_queued_prompt",
     "CloseSession": "close_session",
@@ -497,20 +499,46 @@
         "speed_x"
       ]
     },
-    "DocumentHandOff": {
+    "DocumentHandOffPending": {
       "": [
         "kind",
         "update"
       ],
       "/update": [
-        "document_hand_off"
+        "document_hand_off_pending"
       ],
-      "/update/document_hand_off": [
+      "/update/document_hand_off_pending": [
+        "id",
         "key",
         "path",
         "reviewable"
       ],
-      "/update/document_hand_off/key": [
+      "/update/document_hand_off_pending/key": [
+        "label",
+        "org",
+        "project"
+      ]
+    },
+    "DocumentHandOffResolved": {
+      "": [
+        "kind",
+        "update"
+      ],
+      "/update": [
+        "document_hand_off_resolved"
+      ],
+      "/update/document_hand_off_resolved": [
+        "ending",
+        "id",
+        "key"
+      ],
+      "/update/document_hand_off_resolved/ending": [
+        "done"
+      ],
+      "/update/document_hand_off_resolved/ending/done": [
+        "review_id"
+      ],
+      "/update/document_hand_off_resolved/key": [
         "label",
         "org",
         "project"

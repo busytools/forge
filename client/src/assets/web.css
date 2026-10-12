@@ -3570,9 +3570,11 @@ details[open] > summary .arw { opacity: 1; }
 }
 
 /* ---------- the document viewer ---------- */
-/* One document is the page: a reading measure, centred rather than a cap
-   with the hole on one side. */
-.doc { max-width: 860px; margin: 0 auto; }
+/* One document is the page, at the width the reader has: the viewer takes
+   the whole column - a centred reading measure was tried and read as wasted
+   space on a wide screen (Ved, the look) - and the column's own padding
+   keeps the text off the edges. */
+.doc { max-width: none; margin: 0; }
 /* A refusal, an unsupported kind and an empty document: the same line the
    other pages state a state in. */
 .doc .doc-said { margin-top: 10vh; color: var(--muted); font-size: var(--fs-base);
@@ -3594,30 +3596,33 @@ details[open] > summary .arw { opacity: 1; }
 .doc .doc-pdf-js canvas { max-width: 100%; border: 1px solid var(--line);
   border-radius: var(--r); background: #fff; }
 
-/* ---------- a reviewable document: its own lines ---------- */
-/* The document as a numbered file, because a comment anchors to the raw
-   file's numbering rather than to a rendered block's. The line's number is
-   the target; the text sits beside it. */
-.doc .doc-lines { font-family: var(--mono); font-size: var(--fs-data);
-  line-height: 1.6; }
-.doc .doc-line { display: flex; gap: 12px; align-items: baseline; }
-.doc .doc-line.target { background: var(--s1); }
-.doc .doc-lnum { flex: 0 0 auto; min-width: 2.6rem; text-align: right;
-  font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
-  background: none; border: 0; cursor: pointer; padding: 0; }
-.doc .doc-lnum:hover { color: var(--accent); }
-.doc .doc-ltext { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); }
-/* A comment under the line it is about: who wrote it, the words, and the
-   drafted mark until the finish files it. */
+/* ---------- a reviewable document: its rendered blocks ---------- */
+/* The document rendered, every top-level block a comment target: the block
+   under the pointer (or the focus) is marked, and a press opens the composer
+   under it. The anchor is the block's own source lines, which is what keeps
+   a comment's captured lines and its outdated marking exact when the
+   document changes. A plain-text document has no blocks, so its rows are
+   its own lines, drawn as the text they are. */
+.doc .doc-blocks { font-size: var(--fs-base); }
+.doc .doc-block { position: relative; border-radius: 6px; padding: 2px 10px;
+  margin: 0 -10px; cursor: pointer; }
+.doc .doc-block:hover, .doc .doc-block.target, .doc .doc-block:focus-visible {
+  background: var(--s1); box-shadow: inset 2px 0 0 var(--accent); outline: none; }
+.doc .doc-block > :first-child { margin-top: 0; }
+.doc .doc-block > :last-child { margin-bottom: 0; }
+.doc .doc-raw { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text);
+  font-family: var(--mono); font-size: var(--fs-data); line-height: 1.6; }
+/* A comment under the block it is about: who wrote it, the words, and the
+   drafted mark until the done files it. */
 .doc .doc-note { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline;
-  margin: 4px 0 8px 4.6rem; padding: 6px 10px; background: var(--s1);
+  margin: 4px 0 8px 2.2rem; padding: 6px 10px; background: var(--s1);
   border-left: 2px solid var(--line); border-radius: 0 var(--r) var(--r) 0;
   font-family: var(--ui); font-size: var(--fs-base); }
 .doc .doc-who { color: var(--muted); font-size: var(--fs-label); }
 .doc .doc-words { color: var(--text); overflow-wrap: anywhere; }
 .doc .doc-cc { color: var(--warn); font-size: var(--fs-label); font-family: var(--mono); }
-/* The composer, under the line it opened on. */
-.doc .doc-compose { margin: 4px 0 10px 4.6rem; display: flex; flex-direction: column;
+/* The composer, under the block it opened on. */
+.doc .doc-compose { margin: 4px 0 10px 2.2rem; display: flex; flex-direction: column;
   gap: 8px; }
 .doc .doc-compose textarea { width: 100%; min-height: 64px; resize: vertical;
   background: var(--bg); color: var(--text); border: 1px solid var(--line);
@@ -3641,15 +3646,16 @@ details[open] > summary .arw { opacity: 1; }
   color: var(--muted); background: var(--bg); border: 1px solid var(--line);
   border-radius: 8px; padding: 6px 8px; white-space: pre-wrap;
   overflow-wrap: anywhere; }
-/* The finish, at the document's end: the one control that files the round. */
+/* The done, at the document's end: the one control that files the round and
+   answers the hand-off. */
 .doc .doc-finish { display: flex; align-items: center; gap: 12px;
   margin-top: 26px; padding-top: 14px; border-top: 1px solid var(--line); }
 .doc .doc-left { color: var(--ok); font-family: var(--ui); font-size: var(--fs-base); }
 
 @media (pointer: coarse) {
-  /* A finger reaches the line targets, the composer's pair and the finish. */
-  .doc .doc-lnum, .doc .doc-comment-btn, .doc .doc-cancel-btn,
+  /* A finger reaches the block targets, the composer's pair and the done. */
+  .doc .doc-block, .doc .doc-comment-btn, .doc .doc-cancel-btn,
   .doc .doc-finish-btn { min-height: 44px; }
-  .doc .doc-lnum { display: inline-flex; align-items: center; justify-content: flex-end; }
-  .doc .doc-note, .doc .doc-compose { margin-left: 3.6rem; }
+  .doc .doc-block { display: flex; flex-direction: column; justify-content: center; }
+  .doc .doc-note, .doc .doc-compose { margin-left: 1.8rem; }
 }

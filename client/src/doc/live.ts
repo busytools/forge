@@ -1,6 +1,5 @@
 /**
- * The document viewer over a live connection: the read one route makes, and
- * the hand-offs that open it.
+ * The document viewer over a live connection: the read one route makes.
  *
  * **The answer is matched by seat AND document.** A client holding two seats
  * can have two viewers' reads in flight, and the answer names both back, so
@@ -15,8 +14,8 @@
 import { writable, type Readable, type Writable } from 'svelte/store';
 
 import { bytesOf } from '../browser/host';
-import { report, type Connection, type ConnectionStatus } from '../socket';
-import { subjectKey, slotOf, type DocumentKind, type ServerMessage } from '../protocol';
+import { type Connection, type ConnectionStatus } from '../socket';
+import { subjectKey, type DocumentKind, type ServerMessage } from '../protocol';
 import {
   reviewSetFrom,
   reviewThreadFrom,
@@ -148,40 +147,4 @@ export function watchDocument(
   });
 
   return { subscribe: view.subscribe };
-}
-
-/** One hand-off raise, as the shell acts on it. */
-export interface DocumentHandOff {
-  slot: SessionSlot;
-  path: string;
-  reviewable: boolean;
-}
-
-/**
- * Watch for hand-off raises: each one opens the viewer at the document it
- * names. The shell routes on these, which is what makes a hand-off land in
- * front of the reader rather than in a chat line they have to notice.
- */
-export function watchDocumentHandOffs(
-  connection: DocumentConnection,
-  onRaise: (raise: DocumentHandOff) => void,
-): () => void {
-  return connection.onMessage((message: ServerMessage) => {
-    if (message.kind !== 'update') return;
-    if (typeof message.update === 'string') return;
-    if (!('document_hand_off' in message.update)) return;
-    const payload = message.update['document_hand_off'];
-    if (typeof payload !== 'object' || payload === null) {
-      report('a document hand-off arrived with no fields', message.update);
-      return;
-    }
-    const slot = slotOf(message.update);
-    const path = (payload as { path?: unknown }).path;
-    if (slot === null || typeof path !== 'string' || path === '') {
-      report('a document hand-off arrived without a seat and a path', message.update);
-      return;
-    }
-    const reviewable = (payload as { reviewable?: unknown }).reviewable;
-    onRaise({ slot, path, reviewable: reviewable === true });
-  });
 }

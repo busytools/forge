@@ -1,7 +1,16 @@
 // @vitest-environment jsdom
+import { get } from 'svelte/store';
 import { describe, expect, it } from 'vitest';
 
-import { goTo, hrefFor, hrefForSlot, parseRoute, titleFor, type Route } from './routes';
+import {
+  currentRoute,
+  goTo,
+  hrefFor,
+  hrefForSlot,
+  parseRoute,
+  titleFor,
+  type Route,
+} from './routes';
 
 describe('the URLs the server serves', () => {
   it('resolves the home at the root', () => {
@@ -127,23 +136,40 @@ describe("the tab's title", () => {
 
 describe('moving the app in place', () => {
   /**
-   * The event is what the shell re-reads the route from, so a `goTo` that
-   * only pushed would move the URL and leave the page on the seat it was
-   * showing - the reader looking at a page the address no longer names.
+   * **The store is what moves the shell, and the push writes the address.**
+   * A `goTo` that only pushed would leave the page on the seat it was
+   * showing; one that fired a popstate instead would have the shell
+   * re-parse the URL, which drops the fields an address cannot carry.
    */
-  it('fires the event the shell re-reads the route from', () => {
-    const seen: string[] = [];
-    const listener = (): void => {
-      seen.push(location.pathname);
-    };
-    addEventListener('popstate', listener);
+  it('sets the route store and writes the same address', () => {
     goTo({ name: 'session', slot: { org: 'TestOrg', project: 'proj', label: 'w1' } });
-    removeEventListener('popstate', listener);
 
-    expect(seen, 'the shell was given no event to re-read the route from').toEqual([
-      '/session/TestOrg/proj/w1',
-    ]);
+    expect(get(currentRoute)).toEqual({
+      name: 'session',
+      slot: { org: 'TestOrg', project: 'proj', label: 'w1' },
+    });
     expect(location.pathname).toBe('/session/TestOrg/proj/w1');
+  });
+
+  /** **A hand-off's own fields cross whole.** `reviewable` and the parked
+   *  call's id ride the ask's Open into the route, and the address carries
+   *  neither - the store is what keeps them. */
+  it('carries the fields the address cannot', () => {
+    goTo({
+      name: 'doc',
+      slot: { org: 'TestOrg', project: 'proj', label: 'lead' },
+      path: '/proj/docs/plan.md',
+      reviewable: true,
+      handoff: 'h-1',
+    });
+
+    expect(get(currentRoute), 'the parked id survives the move').toMatchObject({
+      reviewable: true,
+      handoff: 'h-1',
+    });
+    expect(location.pathname, 'and the address is the document, without them').toBe(
+      '/doc/TestOrg/proj/lead/proj/docs/plan.md',
+    );
   });
 });
 

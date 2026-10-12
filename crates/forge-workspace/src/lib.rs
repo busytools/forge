@@ -76,6 +76,7 @@ pub mod conversation_turns;
 pub mod conversation_window;
 mod crons;
 mod dictate;
+pub mod documents;
 mod domain_session;
 mod error;
 pub mod file_index;

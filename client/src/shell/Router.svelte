@@ -198,8 +198,16 @@
 {:else if route.name === 'doc'}
   {#if connection !== null}
     <!-- The viewer asks the connection for the document itself: the route
-         is the address, and the read is the page's own. -->
-    <Document slot={route.slot} path={route.path} reviewable={route.reviewable} {connection} />
+         is the address, and the read is the page's own. `handoff` is the
+         parked call's id, absent on a deep link - the done answers it when
+         it is there. -->
+    <Document
+      slot={route.slot}
+      path={route.path}
+      reviewable={route.reviewable}
+      handoff={route.handoff ?? null}
+      {connection}
+    />
   {:else}
     <Connect {settings} initialAddress={address} launchFailure={failure} {notice} {onconnect} />
   {/if}

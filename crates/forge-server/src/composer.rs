@@ -442,7 +442,7 @@ impl Composer {
 
 /// The key an ask is held under: its call, and the round for a question - one
 /// tool call carries a whole batch and advances the index. A draft and a
-/// browser hand-off are each answered by their own id and name no call.
+/// hand-off are each answered by their own id and name no call.
 fn ask_key(ask: &Ask) -> (String, Option<u64>) {
     match ask {
         Ask::Permission(request) => (request.tool_call.tool_call_id.clone(), None),
@@ -451,6 +451,7 @@ fn ask_key(ask: &Ask) -> (String, Option<u64>) {
         }
         Ask::SlackDraft(draft) => (draft.id.to_string(), None),
         Ask::BrowserHandOff(handoff) => (handoff.id.to_string(), None),
+        Ask::DocumentHandOff(handoff) => (handoff.id.to_string(), None),
     }
 }
 
@@ -469,10 +470,9 @@ fn resolved(ask: &Ask, tool_id: &str, round: Option<u64>) -> bool {
             request.tool_call.tool_call_id == tool_id
                 && round.is_none_or(|index| index == request.question_index)
         }
-        // A draft and a browser hand-off are each answered by their own id
-        // rather than by a tool call, so a resolved interaction never names
-        // one.
-        Ask::SlackDraft(_) | Ask::BrowserHandOff(_) => false,
+        // A draft and a hand-off are each answered by their own id rather
+        // than by a tool call, so a resolved interaction never names one.
+        Ask::SlackDraft(_) | Ask::BrowserHandOff(_) | Ask::DocumentHandOff(_) => false,
     }
 }
 

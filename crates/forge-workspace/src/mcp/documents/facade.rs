@@ -9,27 +9,29 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use forge_primitives::SessionSlot;
+use forge_primitives::document::DocumentHandOffEnding;
 
 use crate::workspace::Workspace;
 
 /// The hand-off, as one tool call sees it.
 #[async_trait]
 pub trait DocumentFacade: Send + Sync {
-    /// Read the document out of `seat`'s own tree, raise it at the clients
-    /// drawing that seat, and answer the resolved absolute path.
+    /// Read the document out of `seat`'s own tree, ask the clients drawing
+    /// that seat to open it, and **park until the reader answers** -
+    /// answering with the resolved path and the ending the park released
+    /// on.
     ///
-    /// **The raise is the open.** Nothing parks on the reader's pace - a
-    /// review they leave is its own event later - so the only failures are
-    /// the read's own, each carried back as its sentence.
+    /// A refused read raises nothing and parks on nothing; a forge with no
+    /// attached client is the read's sibling failure, its own sentence.
     async fn hand_off(
         &self,
         seat: &SessionSlot,
         path: &str,
         reviewable: bool,
-    ) -> Result<String, String>;
+    ) -> Result<(String, DocumentHandOffEnding), String>;
 }
 
-/// Production impl: the workspace's own read and raise.
+/// Production impl: the workspace's own read and parked ask.
 pub struct ProdDocumentFacade {
     workspace: std::sync::Weak<Workspace>,
 }
@@ -47,11 +49,11 @@ impl DocumentFacade for ProdDocumentFacade {
         seat: &SessionSlot,
         path: &str,
         reviewable: bool,
-    ) -> Result<String, String> {
+    ) -> Result<(String, DocumentHandOffEnding), String> {
         let Some(workspace) = self.workspace.upgrade() else {
             return Err("the workspace went away before the document was handed".to_owned());
         };
-        workspace.hand_off_document(seat, path, reviewable)
+        workspace.hand_off_document(seat, path, reviewable).await
     }
 }
 
@@ -65,7 +67,7 @@ pub struct MockDocumentFacade {
     /// a failed assertion rather than a silent mismatch.
     pub seats: parking_lot::Mutex<Vec<SessionSlot>>,
     /// The outcome every call answers with.
-    pub answer: parking_lot::Mutex<Result<String, String>>,
+    pub answer: parking_lot::Mutex<Result<(String, DocumentHandOffEnding), String>>,
 }
 
 #[cfg(test)]
@@ -74,7 +76,10 @@ impl MockDocumentFacade {
         Self {
             calls: parking_lot::Mutex::new(Vec::new()),
             seats: parking_lot::Mutex::new(Vec::new()),
-            answer: parking_lot::Mutex::new(Ok("/proj/docs/readme.md".to_owned())),
+            answer: parking_lot::Mutex::new(Ok((
+                "/proj/docs/readme.md".to_owned(),
+                DocumentHandOffEnding::Done { review_id: None },
+            ))),
         }
     }
 
@@ -91,7 +96,7 @@ impl DocumentFacade for MockDocumentFacade {
         seat: &SessionSlot,
         path: &str,
         reviewable: bool,
-    ) -> Result<String, String> {
+    ) -> Result<(String, DocumentHandOffEnding), String> {
         self.seats.lock().push(seat.clone());
         self.calls.lock().push((path.to_owned(), reviewable));
         self.answer.lock().clone()

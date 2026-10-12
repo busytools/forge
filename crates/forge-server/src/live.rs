@@ -287,7 +287,8 @@ pub fn fleet_news(update: &SessionUpdate) -> FleetNews<'_> {
         // every client holds - a seat-keyed raise a reader sitting on the
         // home never heard drew no viewer at all (measured 2026-10-12, the
         // e2e). It redraws no row; the arm is what carries it there.
-        | SessionUpdate::DocumentHandOff { .. }
+        | SessionUpdate::DocumentHandOffPending { .. }
+        | SessionUpdate::DocumentHandOffResolved { .. }
         | SessionUpdate::WorkerStatusChanged { .. }
         // The seat's release has begun: its row says where it is going until
         // the roster lands it asleep or gone. Announced at the start of the

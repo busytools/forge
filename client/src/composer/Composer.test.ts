@@ -82,6 +82,7 @@ import { subjectKey, type ServerMessage } from '../protocol';
 import { DEFAULT_AXES, type DictateAxes } from '../session/wire';
 import {
   browserHandOffAsk,
+  documentHandOffAsk,
   permissionAsk,
   questionAsk,
   record,
@@ -4596,6 +4597,50 @@ describe('the dock', () => {
     expect(hideBrowser, "and it is that hand-off's profile that comes down").toHaveBeenCalledWith(
       'job-hunt',
     );
+  });
+
+  /** **An answer from another view lowers the window here.** The local Done
+   *  takes its own window down; a Done from the terminal never touches this
+   *  shell, and without this the browser stays headed for the next agent call
+   *  to attach to while the answer says the person finished. */
+  it('draws the document hand-off with its path and both verbs', () => {
+    open({ record: record({ pending_asks: [documentHandOffAsk()] }) });
+
+    expect(drawn()).toContain('needs you');
+    expect(drawn()).toContain('document hand-off');
+    expect(drawn(), "the document's own address, in full").toContain('/proj/docs/plan.md');
+    expect(drawn(), 'Open and the decline are both reachable').toContain('Open');
+    expect(drawn()).toContain('Not now');
+  });
+
+  it('answers the document hand-off with its decline, which is the release', () => {
+    const harness = open({ record: record({ pending_asks: [documentHandOffAsk()] }) });
+
+    action('Not now').click();
+    flushSync();
+
+    expect(commands(harness)).toEqual([
+      {
+        answer_document_hand_off: {
+          key: { org: 'Busytools', project: 'forge', label: 'lead' },
+          id: '0192e1c0-0000-7000-8000-0000000000dd',
+          answer: 'not_now',
+        },
+      },
+    ]);
+  });
+
+  /** **Open answers nothing.** The parked call releases on the viewer's own
+   *  done, so opening is the client's route and the session hears only what
+   *  the reading produced. */
+  it('opens the document without answering the parked call', () => {
+    const harness = open({ record: record({ pending_asks: [documentHandOffAsk()] }) });
+
+    action('Open').click();
+    flushSync();
+
+    expect(commands(harness), 'opening is not the answer').toEqual([]);
+    expect(location.pathname, 'the route is the document, under its seat').toContain('/doc/');
   });
 
   /** **An answer from another view lowers the window here.** The local Done

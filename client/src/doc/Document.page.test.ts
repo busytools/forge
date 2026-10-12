@@ -155,17 +155,24 @@ function drawReviewable(
   fake = fakeDoc(answer);
   app = mount(Document, {
     target: document.body,
-    props: { slot: SLOT, path: PATH, reviewable: true, connection: fake.connection },
+    props: {
+      slot: SLOT,
+      path: PATH,
+      reviewable: true,
+      handoff: 'h-1',
+      connection: fake.connection,
+    },
   });
   flushSync();
   return fake;
 }
 
-function lineTarget(line: number): HTMLButtonElement {
-  const found = [...document.querySelectorAll('button.doc-lnum')].find(
-    (button) => button.textContent?.trim() === String(line),
+/** The comment target whose rendered text contains `text`. */
+function blockTarget(text: string): HTMLElement {
+  const found = [...document.querySelectorAll('.doc-block')].find((block) =>
+    block.textContent?.includes(text),
   );
-  if (!(found instanceof HTMLButtonElement)) throw new Error(`no line target reads ${line}`);
+  if (!(found instanceof HTMLElement)) throw new Error(`no block reads "${text}"`);
   return found;
 }
 
@@ -178,19 +185,23 @@ function buttonByText(text: string): HTMLButtonElement {
 }
 
 describe('the reviewable document', () => {
-  it('draws its own lines rather than rendered prose, each one a target', () => {
+  it('renders the document as its blocks, each one a comment target', () => {
     drawReviewable();
 
-    expect(document.querySelector('.doc-lines'), 'the line view').not.toBeNull();
-    expect(document.querySelector('.prose'), 'no rendered half').toBeNull();
-    expect(document.querySelectorAll('button.doc-lnum')).toHaveLength(3);
-    expect(lineTarget(2).getAttribute('aria-label')).toBe('comment on line 2');
+    const blocks = document.querySelectorAll('.doc-block');
+    expect(blocks.length, 'a heading, a paragraph - one row each').toBeGreaterThanOrEqual(2);
+    expect(blocks[0]?.querySelector('h1'), 'the markdown rendered, not raw').not.toBeNull();
+    expect(
+      blocks[0]?.getAttribute('aria-label'),
+      'the row itself is the target, named for what it does',
+    ).toBe('comment on this part of the document');
+    expect(document.querySelector('button.doc-lnum'), 'no number strip').toBeNull();
   });
 
-  it('comments on a line: the upsert carries the document anchor', () => {
+  it('comments on a block: the upsert carries the block anchor', () => {
     const page = drawReviewable();
 
-    lineTarget(2).click();
+    blockTarget('line two').click();
     flushSync();
     const box = document.querySelector('textarea');
     if (!(box instanceof HTMLTextAreaElement)) throw new Error('no composer');
@@ -209,17 +220,23 @@ describe('the reviewable document', () => {
       side: 'New',
       line: 2,
       content_hash: '42',
-      context: ['# hi', 'line three'],
+      context: ['line two', 'line three'],
       base_ref: `doc:${PATH}`,
     });
     expect((thread['comments'] as { text: string }[])[0]?.text).toBe('one line, please');
     expect(document.querySelector('.doc-draft')?.textContent).toContain('drafted');
   });
 
-  it('files the drafts as one review and draws the round it minted', async () => {
+  /**
+   * **The done files the round and releases the hand-off.** The parked
+   * call's answer carries the review the finish minted, so the agent hears
+   * what the reading produced - and the review id it named is the same one
+   * the submit answered with.
+   */
+  it('files the drafts on done and answers the hand-off with the review', async () => {
     const page = drawReviewable();
 
-    lineTarget(1).click();
+    blockTarget('line two').click();
     flushSync();
     const box = document.querySelector('textarea');
     if (!(box instanceof HTMLTextAreaElement)) throw new Error('no composer');
@@ -230,7 +247,7 @@ describe('the reviewable document', () => {
     flushSync();
 
     page.submitAnswer = { body: { id: 'r9', number: 4, summary: null, created_at: 'x' } };
-    buttonByText('finish review (1)').click();
+    buttonByText('done (1)').click();
     await vi.waitFor(() => {
       expect(document.querySelector('.doc-left')?.textContent).toContain('review left (R4)');
     });
@@ -240,13 +257,24 @@ describe('the reviewable document', () => {
     ) as { submit_review: { branch: string; thread_ids: string[] } } | undefined;
     expect(submit?.submit_review.branch).toBe(`doc:${PATH}`);
     expect(submit?.submit_review.thread_ids).toHaveLength(1);
+
+    const answered = (page.sent as Record<string, unknown>[]).find(
+      (command) => 'answer_document_hand_off' in command,
+    ) as
+      | { answer_document_hand_off: { id: string; answer: { done: { review_id: string } } } }
+      | undefined;
+    expect(answered?.answer_document_hand_off.id).toBe('h-1');
+    expect(
+      answered?.answer_document_hand_off.answer.done.review_id,
+      'the answer carries the review the finish minted',
+    ).toBe('r9');
     expect(document.querySelector('.doc-draft'), 'the drafts were filed').toBeNull();
   });
 
-  it("draws a refused finish in the core's own words, drafts kept", async () => {
+  it("draws a refused done in the core's own words, drafts kept", async () => {
     const page = drawReviewable();
 
-    lineTarget(1).click();
+    blockTarget('line two').click();
     flushSync();
     const box = document.querySelector('textarea');
     if (!(box instanceof HTMLTextAreaElement)) throw new Error('no composer');
@@ -257,11 +285,16 @@ describe('the reviewable document', () => {
     flushSync();
 
     page.submitAnswer = { reject: 'the store is not open' };
-    buttonByText('finish review (1)').click();
+    buttonByText('done (1)').click();
     await vi.waitFor(() => {
       expect(document.body.textContent).toContain('the store is not open');
     });
     expect(document.querySelector('.doc-draft'), 'nothing was cleared').not.toBeNull();
+
+    const answered = (page.sent as Record<string, unknown>[]).find(
+      (command) => 'answer_document_hand_off' in command,
+    );
+    expect(answered, 'a refused review answers nothing - the call stays parked').toBeUndefined();
   });
 
   /**
@@ -354,11 +387,11 @@ describe('the reviewable document', () => {
     ]);
   });
 
-  /** The line view with a composer open, through axe: every line target
-   *  carries its own name, and the field is labelled. */
+  /** The rendered document with a composer open, through axe: every block
+   *  target carries its own name, and the field is labelled. */
   it('draws the comment affordance with no axe violations', async () => {
     drawReviewable();
-    lineTarget(1).click();
+    blockTarget('line two').click();
     flushSync();
 
     const found = await violationsOf(document.body.innerHTML);
@@ -371,7 +404,7 @@ describe('the reviewable document', () => {
    *  viewer's own level. */
   it('keeps a draft when the viewer leaves the document and comes back', async () => {
     const page = drawReviewable();
-    lineTarget(3).click();
+    blockTarget('line three').click();
     flushSync();
     const box = document.querySelector('textarea');
     if (!(box instanceof HTMLTextAreaElement)) throw new Error('no composer');

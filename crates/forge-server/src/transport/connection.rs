@@ -1896,12 +1896,13 @@ mod tests {
     use super::*;
     use crate::work::WorkCache;
 
-    /// **The transport is what makes a hand-off's open claimable.** The
+    /// **The transport is what makes a hand-off's ask claimable.** The
     /// per-connection guard is the only thing that moves the attached count,
     /// so a regression that skipped it would refuse every hand-off with
     /// NO_VIEWER_CLIENT - and only a live run would catch it. The guard's
     /// whole life is pinned here: no connection refuses with the reason, an
-    /// attached one claims the open, and its drop takes the claim back.
+    /// attached one parks the call on its ask, the answer command releases
+    /// it, and the guard's drop takes the claim back.
     #[tokio::test]
     async fn an_attached_connection_is_what_a_hand_off_claims_its_open_on() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1919,29 +1920,56 @@ mod tests {
             client: forge_primitives::ClientConfig::default(),
             browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
         };
-        // The raise needs a subscriber to land on; a connection's own stream
-        // stands in for one.
-        let _updates = state.surface.subscribe_client(false);
+        // The ask needs a subscriber that can ANSWER it to land on - the
+        // raise is a parked prompt, so an observing stream alone fails it
+        // closed; a connection's own answering stream stands in for one.
+        let mut updates = state.surface.subscribe_client(true);
         let seat = SessionSlot::lead("TestOrg", "proj");
 
         let refused = fleet
             .workspace()
             .hand_off_document(&seat, "docs/readme.md", false)
+            .await
             .expect_err("no connection, so nothing to open on");
-        assert_eq!(refused, forge_workspace::Workspace::NO_VIEWER_CLIENT);
+        assert_eq!(refused, forge_workspace::documents::NO_VIEWER_CLIENT);
 
         let attached = AttachedClient::new(&state.surface);
-        fleet
-            .workspace()
-            .hand_off_document(&seat, "docs/readme.md", false)
-            .expect("an attached connection claims the open");
+        let handed = {
+            let ws = fleet.workspace();
+            let seat = seat.clone();
+            tokio::spawn(async move { ws.hand_off_document(&seat, "docs/readme.md", false).await })
+        };
+        let id = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match updates.recv().await {
+                    Some(SessionUpdate::DocumentHandOffPending { id, .. }) => break id,
+                    Some(_) => {}
+                    None => panic!("the stream ended before the ask"),
+                }
+            }
+        })
+        .await
+        .expect("an attached connection is what the hand-off parks on");
+
+        // The answer rides the command a client's done sends, so the
+        // dispatch guard and the registry are both on this path.
+        state
+            .surface
+            .dispatch(forge_workspace::Command::AnswerDocumentHandOff {
+                key: seat.clone(),
+                id,
+                answer: forge_primitives::document::DocumentHandOffEnding::Done { review_id: None },
+            })
+            .expect("the answer lands on the parked ask");
+        handed.await.expect("the task joins").expect("and the park releases");
 
         drop(attached);
         let refused = fleet
             .workspace()
             .hand_off_document(&seat, "docs/readme.md", false)
+            .await
             .expect_err("the connection went, so the claim goes with it");
-        assert_eq!(refused, forge_workspace::Workspace::NO_VIEWER_CLIENT);
+        assert_eq!(refused, forge_workspace::documents::NO_VIEWER_CLIENT);
     }
 
     /// Escalating from observing to answering opens a new stream - and what

@@ -63,11 +63,13 @@ export const REDRAWS = new Set([
   'accounts_changed',
   'dictate_availability',
   'connection_failed',
-  // A document hand-off draws no row, and it rides this arm because the
-  // home subscription is the one EVERY client holds: the raise has to reach
-  // the viewer wherever the reader is (measured 2026-10-12 - seat-keyed, it
-  // reached nobody sitting on the home).
-  'document_hand_off',
+  // A document hand-off draws no row, and its ask rides this arm because
+  // the home subscription is the one EVERY client holds: the raise has to
+  // reach the reader wherever they are (measured 2026-10-12 - seat-keyed,
+  // it reached nobody sitting on the home). The resolution rides it too, so
+  // a view that never answered the ask closes it.
+  'document_hand_off_pending',
+  'document_hand_off_resolved',
   // The seat's release has begun: its row moves to the going-to-sleep mark
   // until the roster lands it asleep or gone. A close made from ANOTHER view
   // sends nothing else before the removal, so without this arm that viewer's

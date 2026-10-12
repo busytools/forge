@@ -7,6 +7,8 @@
  * point at any forge.
  */
 
+import { writable } from 'svelte/store';
+
 import type { SessionSlot } from './wire/types';
 
 export type Route =
@@ -18,11 +20,18 @@ export type Route =
    * against, and the resolved absolute path - the document IS the address,
    * so a hand-off and a thread's deep link spell one.
    *
-   * `reviewable` is the hand-off's flag rather than the address's: it rides
-   * the raise into this route, and an address read back from the URL decides
-   * it again where it opens (the read refuses it for a PDF either way).
+   * `reviewable` and `handoff` are the hand-off's own facts rather than the
+   * address's: they ride the ask's Open into this route, and an address read
+   * back from the URL carries neither (the read decides `reviewable` again
+   * where it opens, and a deep-linked viewer has no parked call to release).
    */
-  | { name: 'doc'; slot: SessionSlot; path: string; reviewable: boolean }
+  | {
+      name: 'doc';
+      slot: SessionSlot;
+      path: string;
+      reviewable: boolean;
+      handoff?: string;
+    }
   /** The dictation models: the pins, the catalogue and the updates it proposes. */
   | { name: 'models' }
   /** The extensions: the plugin inventory, its components and the marketplaces. */
@@ -151,16 +160,27 @@ export function titleFor(route: Route): string {
 }
 
 /**
+ * The route the app is showing, which is what a component that moves the
+ * reader (a close, an ask's Open) reaches without owning the shell's state.
+ *
+ * **A store rather than a URL round-trip**, because the URL is not the
+ * whole route: a hand-off's Open carries a reviewable flag and the parked
+ * call's id, and re-parsing the address would drop both. A back or forward
+ * is the URL's own move, so the shell re-parses it there - and that is
+ * exactly the documented difference: an address read back carries neither.
+ */
+export const currentRoute = writable<Route>({ name: 'home' });
+
+/**
  * Move the app to `route` in place.
  *
- * A push plus the event the shell listens for, which is the path a link
- * click already takes: a component that moves the reader (a close that
- * cannot leave them on the seat it closed) reaches the one route state
- * without owning it.
+ * The store is what moves it; the push is for the address bar and history.
+ * No popstate event rides this: a listener re-parses the URL, which would
+ * drop fields the URL cannot carry.
  */
 export function goTo(route: Route): void {
+  currentRoute.set(route);
   history.pushState(null, '', hrefFor(route));
-  dispatchEvent(new PopStateEvent('popstate'));
 }
 
 function encode(segment: string): string {

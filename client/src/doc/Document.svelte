@@ -3,18 +3,23 @@
    * The document viewer: one route, one document, every state drawn.
    *
    * The address is the document (the seat and its resolved path), so a
-   * hand-off raises this page and a thread's deep link reopens it. What it
-   * draws is the read's answer: markdown as the chat's own prose, text as
-   * text, a PDF in the surface's viewer, anything else as itself, and a
-   * refusal in the server's own sentence.
+   * hand-off's Open raises this page and a thread's deep link reopens it.
+   * What it draws is the read's answer: markdown as the chat's own prose,
+   * text as text, a PDF in the surface's viewer, anything else as itself,
+   * and a refusal in the server's own sentence.
    *
-   * **A reviewable document draws as its LINES**, because a comment anchors
-   * to the raw file's numbering, not to a rendered block's: every line is a
-   * target, a comment waits under the line it is about, and the finish
-   * files them as one review - the same event a code review leaves, through
-   * the same commands. A comment written against another version of the
-   * document draws outdated AT ONCE, at its captured lines, and nothing
-   * re-anchors it.
+   * **A reviewable document draws as its rendered BLOCKS, each one a
+   * comment target**: hover (or focus) marks the block under the pointer,
+   * a press opens the composer, and the comment anchors to the block's own
+   * source lines - which is what keeps the captured lines and the
+   * outdated marking exact when the document changes. A plain-text document
+   * has no blocks, so its rows are its lines.
+   *
+   * **The done is the hand-off's answer.** The reader comments, presses
+   * done, and the drafts are filed as one review through the same commands
+   * a code review rides - then the parked call is released with what was
+   * filed, so the agent hears the reading's result and not merely that the
+   * document opened.
    */
   import { report } from '../socket';
   import Prose from '../chat/Prose.svelte';
@@ -25,14 +30,14 @@
   import {
     addDraft,
     clearDrafts,
-    contextAround,
     docScope,
     docThread,
     draftsFor,
-    linesOf,
+    rowsOf,
     placedThreads,
     threadsAgainstAnotherVersion,
     type DocDraft,
+    type DocRow,
   } from './comments';
   import { watchDocument, type DocRead, type DocumentConnection } from './live';
   import Pdf from './Pdf.svelte';
@@ -49,11 +54,15 @@
     slot,
     path,
     reviewable,
+    handoff = null,
     connection,
   }: {
     slot: SessionSlot;
     path: string;
     reviewable: boolean;
+    /** The parked hand-off's id, when this route came from an ask's Open;
+     *  null on a deep link, where there is no call to release. */
+    handoff?: string | null;
     connection: DocumentConnection;
   } = $props();
 
@@ -72,6 +81,9 @@
 
   $effect(() => {
     const open = connection;
+    // A re-hand carries a NEW id, and that is a fresh open: the same
+    // document can have changed under the reader, so the read runs again.
+    void handoff;
     return watchDocument(open, slot, path, reviewable).subscribe((value) => {
       held = value;
     });
@@ -95,6 +107,9 @@
   const placed = $derived(placedThreads(held.threads, hashed));
   const outdated = $derived(threadsAgainstAnotherVersion(held.threads, hashed));
 
+  /** The comment targets: rendered blocks for markdown, lines for text. */
+  const rows = $derived(held.kind === 'text' ? rowsOf(text, 'text') : rowsOf(text, 'markdown'));
+
   /**
    * The drift is written back where it is drawn: a diff's overlay ages a
    * drifted code thread as it re-anchors it, and this viewer is the
@@ -113,31 +128,31 @@
     }
   });
 
-  /** The line a composer is open on, and what is typed into it. */
+  /** The block a composer is open on, and what is typed into it. */
   let composing = $state<number | null>(null);
   let commentText = $state('');
 
   let finishState = $state<
     | { kind: 'idle' | 'busy' }
-    | { kind: 'left'; number: number | null }
+    | { kind: 'done'; number: number | null }
     | { kind: 'refused'; why: string }
   >({ kind: 'idle' });
 
-  function openComposer(line: number): void {
-    composing = composing === line ? null : line;
+  function openComposer(row: DocRow): void {
+    composing = composing === row.line ? null : row.line;
     commentText = '';
   }
 
   /** Write one comment: held as a draft here, upserted to the store the
-   *  moment it is written - the finish is what files it into a review. */
-  function writeComment(line: number): void {
+   *  moment it is written - the done is what files it into a review. */
+  function writeComment(row: DocRow): void {
     const written = commentText.trim();
     if (written === '' || held.path === null || held.contentHash === null) return;
     const draft: DocDraft = {
       id: crypto.randomUUID(),
-      line,
+      line: row.line,
       text: written,
-      context: contextAround(linesOf(text), line),
+      context: row.context,
     };
     addDraft(scope, draft);
     draftsVersion += 1;
@@ -154,34 +169,66 @@
     commentText = '';
   }
 
-  /** File the drafts as one review, and draw what came back: the number the
-   *  round minted, or the refusal in the core's own words. */
-  async function finish(): Promise<void> {
-    if (drafts.length === 0 || held.path === null) return;
-    const ids = drafts.map((draft) => draft.id);
+  /**
+   * The reader is done: file the drafts as one review (through the same
+   * command a code review rides), then release the parked hand-off with
+   * what was filed - a refusal keeps the drafts and says why, and nothing
+   * is answered until the review actually landed.
+   */
+  async function done(): Promise<void> {
+    if (held.path === null) return;
     finishState = { kind: 'busy' };
-    let answer: unknown;
-    try {
-      answer = await connection.dispatch(submitCommand(slot, scope, ids, null), slot);
-    } catch (why) {
-      finishState = { kind: 'refused', why: reasonOf(why) };
-      return;
+    let reviewId: string | null = null;
+    let number: number | null = null;
+    if (drafts.length > 0) {
+      const ids = drafts.map((draft) => draft.id);
+      let answer: unknown;
+      try {
+        answer = await connection.dispatch(submitCommand(slot, scope, ids, null), slot);
+      } catch (why) {
+        finishState = { kind: 'refused', why: reasonOf(why) };
+        return;
+      }
+      if (typeof answer === 'string') {
+        finishState = { kind: 'refused', why: answer };
+        return;
+      }
+      if (answer === null || answer === undefined) {
+        finishState = { kind: 'refused', why: 'the review could not be filed' };
+        return;
+      }
+      clearDrafts(scope, ids);
+      draftsVersion += 1;
+      const filed = answer as { id?: unknown; number?: unknown };
+      reviewId = typeof filed.id === 'string' ? filed.id : null;
+      number = typeof filed.number === 'number' ? filed.number : null;
     }
-    if (typeof answer === 'string') {
-      finishState = { kind: 'refused', why: answer };
-      return;
+    if (handoff !== null) {
+      try {
+        await connection.dispatch(
+          {
+            answer_document_hand_off: {
+              key: slot,
+              id: handoff,
+              answer: { done: { review_id: reviewId } },
+            },
+          },
+          slot,
+        );
+      } catch (why) {
+        finishState = { kind: 'refused', why: reasonOf(why) };
+        return;
+      }
     }
-    if (answer === null || answer === undefined) {
-      finishState = { kind: 'refused', why: 'the review could not be filed' };
-      return;
-    }
-    clearDrafts(scope, ids);
-    draftsVersion += 1;
-    const number = (answer as { number?: unknown }).number;
-    finishState = { kind: 'left', number: typeof number === 'number' ? number : null };
+    finishState = { kind: 'done', number };
   }
 
-  const lines = $derived(linesOf(text));
+  /** The threads a row is the home of: their anchor's line is inside it. */
+  function threadsUnder(row: DocRow) {
+    return placed.filter(
+      (thread) => thread.anchor.line >= row.line && thread.anchor.line <= row.end,
+    );
+  }
 
   /**
    * A kind the viewer does not draw, said as itself: the extension it
@@ -211,19 +258,42 @@
   {:else if held.kind === 'pdf'}
     <article class="doc-body"><Pdf bytes={held.bytes ?? new Uint8Array()} /></article>
   {:else if held.kind === 'markdown' || held.kind === 'text'}
-    <!-- A reviewable document: its own lines, each one a target, so a
-         comment anchors to the raw file's numbering. -->
-    <article class="doc-body doc-lines">
-      {#each lines as line (line.number)}
-        <div class="doc-line" class:target={composing === line.number}>
-          <button
-            class="doc-lnum"
-            aria-label="comment on line {line.number}"
-            onclick={() => openComposer(line.number)}>{line.number}</button
-          >
-          <span class="doc-ltext">{line.text === '' ? ' ' : line.text}</span>
+    <!-- A reviewable document: its rendered blocks, each one a comment
+         target, so a comment anchors to the block it was written on. -->
+    <article class="doc-body doc-blocks">
+      {#each rows as row (row.line)}
+        <!-- The row itself is the target (Ved's shape): a pointer press
+             opens the composer, and the keyboard reaches it with tabindex +
+             Enter. svelte-check wants role=button for that, which would nest
+             any link the rendered markdown carries inside a button - so the
+             row is a focusable group carrying its own action instead. -->
+        <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+        <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+        <div
+          class="doc-block"
+          class:target={composing === row.line}
+          role="group"
+          tabindex="0"
+          aria-label="comment on this part of the document"
+          onclick={() => openComposer(row)}
+          onkeydown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              openComposer(row);
+            }
+          }}
+        >
+          {#if row.html !== null}
+            <!-- The rendered markdown, which `renderProseBlocks` produced
+                 from escaped input: the same renderer and the same rules
+                 the chat's own Prose draws with, raw HTML off. -->
+            <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+            {@html row.html}
+          {:else}
+            <span class="doc-raw">{row.text === '' ? ' ' : row.text}</span>
+          {/if}
         </div>
-        {#each placed.filter((thread) => thread.anchor.line === line.number) as thread (thread.id)}
+        {#each threadsUnder(row) as thread (thread.id)}
           <div class="doc-note">
             <span class="doc-who"
               >{authorName(thread.comments[0]?.author ?? { kind: 'unknown', raw: null })}</span
@@ -231,30 +301,28 @@
             <span class="doc-words">{thread.comments[0]?.text ?? ''}</span>
           </div>
         {/each}
-        {#each drafts.filter((draft) => draft.line === line.number) as draft (draft.id)}
+        {#each drafts.filter((draft) => draft.line === row.line) as draft (draft.id)}
           <div class="doc-note doc-draft">
             <span class="doc-who">you</span>
             <span class="doc-words">{draft.text}</span>
             <span class="doc-cc">drafted</span>
           </div>
         {/each}
-        {#if composing === line.number}
+        {#if composing === row.line}
           <div class="doc-compose">
             <!-- A take's words are routed nowhere here: a comment is typed. -->
             <textarea
               data-editor="nowhere"
-              aria-label="comment on line {line.number}"
+              aria-label="comment on this part of the document"
               bind:value={commentText}
-              placeholder="comment on line {line.number}..."></textarea>
+              placeholder="comment on this part..."></textarea>
             <div class="doc-compose-acts">
               <button
                 class="doc-comment-btn"
                 disabled={commentText.trim() === ''}
-                onclick={() => writeComment(line.number)}>comment</button
+                onclick={() => writeComment(row)}>comment</button
               >
-              <button class="doc-cancel-btn" onclick={() => openComposer(line.number)}
-                >cancel</button
-              >
+              <button class="doc-cancel-btn" onclick={() => openComposer(row)}>cancel</button>
             </div>
           </div>
         {/if}
@@ -277,24 +345,29 @@
         </section>
       {/if}
 
-      <div class="doc-finish">
-        {#if finishState.kind === 'left'}
-          <p class="doc-left">
-            review left{finishState.number === null ? '' : ` (R${finishState.number})`} - the agent hears
-            it like any review.
-          </p>
-        {:else}
-          <button
-            class="doc-finish-btn"
-            disabled={drafts.length === 0 || finishState.kind === 'busy'}
-            onclick={() => void finish()}
-            >finish review{drafts.length > 0 ? ` (${drafts.length})` : ''}</button
-          >
-          {#if finishState.kind === 'refused'}
-            <p class="doc-said">{finishState.why}</p>
+      {#if drafts.length > 0 || handoff !== null}
+        <div class="doc-finish">
+          {#if finishState.kind === 'done'}
+            <p class="doc-left">
+              done{finishState.number === null
+                ? ''
+                : ` - review left (R${finishState.number})`}{handoff === null
+                ? '.'
+                : ' - the agent has it.'}
+            </p>
+          {:else}
+            <button
+              class="doc-finish-btn"
+              disabled={finishState.kind === 'busy'}
+              onclick={() => void done()}
+              >done{drafts.length > 0 ? ` (${drafts.length})` : ''}</button
+            >
+            {#if finishState.kind === 'refused'}
+              <p class="doc-said">{finishState.why}</p>
+            {/if}
           {/if}
-        {/if}
-      </div>
+        </div>
+      {/if}
     </article>
   {:else}
     <p class="doc-said">{otherLine(held.kind)}</p>

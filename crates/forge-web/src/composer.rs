@@ -673,12 +673,13 @@ fn dock(
             @match ask {
                 Some(Ask::Permission(request)) => (permission_dock(request, endpoint)),
                 Some(Ask::Question(request)) => (question_dock(request, endpoint)),
-                // A draft and a browser hand-off read back through
-                // `pending_asks` now, and this page has no dock for either -
-                // it drew the unknown line for a seat holding a draft
-                // before, and it still does. The dock is the client's, and
-                // this crate stops being started.
-                Some(Ask::SlackDraft(_) | Ask::BrowserHandOff(_)) | None => (unknown_dock(kind)),
+                // A draft and a hand-off read back through `pending_asks`
+                // now, and this page has no dock for any of them - it drew
+                // the unknown line for a seat holding a draft before, and it
+                // still does. The dock is the client's, and this crate stops
+                // being started.
+                Some(Ask::SlackDraft(_) | Ask::BrowserHandOff(_) | Ask::DocumentHandOff(_))
+                | None => (unknown_dock(kind)),
             }
             (dock_keys(ask))
         }

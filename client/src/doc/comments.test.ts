@@ -4,12 +4,12 @@ import type { ReviewThreadRecord } from '../session/wire';
 import {
   addDraft,
   clearDrafts,
-  contextAround,
   docScope,
   docThread,
   draftsFor,
   linesOf,
   placedThreads,
+  rowsOf,
   threadsAgainstAnotherVersion,
   type DocDraft,
 } from './comments';
@@ -43,13 +43,37 @@ describe('the document comment helpers', () => {
     ]);
   });
 
-  it('captures the neighbours within the document, on both sides', () => {
-    const lines = linesOf('a\nb\nc\nd\ne');
+  /**
+   * **A markdown document's rows are its rendered blocks**, each carrying
+   * the source lines it came from: the first line is the anchor, and the
+   * whole span is the comment's captured context - what keeps a comment's
+   * lines exact when the document changes.
+   */
+  it('renders markdown as blocks with their source spans', () => {
+    const rows = rowsOf('# hi\n\nbody **bold**\n', 'markdown');
 
-    expect(contextAround(lines, 3, 1)).toEqual(['b', 'd']);
-    expect(contextAround(lines, 1, 1), 'the first line has nothing before it').toEqual(['b']);
-    expect(contextAround(lines, 5, 1), 'nor has the last').toEqual(['d']);
-    expect(contextAround(lines, 2, 3), 'clamped at the edge').toEqual(['a', 'c', 'd', 'e']);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ line: 1, end: 1, context: ['# hi'] });
+    expect(rows[0]?.html, 'a heading renders as a heading').toContain('<h1>');
+    expect(rows[1]).toMatchObject({ line: 3, end: 3, context: ['body **bold**'] });
+    expect(rows[1]?.html).toContain('<strong>bold</strong>');
+  });
+
+  it('keeps a multi-line block whole, with its lines captured', () => {
+    const rows = rowsOf('one\ntwo\nthree\n', 'markdown');
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ line: 1, end: 3, context: ['one', 'two', 'three'] });
+  });
+
+  /** A plain-text document has no blocks: its rows are its own lines, drawn
+   *  as the text they are. */
+  it('makes text documents a row per line', () => {
+    const rows = rowsOf('alpha\n\nbeta', 'text');
+
+    expect(rows).toHaveLength(3);
+    expect(rows[1]).toMatchObject({ line: 2, end: 2, context: [''], html: null, text: '' });
+    expect(rows[2]?.text).toBe('beta');
   });
 
   it('spells the scope the store keys the document under', () => {

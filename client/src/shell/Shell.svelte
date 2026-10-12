@@ -5,10 +5,9 @@
   import { DEFAULT_ADDRESS, displayAddress, type Attempt } from '../connect/attempt';
   import { boot } from '../connect/boot';
   import { rememberedAddress } from '../connect/remembered';
-  import { watchDocumentHandOffs } from '../doc/live';
   import { watchHome, type HomeRead } from '../home/live';
   import { skewMessage, subjectKey, type Skew } from '../protocol';
-  import { hrefFor, parseRoute, type Route } from '../routes';
+  import { currentRoute, goTo, hrefFor, parseRoute, type Route } from '../routes';
   import { forgetClosed, removedLanding, watchReleases, watchRemovals } from '../session/close';
   import type { Connection, ConnectionStatus } from '../socket';
   import { applySettings } from '../theme';
@@ -26,7 +25,11 @@
   // door's field carries, whether or not there was one to open on.
   const remembered = rememberedAddress();
 
-  let route = $state<Route>(onDoor ? { name: 'connect' } : opened);
+  // The route lives in `routes.ts`'s store, so a component that moves the
+  // reader (an ask's Open, a close) sets the RICH route - the URL round-trip
+  // would drop the fields an address cannot carry.
+  currentRoute.set(onDoor ? { name: 'connect' } : opened);
+  const route = $derived($currentRoute);
   let settings = $state<ClientSettings>(DEFAULT_SETTINGS);
   let address = $state(remembered ?? DEFAULT_ADDRESS);
   let home = $state<HomeRead>({ wire: null, refused: null, report: null });
@@ -93,7 +96,7 @@
     if (launched.connected) take(launched.connected);
     // `null` is a route the app was addressed at. A launch opens the socket
     // its page reads but leaves the page itself alone.
-    if (launched.route !== null) route = launched.route;
+    if (launched.route !== null) currentRoute.set(launched.route);
   }
 
   $effect(() => {
@@ -101,8 +104,10 @@
   });
 
   $effect(() => {
+    // Back and forward are the URL's own move, so the address is re-parsed
+    // there - which is where a hand-off's flag and parked id fall away.
     const restore = () => {
-      route = parseRoute(location.pathname);
+      currentRoute.set(parseRoute(location.pathname));
     };
     addEventListener('popstate', restore);
     return () => removeEventListener('popstate', restore);
@@ -227,22 +232,8 @@
   const doorNotice = $derived(skew === null ? null : skewMessage(skew));
 
   function go(next: Route) {
-    route = next;
-    history.pushState(null, '', hrefFor(next));
+    goTo(next);
   }
-
-  /**
-   * A hand-off pulls the reader to the document: every raise lands on the
-   * viewer's own address, and one that arrives while the viewer is open
-   * moves it to the newest.
-   */
-  $effect(() => {
-    const open = connection;
-    if (open === null) return;
-    return watchDocumentHandOffs(open, (raise) => {
-      go({ name: 'doc', slot: raise.slot, path: raise.path, reviewable: raise.reviewable });
-    });
-  });
 
   /** The connection the pages read through, and what it came with. */
   function take(connected: Extract<Attempt, { ok: true }>) {

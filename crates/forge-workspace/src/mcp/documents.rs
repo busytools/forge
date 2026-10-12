@@ -2,20 +2,22 @@
 //! at a client a document - markdown, a PDF or plain text - which opens in
 //! the client's own viewer rather than in the conversation.
 //!
-//! **The tool answers at the open.** The hand-off's two moments split there:
-//! this call returns with the resolved path once the viewer is raised, and a
-//! review the reader leaves arrives later, as the same event a code review
-//! raises. Nothing parks on the reader's pace.
+//! **The tool answers at the reader's finish, like the browser hand-off.**
+//! The call parks on the ask - **open** or **not now** - and the viewer's
+//! done releases it with what the finish filed; a review the reader leaves
+//! is filed under the document's own scope and named in the answer, so the
+//! agent reads it back like any review. `NotNow` ends the call with the
+//! reader's decline, and a client that goes away ends it abandoned.
 //!
 //! **Any-caller and not toggleable, like the browser**: every session may
 //! hand a document out of its own tree, and the read resolves against that
 //! tree - so there is nothing a project could withhold. Every state the read
 //! can refuse is the call's failure, with the read's own sentence in it.
 
-use std::fmt::Write as _;
 use std::sync::Arc;
 
 use forge_primitives::SessionSlot;
+use forge_primitives::document::DocumentHandOffEnding;
 use forge_primitives::review::doc_scope_ref;
 use forge_sdk::mcp::server::McpServerBuilder;
 use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput, ToolOutputBlock};
@@ -54,9 +56,10 @@ own viewer. Use it when a document is the thing the reader should see - a \
 plan, a report, a spec - rather than part of the conversation. `path` is \
 relative to the working directory. Set `reviewable` when you want review \
 comments back: the reader opens it, comments on lines and finishes, and \
-their review then arrives like a code review. A PDF always opens read-only. \
-This answers when the document opens, not when the reading is done - \
-nothing waits on the reader.";
+their review then arrives filed under the document's own scope. A PDF \
+always opens read-only. The reader is asked to open it or not, and **this \
+call waits for them**: it answers when they finish - with the review their \
+comments were filed as - or when they say not now.";
 
 /// The one tool: the hand-off itself.
 pub(crate) struct HandOffTool {
@@ -131,18 +134,28 @@ impl HandOffTool {
             Some(Value::Bool(flag)) => *flag,
             Some(other) => return Err(format!("`reviewable` is true or false, not {other}")),
         };
-        let resolved = self.facade.hand_off(&self.slot, path, reviewable).await?;
-        let mut answer = format!("The document is open in the reader's viewer at {resolved}.");
-        if reviewable {
-            let _ = write!(
-                answer,
-                " A review the reader leaves arrives later, filed under the document's own \
-                 scope, {}; read it back with review__list and pass that scope.",
+        let (resolved, ending) = self.facade.hand_off(&self.slot, path, reviewable).await?;
+        Ok(match ending {
+            DocumentHandOffEnding::Done { review_id: Some(review_id) } => format!(
+                "The reader finished at {resolved}, and their comments are filed as the review \
+                 {review_id} under the document's own scope, {} - read them back with \
+                 review__get and pass that scope.",
                 doc_scope_ref(&resolved),
-            );
-        }
-        answer.push_str(" This answer is the open, not the finish.");
-        Ok(answer)
+            ),
+            DocumentHandOffEnding::Done { review_id: None } => {
+                format!("The reader finished at {resolved} without leaving comments.")
+            }
+            DocumentHandOffEnding::NotNow => {
+                return Err("the reader said not now, so nothing opened".to_owned());
+            }
+            DocumentHandOffEnding::Abandoned => {
+                return Err(
+                    "the reader's client went away before they finished, so the hand-off ended \
+                     without an answer"
+                        .to_owned(),
+                );
+            }
+        })
     }
 }
 
@@ -166,11 +179,14 @@ mod tests {
 
     /// The whole call: the path and the reviewable flag cross to the
     /// hand-off for the caller's own seat, and the answer carries the
-    /// resolved path - the open, not the finish.
+    /// resolved path and the ending the park released on.
     #[tokio::test]
     async fn a_hand_off_carries_the_path_and_the_flag_for_the_callers_seat() {
         let mock = Arc::new(MockDocumentFacade::new());
-        *mock.answer.lock() = Ok("/proj/docs/readme.md".to_owned());
+        *mock.answer.lock() = Ok((
+            "/proj/docs/readme.md".to_owned(),
+            DocumentHandOffEnding::Done { review_id: None },
+        ));
 
         let out = tool(Arc::clone(&mock) as Arc<dyn DocumentFacade>)
             .call(ToolInput { value: json!({ "path": "docs/readme.md", "reviewable": true }) })
@@ -208,27 +224,55 @@ mod tests {
         assert!(text.contains("outside the session's tree"), "{text}");
     }
 
-    /// A reviewable hand-off names the scope a review will be filed
-    /// under, so the agent can read the review back without a failed call
-    /// first; a read-only hand-off names nothing, because nothing can be
-    /// filed.
+    /// A finish that filed a review names the scope it landed under and the
+    /// review's own id, so the agent reads it back without a failed call
+    /// first; a finish with nothing commented names neither.
     #[tokio::test]
-    async fn a_reviewable_hand_offs_answer_names_the_scope() {
+    async fn a_finished_hand_offs_answer_names_the_review_and_its_scope() {
         let mock = Arc::new(MockDocumentFacade::new());
-        *mock.answer.lock() = Ok("/proj/docs/readme.md".to_owned());
+        *mock.answer.lock() = Ok((
+            "/proj/docs/readme.md".to_owned(),
+            DocumentHandOffEnding::Done { review_id: Some("r-7".to_owned()) },
+        ));
         let tool = tool(Arc::clone(&mock) as Arc<dyn DocumentFacade>);
 
-        let reviewable = tool
-            .call(ToolInput { value: json!({ "path": "docs/readme.md", "reviewable": true }) })
-            .await;
-        assert!(!reviewable.is_error, "{:?}", reviewable.blocks);
-        let text = crate::mcp::test_support::block_text(&reviewable.blocks[0]);
-        assert!(text.contains("doc:/proj/docs/readme.md"), "the answer names the scope: {text}");
+        let with_review =
+            tool.call(ToolInput { value: json!({ "path": "docs/readme.md" }) }).await;
+        assert!(!with_review.is_error, "{:?}", with_review.blocks);
+        let text = crate::mcp::test_support::block_text(&with_review.blocks[0]);
+        assert!(text.contains("r-7"), "the answer names the review: {text}");
+        assert!(text.contains("doc:/proj/docs/readme.md"), "and the scope: {text}");
 
-        let read_only = tool.call(ToolInput { value: json!({ "path": "docs/readme.md" }) }).await;
-        assert!(!read_only.is_error, "{:?}", read_only.blocks);
-        let text = crate::mcp::test_support::block_text(&read_only.blocks[0]);
-        assert!(!text.contains("doc:"), "a read-only hand-off names no scope: {text}");
+        *mock.answer.lock() = Ok((
+            "/proj/docs/readme.md".to_owned(),
+            DocumentHandOffEnding::Done { review_id: None },
+        ));
+        let without = tool.call(ToolInput { value: json!({ "path": "docs/readme.md" }) }).await;
+        assert!(!without.is_error, "{:?}", without.blocks);
+        let text = crate::mcp::test_support::block_text(&without.blocks[0]);
+        assert!(!text.contains("doc:"), "nothing commented, so no scope to name: {text}");
+    }
+
+    /// The reader's decline and an abandoned client are the call's failures,
+    /// each with its own sentence - the agent must not read either as done.
+    #[tokio::test]
+    async fn a_declined_or_abandoned_hand_off_fails_with_its_reason() {
+        let mock = Arc::new(MockDocumentFacade::new());
+        let tool = tool(Arc::clone(&mock) as Arc<dyn DocumentFacade>);
+
+        *mock.answer.lock() =
+            Ok(("/proj/docs/readme.md".to_owned(), DocumentHandOffEnding::NotNow));
+        let out = tool.call(ToolInput { value: json!({ "path": "docs/readme.md" }) }).await;
+        assert!(out.is_error, "a decline is not a success: {:?}", out.blocks);
+        let text = crate::mcp::test_support::block_text(&out.blocks[0]);
+        assert!(text.contains("not now"), "{text}");
+
+        *mock.answer.lock() =
+            Ok(("/proj/docs/readme.md".to_owned(), DocumentHandOffEnding::Abandoned));
+        let out = tool.call(ToolInput { value: json!({ "path": "docs/readme.md" }) }).await;
+        assert!(out.is_error, "an abandoned hand-off is not a success: {:?}", out.blocks);
+        let text = crate::mcp::test_support::block_text(&out.blocks[0]);
+        assert!(text.contains("went away"), "{text}");
     }
 
     /// `reviewable` is off unless asked for: everything the agent did not

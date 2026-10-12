@@ -371,6 +371,7 @@ impl Workspace {
             dictate_device_pick: Mutex::new(None),
             browser: Arc::new(crate::browser::BrowserRelay::new()),
             attached_clients: std::sync::atomic::AtomicUsize::new(0),
+            document_handoffs: parking_lot::Mutex::new(HashMap::new()),
             dictate_catalogue: Mutex::new(crate::catalogue::CatalogueState::default()),
             dictate_install: Mutex::new(crate::install::InstallState::default()),
             plugin_cli: Mutex::new(crate::plugins::PluginCli::real()),

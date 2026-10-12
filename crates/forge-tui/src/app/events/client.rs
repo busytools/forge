@@ -727,9 +727,10 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         // exists for the views that hold no path. Nothing to redraw here.
         | SessionUpdate::CallOutput { .. }
         | SessionUpdate::FileIndexChanged { .. }
-        // No viewer exists in the terminal: the hand-off raises a client's
-        // own route, and this view is being deleted.
-        | SessionUpdate::DocumentHandOff { .. } => {}
+        // No viewer exists in the terminal: the hand-off's ask is a client's
+        // own dock, and this view is being deleted.
+        | SessionUpdate::DocumentHandOffPending { .. }
+        | SessionUpdate::DocumentHandOffResolved { .. } => {}
         SessionUpdate::DictateStarted { key, floor_db, generation, .. } => {
             app.dictate_take_pending = false;
             if let Some(bucket) = app.session_mut(&key) {
