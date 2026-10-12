@@ -249,7 +249,9 @@ census!(ServerMessage,
     [
         Greeting struct, Snapshot struct, Update struct, Page struct,
         Devices struct, CommitDiff struct, Reply struct, BrowserRole struct, Error struct,
-        BrowserAsk struct, BrowserSeats struct,
+        BrowserAsk struct,
+        DocumentRead struct,
+        BrowserSeats struct,
     ],
     server_message_census, SERVER_MESSAGE_VARIANTS);
 
@@ -290,6 +292,7 @@ census!(SessionUpdate,
         DictateStarted struct, DictateLevel struct, DictateTranscribing struct,
         DictateProgress struct, DictateEnded struct, FatalError struct,
         DictateModelsChanged struct,
+        DocumentHandOffPending struct, DocumentHandOffResolved struct,
     ],
     session_update_census, SESSION_UPDATE_VARIANTS);
 
@@ -300,6 +303,7 @@ census!(Command,
         NewSession struct,
         ResumeSession struct, RespondPermission struct, RespondSlackPost struct,
         RespondBrowserHandOff struct,
+        AnswerDocumentHandOff struct,
         RespondQuestion struct, SetDictateOverride struct, ResetDictateOverrides struct,
         SetDictateDevice struct, DictateCatalogueCheck struct, DictateInstall struct,
         DictateActivate struct, DictateDeactivate struct, DictateBench struct,
@@ -329,6 +333,7 @@ census!(ClientMessage,
         Devices struct,
         BrowserAnswer struct,
         BrowserTakeRole struct,
+        DocumentRead struct,
     ],
     client_message_census, CLIENT_MESSAGE_VARIANTS);
 
@@ -727,6 +732,16 @@ fn frames_record() -> Value {
             tool: "browser_navigate".to_owned(),
             args: json!({ "url": "https://example.com" }),
         },
+        ServerMessage::DocumentRead {
+            session: seat.clone(),
+            path: "/proj/docs/readme.md".to_owned(),
+            document_kind: forge_primitives::document::DocumentKind::Markdown,
+            bytes: "IyBoaQo=".to_owned(),
+            reviewable: true,
+            content_hash: "7".to_owned(),
+            threads: Vec::new(),
+            reviews: Vec::new(),
+        },
     ];
 
     for sample in &samples {
@@ -786,6 +801,11 @@ fn frames_record() -> Value {
             id: 1,
             parts: vec![forge_primitives::browser::BrowserPart::Text { text: "done".to_owned() }],
             error: None,
+        },
+        ClientMessage::DocumentRead {
+            session: seat.clone(),
+            path: "docs/readme.md".to_owned(),
+            reviewable: true,
         },
     ];
     for sample in &client_messages {
@@ -876,6 +896,53 @@ fn frames_record() -> Value {
     // ever.
     payload_sampled
         .insert("BrowserRole".to_owned(), shape_of(&ServerMessage::BrowserRole { hosting: true }));
+    // **The document read's answer, where a rename would leave the viewer
+    // rendering nothing.** `document_kind` is what a route branches on to
+    // pick its renderer and `bytes` is what it draws, and neither is a name
+    // the census sees - a rename inside this payload would fail nothing
+    // while the page drew a blank document. The seat crosses back because a
+    // client holding several seats routes each answer to its own viewer.
+    // One thread and one set ride the sample: the document's own review
+    // crosses INSIDE this answer, and an empty list would pin nothing about
+    // the shapes the viewer parses its comments out of.
+    payload_sampled.insert(
+        "DocumentRead".to_owned(),
+        shape_of(&ServerMessage::DocumentRead {
+            session: seat.clone(),
+            path: "/proj/docs/readme.md".to_owned(),
+            document_kind: forge_primitives::document::DocumentKind::Markdown,
+            bytes: "IyBoaQo=".to_owned(),
+            reviewable: true,
+            content_hash: "7".to_owned(),
+            threads: vec![forge_primitives::review::ReviewThread {
+                id: "d1".to_owned(),
+                anchor: forge_primitives::review::ReviewAnchor {
+                    path: "/proj/docs/readme.md".to_owned(),
+                    side: forge_primitives::review::ReviewSide::New,
+                    line: 3,
+                    content_hash: 7,
+                    context: vec!["^ # hi".to_owned()],
+                    base_ref: forge_primitives::review::doc_scope_ref("/proj/docs/readme.md"),
+                },
+                comments: vec![forge_primitives::review::ReviewComment {
+                    author: forge_primitives::review::ReviewAuthor::User,
+                    text: "one line, please".to_owned(),
+                    at: "2026-10-12T00:00:00Z".to_owned(),
+                    review_id: Some("r1".to_owned()),
+                }],
+                status: forge_primitives::review::ReviewStatus::Open,
+                created_at: "2026-10-12T00:00:00Z".to_owned(),
+                updated_at: "2026-10-12T00:00:00Z".to_owned(),
+                commit: None,
+            }],
+            reviews: vec![forge_primitives::ReviewSet {
+                id: "r1".to_owned(),
+                number: 1,
+                summary: None,
+                created_at: "2026-10-12T00:00:00Z".to_owned(),
+            }],
+        }),
+    );
     // The commit answer's own fields, one file with one hunk: the review
     // canvas parses these names (`diffLayerFrom` and the `diffFileFrom` it
     // maps with, in the client's `session/wire.ts`), and a rename among them
@@ -933,6 +1000,36 @@ fn frames_record() -> Value {
                     id: uuid::Uuid::from_u128(7),
                     reason: "solve the CAPTCHA".to_owned(),
                     profile: Some("job-hunt".to_owned()),
+                },
+            }),
+        }),
+    );
+    // **The document hand-off's ask, whose fields a viewer opens by and
+    // answers by.** A rename here - the id an answer names, the path a
+    // route addresses, or the flag deciding whether comments are offered -
+    // moves no census line and would leave the ask drawn as a blank, so the
+    // sample is what makes the next such rename a record change.
+    payload_sampled.insert(
+        "DocumentHandOffPending".to_owned(),
+        shape_of(&ServerMessage::Update {
+            update: Box::new(SessionUpdate::DocumentHandOffPending {
+                key: seat.clone(),
+                id: uuid::Uuid::new_v4(),
+                path: "/proj/docs/readme.md".to_owned(),
+                reviewable: true,
+            }),
+        }),
+    );
+    // The ask's resolution: a view that did not answer it closes on the id,
+    // and the ending says what happened, so both ride the sample.
+    payload_sampled.insert(
+        "DocumentHandOffResolved".to_owned(),
+        shape_of(&ServerMessage::Update {
+            update: Box::new(SessionUpdate::DocumentHandOffResolved {
+                key: seat.clone(),
+                id: uuid::Uuid::new_v4(),
+                ending: forge_primitives::document::DocumentHandOffEnding::Done {
+                    review_id: Some("r-1".to_owned()),
                 },
             }),
         }),
@@ -1342,6 +1439,18 @@ fn client_sampled() -> BTreeMap<String, BTreeMap<String, Value>> {
             answering: false,
             browser: true,
             declare: false,
+        }),
+    );
+    // A document read's ask: the page writes these fields by hand, so a
+    // rename here fails nothing until the viewer reads a document with a
+    // key nothing on the server reads - and the seat is what the path
+    // resolves against.
+    sampled.insert(
+        "DocumentRead".to_owned(),
+        sample(ClientMessage::DocumentRead {
+            session: SessionSlot::lead("TestOrg", "proj"),
+            path: "docs/readme.md".to_owned(),
+            reviewable: true,
         }),
     );
     sampled

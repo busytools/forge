@@ -7,6 +7,7 @@
   import Fixture from '../dev/Fixture.svelte';
   import Board from '../board/Board.svelte';
   import Extensions from '../extensions/Extensions.svelte';
+  import Document from '../doc/Document.svelte';
   import Home from '../home/Home.svelte';
   import type { HomeRead } from '../home/live';
   import Models from '../models/Models.svelte';
@@ -136,6 +137,15 @@
          missing column from a quiet one. It is also where the composer's
          presence decides whether this client can answer the prompts it
          shows; absent it, the seat is subscribed as an observer. -->
+    <!-- **Not keyed on the seat, deliberately.** A palette switch moves the
+         route in place and the page keeps its instance - which is the
+         contract, not an oversight: the CONVERSATION outlives the page (Ved,
+         2026-10-09), so returning to a seat the conversation holds sends
+         nothing; a remount would tear that subscription down and make the
+         return re-ask (measured - the keyed version failed exactly that
+         test). The page's per-seat facts are `$derived` from (wire, slot)
+         and move with the prop; `railMode` and `leftChosen` are the
+         reader's own preferences and persist by design. -->
     <Session
       slot={route.slot}
       {connection}
@@ -191,6 +201,22 @@
     />
   {:else if connection !== null}
     <main class="wrap"><p class="pending">Reading the fleet...</p></main>
+  {:else}
+    <Connect {settings} initialAddress={address} launchFailure={failure} {notice} {onconnect} />
+  {/if}
+{:else if route.name === 'doc'}
+  {#if connection !== null}
+    <!-- The viewer asks the connection for the document itself: the route
+         is the address, and the read is the page's own. `handoff` is the
+         parked call's id, absent on a deep link - the done answers it when
+         it is there. -->
+    <Document
+      slot={route.slot}
+      path={route.path}
+      reviewable={route.reviewable}
+      handoff={route.handoff ?? null}
+      {connection}
+    />
   {:else}
     <Connect {settings} initialAddress={address} launchFailure={failure} {notice} {onconnect} />
   {/if}

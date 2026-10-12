@@ -26,8 +26,9 @@ export type Lifecycle =
   | 'Failed'
   | 'LoggedOut';
 
-/** `PendingInteractionKind`: the two asks a row can name. */
-export type PendingKind = 'question' | 'permission';
+/** `PendingInteractionKind`: the asks a row can name - the two prompts a
+ *  session holds, and a document hand-off parked in the workspace. */
+export type PendingKind = 'question' | 'permission' | 'hand_off';
 
 /** `forge_gateway::LoadingState`, as the account pool reports it. */
 export type LoadingState = 'loading' | 'ready' | 'bailed';
@@ -363,7 +364,7 @@ const LIFECYCLES: Lifecycle[] = [
 
 const LINK_KINDS: LinkKind[] = ['spec', 'plan', 'issue', 'pr', 'branch', 'path', 'other'];
 const VERIFY_VALUES: ('user' | 'none')[] = ['user', 'none'];
-const PENDING: PendingKind[] = ['question', 'permission'];
+const PENDING: PendingKind[] = ['question', 'permission', 'hand_off'];
 const LOADING: LoadingState[] = ['loading', 'ready', 'bailed'];
 const GATES: Gate[] = ['in_repo', 'not_a_repository', 'gone', 'scanner_failed'];
 /** Every status the wire carries, for narrowing and for the board's lanes. */

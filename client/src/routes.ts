@@ -7,12 +7,31 @@
  * point at any forge.
  */
 
+import { writable } from 'svelte/store';
+
 import type { SessionSlot } from './wire/types';
 
 export type Route =
   | { name: 'home' }
   | { name: 'session'; slot: SessionSlot }
   | { name: 'connect' }
+  /**
+   * One document in the viewer: the seat whose tree its path resolves
+   * against, and the resolved absolute path - the document IS the address,
+   * so a hand-off and a thread's deep link spell one.
+   *
+   * `reviewable` and `handoff` are the hand-off's own facts rather than the
+   * address's: they ride the ask's Open into this route, and an address read
+   * back from the URL carries neither (the read decides `reviewable` again
+   * where it opens, and a deep-linked viewer has no parked call to release).
+   */
+  | {
+      name: 'doc';
+      slot: SessionSlot;
+      path: string;
+      reviewable: boolean;
+      handoff?: string;
+    }
   /** The dictation models: the pins, the catalogue and the updates it proposes. */
   | { name: 'models' }
   /** The extensions: the plugin inventory, its components and the marketplaces. */
@@ -56,6 +75,18 @@ export function parseRoute(path: string): Route {
       slot: { org: decode(org), project: decode(project), label: decode(label) },
     };
   }
+  if (segments.length >= 5 && segments[0] === 'doc') {
+    const [, org, project, label] = segments as [string, string, string, string, ...string[]];
+    return {
+      name: 'doc',
+      slot: { org: decode(org), project: decode(project), label: decode(label) },
+      // The path is absolute on the wire (the read answers the resolved
+      // one), so its leading slash comes back here rather than from a
+      // segment the filter dropped.
+      path: `/${segments.slice(4).map(decode).join('/')}`,
+      reviewable: false,
+    };
+  }
   return { name: 'notFound' };
 }
 
@@ -78,6 +109,14 @@ export function hrefFor(route: Route): string {
       return `/session/${encode(route.slot.org)}/${encode(route.slot.project)}/${encode(route.slot.label)}`;
     case 'review':
       return `/session/${encode(route.slot.org)}/${encode(route.slot.project)}/${encode(route.slot.label)}/review`;
+    case 'doc': {
+      const document = route.path
+        .split('/')
+        .filter((segment) => segment !== '')
+        .map(encode)
+        .join('/');
+      return `/doc/${encode(route.slot.org)}/${encode(route.slot.project)}/${encode(route.slot.label)}/${document}`;
+    }
     case 'notFound':
       return '/';
   }
@@ -108,22 +147,40 @@ export function titleFor(route: Route): string {
     const seat = label === 'lead' ? project : `${project} \u{b7} ${label}`;
     return `${seat} \u{b7} review`;
   }
+  if (route.name === 'doc') {
+    const name = route.path
+      .split('/')
+      .filter((segment) => segment !== '')
+      .pop();
+    return name === undefined ? 'forge' : `forge \u{b7} ${name}`;
+  }
   if (route.name !== 'session') return 'forge';
   const { project, label } = route.slot;
   return label === 'lead' ? project : `${project} \u{b7} ${label}`;
 }
 
 /**
+ * The route the app is showing, which is what a component that moves the
+ * reader (a close, an ask's Open) reaches without owning the shell's state.
+ *
+ * **A store rather than a URL round-trip**, because the URL is not the
+ * whole route: a hand-off's Open carries a reviewable flag and the parked
+ * call's id, and re-parsing the address would drop both. A back or forward
+ * is the URL's own move, so the shell re-parses it there - and that is
+ * exactly the documented difference: an address read back carries neither.
+ */
+export const currentRoute = writable<Route>({ name: 'home' });
+
+/**
  * Move the app to `route` in place.
  *
- * A push plus the event the shell listens for, which is the path a link
- * click already takes: a component that moves the reader (a close that
- * cannot leave them on the seat it closed) reaches the one route state
- * without owning it.
+ * The store is what moves it; the push is for the address bar and history.
+ * No popstate event rides this: a listener re-parses the URL, which would
+ * drop fields the URL cannot carry.
  */
 export function goTo(route: Route): void {
+  currentRoute.set(route);
   history.pushState(null, '', hrefFor(route));
-  dispatchEvent(new PopStateEvent('popstate'));
 }
 
 function encode(segment: string): string {

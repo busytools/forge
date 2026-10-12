@@ -130,6 +130,15 @@ export interface Connection {
    */
   commitDiff(session: SessionSlot, sha: string): boolean;
   /**
+   * Ask for one document, by the seat whose tree its path resolves against.
+   *
+   * One ask for one read, answered by a `document_read` message carrying
+   * the seat back - so a page holding two seats routes each answer to its
+   * own viewer - or an `error` naming it. `false` means the socket was not
+   * open and no answer is coming.
+   */
+  readDocument(session: SessionSlot, path: string, reviewable: boolean): boolean;
+  /**
    * Send one binary frame: dictation audio, and nothing else the socket
    * carries.
    *
@@ -747,6 +756,11 @@ export function connect(url: string): Connection {
     commitDiff(session, sha) {
       if (!isOpen()) return false;
       sendNow({ kind: 'commit_diff', session, sha });
+      return true;
+    },
+    readDocument(session, path, reviewable) {
+      if (!isOpen()) return false;
+      sendNow({ kind: 'document_read', session, path, reviewable });
       return true;
     },
     frame(bytes) {

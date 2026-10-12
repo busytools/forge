@@ -127,11 +127,20 @@ pub(crate) struct ReviewActivity {
 
 /// The reviewer-facing one-line summary a worker's review turn produces:
 /// `worker addressed review #N - A replied, B resolved, C open. Open /diff.`
-/// `open` is the review's current open-comment count after the turn.
-pub(crate) fn notice_message(number: u32, replied: usize, resolved: usize, open: usize) -> String {
+/// `open` is the review's current open-comment count after the turn. `doc`
+/// is true for a document's scope, whose door is the viewer rather than the
+/// diff overlay - a doc scope never loads into the overlay at all.
+pub(crate) fn notice_message(
+    number: u32,
+    replied: usize,
+    resolved: usize,
+    open: usize,
+    doc: bool,
+) -> String {
+    let door = if doc { "Open the document." } else { "Open /diff." };
     format!(
         "worker addressed review #{number} - {replied} replied, {resolved} resolved, \
-         {open} open. Open /diff."
+         {open} open. {door}"
     )
 }
 
@@ -291,15 +300,21 @@ fn rfc3339_now() -> String {
 async fn scope_or_error(
     facade: &Arc<dyn ReviewFacade>,
     slot: &SessionSlot,
+    scope: Option<&str>,
 ) -> Result<ReviewScope, ToolOutput> {
-    facade.resolve_scope(slot).await.map_err(|err| tool_error(err.message()))
+    facade.resolve_scope(slot, scope).await.map_err(|err| tool_error(err.message()))
 }
 
 /// `review__list` - the submitted reviews on the caller's (project,
-/// branch). No args.
+/// branch), or on an explicit `scope`.
 pub(crate) struct ReviewList {
     pub(crate) facade: Arc<dyn ReviewFacade>,
     pub(crate) slot: SessionSlot,
+}
+
+#[derive(Deserialize)]
+struct ListArgs {
+    scope: Option<String>,
 }
 
 #[async_trait::async_trait]
@@ -315,19 +330,32 @@ impl Tool for ReviewList {
          tally of its comments (open / addressed / resolved / outdated). \
          Start here when you get a 'review #N ready' nudge, then call \
          review__get with a review_id to read the individual comments. \
-         Takes no arguments."
+         Pass `scope` to address a review filed elsewhere: one left on a \
+         document hand-off is filed under the document's own scope, \
+         doc:<resolved path>, which the hand-off answer names."
     }
 
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
-            "properties": {},
+            "properties": {
+                "scope": {
+                    "type": "string",
+                    "description": "Address a scope other than your branch; a document's \
+                                    review is filed under doc:<resolved path>, which the \
+                                    hand-off that opened it names.",
+                },
+            },
             "additionalProperties": false,
         })
     }
 
-    async fn call(&self, _input: ToolInput) -> ToolOutput {
-        let scope = match scope_or_error(&self.facade, &self.slot).await {
+    async fn call(&self, input: ToolInput) -> ToolOutput {
+        let args: ListArgs = match serde_json::from_value(input.value) {
+            Ok(a) => a,
+            Err(err) => return tool_error(format!("invalid arguments: {err}")),
+        };
+        let scope = match scope_or_error(&self.facade, &self.slot, args.scope.as_deref()).await {
             Ok(s) => s,
             Err(out) => return out,
         };
@@ -381,6 +409,7 @@ pub(crate) struct ReviewGet {
 #[derive(Deserialize)]
 struct GetArgs {
     review_id: String,
+    scope: Option<String>,
 }
 
 #[async_trait::async_trait]
@@ -398,7 +427,9 @@ impl Tool for ReviewGet {
          'you' is the reviewer, otherwise a worker reply). Prefer the \
          `context` code snippet over the line number to locate the spot - \
          a comment may be scoped to a commit whose line no longer matches \
-         your working tree. Pass the review_id from review__list."
+         your working tree. Pass the review_id from review__list, plus \
+         `scope` for a review filed under a document's scope rather than \
+         your branch."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -408,6 +439,12 @@ impl Tool for ReviewGet {
                 "review_id": {
                     "type": "string",
                     "description": "The review_id from review__list.",
+                },
+                "scope": {
+                    "type": "string",
+                    "description": "A scope other than your branch; a document's review is \
+                                    filed under doc:<resolved path>, which the hand-off \
+                                    that opened it names.",
                 },
             },
             "required": ["review_id"],
@@ -420,7 +457,7 @@ impl Tool for ReviewGet {
             Ok(a) => a,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
-        let scope = match scope_or_error(&self.facade, &self.slot).await {
+        let scope = match scope_or_error(&self.facade, &self.slot, args.scope.as_deref()).await {
             Ok(s) => s,
             Err(out) => return out,
         };
@@ -446,6 +483,7 @@ pub(crate) struct ReviewReply {
 struct ReplyArgs {
     comment_id: String,
     text: String,
+    scope: Option<String>,
 }
 
 #[async_trait::async_trait]
@@ -462,7 +500,9 @@ impl Tool for ReviewReply {
          the comment_id from review__get. Returns the comment's new status \
          alongside the file, line and side it is anchored to. \
          Reply per comment, then use review__resolve for the ones you \
-         consider done, or leave them addressed for the reviewer to resolve."
+         consider done, or leave them addressed for the reviewer to resolve. \
+         For a review filed under a document's scope rather than your \
+         branch, pass `scope`."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -477,6 +517,12 @@ impl Tool for ReviewReply {
                     "type": "string",
                     "description": "Your reply, addressed to the reviewer.",
                 },
+                "scope": {
+                    "type": "string",
+                    "description": "A scope other than your branch; a document's review is \
+                                    filed under doc:<resolved path>, which the hand-off \
+                                    that opened it names.",
+                },
             },
             "required": ["comment_id", "text"],
             "additionalProperties": false,
@@ -488,7 +534,7 @@ impl Tool for ReviewReply {
             Ok(a) => a,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
-        let scope = match scope_or_error(&self.facade, &self.slot).await {
+        let scope = match scope_or_error(&self.facade, &self.slot, args.scope.as_deref()).await {
             Ok(s) => s,
             Err(out) => return out,
         };
@@ -508,6 +554,7 @@ pub(crate) struct ReviewResolve {
 #[derive(Deserialize)]
 struct ResolveArgs {
     comment_id: String,
+    scope: Option<String>,
 }
 
 #[async_trait::async_trait]
@@ -522,7 +569,8 @@ impl Tool for ReviewResolve {
          resolve; or leave a comment addressed and let the reviewer resolve \
          it themselves. Pass the comment_id from review__get. Returns the \
          comment's new status alongside the file, line and side it is \
-         anchored to."
+         anchored to. For a review filed under a document's scope rather \
+         than your branch, pass `scope`."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -532,6 +580,12 @@ impl Tool for ReviewResolve {
                 "comment_id": {
                     "type": "string",
                     "description": "The comment_id from review__get.",
+                },
+                "scope": {
+                    "type": "string",
+                    "description": "A scope other than your branch; a document's review is \
+                                    filed under doc:<resolved path>, which the hand-off \
+                                    that opened it names.",
                 },
             },
             "required": ["comment_id"],
@@ -544,7 +598,7 @@ impl Tool for ReviewResolve {
             Ok(a) => a,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
-        let scope = match scope_or_error(&self.facade, &self.slot).await {
+        let scope = match scope_or_error(&self.facade, &self.slot, args.scope.as_deref()).await {
             Ok(s) => s,
             Err(out) => return out,
         };
@@ -690,12 +744,21 @@ mod tests {
     #[test]
     fn notice_message_reads_as_a_tally_line() {
         assert_eq!(
-            notice_message(3, 2, 1, 4),
+            notice_message(3, 2, 1, 4, false),
             "worker addressed review #3 - 2 replied, 1 resolved, 4 open. Open /diff.",
         );
     }
 
-    use crate::mcp::review::facade::{MockReviewFacade, ScopeError};
+    /// A document's review names the viewer as its door; `/diff` carries no
+    /// doc scope, so pointing there would send the reader nowhere.
+    #[test]
+    fn notice_message_for_a_document_names_the_viewer() {
+        let message = notice_message(1, 1, 0, 1, true);
+        assert!(message.contains("Open the document."), "{message}");
+        assert!(!message.contains("/diff"), "{message}");
+    }
+
+    use crate::mcp::review::facade::{MockReviewFacade, ProdReviewFacade, ScopeError};
 
     fn caller_slot() -> SessionSlot {
         SessionSlot::from_str_for_test("caller")
@@ -949,6 +1012,50 @@ mod tests {
         assert_eq!(*mock.resolve_calls.lock(), vec!["c2".to_owned()]);
     }
 
+    /// The read-back for a document's review: `scope` on any of the four
+    /// tools addresses that scope instead of the caller's branch, so a
+    /// review filed under `doc:<path>` is listable, readable, answerable
+    /// and resolvable from the session that wrote the document.
+    #[tokio::test]
+    async fn the_scope_argument_addresses_all_four_tools() {
+        let mock = Arc::new(MockReviewFacade::new());
+        *mock.detail.lock() = Some(ReviewDetail {
+            review_id: "r1".to_owned(),
+            number: 1,
+            summary: None,
+            comments: Vec::new(),
+        });
+        let facade: Arc<dyn ReviewFacade> = mock.clone();
+        let scope = "doc:/proj/plan.md";
+
+        let outputs = vec![
+            ReviewList { facade: Arc::clone(&facade), slot: caller_slot() }
+                .call(ToolInput { value: serde_json::json!({ "scope": scope }) })
+                .await,
+            ReviewGet { facade: Arc::clone(&facade), slot: caller_slot() }
+                .call(ToolInput {
+                    value: serde_json::json!({ "review_id": "r1", "scope": scope }),
+                })
+                .await,
+            ReviewReply { facade: Arc::clone(&facade), slot: caller_slot() }
+                .call(ToolInput {
+                    value: serde_json::json!({ "comment_id": "c1", "text": "done", "scope": scope }),
+                })
+                .await,
+            ReviewResolve { facade: Arc::clone(&facade), slot: caller_slot() }
+                .call(ToolInput { value: serde_json::json!({ "comment_id": "c2", "scope": scope }) })
+                .await,
+        ];
+        for out in &outputs {
+            assert!(!out.is_error, "{:?}", out.blocks);
+        }
+        assert_eq!(
+            mock.scopes_seen.lock().as_slice(),
+            [scope, scope, scope, scope],
+            "every tool addressed the explicit scope rather than the caller's branch",
+        );
+    }
+
     #[tokio::test]
     async fn review_reply_invalid_args_is_error() {
         let mock = Arc::new(MockReviewFacade::new());
@@ -957,6 +1064,94 @@ mod tests {
         let out = tool.call(ToolInput { value: serde_json::json!({ "comment_id": "c1" }) }).await;
         assert!(out.is_error, "missing 'text' is an error");
         assert!(text_of(&out).to_lowercase().contains("invalid"));
+    }
+
+    /// The document read-back loop, asserted by OUTCOME: with the
+    /// document's scope as the only address, the four tools list, read,
+    /// reply and resolve the review the viewer filed, and the STORE is
+    /// what must show it - the terminal status on disk, not a tool call
+    /// having appeared.
+    #[tokio::test]
+    async fn a_documents_review_reads_back_by_its_scope_to_a_resolved_thread() {
+        use crate::workspace::Workspace;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = crate::config::LoadedConfig::empty_for_test();
+        config.projects.push(crate::config::LoadedProject {
+            name: "myproj".to_owned(),
+            path: dir.path().to_path_buf(),
+            display_path: dir.path().to_string_lossy().into_owned(),
+            org: "TestOrg".to_owned(),
+            accounts: Vec::new(),
+            fallback_accounts: Vec::new(),
+            auto_start: false,
+            model: None,
+            env: std::collections::HashMap::new(),
+            max_workers: None,
+            issues: true,
+            permission_mode: forge_primitives::permission::PermissionMode::Auto,
+        });
+        let (ws, _rx) = Workspace::testing_stub_with_config(dir.path().to_path_buf(), config)
+            .expect("the stub config is well-formed");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+
+        // The viewer's side: a comment on a line of the document, filed
+        // as one review under the document's own scope.
+        let scope = "doc:/proj/plan.md";
+        let mut t = thread("a", None, ReviewStatus::Open);
+        t.anchor.base_ref = scope.to_owned();
+        assert!(ws.upsert_review_thread("myproj", scope, t), "the thread lands");
+        let reviewer = SessionSlot::from_str_for_test("reviewer-uuid");
+        ws.submit_review("myproj", scope, Some("overview".to_owned()), &["a".to_owned()], reviewer)
+            .expect("the review is sealed");
+
+        // The agent's side, through the real tools over the real store.
+        let facade: Arc<dyn ReviewFacade> = ProdReviewFacade::from_arc(&ws);
+        let slot = SessionSlot::lead("TestOrg", "myproj");
+
+        let list = ReviewList { facade: Arc::clone(&facade), slot: slot.clone() }
+            .call(ToolInput { value: serde_json::json!({ "scope": scope }) })
+            .await;
+        assert!(!list.is_error, "{:?}", list.blocks);
+        let rows: serde_json::Value = serde_json::from_str(text_of(&list)).expect("list json");
+        let review_id = rows[0]["review_id"].as_str().expect("a review id").to_owned();
+
+        let get = ReviewGet { facade: Arc::clone(&facade), slot: slot.clone() }
+            .call(ToolInput {
+                value: serde_json::json!({ "review_id": review_id, "scope": scope }),
+            })
+            .await;
+        assert!(!get.is_error, "{:?}", get.blocks);
+        let detail: serde_json::Value = serde_json::from_str(text_of(&get)).expect("get json");
+        let comment_id =
+            detail["comments"][0]["comment_id"].as_str().expect("a comment id").to_owned();
+        assert_eq!(detail["comments"][0]["status"], "open", "the viewer's comment starts open");
+
+        let reply = ReviewReply { facade: Arc::clone(&facade), slot: slot.clone() }
+            .call(ToolInput {
+                value: serde_json::json!({ "comment_id": comment_id, "text": "done", "scope": scope }),
+            })
+            .await;
+        assert!(!reply.is_error, "{:?}", reply.blocks);
+        let echoed: serde_json::Value = serde_json::from_str(text_of(&reply)).expect("reply json");
+        assert_eq!(echoed["status"], "addressed", "a reply flips the comment");
+
+        let resolve = ReviewResolve { facade: Arc::clone(&facade), slot }
+            .call(ToolInput {
+                value: serde_json::json!({ "comment_id": comment_id, "scope": scope }),
+            })
+            .await;
+        assert!(!resolve.is_error, "{:?}", resolve.blocks);
+
+        // The outcome, read from the store where it landed.
+        let stored = ws.load_review_threads("myproj", scope).expect("threads read back");
+        assert_eq!(
+            stored[0].status,
+            ReviewStatus::Resolved,
+            "the stored thread is the assertion; a call that failed cannot read as resolved",
+        );
     }
 
     #[test]

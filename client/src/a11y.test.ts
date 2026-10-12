@@ -26,6 +26,7 @@ import {
 import Turn from './chat/Turn.svelte';
 import Connect from './connect/Connect.svelte';
 import { homeWire } from './dev/fixture.data';
+import Document from './doc/Document.svelte';
 import ExtensionsBody from './extensions/ExtensionsBody.svelte';
 import { extensionsWire, project, recorder } from './extensions/testing';
 import Home from './home/Home.svelte';
@@ -58,6 +59,7 @@ function untouched(): Connection {
     more: refuse,
     devices: refuse,
     commitDiff: refuse,
+    readDocument: refuse,
     frame: refuse,
     onBrowserAsk: refuse,
     browserRole: refuse,
@@ -734,6 +736,24 @@ describe('axe over the rendered pages', () => {
   it('draws the models route waiting for its read, with no violations', async () => {
     const html = render(Models, { props: { connection: null } }).body;
     expect(html).toContain('Reading the models');
+    expect(await idsOf(html)).toEqual([]);
+  });
+
+  /**
+   * The document viewer, as a server render reaches it: the read is in an
+   * effect, so this is the state the page opens in - the pending line under
+   * its own `<main>` landmark.
+   */
+  it('draws the document viewer opening, with no violations', async () => {
+    const html = render(Document, {
+      props: {
+        slot: { org: 'Busytools', project: 'forge', label: 'lead' },
+        path: '/proj/docs/plan.md',
+        reviewable: false,
+        connection: untouched(),
+      },
+    }).body;
+    expect(html).toContain('Opening /proj/docs/plan.md');
     expect(await idsOf(html)).toEqual([]);
   });
 

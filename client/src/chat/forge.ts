@@ -481,7 +481,9 @@ export function forgeCardOf(
             ? slackCard(verbOf(name), input, answer)
             : family === 'review'
               ? reviewCard(verbOf(name), input, answer)
-              : agentsCard(verbOf(name), input, answer);
+              : family === 'documents'
+                ? documentsCard(verbOf(name), input)
+                : agentsCard(verbOf(name), input, answer);
   // A result that said more than the one block the card reads draws the rest
   // beside the card: the card replaces the body, and a block it swallowed
   // would be the one thing a reader could not find.
@@ -503,11 +505,22 @@ export function forgeCardOf(
 const FAMILY_NOUN: Record<ForgeFamily, string> = {
   tasks: 'tasks',
   cron: 'schedules',
+  documents: 'documents',
   gotify: 'notifications',
   slack: 'conversations',
   review: 'reviews',
   agents: 'workers',
 };
+
+/** The last segment of a path, which is the name a row calls a file by. */
+function leafName(path: string): string {
+  return (
+    path
+      .split('/')
+      .filter((segment) => segment !== '')
+      .pop() ?? path
+  );
+}
 
 /**
  * What a forge call's row is titled by when it carries no card.
@@ -570,6 +583,16 @@ function pendingCard(family: ForgeFamily, verb: string, input: unknown): ForgeCa
       pieces.push({ kind: 'quote', text: charter });
     }
     return { title: `spawning ${label}`, chips, figure: null, pieces };
+  }
+  if (verb === 'hand_off') {
+    const handed = str(held, 'path');
+    if (handed === null || handed.trim() === '') return null;
+    return {
+      title: `handing the reader ${leafName(handed)}`,
+      chips: [{ text: 'waiting for the reader', tone: 'warn' }],
+      figure: null,
+      pieces: held['reviewable'] === true ? [{ kind: 'tag', text: 'reviewable' }] : [],
+    };
   }
   if (verb === 'post') {
     // The input carries an id and never a name, so the title spells it as
@@ -761,6 +784,23 @@ function reviewCard(verb: string, input: unknown, answer: unknown): ForgeCard | 
     };
   }
   return null;
+}
+
+/**
+ * The documents family's card: what was handed, by its own name. The tool
+ * answers in prose - what the reader's finish filed - so the body beside
+ * the card carries that, and the card is the subject.
+ */
+function documentsCard(verb: string, input: unknown): ForgeCard | null {
+  const held = obj(input);
+  const handed = str(held, 'path');
+  if (verb !== 'hand_off' || handed === null || handed.trim() === '') return null;
+  return {
+    title: `handed the reader ${leafName(handed)}`,
+    chips: [],
+    figure: null,
+    pieces: [],
+  };
 }
 
 /** The per-state tally a review answers with, as chips. */

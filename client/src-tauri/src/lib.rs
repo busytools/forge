@@ -155,6 +155,19 @@ mod commands {
         bridge.commit_diff(&session, &sha)
     }
 
+    /// One document read; false means no socket is open and no answer is
+    /// coming. The answer is a `document_read` frame or an error, read from
+    /// the page's own frame stream.
+    #[tauri::command]
+    pub fn client_read_document(
+        bridge: tauri::State<'_, Arc<Bridge>>,
+        session: Value,
+        path: String,
+        reviewable: bool,
+    ) -> bool {
+        bridge.read_document(&session, path, reviewable)
+    }
+
     #[tauri::command]
     pub fn client_take_role(bridge: tauri::State<'_, Arc<Bridge>>) {
         bridge.take_role();
@@ -214,6 +227,7 @@ pub fn run() {
             commands::client_dispatch,
             commands::client_frame,
             commands::client_devices,
+            commands::client_read_document,
             commands::client_commit_diff,
             commands::client_take_role,
             commands::client_heartbeat,
@@ -255,6 +269,7 @@ pub fn run() {
             commands::client_dispatch,
             commands::client_frame,
             commands::client_devices,
+            commands::client_read_document,
             commands::client_commit_diff,
             commands::client_take_role,
             commands::client_heartbeat,

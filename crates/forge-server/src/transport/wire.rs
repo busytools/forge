@@ -559,6 +559,7 @@ pub enum PendingAskWire {
     Question(Value),
     SlackDraft(Value),
     BrowserHandOff(Value),
+    DocumentHandOff(Value),
 }
 
 impl From<&PendingAsk> for PendingAskWire {
@@ -576,6 +577,9 @@ impl From<&PendingAsk> for PendingAskWire {
             }
             PendingAsk::BrowserHandOff(handoff) => {
                 Self::BrowserHandOff(encode(serde_json::to_value(handoff.as_ref())))
+            }
+            PendingAsk::DocumentHandOff(ask) => {
+                Self::DocumentHandOff(encode(serde_json::to_value(ask.as_ref())))
             }
         }
     }

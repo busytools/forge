@@ -3595,3 +3595,117 @@ details[open] > summary .arw { opacity: 1; }
   .extensions .ext-row .ext-src { flex-basis: 100%; order: 3; padding-left: 22px; }
   .extensions .ext-subwrap { grid-template-columns: 1fr; }
 }
+
+/* ---------- the document viewer ---------- */
+.doc { max-width: none; margin: 0; }
+/* **The sheet** (Ved, the look, chosen over the full-bleed page): the
+   document rests on the app like a page on a desk - one panel at a
+   comfortable measure, and the space around it is the desk rather than
+   emptiness. The typography inside is the chat's own rules under the
+   doc scope, carrying the reading scale the drawing settled on: a hairline
+   over every section, tighter leading, one type scale for both the
+   rendered prose and the reviewable blocks (whose HTML is bare elements,
+   so the same rules reach them). */
+.doc .doc-body { max-width: 940px; margin: 0 auto; background: var(--s1);
+  border: 1px solid var(--line); border-radius: 10px; padding: 52px 60px 44px; }
+.doc .doc-body h1 { font-size: 30px; line-height: 1.25; font-weight: 600;
+  letter-spacing: -0.01em; margin: 0 0 18px; }
+.doc .doc-body h2 { font-size: 19px; font-weight: 600; letter-spacing: -0.005em;
+  margin: 38px 0 12px; padding-top: 22px; border-top: 1px solid var(--line); }
+.doc .doc-body h3 { font-size: 16px; font-weight: 600; margin: 26px 0 8px; }
+.doc .doc-body p, .doc .doc-body li { font-size: 15px; line-height: 1.72; }
+/* The PDF state is not a document body to typeset: the platform's viewer
+   IS the page, so the sheet stands down and the embed takes the window. */
+.doc.wide .doc-body { background: none; border: 0; border-radius: 0;
+  padding: 0; max-width: none; }
+/* A refusal, an unsupported kind and an empty document: the same line the
+   other pages state a state in. */
+.doc .doc-said { margin-top: 10vh; color: var(--muted); font-size: var(--fs-base);
+  text-align: center; }
+.doc .doc-empty { margin-top: 10vh; color: var(--dim); font-size: var(--fs-base);
+  text-align: center; }
+/* A plain-text document WRAPS: its long lines are read, not scrolled to -
+   the sheet has no horizontal scroller and this page brings none. */
+.doc .doc-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere;
+  font-family: var(--mono); font-size: var(--fs-data); color: var(--text);
+  line-height: 1.6; }
+/* The platform's own PDF viewer: **the page itself** (Ved, the look - a
+   boxed panel read as "does not open up a full page"), so the PDF state
+   gives up the column's padding and the embed takes the window down to its
+   own done row - nothing between them but the hairline. */
+.doc.wide { padding: 8px 10px 10px; }
+.doc .doc-pdf { width: 100%; height: 78dvh; border: 1px solid var(--line);
+  border-radius: var(--r); background: var(--s1); }
+.doc.wide .doc-pdf { height: calc(100dvh - 104px); }
+.doc.wide .doc-exit { margin-top: 8px; padding-top: 8px; border-top: 0; }
+/* pdf.js draws to canvases at the container's width; the page behind them
+   is the paper the document was written on, not this theme's. */
+.doc .doc-pdf-js { display: flex; flex-direction: column; gap: 14px; }
+.doc .doc-pdf-js canvas { max-width: 100%; border: 1px solid var(--line);
+  border-radius: var(--r); background: #fff; }
+
+/* ---------- a reviewable document: its rendered blocks ---------- */
+/* The document rendered, every top-level block a comment target: the block
+   under the pointer (or the focus) is marked, and a press opens the composer
+   under it. The anchor is the block's own source lines, which is what keeps
+   a comment's captured lines and its outdated marking exact when the
+   document changes. A plain-text document has no blocks, so its rows are
+   its own lines, drawn as the text they are. */
+.doc .doc-blocks { font-size: var(--fs-base); }
+.doc .doc-block { position: relative; border-radius: 6px; padding: 2px 10px;
+  margin: 0 -10px; cursor: pointer; }
+.doc .doc-block:hover, .doc .doc-block.target, .doc .doc-block:focus-visible {
+  background: var(--s1); box-shadow: inset 2px 0 0 var(--accent); outline: none; }
+.doc .doc-block > :first-child { margin-top: 0; }
+.doc .doc-block > :last-child { margin-bottom: 0; }
+.doc .doc-raw { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text);
+  font-family: var(--mono); font-size: var(--fs-data); line-height: 1.6; }
+/* A comment under the block it is about: who wrote it, the words, and the
+   drafted mark until the done files it. */
+.doc .doc-note { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline;
+  margin: 4px 0 8px 2.2rem; padding: 6px 10px; background: var(--s1);
+  border-left: 2px solid var(--line); border-radius: 0 var(--r) var(--r) 0;
+  font-family: var(--ui); font-size: var(--fs-base); }
+.doc .doc-who { color: var(--muted); font-size: var(--fs-label); }
+.doc .doc-words { color: var(--text); overflow-wrap: anywhere; }
+.doc .doc-cc { color: var(--warn); font-size: var(--fs-label); font-family: var(--mono); }
+/* The composer, under the block it opened on. */
+.doc .doc-compose { margin: 4px 0 10px 2.2rem; display: flex; flex-direction: column;
+  gap: 8px; }
+.doc .doc-compose textarea { width: 100%; min-height: 64px; resize: vertical;
+  background: var(--bg); color: var(--text); border: 1px solid var(--line);
+  border-radius: var(--r); padding: 8px 10px; font-family: var(--ui);
+  font-size: var(--fs-base); }
+.doc .doc-compose-acts { display: flex; gap: 8px; justify-content: flex-end; }
+.doc .doc-comment-btn, .doc .doc-cancel-btn, .doc .doc-finish-btn {
+  font-family: var(--mono); font-size: var(--fs-label); border-radius: 9px;
+  padding: 6px 12px; cursor: pointer; border: 1px solid var(--line);
+  background: var(--s1); color: var(--muted); }
+.doc .doc-comment-btn:not(:disabled):hover, .doc .doc-finish-btn:not(:disabled):hover {
+  color: var(--text); border-color: var(--ctl); }
+.doc .doc-comment-btn:disabled, .doc .doc-finish-btn:disabled { color: var(--dim); cursor: default; }
+/* Comments written against an earlier version: their captured lines kept,
+   the same shape the code review's parked section draws. */
+.doc .doc-stale { margin: 24px 0 8px; border-top: 1px solid var(--line); padding-top: 14px; }
+.doc .doc-stale h2 { font-size: var(--fs-label); font-weight: 400; color: var(--dim);
+  font-family: var(--mono); margin-bottom: 10px; }
+.doc .doc-quoted { margin-left: 0; }
+.doc .doc-quote { width: 100%; font-family: var(--mono); font-size: var(--fs-label);
+  color: var(--muted); background: var(--bg); border: 1px solid var(--line);
+  border-radius: 8px; padding: 6px 8px; white-space: pre-wrap;
+  overflow-wrap: anywhere; }
+/* The exit, at the document's end - **in every state**: the one control
+   that files the round and answers the parked hand-off (a PDF or a
+   read-only document included), and the way back to the session when
+   there is nothing to release. */
+.doc .doc-exit { display: flex; flex-wrap: wrap; align-items: center; gap: 16px;
+  margin-top: 26px; padding-top: 14px; border-top: 1px solid var(--line); }
+.doc .doc-left { color: var(--ok); font-family: var(--ui); font-size: var(--fs-base); }
+
+@media (pointer: coarse) {
+  /* A finger reaches the block targets, the composer's pair and the done. */
+  .doc .doc-block, .doc .doc-comment-btn, .doc .doc-cancel-btn,
+  .doc .doc-finish-btn { min-height: 44px; }
+  .doc .doc-block { display: flex; flex-direction: column; justify-content: center; }
+  .doc .doc-note, .doc .doc-compose { margin-left: 1.8rem; }
+}

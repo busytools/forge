@@ -11,8 +11,10 @@ use axum::response::Response;
 use futures_util::StreamExt;
 use tokio::sync::{mpsc, oneshot};
 
+use base64::Engine as _;
 use forge_primitives::SessionSlot;
 use forge_primitives::browser::BrowserPart;
+use forge_primitives::document::DocumentRead;
 use forge_workspace::browser::{BrowserRelay, BrowserRequest, Notice};
 
 use super::PROTOCOL_VERSION;
@@ -127,6 +129,25 @@ struct BrowserRole {
     id: u64,
 }
 
+/// Counts this connection among the attached clients for as long as it
+/// lives, so a document hand-off can tell a viewer exists to open on. A
+/// guard, for the same reason [`Holds`] is one: the count must come back
+/// down however the connection ends, a dropped socket included.
+struct AttachedClient(Arc<ViewSurface>);
+
+impl AttachedClient {
+    fn new(surface: &Arc<ViewSurface>) -> Self {
+        surface.client_attached();
+        Self(Arc::clone(surface))
+    }
+}
+
+impl Drop for AttachedClient {
+    fn drop(&mut self) {
+        self.0.client_detached();
+    }
+}
+
 impl Drop for BrowserRole {
     fn drop(&mut self) {
         self.relay.unregister(self.id);
@@ -206,6 +227,9 @@ async fn drive(socket: &mut WebSocket, state: &Arc<TransportState>) -> anyhow::R
     // the updates that come back. Minted here so the teardown closes the
     // take this connection started and no other.
     let me = mint_connection_id();
+    // This connection is a client that can draw the viewer for as long as it
+    // lives; the guard hands the count back on the way out.
+    let _attached = AttachedClient::new(&state.surface);
     let mut watched: Vec<Subject> = Vec::new();
     // The seats THIS connection is holding, which is not the same list as the
     // seats it watches: every session subscribe holds - a sessionless seat's
@@ -1116,6 +1140,20 @@ async fn handle_client(
             )
             .await
         }
+        ClientMessage::DocumentRead { session, path, reviewable } => {
+            // A file off disk takes as long as it takes, so the read runs in
+            // a blocking task rather than inline - the same shape the device
+            // walk below takes. Nothing parks on the reader's pace: the
+            // answer is the read, and the review's finish is its own event.
+            let surface = Arc::clone(&state.surface);
+            let seat = session.clone();
+            let outcome = tokio::task::spawn_blocking(move || {
+                surface.read_document(&seat, &path, reviewable)
+            })
+            .await
+            .unwrap_or_else(|join| Err(join.to_string()));
+            send(socket, document_answer(&state.surface, &session, outcome)).await
+        }
         ClientMessage::CommitDiff { session, sha } => {
             // The same seat resolution the session record takes, so a
             // commit scope reads the tree the record's own content read.
@@ -1798,6 +1836,53 @@ async fn dispatch_answering(
 
 /// What a `devices` request is answered with: the walked list, or the walk's
 /// own refusal - which a client renders where the list would have been.
+/// One document read's outcome, as the asking client reads it: the answer
+/// with the document's bytes base64, or the refusal under the seat that
+/// asked - the seat is what lets a client holding several seats drain only
+/// its own.
+fn document_answer(
+    surface: &ViewSurface,
+    seat: &SessionSlot,
+    outcome: Result<DocumentRead, String>,
+) -> ServerMessage {
+    let read = match outcome {
+        Ok(read) => read,
+        Err(why) => {
+            return ServerMessage::Error {
+                what: "document_read".to_owned(),
+                why,
+                seat: Some(seat.clone()),
+            };
+        }
+    };
+    // The document's own review: the scope key IS the document, so this is
+    // the whole of its comments - a store that cannot answer refuses the
+    // read rather than drawing an uncommented document.
+    let scope = forge_primitives::review::doc_scope_ref(&read.path.to_string_lossy());
+    let held = surface.reviews(seat.project(), &scope);
+    let (threads, reviews) = match (held.threads, held.reviews) {
+        (Ok(threads), Ok(reviews)) => (threads, reviews),
+        (threads, reviews) => {
+            let why = threads.err().or(reviews.err()).unwrap_or_default();
+            return ServerMessage::Error {
+                what: "document_read".to_owned(),
+                why: format!("the document's review could not be read: {why}"),
+                seat: Some(seat.clone()),
+            };
+        }
+    };
+    ServerMessage::DocumentRead {
+        session: seat.clone(),
+        path: read.path.to_string_lossy().into_owned(),
+        document_kind: read.kind,
+        bytes: base64::engine::general_purpose::STANDARD.encode(&read.bytes),
+        reviewable: read.reviewable,
+        content_hash: read.content_hash.to_string(),
+        threads,
+        reviews,
+    }
+}
+
 fn devices_answer(outcome: Result<forge_workspace::DictateDeviceCatalog, String>) -> ServerMessage {
     match outcome {
         Ok(catalog) => ServerMessage::Devices {
@@ -1872,6 +1957,82 @@ mod tests {
 
     use super::*;
     use crate::work::WorkCache;
+
+    /// **The transport is what makes a hand-off's ask claimable.** The
+    /// per-connection guard is the only thing that moves the attached count,
+    /// so a regression that skipped it would refuse every hand-off with
+    /// NO_VIEWER_CLIENT - and only a live run would catch it. The guard's
+    /// whole life is pinned here: no connection refuses with the reason, an
+    /// attached one parks the call on its ask, the answer command releases
+    /// it, and the guard's drop takes the claim back.
+    #[tokio::test]
+    async fn an_attached_connection_is_what_a_hand_off_claims_its_open_on() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fleet = crate::testing::Fleet::in_dir(dir.path(), &[("TestOrg", &["proj"])])
+            .expect("the fleet builds");
+        let root = dir.path().join("proj");
+        std::fs::create_dir_all(root.join("docs")).expect("the project tree");
+        std::fs::write(root.join("docs/readme.md"), b"# hi\n").expect("the document");
+
+        let state = TransportState {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            client: forge_primitives::ClientConfig::default(),
+            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+        };
+        // The ask needs a subscriber that can ANSWER it to land on - the
+        // raise is a parked prompt, so an observing stream alone fails it
+        // closed; a connection's own answering stream stands in for one.
+        let mut updates = state.surface.subscribe_client(true);
+        let seat = SessionSlot::lead("TestOrg", "proj");
+
+        let refused = fleet
+            .workspace()
+            .hand_off_document(&seat, "docs/readme.md", false)
+            .await
+            .expect_err("no connection, so nothing to open on");
+        assert_eq!(refused, forge_workspace::documents::NO_VIEWER_CLIENT);
+
+        let attached = AttachedClient::new(&state.surface);
+        let handed = {
+            let ws = fleet.workspace();
+            let seat = seat.clone();
+            tokio::spawn(async move { ws.hand_off_document(&seat, "docs/readme.md", false).await })
+        };
+        let id = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match updates.recv().await {
+                    Some(SessionUpdate::DocumentHandOffPending { id, .. }) => break id,
+                    Some(_) => {}
+                    None => panic!("the stream ended before the ask"),
+                }
+            }
+        })
+        .await
+        .expect("an attached connection is what the hand-off parks on");
+
+        // The answer rides the command a client's done sends, so the
+        // dispatch guard and the registry are both on this path.
+        state
+            .surface
+            .dispatch(forge_workspace::Command::AnswerDocumentHandOff {
+                key: seat.clone(),
+                id,
+                answer: forge_primitives::document::DocumentHandOffEnding::Done { review_id: None },
+            })
+            .expect("the answer lands on the parked ask");
+        handed.await.expect("the task joins").expect("and the park releases");
+
+        drop(attached);
+        let refused = fleet
+            .workspace()
+            .hand_off_document(&seat, "docs/readme.md", false)
+            .await
+            .expect_err("the connection went, so the claim goes with it");
+        assert_eq!(refused, forge_workspace::documents::NO_VIEWER_CLIENT);
+    }
 
     /// Escalating from observing to answering opens a new stream - and what
     /// the old one had queued is handed back rather than dropped. The queue is
@@ -2144,6 +2305,120 @@ mod tests {
         };
         assert_eq!(what, "devices", "the refusal names what was asked for");
         assert_eq!(why, "no audio host", "and carries the walk's own reason");
+    }
+
+    /// The read's two outcomes as a viewer draws them: the document with
+    /// its bytes base64 and its detected kind, or the error a route renders
+    /// where the document would have been - refused under the seat that
+    /// asked, so a client holding several seats drains only its own.
+    #[test]
+    fn a_document_answer_carries_the_bytes_and_the_kind_or_the_refusal() {
+        use forge_primitives::document::{DocumentKind, DocumentRead};
+        use forge_primitives::review::{
+            ReviewAnchor, ReviewAuthor, ReviewComment, ReviewSide, ReviewStatus, ReviewThread,
+        };
+
+        let (workspace, _dir) = crate::surface::testing::workspace();
+        let surface = crate::surface::ViewSurface::new(Arc::clone(&workspace));
+        let seat = SessionSlot::lead("TestOrg", "forge");
+        // The document's own review, seeded under the scope key the answer
+        // derives from the read's path - and a second document's, which must
+        // NOT ride this one's answer.
+        let scope = forge_primitives::review::doc_scope_ref("/proj/docs/readme.md");
+        let other = forge_primitives::review::doc_scope_ref("/proj/docs/other.md");
+        let doc_thread = |id: &str, base_ref: &str| ReviewThread {
+            id: id.to_owned(),
+            anchor: ReviewAnchor {
+                path: "/proj/docs/readme.md".to_owned(),
+                side: ReviewSide::New,
+                line: 3,
+                content_hash: 7,
+                context: vec!["^ # hi".to_owned()],
+                base_ref: base_ref.to_owned(),
+            },
+            comments: vec![ReviewComment {
+                author: ReviewAuthor::User,
+                text: "one line, please".to_owned(),
+                at: String::new(),
+                review_id: None,
+            }],
+            status: ReviewStatus::Open,
+            created_at: String::new(),
+            updated_at: String::new(),
+            commit: None,
+        };
+        assert!(workspace.upsert_review_thread("forge", &scope, doc_thread("d1", &scope)));
+        assert!(workspace.upsert_review_thread("forge", &other, doc_thread("d2", &other)));
+        workspace
+            .submit_review(
+                "forge",
+                &scope,
+                None,
+                &["d1".to_owned()],
+                SessionSlot::from_str_for_test("reader"),
+            )
+            .expect("a set for the document's scope");
+
+        let landed = Ok(DocumentRead {
+            path: std::path::PathBuf::from("/proj/docs/readme.md"),
+            kind: DocumentKind::Markdown,
+            bytes: b"# hi\n".to_vec(),
+            reviewable: true,
+            content_hash: 42,
+        });
+
+        let ServerMessage::DocumentRead {
+            session,
+            path,
+            document_kind,
+            bytes,
+            reviewable,
+            content_hash,
+            threads,
+            reviews,
+        } = document_answer(&surface, &seat, landed)
+        else {
+            panic!("a read that landed is its own answer")
+        };
+        assert_eq!(session, seat, "the answer names the seat it was read for");
+        assert_eq!(path, "/proj/docs/readme.md", "and the resolved absolute path");
+        assert_eq!(document_kind, DocumentKind::Markdown, "and the kind the read detected");
+        assert_eq!(bytes, "IyBoaQo=", "the bytes base64: what a client decodes is the document");
+        assert!(reviewable, "and the flag the hand-off passed");
+        assert_eq!(content_hash, "42", "and the document's hash, as decimal digits");
+        assert_eq!(threads.len(), 1, "the document's OWN comments ride the answer");
+        assert_eq!(threads[0].id, "d1");
+        assert_eq!(threads[0].anchor.base_ref, scope, "read under the document's scope");
+        assert_eq!(reviews.len(), 1, "and so do its review sets");
+
+        // A scope with nothing in it crosses empty rather than carrying the
+        // other document's rows - the control for the read's own scope.
+        let clean = Ok(DocumentRead {
+            path: std::path::PathBuf::from("/proj/docs/third.md"),
+            kind: DocumentKind::Text,
+            bytes: b"x".to_vec(),
+            reviewable: false,
+            content_hash: 8,
+        });
+        let ServerMessage::DocumentRead { threads, reviews, .. } =
+            document_answer(&surface, &seat, clean)
+        else {
+            panic!("a read that landed is its own answer")
+        };
+        assert!(threads.is_empty(), "no other document's comments leak in");
+        assert!(reviews.is_empty(), "and no review sets either");
+
+        let refused = document_answer(
+            &surface,
+            &seat,
+            Err("a PDF opens read-only; it cannot be handed reviewable".to_owned()),
+        );
+        let ServerMessage::Error { what, why, seat: named } = refused else {
+            panic!("a refused read is an error, not an empty document")
+        };
+        assert_eq!(what, "document_read", "the refusal names what was asked for");
+        assert!(why.contains("read-only"), "and carries the read's own reason: {why}");
+        assert_eq!(named, Some(seat), "under the seat that asked");
     }
 
     /// A transcript of `turns` single-frame turns, each a user row carrying

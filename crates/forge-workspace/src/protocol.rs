@@ -83,18 +83,19 @@ pub enum PendingAsk {
     Question(Box<QuestionRequest>),
     SlackDraft(Box<forge_primitives::slack::SlackDraft>),
     BrowserHandOff(Box<forge_primitives::browser::HandOff>),
+    DocumentHandOff(Box<forge_primitives::document::DocumentHandOffAsk>),
 }
 
 impl PendingAsk {
     /// The tool call this prompt is about, which is the id an answer names.
     ///
-    /// `None` for a Slack draft and a browser hand-off: each is answered by
-    /// its own command with its own id, and names no tool call at all.
+    /// `None` for a Slack draft and a hand-off: each is answered by its own
+    /// command with its own id, and names no tool call at all.
     pub fn tool_id(&self) -> Option<&str> {
         match self {
             Self::Permission(request) => Some(&request.tool_call.tool_call_id),
             Self::Question(request) => Some(&request.tool_call.tool_call_id),
-            Self::SlackDraft(_) | Self::BrowserHandOff(_) => None,
+            Self::SlackDraft(_) | Self::BrowserHandOff(_) | Self::DocumentHandOff(_) => None,
         }
     }
 }
@@ -359,6 +360,15 @@ pub enum Command {
         key: SessionSlot,
         id: uuid::Uuid,
         done: bool,
+    },
+    /// Answer a parked document hand-off: `NotNow` declines it, `Done`
+    /// releases it with what the viewer's finish filed. The blocked
+    /// `hand_off_document` call is awaiting this; `key` names the owner the
+    /// answer is checked against.
+    AnswerDocumentHandOff {
+        key: SessionSlot,
+        id: uuid::Uuid,
+        answer: forge_primitives::document::DocumentHandOffEnding,
     },
     RespondQuestion {
         key: SessionSlot,
@@ -884,6 +894,7 @@ impl Command {
             | Self::UpsertReviewThread { .. }
             | Self::RespondSlackPost { .. }
             | Self::RespondBrowserHandOff { .. }
+            | Self::AnswerDocumentHandOff { .. }
             | Self::SubmitReview { .. }
             | Self::TaskVerdict { .. }
             | Self::TaskAnswer { .. }
@@ -966,6 +977,12 @@ impl std::fmt::Debug for Command {
                 .field("key", key)
                 .field("id", id)
                 .field("done", done)
+                .finish_non_exhaustive(),
+            Self::AnswerDocumentHandOff { key, id, answer } => f
+                .debug_struct("AnswerDocumentHandOff")
+                .field("key", key)
+                .field("id", id)
+                .field("answer", answer)
                 .finish_non_exhaustive(),
             Self::SetDictateOverride { key, .. } => {
                 f.debug_struct("SetDictateOverride").field("key", key).finish_non_exhaustive()
@@ -2070,6 +2087,29 @@ pub enum SessionUpdate {
     DictateModelsChanged {
         models: crate::catalogue::DictateModelsSnapshot,
     },
+    /// A session handed the reader a document: the ask a client draws -
+    /// **open** or **not now** - with the resolved path it opens at.
+    ///
+    /// **The call parks on this**, like the browser hand-off: `id` names the
+    /// parked call, and the reader's answer releases it - `NotNow` here, or
+    /// `Done` when the viewer's finish files the reading. `path` is the
+    /// resolved absolute path, the viewer's stable address; `reviewable` is
+    /// what the hand-off flagged, so a viewer knows whether to offer
+    /// comments.
+    DocumentHandOffPending {
+        key: SessionSlot,
+        id: Uuid,
+        path: String,
+        reviewable: bool,
+    },
+    /// A document hand-off left the core's registry: finished in some view,
+    /// declined, or its asking session gone. `ending` is what a view that
+    /// did not answer it says happened.
+    DocumentHandOffResolved {
+        key: SessionSlot,
+        id: Uuid,
+        ending: forge_primitives::document::DocumentHandOffEnding,
+    },
 }
 
 impl SessionUpdate {
@@ -2116,6 +2156,8 @@ impl SessionUpdate {
             | Self::SlackDraftResolved { key, .. }
             | Self::BrowserHandOffPending { key, .. }
             | Self::BrowserHandOffResolved { key, .. }
+            | Self::DocumentHandOffPending { key, .. }
+            | Self::DocumentHandOffResolved { key, .. }
             | Self::RuntimeReloadCompleted { key }
             | Self::RuntimeReloadFailed { key, .. }
             | Self::ChatAppended { key, .. }
@@ -2473,6 +2515,12 @@ impl std::fmt::Debug for SessionUpdate {
                 .field("in_use", &models.in_use.len())
                 .field("rows", &models.rows.len())
                 .finish(),
+            Self::DocumentHandOffPending { key, .. } => {
+                f.debug_struct("DocumentHandOffPending").field("key", key).finish_non_exhaustive()
+            }
+            Self::DocumentHandOffResolved { key, .. } => {
+                f.debug_struct("DocumentHandOffResolved").field("key", key).finish_non_exhaustive()
+            }
             Self::CatalogLoaded => f.write_str("CatalogLoaded"),
             Self::CliVersionChanged => f.write_str("CliVersionChanged"),
             Self::AccountsChanged => f.write_str("AccountsChanged"),
@@ -2514,6 +2562,14 @@ pub enum DispatchError {
         "that browser hand-off is no longer waiting: it has been answered, or its asking session went away"
     )]
     NoBrowserHandOffWaiting { key: SessionSlot, id: Uuid },
+    /// A document hand-off answer named a hand-off the registry does not
+    /// hold: finished in another view, declined, or its asking session went
+    /// away. Its own word for the same reason [`Self::NoDraftWaiting`] has
+    /// one.
+    #[error(
+        "that document hand-off is no longer waiting: it has been answered, or its asking session went away"
+    )]
+    NoDocumentHandOffWaiting { key: SessionSlot, id: Uuid },
     /// A catalogue check was asked for with `[dictate]` switched off:
     /// there are no pinned models for a check to be about.
     #[error("dictation is off, so there is no catalogue to check")]

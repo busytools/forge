@@ -1067,7 +1067,11 @@
    */
   function askToolId(current: ReturnType<typeof pendingAsk>): string | null {
     if (current === null) return null;
-    if (current.kind === 'slack_draft' || current.kind === 'browser_hand_off') {
+    if (
+      current.kind === 'slack_draft' ||
+      current.kind === 'browser_hand_off' ||
+      current.kind === 'document_hand_off'
+    ) {
       return current.request.id;
     }
     return current.request.toolId;

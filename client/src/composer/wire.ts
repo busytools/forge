@@ -121,13 +121,24 @@ export interface BrowserHandOff {
   profile: string | null;
 }
 
+/** A document hand-off: a session offering the person a document to open. */
+export interface DocumentHandOff {
+  /** The hand-off's own id, which is what an answer is addressed by. */
+  id: string;
+  /** The resolved path the viewer opens at. */
+  path: string;
+  /** Whether the reader can leave review comments on it. */
+  reviewable: boolean;
+}
+
 /** The prompt the seat is parked on. */
 export type Ask =
   | { kind: 'permission'; request: PermissionRequest }
   | { kind: 'question'; request: QuestionRequest }
   /** A held Slack post, which this composer draws no dock for. */
   | { kind: 'slack_draft'; request: SlackDraft }
-  | { kind: 'browser_hand_off'; request: BrowserHandOff };
+  | { kind: 'browser_hand_off'; request: BrowserHandOff }
+  | { kind: 'document_hand_off'; request: DocumentHandOff };
 
 const OPTION_KINDS: PermissionOption['kind'][] = ['allow', 'deny', 'edit', 'notes'];
 const PHASES: TakePhase[] = ['recording', 'transcribing'];
@@ -216,6 +227,8 @@ export function askFrom(value: unknown): Ask | null {
       return slackFrom(request);
     case 'browser_hand_off':
       return browserHandOffFrom(request);
+    case 'document_hand_off':
+      return documentHandOffFrom(request);
     default:
       return null;
   }
@@ -302,6 +315,20 @@ function browserHandOffFrom(value: unknown): Ask {
       // floor's own case proves the read, so a v1.1.0 server's hand-off keeps
       // its profile name in the dock's title instead of losing it.
       profile: text(held['profile']) ?? text(held['context']),
+    },
+  };
+}
+
+/** A document hand-off: the id is what an answer names, the path what Open
+ *  opens. */
+function documentHandOffFrom(value: unknown): Ask {
+  const held = record(value);
+  return {
+    kind: 'document_hand_off',
+    request: {
+      id: text(held['id']) ?? '',
+      path: text(held['path']) ?? '',
+      reviewable: held['reviewable'] === true,
     },
   };
 }

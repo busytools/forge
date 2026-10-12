@@ -134,7 +134,14 @@ impl ScopeError {
 #[async_trait]
 pub trait ReviewFacade: Send + Sync {
     /// Resolve the caller to its review scope, or the step that failed.
-    async fn resolve_scope(&self, caller: &SessionSlot) -> Result<ReviewScope, ScopeError>;
+    /// `scope` overrides the branch: an explicit scope (a document's, from
+    /// a hand-off) needs no checkout, so the git step is skipped and only
+    /// the caller's project still has to resolve.
+    async fn resolve_scope(
+        &self,
+        caller: &SessionSlot,
+        scope: Option<&str>,
+    ) -> Result<ReviewScope, ScopeError>;
 
     /// `review__list` rows for the scope's branch, newest review first.
     fn list(&self, scope: &ReviewScope) -> Result<Vec<ReviewSummary>, String>;
@@ -201,13 +208,28 @@ fn warn_unresolved(
 
 #[async_trait]
 impl ReviewFacade for ProdReviewFacade {
-    async fn resolve_scope(&self, caller: &SessionSlot) -> Result<ReviewScope, ScopeError> {
+    async fn resolve_scope(
+        &self,
+        caller: &SessionSlot,
+        scope: Option<&str>,
+    ) -> Result<ReviewScope, ScopeError> {
         let Some(ws) = self.0.upgrade() else {
             return Err(warn_unresolved(caller, None, None, ScopeError::WorkspaceGone));
         };
         let Some(cx) = crate::mcp::caller_context::caller_context(&ws, caller) else {
             return Err(warn_unresolved(caller, None, None, ScopeError::UnknownCaller));
         };
+        let author_label = cx.worker_label.as_deref().unwrap_or("agent").to_owned();
+        // An explicit scope (a document's) is the store key itself, so the
+        // checkout never enters it: no cwd, no git query.
+        if let Some(branch) = scope {
+            return Ok(ReviewScope {
+                project: cx.project_name,
+                branch: branch.to_owned(),
+                author_label,
+                caller: caller.clone(),
+            });
+        }
         // The branch keys the review store; resolve it from the caller's
         // git dir the same way the /diff overlay does. A worker's git dir
         // is its worktree, so route the raw cwd through the scan-dir
@@ -225,7 +247,6 @@ impl ReviewFacade for ProdReviewFacade {
             Ok(None) => return fail(ScopeError::DetachedHead { scan_cwd }),
             Err(gate) => return fail(ScopeError::NoBranchFromGit { scan_cwd, gate }),
         };
-        let author_label = cx.worker_label.unwrap_or_else(|| "agent".to_owned());
         Ok(ReviewScope { project: cx.project_name, branch, author_label, caller: caller.clone() })
     }
 
@@ -303,6 +324,9 @@ pub struct MockReviewFacade {
     pub resolve_anchor: parking_lot::Mutex<CommentAnchorView>,
     /// When set, `reply` / `resolve` return this error (scope rejection).
     pub force_error: parking_lot::Mutex<Option<String>>,
+    /// The branch of every scope an op was called with, in call order, so a
+    /// test can pin which scope each tool addressed.
+    pub scopes_seen: parking_lot::Mutex<Vec<String>>,
 }
 
 #[cfg(test)]
@@ -337,6 +361,7 @@ impl MockReviewFacade {
                 number: Some(1),
             }),
             force_error: parking_lot::Mutex::new(None),
+            scopes_seen: parking_lot::Mutex::new(Vec::new()),
         }
     }
 
@@ -348,11 +373,20 @@ impl MockReviewFacade {
 #[cfg(test)]
 #[async_trait]
 impl ReviewFacade for MockReviewFacade {
-    async fn resolve_scope(&self, _caller: &SessionSlot) -> Result<ReviewScope, ScopeError> {
-        self.scope.lock().clone()
+    async fn resolve_scope(
+        &self,
+        _caller: &SessionSlot,
+        scope: Option<&str>,
+    ) -> Result<ReviewScope, ScopeError> {
+        let mut resolved = self.scope.lock().clone()?;
+        if let Some(branch) = scope {
+            branch.clone_into(&mut resolved.branch);
+        }
+        Ok(resolved)
     }
 
-    fn list(&self, _scope: &ReviewScope) -> Result<Vec<ReviewSummary>, String> {
+    fn list(&self, scope: &ReviewScope) -> Result<Vec<ReviewSummary>, String> {
+        self.scopes_seen.lock().push(scope.branch.clone());
         Ok(self.summaries.lock().clone())
     }
 
@@ -360,17 +394,19 @@ impl ReviewFacade for MockReviewFacade {
         self.review_branches.lock().clone()
     }
 
-    fn get(&self, _scope: &ReviewScope, review_id: &str) -> Result<Option<ReviewDetail>, String> {
+    fn get(&self, scope: &ReviewScope, review_id: &str) -> Result<Option<ReviewDetail>, String> {
+        self.scopes_seen.lock().push(scope.branch.clone());
         Ok(self.detail.lock().clone().filter(|d| d.review_id == review_id))
     }
 
     fn reply(
         &self,
-        _scope: &ReviewScope,
+        scope: &ReviewScope,
         comment_id: &str,
         text: &str,
         _at: &str,
     ) -> Result<CommentAnchorView, String> {
+        self.scopes_seen.lock().push(scope.branch.clone());
         if let Some(err) = self.force_error.lock().clone() {
             return Err(err);
         }
@@ -378,7 +414,8 @@ impl ReviewFacade for MockReviewFacade {
         Ok(self.reply_anchor.lock().clone())
     }
 
-    fn resolve(&self, _scope: &ReviewScope, comment_id: &str) -> Result<CommentAnchorView, String> {
+    fn resolve(&self, scope: &ReviewScope, comment_id: &str) -> Result<CommentAnchorView, String> {
+        self.scopes_seen.lock().push(scope.branch.clone());
         if let Some(err) = self.force_error.lock().clone() {
             return Err(err);
         }
@@ -529,15 +566,45 @@ mod resolve_scope_tests {
 
     async fn scope_err(ws: &Arc<Workspace>, caller: &SessionSlot) -> ScopeError {
         ProdReviewFacade(Arc::downgrade(ws))
-            .resolve_scope(caller)
+            .resolve_scope(caller, None)
             .await
             .expect_err("scope resolution must fail")
+    }
+
+    /// A document's review is keyed to the document's scope, not the
+    /// caller's branch, so an explicit scope resolves without a checkout:
+    /// the git step is skipped, while the project still resolves through
+    /// the caller.
+    #[tokio::test]
+    async fn an_explicit_scope_resolves_without_a_checkout() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cwd = dir.path().to_string_lossy().into_owned();
+        let (ws, caller) = ws_with_session_cwd(&cwd);
+        let scope = ProdReviewFacade(Arc::downgrade(&ws))
+            .resolve_scope(&caller, Some("doc:/proj/plan.md"))
+            .await
+            .expect("an explicit scope needs no branch");
+        assert_eq!(scope.project, "myproj", "the project still resolves through the caller");
+        assert_eq!(scope.branch, "doc:/proj/plan.md");
+        assert_eq!(scope.author_label, "agent");
+    }
+
+    /// The explicit scope replaces the branch step alone: an unknown caller
+    /// still has no project to key the scope by, and the failure says so.
+    #[tokio::test]
+    async fn an_explicit_scope_still_requires_a_known_caller() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let err = ProdReviewFacade(Arc::downgrade(&ws))
+            .resolve_scope(&SessionSlot::from_str_for_test("ghost-uuid"), Some("doc:/x"))
+            .await
+            .expect_err("an explicit scope does not bypass the caller step");
+        assert_eq!(err, ScopeError::UnknownCaller);
     }
 
     #[tokio::test]
     async fn workspace_gone_is_its_own_reason() {
         let err = ProdReviewFacade(Weak::new())
-            .resolve_scope(&SessionSlot::from_str_for_test("caller-uuid"))
+            .resolve_scope(&SessionSlot::from_str_for_test("caller-uuid"), None)
             .await
             .expect_err("a dropped workspace fails");
         assert_eq!(err, ScopeError::WorkspaceGone);
@@ -579,7 +646,7 @@ mod resolve_scope_tests {
         .expect("submit review on the worker's branch");
 
         let facade = ProdReviewFacade(Arc::downgrade(&ws));
-        let scope = facade.resolve_scope(&caller).await.expect("worker scope resolves");
+        let scope = facade.resolve_scope(&caller, None).await.expect("worker scope resolves");
         assert_eq!(scope.branch, "worktree-pyth-review-fixes");
         assert_eq!(scope.author_label, "pyth-review-fixes");
         assert_eq!(
@@ -653,7 +720,7 @@ mod resolve_scope_tests {
         let cwd = dir.path().to_string_lossy().into_owned();
         let (ws, caller) = ws_with_session_cwd(&cwd);
         let scope = ProdReviewFacade(Arc::downgrade(&ws))
-            .resolve_scope(&caller)
+            .resolve_scope(&caller, None)
             .await
             .expect("a named branch resolves");
         assert_eq!(scope.project, "myproj");

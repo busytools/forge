@@ -325,6 +325,14 @@ class RustConnection implements Connection {
     return true;
   }
 
+  readDocument(session: SessionSlot, path: string, reviewable: boolean): boolean {
+    if (this.state !== 'open') return false;
+    void invoke('client_read_document', { session, path, reviewable }).catch((why: unknown) => {
+      report('a document read could not reach the shell', why);
+    });
+    return true;
+  }
+
   frame(bytes: Uint8Array): boolean {
     if (this.state !== 'open') return false;
     // A take's frames cross as a plain number array: the invoke payload is

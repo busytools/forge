@@ -40,6 +40,7 @@ have pages here in the same way the TUI's do, current state only.
 - [Review](./ui/client/review.md)
 - [Dictation models](./ui/client/dictate-models.md)
 - [Extensions](./ui/client/extensions.md)
+- [A document](./ui/client/document.md)
 
 # Contributor
 

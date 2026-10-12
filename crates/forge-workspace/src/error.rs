@@ -73,6 +73,21 @@ pub enum WorkspaceError {
     GatewayRotationInvalid { path: PathBuf, key: &'static str },
 
     #[error(
+        "documents max_size_mib = {value} in forge.toml at {} is not usable; it must name a positive ceiling in MiB, so remove the key for the {} MiB default",
+        path.display(),
+        crate::config::DEFAULT_DOCUMENT_MAX_MIB
+    )]
+    DocumentCeilingInvalid { path: PathBuf, value: u64 },
+
+    #[error(
+        "documents max_size_mib = {value} in forge.toml at {} is over the wire's ceiling; a document crosses the socket base64-encoded and the desktop client's frame cap is 256 MiB, so the most a ceiling can name is {} MiB - remove the key for the {} MiB default",
+        path.display(),
+        crate::config::DOCUMENT_MAX_MIB_LIMIT,
+        crate::config::DEFAULT_DOCUMENT_MAX_MIB
+    )]
+    DocumentCeilingTooLarge { path: PathBuf, value: u64 },
+
+    #[error(
         "server port 0 in forge.toml at {} is not usable; the socket needs a port a client can be pointed at",
         path.display()
     )]

@@ -55,6 +55,7 @@ pub mod cloud;
 pub mod command;
 pub mod content;
 pub mod cron;
+pub mod document;
 pub mod error;
 pub mod git;
 pub mod git_diff;

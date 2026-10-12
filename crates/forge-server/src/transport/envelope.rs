@@ -6,6 +6,7 @@
 //! adding a variant is compatible and renaming one is not.
 
 use forge_primitives::browser::BrowserPart;
+use forge_primitives::document::DocumentKind;
 use forge_primitives::git_diff::LayerState;
 use forge_primitives::{ClientConfig, SessionSlot};
 use forge_workspace::DictateAxes;
@@ -216,6 +217,17 @@ pub enum ClientMessage {
     /// and its in-flight calls fail, so a take-over is loud on both sides
     /// rather than half-done.
     BrowserTakeRole,
+    /// One document, read out of a seat's own tree for a viewer's route.
+    ///
+    /// `path` resolves against the seat's working directory, and `reviewable`
+    /// is what the hand-off flagged: it rides the read back so the route
+    /// knows whether to offer comments. The answer is a `document_read`
+    /// message or an `error` naming it; those are its only two.
+    DocumentRead {
+        session: SessionSlot,
+        path: String,
+        reviewable: bool,
+    },
 }
 
 /// What the server sends.
@@ -323,6 +335,34 @@ pub enum ServerMessage {
         /// The arguments the CLI sent, verbatim: the driver validates them
         /// against the same schema the tool published.
         args: serde_json::Value,
+    },
+    /// One document, as the read answered: the seat it was read for, the
+    /// path it resolved to, the bytes, the detected kind, the flag the
+    /// hand-off passed, the document's own hash, and the review the
+    /// document already carries.
+    ///
+    /// `session` is named back so a client holding two seats routes each
+    /// answer to its own viewer - the same reason a refusal names its seat.
+    /// `bytes` are base64: the ceiling makes a document up to a third
+    /// larger than its file, well inside the socket's own frame bound.
+    /// `document_kind` and not `kind`: a field named `kind` collides with
+    /// the envelope's own tag.
+    ///
+    /// `threads` and `reviews` are the document scope's own (`doc:<path>`)
+    /// store read, taken in the same handler: the viewer draws its comments
+    /// and decides which of them the document left behind from it, and no
+    /// second read exists for a scope the seat's record does not cover.
+    /// `content_hash` crosses as DECIMAL DIGITS for the same reason a
+    /// thread's anchor hash does - JS numbers are exact only to 2^53.
+    DocumentRead {
+        session: SessionSlot,
+        path: String,
+        document_kind: DocumentKind,
+        bytes: String,
+        reviewable: bool,
+        content_hash: String,
+        threads: Vec<forge_primitives::review::ReviewThread>,
+        reviews: Vec<forge_primitives::ReviewSet>,
     },
     /// The seats that exist right now, for a browser-capable client's
     /// profile sweep.
@@ -526,6 +566,69 @@ mod tests {
         };
         assert_eq!(devices.len(), 1, "the list crosses with its rows");
         assert_eq!(configured.as_deref(), Some("a-mic"), "and so does the configured pin");
+    }
+
+    /// The document read a viewer's route makes, and the answer it gets.
+    ///
+    /// The request names the seat whose tree the path resolves against; the
+    /// answer names that seat BACK, so a client holding two seats routes
+    /// each answer to its own viewer rather than to whichever asked last.
+    #[test]
+    fn a_document_read_request_and_its_answer_round_trip_through_json() {
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        let asked = ClientMessage::DocumentRead {
+            session: seat.clone(),
+            path: "docs/readme.md".to_owned(),
+            reviewable: true,
+        };
+        let json = serde_json::to_string(&asked).expect("encode");
+        assert!(json.contains("\"kind\":\"document_read\""), "{json}");
+        let ClientMessage::DocumentRead { session, path, reviewable } =
+            serde_json::from_str(&json).expect("decode")
+        else {
+            panic!("{json} decoded into another message")
+        };
+        assert_eq!(session, seat, "the seat whose tree the path resolves against");
+        assert_eq!(path, "docs/readme.md");
+        assert!(reviewable, "the flag the hand-off passed");
+
+        let answer = ServerMessage::DocumentRead {
+            session: seat.clone(),
+            path: "/Users/me/proj/docs/readme.md".to_owned(),
+            document_kind: DocumentKind::Markdown,
+            bytes: "aGk=".to_owned(),
+            reviewable: true,
+            content_hash: "18446744073709551615".to_owned(),
+            threads: Vec::new(),
+            reviews: Vec::new(),
+        };
+        let json = serde_json::to_string(&answer).expect("encode");
+        assert!(json.contains("\"kind\":\"document_read\""), "{json}");
+        assert!(
+            json.contains("\"content_hash\":\"18446744073709551615\""),
+            "the document's hash crosses as decimal digits, as a thread's anchor does: {json}",
+        );
+        let ServerMessage::DocumentRead {
+            session,
+            path,
+            document_kind,
+            bytes,
+            reviewable,
+            content_hash,
+            threads,
+            reviews,
+        } = serde_json::from_str(&json).expect("decode")
+        else {
+            panic!("{json} decoded into another message")
+        };
+        assert_eq!(session, seat, "the answer names its seat back");
+        assert_eq!(path, "/Users/me/proj/docs/readme.md", "the resolved absolute path");
+        assert_eq!(document_kind, DocumentKind::Markdown, "the kind the read detected");
+        assert_eq!(bytes, "aGk=", "the document's bytes, base64, as they cross");
+        assert!(reviewable);
+        assert_eq!(content_hash, "18446744073709551615", "the hash survives the round trip");
+        assert!(threads.is_empty(), "an uncommented document carries no threads");
+        assert!(reviews.is_empty(), "and no review sets");
     }
 
     #[test]
@@ -752,6 +855,40 @@ mod tests {
                 key: seat.clone(),
                 id: uuid::Uuid::new_v4(),
                 ending: forge_primitives::slack::SlackDraftEnding::Expired,
+            },
+        ] {
+            assert!(
+                fleet_news(&update).any(),
+                "admitted by the redraw arm, not by the wildcard: {update:?}",
+            );
+            assert!(Subject::Home.covers(&update), "so the home is sent it: {update:?}");
+            assert!(
+                Subject::Session(seat.clone()).covers(&update),
+                "and the seat it routes on is sent it too: {update:?}",
+            );
+        }
+    }
+
+    /// A document hand-off has to reach the client wherever the reader is:
+    /// the ask is drawn on the raise, and the home subscription is the one
+    /// every client holds. A reader sitting on the home never heard the
+    /// seat-keyed raise until the redraw arm carried it (measured in the
+    /// e2e, 2026-10-12), so this pins the arm by name - dropping it leaves
+    /// the home silent and the ask undrawn.
+    #[test]
+    fn a_document_hand_off_reaches_home_and_its_seat() {
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        for update in [
+            SessionUpdate::DocumentHandOffPending {
+                key: seat.clone(),
+                id: uuid::Uuid::new_v4(),
+                path: "/proj/docs/plan.md".to_owned(),
+                reviewable: true,
+            },
+            SessionUpdate::DocumentHandOffResolved {
+                key: seat.clone(),
+                id: uuid::Uuid::new_v4(),
+                ending: forge_primitives::document::DocumentHandOffEnding::NotNow,
             },
         ] {
             assert!(

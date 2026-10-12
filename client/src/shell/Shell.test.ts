@@ -181,6 +181,19 @@ async function stubForge(
         socket.send(JSON.stringify({ kind: 'update', update: { releasing: { key: seat } } }));
       }
     },
+    /** A document hand-off, as a session's own tool asks it. */
+    handOff(seat: SessionSlot, path: string, reviewable: boolean) {
+      for (const socket of server.clients) {
+        socket.send(
+          JSON.stringify({
+            kind: 'update',
+            update: {
+              document_hand_off_pending: { key: seat, id: 'h-1', path, reviewable },
+            },
+          }),
+        );
+      }
+    },
     async close() {
       for (const client of server.clients) client.terminate();
       await new Promise((resolve) => server.close(resolve));
@@ -303,6 +316,30 @@ describe('the shell at launch', () => {
     expect(drawn(), 'the door is what a session route draws when nothing answers').toContain(
       'is not an address',
     );
+  });
+
+  /**
+   * **A hand-off asks; it does not pull.** The raise lands on the seat as
+   * the dock's ask, and the reader's Open is what moves the route - so a
+   * hand-off arriving mid-read never takes the page from under them. (The
+   * ask's card and its Open->route half are the Composer's own tests, where
+   * the dock draws without a conversation behind it.)
+   */
+  it('never moves the reader when a document is handed over', async () => {
+    const forge = await stubForge({ mark: null, theme: null, font: null });
+    forges.push(forge);
+    await openAt('/session/TestOrg/proj/lead', forge.address);
+    await crossed();
+
+    forge.handOff({ org: 'TestOrg', project: 'proj', label: 'lead' }, '/proj/docs/a.md', false);
+    // Bounded settle: the frame is applied within a tick or two, and the
+    // assertion is that the route did NOT move.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(location.pathname, 'the raise does not move the reader by itself').toBe(
+      '/session/TestOrg/proj/lead',
+    );
+    expect(drawn(), 'and the viewer never opened').not.toContain('Opening /proj/docs/a.md');
   });
 
   /**

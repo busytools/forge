@@ -333,6 +333,35 @@ impl Composer {
                 }
                 true
             }
+            SessionUpdate::DocumentHandOffPending { key, id, path, reviewable } => {
+                let ask = Ask::DocumentHandOff(Box::new(
+                    forge_primitives::document::DocumentHandOffAsk {
+                        id: *id,
+                        path: path.clone(),
+                        reviewable: *reviewable,
+                    },
+                ));
+                self.park(key, ask);
+                true
+            }
+            // The hand-off left the core's registry - finished, declined or
+            // abandoned - so a page that keeps drawing the ask offers a
+            // prompt no answer can reach.
+            SessionUpdate::DocumentHandOffResolved { key, id, .. } => {
+                let emptied = match self.asks.get_mut(key) {
+                    Some(queue) => {
+                        queue.retain(
+                            |ask| !matches!(ask, Ask::DocumentHandOff(held) if held.id == *id),
+                        );
+                        queue.is_empty()
+                    }
+                    None => false,
+                };
+                if emptied {
+                    self.asks.remove(key);
+                }
+                true
+            }
             // The prompt is settled, so its dock goes. This is the only
             // thing on the stream that says so: answering leaves the core's
             // pending set either way, and a view that answered from another
@@ -405,15 +434,15 @@ impl Composer {
             return;
         }
         // The kinds held in the CORE's registries rather than in the
-        // session's own pending set lead: a draft and a browser hand-off are
-        // both answered by their own id, and the read orders them the same
-        // way, so a fold that appended one would disagree with the read
-        // about the front.
-        let at = if matches!(ask, Ask::SlackDraft(_) | Ask::BrowserHandOff(_)) {
-            queue
-                .iter()
-                .position(|waiting| !matches!(waiting, Ask::SlackDraft(_) | Ask::BrowserHandOff(_)))
-                .unwrap_or(queue.len())
+        // session's own pending set lead: a draft, a browser hand-off and a
+        // document hand-off are all answered by their own id, and the read
+        // orders them the same way, so a fold that appended one would
+        // disagree with the read about the front.
+        let leads = |ask: &Ask| {
+            matches!(ask, Ask::SlackDraft(_) | Ask::BrowserHandOff(_) | Ask::DocumentHandOff(_))
+        };
+        let at = if leads(&ask) {
+            queue.iter().position(|waiting| !leads(waiting)).unwrap_or(queue.len())
         } else {
             queue.len()
         };
@@ -442,7 +471,7 @@ impl Composer {
 
 /// The key an ask is held under: its call, and the round for a question - one
 /// tool call carries a whole batch and advances the index. A draft and a
-/// browser hand-off are each answered by their own id and name no call.
+/// hand-off are each answered by their own id and name no call.
 fn ask_key(ask: &Ask) -> (String, Option<u64>) {
     match ask {
         Ask::Permission(request) => (request.tool_call.tool_call_id.clone(), None),
@@ -451,6 +480,7 @@ fn ask_key(ask: &Ask) -> (String, Option<u64>) {
         }
         Ask::SlackDraft(draft) => (draft.id.to_string(), None),
         Ask::BrowserHandOff(handoff) => (handoff.id.to_string(), None),
+        Ask::DocumentHandOff(handoff) => (handoff.id.to_string(), None),
     }
 }
 
@@ -469,10 +499,9 @@ fn resolved(ask: &Ask, tool_id: &str, round: Option<u64>) -> bool {
             request.tool_call.tool_call_id == tool_id
                 && round.is_none_or(|index| index == request.question_index)
         }
-        // A draft and a browser hand-off are each answered by their own id
-        // rather than by a tool call, so a resolved interaction never names
-        // one.
-        Ask::SlackDraft(_) | Ask::BrowserHandOff(_) => false,
+        // A draft and a hand-off are each answered by their own id rather
+        // than by a tool call, so a resolved interaction never names one.
+        Ask::SlackDraft(_) | Ask::BrowserHandOff(_) | Ask::DocumentHandOff(_) => false,
     }
 }
 
@@ -711,6 +740,42 @@ mod tests {
             key: slot.clone(),
             id: handoff.id,
             ending: forge_primitives::browser::HandOffEnding::Done,
+        });
+
+        assert_eq!(
+            front(&composer, &slot),
+            ("toolu_q".to_owned(), Some(0)),
+            "and its resolution falls back to the question",
+        );
+    }
+
+    /// The same rule for a document hand-off: it parks in the core's own
+    /// registry and leads like the browser's, so its queue and the read
+    /// agree about the front.
+    #[test]
+    fn a_document_hand_off_leads_the_queue_and_its_resolution_falls_back() {
+        let mut composer = Composer::default();
+        let slot = SessionSlot::lead("Busytools", "forge");
+        let id = uuid::Uuid::parse_str("0192e1c0-0000-7000-8000-0000000000dd").expect("a uuid");
+
+        composer.apply(&asked(&slot, question("toolu_q", 0)));
+        composer.apply(&SessionUpdate::DocumentHandOffPending {
+            key: slot.clone(),
+            id,
+            path: "/proj/docs/plan.md".to_owned(),
+            reviewable: true,
+        });
+
+        assert_eq!(
+            ask_key(composer.ask(&slot).expect("a front ask")),
+            (id.to_string(), None),
+            "the hand-off leads the question that was already waiting",
+        );
+
+        composer.apply(&SessionUpdate::DocumentHandOffResolved {
+            key: slot.clone(),
+            id,
+            ending: forge_primitives::document::DocumentHandOffEnding::NotNow,
         });
 
         assert_eq!(

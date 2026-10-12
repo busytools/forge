@@ -193,12 +193,16 @@ pub enum SessionChipState {
 
 /// What a session is waiting on a person for. The kind a needs-you row
 /// names, since "asked you a question" and "a permission prompt is
-/// waiting" are different asks with the same mark.
+/// waiting" are different asks with the same mark - and a document
+/// hand-off is a third, parked in the workspace's own registry rather
+/// than in the session's pending set (Ved, the look: the hand-off must
+/// ride the same needs-you machinery as every ask).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PendingInteractionKind {
     Question,
     Permission,
+    HandOff,
 }
 
 /// The dedupe key for a delivered Slack message: one destination is
@@ -327,6 +331,14 @@ pub struct Workspace {
     /// tools in `mcp::browser` ask through it, and the transport registers
     /// the connection that answers into it.
     pub(crate) browser: Arc<crate::browser::BrowserRelay>,
+    /// How many client connections are attached, noted by the transport per
+    /// connection. A document hand-off reads it before claiming an open: the
+    /// terminal is not counted, because it draws no document viewer.
+    pub(crate) attached_clients: std::sync::atomic::AtomicUsize,
+    /// The parked document hand-offs, under their ids: each holds the
+    /// awaiting tool's sender until the reader's answer releases it.
+    pub(crate) document_handoffs:
+        parking_lot::Mutex<HashMap<uuid::Uuid, crate::documents::ParkedDocument>>,
     /// The model catalogue: the last fetched feed and what the last check
     /// did. Loaded from its cache at boot, refreshed by
     /// `start_dictate_catalogue` and `Command::DictateCatalogueCheck`, and
@@ -1621,6 +1633,8 @@ impl Workspace {
             dictate_runtime: Mutex::new(crate::dictate::DictateRuntime::default()),
             dictate_device_pick: Mutex::new(None),
             browser: Arc::new(crate::browser::BrowserRelay::new()),
+            attached_clients: std::sync::atomic::AtomicUsize::new(0),
+            document_handoffs: parking_lot::Mutex::new(HashMap::new()),
             dictate_catalogue: Mutex::new(crate::catalogue::CatalogueState::default()),
             dictate_install: Mutex::new(crate::install::InstallState::default()),
             plugin_cli: Mutex::new(crate::plugins::PluginCli::real()),
@@ -1724,6 +1738,31 @@ impl Workspace {
     /// `forge.toml` itself.
     pub fn client_config(&self) -> forge_primitives::ClientConfig {
         self.config.client.clone()
+    }
+
+    /// The ceiling on one handed document, in bytes: `[documents]
+    /// max_size_mib` over the crate's own default. Read by the document
+    /// read, which refuses a document over it.
+    pub fn document_max_bytes(&self) -> u64 {
+        self.config.document_max_bytes
+    }
+
+    /// Note a client connection attached, and give it back when it goes.
+    /// The transport's per-connection guard calls these.
+    pub fn note_client_attached(&self) {
+        self.attached_clients.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The counterpart of [`Self::note_client_attached`].
+    pub fn note_client_detached(&self) {
+        self.attached_clients.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Whether any client connection is attached. The terminal is not a
+    /// client here: it draws no document viewer, and a hand-off's ask needs
+    /// one that does.
+    pub(crate) fn client_attached(&self) -> bool {
+        self.attached_clients.load(std::sync::atomic::Ordering::Relaxed) > 0
     }
 
     /// The browser relay: the one client connection that drives the browser.
@@ -2188,6 +2227,8 @@ impl Workspace {
             let worker_facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(self);
             let browser_facade =
                 crate::mcp::browser::facade::ProdBrowserFacade::from_workspace(self);
+            let documents_facade =
+                crate::mcp::documents::facade::ProdDocumentFacade::from_workspace(self);
             let review_facade = crate::mcp::review::facade::ProdReviewFacade::from_arc(self);
             let cron_facade = crate::mcp::cron::facade::ProdCronFacade::from_arc(self);
             let gotify_facade = crate::mcp::gotify::facade::ProdGotifyFacade::from_arc(self);
@@ -2208,6 +2249,7 @@ impl Workspace {
                     workspace: workspace_facade,
                     worker: worker_facade,
                     browser: browser_facade,
+                    documents: documents_facade,
                     review: review_facade,
                     cron: cron_facade,
                     gotify: gotify_facade,
@@ -4486,6 +4528,15 @@ impl Workspace {
                     });
                 }
             }
+            Command::AnswerDocumentHandOff { key, id, .. } => {
+                let waiting = self.document_handoff_waiting(*id, key);
+                if !waiting {
+                    return Err(DispatchError::NoDocumentHandOffWaiting {
+                        key: key.clone(),
+                        id: *id,
+                    });
+                }
+            }
             _ => {}
         }
         if let Some(key) = cmd.key() {
@@ -4829,6 +4880,25 @@ impl Workspace {
                     let answered = self.resolve_browser_hand_off(id, &key, ending);
                     if !answered {
                         return Err(DispatchError::NoBrowserHandOffWaiting {
+                            key: key.clone(),
+                            id,
+                        });
+                    }
+                }
+                Command::AnswerDocumentHandOff { key, id, answer } => {
+                    // Same shape as the browser arm above: the guard already
+                    // refused one that is not waiting, so a `false` here is a
+                    // resolve that landed between the two.
+                    tracing::debug!(
+                        event_name = "document_hand_off_answered",
+                        key = ?key,
+                        id = %id,
+                        ?answer,
+                        "a client answered a parked document hand-off"
+                    );
+                    let answered = self.resolve_document_hand_off(id, &key, answer);
+                    if !answered {
+                        return Err(DispatchError::NoDocumentHandOffWaiting {
                             key: key.clone(),
                             id,
                         });
@@ -5876,6 +5946,13 @@ impl Workspace {
     /// What the session at `slot` is waiting on a person for, or `None`
     /// when it can advance on its own.
     pub fn pending_interaction(&self, slot: &SessionSlot) -> Option<PendingInteractionKind> {
+        // The document hand-offs first: one parks in the workspace's own
+        // registry rather than in the session's set, so a seat with no
+        // domain can still be holding one - and it is a prompt a person
+        // must act on exactly like the other two.
+        if self.has_document_handoff(slot) {
+            return Some(PendingInteractionKind::HandOff);
+        }
         let domain = self.domain_session_for(slot)?;
         let guard = domain.lock();
         // A question outranks a permission prompt: both hold a turn, and
@@ -5898,7 +5975,11 @@ impl Workspace {
     /// The same set [`Self::pending_interaction`] answers the kind of, so a
     /// view showing one of them can say how many wait behind it.
     pub fn pending_interaction_depth(&self, slot: &SessionSlot) -> usize {
-        self.domain_session_for(slot).map_or(0, |domain| domain.lock().pending_interactions.len())
+        let parked = self.document_handoffs.lock().values().filter(|h| &h.seat == slot).count();
+        parked
+            + self
+                .domain_session_for(slot)
+                .map_or(0, |domain| domain.lock().pending_interactions.len())
     }
 
     /// Record a fatal error, so a view that was not attached when it fired
@@ -5970,6 +6051,12 @@ impl Workspace {
                     crate::protocol::PendingAsk::BrowserHandOff(Box::new(handoff.clone()))
                 },
             ));
+        }
+        {
+            let parked = self.document_handoffs.lock();
+            asks.extend(parked.values().filter(|held| &held.seat == slot).map(|held| {
+                crate::protocol::PendingAsk::DocumentHandOff(Box::new(held.ask.clone()))
+            }));
         }
         if let Some(domain) = self.domain_session_for(slot) {
             let guard = domain.lock();
@@ -6087,7 +6174,11 @@ impl Workspace {
         // (#1758). **The browser hand-off is the same shape** - its own
         // registry, its own read - and the same silence without it (Ved,
         // 2026-10-07).
-        if blocked || self.has_slack_draft(slot) || self.has_browser_hand_off(slot) {
+        if blocked
+            || self.has_slack_draft(slot)
+            || self.has_browser_hand_off(slot)
+            || self.has_document_handoff(slot)
+        {
             L::Attention
         } else {
             L::Running
@@ -13822,6 +13913,45 @@ mod worker_activity_tests {
         );
     }
 
+    /// **A parked document hand-off rides the same machinery every ask
+    /// does.** It parks in its own registry, so without this read a seat
+    /// holding one kept its running mark and the needs-you row said
+    /// nothing - the silence #1758 and the browser hand-off both had.
+    #[test]
+    fn a_parked_document_hand_off_reads_as_attention() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let seat = SessionSlot::from_str_for_test("w-dochandoff");
+        let domain = ws.register_domain_session(seat.clone(), None);
+        domain.lock().turn_pending = true;
+        assert_eq!(ws.session_activity(&seat), L::Running, "the control, mid-turn");
+        assert_eq!(ws.pending_interaction(&seat), None, "and no ask is held yet");
+
+        ws.note_client_attached();
+        let (id, _ending) = ws
+            .register_document_hand_off(&seat, "/proj/docs/plan.md", true)
+            .expect("the park lands with a client attached");
+
+        assert_eq!(
+            ws.session_activity(&seat),
+            L::Attention,
+            "a held ask is a person's to answer, not a running turn's",
+        );
+        assert_eq!(
+            ws.pending_interaction(&seat),
+            Some(crate::PendingInteractionKind::HandOff),
+            "and the row's needs-you names the kind",
+        );
+        assert_eq!(ws.pending_interaction_depth(&seat), 1, "the depth counts it");
+
+        assert!(ws.resolve_document_hand_off(
+            id,
+            &seat,
+            forge_primitives::document::DocumentHandOffEnding::Done { review_id: None },
+        ));
+        assert_eq!(ws.session_activity(&seat), L::Running, "answered, the turn runs again");
+        assert_eq!(ws.pending_interaction(&seat), None, "and the row stands down");
+    }
+
     /// `activity` is populated by the `agents__list` read path only; the
     /// `WorkerStatusChanged` event path leaves it `None`.
     #[test]
@@ -14817,6 +14947,9 @@ mod worker_respawn_tests {
                 workspace: crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(workspace),
                 worker: crate::mcp::workers::facade::ProdWorkerFacade::from_arc(workspace),
                 browser: crate::mcp::browser::facade::ProdBrowserFacade::from_workspace(workspace),
+                documents: crate::mcp::documents::facade::ProdDocumentFacade::from_workspace(
+                    workspace,
+                ),
                 review: crate::mcp::review::facade::ProdReviewFacade::from_arc(workspace),
                 cron: crate::mcp::cron::facade::ProdCronFacade::from_arc(workspace),
                 gotify: crate::mcp::gotify::facade::ProdGotifyFacade::from_arc(workspace),
@@ -17164,6 +17297,7 @@ mod git_scan_cwd_tests {
     use super::*;
     use crate::mcp::workers::types::WorkerEntry;
     use forge_primitives::WorkerLiveness;
+    use forge_primitives::document::DocumentHandOffEnding;
     use std::time::SystemTime;
 
     fn worker_entry(label: &str, session_key: &SessionSlot, is_git: bool) -> WorkerEntry {
@@ -17437,6 +17571,248 @@ provider = "anthropic"
         assert_eq!(
             ws.cwd_for_session(&session_key).as_deref(),
             project_root.join(".claude/worktrees/pyth-review-fixes").to_str(),
+        );
+    }
+
+    /// A hand-off reads the document out of the seat's OWN tree, asks the
+    /// seat's clients to open it with the resolved path, and **parks until
+    /// the reader answers** - the finish is what releases the call, and the
+    /// answer carries what it filed.
+    #[tokio::test]
+    async fn a_document_hand_off_parks_on_the_ask_and_answers_with_the_ending() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().to_str().expect("utf8").to_owned();
+        let (ws, mut updates) = Workspace::testing_stub();
+        let (project_root, session_key) = seed_project_and_worker(
+            &ws,
+            "forge",
+            &root,
+            "implementer",
+            "worker-uuid-hand-off",
+            true,
+        );
+        let cwd = project_root.join(".claude/worktrees/implementer");
+        std::fs::create_dir_all(cwd.join("docs")).expect("the worktree");
+        std::fs::write(cwd.join("docs/readme.md"), b"# hi\n").expect("the document");
+        // The read answers the CANONICAL path (the `/var` -> `/private/var`
+        // case on this machine), which is what a viewer deep-links by.
+        let expected = cwd.canonicalize().expect("canonical").join("docs/readme.md");
+        ws.note_client_attached();
+
+        let handed = {
+            let ws = Arc::clone(&ws);
+            let seat = session_key.clone();
+            tokio::spawn(async move { ws.hand_off_document(&seat, "docs/readme.md", true).await })
+        };
+        // The ask crosses, carrying the id the answer will name.
+        let ask = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match updates.recv().await {
+                    Some(SessionUpdate::DocumentHandOffPending {
+                        id, path, reviewable, ..
+                    }) => {
+                        break (id, path, reviewable);
+                    }
+                    Some(_) => {}
+                    None => panic!("the stream ended before the ask"),
+                }
+            }
+        })
+        .await
+        .expect("the ask reaches the seat's stream");
+        assert_eq!(ask.1, expected.to_string_lossy(), "with the resolved path - the address");
+        assert!(ask.2, "and the flag the hand-off passed");
+
+        assert!(ws.resolve_document_hand_off(
+            ask.0,
+            &session_key,
+            DocumentHandOffEnding::Done { review_id: Some("r-1".to_owned()) },
+        ));
+
+        let (resolved, ending) = handed.await.expect("the task joins").expect("the hand-off lands");
+        assert_eq!(resolved, expected.to_string_lossy(), "answered with the resolved path");
+        assert_eq!(ending, DocumentHandOffEnding::Done { review_id: Some("r-1".to_owned()) });
+        assert!(
+            std::iter::from_fn(|| updates.try_recv().ok()).any(|update| matches!(
+                update,
+                SessionUpdate::DocumentHandOffResolved { id, .. } if id == ask.0
+            )),
+            "and the resolution crosses, so a view that did not answer closes its ask",
+        );
+    }
+
+    /// A refused read raises nothing, parks on nothing, and answers the
+    /// read's own sentence.
+    #[tokio::test]
+    async fn a_refused_document_hand_off_raises_nothing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().to_str().expect("utf8").to_owned();
+        let (ws, mut updates) = Workspace::testing_stub();
+        let (project_root, session_key) = seed_project_and_worker(
+            &ws,
+            "forge",
+            &root,
+            "implementer",
+            "worker-uuid-hand-off-refused",
+            true,
+        );
+        let cwd = project_root.join(".claude/worktrees/implementer");
+        std::fs::create_dir_all(&cwd).expect("the worktree");
+
+        let refused = ws
+            .hand_off_document(&session_key, "gone.md", false)
+            .await
+            .expect_err("nothing to read");
+
+        assert!(refused.contains("no document at"), "{refused}");
+        assert!(
+            std::iter::from_fn(|| updates.try_recv().ok())
+                .all(|update| !matches!(update, SessionUpdate::DocumentHandOffPending { .. })),
+            "a refusal is not a hand-off",
+        );
+    }
+
+    /// **A hand-off claims an open only where something can draw it.** With
+    /// no client attached, the ask would cross the fan-out and reach the
+    /// terminal, which draws no document viewer - so the tool refuses with
+    /// the reason instead of parking on an ask nothing can draw. A client
+    /// attaching (the transport notes each connection) is what makes the
+    /// same hand-off land, and its leaving takes the claim back.
+    #[tokio::test]
+    async fn a_hand_off_claims_an_open_only_with_a_client_attached() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().to_str().expect("utf8").to_owned();
+        let (ws, mut updates) = Workspace::testing_stub();
+        let (project_root, session_key) = seed_project_and_worker(
+            &ws,
+            "forge",
+            &root,
+            "implementer",
+            "worker-uuid-hand-off-gate",
+            true,
+        );
+        let cwd = project_root.join(".claude/worktrees/implementer");
+        std::fs::create_dir_all(cwd.join("docs")).expect("the worktree");
+        std::fs::write(cwd.join("docs/readme.md"), b"# hi\n").expect("the document");
+
+        let refused = ws
+            .hand_off_document(&session_key, "docs/readme.md", false)
+            .await
+            .expect_err("no client, so nothing to open on");
+        assert_eq!(refused, crate::documents::NO_VIEWER_CLIENT, "the refusal is the named one");
+        assert!(
+            std::iter::from_fn(|| updates.try_recv().ok())
+                .all(|update| !matches!(update, SessionUpdate::DocumentHandOffPending { .. })),
+            "and nothing was asked of the terminal",
+        );
+
+        ws.note_client_attached();
+        let handed = {
+            let ws = Arc::clone(&ws);
+            let seat = session_key.clone();
+            tokio::spawn(async move { ws.hand_off_document(&seat, "docs/readme.md", false).await })
+        };
+        let ask = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match updates.recv().await {
+                    Some(SessionUpdate::DocumentHandOffPending { id, .. }) => break id,
+                    Some(_) => {}
+                    None => panic!("the stream ended before the ask"),
+                }
+            }
+        })
+        .await
+        .expect("an attached client is what the hand-off waits for");
+        ws.resolve_document_hand_off(
+            ask,
+            &session_key,
+            DocumentHandOffEnding::Done { review_id: None },
+        );
+        handed.await.expect("the task joins").expect("and the park releases");
+
+        ws.note_client_detached();
+        let refused = ws
+            .hand_off_document(&session_key, "docs/readme.md", false)
+            .await
+            .expect_err("the client left, so the open is unclaimed again");
+        assert_eq!(refused, crate::documents::NO_VIEWER_CLIENT);
+    }
+
+    /// **A document deleted between the hand-off and a later open of its
+    /// stable address refuses as missing - and its threads still read, with
+    /// their captured lines.** The store was never about the file: deleting
+    /// the document cannot touch what was written against it, which is what
+    /// keeps a thread reachable from the review record after the file it
+    /// reviewed is gone.
+    #[tokio::test]
+    async fn a_deleted_document_refuses_and_its_threads_still_read() {
+        use forge_primitives::review::{
+            ReviewAnchor, ReviewAuthor, ReviewComment, ReviewSide, ReviewStatus, ReviewThread,
+        };
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().to_str().expect("utf8").to_owned();
+        let (ws, _updates) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let (project_root, session_key) = seed_project_and_worker(
+            &ws,
+            "forge",
+            &root,
+            "implementer",
+            "worker-uuid-hand-off-deleted",
+            true,
+        );
+        let cwd = project_root.join(".claude/worktrees/implementer");
+        std::fs::create_dir_all(cwd.join("docs")).expect("the worktree");
+        let document = cwd.join("docs/plan.md");
+        std::fs::write(&document, b"# plan\n").expect("the document");
+        let resolved = cwd.canonicalize().expect("canonical").join("docs/plan.md");
+        let scope = forge_primitives::review::doc_scope_ref(&resolved.to_string_lossy());
+        assert!(
+            ws.upsert_review_thread(
+                "forge",
+                &scope,
+                ReviewThread {
+                    id: "d1".to_owned(),
+                    anchor: ReviewAnchor {
+                        path: resolved.to_string_lossy().into_owned(),
+                        side: ReviewSide::New,
+                        line: 1,
+                        content_hash: 7,
+                        context: vec!["# plan".to_owned()],
+                        base_ref: scope.clone(),
+                    },
+                    comments: vec![ReviewComment {
+                        author: ReviewAuthor::User,
+                        text: "one line, please".to_owned(),
+                        at: String::new(),
+                        review_id: None,
+                    }],
+                    status: ReviewStatus::Open,
+                    created_at: String::new(),
+                    updated_at: String::new(),
+                    commit: None,
+                },
+            ),
+            "the thread was stored",
+        );
+
+        std::fs::remove_file(&document).expect("the deletion");
+
+        let refused = ws
+            .hand_off_document(&session_key, "docs/plan.md", false)
+            .await
+            .expect_err("the stable address now refuses");
+        assert!(refused.contains("no document at"), "and says what it met: {refused}");
+
+        let threads = ws.load_review_threads("forge", &scope).expect("the scope still reads");
+        assert_eq!(threads.len(), 1, "the deletion cannot touch the document's threads");
+        assert_eq!(
+            threads[0].anchor.context,
+            vec!["# plan".to_owned()],
+            "with their captured lines kept",
         );
     }
 

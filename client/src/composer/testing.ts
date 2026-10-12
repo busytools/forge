@@ -181,6 +181,19 @@ export function browserHandOffAsk(over: Record<string, unknown> = {}): unknown {
   };
 }
 
+/** A document hand-off as the core offers one, with whatever the test overrides. */
+export function documentHandOffAsk(over: Record<string, unknown> = {}): unknown {
+  return {
+    kind: 'document_hand_off',
+    request: {
+      id: '0192e1c0-0000-7000-8000-0000000000dd',
+      path: '/proj/docs/plan.md',
+      reviewable: true,
+      ...over,
+    },
+  };
+}
+
 /** One command the composer sent, as the connection received it. */
 export interface Sent {
   command: Record<string, Record<string, unknown>>;

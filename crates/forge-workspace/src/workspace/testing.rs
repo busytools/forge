@@ -22,6 +22,12 @@ use forge_gateway::AccountKey;
 #[cfg(any(test, feature = "testing"))]
 pub const TEST_TOOL_ID: &str = "test-tool";
 
+/// The path a seeded document hand-off parks at. The registration IS the
+/// state a seeder produces - nothing reads the file - so the fixture names
+/// one rather than touching disk.
+#[cfg(any(test, feature = "testing"))]
+const TEST_DOCUMENT_PATH: &str = "/proj/docs/test.md";
+
 /// A permission prompt for a fixture to park on a seat: the smallest one a
 /// dock can draw, carrying the id [`TEST_TOOL_ID`] answers to. A fixture is
 /// the only place a prompt is invented, so it says what it invents.
@@ -95,17 +101,22 @@ pub(crate) fn test_question(
 }
 
 /// [`test_permission`] or [`test_question`] with a receiver nobody keeps.
+///
+/// `None` for a hand-off: it parks in the workspace's own registry rather
+/// than in the session's pending set, and the seeders below register it
+/// there instead - so a test that wants the HELD state gets the real one.
 #[cfg(any(test, feature = "testing"))]
-fn test_prompt(kind: PendingInteractionKind) -> crate::protocol::PendingInteractionSlot {
+fn test_prompt(kind: PendingInteractionKind) -> Option<crate::protocol::PendingInteractionSlot> {
     match kind {
         PendingInteractionKind::Permission => {
             let (tx, _rx) = tokio::sync::oneshot::channel();
-            test_permission(tx)
+            Some(test_permission(tx))
         }
         PendingInteractionKind::Question => {
             let (tx, _rx) = tokio::sync::oneshot::channel();
-            test_question(tx)
+            Some(test_question(tx))
         }
+        PendingInteractionKind::HandOff => None,
     }
 }
 
@@ -370,6 +381,8 @@ impl Workspace {
             dictate_runtime: Mutex::new(crate::dictate::DictateRuntime::default()),
             dictate_device_pick: Mutex::new(None),
             browser: Arc::new(crate::browser::BrowserRelay::new()),
+            attached_clients: std::sync::atomic::AtomicUsize::new(0),
+            document_handoffs: parking_lot::Mutex::new(HashMap::new()),
             dictate_catalogue: Mutex::new(crate::catalogue::CatalogueState::default()),
             dictate_install: Mutex::new(crate::install::InstallState::default()),
             plugin_cli: Mutex::new(crate::plugins::PluginCli::real()),
@@ -736,10 +749,18 @@ impl Workspace {
     /// driving the wire. Test-only.
     #[cfg(any(test, feature = "testing"))]
     pub fn seed_test_pending_interaction(&self, slot: &SessionSlot, kind: PendingInteractionKind) {
+        // A hand-off's held state is a parked registration, not a domain
+        // slot: the seeder produces the state the kind names, wherever that
+        // state really lives.
+        let Some(prompt) = test_prompt(kind) else {
+            self.note_client_attached();
+            let _ = self.register_document_hand_off(slot, TEST_DOCUMENT_PATH, true);
+            return;
+        };
         let domain = self
             .domain_session_for(slot)
             .unwrap_or_else(|| self.register_domain_session(slot.clone(), None));
-        domain.lock().pending_interactions.insert(TEST_TOOL_ID.to_owned(), test_prompt(kind));
+        domain.lock().pending_interactions.insert(TEST_TOOL_ID.to_owned(), prompt);
     }
 
     /// Let go of everything parked on `slot`, which is half of what
@@ -770,12 +791,21 @@ impl Workspace {
         kind: PendingInteractionKind,
         count: usize,
     ) {
+        if test_prompt(kind).is_none() {
+            self.note_client_attached();
+            for _ in 0..count {
+                let _ = self.register_document_hand_off(slot, TEST_DOCUMENT_PATH, true);
+            }
+            return;
+        }
         let domain = self
             .domain_session_for(slot)
             .unwrap_or_else(|| self.register_domain_session(slot.clone(), None));
         let mut domain = domain.lock();
         for index in 0..count {
-            domain.pending_interactions.insert(format!("test-tool-{index}"), test_prompt(kind));
+            if let Some(prompt) = test_prompt(kind) {
+                domain.pending_interactions.insert(format!("test-tool-{index}"), prompt);
+            }
         }
     }
 

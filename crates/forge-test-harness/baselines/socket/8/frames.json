@@ -5,6 +5,7 @@
     "BrowserSeats": "browser_seats",
     "CommitDiff": "commit_diff",
     "Devices": "devices",
+    "DocumentRead": "document_read",
     "Error": "error",
     "Greeting": "greeting",
     "Page": "page",
@@ -38,6 +39,8 @@
     "DictateStarted": "dictate_started",
     "DictateTranscribing": "dictate_transcribing",
     "DispatchesChanged": "dispatches_changed",
+    "DocumentHandOffPending": "document_hand_off_pending",
+    "DocumentHandOffResolved": "document_hand_off_resolved",
     "FatalError": "fatal_error",
     "FileIndexChanged": "file_index_changed",
     "ForgeAccountIdentity": "forge_account_identity",
@@ -99,6 +102,7 @@
     "Usage": "usage"
   },
   "command": {
+    "AnswerDocumentHandOff": "answer_document_hand_off",
     "Cancel": "cancel",
     "CancelQueuedPrompt": "cancel_queued_prompt",
     "CloseSession": "close_session",
@@ -168,6 +172,7 @@
     "Command": "command",
     "CommitDiff": "commit_diff",
     "Devices": "devices",
+    "DocumentRead": "document_read",
     "More": "more",
     "Subscribe": "subscribe",
     "Unsubscribe": "unsubscribe"
@@ -493,6 +498,98 @@
       "/update/dictate_models_changed/models/updates[]/current": [
         "fleurs_en_wer",
         "speed_x"
+      ]
+    },
+    "DocumentHandOffPending": {
+      "": [
+        "kind",
+        "update"
+      ],
+      "/update": [
+        "document_hand_off_pending"
+      ],
+      "/update/document_hand_off_pending": [
+        "id",
+        "key",
+        "path",
+        "reviewable"
+      ],
+      "/update/document_hand_off_pending/key": [
+        "label",
+        "org",
+        "project"
+      ]
+    },
+    "DocumentHandOffResolved": {
+      "": [
+        "kind",
+        "update"
+      ],
+      "/update": [
+        "document_hand_off_resolved"
+      ],
+      "/update/document_hand_off_resolved": [
+        "ending",
+        "id",
+        "key"
+      ],
+      "/update/document_hand_off_resolved/ending": [
+        "done"
+      ],
+      "/update/document_hand_off_resolved/ending/done": [
+        "review_id"
+      ],
+      "/update/document_hand_off_resolved/key": [
+        "label",
+        "org",
+        "project"
+      ]
+    },
+    "DocumentRead": {
+      "": [
+        "bytes",
+        "content_hash",
+        "document_kind",
+        "kind",
+        "path",
+        "reviewable",
+        "reviews",
+        "session",
+        "threads"
+      ],
+      "/reviews[]": [
+        "created_at",
+        "id",
+        "number",
+        "summary"
+      ],
+      "/session": [
+        "label",
+        "org",
+        "project"
+      ],
+      "/threads[]": [
+        "anchor",
+        "comments",
+        "commit",
+        "created_at",
+        "id",
+        "status",
+        "updated_at"
+      ],
+      "/threads[]/anchor": [
+        "base_ref",
+        "content_hash",
+        "context",
+        "line",
+        "path",
+        "side"
+      ],
+      "/threads[]/comments[]": [
+        "at",
+        "author",
+        "review_id",
+        "text"
       ]
     },
     "Greeting": {
@@ -827,6 +924,19 @@
         "mime_type",
         "text",
         "type"
+      ]
+    },
+    "DocumentRead": {
+      "": [
+        "kind",
+        "path",
+        "reviewable",
+        "session"
+      ],
+      "/session": [
+        "label",
+        "org",
+        "project"
       ]
     },
     "Subscribe": {

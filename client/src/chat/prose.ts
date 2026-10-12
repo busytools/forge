@@ -96,3 +96,50 @@ export function renderProse(text: string, preserveLines = false): string {
 export function renderInlineProse(text: string): string {
   return READER.renderInline(text);
 }
+
+/** One top-level block of `text`, rendered on its own. */
+export interface ProseBlock {
+  /** 1-based first source line the block came from. */
+  line: number;
+  /** 1-based last source line, inclusive. */
+  end: number;
+  /** The block's own HTML, through the same renderer as the body. */
+  html: string;
+}
+
+/**
+ * `text` as its top-level blocks, each rendered on its own.
+ *
+ * The document viewer's comment target: a comment anchors to the block it was
+ * written on, so the block's SOURCE span has to survive rendering. The tokens
+ * carry it - markdown-it records the lines every block token came from - and
+ * a slice cut at a top-level boundary is a whole block, opens and closes
+ * together, which is what makes rendering the pieces the same as rendering
+ * the text.
+ */
+export function renderProseBlocks(text: string): ProseBlock[] {
+  const env = {};
+  const tokens = READER.parse(text, env);
+  const starts: number[] = [];
+  for (let at = 0; at < tokens.length; at += 1) {
+    const token = tokens[at];
+    if (token === undefined || token.level !== 0) continue;
+    // A top-level block OPENS (nesting 1) or stands alone (0); a closer
+    // (nesting -1) is inside the block the opener began.
+    if (token.nesting >= 0) starts.push(at);
+  }
+  const blocks: ProseBlock[] = [];
+  for (let i = 0; i < starts.length; i += 1) {
+    const from = starts[i] as number;
+    const slice = tokens.slice(from, starts[i + 1] ?? tokens.length);
+    const head = slice[0];
+    const map = head?.map;
+    if (head === undefined || map === null || map === undefined) continue;
+    blocks.push({
+      line: map[0] + 1,
+      end: map[1],
+      html: READER.renderer.render(slice, READER.options, env),
+    });
+  }
+  return blocks;
+}

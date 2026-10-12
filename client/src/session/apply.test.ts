@@ -760,6 +760,34 @@ describe('applyUpdate', () => {
         'a resolution naming another hand-off leaves this one parked',
       ).toBe(parked);
     });
+
+    it('parks a document hand-off, ahead of the asks already waiting, the way the read orders it', () => {
+      const kinds = (held: SessionRecord): unknown[] =>
+        held.pending_asks.map((ask) => (ask as Record<string, unknown>)['kind']);
+
+      const asked = applyUpdate(empty(), {
+        question_request: {
+          key: SLOT,
+          tool_id: 'toolu_q',
+          request: { tool_call: { tool_call_id: 'toolu_q' }, prompt: { question: 'which?' } },
+        },
+      });
+      const ask = { id: 'd1', path: '/proj/docs/plan.md', reviewable: true };
+      const parked = applyUpdate(asked, { document_hand_off_pending: { key: SLOT, ...ask } });
+
+      expect(kinds(parked), 'the ask leads the question that was already waiting').toEqual([
+        'document_hand_off',
+        'question',
+      ]);
+      expect(
+        kinds(applyUpdate(parked, { document_hand_off_resolved: { key: SLOT, id: 'd1' } })),
+        'and its resolution falls back to the question',
+      ).toEqual(['question']);
+      expect(
+        applyUpdate(parked, { document_hand_off_resolved: { key: SLOT, id: 'd2' } }),
+        'a resolution naming another hand-off leaves this one parked',
+      ).toBe(parked);
+    });
   });
 
   describe('the composer', () => {
@@ -1191,6 +1219,8 @@ const EVERY_VARIANT = [
   'dictate_ended',
   'fatal_error',
   'dictate_models_changed',
+  'document_hand_off_pending',
+  'document_hand_off_resolved',
 ] as const;
 
 /**
@@ -1251,9 +1281,9 @@ describe('the variant list', () => {
     // raise it in the same edit that adds a variant, as the plan says.
     expect(
       EVERY_VARIANT.length,
-      'the census no longer carries every variant the enum declares (77 of them): a truncated ' +
+      'the census no longer carries every variant the enum declares (79 of them): a truncated ' +
         'census leaves the assertions below checking only the names it still has',
-    ).toBe(77);
+    ).toBe(79);
   });
 
   it('classifies every variant the core can send', () => {

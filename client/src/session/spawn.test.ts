@@ -56,6 +56,7 @@ function recording(): { connection: Connection; sent: Record<string, unknown>[] 
     more: () => false,
     devices: () => false,
     commitDiff: () => false,
+    readDocument: () => false,
     frame: () => false,
     onBrowserAsk: () => () => {},
     browserRole: () => false,

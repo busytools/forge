@@ -457,6 +457,10 @@ describe('the connection', () => {
       'the socket is not open',
     );
     expect(conn.more(LEAD), 'a page-ask that went nowhere read as one that went').toBe(false);
+    expect(
+      conn.readDocument(LEAD, 'docs/readme.md', false),
+      'a read that went nowhere read as one that went',
+    ).toBe(false);
   });
 
   /**
@@ -510,6 +514,25 @@ describe('the connection', () => {
       conversation: LEAD,
       before: null,
       turns: 20,
+    });
+  });
+
+  /**
+   * One document read crosses with the seat whose tree its path resolves
+   * against, the path and the reviewable flag. The answer arrives as a
+   * `document_read` frame or an error carrying the seat back, so a page
+   * holding two seats routes each answer to its own viewer.
+   */
+  it('asks for one document with its seat and reviewable flag', async () => {
+    const { server, conn } = await connected();
+
+    expect(conn.readDocument(LEAD, 'docs/readme.md', true)).toBe(true);
+    await until(() => server.received.length === 1, 'the read');
+    expect(server.received[0]).toEqual({
+      kind: 'document_read',
+      session: LEAD,
+      path: 'docs/readme.md',
+      reviewable: true,
     });
   });
 

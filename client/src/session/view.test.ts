@@ -235,6 +235,15 @@ describe('the rail', () => {
     ).toBe('asked you a question');
   });
 
+  /** **A parked hand-off is a third ask, and the row names it as itself**
+   *  rather than borrowing the permission line. */
+  it('names a held hand-off on the row', () => {
+    const held: AgentRow = { ...lead(), pending: 'hand_off', reason: null };
+    const groups = railGroups(withHome({ agents: [held] }), LEAD, 0);
+    const needs = groups.find((group) => group.heading === 'needs you');
+    expect(needs?.projects[0]?.why?.line).toBe('a hand-off is waiting');
+  });
+
   /**
    * **A seat this client has just closed reads asleep AT ONCE** (#1712): the
    * reader's click is what moves it out of their working section, not the

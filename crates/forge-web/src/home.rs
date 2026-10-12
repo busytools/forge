@@ -803,6 +803,7 @@ fn waiting_on(pending: PendingKind) -> &'static str {
     match pending {
         PendingKind::Question => "asked you a question",
         PendingKind::Permission => "a permission prompt is waiting",
+        PendingKind::HandOff => "a hand-off is waiting",
     }
 }
 

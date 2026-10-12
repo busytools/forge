@@ -230,10 +230,27 @@ history is the record.
    holder's PID - that guard is correct and expected.
 10. Ports, paths and teardown all use the *canonicalized* path (`/tmp` is
     `/private/tmp`), so one stack keeps one hash.
+11. **A wiped store is not a clean reset. The session transcripts live under
+    `$STACK/config/projects/<slug>/` (`<slug>` is the project path's
+    canonicalized slashes as dashes: `/tmp/.../proj` is
+    `-private-tmp-...-proj`), the boot's catalog scan adopts the last one, and
+    the "fresh" run RESUMES that session** (measured 2026-10-12: an e2e phase
+    went green off the PREVIOUS run's parked ask while its own prompt queued
+    behind the stale turn - one run's whole timeline off by one). The clean
+    reset is four steps, not one: kill by port; `find
+    $STACK/config/projects/<slug> -depth -delete`; `rm -f` the redb under
+    `$STACK/home/Library/Application Support/forge-tui/`; restore the seed.
+12. **A text probe reads the agent's own prose** (measured 2026-10-12, twice
+    in one run). `document.body.innerText.includes('<the card's words>')` can
+    match the SESSION'S OWN CHAT - an agent narrating what it just exercised
+    put the card's exact words on the page while the dock drew nothing, and
+    the probe read green over a click that then found no button. Ask the DOM
+    for the CONTROL, never the words: the dock's own button, the element's
+    presence, the frame's payload. (The harness's older cousin: matching a
+    tool's NAME in a frame proves the call was sent, not that it succeeded.)
 
 ## Could not prove (watch these)
 
-- Cross-boot resume inside a stack (both spike runs had fresh stores).
 - The shallow depth end to end (the dev client alone, pointed at the live
   forge).
 - A taken scratch gateway port's refusal (read from code, not exercised).

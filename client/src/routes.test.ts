@@ -1,7 +1,16 @@
 // @vitest-environment jsdom
+import { get } from 'svelte/store';
 import { describe, expect, it } from 'vitest';
 
-import { goTo, hrefFor, hrefForSlot, parseRoute, titleFor } from './routes';
+import {
+  currentRoute,
+  goTo,
+  hrefFor,
+  hrefForSlot,
+  parseRoute,
+  titleFor,
+  type Route,
+} from './routes';
 
 describe('the URLs the server serves', () => {
   it('resolves the home at the root', () => {
@@ -127,22 +136,98 @@ describe("the tab's title", () => {
 
 describe('moving the app in place', () => {
   /**
-   * The event is what the shell re-reads the route from, so a `goTo` that
-   * only pushed would move the URL and leave the page on the seat it was
-   * showing - the reader looking at a page the address no longer names.
+   * **The store is what moves the shell, and the push writes the address.**
+   * A `goTo` that only pushed would leave the page on the seat it was
+   * showing; one that fired a popstate instead would have the shell
+   * re-parse the URL, which drops the fields an address cannot carry.
    */
-  it('fires the event the shell re-reads the route from', () => {
-    const seen: string[] = [];
-    const listener = (): void => {
-      seen.push(location.pathname);
-    };
-    addEventListener('popstate', listener);
+  it('sets the route store and writes the same address', () => {
     goTo({ name: 'session', slot: { org: 'TestOrg', project: 'proj', label: 'w1' } });
-    removeEventListener('popstate', listener);
 
-    expect(seen, 'the shell was given no event to re-read the route from').toEqual([
-      '/session/TestOrg/proj/w1',
-    ]);
+    expect(get(currentRoute)).toEqual({
+      name: 'session',
+      slot: { org: 'TestOrg', project: 'proj', label: 'w1' },
+    });
     expect(location.pathname).toBe('/session/TestOrg/proj/w1');
+  });
+
+  /** **A hand-off's own fields cross whole.** `reviewable` and the parked
+   *  call's id ride the ask's Open into the route, and the address carries
+   *  neither - the store is what keeps them. */
+  it('carries the fields the address cannot', () => {
+    goTo({
+      name: 'doc',
+      slot: { org: 'TestOrg', project: 'proj', label: 'lead' },
+      path: '/proj/docs/plan.md',
+      reviewable: true,
+      handoff: 'h-1',
+    });
+
+    expect(get(currentRoute), 'the parked id survives the move').toMatchObject({
+      reviewable: true,
+      handoff: 'h-1',
+    });
+    expect(location.pathname, 'and the address is the document, without them').toBe(
+      '/doc/TestOrg/proj/lead/proj/docs/plan.md',
+    );
+  });
+});
+
+describe('the document route', () => {
+  /**
+   * The viewer's address IS the document: the seat whose tree the path
+   * resolves against, then the resolved absolute path. A hand-off raises
+   * this route, and a thread's deep link reopens it, so the two must spell
+   * one address.
+   */
+  it('reads a doc address as its seat and the absolute document path', () => {
+    expect(parseRoute('/doc/Busytools/forge/lead/Users/me/Projects/forge/docs/plan.md')).toEqual({
+      name: 'doc',
+      slot: { org: 'Busytools', project: 'forge', label: 'lead' },
+      path: '/Users/me/Projects/forge/docs/plan.md',
+      reviewable: false,
+    });
+  });
+
+  it('addresses a document back to the same path', () => {
+    const route: Route = {
+      name: 'doc',
+      slot: { org: 'Busytools', project: 'forge', label: 'lead' },
+      path: '/Users/me/Projects/forge/docs/plan.md',
+      reviewable: true,
+    };
+
+    const href = hrefFor(route);
+
+    expect(href).toBe('/doc/Busytools/forge/lead/Users/me/Projects/forge/docs/plan.md');
+    // The flag is the hand-off's, not the address's: a reopened link is the
+    // document, and whether it is reviewable is re-decided where it opens.
+    expect(parseRoute(href)).toEqual({ ...route, reviewable: false });
+  });
+
+  it('keeps a segment that carries a space or a slash', () => {
+    const route: Route = {
+      name: 'doc',
+      slot: { org: 'My Org', project: 'proj', label: 'lead' },
+      path: '/Users/me/My Docs/a plan.md',
+      reviewable: false,
+    };
+
+    expect(parseRoute(hrefFor(route))).toEqual(route);
+  });
+
+  it('names the document in the tab', () => {
+    expect(
+      titleFor({
+        name: 'doc',
+        slot: { org: 'Busytools', project: 'forge', label: 'lead' },
+        path: '/Users/me/Projects/forge/docs/plan.md',
+        reviewable: false,
+      }),
+    ).toBe('forge \u{b7} plan.md');
+  });
+
+  it('is not a document without a path', () => {
+    expect(parseRoute('/doc/Busytools/forge/lead')).toEqual({ name: 'notFound' });
   });
 });

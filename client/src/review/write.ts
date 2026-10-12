@@ -236,12 +236,13 @@ export function submitCommand(
   };
 }
 
-/** The resolve (or reopen) command for one thread. */
+/** The resolve (or reopen) command for one thread; `Outdated` is the
+ *  document viewer aging a comment against a changed document. */
 export function statusCommand(
   slot: SessionSlot,
   branch: string,
   threadId: string,
-  status: 'Resolved' | 'Open',
+  status: 'Resolved' | 'Open' | 'Outdated',
 ) {
   return {
     set_review_thread_status: { project: slot.project, branch, thread_id: threadId, status },

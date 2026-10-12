@@ -390,6 +390,9 @@ mod tests {
                 worker: MockWorkerFacade::new().into_arc(),
                 // The exact composition the spawn uses.
                 browser: ProdBrowserFacade::from_workspace(&workspace),
+                documents: crate::mcp::documents::facade::ProdDocumentFacade::from_workspace(
+                    &workspace,
+                ),
                 review: MockReviewFacade::new().into_arc(),
                 cron: MockCronFacade::new().into_arc(),
                 gotify: MockGotifyFacade::new().into_arc(),

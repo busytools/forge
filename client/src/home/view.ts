@@ -86,7 +86,7 @@ export interface Row {
    */
   gate: string | null;
   task: TaskCell | null;
-  pending: 'question' | 'permission' | null;
+  pending: 'question' | 'permission' | 'hand_off' | null;
   reason: string | null;
   lastActivity: WireTime | null;
   /**

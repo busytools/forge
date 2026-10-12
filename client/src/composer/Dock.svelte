@@ -5,6 +5,7 @@
   import Field from './Field.svelte';
   import TakeCard from './TakeCard.svelte';
   import type { Command } from '../protocol';
+  import { goTo } from '../routes';
   import { report, type Connection } from '../socket';
   import type { SessionSlot } from '../wire/types';
   import type { Ask, PermissionOption, Take } from './wire';
@@ -485,6 +486,13 @@
       handOff(false);
       return;
     }
+    if (ask.kind === 'document_hand_off') {
+      // The same arm for the same reason: Not now is the answer the core
+      // reads as the reader declining, and it is the only release for a
+      // parked call with no timeout.
+      declineDocument();
+      return;
+    }
     // A held post refuses with its own "don't send", which is the answer the
     // core reads as the draft going nowhere.
     post(false);
@@ -600,6 +608,30 @@
     onanswer(id);
     answer({ respond_browser_hand_off: { key: slot, id, done } });
     void hideBrowser(profile);
+  }
+
+  /**
+   * Open the handed document: the client's own route, and no answer - the
+   * parked call releases on the viewer's own done, so nothing is told the
+   * document was read until it was.
+   */
+  function openDocument(): void {
+    if (ask.kind !== 'document_hand_off') return;
+    goTo({
+      name: 'doc',
+      slot,
+      path: ask.request.path,
+      reviewable: ask.request.reviewable,
+      handoff: ask.request.id,
+    });
+  }
+
+  /** Not now: the answer the core reads as the reader declining, which is
+   *  the parked call's only other release. */
+  function declineDocument(): void {
+    if (answered || ask.kind !== 'document_hand_off') return;
+    onanswer(ask.request.id);
+    answer({ answer_document_hand_off: { key: slot, id: ask.request.id, answer: 'not_now' } });
   }
 
   /**
@@ -964,6 +996,18 @@
          question kinds are already in hand, and one kind of block for both
          keeps the dock one system rather than two. -->
       <div class="preview"><Prose text={ask.request.text} /></div>
+    {:else if ask.kind === 'document_hand_off'}
+      <div class="d-head">
+        <span class="tag warn">&#9888; needs you</span>
+        <span class="q mono">document hand-off</span>
+      </div>
+      <!-- The resolved path verbatim: it is the document's own address, and a
+         basename would be the client guessing at which file was meant. -->
+      <div class="d-q">{ask.request.path}</div>
+      <div class="desc">
+        Open reads it in the viewer{ask.request.reviewable ? ', where you can leave comments' : ''};
+        the session waits until you finish. Not now tells it you are not reading this one.
+      </div>
     {:else}
       <div class="d-head">
         <span class="tag warn">&#9888; needs you</span>
@@ -1084,6 +1128,16 @@
         <button class="btn p" onclick={open}>Open browser</button>
         <button class="btn" onclick={() => handOff(true)}>Done</button>
         <button class="btn d" onclick={() => handOff(false)}>Not now</button>
+      </div>
+    {/if}
+
+    {#if ask.kind === 'document_hand_off'}
+      <div class="acts">
+        <!-- Open routes to the viewer and answers nothing: the parked call
+           releases on the viewer's own done, so the session hears what the
+           reading produced. Not now is the answer. -->
+        <button class="btn p" onclick={openDocument}>Open</button>
+        <button class="btn d" onclick={declineDocument}>Not now</button>
       </div>
     {/if}
 
