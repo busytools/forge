@@ -887,7 +887,7 @@ impl BrowserHost {
     /// browser.
     #[cfg(desktop)]
     async fn ensure_auto_profile(&self, seat: &Seat) -> Result<(), String> {
-        self.named_profile(seat, &seat.label).await.map(|_| ())
+        self.named_profile(seat, &auto_name(seat)).await.map(|_| ())
     }
 
     /// Say a failed auto create once per seat per run. The create is retried
@@ -907,7 +907,7 @@ impl BrowserHost {
             text: format!(
                 "Note: this seat's browser profile '{}' could not be created - {why}. This call \
                  drove the shared browser.",
-                seat.label,
+                auto_name(seat),
             ),
         });
     }
@@ -959,6 +959,19 @@ impl BrowserHost {
             }
         }
     }
+}
+
+/// The name a seat's own profile takes: its label qualified by its project.
+///
+/// **The label alone is not unique.** Every project's lead carries `lead`,
+/// and two workers in different projects may share a label, so a
+/// label-only name would let the first seat to reach the browser hold it
+/// against every other seat of that label for good - "every seat gets one"
+/// false for all but one. The project qualifies it; a hand-made name or a
+/// same-named project in another org is the collision refusal's own job.
+#[cfg(desktop)]
+fn auto_name(seat: &Seat) -> String {
+    format!("{}-{}", seat.project, seat.label)
 }
 
 /// Why a named profile cannot be used on the phone yet. One sentence, and
@@ -1534,15 +1547,50 @@ mod tests {
             .expect_err("the shared browser's directory cannot be made");
         assert!(why.contains("cannot be made"), "the call reached the launch: {why}");
 
-        let auto = paths.profiles.join("lead");
+        let auto = paths.profiles.join("forge-lead");
         assert_eq!(
             profiles::owner_of(&auto),
             Ok(Some(who)),
-            "the seat's own name is recorded under its label",
+            "the seat's own name is recorded, its project qualifying its label",
         );
         assert!(
             !auto.join("DevToolsActivePort").exists(),
             "and nothing was driven through it - the browser waits for a call that names it",
+        );
+    }
+
+    /// **Two leads, two projects, two auto profiles.** Every lead carries
+    /// the label `lead`, so a label-only name would let the first project's
+    /// lead hold it against every other lead for good - "every seat gets
+    /// one" true for all but one. The auto name qualifies by project, so
+    /// each lead gets its own and neither is refused.
+    #[tokio::test]
+    async fn two_leads_in_different_projects_each_get_their_auto_profile() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let host = BrowserHost::new(paths.clone());
+        let one =
+            Seat { org: "Org".to_owned(), project: "one".to_owned(), label: "lead".to_owned() };
+        let two =
+            Seat { org: "Org".to_owned(), project: "two".to_owned(), label: "lead".to_owned() };
+
+        host.ensure_auto_profile(&one).await.expect("the first lead's own");
+        host.ensure_auto_profile(&two).await.expect("the second lead's own, not a collision");
+
+        assert_eq!(
+            profiles::owner_of(&paths.profiles.join("one-lead")),
+            Ok(Some(one)),
+            "the first project's lead owns one-lead",
+        );
+        assert_eq!(
+            profiles::owner_of(&paths.profiles.join("two-lead")),
+            Ok(Some(two)),
+            "and the second's owns two-lead, rather than being refused the first's name",
         );
     }
 
@@ -1559,7 +1607,7 @@ mod tests {
             profiles: dir.path().join("profiles"),
         };
         let other = Seat { org: "Other".to_owned(), ..seat() };
-        Named::open(other.clone(), "lead", &paths).expect("the other seat's profile");
+        Named::open(other.clone(), "forge-lead", &paths).expect("the other seat's profile");
         let host = BrowserHost::new(paths.clone());
         let who = seat();
 
@@ -1571,9 +1619,9 @@ mod tests {
             .flatten()
             .filter_map(|entry| entry.file_name().to_str().map(str::to_owned))
             .collect();
-        assert_eq!(dirs, vec!["lead".to_owned()], "no silent suffix: {dirs:?}");
+        assert_eq!(dirs, vec!["forge-lead".to_owned()], "no silent suffix: {dirs:?}");
         assert_eq!(
-            profiles::owner_of(&paths.profiles.join("lead")),
+            profiles::owner_of(&paths.profiles.join("forge-lead")),
             Ok(Some(other)),
             "and the name did not change hands",
         );

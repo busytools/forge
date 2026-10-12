@@ -783,7 +783,8 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
             "Name of the browser profile to drive. **Omit it to use the browser's own \
                 profile**, the one every seat shares. A named profile belongs to the SEAT that \
                 first names it - another seat naming it is refused - and a seat's own profile, \
-                named after its label, is created on its first reach for the browser that names \
+                named after its project and label, is created on its first reach for the browser \
+                that names \
                 no profile."
         };
         properties
