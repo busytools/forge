@@ -330,7 +330,7 @@ mod tests {
 
         // **Ref-shaped is not a ref**: the engine's refs carry a number after
         // the `e`, and the frame sequence ahead of it carries one too.
-        for not_a_ref in ["e", "f1", "fe12", "f1e7x"] {
+        for not_a_ref in ["e", "f1", "fe12", "f1xe3", "f1e7x"] {
             let Routed::Snippet(bare) =
                 route("browser_click", &json!({ "target": not_a_ref, "force": true }))
                     .expect("routes")
