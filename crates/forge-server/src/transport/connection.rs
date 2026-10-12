@@ -2607,18 +2607,19 @@ mod tests {
             });
         }
         let held = conversations.get(&seat).expect("the seat is held");
-        let window = held.lock();
-        assert_eq!(
-            row_id(window.messages().first().expect("a front")).as_deref(),
-            Some("cap-cron"),
-            "precondition: the count cut landed on the forged row",
-        );
-        let boundary = boundary_of(&window).expect("the window carries a row the file has");
+        let boundary = {
+            let window = held.lock();
+            assert_eq!(
+                row_id(window.messages().first().expect("a front")).as_deref(),
+                Some("cap-cron"),
+                "precondition: the count cut landed on the forged row",
+            );
+            boundary_of(&window).expect("the window carries a row the file has")
+        };
         assert_eq!(
             boundary.row, "result9999",
             "the forged row is passed over for the first row under it the file carries",
         );
-        drop(window);
 
         // And the read answers a page from that boundary rather than the empty
         // one: the walk does not end where the file simply could not be asked.

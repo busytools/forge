@@ -644,14 +644,20 @@ fn session_transcript(
 }
 
 /// How many bytes of a transcript one paging pass reads before growing, and
-/// how far it may grow before the transcript stops answering pages.
+/// how wide a single window it takes may be.
 ///
 /// **A page below the window's floor lies near the file's END**: the floor is
 /// the oldest frame the window still holds, so the turns above it are the
 /// newest rows of a file the session is still writing - some 4,000 rows, a
 /// few hundred KB at the rows a transcript writes. The step is what a cold
-/// session pays for its first paging request, and the cap is where the
-/// transcript is treated as unreadable for paging rather than read whole.
+/// session pays for its first paging request.
+///
+/// **The cap bounds one WINDOW, not the pass.** A read that comes up short
+/// doubles and reads again, so a walk that reaches the cap has read the
+/// windows under it as well - up to about twice this, and the anchor search
+/// pays the same. What is capped is therefore how far a single window reaches,
+/// and past it the transcript is treated as unreadable for paging rather than
+/// read whole.
 pub const SPAN_STEP_BYTES: u64 = 1024 * 1024;
 pub const SPAN_CAP_BYTES: u64 = 64 * 1024 * 1024;
 
@@ -764,7 +770,7 @@ fn read_rows_with(
     // wrote - the walk's first ask on a window that holds no row to name.
     let end = match below {
         None => len,
-        Some(anchor) => resolve_anchor(&mut file, len, anchor, step, cap)?,
+        Some(anchor) => resolve_anchor(&mut file, session_id, len, anchor, step, cap)?,
     };
 
     // **The rows, walked backward from the end.** A window holds the rows just
@@ -867,6 +873,7 @@ fn read_rows_with(
 /// answers as the end of the history.
 fn resolve_anchor(
     file: &mut fs::File,
+    session_id: &str,
     len: u64,
     anchor: &forge_primitives::TranscriptAnchor,
     step: u64,
@@ -893,6 +900,7 @@ fn resolve_anchor(
         if take >= cap || take >= len {
             tracing::warn!(
                 event_name = "span_read_anchor_unreached",
+                %session_id,
                 row = %anchor.row,
                 len,
                 cap,
