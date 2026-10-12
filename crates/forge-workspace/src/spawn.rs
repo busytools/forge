@@ -2066,7 +2066,7 @@ pub(crate) fn handle_despawn_worker(
     // nothing: a client reading "no seats" would delete every profile it
     // holds.
     if let Some(seats) = workspace.live_seats() {
-        workspace.browser_relay().announce_seats(seats);
+        workspace.browser_relay().announce_seats(&seats);
     }
 
     // Everything from here runs `git` or walks the tree, and the removal

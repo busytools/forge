@@ -199,10 +199,8 @@ mod tests {
         std::fs::create_dir_all(&hunt).expect("the profile dir");
         std::fs::write(
             hunt.join("owner.json"),
-            serde_json::to_vec(
-                &json!({ "org": "Other", "project": "forge", "label": "job-hunt" }),
-            )
-            .expect("the record"),
+            serde_json::to_vec(&json!({ "org": "Other", "project": "forge", "label": "job-hunt" }))
+                .expect("the record"),
         )
         .expect("the record file");
         let host = Arc::new(BrowserHost::new(paths));

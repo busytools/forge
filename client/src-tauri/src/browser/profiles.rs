@@ -250,12 +250,15 @@ impl Named {
 
 /// The file inside a profile's directory that records the seat it belongs to.
 /// Absent means the directory predates ownership: a legacy orphan the sweep
-/// takes.
+/// takes. Desktop-only: the phone runs one browser and holds no named
+/// profiles.
+#[cfg(desktop)]
 pub(super) const OWNER_FILE: &str = "owner.json";
 
 /// Record the seat a profile belongs to, beside the profile's own files so
 /// the name, the logins and the owner travel together. Creates the directory,
-/// which the owner file lives in.
+/// which the owner file lives in. Desktop-only, with its callers.
+#[cfg(desktop)]
 pub(super) fn record_owner(dir: &Path, seat: &Seat) -> Result<(), String> {
     std::fs::create_dir_all(dir)
         .map_err(|why| format!("the profile's directory cannot be made: {why}"))?;
@@ -268,7 +271,9 @@ pub(super) fn record_owner(dir: &Path, seat: &Seat) -> Result<(), String> {
 /// The seat recorded as this profile's owner. `Ok(None)` is a directory with
 /// no record - a legacy profile, owned by nobody - and `Err` is a record that
 /// cannot be read: the name refuses on that rather than guessing an owner,
-/// and the sweep reads it as ownerless and takes it.
+/// and the sweep reads it as ownerless and takes it. Desktop-only, with its
+/// callers.
+#[cfg(desktop)]
 pub(super) fn owner_of(dir: &Path) -> Result<Option<Seat>, String> {
     let body = match std::fs::read(dir.join(OWNER_FILE)) {
         Ok(body) => body,

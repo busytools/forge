@@ -386,8 +386,7 @@ mod tests {
         };
         let json = serde_json::to_string(&sent).expect("encode");
         assert!(json.contains("\"kind\":\"browser_seats\""), "{json}");
-        let ServerMessage::BrowserSeats { seats } =
-            serde_json::from_str(&json).expect("decode")
+        let ServerMessage::BrowserSeats { seats } = serde_json::from_str(&json).expect("decode")
         else {
             panic!("{json} decoded into another message")
         };

@@ -144,13 +144,11 @@ async fn two_named_profiles_are_two_browsers_and_see_different_cookies() {
         .expect("beta's launch wrote its port file");
     let alpha_port = alpha_port.lines().next().unwrap_or_default().to_owned();
     let beta_port = beta_port.lines().next().unwrap_or_default().to_owned();
-    assert_ne!(
-        alpha_port, beta_port,
-        "each name is a browser of its own, not a context of one",
-    );
+    assert_ne!(alpha_port, beta_port, "each name is a browser of its own, not a context of one",);
     // The browsers die with the test, whichever way it ends.
     for name in ["alpha", "beta"] {
-        if let Ok(port) = std::fs::read_to_string(paths.profiles.join(name).join("DevToolsActivePort"))
+        if let Ok(port) =
+            std::fs::read_to_string(paths.profiles.join(name).join("DevToolsActivePort"))
             && let Some(first) = port.lines().next()
             && let Ok(port) = first.trim().parse::<u16>()
         {
@@ -189,10 +187,7 @@ async fn show_raises_the_named_profiles_own_browser_on_its_own_page_raises_a_win
     // opened on, and the launch behind it is the headed one.
     let marker = std::fs::read_to_string(paths.profiles.join("hunt/windowed"))
         .expect("the headed launch left its windowed marker");
-    assert!(
-        marker.contains(&page),
-        "the window opened on the profile's own page: {marker}",
-    );
+    assert!(marker.contains(&page), "the window opened on the profile's own page: {marker}",);
     assert!(
         !paths.user_data.join("windowed").exists(),
         "the shared browser was not the one raised",
@@ -287,10 +282,7 @@ async fn a_named_profile_refuses_another_session_and_keeps_its_logins_across_a_d
         .await
         .map(|parts| text_of(&parts))
         .unwrap_or_else(|why| panic!("the profile could not be reopened: {why}"));
-    assert!(
-        seen.contains("alpha"),
-        "the profile's login survived the browser's close: {seen}",
-    );
+    assert!(seen.contains("alpha"), "the profile's login survived the browser's close: {seen}",);
 
     let relaunched = std::fs::read_to_string(&port_file)
         .expect("the new launch wrote its port file")

@@ -672,6 +672,14 @@ impl BrowserHost {
         Vec::new()
     }
 
+    /// The phone holds no named profiles, so a sweep has nothing to delete -
+    /// and it still exists, because the seat frame's handler is shared with
+    /// the desktop.
+    #[cfg(target_os = "android")]
+    pub async fn sweep(&self, _live: &[Seat]) -> Vec<String> {
+        Vec::new()
+    }
+
     /// Whether the profile's browser is up as a WINDOW right now - the shared
     /// one for `None` - so the strip's button can say hide where the window is
     /// up and show where it is not.
@@ -929,12 +937,18 @@ impl BrowserHost {
         };
         match profiles::verdict(name, seat, held.as_ref()) {
             profiles::Verdict::Refuse(refusal) => Err(refusal),
-            profiles::Verdict::Drive => {
-                let Some(entry) = named.get(name).map(Arc::clone) else {
-                    return Err(format!("the profile '{name}' went away while it was read"));
-                };
-                Ok(entry)
-            }
+            // **The record outlives the entry.** A restart leaves the map
+            // empty while the record still names the seat, so the owner's
+            // first call re-opens its own name over the same directory
+            // rather than being answered as if it had gone away.
+            profiles::Verdict::Drive => match named.get(name).map(Arc::clone) {
+                Some(entry) => Ok(entry),
+                None => {
+                    let fresh = Arc::new(Named::open(seat.clone(), name, &paths)?);
+                    named.insert(name.to_owned(), Arc::clone(&fresh));
+                    Ok(fresh)
+                }
+            },
             profiles::Verdict::Open => {
                 // The browser and its driver wait for the profile's first
                 // CALL: opening the name here costs nothing, and a session
@@ -1549,10 +1563,8 @@ mod tests {
         let host = BrowserHost::new(paths.clone());
         let who = seat();
 
-        let why = host
-            .ensure_auto_profile(&who)
-            .await
-            .expect_err("the name belongs to another seat");
+        let why =
+            host.ensure_auto_profile(&who).await.expect_err("the name belongs to another seat");
         assert!(why.contains("belongs to Other/forge/lead"), "{why}");
         let dirs: Vec<String> = std::fs::read_dir(&paths.profiles)
             .expect("the profiles root")
@@ -1603,7 +1615,11 @@ mod tests {
 
         let other = Seat { org: "Other".to_owned(), ..seat() };
         let refused = host
-            .call(&other, "browser_navigate", json!({ "url": "https://example.com", "profile": "hunt" }))
+            .call(
+                &other,
+                "browser_navigate",
+                json!({ "url": "https://example.com", "profile": "hunt" }),
+            )
             .await
             .expect_err("another seat's recorded profile");
         assert!(refused.contains("belongs to Busytools/forge/lead"), "{refused}");
@@ -1612,12 +1628,29 @@ mod tests {
             "the refusal names the two doors that do end it: {refused}",
         );
 
+        // **The owner re-attaches.** The record outlives the entry: the
+        // owner's first naming after the restart opens the SAME directory
+        // again rather than being answered as if the name had gone away.
+        // The op is the name resolution, not a call: a call would launch,
+        // and a unit test launches nothing.
+        let reattached = host.named_profile(&owner, "hunt").await.expect("the owner re-attaches");
+        assert_eq!(reattached.owner, owner, "and the entry is the owner's own");
+        assert_eq!(
+            profiles::owner_of(&paths.profiles.join("hunt")),
+            Ok(Some(owner.clone())),
+            "over the same record, not a new one",
+        );
+
         // A record that cannot be read refuses with its reason.
         std::fs::write(paths.profiles.join("hunt").join(profiles::OWNER_FILE), b"not json")
             .expect("a tampered record");
         let broken = BrowserHost::new(paths.clone());
         let refused = broken
-            .call(&owner, "browser_navigate", json!({ "url": "https://example.com", "profile": "hunt" }))
+            .call(
+                &owner,
+                "browser_navigate",
+                json!({ "url": "https://example.com", "profile": "hunt" }),
+            )
             .await
             .expect_err("an unreadable record refuses");
         assert!(refused.contains("cannot be read"), "{refused}");
@@ -1723,10 +1756,8 @@ mod tests {
         Named::open(other, "scout", &paths).expect("the other seat's profile");
         Named::open(mine.clone(), "hunt", &paths).expect("mine");
 
-        let refused = host
-            .show(Some("scout"), Some(&mine))
-            .await
-            .expect_err("another seat's profile");
+        let refused =
+            host.show(Some("scout"), Some(&mine)).await.expect_err("another seat's profile");
         assert!(refused.contains("belongs to Other/forge/lead"), "{refused}");
         assert!(refused.contains("raises only its own"), "{refused}");
     }

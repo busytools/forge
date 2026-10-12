@@ -212,10 +212,10 @@ impl BrowserRelay {
     /// machine. The set is sent whole rather than as a delta - it is
     /// authoritative at the moment it is sent, and the sweep is idempotent,
     /// so a repeat costs nothing and a missed one is corrected by the next.
-    pub fn announce_seats(&self, seats: Vec<SessionSlot>) {
+    pub fn announce_seats(&self, seats: &[SessionSlot]) {
         let role = self.lock();
         for client in role.host.iter().chain(role.waiting.iter()) {
-            let _ = client.notices.send(Notice::Seats(seats.clone()));
+            let _ = client.notices.send(Notice::Seats(seats.to_vec()));
         }
     }
 
@@ -681,11 +681,7 @@ mod tests {
             .await
             .expect("the ask reaches the claimant, not the displaced holder");
         assert!(first_rx.try_recv().is_err(), "and nothing reaches the old holder");
-        assert_eq!(
-            first_note_rx.try_recv(),
-            Ok(Notice::Taken),
-            "which is told it lost the role",
-        );
+        assert_eq!(first_note_rx.try_recv(), Ok(Notice::Taken), "which is told it lost the role");
     }
 
     /// The role a force-take leaves is the claimant's: a third capable client
@@ -754,7 +750,7 @@ mod tests {
         assert!(!relay.register(2, second, second_notes), "a waiter");
 
         let seats = vec![SessionSlot::lead("TestOrg", "proj")];
-        relay.announce_seats(seats.clone());
+        relay.announce_seats(&seats);
 
         assert_eq!(first_note_rx.try_recv(), Ok(Notice::Seats(seats.clone())), "the host");
         assert_eq!(second_note_rx.try_recv(), Ok(Notice::Seats(seats)), "and the waiter");
