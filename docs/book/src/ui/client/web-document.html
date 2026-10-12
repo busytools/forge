@@ -1,210 +1,526 @@
 <!doctype html>
 <html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>forge &middot; a document</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
-<style>
-  /* The same token set the client ships (theme.ts) and the same class names
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>forge &middot; a document</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      /* The same token set the client ships (theme.ts) and the same class names
      the page draws with (`client/src/assets/web.css`, the `.doc` block), so
      this file and the page can be read side by side. The prose rules are
      web-session.html's own block, repeated here because the viewer renders
      markdown through the chat's exact renderer and Prose component. */
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  :root {
-    --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130; --line:#222a3c;
-    --text:#c9d1d9; --muted:#8f98a8; --dim:#788294;
-    --accent:#f47600; --ok:#82c76b; --bad:#e0683e; --warn:#c9a13b;
-    --blue:#61a0e0; --hot:#ffb058; --sel:#20140a; --ctl:#516590;
-    --ui: "Fira Code", system-ui, -apple-system, "Segoe UI", sans-serif;
-    --mono: "Fira Code", ui-monospace, Menlo, monospace;
-    --r: 10px;
-    --fs-prose: 15.5px; --fs-base: 15.5px; --fs-data: 14px; --fs-label: 12.5px;
-  }
-  html, body { height: 100%; }
-  body {
-    background:
-      radial-gradient(1100px 520px at 8% -12%, rgba(244,118,0,.07), transparent 60%),
-      radial-gradient(900px 460px at 96% 108%, rgba(91,156,248,.05), transparent 62%),
-      var(--bg);
-    color: var(--text); font-family: var(--ui); font-size: 15.5px; line-height: 1.5;
-    -webkit-font-smoothing: antialiased;
-  }
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      :root {
+        --bg: #04050a;
+        --s1: #0d111a;
+        --s2: #141926;
+        --s3: #1b2130;
+        --line: #222a3c;
+        --text: #c9d1d9;
+        --muted: #8f98a8;
+        --dim: #788294;
+        --accent: #f47600;
+        --ok: #82c76b;
+        --bad: #e0683e;
+        --warn: #c9a13b;
+        --blue: #61a0e0;
+        --hot: #ffb058;
+        --sel: #20140a;
+        --ctl: #516590;
+        --ui: "Fira Code", system-ui, -apple-system, "Segoe UI", sans-serif;
+        --mono: "Fira Code", ui-monospace, Menlo, monospace;
+        --r: 10px;
+        --fs-prose: 15.5px;
+        --fs-base: 15.5px;
+        --fs-data: 14px;
+        --fs-label: 12.5px;
+      }
+      html,
+      body {
+        height: 100%;
+      }
+      body {
+        background:
+          radial-gradient(
+            1100px 520px at 8% -12%,
+            rgba(244, 118, 0, 0.07),
+            transparent 60%
+          ),
+          radial-gradient(
+            900px 460px at 96% 108%,
+            rgba(91, 156, 248, 0.05),
+            transparent 62%
+          ),
+          var(--bg);
+        color: var(--text);
+        font-family: var(--ui);
+        font-size: 15.5px;
+        line-height: 1.5;
+        -webkit-font-smoothing: antialiased;
+      }
 
-  /* ---------- the viewer's column (web.css `.wrap.doc`) ---------- */
-  .wrap { padding: 30px 40px 64px; }
-  .doc { max-width: 860px; margin: 0 auto; }
-  .pending { color: var(--muted); font-size: var(--fs-base); margin-top: 12vh; text-align: center; }
-  .doc-said { color: var(--muted); font-size: var(--fs-base); text-align: center; margin: 40px 0; }
-  .doc-empty { color: var(--dim); font-size: var(--fs-base); text-align: center; margin: 40px 0; }
-  .doc-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere;
-    font-family: var(--mono); font-size: var(--fs-data); color: var(--text); line-height: 1.6; }
-  .doc-pdf { width: 100%; height: 420px; border: 1px solid var(--line);
-    border-radius: var(--r); background: var(--s1); display: flex; align-items: center;
-    justify-content: center; color: var(--dim); font-family: var(--mono); font-size: var(--fs-label); }
+      /* ---------- the viewer's column (web.css `.wrap.doc`) ---------- */
+      .wrap {
+        padding: 30px 40px 64px;
+      }
+      .doc {
+        max-width: 860px;
+        margin: 0 auto;
+      }
+      .pending {
+        color: var(--muted);
+        font-size: var(--fs-base);
+        margin-top: 12vh;
+        text-align: center;
+      }
+      .doc-said {
+        color: var(--muted);
+        font-size: var(--fs-base);
+        text-align: center;
+        margin: 40px 0;
+      }
+      .doc-empty {
+        color: var(--dim);
+        font-size: var(--fs-base);
+        text-align: center;
+        margin: 40px 0;
+      }
+      .doc-text {
+        margin: 0;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        font-family: var(--mono);
+        font-size: var(--fs-data);
+        color: var(--text);
+        line-height: 1.6;
+      }
+      .doc-pdf {
+        width: 100%;
+        height: 420px;
+        border: 1px solid var(--line);
+        border-radius: var(--r);
+        background: var(--s1);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--dim);
+        font-family: var(--mono);
+        font-size: var(--fs-label);
+      }
 
-  /* prose, as web-session.html draws it */
-  .prose p + p { margin-top: 20px; }
-  .prose ul, .prose ol { padding-left: 22px; margin: 20px 0; list-style-position: inside; }
-  .prose li + li { margin-top: 4px; }
-  .prose code { font-family: var(--mono); font-size: .87em; color: var(--muted);
-    background: var(--s2); border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; }
-  .prose h1, .prose h2, .prose h3, .prose h4, .prose h5, .prose h6 {
-    font-size: var(--fs-prose); font-weight: 500; margin: 20px 0; }
-  .prose strong { font-weight: 500; }
-  .prose a { color: var(--blue); }
-  .prose { overflow-wrap: anywhere; }
-  .prose blockquote { border-left: 2px solid var(--line); color: var(--muted);
-    padding: 2px 0 2px 12px; margin: 20px 0; }
-  .prose table { border-collapse: collapse; margin: 20px 0; }
-  .prose th, .prose td { text-align: left; padding: 2px 12px 2px 0; }
-  .prose td { overflow-wrap: break-word; }
-  .prose th { color: var(--muted); font-weight: 500; overflow-wrap: normal;
-    border-bottom: 1px solid var(--line); }
-  .prose hr { border: 0; height: 1px; background: var(--line); margin: 20px 0; }
-  .prose .code { margin: 20px 0; background: var(--s1); border: 1px solid var(--line);
-    border-radius: var(--r); padding: 12px 14px; font-family: var(--mono);
-    font-size: var(--fs-data); overflow-wrap: anywhere; }
-  .prose .code .head { color: var(--dim); font-size: var(--fs-label); margin-bottom: 6px; }
+      /* prose, as web-session.html draws it */
+      .prose p + p {
+        margin-top: 20px;
+      }
+      .prose ul,
+      .prose ol {
+        padding-left: 22px;
+        margin: 20px 0;
+        list-style-position: inside;
+      }
+      .prose li + li {
+        margin-top: 4px;
+      }
+      .prose code {
+        font-family: var(--mono);
+        font-size: 0.87em;
+        color: var(--muted);
+        background: var(--s2);
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        padding: 1px 5px;
+      }
+      .prose h1,
+      .prose h2,
+      .prose h3,
+      .prose h4,
+      .prose h5,
+      .prose h6 {
+        font-size: var(--fs-prose);
+        font-weight: 500;
+        margin: 20px 0;
+      }
+      .prose strong {
+        font-weight: 500;
+      }
+      .prose a {
+        color: var(--blue);
+      }
+      .prose {
+        overflow-wrap: anywhere;
+      }
+      .prose blockquote {
+        border-left: 2px solid var(--line);
+        color: var(--muted);
+        padding: 2px 0 2px 12px;
+        margin: 20px 0;
+      }
+      .prose table {
+        border-collapse: collapse;
+        margin: 20px 0;
+      }
+      .prose th,
+      .prose td {
+        text-align: left;
+        padding: 2px 12px 2px 0;
+      }
+      .prose td {
+        overflow-wrap: break-word;
+      }
+      .prose th {
+        color: var(--muted);
+        font-weight: 500;
+        overflow-wrap: normal;
+        border-bottom: 1px solid var(--line);
+      }
+      .prose hr {
+        border: 0;
+        height: 1px;
+        background: var(--line);
+        margin: 20px 0;
+      }
+      .prose .code {
+        margin: 20px 0;
+        background: var(--s1);
+        border: 1px solid var(--line);
+        border-radius: var(--r);
+        padding: 12px 14px;
+        font-family: var(--mono);
+        font-size: var(--fs-data);
+        overflow-wrap: anywhere;
+      }
+      .prose .code .head {
+        color: var(--dim);
+        font-size: var(--fs-label);
+        margin-bottom: 6px;
+      }
 
-  /* the states below the measure, each in its own frame */
-  .strip { max-width: 860px; margin: 40px auto 0; padding-top: 18px; border-top: 1px solid var(--line); }
-  .strip h2 { font-size: var(--fs-label); color: var(--dim); font-weight: 400;
-    font-family: var(--mono); margin-bottom: 14px; }
-  .strip .state { border: 1px dashed var(--line); border-radius: var(--r);
-    padding: 18px 16px; margin-bottom: 12px; }
-  .strip .state .cap { font-family: var(--mono); font-size: var(--fs-label);
-    color: var(--dim); margin-bottom: 8px; }
+      /* the states below the measure, each in its own frame */
+      .strip {
+        max-width: 860px;
+        margin: 40px auto 0;
+        padding-top: 18px;
+        border-top: 1px solid var(--line);
+      }
+      .strip h2 {
+        font-size: var(--fs-label);
+        color: var(--dim);
+        font-weight: 400;
+        font-family: var(--mono);
+        margin-bottom: 14px;
+      }
+      .strip .state {
+        border: 1px dashed var(--line);
+        border-radius: var(--r);
+        padding: 18px 16px;
+        margin-bottom: 12px;
+      }
+      .strip .state .cap {
+        font-family: var(--mono);
+        font-size: var(--fs-label);
+        color: var(--dim);
+        margin-bottom: 8px;
+      }
 
-  /* a reviewable document: its own numbered lines */
-  .strip .doc-lines { font-family: var(--mono); font-size: var(--fs-data); line-height: 1.6; }
-  .strip .doc-line { display: flex; gap: 12px; align-items: baseline; }
-  .strip .doc-line.target { background: var(--s1); }
-  .strip .doc-lnum { flex: 0 0 auto; min-width: 2.6rem; text-align: right;
-    font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
-    background: none; border: 0; padding: 0; }
-  .strip .doc-line.target .doc-lnum { color: var(--accent); }
-  .strip .doc-ltext { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); }
-  .strip .doc-note { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline;
-    margin: 4px 0 8px 4.6rem; padding: 6px 10px; background: var(--s1);
-    border-left: 2px solid var(--line); border-radius: 0 var(--r) var(--r) 0;
-    font-family: var(--ui); font-size: var(--fs-base); }
-  .strip .doc-who { color: var(--muted); font-size: var(--fs-label); }
-  .strip .doc-words { color: var(--text); }
-  .strip .doc-cc { color: var(--warn); font-size: var(--fs-label); font-family: var(--mono); }
-  .strip .doc-compose { margin: 4px 0 10px 4.6rem; display: flex; flex-direction: column; gap: 8px; }
-  .strip .doc-compose .box { width: 100%; min-height: 44px; background: var(--bg);
-    color: var(--muted); border: 1px solid var(--line); border-radius: var(--r);
-    padding: 8px 10px; font-family: var(--ui); font-size: var(--fs-base); }
-  .strip .doc-compose-acts { display: flex; gap: 8px; justify-content: flex-end; }
-  .strip .doc-comment-btn, .strip .doc-cancel-btn, .strip .doc-finish-btn {
-    font-family: var(--mono); font-size: var(--fs-label); border-radius: 9px;
-    padding: 6px 12px; border: 1px solid var(--line); background: var(--s1); color: var(--muted); }
-  .strip .doc-comment-btn { color: var(--text); border-color: var(--ctl); }
-  .strip .doc-stale { margin: 16px 0 8px; border-top: 1px solid var(--line); padding-top: 12px; }
-  .strip .doc-stale h3 { font-size: var(--fs-label); font-weight: 400; color: var(--dim);
-    font-family: var(--mono); margin-bottom: 10px; }
-  .strip .doc-quoted { margin-left: 0; }
-  .strip .doc-quote { width: 100%; font-family: var(--mono); font-size: var(--fs-label);
-    color: var(--muted); background: var(--bg); border: 1px solid var(--line);
-    border-radius: 8px; padding: 6px 8px; white-space: pre-wrap; }
-  .strip .doc-finish { display: flex; align-items: center; gap: 12px;
-    margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--line); }
-  .strip .doc-left { color: var(--ok); font-family: var(--ui); font-size: var(--fs-base); }
-</style>
-</head>
-<body>
+      /* a reviewable document: its rendered blocks, each one a comment target */
+      .strip .doc-blocks {
+        font-size: var(--fs-base);
+      }
+      .strip .doc-block {
+        position: relative;
+        border-radius: 6px;
+        padding: 2px 10px;
+        margin: 0 -10px;
+      }
+      .strip .doc-block.target {
+        background: var(--s1);
+        box-shadow: inset 2px 0 0 var(--accent);
+      }
+      .strip .doc-block h1 {
+        font-size: calc(var(--fs-base) * 1.6);
+        margin: 6px 0;
+        font-weight: 600;
+      }
+      .strip .doc-block p {
+        margin: 8px 0;
+        line-height: 1.55;
+      }
+      .strip .doc-note {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: baseline;
+        margin: 4px 0 8px 2.2rem;
+        padding: 6px 10px;
+        background: var(--s1);
+        border-left: 2px solid var(--line);
+        border-radius: 0 var(--r) var(--r) 0;
+        font-family: var(--ui);
+        font-size: var(--fs-base);
+      }
+      .strip .doc-who {
+        color: var(--muted);
+        font-size: var(--fs-label);
+      }
+      .strip .doc-words {
+        color: var(--text);
+      }
+      .strip .doc-cc {
+        color: var(--warn);
+        font-size: var(--fs-label);
+        font-family: var(--mono);
+      }
+      .strip .doc-compose {
+        margin: 4px 0 10px 2.2rem;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .strip .doc-compose .box {
+        width: 100%;
+        min-height: 44px;
+        background: var(--bg);
+        color: var(--muted);
+        border: 1px solid var(--line);
+        border-radius: var(--r);
+        padding: 8px 10px;
+        font-family: var(--ui);
+        font-size: var(--fs-base);
+      }
+      .strip .doc-compose-acts {
+        display: flex;
+        gap: 8px;
+        justify-content: flex-end;
+      }
+      .strip .doc-comment-btn,
+      .strip .doc-cancel-btn,
+      .strip .doc-finish-btn {
+        font-family: var(--mono);
+        font-size: var(--fs-label);
+        border-radius: 9px;
+        padding: 6px 12px;
+        border: 1px solid var(--line);
+        background: var(--s1);
+        color: var(--muted);
+      }
+      .strip .doc-comment-btn {
+        color: var(--text);
+        border-color: var(--ctl);
+      }
+      .strip .doc-stale {
+        margin: 16px 0 8px;
+        border-top: 1px solid var(--line);
+        padding-top: 12px;
+      }
+      .strip .doc-stale h3 {
+        font-size: var(--fs-label);
+        font-weight: 400;
+        color: var(--dim);
+        font-family: var(--mono);
+        margin-bottom: 10px;
+      }
+      .strip .doc-quoted {
+        margin-left: 0;
+      }
+      .strip .doc-quote {
+        width: 100%;
+        font-family: var(--mono);
+        font-size: var(--fs-label);
+        color: var(--muted);
+        background: var(--bg);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 6px 8px;
+        white-space: pre-wrap;
+      }
+      .strip .doc-finish {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-top: 18px;
+        padding-top: 12px;
+        border-top: 1px solid var(--line);
+      }
+      .strip .doc-left {
+        color: var(--ok);
+        font-family: var(--ui);
+        font-size: var(--fs-base);
+      }
+    </style>
+  </head>
+  <body>
+    <main class="wrap doc">
+      <article class="doc-body">
+        <div class="prose">
+          <h1>Forge file hand-off &middot; the plan</h1>
+          <p>
+            The agent hands the reader a document, and it opens here: the
+            client's own viewer, on every surface the client runs. This drawing
+            is the ordinary state - a markdown document, rendered by the same
+            module and the same <code>Prose</code> component the chat draws its
+            prose with.
+          </p>
+          <h2>The ask, and the done</h2>
+          <ul>
+            <li>
+              The hand-off arrives as the dock's ask - <strong>Open</strong> or
+              <strong>Not now</strong> - and Open lands here, at the document's
+              resolved path.
+            </li>
+            <li>
+              The parked call waits: the reader's <strong>done</strong> files
+              their comments as one review and answers with what was filed, so
+              the agent hears what the reading produced.
+            </li>
+          </ul>
+          <blockquote>
+            <p>
+              Not now answers the decline; the open answers nothing; the done
+              answers the review.
+            </p>
+          </blockquote>
+          <p>A fence takes the chat's own code panel:</p>
+          <div class="code">
+            <div class="head">toml</div>
+            <pre>
+[documents]
+max_size_mib = 10</pre>
+          </div>
+          <table>
+            <tr>
+              <th>surface</th>
+              <th>the PDF rides</th>
+            </tr>
+            <tr>
+              <td>desktop app</td>
+              <td>WKWebView's own viewer (measured)</td>
+            </tr>
+            <tr>
+              <td>a browser</td>
+              <td>its own viewer (Chromium measured)</td>
+            </tr>
+            <tr>
+              <td>the phone</td>
+              <td>pdf.js, in the page</td>
+            </tr>
+          </table>
+          <hr />
+          <p>
+            The viewer takes the whole column it is given, and a plain-text
+            document wraps inside it - the sheet has no sideways scroller
+            anywhere.
+          </p>
+        </div>
+      </article>
 
-<main class="wrap doc">
-  <article class="doc-body">
-    <div class="prose">
-      <h1>Forge file hand-off &middot; the plan</h1>
-      <p>The agent hands the reader a document, and it opens here: the
-        client's own viewer, on every surface the client runs. This drawing is
-        the ordinary state - a markdown document, rendered by the same module
-        and the same <code>Prose</code> component the chat draws its prose
-        with.</p>
-      <h2>The two moments</h2>
-      <ul>
-        <li>The hand-off answers the moment this page opens, with the
-          document's resolved path.</li>
-        <li>A review the reader leaves arrives later, as the same event a code
-          review raises.</li>
-      </ul>
-      <blockquote>
-        <p>Nothing waits on the reader's pace.</p>
-      </blockquote>
-      <p>A fence takes the chat's own code panel:</p>
-      <div class="code"><div class="head">toml</div><pre>[documents]
-max_size_mib = 10</pre></div>
-      <table>
-        <tr><th>surface</th><th>the PDF rides</th></tr>
-        <tr><td>desktop app</td><td>WKWebView's own viewer (measured)</td></tr>
-        <tr><td>a browser</td><td>its own viewer (Chromium measured)</td></tr>
-        <tr><td>the phone</td><td>pdf.js, in the page</td></tr>
-      </table>
-      <hr>
-      <p>The measure is 860px, centred, and a plain-text document wraps inside
-        it - the sheet has no sideways scroller anywhere.</p>
-    </div>
-  </article>
-
-  <section class="strip">
-    <h2>the states, each drawn as its own line</h2>
-    <div class="state">
-      <div class="cap">a refusal (missing, unreadable, over the ceiling, outside the tree, a PDF asked to be reviewable, non-UTF&nbsp;8)</div>
-      <p class="doc-said">no document at /Users/me/proj/docs/plan.md</p>
-    </div>
-    <div class="state">
-      <div class="cap">a kind the viewer does not draw - as itself</div>
-      <p class="doc-said">This is a .rs document; the viewer draws markdown, PDFs and text.</p>
-    </div>
-    <div class="state">
-      <div class="cap">no bytes</div>
-      <p class="doc-empty">The document is empty.</p>
-    </div>
-    <div class="state">
-      <div class="cap">a PDF in the platform's own viewer (the embed element, over a blob of the read's bytes)</div>
-      <div class="doc-pdf">application/pdf &middot; the platform's viewer draws here</div>
-    </div>
-    <div class="state">
-      <div class="cap">opening - the read is out</div>
-      <p class="pending">Opening /Users/me/proj/docs/plan.md...</p>
-    </div>
-    <div class="state">
-      <div class="cap">a reviewable document: its own numbered lines, a comment under the line it is about, a draft, the composer open, and the finish</div>
-      <div class="doc-lines">
-        <div class="doc-line"><span class="doc-lnum">1</span><span class="doc-ltext"># Forge file hand-off &middot; the plan</span></div>
-        <div class="doc-line"><span class="doc-lnum">2</span><span class="doc-ltext"></span></div>
-        <div class="doc-line"><span class="doc-lnum">3</span><span class="doc-ltext">The agent hands the reader a document.</span></div>
-        <div class="doc-note"><span class="doc-who">you</span><span class="doc-words">name which document this is</span></div>
-        <div class="doc-line"><span class="doc-lnum">4</span><span class="doc-ltext">The hand-off answers the moment this page opens.</span></div>
-        <div class="doc-note"><span class="doc-who">you</span><span class="doc-words">state the 10 MiB default here</span><span class="doc-cc">drafted</span></div>
-        <div class="doc-line target"><span class="doc-lnum">5</span><span class="doc-ltext">A review left arrives later, as any review does.</span></div>
-        <div class="doc-compose">
-          <div class="box">comment on line 5...</div>
-          <div class="doc-compose-acts">
-            <button class="doc-cancel-btn">cancel</button>
-            <button class="doc-comment-btn">comment</button>
+      <section class="strip">
+        <h2>the states, each drawn as its own line</h2>
+        <div class="state">
+          <div class="cap">
+            a refusal (missing, unreadable, over the ceiling, outside the tree,
+            a PDF asked to be reviewable, non-UTF&nbsp;8)
+          </div>
+          <p class="doc-said">no document at /Users/me/proj/docs/plan.md</p>
+        </div>
+        <div class="state">
+          <div class="cap">a kind the viewer does not draw - as itself</div>
+          <p class="doc-said">
+            This is a .rs document; the viewer draws markdown, PDFs and text.
+          </p>
+        </div>
+        <div class="state">
+          <div class="cap">no bytes</div>
+          <p class="doc-empty">The document is empty.</p>
+        </div>
+        <div class="state">
+          <div class="cap">
+            a PDF in the platform's own viewer (the embed element, over a blob
+            of the read's bytes)
+          </div>
+          <div class="doc-pdf">
+            application/pdf &middot; the platform's viewer draws here
           </div>
         </div>
-      </div>
-      <div class="doc-stale">
-        <h3>written against an earlier version of this document</h3>
-        <div class="doc-note doc-quoted">
-          <div class="doc-quote">the line this was written beside, as it stood then</div>
-          <span class="doc-who">you</span><span class="doc-words">the address belongs in this paragraph</span>
+        <div class="state">
+          <div class="cap">opening - the read is out</div>
+          <p class="pending">Opening /Users/me/proj/docs/plan.md...</p>
         </div>
-      </div>
-      <div class="doc-finish">
-        <button class="doc-finish-btn">finish review (2)</button>
-      </div>
-    </div>
-  </section>
-</main>
-
-</body>
+        <div class="state">
+          <div class="cap">
+            a reviewable document: its rendered blocks, each one a comment
+            target - a comment under its block, a draft, the composer open under
+            the marked block, and the done
+          </div>
+          <div class="doc-blocks">
+            <div class="doc-block">
+              <h1>Forge file hand-off &middot; the plan</h1>
+            </div>
+            <div class="doc-block">
+              <p>
+                The agent hands the reader a document, and it opens here.
+                <strong>Markdown renders</strong>, and every block of it is a
+                comment target.
+              </p>
+            </div>
+            <div class="doc-note">
+              <span class="doc-who">you</span
+              ><span class="doc-words">name which document this is</span>
+            </div>
+            <div class="doc-block target">
+              <p>
+                A review left arrives filed under the document's scope - the
+                block under the pointer is the one a press comments on.
+              </p>
+            </div>
+            <div class="doc-compose">
+              <div class="box">comment on this part...</div>
+              <div class="doc-compose-acts">
+                <button class="doc-cancel-btn">cancel</button>
+                <button class="doc-comment-btn">comment</button>
+              </div>
+            </div>
+            <div class="doc-block">
+              <p>
+                The hand-off waits for the done, and the done answers it with
+                the review.
+              </p>
+            </div>
+            <div class="doc-note">
+              <span class="doc-who">you</span
+              ><span class="doc-words">state the 10 MiB default here</span
+              ><span class="doc-cc">drafted</span>
+            </div>
+          </div>
+          <div class="doc-stale">
+            <h3>written against an earlier version of this document</h3>
+            <div class="doc-note doc-quoted">
+              <div class="doc-quote">
+                the block this was written beside, as it stood then
+              </div>
+              <span class="doc-who">you</span
+              ><span class="doc-words"
+                >the address belongs in this paragraph</span
+              >
+            </div>
+          </div>
+          <div class="doc-finish">
+            <button class="doc-finish-btn">done (2)</button>
+          </div>
+        </div>
+      </section>
+    </main>
+  </body>
 </html>
