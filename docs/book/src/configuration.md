@@ -521,8 +521,8 @@ name unset, which is the built-in.
 
 ## `[documents]`
 
-The ceiling on one document a session hands the reader through
-`hand_off_document`. Absent means the default.
+The ceiling on one document a session hands the reader through the
+`documents__hand_off` tool. Absent means the default.
 
 | Key            | Type    | Default | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | -------------- | ------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
