@@ -95,7 +95,7 @@
   .b-lane-nm { font-size: 12.5px; font-weight: 600; color: var(--muted); letter-spacing: .01em; }
   .b-count { font-family: var(--mono); font-size: 12.5px; color: var(--dim); }
   .b-rule { flex: 1; height: 1px; background: var(--line); }
-  /* the completed group's fold, under the last card */
+  /* a grown group's fold, under the last card */
   .b-fold { display: block; width: 100%; margin-top: 10px; text-align: left;
     font-family: var(--mono); font-size: 12.5px; color: var(--muted);
     background: transparent; border: 0; border-radius: 10px; padding: 9px 12px; cursor: pointer; }
@@ -268,7 +268,7 @@
     <button class="b-back">&larr; back</button>
     <span class="b-id">
       <span class="b-nm">task-board</span>
-      <span class="b-read"><b>2 waiting on you</b> &middot; 7 rows &middot; 2 running</span>
+      <span class="b-read"><b>2 waiting on you</b> &middot; 32 rows &middot; 2 running</span>
     </span>
     <span class="b-spacer"></span>
     <a class="b-seat" href="./web-session.html">task-board</a>
@@ -304,7 +304,7 @@
 
   <div class="b-lanes">
     <section class="b-lane" data-state="pending">
-      <div class="b-cap"><span class="b-lane-nm">Backlog</span><span class="b-count">1</span><span class="b-rule"></span></div>
+      <div class="b-cap"><span class="b-lane-nm">Backlog</span><span class="b-count">11</span><span class="b-rule"></span></div>
       <article class="b-card">
         <div class="b-row1">
           <span class="b-mark"></span>
@@ -322,6 +322,142 @@
           <span class="b-acts"><button class="b-pick">unclaimed &#9662;</button></span>
         </div>
       </article>
+      <article class="b-card">
+        <div class="b-row1">
+          <span class="b-mark"></span>
+          <span class="b-sub"><span class="b-line">the drag's ghost follows the pointer</span></span>
+        </div>
+        <div class="b-meta">
+          <span class="b-owner"><span class="b-ava">H</span>hand</span>
+          <span class="b-chips"></span>
+        </div>
+        <div class="b-last">
+          <span class="b-prog"><span class="b-time">worked 0s</span></span>
+          <span class="b-wrote">wrote 4h ago</span>
+          <span class="b-acts"><button class="b-pick">hand &#9662;</button></span>
+        </div>
+      </article>
+      <article class="b-card">
+        <div class="b-row1">
+          <span class="b-mark"></span>
+          <span class="b-sub"><span class="b-line">the epic pill lands on its card</span></span>
+        </div>
+        <div class="b-meta">
+          <span class="b-owner"><span class="b-ava">S</span>steward</span>
+          <span class="b-chips"></span>
+        </div>
+        <div class="b-last">
+          <span class="b-prog"><span class="b-time">worked 10m</span></span>
+          <span class="b-wrote">wrote 4h ago</span>
+          <span class="b-acts"><button class="b-pick">steward &#9662;</button></span>
+        </div>
+      </article>
+      <article class="b-card">
+        <div class="b-row1">
+          <span class="b-mark"></span>
+          <span class="b-sub"><span class="b-line">the count stays true while the group folds</span></span>
+        </div>
+        <div class="b-meta">
+          <span class="b-owner"><span class="b-ava">F</span>fleet</span>
+          <span class="b-chips"></span>
+        </div>
+        <div class="b-last">
+          <span class="b-prog"><span class="b-time">worked 0s</span></span>
+          <span class="b-wrote">wrote 3h ago</span>
+          <span class="b-acts"><button class="b-pick">fleet &#9662;</button></span>
+        </div>
+      </article>
+      <article class="b-card">
+        <div class="b-row1">
+          <span class="b-mark"></span>
+          <span class="b-sub"><span class="b-line">a dropped card keeps its place</span></span>
+        </div>
+        <div class="b-meta">
+          <span class="b-owner"><span class="b-ava">T</span>task-board</span>
+          <span class="b-chips"></span>
+        </div>
+        <div class="b-last">
+          <span class="b-prog"><span class="b-time">worked 20m</span></span>
+          <span class="b-wrote">wrote 3h ago</span>
+          <span class="b-acts"><button class="b-pick">task-board &#9662;</button></span>
+        </div>
+      </article>
+      <article class="b-card">
+        <div class="b-row1">
+          <span class="b-mark"></span>
+          <span class="b-sub"><span class="b-line">the drawer's task list is a door</span></span>
+        </div>
+        <div class="b-meta">
+          <span class="b-owner"><span class="b-ava">P</span>probe</span>
+          <span class="b-chips"></span>
+        </div>
+        <div class="b-last">
+          <span class="b-prog"><span class="b-time">worked 0s</span></span>
+          <span class="b-wrote">wrote 2h ago</span>
+          <span class="b-acts"><button class="b-pick">probe &#9662;</button></span>
+        </div>
+      </article>
+      <article class="b-card">
+        <div class="b-row1">
+          <span class="b-mark"></span>
+          <span class="b-sub"><span class="b-line">the seats draw only for a held project</span></span>
+        </div>
+        <div class="b-meta">
+          <span class="b-owner"><span class="b-ava">F</span>forge</span>
+          <span class="b-chips"></span>
+        </div>
+        <div class="b-last">
+          <span class="b-prog"><span class="b-time">worked 5m</span></span>
+          <span class="b-wrote">wrote 2h ago</span>
+          <span class="b-acts"><button class="b-pick">forge &#9662;</button></span>
+        </div>
+      </article>
+      <article class="b-card">
+        <div class="b-row1">
+          <span class="b-mark"></span>
+          <span class="b-sub"><span class="b-line">the create line files at the queue's end</span></span>
+        </div>
+        <div class="b-meta">
+          <span class="b-owner"><span class="b-ava">A</span>asker</span>
+          <span class="b-chips"></span>
+        </div>
+        <div class="b-last">
+          <span class="b-prog"><span class="b-time">worked 0s</span></span>
+          <span class="b-wrote">wrote 1h ago</span>
+          <span class="b-acts"><button class="b-pick">asker &#9662;</button></span>
+        </div>
+      </article>
+      <article class="b-card">
+        <div class="b-row1">
+          <span class="b-mark"></span>
+          <span class="b-sub"><span class="b-line">the lane head carries the count</span></span>
+        </div>
+        <div class="b-meta">
+          <span class="b-owner"><span class="b-ava">H</span>hand</span>
+          <span class="b-chips"></span>
+        </div>
+        <div class="b-last">
+          <span class="b-prog"><span class="b-time">worked 15m</span></span>
+          <span class="b-wrote">wrote 1h ago</span>
+          <span class="b-acts"><button class="b-pick">hand &#9662;</button></span>
+        </div>
+      </article>
+      <article class="b-card">
+        <div class="b-row1">
+          <span class="b-mark"></span>
+          <span class="b-sub"><span class="b-line">the fold opens on the row it was asked for</span></span>
+        </div>
+        <div class="b-meta">
+          <span class="b-owner"><span class="b-ava">S</span>steward</span>
+          <span class="b-chips"></span>
+        </div>
+        <div class="b-last">
+          <span class="b-prog"><span class="b-time">worked 0s</span></span>
+          <span class="b-wrote">wrote 40m ago</span>
+          <span class="b-acts"><button class="b-pick">steward &#9662;</button></span>
+        </div>
+      </article>
+      <button class="b-fold" aria-expanded="false">show all (11)</button>
     </section>
 
     <section class="b-lane" data-state="waiting">
@@ -488,7 +624,7 @@
     </section>
 
     <section class="b-lane" data-state="failed">
-      <div class="b-cap"><span class="b-lane-nm">Failed</span><span class="b-count">1</span><span class="b-rule"></span></div>
+      <div class="b-cap"><span class="b-lane-nm">Failed</span><span class="b-count">6</span><span class="b-rule"></span></div>
       <article class="b-card">
         <div class="b-row1">
           <span class="b-mark b-fail"><svg class="ic" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></span>
@@ -510,10 +646,147 @@
           <span class="b-acts"><button class="b-pick">probe &#9662;</button></span>
         </div>
       </article>
+      <article class="b-card">
+        <div class="b-row1">
+          <span class="b-mark b-fail"><svg class="ic" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></span>
+          <span class="b-sub"><span class="b-line">the retry that kept timing out</span></span>
+        </div>
+        <div class="b-meta">
+          <span class="b-owner"><span class="b-ava">H</span>hand</span>
+          <span class="b-chips"></span>
+        </div>
+        <div class="b-last">
+          <span class="b-prog"><span class="b-time">worked 6h</span></span>
+          <span class="b-wrote">wrote 2d ago</span>
+          <span class="b-acts"><button class="b-pick">hand &#9662;</button></span>
+        </div>
+      </article>
+      <article class="b-card">
+        <div class="b-row1">
+          <span class="b-mark b-fail"><svg class="ic" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></span>
+          <span class="b-sub"><span class="b-line">the batch that ate the store</span></span>
+        </div>
+        <div class="b-meta">
+          <span class="b-owner"><span class="b-ava">F</span>forge</span>
+          <span class="b-chips"></span>
+        </div>
+        <div class="b-last">
+          <span class="b-prog"><span class="b-time">worked 2h</span></span>
+          <span class="b-wrote">wrote 2d ago</span>
+          <span class="b-acts"><button class="b-pick">forge &#9662;</button></span>
+        </div>
+      </article>
+      <article class="b-card">
+        <div class="b-row1">
+          <span class="b-mark b-fail"><svg class="ic" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></span>
+          <span class="b-sub"><span class="b-line">the probe against a dead port</span></span>
+        </div>
+        <div class="b-meta">
+          <span class="b-owner"><span class="b-ava">P</span>probe</span>
+          <span class="b-chips"></span>
+        </div>
+        <div class="b-last">
+          <span class="b-prog"><span class="b-time">worked 12m</span></span>
+          <span class="b-wrote">wrote 3d ago</span>
+          <span class="b-acts"><button class="b-pick">probe &#9662;</button></span>
+        </div>
+      </article>
+      <article class="b-card">
+        <div class="b-row1">
+          <span class="b-mark b-fail"><svg class="ic" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></span>
+          <span class="b-sub"><span class="b-line">the migration that reversed twice</span></span>
+        </div>
+        <div class="b-meta">
+          <span class="b-owner"><span class="b-ava">S</span>steward</span>
+          <span class="b-chips"><span class="b-chip dim">attempt 2</span></span>
+        </div>
+        <div class="b-last">
+          <span class="b-prog"><span class="b-time">worked 3h</span></span>
+          <span class="b-wrote">wrote 3d ago</span>
+          <span class="b-acts"><button class="b-pick">steward &#9662;</button></span>
+        </div>
+      </article>
+      <button class="b-fold" aria-expanded="false">show all (6)</button>
     </section>
 
     <section class="b-lane" data-state="canceled">
-      <div class="b-cap"><span class="b-lane-nm">Canceled</span><span class="b-count">0</span><span class="b-rule"></span></div>
+      <div class="b-cap"><span class="b-lane-nm">Canceled</span><span class="b-count">6</span><span class="b-rule"></span></div>
+      <article class="b-card">
+        <div class="b-row1">
+          <span class="b-mark b-cancel"></span>
+          <span class="b-sub"><span class="b-line">the second editor nobody asked for</span></span>
+        </div>
+        <div class="b-meta">
+          <span class="b-owner"><span class="b-ava">S</span>steward</span>
+          <span class="b-chips"></span>
+        </div>
+        <div class="b-last">
+          <span class="b-prog"><span class="b-time">worked 2h</span></span>
+          <span class="b-wrote">wrote 4d ago</span>
+          <span class="b-acts"><button class="b-pick">steward &#9662;</button></span>
+        </div>
+      </article>
+      <article class="b-card">
+        <div class="b-row1">
+          <span class="b-mark b-cancel"></span>
+          <span class="b-sub"><span class="b-line">the theme pass that lost the mock</span></span>
+        </div>
+        <div class="b-meta">
+          <span class="b-owner"><span class="b-ava">H</span>hand</span>
+          <span class="b-chips"></span>
+        </div>
+        <div class="b-last">
+          <span class="b-prog"><span class="b-time">worked 4h</span></span>
+          <span class="b-wrote">wrote 4d ago</span>
+          <span class="b-acts"><button class="b-pick">hand &#9662;</button></span>
+        </div>
+      </article>
+      <article class="b-card">
+        <div class="b-row1">
+          <span class="b-mark b-cancel"></span>
+          <span class="b-sub"><span class="b-line">the flag the core never read</span></span>
+        </div>
+        <div class="b-meta">
+          <span class="b-owner"><span class="b-ava">F</span>fleet</span>
+          <span class="b-chips"></span>
+        </div>
+        <div class="b-last">
+          <span class="b-prog"><span class="b-time">worked 1h</span></span>
+          <span class="b-wrote">wrote 5d ago</span>
+          <span class="b-acts"><button class="b-pick">fleet &#9662;</button></span>
+        </div>
+      </article>
+      <article class="b-card">
+        <div class="b-row1">
+          <span class="b-mark b-cancel"></span>
+          <span class="b-sub"><span class="b-line">the tour that duplicated the home</span></span>
+        </div>
+        <div class="b-meta">
+          <span class="b-owner"><span class="b-ava">A</span>asker</span>
+          <span class="b-chips"></span>
+        </div>
+        <div class="b-last">
+          <span class="b-prog"><span class="b-time">worked 3h</span></span>
+          <span class="b-wrote">wrote 5d ago</span>
+          <span class="b-acts"><button class="b-pick">asker &#9662;</button></span>
+        </div>
+      </article>
+      <article class="b-card">
+        <div class="b-row1">
+          <span class="b-mark b-cancel"></span>
+          <span class="b-sub"><span class="b-line">the shortcut that ate Escape</span></span>
+        </div>
+        <div class="b-meta">
+          <span class="b-owner"><span class="b-ava">T</span>task-board</span>
+          <span class="b-chips"></span>
+        </div>
+        <div class="b-last">
+          <span class="b-prog"><span class="b-time">worked 30m</span></span>
+          <span class="b-wrote">wrote 6d ago</span>
+          <span class="b-acts"><button class="b-pick">task-board &#9662;</button></span>
+        </div>
+      </article>
+      <button class="b-fold" aria-expanded="false">show all (6)</button>
     </section>
   </div>
 
