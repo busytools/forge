@@ -1557,13 +1557,16 @@ export interface ReviewStripRow {
  * The seat's review threads as the strip's row draws them: the ones waiting
  * on the reviewer first, then the rest in the record's own order.
  *
- * `null` is a read that has not landed or failed - no row at all, rather
- * than a row claiming the branch is clean. An empty list is a branch whose
- * review reads answered empty, which draws the row as its door.
+ * `null` is no row at all: a read that has not landed or failed, or a seat
+ * with nothing under review - nothing filed, and the branch level with its
+ * default. The row is the door to the review page, so it stands on what the
+ * page holds. A branch-ahead layer that failed or cannot be named still
+ * draws: a read that failed is not a clean branch.
  */
 export function reviewRows(record: SessionRecord | null): ReviewStripRow[] | null {
-  const held = record?.reviews ?? null;
-  if (held === null || held.threads.outcome !== 'read') return null;
+  if (record === null) return null;
+  const held = record.reviews;
+  if (held.threads.outcome !== 'read') return null;
   const rows = held.threads.value.map((thread) => {
     const last = thread.comments[thread.comments.length - 1];
     return {
@@ -1576,6 +1579,7 @@ export function reviewRows(record: SessionRecord | null): ReviewStripRow[] | nul
       waiting: awaitsReviewer(thread),
     };
   });
+  if (rows.length === 0 && record.diff.branchAhead.state === 'clean') return null;
   // Waiting rows first; the sort is stable, so the rest keep their order.
   return [...rows].sort((a, b) => Number(b.waiting) - Number(a.waiting));
 }

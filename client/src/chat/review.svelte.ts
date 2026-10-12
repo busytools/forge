@@ -2,9 +2,9 @@
  * The seat's review threads, as the strip's row draws them.
  *
  * Held as the record is: one seat is on screen, so the rows are replaced
- * whole when the record moves. `null` is a read that has not landed - the
- * row draws nothing at all rather than claiming the branch is clean, which
- * is the same distinction the review page keeps between the two.
+ * whole when the record moves. `null` is no row to draw at all - a read
+ * that has not landed, or a seat with nothing under review - rather than a
+ * row claiming the branch is clean.
  */
 import type { ReviewStripRow } from '../session/view';
 
@@ -16,7 +16,7 @@ export class Reviews {
     this.#rows = rows === null ? null : rows.map((row) => ({ ...row }));
   }
 
-  /** Whether there is a review read to draw at all. */
+  /** Whether the row draws at all. */
   anything(): boolean {
     return this.#rows !== null;
   }

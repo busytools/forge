@@ -9,7 +9,9 @@
    *
    * **The strip is how the page is reached**, not only its URL: the row says
    * how many answers wait to be read - the live fact a reviewer is looking
-   * for - and the panel lists the threads and opens the page.
+   * for - and the panel lists the threads and opens the page. It draws only
+   * while the page has something behind it: a thread, or the branch's own
+   * changes.
    */
   let open = $state(false);
   /** Where this seat's review lives, handed in by the page that owns the seat. */
