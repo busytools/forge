@@ -633,7 +633,11 @@
                  this row is where they go. -->
             <span class="tx">
               {row.owner === '' ? 'closed · its logins are still here' : row.owner}
-              {row.running || row.owner === '' ? '' : ' · its driver is gone'}
+              {row.running || row.owner === ''
+                ? ''
+                : row.opened
+                  ? ' · its driver is gone'
+                  : ' · not opened yet'}
             </span>
             <!-- **The row's own door to its own browser**, the shared row's
                  show one level down: this profile's window over this

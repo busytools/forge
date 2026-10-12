@@ -246,6 +246,10 @@ export interface ProfileRow {
   owner: string;
   /** Whether its driver is still there to answer. */
   running: boolean;
+  /** Whether its browser has ever run: a fresh record-only profile has
+   *  never been opened, which the row's second line says rather than
+   *  implying a driver that was there and left. */
+  opened: boolean;
   /** Whether its browser is up as a WINDOW right now: the row's button says
    *  hide where it is, and show where it is not. */
   windowed: boolean;

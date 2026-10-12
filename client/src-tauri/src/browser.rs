@@ -629,6 +629,7 @@ impl BrowserHost {
                 name: name.clone(),
                 owner: entry.owner.to_string(),
                 running: entry.profile.is_alive(),
+                opened: chromium::ever_opened(&entry.dir),
                 // The same predicate `show` keeps: the marker alone reads a
                 // window that an X-close already took down.
                 windowed: chromium::windowed(&entry.dir).await,
@@ -663,7 +664,8 @@ impl BrowserHost {
                 // show launches one without an entry - so the predicate is
                 // still asked, on the directory itself.
                 let windowed = chromium::windowed(&dir).await;
-                rows.push(ProfileRow { name, owner, running: false, windowed });
+                let opened = chromium::ever_opened(&dir);
+                rows.push(ProfileRow { name, owner, running: false, opened, windowed });
             }
         }
         if let Some(seat) = seat {
@@ -1099,6 +1101,13 @@ pub struct ProfileRow {
     pub owner: String,
     /// Whether its driver is still there to answer.
     pub running: bool,
+    /// Whether its browser has EVER run: a launched Chromium leaves its own
+    /// state in the data directory, while a profile carrying only the
+    /// seat's record has never been opened. **The difference is what the
+    /// row's second line says** - "its driver is gone" over a profile that
+    /// never had one reads as a fault where "not opened yet" is the truth
+    /// (Ved, 2026-10-12).
+    pub opened: bool,
     /// Whether its browser is up as a WINDOW right now: the strip's button
     /// says hide where it is, and show where it is not.
     pub windowed: bool,
@@ -1981,6 +1990,35 @@ mod tests {
             paths.profiles.join("after").exists(),
             "the sweep reached the next name instead of stopping",
         );
+    }
+
+    /// **A never-opened profile is not one whose driver is gone.** The row
+    /// carries which: a freshly recorded profile has no Chromium state in
+    /// its directory, so the strip can say "not opened yet" rather than
+    /// implying a driver that was there and left.
+    #[tokio::test]
+    async fn a_fresh_profile_lists_as_never_opened() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let host = BrowserHost::new(paths.clone());
+        let named = Named::open(seat(), "hunt", &paths).expect("the open");
+        host.named.lock().await.insert("hunt".to_owned(), Arc::new(named));
+
+        let rows = host.profiles(None).await;
+        let row = rows.iter().find(|row| row.name == "hunt").expect("the row");
+        assert!(!row.opened, "a record-only directory has never been launched");
+        assert!(!row.running, "and nothing is running behind it");
+
+        // A launch writes Chromium's own state beside the record.
+        std::fs::write(paths.profiles.join("hunt").join("Local State"), b"").expect("the state");
+        let rows = host.profiles(None).await;
+        let row = rows.iter().find(|row| row.name == "hunt").expect("the row");
+        assert!(row.opened, "a launched Chromium leaves its own state in the directory");
     }
 
     /// **The listing is served per seat.** A seat's read answers its own rows
