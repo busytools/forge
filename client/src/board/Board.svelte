@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from 'svelte';
   import { hrefForSlot } from '../routes';
   import { isBoardRefusal, type ServiceReport } from '../wire/fleet';
   import type { HomeWire, TaskStatus } from '../wire/home';
@@ -43,6 +44,35 @@
    */
   let moved = $state<Record<string, PendingMove>>({});
   const lanes = $derived(applyMoves(view.lanes, moved));
+
+  /** How many finished rows draw before the completed group folds. */
+  const COMPLETED_SHOWN = 5;
+
+  /** Whether the reader opened the completed group's fold. */
+  let showCompleted = $state(false);
+
+  /**
+   * The lanes as drawn: the completed group folds to the five most recently
+   * finished rows - by `updated_at`, so a late finish shows whatever its rank -
+   * plus any card the reader is placing right now, because a drop into the
+   * folded lane lands at once like every other move.
+   */
+  const drawnLanes = $derived.by(() => {
+    const completed = lanes.find((lane) => lane.key === 'completed');
+    if (showCompleted || completed === undefined || completed.cards.length <= COMPLETED_SHOWN) {
+      return lanes;
+    }
+    const recent = new Set(
+      [...completed.cards]
+        .sort((a, b) => b.updatedAt - a.updatedAt)
+        .slice(0, COMPLETED_SHOWN)
+        .map((card) => card.id),
+    );
+    const cards = completed.cards.filter(
+      (card) => recent.has(card.id) || moved[card.id] !== undefined,
+    );
+    return lanes.map((lane) => (lane.key === 'completed' ? { ...lane, cards } : lane));
+  });
   /** The project's seats, for the owner picker: the label that may hold a row. */
   const seats = $derived(
     wire.agents
@@ -386,15 +416,31 @@
 
   /**
    * The reader's jump: a card named by a pill comes into view, takes the
-   * focus, and flashes so the eye lands with it.
+   * focus, and flashes so the eye lands with it. A jump aimed at a card the
+   * fold is holding back opens the fold first - a door onto a finished row
+   * must not die on a missing element.
    */
-  function jumpTo(id: string): void {
-    const el = boardEl?.querySelector<HTMLElement>(`.b-card[data-id="${id}"]`);
+  async function jumpTo(id: string): Promise<void> {
+    let el = boardEl?.querySelector<HTMLElement>(`.b-card[data-id="${id}"]`);
+    if (el === undefined || el === null) {
+      if (!foldedOut(id)) return;
+      showCompleted = true;
+      await tick();
+      el = boardEl?.querySelector<HTMLElement>(`.b-card[data-id="${id}"]`);
+    }
     if (el === undefined || el === null) return;
     el.scrollIntoView({ behavior: 'auto', block: 'nearest', inline: 'nearest' });
     el.focus();
     el.classList.add('b-flash');
     window.setTimeout(() => el.classList.remove('b-flash'), 1500);
+  }
+
+  /** Whether the completed lane holds a row the fold is keeping off the page. */
+  function foldedOut(id: string): boolean {
+    const held = lanes.find((entry) => entry.key === 'completed');
+    if (held === undefined || !held.cards.some((card) => card.id === id)) return false;
+    const drawn = drawnLanes.find((entry) => entry.key === 'completed')?.cards ?? [];
+    return !drawn.some((card) => card.id === id);
   }
 
   /**
@@ -593,7 +639,7 @@
     {/if}
 
     <div class="b-lanes">
-      {#each lanes as lane (lane.key)}
+      {#each drawnLanes as lane (lane.key)}
         <section
           class="b-lane b-lane-{lane.key}"
           class:drop={dropLane === lane.key}
@@ -603,6 +649,15 @@
             <span class="b-lane-nm">{lane.name}</span>
             <span class="b-count">{lane.count}</span>
             <span class="b-rule"></span>
+            {#if lane.key === 'completed' && lane.count > COMPLETED_SHOWN}
+              <button
+                type="button"
+                class="b-fold"
+                aria-expanded={showCompleted}
+                onclick={() => (showCompleted = !showCompleted)}
+                >{showCompleted ? 'show less' : `show all (${lane.count})`}</button
+              >
+            {/if}
           </div>
           {#each lane.cards as row (row.id)}
             <!-- The card itself is the interaction: it takes the pointer for a
@@ -654,7 +709,7 @@
                     class="b-chip blue b-epic-pill"
                     aria-label="jump to {row.epic}"
                     onclick={() => {
-                      if (row.epicId !== null) jumpTo(row.epicId);
+                      if (row.epicId !== null) void jumpTo(row.epicId);
                     }}>&#8627; {row.epic}</button
                   >
                 {/if}
@@ -767,7 +822,7 @@
       onjump={(id: string) => {
         jumping = true;
         closeDrawer();
-        jumpTo(id);
+        void jumpTo(id);
       }}
     />
   {/if}

@@ -302,7 +302,7 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
 }
 .b-back:hover, .b-done:hover { background: var(--s2); color: var(--text); }
 .b-back:focus-visible, .b-done:focus-visible, .b-btn:focus-visible,
-.b-pick:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.b-pick:focus-visible, .b-fold:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
 .b-id { margin-left: 8px; display: flex; align-items: baseline; gap: 12px; }
 .b-nm { font-size: 19px; font-weight: 600; letter-spacing: -.01em; color: var(--text); }
 .b-read { font-size: var(--fs-label); color: var(--dim); }
@@ -376,6 +376,13 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
 .b-lane-nm { font-size: var(--fs-label); font-weight: 600; color: var(--muted); letter-spacing: .01em; }
 .b-count { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
 .b-rule { flex: 1; height: 1px; background: var(--line); }
+/* The completed group's fold: the count stays the true total and the rows
+   behind it open from here. The same quiet voice as back and done. */
+.b-fold {
+  font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
+  background: transparent; border: 0; border-radius: 999px; padding: 3px 9px; cursor: pointer;
+}
+.b-fold:hover { background: var(--s2); color: var(--text); }
 
 /* cards: three lines, the surface step is the elevation */
 .b-card { background: var(--s2); border-radius: 13px; padding: 15px 16px 14px; }
@@ -523,7 +530,7 @@ button.b-epic-pill { cursor: pointer; }
 
 .b-create { display: flex; gap: 9px; align-items: center; flex-wrap: wrap; margin-top: 22px; }
 @media (pointer: coarse) {
-  .b-btn, .b-pick, .b-in, .b-seat, .b-item, button.b-chip { min-height: 44px; }
+  .b-btn, .b-pick, .b-in, .b-seat, .b-item, button.b-chip, .b-fold { min-height: 44px; }
 }
 
 /* ---------- the drawer: one row's own page over the board ---------- */
