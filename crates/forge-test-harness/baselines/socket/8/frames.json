@@ -519,16 +519,48 @@
     "DocumentRead": {
       "": [
         "bytes",
+        "content_hash",
         "document_kind",
         "kind",
         "path",
         "reviewable",
-        "session"
+        "reviews",
+        "session",
+        "threads"
+      ],
+      "/reviews[]": [
+        "created_at",
+        "id",
+        "number",
+        "summary"
       ],
       "/session": [
         "label",
         "org",
         "project"
+      ],
+      "/threads[]": [
+        "anchor",
+        "comments",
+        "commit",
+        "created_at",
+        "id",
+        "status",
+        "updated_at"
+      ],
+      "/threads[]/anchor": [
+        "base_ref",
+        "content_hash",
+        "context",
+        "line",
+        "path",
+        "side"
+      ],
+      "/threads[]/comments[]": [
+        "at",
+        "author",
+        "review_id",
+        "text"
       ]
     },
     "Greeting": {

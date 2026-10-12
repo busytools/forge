@@ -56,18 +56,25 @@ pub enum OutdatedReason {
     Ambiguous { matches: usize },
 }
 
-/// FNV-1a hash of a diff line's text. Deterministic across runs (unlike
-/// `DefaultHasher`), which matters because the value is persisted in the
-/// anchor and compared after restarts.
-pub fn content_hash(text: &str) -> u64 {
+/// FNV-1a hash of raw bytes: what both a line's text and a whole document
+/// go through, so one implementation pins both.
+///
+/// Deterministic across runs (unlike `DefaultHasher`), which matters because
+/// the value is persisted in an anchor and compared after restarts.
+pub fn content_hash_bytes(bytes: &[u8]) -> u64 {
     const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x0000_0100_0000_01b3;
     let mut hash = OFFSET;
-    for byte in text.as_bytes() {
+    for byte in bytes {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(PRIME);
     }
     hash
+}
+
+/// [`content_hash_bytes`] over a diff line's text.
+pub fn content_hash(text: &str) -> u64 {
+    content_hash_bytes(text.as_bytes())
 }
 
 /// Capture up to `radius` lines on each side of `line_idx` within `hunk`
@@ -248,6 +255,15 @@ fn side_line(line: &DiffLine, side: ReviewSide) -> Option<u32> {
 mod tests {
     use super::*;
     use crate::env::git_diff::hunks::{DiffLineKind, FileStatus};
+
+    /// The byte hash is the same function the text hash is, so a document's
+    /// hash and a line's hash share one implementation: text hashing is
+    /// this over its UTF-8 bytes.
+    #[test]
+    fn the_byte_hash_matches_the_text_hash_over_its_bytes() {
+        assert_eq!(content_hash_bytes(b"let x = 1;"), content_hash("let x = 1;"));
+        assert_ne!(content_hash_bytes(b"a"), content_hash_bytes(b"b"));
+    }
 
     /// **A doc-scoped anchor is never placed against a diff.** The scope
     /// spells a document, and the viewer places those threads, not the

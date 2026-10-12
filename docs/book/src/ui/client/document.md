@@ -15,11 +15,18 @@ route, and an address read back from the URL re-decides it where it opens
 (the read refuses it for a PDF either way). The page draws no header: the
 tab names the file, and the document is the whole of what is on screen.
 
+A document the agent flagged **reviewable** draws as its own numbered lines
+and can carry comments, which leave like any review; everything else opens
+read-only, with no comment affordance anywhere.
+
 ## What it draws
 
 | Region | Shows | Read from |
 |---|---|---|
 | The document | markdown rendered by the chat's own `Prose`; plain text as wrapping text; a PDF in the surface's own viewer; any other kind named as itself | the `document_read` answer: `document_kind` and the bytes |
+| A reviewable document | its own lines, numbered from one, each number a target that opens a composer; a comment waits under the line it is about, drafted until a finish files it | the answer's `threads` and the page's own drafts |
+| Outdated comments | written against an earlier version of this document: their captured lines kept, in their own section - nothing re-anchors them | each thread's anchor `content_hash` against the answer's |
+| The finish | `finish review (n)` files the drafts as one round and draws `review left (R{n})`; a refusal draws the core's own words and keeps the drafts | `submit_review`'s reply |
 | A refusal | the server's sentence as its own line - missing, unreadable, over the ceiling, outside the session's tree, a PDF handed reviewable, a text kind that is not UTF-8 | the `error` naming `document_read` |
 | Opening | `Opening <path>...` while the read is out | the page's own state |
 | Empty | its own line, before any kind is drawn | an answer with zero bytes |
@@ -57,10 +64,45 @@ have been.** A missing file leaves the address alive: the page draws the
 refusal, and the tabs' back still works, because a deep link to a document
 that moved is a page the reader has to be able to leave.
 
+**A comment anchors to the raw file's numbering, and the document's own
+hash places it.** A reviewable document therefore draws as lines, not as
+rendered blocks: a comment's anchor is the line it was written on, with its
+neighbours captured. The anchor carries the WHOLE document's hash - the
+same FNV-1a a code thread hashes a line with, over the document's bytes -
+so a comment written against this exact content sits at its line, and one
+written against another version draws outdated at once, with its captured
+lines kept. Nothing re-anchors a document automatically: a code review
+re-finds a moved line by its content, and a document has no diff to move
+within.
+
+**The drafts outlive the viewer.** Unsent comments are held per document,
+module-wide, so a second hand-off that raises another document does not take
+the first's unsent comments with it - they wait in their own scope until
+their finish files them.
+
+**The finish is the review-left event.** `finish review (n)` submits the
+drafted threads as one round through the same command a code review uses,
+under the document's scope (`doc:<path>`), stamped with the asking seat as
+the origin - so the agent hears it exactly as it hears a code review, the
+review record holds it, and `review__list` names the document's scope among
+the project's reviews.
+
 ## The states the page can be in
 
 - **Markdown**: rendered with the chat's renderer - raw HTML never reaches
   the page - and the same `.prose` rules the conversation draws with.
+- **A reviewable markdown or text document**: the line view instead - every
+  line numbered and pressable - with its comments placed and its drafts
+  under their lines.
+- **A comment being written**: the composer opens under the line, with its
+  own comment and cancel pair; a written comment draws as `drafted` until
+  the finish files it.
+- **A refused finish**: the core's own words beside the finish button, and
+  the drafts stay exactly where they were - a refusal that cleared them
+  would take the reviewer's words with it.
+- **A review left**: `review left (R{n})` in place of the finish button.
+- **Comments written against an earlier version**: their own section at the
+  document's end, each with the captured lines it was written beside.
 - **Plain text**: a wrapping `pre`, decoded once; markup in it stays text.
 - **A PDF**: the platform's embed over a blob of the bytes, sized to the
   page. On the phone, pdf.js renders each page to a canvas at the column's
@@ -82,6 +124,10 @@ that moved is a page the reader has to be able to leave.
 - `Prose` and `renderProse` are the chat's own: one markdown upstream
   (`markdown-it`, raw HTML off), one set of `.prose` rules, so a document
   and a quote from one render alike.
+- The comment path is the review page's own: `upsertCommand` and
+  `submitCommand` from `review/write`, and `authorName` from `review/view` -
+  one writer, one vocabulary, so a doc comment and a code comment are one
+  kind of thing on the wire.
 - The page's own classes are `doc-*` under a `.doc` scope - a new component
   takes its own stem rather than reusing a bare name the sheet already
   styles.
@@ -96,6 +142,9 @@ and the PDF embeds at the column's own width.
 
 ## Touch
 
-The page carries no controls of its own - the platform PDF viewer's chrome
-is the viewer's, and everything else is text. The reading column is the
-whole of the page, so there is nothing under 44px to reach.
+Every control the page carries takes the 44px target under
+`@media (pointer: coarse)`: a numbered line target, the composer's comment
+and cancel pair, and the finish button. Nothing lives on hover alone - the
+number is drawn at rest and the composer opens on a press - and the plain
+and PDF states carry no controls at all (the platform PDF viewer's chrome
+is the viewer's own).

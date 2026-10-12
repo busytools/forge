@@ -17,12 +17,19 @@ import { writable, type Readable, type Writable } from 'svelte/store';
 import { bytesOf } from '../browser/host';
 import { report, type Connection, type ConnectionStatus } from '../socket';
 import { subjectKey, slotOf, type DocumentKind, type ServerMessage } from '../protocol';
+import {
+  reviewSetFrom,
+  reviewThreadFrom,
+  type ReviewSetRecord,
+  type ReviewThreadRecord,
+} from '../session/wire';
 import type { SessionSlot } from '../wire/types';
 
-/** What watching a document needs of a socket. */
+/** What watching a document needs of a socket: the read, the frames it is
+ *  answered on, and the dispatch a comment and a finish ride. */
 export type DocumentConnection = Pick<
   Connection,
-  'readDocument' | 'onMessage' | 'onStatus' | 'status'
+  'readDocument' | 'onMessage' | 'onStatus' | 'status' | 'dispatch'
 >;
 
 /** What the viewer has to draw. */
@@ -33,6 +40,12 @@ export interface DocRead {
   kind: DocumentKind | null;
   bytes: Uint8Array | null;
   reviewable: boolean;
+  /** The document's own hash, as decimal digits - what a thread's anchor
+   *  was written against. */
+  contentHash: string | null;
+  /** The document's comments, and the reviews they were filed into. */
+  threads: ReviewThreadRecord[];
+  reviews: ReviewSetRecord[];
   /** Why it could not be read: the server's sentence, or the client's own. */
   refused: string | null;
 }
@@ -43,6 +56,9 @@ const READING: DocRead = {
   kind: null,
   bytes: null,
   reviewable: false,
+  contentHash: null,
+  threads: [],
+  reviews: [],
   refused: null,
 };
 
@@ -97,6 +113,9 @@ export function watchDocument(
           kind: message.document_kind,
           bytes: bytesOf(message.bytes),
           reviewable: message.reviewable,
+          contentHash: message.content_hash,
+          threads: message.threads.map(reviewThreadFrom),
+          reviews: message.reviews.map(reviewSetFrom),
           refused: null,
         });
         return;

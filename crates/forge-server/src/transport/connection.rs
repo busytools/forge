@@ -1102,7 +1102,7 @@ async fn handle_client(
             })
             .await
             .unwrap_or_else(|join| Err(join.to_string()));
-            send(socket, document_answer(&session, outcome)).await
+            send(socket, document_answer(&state.surface, &session, outcome)).await
         }
         ClientMessage::CommitDiff { session, sha } => {
             // The same seat resolution the session record takes, so a
@@ -1756,18 +1756,46 @@ async fn dispatch_answering(
 /// with the document's bytes base64, or the refusal under the seat that
 /// asked - the seat is what lets a client holding several seats drain only
 /// its own.
-fn document_answer(seat: &SessionSlot, outcome: Result<DocumentRead, String>) -> ServerMessage {
-    match outcome {
-        Ok(read) => ServerMessage::DocumentRead {
-            session: seat.clone(),
-            path: read.path.to_string_lossy().into_owned(),
-            document_kind: read.kind,
-            bytes: base64::engine::general_purpose::STANDARD.encode(&read.bytes),
-            reviewable: read.reviewable,
-        },
+fn document_answer(
+    surface: &ViewSurface,
+    seat: &SessionSlot,
+    outcome: Result<DocumentRead, String>,
+) -> ServerMessage {
+    let read = match outcome {
+        Ok(read) => read,
         Err(why) => {
-            ServerMessage::Error { what: "document_read".to_owned(), why, seat: Some(seat.clone()) }
+            return ServerMessage::Error {
+                what: "document_read".to_owned(),
+                why,
+                seat: Some(seat.clone()),
+            };
         }
+    };
+    // The document's own review: the scope key IS the document, so this is
+    // the whole of its comments - a store that cannot answer refuses the
+    // read rather than drawing an uncommented document.
+    let scope = forge_primitives::review::doc_scope_ref(&read.path.to_string_lossy());
+    let held = surface.reviews(seat.project(), &scope);
+    let (threads, reviews) = match (held.threads, held.reviews) {
+        (Ok(threads), Ok(reviews)) => (threads, reviews),
+        (threads, reviews) => {
+            let why = threads.err().or(reviews.err()).unwrap_or_default();
+            return ServerMessage::Error {
+                what: "document_read".to_owned(),
+                why: format!("the document's review could not be read: {why}"),
+                seat: Some(seat.clone()),
+            };
+        }
+    };
+    ServerMessage::DocumentRead {
+        session: seat.clone(),
+        path: read.path.to_string_lossy().into_owned(),
+        document_kind: read.kind,
+        bytes: base64::engine::general_purpose::STANDARD.encode(&read.bytes),
+        reviewable: read.reviewable,
+        content_hash: read.content_hash.to_string(),
+        threads,
+        reviews,
     }
 }
 
@@ -2126,17 +2154,69 @@ mod tests {
     #[test]
     fn a_document_answer_carries_the_bytes_and_the_kind_or_the_refusal() {
         use forge_primitives::document::{DocumentKind, DocumentRead};
+        use forge_primitives::review::{
+            ReviewAnchor, ReviewAuthor, ReviewComment, ReviewSide, ReviewStatus, ReviewThread,
+        };
 
-        let seat = SessionSlot::lead("TestOrg", "proj");
+        let (workspace, _dir) = crate::surface::testing::workspace();
+        let surface = crate::surface::ViewSurface::new(Arc::clone(&workspace));
+        let seat = SessionSlot::lead("TestOrg", "forge");
+        // The document's own review, seeded under the scope key the answer
+        // derives from the read's path - and a second document's, which must
+        // NOT ride this one's answer.
+        let scope = forge_primitives::review::doc_scope_ref("/proj/docs/readme.md");
+        let other = forge_primitives::review::doc_scope_ref("/proj/docs/other.md");
+        let doc_thread = |id: &str, base_ref: &str| ReviewThread {
+            id: id.to_owned(),
+            anchor: ReviewAnchor {
+                path: "/proj/docs/readme.md".to_owned(),
+                side: ReviewSide::New,
+                line: 3,
+                content_hash: 7,
+                context: vec!["^ # hi".to_owned()],
+                base_ref: base_ref.to_owned(),
+            },
+            comments: vec![ReviewComment {
+                author: ReviewAuthor::User,
+                text: "one line, please".to_owned(),
+                at: String::new(),
+                review_id: None,
+            }],
+            status: ReviewStatus::Open,
+            created_at: String::new(),
+            updated_at: String::new(),
+            commit: None,
+        };
+        assert!(workspace.upsert_review_thread("forge", &scope, doc_thread("d1", &scope)));
+        assert!(workspace.upsert_review_thread("forge", &other, doc_thread("d2", &other)));
+        workspace
+            .submit_review(
+                "forge",
+                &scope,
+                None,
+                &["d1".to_owned()],
+                SessionSlot::from_str_for_test("reader"),
+            )
+            .expect("a set for the document's scope");
+
         let landed = Ok(DocumentRead {
             path: std::path::PathBuf::from("/proj/docs/readme.md"),
             kind: DocumentKind::Markdown,
             bytes: b"# hi\n".to_vec(),
             reviewable: true,
+            content_hash: 42,
         });
 
-        let ServerMessage::DocumentRead { session, path, document_kind, bytes, reviewable } =
-            document_answer(&seat, landed)
+        let ServerMessage::DocumentRead {
+            session,
+            path,
+            document_kind,
+            bytes,
+            reviewable,
+            content_hash,
+            threads,
+            reviews,
+        } = document_answer(&surface, &seat, landed)
         else {
             panic!("a read that landed is its own answer")
         };
@@ -2145,8 +2225,31 @@ mod tests {
         assert_eq!(document_kind, DocumentKind::Markdown, "and the kind the read detected");
         assert_eq!(bytes, "IyBoaQo=", "the bytes base64: what a client decodes is the document");
         assert!(reviewable, "and the flag the hand-off passed");
+        assert_eq!(content_hash, "42", "and the document's hash, as decimal digits");
+        assert_eq!(threads.len(), 1, "the document's OWN comments ride the answer");
+        assert_eq!(threads[0].id, "d1");
+        assert_eq!(threads[0].anchor.base_ref, scope, "read under the document's scope");
+        assert_eq!(reviews.len(), 1, "and so do its review sets");
+
+        // A scope with nothing in it crosses empty rather than carrying the
+        // other document's rows - the control for the read's own scope.
+        let clean = Ok(DocumentRead {
+            path: std::path::PathBuf::from("/proj/docs/third.md"),
+            kind: DocumentKind::Text,
+            bytes: b"x".to_vec(),
+            reviewable: false,
+            content_hash: 8,
+        });
+        let ServerMessage::DocumentRead { threads, reviews, .. } =
+            document_answer(&surface, &seat, clean)
+        else {
+            panic!("a read that landed is its own answer")
+        };
+        assert!(threads.is_empty(), "no other document's comments leak in");
+        assert!(reviews.is_empty(), "and no review sets either");
 
         let refused = document_answer(
+            &surface,
             &seat,
             Err("a PDF opens read-only; it cannot be handed reviewable".to_owned()),
         );

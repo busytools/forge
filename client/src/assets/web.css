@@ -3593,3 +3593,63 @@ details[open] > summary .arw { opacity: 1; }
 .doc .doc-pdf-js { display: flex; flex-direction: column; gap: 14px; }
 .doc .doc-pdf-js canvas { max-width: 100%; border: 1px solid var(--line);
   border-radius: var(--r); background: #fff; }
+
+/* ---------- a reviewable document: its own lines ---------- */
+/* The document as a numbered file, because a comment anchors to the raw
+   file's numbering rather than to a rendered block's. The line's number is
+   the target; the text sits beside it. */
+.doc .doc-lines { font-family: var(--mono); font-size: var(--fs-data);
+  line-height: 1.6; }
+.doc .doc-line { display: flex; gap: 12px; align-items: baseline; }
+.doc .doc-line.target { background: var(--s1); }
+.doc .doc-lnum { flex: 0 0 auto; min-width: 2.6rem; text-align: right;
+  font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+  background: none; border: 0; cursor: pointer; padding: 0; }
+.doc .doc-lnum:hover { color: var(--accent); }
+.doc .doc-ltext { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); }
+/* A comment under the line it is about: who wrote it, the words, and the
+   drafted mark until the finish files it. */
+.doc .doc-note { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline;
+  margin: 4px 0 8px 4.6rem; padding: 6px 10px; background: var(--s1);
+  border-left: 2px solid var(--line); border-radius: 0 var(--r) var(--r) 0;
+  font-family: var(--ui); font-size: var(--fs-base); }
+.doc .doc-who { color: var(--muted); font-size: var(--fs-label); }
+.doc .doc-words { color: var(--text); overflow-wrap: anywhere; }
+.doc .doc-cc { color: var(--warn); font-size: var(--fs-label); font-family: var(--mono); }
+/* The composer, under the line it opened on. */
+.doc .doc-compose { margin: 4px 0 10px 4.6rem; display: flex; flex-direction: column;
+  gap: 8px; }
+.doc .doc-compose textarea { width: 100%; min-height: 64px; resize: vertical;
+  background: var(--bg); color: var(--text); border: 1px solid var(--line);
+  border-radius: var(--r); padding: 8px 10px; font-family: var(--ui);
+  font-size: var(--fs-base); }
+.doc .doc-compose-acts { display: flex; gap: 8px; justify-content: flex-end; }
+.doc .doc-comment-btn, .doc-cancel-btn, .doc-finish-btn {
+  font-family: var(--mono); font-size: var(--fs-label); border-radius: 9px;
+  padding: 6px 12px; cursor: pointer; border: 1px solid var(--line);
+  background: var(--s1); color: var(--muted); }
+.doc .doc-comment-btn:not(:disabled):hover, .doc-finish-btn:not(:disabled):hover {
+  color: var(--text); border-color: var(--ctl); }
+.doc .doc-comment-btn:disabled, .doc-finish-btn:disabled { color: var(--dim); cursor: default; }
+/* Comments written against an earlier version: their captured lines kept,
+   the same shape the code review's parked section draws. */
+.doc .doc-stale { margin: 24px 0 8px; border-top: 1px solid var(--line); padding-top: 14px; }
+.doc .doc-stale h2 { font-size: var(--fs-label); font-weight: 400; color: var(--dim);
+  font-family: var(--mono); margin-bottom: 10px; }
+.doc .doc-quoted { margin-left: 0; }
+.doc .doc-quote { width: 100%; font-family: var(--mono); font-size: var(--fs-label);
+  color: var(--muted); background: var(--bg); border: 1px solid var(--line);
+  border-radius: 8px; padding: 6px 8px; white-space: pre-wrap;
+  overflow-wrap: anywhere; }
+/* The finish, at the document's end: the one control that files the round. */
+.doc .doc-finish { display: flex; align-items: center; gap: 12px;
+  margin-top: 26px; padding-top: 14px; border-top: 1px solid var(--line); }
+.doc .doc-left { color: var(--ok); font-family: var(--ui); font-size: var(--fs-base); }
+
+@media (pointer: coarse) {
+  /* A finger reaches the line targets, the composer's pair and the finish. */
+  .doc .doc-lnum, .doc .doc-comment-btn, .doc .doc-cancel-btn,
+  .doc .doc-finish-btn { min-height: 44px; }
+  .doc .doc-lnum { display: inline-flex; align-items: center; justify-content: flex-end; }
+  .doc .doc-note, .doc .doc-compose { margin-left: 3.6rem; }
+}

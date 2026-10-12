@@ -736,6 +736,9 @@ fn frames_record() -> Value {
             document_kind: forge_primitives::document::DocumentKind::Markdown,
             bytes: "IyBoaQo=".to_owned(),
             reviewable: true,
+            content_hash: "7".to_owned(),
+            threads: Vec::new(),
+            reviews: Vec::new(),
         },
     ];
 
@@ -897,6 +900,9 @@ fn frames_record() -> Value {
     // the census sees - a rename inside this payload would fail nothing
     // while the page drew a blank document. The seat crosses back because a
     // client holding several seats routes each answer to its own viewer.
+    // One thread and one set ride the sample: the document's own review
+    // crosses INSIDE this answer, and an empty list would pin nothing about
+    // the shapes the viewer parses its comments out of.
     payload_sampled.insert(
         "DocumentRead".to_owned(),
         shape_of(&ServerMessage::DocumentRead {
@@ -905,6 +911,34 @@ fn frames_record() -> Value {
             document_kind: forge_primitives::document::DocumentKind::Markdown,
             bytes: "IyBoaQo=".to_owned(),
             reviewable: true,
+            content_hash: "7".to_owned(),
+            threads: vec![forge_primitives::review::ReviewThread {
+                id: "d1".to_owned(),
+                anchor: forge_primitives::review::ReviewAnchor {
+                    path: "/proj/docs/readme.md".to_owned(),
+                    side: forge_primitives::review::ReviewSide::New,
+                    line: 3,
+                    content_hash: 7,
+                    context: vec!["^ # hi".to_owned()],
+                    base_ref: forge_primitives::review::doc_scope_ref("/proj/docs/readme.md"),
+                },
+                comments: vec![forge_primitives::review::ReviewComment {
+                    author: forge_primitives::review::ReviewAuthor::User,
+                    text: "one line, please".to_owned(),
+                    at: "2026-10-12T00:00:00Z".to_owned(),
+                    review_id: Some("r1".to_owned()),
+                }],
+                status: forge_primitives::review::ReviewStatus::Open,
+                created_at: "2026-10-12T00:00:00Z".to_owned(),
+                updated_at: "2026-10-12T00:00:00Z".to_owned(),
+                commit: None,
+            }],
+            reviews: vec![forge_primitives::ReviewSet {
+                id: "r1".to_owned(),
+                number: 1,
+                summary: None,
+                created_at: "2026-10-12T00:00:00Z".to_owned(),
+            }],
         }),
     );
     // The commit answer's own fields, one file with one hunk: the review

@@ -38,6 +38,11 @@ pub struct DocumentRead {
     pub kind: DocumentKind,
     pub bytes: Vec<u8>,
     pub reviewable: bool,
+    /// FNV-1a over the whole document's bytes, the same function a code
+    /// anchor hashes a line with. A doc-scoped thread stores this in its
+    /// anchor, so a document that changed under its comments reads outdated
+    /// at once - nothing re-anchors a document automatically.
+    pub content_hash: u64,
 }
 
 #[cfg(test)]

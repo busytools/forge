@@ -85,6 +85,26 @@ describe('the document read', () => {
       document_kind: 'markdown',
       bytes: btoa('# hi\n'),
       reviewable: true,
+      content_hash: '42',
+      threads: [
+        {
+          id: 'd1',
+          anchor: {
+            path: '/proj/docs/plan.md',
+            side: 'New',
+            line: 3,
+            content_hash: '42',
+            context: ['context'],
+            base_ref: 'doc:/proj/docs/plan.md',
+          },
+          comments: [{ author: 'User', text: 'hello', at: 'x', review_id: null }],
+          status: 'Open',
+          created_at: 'x',
+          updated_at: 'x',
+          commit: null,
+        },
+      ],
+      reviews: [{ id: 'r1', number: 1, summary: null, created_at: 'x' }],
     });
 
     const held = get(view);
@@ -92,6 +112,13 @@ describe('the document read', () => {
     expect(held.kind).toBe('markdown');
     expect(new TextDecoder().decode(held.bytes ?? new Uint8Array())).toBe('# hi\n');
     expect(held.reviewable).toBe(true);
+    expect(held.contentHash, 'the document hash crosses as the digits it arrived as').toBe('42');
+    expect(
+      held.threads.map((thread) => thread.id),
+      'its comments narrow with it',
+    ).toEqual(['d1']);
+    expect(held.threads[0]?.anchor.base_ref).toBe('doc:/proj/docs/plan.md');
+    expect(held.reviews.map((set) => set.number)).toEqual([1]);
   });
 
   /**
@@ -110,6 +137,9 @@ describe('the document read', () => {
       document_kind: 'text',
       bytes: btoa('other seat'),
       reviewable: false,
+      content_hash: '1',
+      threads: [],
+      reviews: [],
     });
     socket.emit({
       kind: 'document_read',
@@ -118,6 +148,9 @@ describe('the document read', () => {
       document_kind: 'text',
       bytes: btoa('other doc'),
       reviewable: false,
+      content_hash: '2',
+      threads: [],
+      reviews: [],
     });
 
     expect(get(view).state, "neither answer is this page's").toBe('reading');

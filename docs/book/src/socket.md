@@ -381,15 +381,20 @@ was asked for.
   state rather than as an event: a card left at `0 ready, probing` looks
   like a slow probe rather than like a page that stopped listening.
 - **`page {conversation, turns, cursor}`** - in answer to `more`.
-- **`document_read {session, path, document_kind, bytes, reviewable}`** - in
-  answer to `document_read`: the seat it was read for, the resolved absolute
-  path the viewer addresses by, the kind the read detected (`markdown`,
-  `pdf`, `text`, or `{"other": "<extension>"}` kept as itself), the bytes
-  base64 - the ceiling keeps a document well inside the socket's frame
-  bound - and the flag the hand-off passed. `session` is named back so a
-  client holding two seats routes each answer to its own viewer; a refused
-  read comes back as an `error` naming `document_read`, under the seat that
-  asked.
+- **`document_read {session, path, document_kind, bytes, reviewable,
+  content_hash, threads, reviews}`** - in answer to `document_read`: the
+  seat it was read for, the resolved absolute path the viewer addresses by,
+  the kind the read detected (`markdown`, `pdf`, `text`, or `{"other":
+  "<extension>"}` kept as itself), the bytes base64 - the ceiling keeps a
+  document well inside the socket's frame bound - the flag the hand-off
+  passed, the document's own hash as DECIMAL DIGITS (the same convention an
+  anchor's `content_hash` crosses under), and the document's scope read:
+  its comment threads and the reviews they were filed into. `session` is
+  named back so a client holding two seats routes each answer to its own
+  viewer; a refused read comes back as an `error` naming `document_read`,
+  under the seat that asked - and so does one whose review store could not
+  be read, because an answer with no comments would draw an uncommented
+  document.
 - **`devices {devices, configured}`** - in answer to `devices`: every input
   forge can record from, each with the id a pick sends back, the label a
   picker draws, and whether the system would pick it. **`configured` is the

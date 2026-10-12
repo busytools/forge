@@ -337,8 +337,9 @@ pub enum ServerMessage {
         args: serde_json::Value,
     },
     /// One document, as the read answered: the seat it was read for, the
-    /// path it resolved to, the bytes, the detected kind, and the flag the
-    /// hand-off passed.
+    /// path it resolved to, the bytes, the detected kind, the flag the
+    /// hand-off passed, the document's own hash, and the review the
+    /// document already carries.
     ///
     /// `session` is named back so a client holding two seats routes each
     /// answer to its own viewer - the same reason a refusal names its seat.
@@ -346,12 +347,22 @@ pub enum ServerMessage {
     /// larger than its file, well inside the socket's own frame bound.
     /// `document_kind` and not `kind`: a field named `kind` collides with
     /// the envelope's own tag.
+    ///
+    /// `threads` and `reviews` are the document scope's own (`doc:<path>`)
+    /// store read, taken in the same handler: the viewer draws its comments
+    /// and decides which of them the document left behind from it, and no
+    /// second read exists for a scope the seat's record does not cover.
+    /// `content_hash` crosses as DECIMAL DIGITS for the same reason a
+    /// thread's anchor hash does - JS numbers are exact only to 2^53.
     DocumentRead {
         session: SessionSlot,
         path: String,
         document_kind: DocumentKind,
         bytes: String,
         reviewable: bool,
+        content_hash: String,
+        threads: Vec<forge_primitives::review::ReviewThread>,
+        reviews: Vec<forge_primitives::ReviewSet>,
     },
 }
 
@@ -555,11 +566,26 @@ mod tests {
             document_kind: DocumentKind::Markdown,
             bytes: "aGk=".to_owned(),
             reviewable: true,
+            content_hash: "18446744073709551615".to_owned(),
+            threads: Vec::new(),
+            reviews: Vec::new(),
         };
         let json = serde_json::to_string(&answer).expect("encode");
         assert!(json.contains("\"kind\":\"document_read\""), "{json}");
-        let ServerMessage::DocumentRead { session, path, document_kind, bytes, reviewable } =
-            serde_json::from_str(&json).expect("decode")
+        assert!(
+            json.contains("\"content_hash\":\"18446744073709551615\""),
+            "the document's hash crosses as decimal digits, as a thread's anchor does: {json}",
+        );
+        let ServerMessage::DocumentRead {
+            session,
+            path,
+            document_kind,
+            bytes,
+            reviewable,
+            content_hash,
+            threads,
+            reviews,
+        } = serde_json::from_str(&json).expect("decode")
         else {
             panic!("{json} decoded into another message")
         };
@@ -568,6 +594,9 @@ mod tests {
         assert_eq!(document_kind, DocumentKind::Markdown, "the kind the read detected");
         assert_eq!(bytes, "aGk=", "the document's bytes, base64, as they cross");
         assert!(reviewable);
+        assert_eq!(content_hash, "18446744073709551615", "the hash survives the round trip");
+        assert!(threads.is_empty(), "an uncommented document carries no threads");
+        assert!(reviews.is_empty(), "and no review sets");
     }
 
     #[test]

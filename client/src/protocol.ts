@@ -372,13 +372,16 @@ export type ServerMessage =
   | { kind: 'commit_diff'; sha: string; files: unknown; truncated: boolean }
   /**
    * One document, as the read answered: the seat it was read for, the
-   * resolved absolute path, the detected kind, the bytes base64, and the
-   * flag the hand-off passed.
+   * resolved absolute path, the detected kind, the bytes base64, the flag
+   * the hand-off passed, the document's own hash, and the review it already
+   * carries.
    *
    * `session` is named back so a page holding two seats routes each answer
    * to its own viewer - the same reason a refusal names its seat. `bytes`
    * is base64 because the wire is JSON, and `document_kind` because the
-   * envelope is already tagged on `kind`.
+   * envelope is already tagged on `kind`. `content_hash` crosses as
+   * decimal digits - JS numbers are exact only to 2^53 - and `threads` /
+   * `reviews` are the document scope's own store read.
    */
   | {
       kind: 'document_read';
@@ -387,6 +390,9 @@ export type ServerMessage =
       document_kind: DocumentKind;
       bytes: string;
       reviewable: boolean;
+      content_hash: string;
+      threads: unknown[];
+      reviews: unknown[];
     }
   /** The answer to a command that asked for one, a refusal included. */
   | { kind: 'reply'; reply_to: number; body: unknown }

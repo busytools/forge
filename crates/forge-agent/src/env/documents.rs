@@ -91,7 +91,8 @@ pub fn read(
     {
         return Err(DocumentRefusal::NotUtf8 { path: path.to_owned() });
     }
-    Ok(DocumentRead { path: resolved, kind, bytes, reviewable })
+    let content_hash = crate::env::git_diff::resolver::content_hash_bytes(&bytes);
+    Ok(DocumentRead { path: resolved, kind, bytes, reviewable, content_hash })
 }
 
 /// The canonical target of `path` under `root`. A missing file has no
@@ -178,6 +179,11 @@ mod tests {
         assert_eq!(document.bytes, b"# hi\n");
         assert_eq!(document.path, root.join("docs/readme.md"), "the resolved absolute path");
         assert!(!document.reviewable, "the flag the hand-off passed rides the read");
+        assert_eq!(
+            document.content_hash,
+            crate::env::git_diff::resolver::content_hash_bytes(b"# hi\n"),
+            "and the document's own hash, which a thread's anchor compares against",
+        );
     }
 
     /// The kinds the list starts with, by extension, case-insensitive; an
