@@ -193,12 +193,16 @@ pub enum SessionChipState {
 
 /// What a session is waiting on a person for. The kind a needs-you row
 /// names, since "asked you a question" and "a permission prompt is
-/// waiting" are different asks with the same mark.
+/// waiting" are different asks with the same mark - and a document
+/// hand-off is a third, parked in the workspace's own registry rather
+/// than in the session's pending set (Ved, the look: the hand-off must
+/// ride the same needs-you machinery as every ask).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PendingInteractionKind {
     Question,
     Permission,
+    HandOff,
 }
 
 /// The dedupe key for a delivered Slack message: one destination is
@@ -5851,6 +5855,13 @@ impl Workspace {
     /// What the session at `slot` is waiting on a person for, or `None`
     /// when it can advance on its own.
     pub fn pending_interaction(&self, slot: &SessionSlot) -> Option<PendingInteractionKind> {
+        // The document hand-offs first: one parks in the workspace's own
+        // registry rather than in the session's set, so a seat with no
+        // domain can still be holding one - and it is a prompt a person
+        // must act on exactly like the other two.
+        if self.has_document_handoff(slot) {
+            return Some(PendingInteractionKind::HandOff);
+        }
         let domain = self.domain_session_for(slot)?;
         let guard = domain.lock();
         // A question outranks a permission prompt: both hold a turn, and
@@ -5873,7 +5884,11 @@ impl Workspace {
     /// The same set [`Self::pending_interaction`] answers the kind of, so a
     /// view showing one of them can say how many wait behind it.
     pub fn pending_interaction_depth(&self, slot: &SessionSlot) -> usize {
-        self.domain_session_for(slot).map_or(0, |domain| domain.lock().pending_interactions.len())
+        let parked = self.document_handoffs.lock().values().filter(|h| &h.seat == slot).count();
+        parked
+            + self
+                .domain_session_for(slot)
+                .map_or(0, |domain| domain.lock().pending_interactions.len())
     }
 
     /// Record a fatal error, so a view that was not attached when it fired
@@ -6068,7 +6083,11 @@ impl Workspace {
         // (#1758). **The browser hand-off is the same shape** - its own
         // registry, its own read - and the same silence without it (Ved,
         // 2026-10-07).
-        if blocked || self.has_slack_draft(slot) || self.has_browser_hand_off(slot) {
+        if blocked
+            || self.has_slack_draft(slot)
+            || self.has_browser_hand_off(slot)
+            || self.has_document_handoff(slot)
+        {
             L::Attention
         } else {
             L::Running
@@ -13803,6 +13822,45 @@ mod worker_activity_tests {
         );
     }
 
+    /// **A parked document hand-off rides the same machinery every ask
+    /// does.** It parks in its own registry, so without this read a seat
+    /// holding one kept its running mark and the needs-you row said
+    /// nothing - the silence #1758 and the browser hand-off both had.
+    #[test]
+    fn a_parked_document_hand_off_reads_as_attention() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let seat = SessionSlot::from_str_for_test("w-dochandoff");
+        let domain = ws.register_domain_session(seat.clone(), None);
+        domain.lock().turn_pending = true;
+        assert_eq!(ws.session_activity(&seat), L::Running, "the control, mid-turn");
+        assert_eq!(ws.pending_interaction(&seat), None, "and no ask is held yet");
+
+        ws.note_client_attached();
+        let (id, _ending) = ws
+            .register_document_hand_off(&seat, "/proj/docs/plan.md", true)
+            .expect("the park lands with a client attached");
+
+        assert_eq!(
+            ws.session_activity(&seat),
+            L::Attention,
+            "a held ask is a person's to answer, not a running turn's",
+        );
+        assert_eq!(
+            ws.pending_interaction(&seat),
+            Some(crate::PendingInteractionKind::HandOff),
+            "and the row's needs-you names the kind",
+        );
+        assert_eq!(ws.pending_interaction_depth(&seat), 1, "the depth counts it");
+
+        assert!(ws.resolve_document_hand_off(
+            id,
+            &seat,
+            forge_primitives::document::DocumentHandOffEnding::Done { review_id: None },
+        ));
+        assert_eq!(ws.session_activity(&seat), L::Running, "answered, the turn runs again");
+        assert_eq!(ws.pending_interaction(&seat), None, "and the row stands down");
+    }
+
     /// `activity` is populated by the `agents__list` read path only; the
     /// `WorkerStatusChanged` event path leaves it `None`.
     #[test]
@@ -17459,7 +17517,9 @@ provider = "anthropic"
         let ask = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
                 match updates.recv().await {
-                    Some(SessionUpdate::DocumentHandOffPending { id, path, reviewable, .. }) => {
+                    Some(SessionUpdate::DocumentHandOffPending {
+                        id, path, reviewable, ..
+                    }) => {
                         break (id, path, reviewable);
                     }
                     Some(_) => {}
@@ -17572,9 +17632,11 @@ provider = "anthropic"
         })
         .await
         .expect("an attached client is what the hand-off waits for");
-        ws.resolve_document_hand_off(ask, &session_key, DocumentHandOffEnding::Done {
-            review_id: None,
-        });
+        ws.resolve_document_hand_off(
+            ask,
+            &session_key,
+            DocumentHandOffEnding::Done { review_id: None },
+        );
         handed.await.expect("the task joins").expect("and the park releases");
 
         ws.note_client_detached();

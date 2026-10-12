@@ -660,7 +660,7 @@ mod tests {
             .map(str::to_owned)
             .chain(crate::mcp::browser::specs::specs().iter().map(|spec| spec.name.to_owned()))
             // The document hand-off is always-on beside the browser.
-            .chain(["hand_off_document"].into_iter().map(str::to_owned))
+            .chain(["documents__hand_off"].into_iter().map(str::to_owned))
             .collect();
         expected.sort();
         assert_eq!(
@@ -692,7 +692,7 @@ mod tests {
             .into_iter()
             .map(str::to_owned)
             .chain(crate::mcp::browser::specs::specs().iter().map(|spec| spec.name.to_owned()))
-            .chain(["hand_off_document"].into_iter().map(str::to_owned))
+            .chain(["documents__hand_off"].into_iter().map(str::to_owned))
             .chain(["cron__create", "cron__delete", "cron__list"].into_iter().map(str::to_owned))
             .collect();
         expected.sort();

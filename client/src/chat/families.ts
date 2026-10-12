@@ -32,10 +32,18 @@ export type Family =
  * family segment a tool name carries IS the family (`mcp__forge__tasks__update`
  * is tasks), so a family added on the server arrives here by being named.
  */
-export type ForgeFamily = 'agents' | 'cron' | 'gotify' | 'review' | 'slack' | 'tasks';
+export type ForgeFamily = 'agents' | 'cron' | 'documents' | 'gotify' | 'review' | 'slack' | 'tasks';
 
 /** The families a `forge` call draws a card for; `systemone` keeps its own kind. */
-const FORGE_FAMILIES = new Set<string>(['agents', 'cron', 'gotify', 'review', 'slack', 'tasks']);
+const FORGE_FAMILIES = new Set<string>([
+  'agents',
+  'cron',
+  'documents',
+  'gotify',
+  'review',
+  'slack',
+  'tasks',
+]);
 
 /**
  * The forge family a tool belongs to, or `null` for every other call.
@@ -176,6 +184,7 @@ export function rowOf(name: string): KindRow {
 const FORGE_GLYPH: Record<ForgeFamily, string> = {
   agents: 'subagents',
   cron: 'schedules',
+  documents: 'file',
   gotify: 'gotify',
   review: 'review',
   slack: 'slack',

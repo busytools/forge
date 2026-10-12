@@ -705,7 +705,10 @@ function permClass(mode: string): string {
  * Where a row sits in the rail. The three groups are also the order they read
  * in, so the rank is the order and the array index both.
  */
-export function rankOf(state: RowState, pending: 'question' | 'permission' | null): number {
+export function rankOf(
+  state: RowState,
+  pending: 'question' | 'permission' | 'hand_off' | null,
+): number {
   // An ask outranks the lifecycle: a session holds a prompt while the core
   // still calls it idle, and what it is waiting on is a person.
   if (pending !== null) return 0;
@@ -761,7 +764,11 @@ function whyOf(lead: Row, workers: Row[]): { line: string; bad: boolean } | null
     if (row.pending !== null) {
       return {
         line:
-          row.pending === 'question' ? 'asked you a question' : 'a permission prompt is waiting',
+          row.pending === 'question'
+            ? 'asked you a question'
+            : row.pending === 'hand_off'
+              ? 'a hand-off is waiting'
+              : 'a permission prompt is waiting',
         bad: false,
       };
     }

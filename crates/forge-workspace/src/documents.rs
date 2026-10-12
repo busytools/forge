@@ -68,12 +68,15 @@ impl Workspace {
     /// Whether a hand-off with this id is still registered to `seat`,
     /// without removing it - the read the dispatch guard makes before an
     /// answer.
-    pub(crate) fn document_handoff_waiting(
-        &self,
-        id: uuid::Uuid,
-        seat: &SessionSlot,
-    ) -> bool {
+    pub(crate) fn document_handoff_waiting(&self, id: uuid::Uuid, seat: &SessionSlot) -> bool {
         self.document_handoffs.lock().get(&id).is_some_and(|held| &held.seat == seat)
+    }
+
+    /// Whether `seat` is parked on a document hand-off: the read the
+    /// activity gate and the needs-you row both make, so a held ask lights
+    /// the same marks a held draft and a held browser hand-off do.
+    pub(crate) fn has_document_handoff(&self, seat: &SessionSlot) -> bool {
+        self.document_handoffs.lock().values().any(|held| &held.seat == seat)
     }
 
     /// Remove a parked hand-off, answer its waiter, and tell every view it
@@ -155,4 +158,3 @@ impl Drop for AbandonOnDrop<'_> {
         );
     }
 }
-

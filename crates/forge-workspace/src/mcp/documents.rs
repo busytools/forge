@@ -70,7 +70,11 @@ pub(crate) struct HandOffTool {
 #[async_trait::async_trait]
 impl Tool for HandOffTool {
     fn name(&self) -> &'static str {
-        "hand_off_document"
+        // The family segment is the family: every forge tool is
+        // `mcp__forge__<family>__<verb>`, and the client reads the card and
+        // glyph out of that segment - a tool without one draws as the
+        // generic MCP call (Ved, the look: "every tool has its own glyph").
+        "documents__hand_off"
     }
 
     fn description(&self) -> &'static str {
@@ -123,11 +127,9 @@ impl Tool for HandOffTool {
 impl HandOffTool {
     async fn hand_off(&self, args: Value) -> Result<String, String> {
         let Some(path) = args.get("path").and_then(Value::as_str) else {
-            return Err(
-                "hand_off_document needs `path`: the document's path, relative to this session's \
-                 working directory"
-                    .to_owned(),
-            );
+            return Err("documents__hand_off needs `path`: the document's path, relative to this \
+                 session's working directory"
+                .to_owned());
         };
         let reviewable = match args.get("reviewable") {
             None | Some(Value::Null) => false,
@@ -236,8 +238,7 @@ mod tests {
         ));
         let tool = tool(Arc::clone(&mock) as Arc<dyn DocumentFacade>);
 
-        let with_review =
-            tool.call(ToolInput { value: json!({ "path": "docs/readme.md" }) }).await;
+        let with_review = tool.call(ToolInput { value: json!({ "path": "docs/readme.md" }) }).await;
         assert!(!with_review.is_error, "{:?}", with_review.blocks);
         let text = crate::mcp::test_support::block_text(&with_review.blocks[0]);
         assert!(text.contains("r-7"), "the answer names the review: {text}");
@@ -311,7 +312,7 @@ mod tests {
     /// The family registers exactly one tool, under the name a prompt calls
     /// it by.
     #[test]
-    fn the_family_registers_one_tool_named_hand_off_document() {
+    fn the_family_registers_one_tool_named_documents_hand_off() {
         let server = build_server(MockDocumentFacade::new().into_arc(), seat());
         let debug = format!("{server:?}");
         let (_, tools) = debug.split_once("tools: [").expect("debug lists the tool names");
@@ -321,6 +322,6 @@ mod tests {
             .map(|name| name.trim_matches('"'))
             .filter(|n| !n.is_empty())
             .collect();
-        assert_eq!(names, ["hand_off_document"]);
+        assert_eq!(names, ["documents__hand_off"]);
     }
 }

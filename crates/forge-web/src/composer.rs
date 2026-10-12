@@ -829,6 +829,7 @@ fn unknown_dock(kind: PendingKind) -> Markup {
     let what = match kind {
         PendingKind::Question => "a question is waiting for you",
         PendingKind::Permission => "a permission prompt is waiting",
+        PendingKind::HandOff => "a hand-off is waiting for you",
     };
     html! {
         div .head { span .t { (what) } }
