@@ -16,7 +16,9 @@
 - **`just`**, if you want the task recipes. Most wrap a cargo
   invocation you can also type out.
 - **Node and npm, for the client.** `just check` runs the client's
-  Prettier, ESLint, `svelte-check`, `tsc` and vitest steps, and
+  Prettier, ESLint, `svelte-check`, `tsc` and vitest steps, and its
+  android warnings check (`client-android-warnings`, the shell crate
+  compiled for `aarch64-linux-android`), and
   `just client-tauri-check` builds the shell in its shipping configuration;
   `just release` builds and installs it. CI uses Node 24, and
   `npm --prefix client ci` fetches the client's dependencies. The client
@@ -72,6 +74,8 @@ That runs, in order: `cargo fmt --check`, the Unicode punctuation gate,
 the release scripts' tests (`script-tests`), the client's Prettier check,
 its ESLint, `svelte-check` and `tsc --noEmit`
 and then its vitest run,
+the shell crate's android warnings check (`client-android-warnings`:
+`cargo check --target aarch64-linux-android` with warnings denied),
 `cargo clippy --all-targets --workspace -- -D warnings` once per feature
 set (with and without `--all-features`),
 `cargo nextest run --workspace --all-features`,
@@ -82,17 +86,23 @@ would reject fails locally too; CI sets it once at workflow level
 instead. It covers the build each step drives, and rustdoc compiles a
 doctest on its own, so it does not deny warnings inside one.
 
-Run it before opening a pull request. It is CI's set minus two jobs: CI
-also runs `cargo check --release` and `just check-feature-configs`, both
-of which `just check` deliberately leaves out. The client's steps are in
+Run it before opening a pull request. It is CI's set with three
+differences: CI also runs `cargo check --release` and
+`just check-feature-configs`, both of which `just check` deliberately
+leaves out, while `client-android-warnings` (the shell's android step) is
+in `just check` alone - the vendoring its build needs refuses non-macOS
+hosts, so CI runs no such job yet (issue #1959). The client's steps are in
 here too, so the client is not a second command to remember and a failure
 on either side lands on the same verdict line.
 
-The shell under `client/src-tauri/` is its own workspace root, so
-`just check`'s Rust steps and CI's cargo jobs do not reach it; the Unicode
-punctuation gate, which CI runs too, and the client's Prettier step do.
-`just client-tauri-check` builds it in the shipping configuration and
-`just client-tauri-bundle` adds the bundles, and the first is the one to
+The shell under `client/src-tauri/` is its own workspace root, so the
+workspace's cargo steps and CI's cargo jobs do not reach it. `just check`
+reaches it through `client-android-warnings` alone - the crate compiled
+for `aarch64-linux-android` with warnings denied, which is what catches
+desktop-only code going dead on Android - and the Unicode punctuation gate
+and the client's Prettier step reach it too. Everything else about the
+shell needs `just client-tauri-check` (the shipping configuration) or
+`just client-tauri-bundle` (plus the bundles), and the first is the one to
 run before handing over a change there.
 
 A client that BUNDLES takes one step of its own first: `just

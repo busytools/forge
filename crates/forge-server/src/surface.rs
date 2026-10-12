@@ -8,9 +8,11 @@
 
 pub mod accounts;
 pub mod agents;
+pub mod board;
 pub mod composer;
 pub mod connectors;
 pub mod dictate;
+pub mod extensions;
 pub mod inspector;
 pub mod plugins;
 pub mod reviews;
@@ -28,6 +30,7 @@ use forge_workspace::{Command, DispatchError, Workspace};
 pub use accounts::{AccountsView, GatewayView};
 pub use agents::{AgentRow, Agents, PendingKind};
 pub use dictate::DictateView;
+pub use extensions::{ExtensionsView, LspServerCheck};
 // A view compares the values the surface hands it, so it needs their names
 // too - re-exported here rather than reached for in the crates below, which
 // a view does not name.

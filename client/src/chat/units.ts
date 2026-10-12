@@ -1185,14 +1185,28 @@ function questionCard(input: unknown, answer: unknown, key: string): Unit | null
       : typeof recorded === 'string'
         ? [recorded]
         : [];
-    const picked = values.filter((value) => value !== '' && labels.includes(value));
+    // **A multi-select answer arrives JOINED** ("Dev client, App") while a
+    // single pick arrives alone, so each value is read as its parts against
+    // the labels - a joined string tested whole matched no label and drew
+    // the reader's picks as if they had been typed.
+    const parts = (value: string): string[] =>
+      value
+        .split(', ')
+        .map((part) => part.trim())
+        .filter((part) => part !== '');
+    const picked = values
+      .filter((value) => value !== '')
+      .flatMap(parts)
+      .filter((part) => labels.includes(part));
     // The annotation first: it is the field the CLI fills with what was TYPED,
     // and a selected value that is not one of the question's own labels is the
     // escape row's label - so reading values first drew "you typed: Tell the
     // agent something else" where the reader's own words should be.
     const typed =
       str(obj(annotations[text]), 'notes') ??
-      values.find((value) => value !== '' && !labels.includes(value)) ??
+      values.find(
+        (value) => value !== '' && parts(value).every((part) => !labels.includes(part)),
+      ) ??
       null;
 
     asked.push({ question: text, picked_labels: picked, typed_note: typed === '' ? null : typed });

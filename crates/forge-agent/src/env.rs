@@ -7,8 +7,10 @@
 
 pub mod cli_version;
 pub mod file_index;
+pub mod gh_issue;
 pub mod git_command;
 pub mod git_diff;
+pub mod lsp_path;
 pub mod open_url;
 pub mod processes;
 pub mod timezone;

@@ -5,6 +5,8 @@
   import { dictationOffered } from '../composer/view';
   import Connect from '../connect/Connect.svelte';
   import Fixture from '../dev/Fixture.svelte';
+  import Board from '../board/Board.svelte';
+  import Extensions from '../extensions/Extensions.svelte';
   import Home from '../home/Home.svelte';
   import type { HomeRead } from '../home/live';
   import Models from '../models/Models.svelte';
@@ -57,6 +59,15 @@
    */
   const dictate = $derived(home.wire === null ? false : dictationOffered(home.wire.dictate));
 
+  /**
+   * The board's edits, sent over the socket as commands: the user's own
+   * moves, app-level (no seat routes them), each carrying its project.
+   * Without a connection the page's controls draw and do nothing.
+   */
+  function boardAct(command: Record<string, Record<string, unknown>>): void {
+    void connection?.dispatch(command);
+  }
+
   // The tab's name follows what is on screen: forge at the home, the seat's
   // project on a session, and its label too when it is a worker's.
   $effect(() => {
@@ -68,7 +79,7 @@
   <Connect {settings} initialAddress={address} launchFailure={failure} {notice} {onconnect} />
 {:else if route.name === 'home'}
   {#if home.wire}
-    <Home wire={home.wire} {address} mark={settings.mark} />
+    <Home wire={home.wire} {address} mark={settings.mark} {connection} />
   {:else if home.refused}
     <!-- The server turned the subscription down, in its own words. Handing
          the door back here would say the address was wrong, which is the one
@@ -85,6 +96,30 @@
     <!-- No server has answered, and the app's only input is its URL: the
          connect screen stays rather than a page falling back to bundled
          data. -->
+    <Connect {settings} initialAddress={address} launchFailure={failure} {notice} {onconnect} />
+  {/if}
+{:else if route.name === 'board'}
+  {#if home.wire !== null}
+    <!-- One project's board, a takeover over wherever the reader was: the
+         top bar's back and done return through history. The page reads the
+         same snapshot the fleet does - its rows ride the wire. -->
+    <Board
+      wire={home.wire}
+      org={route.org}
+      project={route.project}
+      onact={boardAct}
+      notice={home.report}
+    />
+  {:else if home.refused}
+    <!-- The board reads the same snapshot the fleet does, so a subscription
+         the server turned down leaves it with nothing to draw - and saying so
+         is not the same page as never having read. -->
+    <main class="wrap">
+      <p class="pending">This forge would not answer for the home: {home.refused}</p>
+    </main>
+  {:else if connected}
+    <main class="wrap"><p class="pending">Reading the fleet...</p></main>
+  {:else}
     <Connect {settings} initialAddress={address} launchFailure={failure} {notice} {onconnect} />
   {/if}
 {:else if route.name === 'fixture' && import.meta.env.DEV}
@@ -130,6 +165,22 @@
          directly: its own state (loading, refused, the four sections) is the
          page's, and nothing outside it draws any of it. -->
     <Models {connection} mark={settings.mark} />
+  {:else}
+    <Connect {settings} initialAddress={address} launchFailure={failure} {notice} {onconnect} />
+  {/if}
+{:else if route.name === 'extensions'}
+  {#if connection !== null && home.wire !== null}
+    <!-- The page subscribes the inventory itself. The roster rides in
+         because the install scope picker targets a declared project, and a
+         path the server cannot resolve from `forge.toml` is not a target it
+         accepts. -->
+    <Extensions
+      {connection}
+      mark={settings.mark}
+      projects={home.wire.projects.map((row) => row.project)}
+    />
+  {:else if connection !== null}
+    <main class="wrap"><p class="pending">Reading the fleet...</p></main>
   {:else}
     <Connect {settings} initialAddress={address} launchFailure={failure} {notice} {onconnect} />
   {/if}

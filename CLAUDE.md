@@ -167,24 +167,27 @@ Work top-down; first match wins.
 
 **The view surface is built, reads and writes.** A view reads the core
 through named verbs by subject - `roster`, `session`, `agents`,
-`accounts`, `plugins`, `reviews`, `workers`, `connectors`, `dictate`,
+`accounts`, `plugins`, `extensions`, `reviews`, `workers`, `connectors`,
+`dictate`,
 `dictate_models`, `cli_version`, `conversation`, `slash_commands`,
 `forge_commands`, `subagents`, `has_dispatches`, `subagent_cards`,
 `file_index`, `walk_file_index`, `respect_gitignore`, `header`, `mcp_servers`,
-`processes`, `work`, `background_tasks`, `monitors`, `pending_asks`,
+`processes`, `work`, `board`, `background_tasks`, `monitors`, `pending_asks`,
 `fatal_error`, `service_status`
 and `usage` - receives changes through
 `subscribe()`, and acts through `dispatch()`, which is a verb rather than
 an accessor so a view is handed the commands it needs and not the whole
-core. All thirty exist in `forge-server`, and the TUI reads
+core. All thirty-two exist in `forge-server`, and the TUI reads
 its project roster, session scan cwd, worker registry, account pool,
 plugin records, review threads,
 connector subscriptions, dictation state and the session's process walk
 through them; a second view reads its project roster and agent rows, the
+task board's fleet and per-project rows through `board`, the
 account pool, the worker registry, connector subscriptions and dictation
 state through those, the claude version through `cli_version`, its
 composer's data through `slash_commands`, `forge_commands`, `subagents`,
-`file_index` and `respect_gitignore`, and the conversation,
+`file_index` and `respect_gitignore`, the plugin inventory, its PATH
+checks and its last update run through `extensions`, and the conversation,
 header, inspector and the asks it answers through
 `conversation`, `header`, `mcp_servers`, `processes`, `monitors` and
 `pending_asks`, and dispatches its composer's send, its prompt answers and
@@ -820,12 +823,17 @@ inspected.
 22. **The client is gated like the Rust side, and it is a shell.** `just
     check` runs the client's steps too - Prettier, ESLint on
     typescript-eslint's type-checked configs, `svelte-check`, `tsc
-    --noEmit`, then vitest - so one command decides both stacks and its
+    --noEmit`, then vitest, then the shell's android warnings check
+    (`client-android-warnings`:
+    `cargo check --target aarch64-linux-android` with warnings
+    denied, the thing that catches desktop-only code going dead on
+    Android) - so one command decides both stacks and its
     verdict line names the first failing step. **The shell under
-    `client/src-tauri/` is its own workspace root**, so `just check`'s
-    Rust steps and CI's cargo jobs do not reach it; the Unicode
-    punctuation gate, which CI runs too, and the client's Prettier step
-    do. `just client-tauri-check` builds it in the shipping configuration
+    `client/src-tauri/` is its own workspace root**, so the workspace's
+    cargo steps and CI's cargo jobs do not reach it; `just check`'s
+    `client-android-warnings` reaches it, and the Unicode punctuation gate
+    and the client's Prettier step reach it too.
+    `just client-tauri-check` builds it in the shipping configuration
     and `just client-tauri-bundle` adds the bundles. **Denied as errors**, the
     analogue of the denied Rust lints: `any`, non-null assertion,
     `@ts-ignore`, `innerHTML`, `eval` and floating promises. **A waiver
@@ -978,6 +986,36 @@ inspected.
 
     Audience: everything that draws. The terminal is not exempt in
     principle - it is exempt only because it is being deleted.
+26. **One feature, one issue, one fix, one shot: a work cut lands
+    whole.** Ved, 2026-10-11: *"one feature, one issue, one fix, one
+    shot. I do not want intermediate steps... they should start up a
+    dev stack for that same reason, because I want end to end."*
+
+    **A work cut - one feature, one issue, one fix - lands whole: one
+    branch, one review, one look, one merge.** Never sliced into
+    pieces that land one after another; no intermediate step is shown
+    or merged on the way. The look is the one that cut is owed: a
+    feature waits for the user's own look before merge; a fix merges
+    after the review loop as usual. A plan that sequences the cut as
+    "land A, then B, then C", and a first PR that lands part of it
+    while the rest waits behind, are both this rule's subject. A cut
+    that genuinely cannot land whole is decided with the user BEFORE
+    anything is cut down - a smaller PR followed by the rest is the
+    failure this names.
+
+    **A slice is reviewed wrong as well as late.** Feedback on a piece
+    arrives after part of the cut has merged, each intermediate
+    landing spends a review round on a state nobody wanted, and the
+    whole is never exercised end to end. The review page's a/b/c plan
+    and the board's original landing in pieces are the two cases that
+    produced the rule.
+
+    **The dev stack exists so the whole cut is exercised end to end
+    before it lands** - for the feature-scale web work that skill is
+    scoped to (`.claude/skills/dev-stack/`); every other cut still
+    lands whole, without a stack. Rule 11's same-PR book obligation
+    rides the whole cut too: the page lands with the thing it
+    describes, not with the first slice of it.
 
 ## Claude Code worktree interop
 

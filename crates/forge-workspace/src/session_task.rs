@@ -1622,7 +1622,19 @@ pub(crate) fn execute_command_via_handle(
         | Command::SetReviewThreadStatus { .. }
         | Command::CloseSession { .. }
         | Command::UpsertReviewThread { .. }
-        | Command::SubmitReview { .. }) => {
+        | Command::SubmitReview { .. }
+        | Command::TaskVerdict { .. }
+        | Command::TaskAnswer { .. }
+        | Command::TaskRank { .. }
+        | Command::TaskAssign { .. }
+        | Command::TaskCreate { .. }
+        | Command::TaskMove { .. }
+        | Command::PluginInstall { .. }
+        | Command::PluginUpdate { .. }
+        | Command::PluginUpdateAll
+        | Command::PluginCheckUpdates
+        | Command::MarketplaceAdd { .. }
+        | Command::MarketplaceRepair { .. }) => {
             tracing::warn!(
                 target: "forge_workspace::session_task",
                 slot = %key.display(),
@@ -1714,6 +1726,7 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
         // with them: the row reads its failure from the lifecycle.
         domain.runtime_state = None;
         domain.turn_pending = false;
+        domain.turn_open = false;
         domain.pending_cancel = false;
         domain.failed_turn_at = None;
         domain.auto_continue = None;
@@ -1839,6 +1852,7 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
         domain.session_id = Some(SessionId::new(session_id.clone()));
         domain.runtime_state = None;
         domain.turn_pending = false;
+        domain.turn_open = false;
         // The failure mark named the last occupant's turn, and so did any
         // interrupt it was holding.
         domain.pending_cancel = false;
@@ -1938,6 +1952,16 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
             forge_agent::translate::state_parsing::parse_runtime_session_state(data.get("state"))
     {
         domain.runtime_state = Some(state);
+    }
+    // Mirror the frames' own claim about the turn, which is the one signal
+    // that covers a turn's OPENING: `turn_pending` is spent by the previous
+    // Result and `session_state_changed` no longer arrives, so thinking and
+    // prose alone left the header reading idle while the model worked
+    // (`DomainSession::turn_open` carries the measured window).
+    if let AgentEvent::SdkMessage { msg, .. } = event
+        && let Some(said) = crate::domain_session::liveness_of(msg)
+    {
+        domain.note_liveness(said);
     }
     // The two catalogues the composer's autocomplete reads, as the CLI
     // last advertised them. Held on the session so a view arriving after
@@ -4326,6 +4350,38 @@ provider = "anthropic"
         assert_eq!(
             domain.session_id.as_ref().map(std::string::ToString::to_string),
             Some("real-uuid-1".to_owned())
+        );
+    }
+
+    /// **The whole chain, not just its two ends.**
+    ///
+    /// `liveness_of` and `note_liveness` are each pinned, but nothing pinned the
+    /// FOLD that joins them - so an edit that called `liveness_of` and dropped
+    /// its answer would leave every test green while the header went back to
+    /// reading idle through a turn's opening, which is the 41-second window the
+    /// mirror exists to close. This drives a real frame through the real fold.
+    #[test]
+    fn a_thinking_frame_on_the_wire_opens_the_turn() {
+        let mut domain = empty_domain();
+        assert!(!domain.turn_in_flight(), "precondition: nothing is running");
+
+        apply_event_to_domain(
+            &mut domain,
+            &AgentEvent::SdkMessage {
+                session_id: "s".to_owned(),
+                msg: forge_primitives::Message::ThinkingTokens {
+                    estimated_tokens: 40,
+                    estimated_tokens_delta: 40,
+                    uuid: "tokens-1".to_owned(),
+                    session_id: "s".to_owned(),
+                    extras: serde_json::Map::new(),
+                },
+            },
+        );
+
+        assert!(
+            domain.turn_in_flight(),
+            "the frame did not reach the liveness mirror, so the header reads idle",
         );
     }
 

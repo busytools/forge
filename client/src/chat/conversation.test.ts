@@ -8,7 +8,7 @@ import { MORE_TURNS, subjectKey } from '../protocol';
 import type { ClientMessage, ServerMessage, SessionUpdate } from '../protocol';
 import type { Connection, ConnectionStatus } from '../socket';
 import type { SessionSlot } from '../wire/types';
-import { Chat, type PageTurn } from './conversation';
+import { Chat, Frames, type PageTurn } from './conversation';
 import { echoes } from './echoes.svelte';
 import { outputs } from './outputs.svelte';
 import { refused } from '../refusals';
@@ -237,50 +237,32 @@ const words = (chat: Chat): string => JSON.stringify(get(chat.value).turns);
 
 describe('the conversation the chat draws', () => {
   /**
-   * A seat the reader has left folds nothing.
+   * A seat the reader has left still FOLDS.
    *
-   * **The frames keep arriving anyway** - the client holds the home
-   * subscription for the whole session, and it carries every seat's
-   * `chat_appended` for the fleet rows - so a kept conversation that folded
-   * them would grow for every seat ever visited, and a return would re-mount
-   * all of it. Held back, the return's own reads put the seat current again:
-   * the re-subscribe's snapshot and the newest page asked here.
+   * **The state is lossless for every seat; whether one is shown gates only
+   * the draw** (Ved, 2026-10-09). The frames arrive for every visited seat
+   * through the home feed anyway - dropping them here made the state the
+   * place a conversation was lost, because the return's reads cannot restore
+   * what the bounded window has itself already dropped. The column keeps a
+   * left seat's value without drawing it.
    */
-  it('folds nothing while unshown, and asks the newest page on the return', () => {
+  it('folds while unshown - the draw is what waits, never the state', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
     const stop = chat.start();
-    // The first ask's own answer: an ask that never landed would swallow the
-    // return's refresh under the in-flight guard.
     server.send(page([turn('t1', 'kept')], null));
-    let notifies = 0;
-    const off = chat.value.subscribe(() => (notifies += 1));
 
     server.update({ chat_appended: { key: LEAD, msg: said('while shown') } });
-    const shownNotifies = notifies;
-    expect(shownNotifies, 'a shown seat folds and notifies').toBeGreaterThan(0);
 
     chat.leaving();
     server.update({ chat_appended: { key: LEAD, msg: said('while away') } });
-    expect(notifies, 'an unshown seat neither folds nor notifies').toBe(shownNotifies);
-    // The notify alone is paint-gated, so the fold itself is read here too:
-    // the frame is dropped, not folded and left undrawn.
     expect(
       JSON.stringify(get(chat.value).turns),
-      'and the frame was dropped, not folded',
-    ).not.toContain('while away');
+      'a frame for an unshown seat folds into the state',
+    ).toContain('while away');
 
-    const asked = server.more().length;
     chat.showing();
-    expect(server.more().length, 'the return asks the newest page').toBe(asked + 1);
-    expect(server.more().at(-1), 'for the newest page, this seat').toEqual({
-      kind: 'more',
-      conversation: LEAD,
-      before: null,
-      turns: 20,
-    });
-
-    off();
+    expect(words(chat), 'and the return draws it').toContain('while away');
     stop();
   });
 
@@ -314,27 +296,412 @@ describe('the conversation the chat draws', () => {
   });
 
   /**
-   * A return after more than one page of away turns drops the stale tail
-   * rather than stranding the gap: the held turns and the new page share
-   * nothing, the turns in between are in no page, and older() walks from the
-   * OLDEST held - so the middle was unreachable for good (rule 25's rows).
-   * The page's own cursor is the walk-back, so scrolling up loads the
-   * history again from the transcript.
+   * **A page the client's half reconciled is the catch-up, not an answer.**
+   * After a park, an ask that died with the connection leaves the count of
+   * abandoned asks standing - and the reconcile's newest window would be
+   * swallowed by it, the reader meeting an old conversation with no way to
+   * tell. The mark is what tells the two apart; without it this page
+   * disappears, which is the case beside this one.
    */
-  it("drops the stale tail when the return's page does not reach it", () => {
+  it('lands a reconciled page even when an ask died with the park', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
     const stop = chat.start();
-    server.send(page([turn('t1', 'kept tail')], 'tail-cursor'));
+    // A page with a cursor, so an older ask can go out and never answer.
+    server.send(page([turn('t1', 'the kept turn')], 'cursor-1'));
+    chat.older();
+    server.update({ session_replaced: { key: LEAD } });
+
+    server.send({
+      kind: 'page',
+      conversation: LEAD,
+      turns: [turn('t9', 'the catch-up')],
+      cursor: null,
+      reconciled: true,
+    });
+
+    const drawn = words(chat);
+    expect(drawn, 'the catch-up lands as the newest window').toContain('the catch-up');
+    stop();
+  });
+
+  /** The same state, unmarked: the abandoned count swallows it (the pair
+   *  with the test above is what makes the mark load-bearing). */
+  it('swallows an unmarked page while an ask is abandoned', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'the kept turn')], 'cursor-1'));
+    chat.older();
+    server.update({ session_replaced: { key: LEAD } });
+
+    server.send(page([turn('t9', 'not an answer')], null));
+
+    expect(words(chat), 'an answer to an ask nobody wants is dropped').not.toContain(
+      'not an answer',
+    );
+    stop();
+  });
+
+  /**
+   * A return whose page does not reach the held tail KEEPS the tail and
+   * walks back to it. Dropping it (the old contract) made the stretch
+   * between the page and the tail unreachable except by a scroll, and the
+   * tail itself was held state no read owed anyone (Ved, 2026-10-09). The
+   * page's own cursor is the walk, so the pages between load on their own.
+   */
+  it('keeps the unreached tail and walks back to it', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    // Two turns, so the fresh open's fill has nothing to ask for - the return's
+    // own newest page is the landing that has to reach back.
+    server.send(page([turn('t1', 'kept tail'), turn('t1b', 'kept too')], 'tail-cursor'));
 
     chat.leaving();
     chat.showing();
     server.send(page([turn('t2', 'a new turn')], 'newest-cursor'));
 
-    const held = get(chat.value);
-    expect(words(chat), 'the unreachable tail is gone').not.toContain('kept tail');
+    expect(words(chat), 'the unreached tail is kept').toContain('kept tail');
     expect(words(chat), 'and the newest page draws').toContain('a new turn');
-    expect(held.cursor, "the walk-back is the page's own cursor").toBe('newest-cursor');
+    expect(
+      server.more().at(-1),
+      'and the walk asks the next page down from the one that could not reach',
+    ).toEqual({ kind: 'more', conversation: LEAD, before: 'newest-cursor', turns: 20 });
+    stop();
+  });
+
+  /**
+   * The occlusion repro: a SHOWN seat whose socket dies (the app's window
+   * was behind something and its page was suspended) and reconnects. The
+   * frames that crossed while the socket was down are the ones no live fold
+   * ever sees - the reconnect's newest page is the only carrier - so every
+   * one of them must land in the merge, whatever the page's cut did to the
+   * live turn's row (#1893's machinery) and whatever the held row already
+   * carried.
+   */
+  it('a shown seat that reconnects keeps every frame that crossed while the socket was down', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'before the drop')], 'c1'));
+    server.update({ chat_appended: { key: LEAD, msg: said('held before the drop') } });
+
+    // The window was occluded: the socket died and came back.
+    server.reach('connecting');
+    server.reach('open');
+    expect(server.more().at(-1), 'the reconnect asks the newest page').toEqual({
+      kind: 'more',
+      conversation: LEAD,
+      before: null,
+      turns: 20,
+    });
+
+    // The page as the transcript has it - the held frames and the ones that
+    // crossed while the socket was down, one turn.
+    server.send(
+      page(
+        [
+          {
+            key: 't1',
+            messages: [
+              {
+                type: 'user',
+                uuid: 'u-before',
+                message: { role: 'user', content: [{ type: 'text', text: 'before the drop' }] },
+              },
+              {
+                type: 'assistant',
+                uuid: 'a-held',
+                message: {
+                  role: 'assistant',
+                  content: [{ type: 'text', text: 'held before the drop' }],
+                },
+              },
+              {
+                type: 'assistant',
+                uuid: 'a-gap',
+                message: {
+                  role: 'assistant',
+                  content: [{ type: 'text', text: 'crossed while down' }],
+                },
+              },
+            ],
+          },
+        ],
+        null,
+      ),
+    );
+
+    const drawn = words(chat);
+    expect(drawn, 'the frame that crossed while down must draw').toContain('crossed while down');
+    expect(drawn, 'and the held frame stays').toContain('held before the drop');
+    stop();
+  });
+
+  /**
+   * The reconnect whose newest page stops at the window's floor: the page
+   * does not reach the held state, so the stretch in between - the frames
+   * that crossed while the socket was down - is in no page the client has.
+   * The held tail must not be dropped and the read must not stop at the
+   * floor: the conversation walks back until a page reaches what it holds,
+   * and every frame lands.
+   */
+  it('walks below the floor when the newest page does not reach the held state', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'oldest words')], 'c1'));
+    server.update({ chat_appended: { key: LEAD, msg: said('held before the drop') } });
+
+    // The socket died while the page was suspended; frames crossed unheld.
+    server.reach('connecting');
+    server.reach('open');
+
+    // The newest page, cut at the window's floor: it carries only the newest
+    // stretch - the held turn is below it, and the gap is between them.
+    server.send(
+      page(
+        [
+          {
+            key: 't2',
+            messages: [
+              {
+                type: 'assistant',
+                uuid: 'a-newest',
+                message: { role: 'assistant', content: [{ type: 'text', text: 'newest stretch' }] },
+              },
+            ],
+          },
+        ],
+        'floor-cursor',
+      ),
+    );
+
+    // The walk: the conversation asks the next page down, on its own.
+    const walked = server.more().filter((ask) => ask.kind === 'more' && ask.before !== null);
+    expect(
+      walked.length,
+      'a page that does not reach the held state walks back on its own',
+    ).toBeGreaterThan(0);
+    expect(walked.at(-1)?.before, 'from the page it could not reach from').toBe('floor-cursor');
+
+    // The walked page: the middle - held and gap - as the transcript has it.
+    server.send(
+      page(
+        [
+          {
+            key: 't1',
+            messages: [
+              {
+                type: 'user',
+                uuid: 'u-oldest',
+                message: { role: 'user', content: [{ type: 'text', text: 'oldest words' }] },
+              },
+              {
+                type: 'assistant',
+                uuid: 'a-held',
+                message: {
+                  role: 'assistant',
+                  content: [{ type: 'text', text: 'held before the drop' }],
+                },
+              },
+              {
+                type: 'assistant',
+                uuid: 'a-gap',
+                message: {
+                  role: 'assistant',
+                  content: [{ type: 'text', text: 'crossed while down' }],
+                },
+              },
+            ],
+          },
+        ],
+        'c1',
+      ),
+    );
+
+    const drawn = words(chat);
+    expect(drawn, 'the oldest held row stays').toContain('oldest words');
+    expect(drawn, 'the frame from the gap draws').toContain('crossed while down');
+    expect(drawn, 'and the newest page stays').toContain('newest stretch');
+    stop();
+  });
+
+  /**
+   * The walk fills the gap IN PLACE. A walk page is the middle of the
+   * conversation - newer than the tail it walks toward, older than the page
+   * it walks from - so the plain older landing (which prepends above
+   * everything held) drew the recovered stretch at the top of the column.
+   */
+  it('draws the walked gap between the tail and the newest page', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'one'), turn('t2', 'two')], 'c-tail'));
+
+    server.reach('connecting');
+    server.reach('open');
+    // The newest page, cut at the window's floor: the walk starts toward t2.
+    server.send(page([turn('t5', 'five')], 'floor'));
+    // The walk's pages, from the page's cursor down - the last one reaches
+    // the target and stops the walk.
+    server.send(page([turn('t4', 'four')], 'floor-2'));
+    const beforeReach = server.more().length;
+    server.send(page([turn('t2', 'two'), turn('t3', 'three')], 'c-tail'));
+
+    const keys = get(chat.value).turns.map((row) => row.key);
+    expect(keys, 'the recovered stretch draws where it happened').toEqual([
+      't1',
+      't2',
+      't3',
+      't4',
+      't5',
+    ]);
+    expect(server.more().length, 'and a page reaching the target stops the walk').toBe(beforeReach);
+    stop();
+  });
+
+  /**
+   * The walk stops where the history ends: a page with no cursor above it
+   * cannot be walked past, and asking again would fetch the same answer.
+   */
+  it('stops the walk where the history ends', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'one')], 'c-tail'));
+
+    server.reach('connecting');
+    server.reach('open');
+    server.send(page([turn('t4', 'four')], 'floor'));
+    const beforeEnd = server.more().length;
+    server.send(page([turn('t2', 'two'), turn('t3', 'three')], null));
+
+    const keys = get(chat.value).turns.map((row) => row.key);
+    expect(keys, 'everything walked still draws').toEqual(['t1', 't2', 't3', 't4']);
+    expect(server.more().length, 'and no further ask follows the end').toBe(beforeEnd);
+    stop();
+  });
+
+  /**
+   * A return page heals a held live turn whose counter frames it missed.
+   *
+   * The strip draws its clock from the held row and its thinking count from
+   * the counter frames the row carries - so a held turn that grew without
+   * them (the frames crossed while the seat was away) shows a ticking clock
+   * and no count until a page puts them back. Ved saw exactly that on
+   * 2026-10-09: "the duration just appeared... thinking tokens does not
+   * appear."
+   */
+  it('heals a held live turn with the counters a return page carries', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'one')], 'c1'));
+    server.update({ chat_appended: { key: LEAD, msg: said('working') } });
+
+    chat.leaving();
+    chat.showing();
+    server.send(
+      page([{ key: 't1', messages: [typed('one'), said('working'), counted(40)] }], 'c1'),
+    );
+
+    const turns = get(chat.value).turns;
+    const units = fold(turns[turns.length - 1]?.messages ?? [], null, true, false);
+    const report = units.at(-1) as
+      { kind?: string; info?: { thinking_tokens?: number | null } } | undefined;
+    expect(
+      report?.info?.thinking_tokens,
+      'the counters the page carries reach the running row',
+    ).toBe(40);
+    stop();
+  });
+
+  /**
+   * A completion keeps the live row while the record still says a turn is in
+   * flight: the CLI ends a turn per delivered prompt, so a mid-turn message
+   * fires `turn_complete` while the seat is still running - and taking that
+   * frame as the end killed the clock and the thinking count until a
+   * remount (Ved, 2026-10-09: "the thinking tokens... is also very finicky").
+   */
+  it('keeps the live row through a completion the record says is not the end', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'one')], null));
+    server.update({ chat_appended: { key: LEAD, msg: said('working') } });
+    // The core's own record says the seat has a turn in flight.
+    server.send({
+      kind: 'snapshot',
+      subject: { session: LEAD },
+      data: { header: { turn_in_flight: true } },
+    });
+
+    server.update({ turn_complete: { key: LEAD } });
+
+    expect(
+      get(chat.value).turns.at(-1)?.running,
+      'the completion is one queued prompt ending, not the seat',
+    ).toBe(true);
+    stop();
+  });
+
+  /**
+   * A fresh open keeps asking until history joins the newest turn.
+   *
+   * A page is twenty TURNS - and a seat whose running turn is giant fills
+   * that whole page alone, so a first open drew the newest turn and nothing
+   * above it (Ved, 2026-10-09: "it is only showing me the latest one... not
+   * able to pull down the older messages"). The fill asks for what is above
+   * once, from the page's own cursor, and stops as soon as a landing brings
+   * settled turns with it.
+   */
+  it('a fresh open keeps asking until history joins the newest turn', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t9', 'the newest turn')], 'above-cursor'));
+    expect(
+      server.more().at(-1),
+      'a page that brought nothing but the newest turn asks for the history above it',
+    ).toEqual({ kind: 'more', conversation: LEAD, before: 'above-cursor', turns: 20 });
+
+    const asked = server.more().length;
+    server.send(page([turn('t7', 'seven'), turn('t8', 'eight')], 'older-cursor'));
+    const keys = get(chat.value).turns.map((row) => row.key);
+    expect(keys, 'the history above draws with the newest turn').toEqual(['t7', 't8', 't9']);
+    expect(server.more().length, 'and the fill stops once a landing brings history with it').toBe(
+      asked,
+    );
+    stop();
+  });
+
+  /**
+   * A tail no page can carry walks nothing: a `forge_notice` row is written
+   * on this page and nowhere else, so targeting one would fetch the whole
+   * history one page per landing for a turn no transcript holds.
+   */
+  it('walks nothing for a tail that is only notices', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.update({
+      chat_appended: {
+        key: LEAD,
+        msg: { type: 'system', subtype: 'forge_notice', severity: 'warning', text: 'a notice' },
+      },
+    });
+
+    const asked = server.more().length;
+    // Two turns on the first page, so the fresh fill cannot fire and the only
+    // ask this test can see is a walk's.
+    server.send(page([turn('t2', 'a new turn'), turn('t2b', 'and another')], 'floor'));
+    expect(
+      server.more().length,
+      'a notice-only tail has nothing in the transcript to walk for',
+    ).toBe(asked);
+    expect(words(chat), 'and the notice still draws').toContain('a notice');
     stop();
   });
 
@@ -864,6 +1231,55 @@ describe('the conversation the chat draws', () => {
     }
   });
 
+  /**
+   * **A frame armed when the page goes hidden does not swallow the ones after
+   * it**, which is this store's half of the gate the seat's own test pins: a
+   * display going off mid-turn leaves a frame in flight, and an armed frame
+   * never fires on a page that cannot paint. Without this, a revert of this
+   * store's order alone would leave the suite green - and this column is
+   * where the stall was seen.
+   */
+  it('draws a frame that arrives when the page is hidden with one already armed', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const frames = new Map<number, () => void>();
+    let next = 1;
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      const id = next;
+      next += 1;
+      frames.set(id, callback as () => void);
+      return id;
+    });
+    try {
+      const server = fakeConnection();
+      const chat = new Chat(server.connection, LEAD);
+      chat.start();
+      server.send(page([turn('t1', 'first')], null));
+      // A reader, so the store waits for a paint rather than publishing at
+      // once by design.
+      let drawn = '';
+      const stop = chat.value.subscribe((value) => {
+        drawn = JSON.stringify(value);
+      });
+
+      server.update({ chat_appended: { key: LEAD, msg: said('armed while visible') } });
+      expect(frames.size, 'precondition: the visible frame is armed').toBe(1);
+
+      // The page goes hidden with that frame still armed, and another frame
+      // lands: the armed one will never fire, so this one has to draw.
+      Object.defineProperty(document, 'hidden', { configurable: true, value: true });
+      server.update({ chat_appended: { key: LEAD, msg: said('arrived while hidden') } });
+
+      expect(
+        drawn,
+        'the frame pending when the page went hidden swallowed the fold after it',
+      ).toContain('arrived while hidden');
+      stop();
+    } finally {
+      raf.mockRestore();
+      delete (document as { hidden?: boolean }).hidden;
+    }
+  });
+
   it("joins a skill's body to the turn whose Skill call loaded it, not a row of its own", () => {
     // The CLI injects the body as a user frame, and it can arrive above a
     // settled turn - where it opened a second row telling the same thing the
@@ -1154,10 +1570,14 @@ describe('the conversation the chat draws', () => {
     chat.start();
 
     // An empty newest page - a cursor and no rows - so the frame has no turn
-    // to join and the walk still has somewhere above to go.
+    // to join and the walk still has somewhere above to go. The fresh fill
+    // asks for what is above it the moment it lands.
     server.update({ chat_appended: { key: LEAD, msg: counted(9) } });
     server.send(page([], '5'));
-    expect(chat.older(), 'the empty page left somewhere to walk').toBe(true);
+    expect(
+      server.more().at(-1),
+      'the empty page left somewhere to walk, and the fill asked for it',
+    ).toEqual({ kind: 'more', conversation: LEAD, before: '5', turns: MORE_TURNS });
 
     server.send(page([turn('t0', 'older')], null));
 
@@ -1610,7 +2030,9 @@ describe('the conversation the chat draws', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
     chat.start();
-    server.send(page([turn('t1', 'first')], '2'));
+    // Two turns, so the fresh fill asks nothing of its own and the reader's
+    // walk is the ask this test is about.
+    server.send(page([turn('t1', 'first'), turn('t1b', 'and then')], '2'));
 
     // The reader walks back while the seat's conversation is not held yet, so
     // the ask is refused - and the refusal is about THAT ask, not about the
@@ -1630,7 +2052,7 @@ describe('the conversation the chat draws', () => {
     expect(
       after.turns.map((row) => row.key),
       'with the page it waited for',
-    ).toEqual(['t0', 't1']);
+    ).toEqual(['t0', 't1', 't1b']);
   });
 
   it('asks a refused page again while the column is live, and stops once one lands', () => {
@@ -1692,7 +2114,9 @@ describe('the conversation the chat draws', () => {
     const after = get(chat.value);
     expect(after.turns, 'the previous occupant turns are gone').toEqual([]);
     expect(after.loaded, 'and the column is not claiming to hold a page').toBe(false);
-    expect(server.more().length, 'and it asks for the new occupant page').toBe(2);
+    // The first page, the fresh fill it earned (one turn, with history above),
+    // and the swap's own ask for the new occupant.
+    expect(server.more().length, 'and it asks for the new occupant page').toBe(3);
   });
 
   /**
@@ -2320,6 +2744,34 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
     expect(words(chat).split('raced words').length - 1, 'once').toBe(1);
   });
 
+  /**
+   * **The joined row's index grows with the row.** The loop appends frames to
+   * a queued row as it runs, and the frame it just appended is one the next
+   * copy has to be found in - an index that only read the row as it stood
+   * would hand the same copy a second landing.
+   */
+  it('lands one copy of a frame the joined row grew with', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    // The fold cut this row at a mid-turn prompt, and the same frame rides it
+    // twice: the second is found in the list the first grew.
+    const copy = {
+      type: 'user',
+      uuid: 'q-g1',
+      timestamp: '2026-10-01T10:00:02Z',
+      message: {
+        role: 'user',
+        content: [{ type: 'queued_command', prompt: 'grown words', commandMode: 'prompt' }],
+      },
+    };
+    server.send(page([turn('t1', 'first'), { key: 't2', messages: [copy, copy] }], null));
+
+    expect(words(chat).split('grown words').length - 1, 'the copy landed twice').toBe(1);
+  });
+
   it('holds the row a page carries while the prompt still waits', () => {
     // The transport keeps the forged turn it was sent, so a read taken while
     // the prompt waits hands the words back as conversation - and a reader
@@ -2709,6 +3161,105 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
     expect(words(chat), 'no start is owed to a dead occupant').not.toContain('doomed');
   });
 
+  /**
+   * The pulled prompt's row stays mounted, keyed, across the hold.
+   *
+   * Removed (the old shape), the list's virtualiser splices the last row's
+   * size away and the drain re-adds it uncached - drawn at the estimate for
+   * one frame, which is the chat-wide up-and-down on every Enter (#1890,
+   * confirmed live 2026-10-09). Kept, the size survives and the words land
+   * back in the row they left.
+   */
+  it('keeps a pulled prompt row mounted, so the list cannot flash', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'kept')], null));
+
+    // The row arrives before the pile hears about the queue (the race the
+    // retraction exists for): it opens the live turn...
+    server.update({ chat_appended: { key: LEAD, msg: forgedUnder('the words', 'p1') } });
+    const opened = get(chat.value).turns;
+    const key = opened[opened.length - 1]?.key;
+    expect(key, 'the row opened a turn').toBeDefined();
+    expect(JSON.stringify(opened), 'precondition: the words drew').toContain('the words');
+
+    // ...and the queue's announcement pulls them into the card - the row must
+    // STAY, under the same key, drawing nothing.
+    server.update({ prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'the words' } });
+    const held = get(chat.value).turns;
+    expect(held[held.length - 1]?.key, 'the row keeps its key').toBe(key);
+    expect(held[held.length - 1]?.held, 'and is marked held').toBe(true);
+    expect(JSON.stringify(held), 'and draws nothing while it waits').not.toContain('the words');
+
+    // The drain fills the row in place: the same key, the hold over, the words
+    // back.
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } });
+    const drained = get(chat.value).turns;
+    expect(drained[drained.length - 1]?.key, 'the drain lands in the same row').toBe(key);
+    expect(drained[drained.length - 1]?.held, 'and the hold is over').toBe(false);
+    expect(JSON.stringify(drained), 'with the words back in it').toContain('the words');
+    stop();
+  });
+
+  /**
+   * **A queued send is the reader acting** (Ved, 2026-10-11: "when I press a
+   * message, the chat does not scroll to my message"). A prompt the CLI queues
+   * never folds as a user unit - the one thing the fold engages the follow for
+   * - so sending mid-turn left the column wherever the reader had it while
+   * their words went to the pile below the fold. The claim puts the foot back
+   * under their eyes, the same way a folded user frame does.
+   */
+  it('engages the follow when a send is queued, which folds no user unit', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'kept')], null));
+    chat.following(false);
+    expect(get(chat.value).following, 'precondition: the reader is away from the foot').toBe(false);
+
+    server.update({ prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'the words' } });
+
+    expect(get(chat.value).following, 'the queued send put the foot back under the reader').toBe(
+      true,
+    );
+    stop();
+  });
+
+  /**
+   * A reconnect that takes the queue with it must not leave a held row standing
+   * empty: clearing the hold bookkeeping without the row strands it, no drain
+   * can fill it, and the page that later carries the prompt draws it again.
+   */
+  it('releases a held row when a reconnect takes the queue that held it', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'kept')], null));
+
+    server.update({ chat_appended: { key: LEAD, msg: forgedUnder('the words', 'p1') } });
+    server.update({ prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'the words' } });
+    expect(get(chat.value).turns.at(-1)?.held, 'precondition: the row is held').toBe(true);
+
+    // The process is gone, and its queue with it.
+    server.update({ connected: { key: LEAD, session_id: 's-2', cwd: '/tmp' } });
+
+    expect(
+      get(chat.value).turns.some((row) => row.held === true),
+      'no row is left held',
+    ).toBe(false);
+
+    // And a page carrying the same prompt draws it once, not beside a blank row.
+    server.send(
+      page([turn('t1', 'kept'), { key: null, messages: [forgedUnder('the words', 'p1')] }], null),
+    );
+    const rows = get(chat.value).turns.filter((row) =>
+      JSON.stringify(row.messages).includes('the words'),
+    );
+    expect(rows, 'the words draw in one row').toHaveLength(1);
+    stop();
+  });
+
   it('pairs the drained row with the page copy carried by its attachment', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
@@ -2843,5 +3394,90 @@ describe('the answer a call-output read leaves behind', () => {
     server.update({ call_output: { key: LEAD, call_id: 'tu-2', output: { novel: true } } });
     expect(outputs.of('tu-2')).toEqual({ kind: 'unknown' });
     stop();
+  });
+});
+
+/**
+ * The index the merge asks instead of scanning, and the four arms of the
+ * question it answers.
+ *
+ * **Same answers as the scan it replaced, by construction**: an id-bearing
+ * frame is matched only by id, an id-less one by the words it says, `prose:
+ * false` narrows the words arm away, and a frame with neither an id nor words
+ * is never found - which repeats it rather than dropping it.
+ */
+describe('the frame index', () => {
+  /** A frame that says `text`, a person's own words, and carries no id. */
+  const unnamed = (text: string): unknown => ({
+    type: 'user',
+    message: {
+      role: 'user',
+      content: [{ type: 'text', text }],
+    },
+  });
+
+  /** A frame that carries neither an id nor words to say. */
+  const blank = (): unknown => ({
+    type: 'assistant',
+    message: { id: 'm-quiet', role: 'assistant', model: 'claude-opus-5', content: [] },
+  });
+
+  it('finds a frame by its id, and only by it', () => {
+    const index = new Frames([minted('one')]);
+
+    expect(index.carries(minted('one')), 'the same id under another object').toBe(true);
+    // **Only by it**: a frame with a different id saying the same words is a
+    // different frame, which is what keeps a repeat from taking an
+    // id-bearing row.
+    const same = minted('one') as { uuid: string };
+    expect(index.carries({ ...same, uuid: 'a-other' }), 'a different id').toBe(false);
+  });
+
+  it('finds a frame with no id by the words it says', () => {
+    const index = new Frames([unnamed('delivered')]);
+
+    expect(index.carries(unnamed('delivered')), 'the same words, no id on either').toBe(true);
+    expect(index.carries(unnamed('something else')), 'the words it does not say').toBe(false);
+  });
+
+  it('finds an id-less frame by the words of one that carries an id', () => {
+    // The pair a return meets: the page's copy carries the id the CLI minted,
+    // and the delivery row arrives with the same words and none - the words
+    // arm is the only thing that can pair them.
+    const built = new Frames([minted('delivered')]);
+    expect(built.carries(unnamed('delivered')), 'an id-less copy against a held minted frame').toBe(
+      true,
+    );
+
+    const grown = new Frames([]);
+    grown.add(minted('delivered'));
+    expect(
+      grown.carries(unnamed('delivered')),
+      'the copy against a frame the index grew with',
+    ).toBe(true);
+  });
+
+  it('narrows the words arm away when asked not to match prose', () => {
+    const index = new Frames([unnamed('delivered')]);
+
+    expect(index.carries(unnamed('delivered'), false), 'the words arm under prose: false').toBe(
+      false,
+    );
+  });
+
+  it('never finds a frame with neither an id nor words', () => {
+    const index = new Frames([blank()]);
+
+    expect(index.carries(blank()), 'a tool result or a thought, repeated rather than found').toBe(
+      false,
+    );
+  });
+
+  it('answers for a frame the index was grown with', () => {
+    const index = new Frames([]);
+    expect(index.carries(said('late')), 'precondition: not carried yet').toBe(false);
+
+    index.add(said('late'));
+    expect(index.carries(said('late')), 'the frame added after the index was built').toBe(true);
   });
 });

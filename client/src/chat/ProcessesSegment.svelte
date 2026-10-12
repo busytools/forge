@@ -3,7 +3,7 @@
   import { askReveal } from '../session/scroll-ask';
   import { memoryLabel } from '../session/view';
   import { processes, type ProcessRow } from './processes.svelte';
-  import { panelStyle } from './strip-panel';
+  import { panelStyle, portal } from './strip-panel';
 
   /**
    * The batch row in the strip above the composer: the seat's backgrounded
@@ -120,6 +120,9 @@
   function release(event?: FocusEvent) {
     if (event === undefined) {
       if (segEl !== null && segEl.matches(':hover')) return;
+      // The panel is portaled to the body (`use:portal`), so moving off the
+      // segment into the panel is not a departure.
+      if (listEl !== null && listEl.matches(':hover')) return;
       const active = document.activeElement;
       const onRow =
         segEl !== null && listEl !== null && active instanceof Node && listEl.contains(active);
@@ -128,7 +131,14 @@
       return;
     }
     const next = event.relatedTarget ?? document.activeElement;
-    if (segEl !== null && next instanceof Node && segEl.contains(next)) return;
+    // The panel is portaled to the body (`use:portal`), so focus moving INTO
+    // it is not a departure - the segment can no longer contain it.
+    if (
+      next instanceof Node &&
+      ((segEl !== null && segEl.contains(next)) || (listEl !== null && listEl.contains(next)))
+    ) {
+      return;
+    }
     arm();
   }
 
@@ -224,7 +234,7 @@
     </button>
 
     {#if open}
-      <div class="sg-list" bind:this={listEl} style={limits}>
+      <div class="sg-list" bind:this={listEl} style={limits} use:portal>
         {#each listed as row (row.key)}
           <button
             type="button"

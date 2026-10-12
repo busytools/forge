@@ -1,11 +1,13 @@
 <script lang="ts">
   import Brand from '../components/Brand.svelte';
   import Card from '../components/Card.svelte';
-  import Row from '../components/Row.svelte';
+  import Mark from '../components/Mark.svelte';
+  import { watchExtensions, type ExtensionsPage } from '../extensions/live';
   import { CLIENT_VERSION, PROTOCOL_VERSION } from '../protocol';
+  import type { Connection } from '../socket';
   import { install, restart, updateState } from '../update/state';
   import type { HomeWire } from '../wire/home';
-  import { countsOf, homeView } from './view';
+  import { ageOf, extensionsCard, fleetRows, homeView, markOf } from './view';
 
   /**
    * The home: every project, its agents, their states, and what needs you.
@@ -18,20 +20,53 @@
     wire,
     address = '',
     mark = null,
-  }: { wire: HomeWire; address?: string; mark?: string | null } = $props();
+    connection = null,
+  }: {
+    wire: HomeWire;
+    address?: string;
+    mark?: string | null;
+    /** The socket, for the extensions card's own read. Optional, because a
+     * rendered-without-a-connection home draws that card's reading state. */
+    connection?: Connection | null;
+  } = $props();
 
   const view = $derived(homeView(wire, address));
-  // One clock for the page: every row's `when` reads against the same now,
+  /**
+   * The extensions read, for the band's fifth card: the counts a reader
+   * wants there (installed, behind its marketplace) are in the `extensions`
+   * subject and nowhere on the home's own wire. The subscription is the
+   * card's and goes with the page.
+   */
+  let extensions = $state<ExtensionsPage>({ read: null, refused: null });
+  $effect(() => {
+    const open = connection;
+    if (open === null) return;
+    return watchExtensions(open).subscribe((value) => {
+      extensions = value;
+    });
+  });
+  const band = $derived([
+    ...view.band,
+    extensionsCard(extensions.read, extensions.refused !== null),
+  ]);
+  // The fleet: one row per project, nothing mixed. The counts and the
+  // misses are the server's own; the mark is the strongest of the
+  // project's seat marks, in the same vocabulary a seat row draws.
+  const fleet = $derived(fleetRows(wire));
+  // One clock for the page: every row's age reads against the same now,
   // so two rows a second apart cannot draw the same age differently.
   //
-  // Re-read with every snapshot AND on a tick. A snapshot alone is not
-  // enough: age is the one cell that is a function of time rather than of
-  // data, and a re-read needs an update the fleet may never send, so a page
-  // opened at nine on a quiet forge would still say "3h" at three.
+  // The tick is the clock's only writer. Age is a function of time rather
+  // than of data, so a quiet forge needs it - a page opened at nine would
+  // otherwise still say "3h" at three - and a snapshot must not refresh it:
+  // reading `wire` in the effect below re-arms the timer on every frame,
+  // and a fleet writing faster than the tick would then freeze the clock
+  // instead of moving it.
   let now = $state(Date.now());
+  /** The ready fact as a value, so the timer below does not restart on every update that rewrites `wire`. */
+  const ready = $derived(wire !== null);
   $effect(() => {
-    if (!wire) return;
-    now = Date.now();
+    if (!ready) return;
     const tick = setInterval(() => {
       now = Date.now();
     }, 30_000);
@@ -104,12 +139,12 @@
   </header>
 
   <section class="band">
-    {#each view.band as card (card.title)}
+    {#each band as card (card.title)}
       <Card {...card} />
     {/each}
   </section>
 
-  {#if view.orgs.length === 0}
+  {#if fleet.length === 0}
     <div class="empty">
       <Brand name={mark} />
       <p class="t">No projects yet</p>
@@ -120,29 +155,50 @@
       </p>
     </div>
   {:else}
-    {#each view.orgs as org (org.name)}
-      <section class="org">
-        <h2>
-          {org.name}<span class="rule"></span>
-          <span class="counts">{countsOf(org)}</span>
-        </h2>
-        <ul class="list">
-          <!-- Org-scoped: two orgs may declare a project of the same name, and
-               a key that collided would leave one of them unrendered. -->
-          {#each org.projects as project (`${project.lead.slot.org}/${project.lead.slot.project}`)}
-            <li class="node">
-              <Row row={project.lead} {now} refused={project.refused} />
-              {#if project.workers.length > 0}
-                <ul class="children">
-                  {#each project.workers as worker (worker.slot.label)}
-                    <li class="node"><Row row={worker} {now} /></li>
-                  {/each}
-                </ul>
-              {/if}
-            </li>
-          {/each}
-        </ul>
-      </section>
-    {/each}
+    <ul class="fleet">
+      <!-- Org-scoped in the key: two orgs may declare a project of the same
+           name, and a key that collided would leave one of them unrendered. -->
+      {#each fleet as row (`${row.org}/${row.name}`)}
+        <!-- The age's tooltip lives on the row itself: the stretched link
+             covers the age cell, so a title on it never shows. -->
+        <li class="fleet-row" title="when the project last moved">
+          <!-- The `.row <state>` ancestor is what the sheet keys every dot
+               shape on, so the fleet reuses the whole mark vocabulary. -->
+          <span class="row {markOf(row.state).class}"><Mark state={row.state} /></span>
+          <!-- The row's own way in: this link stretches over the whole row,
+               so anywhere that is not another control opens the lead's
+               chat. -->
+          <a class="fleet-name fleet-go" href={row.leadHref}>{row.name}</a>
+          <span class="fleet-where">
+            {#if row.gate}{row.gate}{:else}
+              {#if row.place.branch}{row.place.branch}{/if}
+              {#if row.place.branch && row.place.files}{' \u{b7} '}{/if}
+              {#if row.place.files}<span class="files">{row.place.files}</span>{/if}
+            {/if}
+          </span>
+          <span class="fleet-when">{ageOf(row, now)}</span>
+          <span class="fleet-seats">
+            {#each row.seats as seat (seat.label)}
+              <a class="fleet-seat" href={seat.href}
+                ><span class="row {markOf(seat.state).class}"><Mark state={seat.state} /></span
+                >{seat.label}</a
+              >
+            {/each}
+          </span>
+          <span class="fleet-counts">
+            {row.live} of {row.slots ?? '?'} slots {'\u{b7}'} queue {row.queue}
+            {#if row.onYou > 0}
+              {'\u{b7}'} <span class="fleet-you">on you {row.onYou}</span>
+            {/if}
+          </span>
+          <span class="fleet-misses">
+            {#each row.misses as miss (miss.label)}
+              <span class="fleet-miss {miss.kind}">{miss.label}</span>
+            {/each}
+          </span>
+          <a class="fleet-open" href={row.href}>open board {'\u{2192}'}</a>
+        </li>
+      {/each}
+    </ul>
   {/if}
 </main>

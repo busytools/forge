@@ -75,6 +75,8 @@ vi.mock('./mic', () => ({
 import Harness from './Harness.svelte';
 import { encodeFrame } from './capture.svelte';
 import { echoes, type Echo } from '../chat/echoes.svelte';
+import { pinnedRow } from '../chat/pinnedRow.svelte';
+import type { TurnInfo } from '../chat/units';
 import { boxKey } from './box.svelte';
 import { subjectKey, type ServerMessage } from '../protocol';
 import { DEFAULT_AXES, type DictateAxes } from '../session/wire';
@@ -456,7 +458,7 @@ describe('the box', () => {
     expect(document.querySelector('.stop'), 'no turn, no control').toBeNull();
   });
 
-  it('draws the card on the box while a take runs, and takes it away when it resolves', () => {
+  it("draws the take on the draft's own line, and takes it away when it resolves", () => {
     const harness = open();
 
     harness.page.record = record({
@@ -464,14 +466,19 @@ describe('the box', () => {
     });
     flushSync();
 
-    const card = document.querySelector('.box .tc');
-    expect(card, 'the card is drawn inside the box').not.toBeNull();
-    expect(card?.previousElementSibling, 'as its first row, above the draft').toBeNull();
+    const card = document.querySelector('.line .tc');
+    expect(card, "the take did not take the draft's own line").not.toBeNull();
+    expect(
+      document.querySelector('.line textarea'),
+      'the field still draws beside a live take',
+    ).toBeNull();
+    expect(document.querySelector('.foot'), 'the take grew a second row').toBeNull();
 
     harness.page.record = record();
     flushSync();
 
     expect(document.querySelector('.tc'), 'the card goes with the take').toBeNull();
+    expect(document.querySelector('.line textarea'), 'and the field comes back').not.toBeNull();
   });
 
   it('draws no wire counts for a take this page did not start', () => {
@@ -513,7 +520,7 @@ describe('the box', () => {
       expect(field().value, 'the words land where the reader was about to type').toBe(
         'fix the flaky retry test',
       );
-      expect(document.querySelector('.box')?.classList.contains('done'), 'one green beat').toBe(
+      expect(document.querySelector('.surf')?.classList.contains('done'), 'one green beat').toBe(
         true,
       );
 
@@ -521,7 +528,7 @@ describe('the box', () => {
       flushSync();
 
       expect(
-        document.querySelector('.box')?.classList.contains('done'),
+        document.querySelector('.surf')?.classList.contains('done'),
         "and the border eases back to the box's own",
       ).toBe(false);
       expect(field().value, 'the words stay').toBe('fix the flaky retry test');
@@ -964,14 +971,73 @@ describe('the box', () => {
     ).toBeNull();
   });
 
-  it('puts every control in the box footer, so the draft keeps the whole width', () => {
+  /**
+   * **An idle bar is one row, whatever else the seat is doing** (Ved,
+   * 2026-10-09), so the controls ride the field's own line.
+   *
+   * The gate was `filled || dictation || running`, which made a seat with a
+   * live turn two rows tall for a stop button nobody was looking at. **Both
+   * arms of the new gate are pinned by nothing else**: reverting it whole, or
+   * keeping `filled` alone, leaves every other test in this file green.
+   */
+  it('rests as one row with its controls on the field, draftless with a turn running', () => {
+    open({ dictation: true, record: record({ header: { turn_in_flight: true } }) });
+
+    expect(document.querySelector('.foot'), 'an idle bar drew a second row').toBeNull();
+    expect(document.querySelector('.line .mic'), 'the mic left the field line').not.toBeNull();
+    expect(document.querySelector('.line .stop'), 'the stop left the field line').not.toBeNull();
+  });
+
+  /** The other arm: a recording takes the draft's own line, controls on it. */
+  it("gives a recording the draft's own line, with the controls on it", () => {
+    const harness = open({ dictation: true });
+    harness.page.record = record({
+      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+    });
+    flushSync();
+
+    expect(document.querySelector('.line .tc'), 'the take took no row').not.toBeNull();
+    expect(
+      document.querySelector('.line .mic'),
+      'the mic did not stay on the row the take runs in',
+    ).not.toBeNull();
+    expect(document.querySelector('.foot'), 'a recording grew a second row').toBeNull();
+  });
+
+  /**
+   * **The mic keeps the caret when a started take redraws it.**
+   *
+   * The gate destroys and rebuilds the button as the take takes the row, so a
+   * reader who pressed the mic from the keyboard would lose the caret to the
+   * body - Enter could no longer finish the take.
+   */
+  it('keeps the caret on the mic when a started take redraws its row', () => {
+    const harness = open({ dictation: true });
+    const resting = document.querySelector('.line .mic');
+    expect(resting, 'precondition: the mic rests on the field line').not.toBeNull();
+
+    (resting as HTMLElement).focus();
+    (resting as HTMLElement).click();
+    harness.page.record = record({
+      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+    });
+    flushSync();
+
+    expect(
+      document.querySelector('.line .mic'),
+      'precondition: the take redrew the mic for its row',
+    ).not.toBeNull();
+    expect(document.activeElement?.className, 'the caret fell off the mic').toContain('mic');
+  });
+
+  it('gives a draft the second row, so its controls keep off the field', () => {
     open({ dictation: true, record: record({ header: { turn_in_flight: true } }) });
     type('a draft');
 
     for (const control of ['.line .mic', '.line .stop', '.line .send']) {
       expect(
         document.querySelector(control),
-        `${control} still holds a column of the draft`,
+        `${control} sits on the field's line beside a draft`,
       ).toBeNull();
     }
     for (const control of ['.foot .mic', '.foot .stop', '.foot .send']) {
@@ -1318,17 +1384,23 @@ describe('the key', () => {
     harness.page.record = bound('right_cmd', 'auto', take());
     flushSync();
 
-    const newest = () => document.querySelector('.tc .bars i:last-child')?.getAttribute('style');
+    // The take spans the draft's line, so the graph is the envelope: its
+    // newest point is the last reading, and its y is what that reading drew.
+    const newest = (): number | undefined => {
+      const d = document.querySelector('.tc .wave path.area')?.getAttribute('d') ?? '';
+      const match = / 100 ([\d.]+) L 100 100 L 0 100 Z$/.exec(d);
+      return match === null ? undefined : Number(match[1]);
+    };
     mic.held.onFrame?.(encodeFrame([0.9]));
     flushSync();
-    expect(newest(), "a loud frame's own reading").toBe('height: 94%;');
+    expect(newest(), "a loud frame's own reading (94% tall, so y 6)").toBe(6);
 
     // A quieter frame the socket does not take: the record's levels never see
     // it, and the card's graph reads it anyway.
     shared.takes = false;
     mic.held.onFrame?.(encodeFrame([0.4]));
     flushSync();
-    expect(newest(), 'and a quieter one, read where it was produced').toBe('height: 83%;');
+    expect(newest(), 'and a quieter one, read where it was produced (83%, y 17)').toBe(17);
   });
 
   /**
@@ -1745,10 +1817,14 @@ describe('the key', () => {
    */
   it('gives Escape to a live take rather than to the list underneath it', () => {
     const harness = open({ dictation: true });
-    harness.page.record = bound('right_cmd', 'auto', take());
-    flushSync();
+    // The state is reachable one way now: the reader types the `/` that opens
+    // the list, and the take arrives while it stands. (A take owns the draft's
+    // line, so it cannot be typed into once one runs.)
     type('/');
     expect(document.querySelector('.ac'), 'a list is open under the field').not.toBeNull();
+
+    harness.page.record = bound('right_cmd', 'auto', take());
+    flushSync();
 
     press('Escape');
 
@@ -2108,7 +2184,7 @@ interface Ring extends BoxRule {
  * green about a state it never saw.
  */
 function need(selector: string): Need | null {
-  const rest = selector.replace(/^\.box/, '');
+  const rest = selector.replace(/^\.surf/, '');
   if (/[\s>+~]/.test(rest.replace(/\([^)]*\)/g, ''))) return null;
   const found: Need = { classes: [], focus: false, without: [] };
   let at = 0;
@@ -2155,8 +2231,8 @@ function painted(body: string): string | null {
   return parts[2] ?? null;
 }
 
-/** A selector naming the box itself: the class is bounded after its letters. */
-const BOX = /^\.box(?![a-z0-9-])/;
+/** A selector naming the frame itself: the class is bounded after its letters. */
+const BOX = /^\.surf(?![a-z0-9-])/;
 
 /** The parts of a selector list, split outside any parentheses - a `:not(...)` carries its own commas. */
 function listed(selector: string): string[] {
@@ -2302,8 +2378,8 @@ describe('the frame', () => {
    */
   it('reports a state that arrived in front of the focus rule', () => {
     const mutated = sheet.replace(
-      '.box:focus-within',
-      '.box.warn { border-color: var(--warn); }\n.box:focus-within',
+      '.surf:focus-within',
+      '.surf.warn { border-color: var(--warn); }\n.surf:focus-within',
     );
     expect(
       ring(mutated, ['warn'], true),
@@ -2319,8 +2395,8 @@ describe('the frame', () => {
    */
   it('fails on a rule for the box it cannot read, rather than skipping it', () => {
     const spliced = sheet.replace(
-      '.box:focus-within',
-      '.box[data-phase="warn"] { border-color: var(--warn); }\n.box:focus-within',
+      '.surf:focus-within',
+      '.surf[data-phase="warn"] { border-color: var(--warn); }\n.surf:focus-within',
     );
     expect(
       () => ring(spliced, ['warn'], false),
@@ -2334,7 +2410,7 @@ describe('the frame', () => {
    * resolver to read and must not fail for saying so.
    */
   it('skips a border that names no colour rather than reading it as the ring', () => {
-    const spliced = sheet.replace('.box.rec', '.box.reset { border: 0; }\n.box.rec');
+    const spliced = sheet.replace('.surf.rec', '.surf.reset { border: 0; }\n.surf.rec');
     expect(ring(spliced, ['reset'], false), 'a reset is read as a ring colour').toBe('var(--ctl)');
   });
 
@@ -2372,10 +2448,34 @@ describe('the frame', () => {
    * container: without this the queries never match and the card simply grows
    * past its box at every width below the full reading.
    */
-  it('makes the box the container the card ladder measures', () => {
-    expect(baseRule('.box'), 'the box is not a container, so no step can fire').toContain(
+  it('makes the surface the container the card ladder measures', () => {
+    expect(baseRule('.surf'), 'the surface is not a container, so no step can fire').toContain(
       'container-type: inline-size',
     );
+  });
+
+  it('caps a long option list rather than growing the lane past the viewport', () => {
+    // Review Focus 4: eight options on a phone must scroll in place, with the
+    // words row below them still reachable. **Deliberately not pointer-scoped**
+    // (the plan said "under a coarse pointer"): a lane should not grow past the
+    // viewport on any input, and 46vh/420px is a generous desktop measure too.
+    const rule = baseRule('.dock .opts');
+    expect(rule, 'the option list has no cap').toContain('max-height');
+    // The 46vh component is what holds the decision above: a cap weakened to
+    // a fixed 4000px would still read as "a cap" without this.
+    expect(rule, 'the cap no longer measures against the viewport').toContain('46vh');
+    expect(rule, 'and does not scroll').toContain('overflow-y: auto');
+  });
+
+  it('resets the UA button chrome off the folded bar', () => {
+    // The bar is a real `<button>`, so without the house reset it wears the
+    // UA sheet - measured against the real sheet: an rgb(239,239,239) ground,
+    // a 2px outset border around it, Arial - light-mode chrome inside the
+    // dark surface, visible whenever a prompt is folded.
+    const rule = baseRule('.dock .qbar');
+    expect(rule, 'the bar keeps the UA ground').toContain('background: none');
+    expect(rule, 'and the UA border').toContain('border: 0');
+    expect(rule, 'and the UA font').toContain('font: inherit');
   });
 
   /**
@@ -2398,7 +2498,7 @@ describe('the frame', () => {
     // two slots, so they leave with the graph and the tally they replace.
     const leaving = [
       '.tc .clock',
-      '.tc .bars, .tc .ticks, .tc .bar',
+      '.tc .bars, .tc .wave, .tc .ticks, .tc .bar',
       '.tc .ready, .tc .count',
       '.tc .fr',
       '.tc .kb',
@@ -2449,11 +2549,11 @@ describe('the frame', () => {
    */
   it('sees an inset line on a rule for the box that paints no border', () => {
     const spliced = sheet.replace(
-      '.box.rec',
-      '.box.shadow { box-shadow: inset 0 -2px 0 var(--accent); }\n.box.rec',
+      '.surf.rec',
+      '.surf.shadow { box-shadow: inset 0 -2px 0 var(--accent); }\n.surf.rec',
     );
     expect(insetRules(spliced), 'a borderless rule for the box draws the inset line').toEqual([
-      '.box.shadow',
+      '.surf.shadow',
     ]);
   });
 
@@ -2463,7 +2563,10 @@ describe('the frame', () => {
    * would throw and take every test here with it.
    */
   it("does not read a neighbour's class as the box", () => {
-    const spliced = sheet.replace('.box.rec', '.boxrow { border-color: var(--warn); }\n.box.rec');
+    const spliced = sheet.replace(
+      '.surf.rec',
+      '.surfrow { border-color: var(--warn); }\n.surf.rec',
+    );
     expect(ring(spliced, ['rec'], false), 'a class beginning with the same letters').toBe(
       'color-mix(in srgb, var(--accent) 35%, var(--hot))',
     );
@@ -2476,8 +2579,8 @@ describe('the frame', () => {
    */
   it('reads a grouped selector that names the box, first or second', () => {
     const colour = 'color-mix(in srgb, var(--accent) 35%, var(--hot))';
-    for (const grouped of ['.box.rec, .other {', '.other, .box.rec {']) {
-      const spliced = sheet.replace('.box.rec {', grouped);
+    for (const grouped of ['.surf.rec, .other {', '.other, .surf.rec {']) {
+      const spliced = sheet.replace('.surf.rec {', grouped);
       expect(ring(spliced, ['rec'], false), `a rule grouped as ${JSON.stringify(grouped)}`).toBe(
         colour,
       );
@@ -2486,8 +2589,8 @@ describe('the frame', () => {
 
   it('fails on a border shorthand it cannot read, rather than skipping it', () => {
     const spliced = sheet.replace(
-      '.box.rec',
-      '.box.odd { border: 1px solid var(--ok) inset; }\n.box.rec',
+      '.surf.rec',
+      '.surf.odd { border: 1px solid var(--ok) inset; }\n.surf.rec',
     );
     expect(
       () => ring(spliced, ['rec'], false),
@@ -2495,11 +2598,13 @@ describe('the frame', () => {
     ).toThrow(/cannot read/);
   });
 
-  it('puts the controls in the box footer, off the draft and under the caret', () => {
-    expect(
-      sheetRule('.foot .ctls'),
-      'the controls lost the footer row the draft no longer shares',
-    ).toContain('margin-left: auto');
+  it('puts the controls at the right end of whichever row holds them', () => {
+    // The bar is one row while the field is empty and the controls ride it;
+    // a draft takes the second row and they follow it down. One rule serves
+    // both, so neither row can drop them to the left of the field.
+    expect(sheetRule('.ctls'), 'the controls lost the right end they take in either row').toContain(
+      'margin-left: auto',
+    );
     expect(() => sheetRule('.line .mic'), 'the mic still holds a column of the draft open').toThrow(
       /writes no rule/,
     );
@@ -2522,13 +2627,23 @@ describe('the frame', () => {
    * unpinned while two changes crossed.
    */
   it("keeps the mic and the panel's close at a finger's size, and the mic's accent", () => {
-    const coarse = /@media \(pointer: coarse\) \{[^\n]*\.foot \.mic[^\n]*\}/.exec(sheet)?.[0] ?? '';
+    // Anchored so `.mic` cannot match as the tail of another class: a pattern
+    // that also accepts `.foot .mic` keeps passing while the on-line mic has
+    // lost the floor this is checking it for.
+    const coarse =
+      /@media \(pointer: coarse\) \{[^\n]*[^.\w]\.mic\s*\{[^\n]*\}/.exec(sheet)?.[0] ?? '';
     expect(coarse, 'the mic lost its height floor on a finger').toContain('min-height: 44px');
     expect(coarse, 'the mic lost its width floor on a finger').toContain('min-width: 44px');
     expect(coarse, "the panel's close lost its width floor").toContain(
       '.pop .hd .x { min-width: 44px; }',
     );
-    expect(sheetRule('.foot .mic:hover'), 'the mic lost its accent hover').toContain(
+    // The fold control's floor lives in the dock's own multiline coarse block,
+    // where the one-line pattern above cannot reach it: read from the media
+    // query to the control's own line, the lines between allowed.
+    expect(sheet, 'the fold control lost its width floor on a finger').toMatch(
+      /@media \(pointer: coarse\) \{\n(?: {2}[^\n]*\n)*? {2}\.dock \.chevb \{ min-width: 44px; \}/,
+    );
+    expect(sheetRule('.mic:hover'), 'the mic lost its accent hover').toContain(
       'color: var(--accent)',
     );
   });
@@ -2550,8 +2665,8 @@ describe('the frame', () => {
     ).not.toContain('padding-top');
   });
 
-  it("gives the footer's controls the same pointer floor", () => {
-    for (const control of ['.foot .mic', '.stop', '.send']) {
+  it('gives the controls the same pointer floor in either row', () => {
+    for (const control of ['.mic', '.stop', '.send']) {
       const rule = sheetRule(control);
       expect(rule, `${control} is a bare glyph rather than a 24px target`).toContain('width: 24px');
       expect(rule, `${control} takes no height of its own`).toContain('height: 24px');
@@ -2563,6 +2678,120 @@ describe('the frame', () => {
       sheetRule('.line .txt:focus'),
       'the field draws a second accent rectangle inside the box',
     ).toContain('outline: none');
+  });
+});
+
+/**
+ * The strip lane: the composer's surface is where the pin is drawn now.
+ *
+ * **A behaviour the column's tests used to pin**: the strip stands on a seat
+ * with no conversation state to speak of - coming up, refused, not yet read,
+ * empty - because the rows are the whole way into the seat's tree, tasks and
+ * watchers. The column publishes the row through `pinnedRow` (see `Chat.test.ts
+ * > the chat column as it draws`); this is where it draws, as the surface's
+ * first lane.
+ */
+describe('the strip lane', () => {
+  const SEAT = subjectKey({ session: SLOT });
+
+  /** One running row, which is what the lane is handed. */
+  const running: TurnInfo = {
+    running: true,
+    failed: false,
+    duration_ms: 4200,
+    api_ms: null,
+    ended_at_utc: null,
+    model: null,
+    thinking_tokens: null,
+    input_tokens: 700,
+    output_tokens: 20,
+    cache_read_tokens: null,
+    cache_written_tokens: null,
+    session_cost_usd: null,
+  };
+
+  afterEach(() => {
+    pinnedRow.set(SEAT, null);
+  });
+
+  it("draws as the surface's first lane, above the box", () => {
+    pinnedRow.set(SEAT, running);
+    open({});
+
+    const strip = document.querySelector('.strip');
+    const surf = document.querySelector('.surf');
+    expect(strip, 'the strip lane did not draw').not.toBeNull();
+    expect(surf, 'the surface did not draw').not.toBeNull();
+    if (strip === null || surf === null) return;
+    expect(surf.firstElementChild === strip, "the strip is not the surface's first lane").toBe(
+      true,
+    );
+    expect(strip.textContent, 'the row the pin published').toContain('700');
+  });
+
+  it('stands on a seat with no conversation state to speak of', () => {
+    // The composer draws it without any conversation at all: no page has
+    // landed, nothing is running, and the lane is still there.
+    pinnedRow.set(SEAT, running);
+    open({});
+
+    expect(document.querySelector('.strip'), 'no strip lane on a bare seat').not.toBeNull();
+  });
+
+  it("shows one seat's pin only", () => {
+    pinnedRow.set('session:somebody-else', running);
+    open({});
+
+    expect(document.querySelector('.strip'), "another seat's pin drew on this surface").toBeNull();
+  });
+
+  it('draws no lane at all when nothing is pinned and no rows hold anything', () => {
+    open({});
+
+    expect(document.querySelector('.strip'), 'a lane drew with nothing to say').toBeNull();
+  });
+
+  it('follows the seat when the page moves', () => {
+    // The pin is read under the SHOWN seat: a page that moves must swap the
+    // lanes with it, never keep drawing the seat being left's figures.
+    const other: SessionSlot = { org: 'Busytools', project: 'forge', label: 'worker' };
+    const otherKey = subjectKey({ session: other });
+    pinnedRow.set(SEAT, running);
+    pinnedRow.set(otherKey, { ...running, input_tokens: 42 });
+    const harness = open({});
+
+    expect(document.querySelector('.strip')?.textContent, "the first seat's figures").toContain(
+      '700',
+    );
+
+    harness.page.slot = other;
+    flushSync();
+
+    expect(
+      document.querySelector('.strip')?.textContent,
+      'the figures did not follow the shown seat',
+    ).toContain('42');
+    pinnedRow.set(otherKey, null);
+  });
+
+  it('stands in every surface state: under a prompt, and on a blocked seat', () => {
+    // The breadth the column's own test used to hold (four conversation
+    // states): the lane is the surface's first child in EVERY arm - the
+    // normal box, the prompt's lane, and the blocked line.
+    pinnedRow.set(SEAT, running);
+    const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
+    expect(document.querySelector('.surf .strip'), 'no strip lane under a prompt').not.toBeNull();
+
+    harness.page.record = record();
+    harness.page.seat = seatRead({ lifecycle: null, waking: true });
+    flushSync();
+
+    expect(document.querySelector('.dock'), 'precondition: the prompt is gone').toBeNull();
+    expect(document.querySelector('.blocked'), 'precondition: the seat is blocked').not.toBeNull();
+    expect(
+      document.querySelector('.surf .strip'),
+      'no strip lane on a blocked seat',
+    ).not.toBeNull();
   });
 });
 
@@ -3057,23 +3286,28 @@ describe('the dock', () => {
     ]);
   });
 
-  it('draws the custom answer as a row of its own, which opens the words rather than answering', () => {
+  it('draws the words row past the last option, where arriving lands the caret', () => {
     const harness = open({
       record: record({ pending_asks: [questionAsk('tu-q', { multi_select: false })] }),
     });
 
     expect(
       [...document.querySelectorAll('.dock .opt .lbl')].map((held) => held.textContent),
-      'the custom answer sits last, where every other choice is',
-    ).toEqual(['Staging', 'Production', 'Tell the agent something else']);
+      'the options are exactly what the wire sent',
+    ).toEqual(['Staging', 'Production']);
 
-    options()[2]?.click();
-    flushSync();
-    expect(commands(harness), 'the door itself answers nothing').toEqual([]);
+    // The row past the last option IS the input: one step onto it lands the
+    // caret, and the words alone are the answer.
+    press('ArrowDown');
+    press('ArrowDown');
 
     const notes = document.querySelector('.dock .notes');
     if (!(notes instanceof HTMLTextAreaElement)) throw new Error('no words row');
-    expect(document.activeElement, 'the door put the caret in the words').toBe(notes);
+    expect(
+      document.activeElement,
+      'the row past the last option did not put the caret in the words',
+    ).toBe(notes);
+    expect(commands(harness), 'arriving answers nothing').toEqual([]);
 
     notes.value = 'custom only';
     notes.dispatchEvent(new Event('input', { bubbles: true }));
@@ -3098,21 +3332,17 @@ describe('the dock', () => {
     ]);
   });
 
-  it('opens the words on Space over the custom row, rather than toggling an id of its own', () => {
+  it('lands the caret on the words row with an ArrowUp off the first option', () => {
     const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
 
-    // The custom row is the last one: an ArrowUp from the first wraps to it.
+    // The words row is the last row: an ArrowUp from the first wraps to it,
+    // and arriving there is what puts the caret in the field.
     press('ArrowUp');
     flushSync();
-    press(' ');
-    flushSync();
 
-    expect(commands(harness), 'Space on the door answers nothing').toEqual([]);
     const notes = document.querySelector('.dock .notes');
-    expect(document.activeElement, 'the door put the caret in the words').toBe(notes);
-    expect(drawn(), 'and no count rides the key for a row that cannot be turned on').not.toContain(
-      'submit 1',
-    );
+    expect(document.activeElement, 'the wrap did not put the caret in the words').toBe(notes);
+    expect(commands(harness), 'arriving answers nothing').toEqual([]);
   });
 
   it("hands a permission's words to its deny, which carries them", () => {
@@ -3960,6 +4190,16 @@ describe('the dock', () => {
       list.getAttribute('aria-activedescendant'),
       'and the listbox points at the row it moved to',
     ).toContain('q-prod');
+
+    // One more step wraps onto the words row, which is NOT an option: the
+    // attribute has to be absent there, or a screen reader keeps hearing an
+    // option while the caret is in the input.
+    press('ArrowUp');
+    press('ArrowUp');
+    expect(
+      list.getAttribute('aria-activedescendant'),
+      'the listbox still points at an option while the mark is on the words row',
+    ).toBeNull();
     void harness;
   });
 
@@ -3972,7 +4212,7 @@ describe('the dock', () => {
     });
 
     expect(
-      document.querySelector('.dock .custom .tc'),
+      document.querySelector('.dock .qrow .tc'),
       'the take draws on the row its words land in, rather than being swallowed',
     ).not.toBeNull();
 
@@ -4715,7 +4955,7 @@ describe('the dock', () => {
 
     expect(
       [...document.querySelectorAll('.dock .opt .n')].map((held) => held.textContent),
-      'the rows carry their own numbers, the first row one, the custom answer last',
+      'the rows carry their own numbers, the first row one, the words row last',
     ).toEqual(['1', '2', '3']);
 
     press('2');
@@ -5694,5 +5934,319 @@ describe('the dictation panel', () => {
     } finally {
       Reflect.set(globalThis, 'ResizeObserver', original);
     }
+  });
+});
+
+/**
+ * The dock's settled shape (2026-10-10): the queue leads, the last row is the
+ * input, and the bar folds the question to itself.
+ */
+describe("the dock's settled shape", () => {
+  /** Every command the composer sent, in order. */
+  const commands = (harness: { sent: { command: Record<string, unknown> }[] }) =>
+    harness.sent.map((entry) => entry.command);
+
+  it('types through from an option: a printable character moves into the words and lands there', () => {
+    // The ARIA practice's rule for a list beside an input, and the defect the
+    // round was filed for: a reader who starts typing must not have to
+    // discover the row first.
+    const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
+
+    press('l');
+
+    const notes = document.querySelector('.dock .notes');
+    if (!(notes instanceof HTMLTextAreaElement)) throw new Error('no words row');
+    expect(document.activeElement, 'the character did not take the caret into the words').toBe(
+      notes,
+    );
+    expect(notes.value, 'and did not land there').toBe('l');
+    expect(commands(harness), 'typing answers nothing').toEqual([]);
+  });
+
+  it('leads the dock with the waiting count', () => {
+    open({
+      record: record({ pending_asks: [questionAsk()] }),
+      seat: seatRead({ pendingDepth: 3 }),
+    });
+
+    const queue = document.querySelector('.dock .queue');
+    expect(queue, 'the dock drew no queue line').not.toBeNull();
+    const head = document.querySelector('.dock .d-head');
+    if (!(queue instanceof HTMLElement) || head === null) return;
+    expect(
+      queue.compareDocumentPosition(head) & Node.DOCUMENT_POSITION_FOLLOWING,
+      'the count does not lead the question',
+    ).not.toBe(0);
+    expect(queue.textContent, 'the count is not the one waiting behind').toContain(
+      '2 more pending',
+    );
+  });
+
+  it('folds the question to its bar, and the bar unwraps it', () => {
+    open({
+      record: record({ pending_asks: [questionAsk()] }),
+      seat: seatRead({ pendingDepth: 2 }),
+    });
+
+    const chev = document.querySelector('.dock .chevb');
+    if (!(chev instanceof HTMLElement)) throw new Error('the head drew no fold control');
+    chev.click();
+    flushSync();
+
+    expect(document.querySelector('.dock .qbar'), 'no bar after folding').not.toBeNull();
+    expect(document.querySelector('.dock .opts'), 'the options stayed under the bar').toBeNull();
+    expect(document.querySelector('.dock .keys'), 'the keys stayed under the bar').toBeNull();
+    expect(document.querySelector('.dock .qbar .cnt')?.textContent, 'the count left the bar').toBe(
+      '+1',
+    );
+    expect(
+      document.querySelector('.dock .qbar .chevc'),
+      'the bar carries its own unfold glyph',
+    ).not.toBeNull();
+    expect(
+      document.querySelector('.dock .queue'),
+      'the pending line drew under the fold, where the bar carries the count instead',
+    ).toBeNull();
+
+    const bar = document.querySelector('.dock .qbar');
+    if (!(bar instanceof HTMLElement)) throw new Error('no bar');
+    bar.click();
+    flushSync();
+
+    expect(document.querySelector('.dock .qbar'), 'the bar did not unwrap').toBeNull();
+    expect(document.querySelector('.dock .opts'), 'the options did not come back').not.toBeNull();
+    expect(
+      document.querySelector('.dock .queue'),
+      'the pending line did not come back with the body',
+    ).not.toBeNull();
+  });
+
+  it('keeps the bar folded across a repaint of the same prompt', () => {
+    // The record is replaced on every frame and on the session poll; the fold
+    // is the reader's, keyed on the prompt, so a repaint must not re-expand it.
+    const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
+
+    const chev = document.querySelector('.dock .chevb');
+    if (!(chev instanceof HTMLElement)) throw new Error('the head drew no fold control');
+    chev.click();
+    flushSync();
+    expect(document.querySelector('.dock .qbar'), 'precondition: folded').not.toBeNull();
+
+    harness.page.record = record({ pending_asks: [questionAsk()] });
+    flushSync();
+
+    expect(document.querySelector('.dock .qbar'), 'a repaint re-expanded the bar').not.toBeNull();
+  });
+
+  it('swaps the keys line while the caret is in the words row', () => {
+    open({ record: record({ pending_asks: [questionAsk()] }) });
+
+    press('ArrowDown');
+    press('ArrowDown');
+
+    const keys = document.querySelector('.dock .keys')?.textContent ?? '';
+    expect(keys, 'the keys line still reads as the list').toContain('send these words');
+    expect(keys, 'and still promises submit').not.toContain('move');
+  });
+
+  it('hands the keyboard back when the prompt vanishes under the caret', () => {
+    // Review Focus: answered from another view, refused, or replaced - the
+    // caret must land somewhere real, never on the body.
+    const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
+
+    press('ArrowDown');
+    press('ArrowDown');
+    const notes = document.querySelector('.dock .notes');
+    expect(document.activeElement, 'precondition: the caret is in the words').toBe(notes);
+
+    harness.page.record = record({ pending_asks: [] });
+    flushSync();
+
+    expect(document.querySelector('.dock'), 'the dock is gone').toBeNull();
+    expect(document.activeElement, 'the caret fell to the body').not.toBe(document.body);
+    expect(document.activeElement?.tagName, 'the caret did not land on the composer field').toBe(
+      'TEXTAREA',
+    );
+  });
+
+  it('draws no prompt for the seat being left', () => {
+    // **The interregnum.** The page moves seats and hands over the new seat's
+    // record only when its read lands; between the two, the record in hand is
+    // the seat being LEFT's - and `owns` is the only thing stopping its prompt
+    // drawing on the surface moved to.
+    const other: SessionSlot = { org: 'Busytools', project: 'forge', label: 'worker' };
+    const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
+    expect(document.querySelector('.dock'), 'precondition: the prompt draws').not.toBeNull();
+
+    harness.page.slot = other;
+    flushSync();
+    expect(
+      document.querySelector('.dock'),
+      "the left seat's prompt drew on the seat moved to",
+    ).toBeNull();
+
+    harness.page.record = record({ slot: other, pending_asks: [questionAsk()] });
+    flushSync();
+    expect(
+      document.querySelector('.dock'),
+      "the moved-to seat's own prompt does not draw",
+    ).not.toBeNull();
+  });
+
+  it('keeps the caret where the reader put it across a repaint', () => {
+    // The docking effect is keyed on the prompt's identity, not the record
+    // object, so a repaint of the SAME prompt must not hand the keyboard back
+    // to the option list mid-sentence.
+    const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
+
+    press('ArrowDown');
+    press('ArrowDown');
+    const notes = document.querySelector('.dock .notes');
+    expect(document.activeElement, 'precondition: the caret is in the words row').toBe(notes);
+
+    harness.page.record = record({ pending_asks: [questionAsk()] });
+    flushSync();
+
+    expect(document.activeElement, 'a repaint stole the caret back to the options').toBe(notes);
+  });
+
+  it('keeps a focused action across a repaint, which is what the keying is for', () => {
+    // **The keying, discriminated.** The caret test above passes even if the
+    // dock remounts and something re-focuses the list on arrival; an action
+    // button has no re-focus to ride - a remount drops it to the body, so
+    // this fails the moment the `{#key}` stops keying on the prompt's own
+    // identity.
+    const harness = open({ record: record({ pending_asks: [permissionAsk()] }) });
+
+    const btn = document.querySelector('.dock .acts .btn');
+    if (!(btn instanceof HTMLButtonElement)) throw new Error('the dock drew no actions');
+    btn.focus();
+    flushSync();
+    expect(document.activeElement, 'precondition: an action holds the keyboard').toBe(btn);
+
+    harness.page.record = record({ pending_asks: [permissionAsk()] });
+    flushSync();
+
+    expect(
+      document.activeElement,
+      'a repaint remounted the dock and dropped the focused action to the body',
+    ).toBe(btn);
+  });
+
+  it('unfolds by keyboard without answering the marked row', () => {
+    // **The accidental-answer defect**: the bar used to be a div with its own
+    // key handler, so the Enter that unfolded ALSO reached the dock's handler
+    // and answered the marked option. As a real button, the root's guard hands
+    // it its keys.
+    const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
+
+    const chev = document.querySelector('.dock .chevb');
+    if (!(chev instanceof HTMLElement)) throw new Error('the head drew no fold control');
+    chev.click();
+    flushSync();
+    const bar = document.querySelector('.dock .qbar');
+    if (!(bar instanceof HTMLButtonElement)) throw new Error('the bar is not a button');
+    expect(document.activeElement, 'the fold did not hand the keyboard to the bar').toBe(bar);
+
+    bar.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    // Space is the browser's other activation key for a button, and it must
+    // ride the same guard: reaching the dock's handler would toggle the marked
+    // row on a question behind the fold, where nobody can see it.
+    bar.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+    flushSync();
+    expect(commands(harness), 'Space answered the question').toEqual([]);
+    expect(
+      document.querySelector('.dock .qbar'),
+      'Space unfolded behind the guard, or dropped the fold',
+    ).not.toBeNull();
+
+    bar.click();
+    flushSync();
+
+    expect(commands(harness), 'unfolding answered the question').toEqual([]);
+    expect(document.querySelector('.dock .opts'), 'the body did not unfold').not.toBeNull();
+    expect(
+      [...document.querySelectorAll('.dock .box2')].map((box) => box.classList.contains('on')),
+      'a Space rode the guard through and flipped a mark that was never seen',
+    ).toEqual([false, false]);
+  });
+});
+
+/**
+ * One shape for every kind, approving first (Ved, 2026-10-10): a permission's
+ * actions and a held post's verbs lead with the action that carries the
+ * reader's intent forward, and the refusal sits last.
+ */
+describe('the approving action leads', () => {
+  it("orders a permission's actions allow-always, allow-once, deny", () => {
+    open({
+      record: record({
+        pending_asks: [
+          permissionAsk('tu-1', {
+            options: [
+              {
+                option_id: 'opt-once',
+                name: 'Allow once',
+                kind: 'allow',
+                action: { kind: 'allow' },
+              },
+              { option_id: 'opt-deny', name: 'Deny', kind: 'deny', action: { kind: 'deny' } },
+              {
+                option_id: 'opt-always',
+                name: 'Allow always',
+                kind: 'allow',
+                action: { kind: 'allow' },
+              },
+              {
+                option_id: 'opt-notes',
+                name: 'Tell the agent something else',
+                kind: 'notes',
+                action: { kind: 'deny' },
+              },
+            ],
+          }),
+        ],
+      }),
+    });
+
+    const buttons = [...document.querySelectorAll('.dock .acts .btn')];
+    const labels = buttons.map((button) => button.textContent?.trim());
+    expect(labels, 'the approving action does not lead').toEqual([
+      'Allow always',
+      'Allow once',
+      'Deny',
+    ]);
+    expect(
+      buttons[0]?.classList.contains('p'),
+      'the action that leads is not the one drawn primary',
+    ).toBe(true);
+  });
+
+  it("orders a held post's verbs Post, then Don't send", () => {
+    open({ record: record({ pending_asks: [slackDraftAsk()] }) });
+
+    const labels = [...document.querySelectorAll('.dock .acts .btn')].map((button) =>
+      button.textContent?.trim(),
+    );
+    expect(labels, 'the approved action does not lead').toEqual(['Post', "Don't send"]);
+  });
+
+  it("lands the caret in a permission's words row on a typed character, riding the deny", () => {
+    open({ record: record({ pending_asks: [permissionAsk()] }) });
+
+    press('n');
+
+    const notes = document.querySelector('.dock .notes');
+    expect(document.activeElement, "typing did not land in the permission's words row").toBe(notes);
+    expect(
+      notes instanceof HTMLTextAreaElement ? notes.value : null,
+      'and did not land there',
+    ).toBe('n');
+    const deny = [...document.querySelectorAll('.dock .acts .btn')].find((button) =>
+      button.textContent?.includes('Deny'),
+    );
+    expect(deny?.textContent, 'the deny does not say the words ride it').toContain(
+      'with these words',
+    );
   });
 });

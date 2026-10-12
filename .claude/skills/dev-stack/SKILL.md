@@ -1,14 +1,39 @@
 ---
 name: dev-stack
-description: Invoke for feature-scale web work - client, server, or both - when the result needs the maintainer's eyes before merge: it spins a per-feature scratch forge under /tmp with its own config, ports and store plus a dev client pointed at it, so the feature is built and verified live without touching the live forge or the maintainer's config. Not for one-line fixes; those take the ordinary PR loop.
+description: Invoke for feature-scale web work - client, server, or both - when the result needs the maintainer's eyes before merge: it stands up the depth the change needs - a per-feature scratch forge under /tmp with its own config, ports and store plus a dev client pointed at it, or, for a pure client change, the dev client alone - so the feature is built and verified live without touching the maintainer's config. Not for one-line fixes; those take the ordinary PR loop.
 ---
 
 # dev-stack
 
-One feature, one self-contained stack: a scratch `forge` under `/tmp`, a dev
-client pointed at it, the maintainer's verification, the usual PR + review
-loop, one post-review re-look for feature-scale work, merge, teardown. The
-live forge, the live client and `~/.claude` are never part of the loop.
+One feature, one self-contained setup: a scratch `forge` under `/tmp` with a
+dev client pointed at it (the deep depth), or the dev client alone against
+the live forge (the shallow one), the maintainer's verification, the usual
+PR + review loop, one post-review re-look for feature-scale work, merge,
+teardown. The
+live forge, the live client and `~/.claude` are never mutated or restarted,
+at any depth.
+
+**When it fires, and whose job that is.** Any feature-scale web change -
+client, server, or both - that needs the maintainer's eyes before merge runs
+this loop; one-line fixes take the ordinary PR loop instead. It runs at one of
+two depths, set by what the change touches: a pure client change takes the
+shallow path (recipe step 5) - the dev client alone, no scratch forge - while
+anything touching server behaviour takes the full stack. Firing it is the
+LEAD's act at plan time, not the worker's discovery: the lead reads this file
+and threads its loop into the worker's charter, so the charter already carries
+the depth, the verification steps and the teardown.
+
+**One landing, never a piece.** A work cut - one feature, one issue, one
+fix - lands whole: one branch, one review, one look, one merge. Never slice
+it into pieces that land one after another, and never show or merge an
+intermediate step on the way. The look is the one that cut is owed: a
+feature waits for the user's own look before merge; a fix merges after the
+review loop as usual. A feature is not split to land faster - the stack
+exists so it can land whole and be looked at whole, exercised end to end
+before it lands. Anything deliberately left out, or lost on the way, is
+surfaced to the maintainer BEFORE merge rather than as a follow-up, and for
+feature-scale work the post-review re-look (step 6) is mandatory, not a
+courtesy.
 
 **The first users refine this.** The recipe is measured, not sacred - when a
 step costs time, breaks, or reads wrong in real use, say so to the lead; the
@@ -26,12 +51,13 @@ history is the record.
    worker to it (until #1825 lands the enforced `model` field on
    `agents__spawn`, verify by observation and say so). Interactive: true - the
    maintainer's verification is the worker's own question.
-3. **The worker brings the stack up** (recipe below), iterating with client
-   hot reload and server restarts inside the stack. Server changes are live
-   from the branch - there is no release and no restart of anything of the
-   maintainer's.
+3. **The worker brings the stack up** (recipe below) - the deep depth; a
+   shallow run has no stack and lives entirely in the client dev server
+   (recipe step 7). Either way: client hot reload throughout, and server
+   changes live from the branch - there is no release and no restart of
+   anything of the maintainer's.
 4. **The maintainer looks**, via the worker's AskUserQuestion, one page or one
-   behavior at a time, against the stack.
+   behavior at a time, against the stack (deep) or the dev client (shallow).
 5. **PR + the lead's review loop.** Fixes land on the branch; the stack
    rebuilds and restarts from it.
 6. **For feature-scale work, the post-review re-look** (Ved's ruling): after
@@ -93,10 +119,17 @@ history is the record.
    stamp on the home (it rides the greeting too) is the invariant check, and
    the roster's org is the cross-check - together they catch a wrong-forge
    connect in one read.
-5. **The client** - judgment call per feature:
-   - Browser tab (default): the dev client from the worktree - hot reload, the
-     maintainer's own browser. Point it at the stack through its own connect
-     screen: type `127.0.0.1:8791` (a bare `host:port`; the field opens on the
+5. **The client - depth follows the change (Ved's ruling, 2026-10-10).** A
+   pure client change runs SHALLOW: the dev client from the worktree on its
+   own (`npm --prefix client run dev`, step 7), pointed at the live forge's
+   own address - no scratch forge, no `/tmp` tree, the change in front of the
+   maintainer as fast as vite starts. The cost, named: that tab is another
+   answering client on the live forge, so a turn can park on it. Anything
+   that touches server behaviour runs DEEP - the full stack - with the client
+   pointed at the stack:
+   - Browser tab (the deep default): the dev client from the worktree - hot
+     reload, the maintainer's own browser. Point it at the stack through its
+     own connect screen: type `127.0.0.1:8791` (a bare `host:port`; the field opens on the
      live forge's address, so the scratch one is a deliberate edit). The client
      keeps the last address that ANSWERED (`localStorage forge.address`,
      written only on a successful connect) and attempts it next open: stack
@@ -193,6 +226,8 @@ history is the record.
 ## Could not prove (watch these)
 
 - Cross-boot resume inside a stack (both spike runs had fresh stores).
+- The shallow depth end to end (the dev client alone, pointed at the live
+  forge).
 - A taken scratch gateway port's refusal (read from code, not exercised).
 - Interactive trust acceptance; a release/perf build; two stacks at once; any
   keychain interaction from the redirected HOME's child sessions.

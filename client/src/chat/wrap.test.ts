@@ -265,18 +265,32 @@ describe('a long line in the conversation', () => {
     expect(valuesOf(applied, 'white-space'), 'and the header may wrap at its spaces').toEqual([]);
   });
 
-  it('leaves the sheet no sideways scroller at all', () => {
+  it("leaves the sheet no sideways scroller at all, save the strip's chips lane", () => {
     // Every one of these was a scroller or a clip before the change, and the
     // smaller block that wrapped a diff line only below 560px was deleted with
     // them: a wrapping rule that has to be repeated inside a media query is a
     // scroller waiting to come back at the width nobody tests.
+    //
+    // **One deliberate exception, and it is not a conversation box**: the
+    // strip's chips take a lane that scrolls sideways at narrow widths (the
+    // settled redesign) - the chips carry counts and marks rather than prose,
+    // so there is nothing in there for a wrap to save. The exception is the
+    // whole selector naming `.sg-fill`, so a scroller admitted anywhere else -
+    // including one sneaking beside it in the same list - still fails.
     expect(sheet, 'the sheet is the one this test read').toContain('.dif .ln .l');
     const code = sheet.replace(/\/\*[\s\S]*?\*\//g, '');
     // The shorthand is the same defect, since it scrolls both axes; an
     // `overflow-y` alone is not, and the rail and the conversation use it.
-    const scrollers = [...code.matchAll(/overflow(?!-y)(?:-x)?:\s*(auto|scroll)/g)].map(
-      (match) => match[0],
-    );
+    const scrollers: string[] = [];
+    for (const rule of code.matchAll(/([^{}]*)\{([^{}]*)\}/g)) {
+      const selector = (rule[1] ?? '').trim();
+      const body = rule[2] ?? '';
+      if (!/overflow(?!-y)(?:-x)?:\s*(auto|scroll)/.test(body)) continue;
+      if (selector === '.strip .sg-fill') continue;
+      scrollers.push(
+        `${selector} { ${/overflow(?!-y)(?:-x)?:\s*(auto|scroll)/.exec(body)?.[0] ?? ''} }`,
+      );
+    }
     expect(scrollers, 'no rule scrolls a box sideways').toEqual([]);
   });
 });

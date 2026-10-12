@@ -27,14 +27,12 @@ const withCli = (installed: string | null, latest: string | null): HomeWire => (
  * the server's committed blob byte for byte, so it cannot be widened here.
  */
 const withGate = (gate: Gate): HomeWire => {
-  // The gate a row draws is the SEAT's own read, so it is set on the agent and
-  // not on the project beside it: a page reading the project's would draw the
-  // fixture's `gone` for every gate below.
+  // The fleet is one row per PROJECT, so the gate it draws is the
+  // project's own read - the same one the mockup's branch cell sits in.
   return {
     ...homeWire,
-    agents: homeWire.agents.map((row) => ({
+    projects: homeWire.projects.map((row) => ({
       ...row,
-      pending: null,
       work: { branch: null, changed: null, gate },
     })),
   };
@@ -125,14 +123,77 @@ describe('the home page as it draws', () => {
   });
 
   it('draws its shell and says so when the server holds no projects', () => {
-    const body = draw({ wire: { ...homeWire, projects: [], agents: [] } });
+    const body = draw({ wire: { ...homeWire, projects: [], agents: [], fleet: [] } });
     expect(body, 'an empty fleet drew no empty state').toContain('No projects yet');
     expect(body).toContain('forge.toml');
-    expect(body).not.toContain('class="list"');
+    expect(body).not.toContain('fleet-row');
   });
 
-  it('draws every project the snapshot holds', () => {
-    expect(draw()).toContain('class="list"');
+  it('draws every project the snapshot holds as its own fleet row', () => {
+    const body = draw();
+    expect(body).toContain('class="fleet-row"');
+    expect(body).toContain('>proj</a>');
+    expect(body, 'and the board keeps its own control').toContain('href="/board/TestOrg/proj"');
+  });
+
+  /**
+   * **The row is the way into the lead's chat** - the way-in the per-seat
+   * rows gave before the fleet replaced them: the name's link stretches
+   * over the whole row (the sheet draws that), and a seat chip is its own
+   * link to its own seat.
+   */
+  it('leads the row into the lead, and a chip into its seat', () => {
+    // Two seats, because with one the chip's target and the row's are the
+    // same string - a chip wired to the row's href would pass everything.
+    const [first] = homeWire.agents;
+    if (first === undefined) throw new Error('the fixture holds no agent');
+    const wire: HomeWire = {
+      ...homeWire,
+      agents: [
+        ...homeWire.agents,
+        { ...first, slot: { org: 'TestOrg', project: 'proj', label: 'w1' } },
+      ],
+    };
+    const body = draw({ wire });
+    expect(body, 'the row opens the lead').toMatch(
+      /class="fleet-name fleet-go" href="\/session\/TestOrg\/proj\/lead"/,
+    );
+    expect(body, 'the lead chip opens the lead').toMatch(
+      /class="fleet-seat" href="\/session\/TestOrg\/proj\/lead"/,
+    );
+    expect(body, 'a worker chip opens its own seat').toMatch(
+      /class="fleet-seat" href="\/session\/TestOrg\/proj\/w1"/,
+    );
+  });
+
+  /**
+   * **The age is the row's own cell.** The reshape dropped the per-row age
+   * the home used to draw, and it is the cell a reader uses to see a project
+   * gone quiet without opening its board - so the fleet row draws when the
+   * project last moved, from the newest write among its seats.
+   */
+  it('draws when the project last moved', () => {
+    const idle = { ...homeWire, agents: homeWire.agents.map((row) => ({ ...row, pending: null })) };
+    // An epoch-second stamp: however far back the clock's year is read from,
+    // the words are days rather than minutes or hours.
+    const body = draw({
+      wire: {
+        ...idle,
+        agents: idle.agents.map((row) => ({
+          ...row,
+          last_activity: { secs_since_epoch: 1_000, nanos_since_epoch: 0 },
+        })),
+      },
+    });
+    expect(body, 'the fleet row drew no age').toContain('class="fleet-when"');
+    expect(body, "the age is not the row's own words").toMatch(/fleet-when[^>]*>\d+d</);
+
+    // A live seat with nothing written yet reads `now`; `never` is for a
+    // project with neither a seat nor a session behind it (the view test
+    // holds that half, where the catalog can be built by hand).
+    expect(draw({ wire: idle }), 'a seat with no write drew no age').toMatch(
+      /fleet-when[^>]*>now</,
+    );
   });
 
   /**
@@ -146,8 +207,29 @@ describe('the home page as it draws', () => {
 
     expect(body).toContain('href="/models"');
     expect(body, 'the door draws no marker a reader can see').toContain('i-chev');
-    // One door, not four: the band's other cards are facts about this forge.
+    // Two doors, not five: the band's other cards are facts about this forge.
     expect(body.match(/href="\/models"/g)).toHaveLength(1);
+  });
+
+  /**
+   * The second door, and the one the view test cannot see either: the card
+   * is drawn as a real anchor to /extensions, with the chevron at rest. Its
+   * facts need the connection (the read is the card's own), so a rendered
+   * home without one draws the card's reading state - which is itself the
+   * state this asserts is honest.
+   */
+  it('opens the extensions page from the extensions card', () => {
+    const body = draw();
+
+    expect(body, 'the card is a way in').toContain('href="/extensions"');
+    expect(body.match(/href="\/extensions"/g), 'one door, not a row of them').toHaveLength(1);
+    // Scoped to THIS anchor's markup and bounded at its close: over the whole
+    // body the dictation card's own chevron satisfies a bare `i-chev`, and an
+    // unbounded tail would let any chevron drawn after the anchor satisfy
+    // that too - so the pin holds only if the door's own markup carries one.
+    const door = body.match(/<a class="svc off" href="\/extensions">[\s\S]*?<\/a>/)?.[0] ?? '';
+    expect(door, 'the title line carries the door chevron').toContain('i-chev');
+    expect(body, 'no read without a connection, and the card says so').toContain('>reading<');
   });
 
   /**
@@ -159,29 +241,28 @@ describe('the home page as it draws', () => {
    * label is `lead`, so a raw template in place of the encoder passes every
    * other test. A label with a space in it is what tells them apart.
    */
-  it('encodes the seat a row links to', () => {
+  it('encodes the project its board links to', () => {
     const wire = {
       ...homeWire,
-      agents: [
-        {
-          ...homeWire.agents[0],
-          // The fixture's project, so the row is drawn at all: an agent whose
-          // slot names no project in `projects` contributes no row.
-          slot: { org: 'TestOrg', project: 'proj', label: 'two words' },
-        },
-      ],
+      projects: homeWire.projects.map((row) => ({
+        ...row,
+        project: { ...row.project, name: 'two words' },
+      })),
+      fleet: homeWire.fleet.map((row) => ({ ...row, project: 'two words' })),
     };
-    expect(draw({ wire })).toContain('href="/session/TestOrg/proj/two%20words"');
+    expect(draw({ wire })).toContain('href="/board/TestOrg/two%20words"');
   });
 
-  it('draws the mark its state names on the row', () => {
+  it('draws the fleet mark the strongest seat state names', () => {
     const body = draw();
     // The fixture's lead holds a permission prompt beside an Idle lifecycle -
     // a pairing this fixture was hand-made with, since the production shape of
-    // an ask is a running seat - and the ask is what its state reads (#1885).
-    expect(body, 'the row drew no lifecycle class').toContain('class="row needs"');
-    expect(body, 'the row drew no ask mark').toContain('class="dot warn"');
-    expect(body, 'the row drew no link to its seat').toContain('href="/session/TestOrg/proj/lead"');
+    // an ask is a running seat - so the ask is the strongest seat state and
+    // the fleet row wears it (#1885), in the same vocabulary a seat row draws.
+    expect(body, 'the fleet row drew no strongest-state class').toContain('class="row needs"');
+    expect(body, 'the fleet row drew no ask mark').toContain('class="dot warn"');
+    expect(body, 'the seats ride the row').toContain('fleet-seat');
+    expect(body, 'and the unnamed miss is named').toContain('w1 holds no row');
   });
 });
 

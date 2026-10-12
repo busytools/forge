@@ -17,6 +17,7 @@
   import { schedules } from './schedules.svelte';
   import { subagents } from './subagents.svelte';
   import { tasks } from './tasks.svelte';
+  import { hrefFor } from '../routes';
   import type { Connection } from '../socket';
   import type { SessionSlot } from '../wire/types';
   import type { TurnInfo } from './units';
@@ -41,7 +42,11 @@
     info,
     connection,
     slot = null,
-  }: { info: TurnInfo | null; connection: Connection; slot?: SessionSlot | null } = $props();
+  }: {
+    info: TurnInfo | null;
+    connection: Pick<Connection, 'browserRole' | 'onBrowserRole' | 'takeBrowserRole'>;
+    slot?: SessionSlot | null;
+  } = $props();
 
   const rows = $derived(
     subagents.all().length > 0 ||
@@ -64,6 +69,9 @@
       <span class="sg-fill"
         ><BrowserSegment {connection} {slot} /><SubagentSegment /><ProcessesSegment
         /><ConnectorsSegment /><SchedulesSegment /><McpSegment /><GitSegment /><TasksSegment
+          href={slot === null
+            ? null
+            : hrefFor({ name: 'board', org: slot.org, project: slot.project })}
         /><MonitorsSegment /></span
       >
     </div>

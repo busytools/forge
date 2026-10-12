@@ -45,6 +45,10 @@ function stub() {
       return () => listeners.delete(fn);
     },
     onStatus: () => () => undefined,
+    // The chat holds the seat's subscription for its own lifetime (Ved,
+    // 2026-10-09); this stub only has to answer the pair.
+    subscribe: () => ({ state: () => ({ kind: 'loading' }) }),
+    unsubscribe: () => undefined,
     store: () => undefined,
   } as unknown as Connection;
 

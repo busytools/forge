@@ -212,6 +212,20 @@ export async function closeProfile(name: string): Promise<void> {
 }
 
 /**
+ * Delete a named profile: the one act that takes its logins.
+ *
+ * Close ends the run and keeps everything; this removes the profile's files
+ * - cookies, sessions, logins - so the row that calls it confirms it first.
+ * It works whether or not the profile is open, and the shell waits out a
+ * call in flight rather than refusing.
+ */
+export async function deleteProfile(name: string): Promise<void> {
+  if (!canHost()) return;
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('browser_profile_delete', { name });
+}
+
+/**
  * Whether a profile's browser is up as a window - the shared one for `null` -
  * which is what the strip's show/hide button toggles on.
  */

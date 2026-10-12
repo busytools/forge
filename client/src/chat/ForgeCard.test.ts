@@ -166,4 +166,37 @@ describe('the forge card body', () => {
     expect(drawn, 'the block draws').toContain('fam-text');
     expect(drawn, 'with its own words').toContain('this project also has reviews on: work/x.');
   });
+
+  it('renders a quote as markdown, so a spawn charter draws as it was written', () => {
+    // The charter is written in markdown and drew raw before (Ved, 2026-10-09);
+    // the quote piece is prose wherever it comes from, so it renders.
+    const drawn = draw({
+      pieces: [
+        { kind: 'tag', text: 'charter' },
+        { kind: 'quote', text: '## Steps\n\n- **first** the run, then `code`.' },
+      ],
+    });
+
+    expect(drawn, 'the quote draws').toContain('fam-quote');
+    expect(drawn, 'the heading does not draw as its hashes').not.toContain('## Steps');
+    expect(drawn, 'a bold run renders').toContain('<strong>first</strong>');
+    expect(drawn, 'and code renders').toContain('<code>code</code>');
+  });
+
+  /**
+   * **A quote keeps the line breaks it was written with.**
+   *
+   * Most of them are the reader's own words - a draft, a review prompt - and
+   * the terminal's own split is that a person's newlines survive where
+   * generated prose joins back. Without it a two-line Slack draft draws as one
+   * flowing paragraph, which is a second visible change from the markdown fix
+   * and not the one it was for.
+   */
+  it('keeps a quote\u{27}s own line breaks, which are the reader\u{27}s', () => {
+    const drawn = draw({
+      pieces: [{ kind: 'quote', text: 'Deploy is done\nWill check the logs tomorrow' }],
+    });
+
+    expect(drawn, 'the reader\u{27}s own line break was joined away').toContain('<br>');
+  });
 });

@@ -16,11 +16,15 @@
  */
 
 import { displayAddress } from '../connect/attempt';
+import { railCounts, stalePlugins } from '../extensions/view';
+import { hrefFor, hrefForSlot } from '../routes';
+import type { ExtensionsRead } from '../wire/extensions';
 import type {
   AgentRow,
   Gate,
   HomeWire,
   Lifecycle,
+  MissRow,
   ProjectWire,
   Task,
   TaskStatus,
@@ -41,9 +45,10 @@ export interface BandCard {
   /**
    * Where the card opens, when it opens anywhere.
    *
-   * The dictation card is the way into the models page: the band is where a
-   * reader looks for dictation, and the page is what draws it. The others are
-   * facts about this forge and open nothing.
+   * The dictation card is the way into the models page and the extensions
+   * card into the extensions page: the band is where a reader looks for
+   * each, and the page is what draws it. The rest are facts about this
+   * forge and open nothing.
    */
   href: string | null;
 }
@@ -66,30 +71,6 @@ export interface TaskCell {
   subject: string;
   chip: string;
   artifact: string | null;
-}
-
-/**
- * Whether the seat's page answers: a lead's always does - the core resolves
- * its directory from the project declaration, and opening one starts it - and
- * a worker's only while it has a session behind it.
- *
- * A row whose seat refuses is information rather than a way in: opening it is
- * refused by the core - "forge holds no session for" and the seat's name -
- * where "this seat has no session behind it" is the page's own not-running
- * line. The terminal draws a sleeping worker row the same way, as a label
- * with no hit target.
- *
- * `LoggedOut` shares the arm with `Sleeping` so a row's mark and its link
- * cannot disagree: the two are one mark in the parked web view's grouping,
- * and no worker row carries the state today.
- */
-export function openable(row: Pick<Row, 'slot' | 'state'>): boolean {
-  if (row.slot.label === 'lead') return true;
-  const { state } = row;
-  return !(
-    state.kind === 'lifecycle' &&
-    (state.lifecycle === 'Sleeping' || state.lifecycle === 'LoggedOut')
-  );
 }
 
 /** One row: the same shape for a lead and for a worker. */
@@ -115,13 +96,6 @@ export interface Row {
    * session that failed to spawn.
    */
   failedTurn: WireTime | null;
-}
-
-/** One org's projects, in the order `forge.toml` declares them. */
-export interface OrgSection {
-  name: string;
-  live: number;
-  projects: { lead: Row; workers: Row[]; refused: string | null }[];
 }
 
 /** One project's rows: the lead, and its workers under it. */
@@ -151,7 +125,152 @@ export interface Header {
 export interface HomeView {
   header: Header;
   band: BandCard[];
-  orgs: OrgSection[];
+  /**
+   * The fleet: one row per project and nothing mixed, so the home is a
+   * glance and a project's world is its own board. A row's strongest
+   * seat state rides its mark; the counts and the named misses ride
+   * beside it.
+   */
+  fleet: FleetViewRow[];
+}
+
+/** One fleet row, as the home draws it. */
+export interface FleetViewRow {
+  org: string;
+  name: string;
+  /** Where the board control opens: the project's own board. */
+  href: string;
+  /**
+   * Where the row ITSELF opens: the project's lead in chat. The whole row's
+   * area is this link - the way in before the fleet row replaced the
+   * per-seat rows, kept - and the controls with targets of their own (each
+   * seat, the board) ride above it. A project with no live seat still reads
+   * its own slot: the session page there draws its start, and the row's
+   * click begins it, the way-in the terminal's rail gives a sleeping seat.
+   */
+  leadHref: string;
+  /** The strongest seat state, drawn with the same `Mark` a seat row uses. */
+  state: RowState;
+  place: { branch: string | null; files: string | null };
+  gate: string | null;
+  seats: { label: string; state: RowState; href: string }[];
+  /**
+   * When the project last moved: the newest `last_activity` across its seats
+   * and the sessions its catalog remembers, or null when nothing has ever
+   * written. It is the cell the row drew before the fleet - "3h" at a glance
+   * - so a reader can see a project that has gone quiet without opening its
+   * board.
+   */
+  lastActivity: WireTime | null;
+  live: number;
+  slots: number | null;
+  queue: number;
+  onYou: number;
+  misses: MissRow[];
+}
+
+/**
+ * How strong a state is beside its neighbours, so a row's own mark can be
+ * the strongest among its seats: a failure outranks a question, a
+ * question a run.
+ */
+const MARK_ORDER: string[] = [
+  'failed',
+  'needs',
+  'auth',
+  'unseen',
+  'running',
+  'spawning',
+  'idle',
+  'asleep',
+  'never',
+];
+
+/**
+ * The fleet rows, from the snapshot and nothing else: the counts and the
+ * misses are the server's own, and the mark is the strongest of the
+ * project's seat marks - the same vocabulary a seat row draws, so the
+ * fleet cannot invent a state the roster does not say.
+ */
+export function fleetRows(wire: HomeWire): FleetViewRow[] {
+  return wire.fleet.map((row) => {
+    const project = wire.projects.find(
+      (entry) =>
+        keyOf(entry.project.org, entry.project.name) ===
+        keyOf(orgOf(wire, row.project), row.project),
+    );
+    const agents = wire.agents.filter(
+      (agent) =>
+        agent.slot.project === row.project &&
+        (project === undefined || agent.slot.org === project.project.org),
+    );
+    const seats = agents.map((agent) => ({
+      label: agent.label,
+      state: stateOf(agent, wire.unseen),
+      href: hrefForSlot(agent.slot),
+    }));
+    // The newest write the project has: a live seat's, or a session the
+    // catalog still remembers once no seat is left. **The catalog half is not
+    // a nicety** - a seat exists only while a project holds a live session,
+    // so a closed project is seatless, and reading the seats alone would word
+    // `never` over a project that wrote ten minutes ago. Every project is in
+    // that state after a forge restart, because only `auto_start` ones come
+    // back on their own.
+    const lastActivity = [
+      ...agents.map((agent) => agent.last_activity),
+      ...(project?.project.sessions.map((session) => session.last_activity) ?? []),
+    ].reduce<WireTime | null>(
+      (newest, at) =>
+        at === null
+          ? newest
+          : newest === null || at.secs_since_epoch > newest.secs_since_epoch
+            ? at
+            : newest,
+      null,
+    );
+    const strongest = seats.reduce<RowState>(
+      (best, seat) =>
+        MARK_ORDER.indexOf(markOf(seat.state).class) < MARK_ORDER.indexOf(markOf(best).class)
+          ? seat.state
+          : best,
+      { kind: 'never-started' },
+    );
+    const org = project?.project.org ?? orgOf(wire, row.project);
+    // The lead is the row's own target; a project between lead sessions still
+    // reads its slot, where the session page draws its start.
+    const lead = seats.find((seat) => seat.label === 'lead');
+    return {
+      org,
+      name: row.project,
+      href: hrefFor({ name: 'board', org, project: row.project }),
+      leadHref: lead?.href ?? hrefForSlot({ org, project: row.project, label: 'lead' }),
+      state: strongest,
+      place: project === undefined ? { branch: null, files: null } : placeOf(project.work),
+      gate: project === undefined ? null : gateLine(project.work.gate),
+      seats,
+      lastActivity,
+      live: row.live_workers,
+      slots: row.slots,
+      queue: row.queue,
+      onYou: row.waiting_on_user,
+      // A project that cannot start says so on its own row: the refusal
+      // the row drew before the fleet, kept as a miss rather than dropped.
+      misses: [
+        ...row.misses,
+        ...(project === undefined
+          ? []
+          : (() => {
+              const why = refusal(project.project.has_model, project.would_bind);
+              return why === null ? [] : [{ kind: 'unknown' as const, label: why }];
+            })()),
+      ],
+    };
+  });
+}
+
+/** The org a project row belongs to, from the projects list. */
+function orgOf(wire: HomeWire, project: string): string {
+  return wire.projects.find((entry) => entry.project.name === project)?.project.org ?? '';
 }
 
 /**
@@ -216,11 +335,6 @@ export function markOf(state: RowState): { class: string; dot: string } {
     case 'LoggedOut':
       return { class: 'asleep', dot: 'off' };
   }
-}
-
-/** What a held session is waiting on a person for. */
-export function waitingOn(pending: 'question' | 'permission'): string {
-  return pending === 'question' ? 'asked you a question' : 'a permission prompt is waiting';
 }
 
 /** The task-status chip. */
@@ -367,6 +481,21 @@ export function whenOf(row: Row, now: number): string {
   return elapsedLabel(row.lastActivity, now);
 }
 
+/**
+ * The same cell for a fleet row, which reads its witnesses rather than a
+ * state: a project holds no seats the moment its sessions close, and its
+ * strongest state is then the reducer's `never-started` seed - so the state
+ * would word `never` over a project that wrote ten minutes ago, which is
+ * every project but the `auto_start` ones after a restart.
+ *
+ * `never` is the row with neither a seat nor a session behind it; `now` is a
+ * live seat that has not written yet.
+ */
+export function ageOf(row: Pick<FleetViewRow, 'lastActivity' | 'seats'>, now: number): string {
+  if (row.lastActivity !== null) return elapsedLabel(row.lastActivity, now);
+  return row.seats.length > 0 ? 'now' : 'never';
+}
+
 /** The band's four cards, each quiet until its own state says otherwise. */
 export function band(wire: HomeWire, address: string): BandCard[] {
   const gateway = wire.accounts.gateway;
@@ -396,7 +525,7 @@ export function band(wire: HomeWire, address: string): BandCard[] {
 
   const models = wire.dictate.snapshot.models;
   const failure = wire.dictate.snapshot.failure;
-  // The one card that is a way in. It stays a door with dictation off, too:
+  // A card that is a way in. It stays a door with dictation off, too:
   // the models page draws the off state and names the key that would switch
   // it on, which is where a reader who came looking for dictation lands.
   const door = '/models';
@@ -467,12 +596,48 @@ export function band(wire: HomeWire, address: string): BandCard[] {
   ];
 }
 
-/** How many of an org's projects have a session. */
-export function countsOf(org: OrgSection): string {
-  const asleep = org.projects.length - org.live;
-  if (org.live === 0) return `${asleep} asleep`;
-  if (asleep === 0) return `${org.live} live`;
-  return `${org.live} live \u{b7} ${asleep} asleep`;
+/**
+ * The extensions card: the fifth band card, and the second way in.
+ *
+ * It reads the `extensions` subject rather than the home snapshot, because
+ * what a reader wants here - how many plugins are installed and whether any
+ * is behind its marketplace - is in that read and nowhere on the wire the
+ * home carries. `read` is `null` until that read lands (and forever, on a
+ * page rendered without a connection), which is its own state rather than a
+ * zero.
+ */
+export function extensionsCard(read: ExtensionsRead | null, refused = false): BandCard {
+  const door = hrefFor({ name: 'extensions' });
+  if (read === null) {
+    return {
+      title: 'extensions',
+      tone: 'off',
+      value: refused ? 'unread' : 'reading',
+      detail: refused ? 'open to see why' : 'plugins · marketplaces',
+      href: door,
+    };
+  }
+  if (read.snapshot === null) {
+    return {
+      title: 'extensions',
+      tone: 'bad',
+      value: 'unread',
+      detail: 'no plugins root resolves',
+      href: door,
+    };
+  }
+  const counts = railCounts(read);
+  const stale = stalePlugins(read).length;
+  return {
+    title: 'extensions',
+    tone: stale > 0 ? 'warn' : 'ready',
+    value: `${counts.installed} plugin${counts.installed === 1 ? '' : 's'}`,
+    detail:
+      stale > 0
+        ? `${stale} update${stale === 1 ? '' : 's'} waiting`
+        : `${counts.marketplaces} marketplace${counts.marketplaces === 1 ? '' : 's'}`,
+    href: door,
+  };
 }
 
 /** The key a project and the seats that belong to it are matched by. */
@@ -529,13 +694,24 @@ function statusRank(status: TaskStatus): number {
   switch (status) {
     case 'in_progress':
       return 0;
-    case 'blocked':
+    case 'waiting':
       return 1;
     case 'pending':
       return 2;
     case 'completed':
       return 3;
+    case 'failed':
+      return 4;
+    case 'canceled':
+      return 5;
   }
+}
+
+/** The artifact a row's cell shows: the first PR or path link, label first. */
+function firstArtifact(task: Task): string | null {
+  const link = task.links.find((entry) => entry.kind === 'pr' || entry.kind === 'path');
+  if (link === undefined) return null;
+  return link.label ?? link.target;
 }
 
 /**
@@ -566,7 +742,10 @@ function taskFor(tasks: Task[], label: string): Task | null {
  * than borrowing a tree it is not in.
  */
 function rowOf(agent: AgentRow, name: string, wire: ProjectWire, unseen: SessionSlot[]): Row {
-  const held = taskFor(wire.tasks, agent.label);
+  const held = taskFor(
+    wire.rows.map((entry) => entry.task),
+    agent.label,
+  );
   return {
     slot: agent.slot,
     state: stateOf(agent, unseen),
@@ -576,7 +755,11 @@ function rowOf(agent: AgentRow, name: string, wire: ProjectWire, unseen: Session
     task:
       held === null
         ? null
-        : { subject: held.subject, chip: chipFor(held.status), artifact: held.artifact },
+        : {
+            subject: held.subject,
+            chip: chipFor(held.status),
+            artifact: firstArtifact(held),
+          },
     pending: agent.pending,
     reason: agent.reason,
     lastActivity: agent.last_activity,
@@ -642,33 +825,11 @@ export function projectRows(wire: HomeWire, row: ProjectWire): ProjectRows {
 
 /** Read the snapshot into the shape the markup wants. */
 export function homeView(wire: HomeWire, address: string): HomeView {
-  const orgs: OrgSection[] = [];
-  for (const row of wire.projects) {
-    const project = row.project;
-    const { lead, workers, started } = projectRows(wire, row);
-
-    const section = orgs.find((org) => org.name === project.org);
-    const entry = {
-      lead,
-      workers,
-      refused: started ? null : refusal(project.has_model, row.would_bind),
-    };
-    if (section) {
-      section.live += started ? 1 : 0;
-      section.projects.push(entry);
-    } else {
-      orgs.push({ name: project.org, live: started ? 1 : 0, projects: [entry] });
-    }
-  }
-
-  // The orgs read alphabetically rather than in whatever order `forge.toml`
-  // declares them; the projects inside each keep their declared order.
-  orgs.sort((a, b) => a.name.localeCompare(b.name));
-
   return {
+    fleet: fleetRows(wire),
     header: {
       liveAgents: wire.agents.length,
-      tasks: wire.projects.reduce((total, row) => total + row.tasks.length, 0),
+      tasks: wire.projects.reduce((total, row) => total + row.rows.length, 0),
       projects: wire.projects.length,
       installed: wire.cli_version?.installed ?? null,
       update: availableVersion(
@@ -678,6 +839,5 @@ export function homeView(wire: HomeWire, address: string): HomeView {
       version: wire.forge_version_short,
     },
     band: band(wire, address),
-    orgs,
   };
 }

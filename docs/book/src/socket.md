@@ -24,7 +24,7 @@ The first message a client receives is the greeting, before it has asked
 for anything:
 
 ```json
-{"kind": "greeting", "version": 7, "forge_version": "1.0.115 · abc1234", "forge_version_short": "1.0.115+abc1234", "settings": {"mark": null, "theme": null, "font": null, "dictate": {"styling": "semi_formal", "structure": "prose", "context": "general"}}}
+{"kind": "greeting", "version": 8, "forge_version": "1.0.115 · abc1234", "forge_version_short": "1.0.115+abc1234", "settings": {"mark": null, "theme": null, "font": null, "dictate": {"styling": "semi_formal", "structure": "prose", "context": "general"}}}
 ```
 
 `version` is the protocol the server speaks. It is fixed rather than
@@ -60,8 +60,9 @@ normalized by.
 
 ## Subjects
 
-Everything a client reads is addressed by a subject, and there are four:
-`home`, `session <org>/<project>/<label>`, `usage`, and `dictate_models`.
+Everything a client reads is addressed by a subject, and there are five:
+`home`, `session <org>/<project>/<label>`, `usage`, `dictate_models` and
+`extensions`.
 
 A seat nobody has started is an answer rather than a silence. Subscribing
 to one that is not there comes back as an `error` saying so, so a client
@@ -82,10 +83,11 @@ variant's own name rather than on `kind`:
 {"kind": "command", "command": {"cancel": {"key": {"org": "Acme", "project": "proj", "label": "lead"}}}, "reply_to": null}
 ```
 
-A command's variant is its name around its field bag - `Command` has 49
-variants, 47 of them struct variants; the two unit variants,
-`dictate_catalogue_check` and `dictate_bench_stop`, cross as the name
-alone. An update is the same shape one level in,
+A command's variant is its name around its field bag - `Command` has 62
+variants, 58 of them struct variants; the four unit variants,
+`dictate_catalogue_check`, `dictate_bench_stop`, `plugin_update_all` and
+`plugin_check_updates`, cross as the name alone. An update is the same
+shape one level in,
 `{"kind": "update", "update": {"chat_appended": {"key": ..., "msg": ...}}}`,
 and 73 of `SessionUpdate`'s 77 variants are struct variants too. The other
 four are why the payload is not one shape: they are unit variants and cross
@@ -386,7 +388,8 @@ facts a row is drawn from.
 
 | Field | What it is |
 |---|---|
-| `projects` | One row per project: `project` (name, org, path, sessions, `has_model`), `work` (branch, changed, gate) read at the project's own path, `tasks`, `crons`, `connectors` (this project's own gotify and slack subscription sets), `would_bind`, and `chip` - the account the row binds and its state. |
+| `projects` | One row per project: `project` (name, org, path, sessions, `has_model`), `work` (branch, changed, gate) read at the project's own path, `rows` (the board: each one a task with its worked time, ages and marks, plus its rollup and its epic's subject), `crons`, `connectors` (this project's own gotify and slack subscription sets), `would_bind`, and `chip` - the account the row binds and its state. |
+| `fleet` | One glance per project, for the home's own fleet row: how many seats are live against the project's cap, the queue (ready and unowned), the rows waiting on the user, and the project's own misses by name. |
 | `agents` | Every seat's row: slot, label, lifecycle, whether it has background work, what it is waiting on, when it was last active, why it failed if it did, and `work` (branch, changed, gate) read at that seat's OWN directory, which for a worker is its worktree and not its project. |
 | `unseen` | The seats whose last turn finished while nobody was showing them. A mark is drawn from this, and nothing else can reconstruct it. |
 | `accounts` | Loading state per account, whether all of them settled, the gateway listener's ready state and port, each account's cached usage snapshot, and the org views with budget and unusable reasons. |
@@ -474,6 +477,26 @@ reaches this subject too: when the preflight finishes loading the models -
 which it announces with that update alone - a page reads again rather than
 drawing `pending` chips until the next check.
 
+**`extensions`** is the Extensions page's read: the plugin inventory, the
+PATH checks the scan cannot carry, and the last update run. A subject of
+its own rather than a field of `home` for `dictate_models`' reason - only
+that page draws any of it.
+
+| Field | What it is |
+|---|---|
+| `snapshot` | The disk scan, or `null` when no plugins root resolves (`CLAUDE_CONFIG_DIR` or `HOME`), which is its own state rather than an empty machine. Carries `installed` (the registry entries: id, version, scope, enabled, install path), `marketplace` (the catalog each marketplace offers), `marketplaces` (the configured sources: name, source kind, repo, clone location), `components` (per plugin: its skills, agents, commands, hook trigger events, an mcp flag, its declared lsp servers, its `available_version`, the `auto` dependency mark, and a `load_error` with its reason), `marketplace_health` (per marketplace: plugin count, load error, install-location drift), and `token_costs` (the always-on cost per plugin version, empty until a producer fetches it). |
+| `lsp` | One row per declared LSP server of an INSTALLED plugin: the plugin, the server, the command its manifest declares, and whether that command resolves on the machine's PATH. Computed here because it is a fact about the machine the socket is on. |
+| `update_run` | The last update run or check, in flight or finished: the trigger, whether it has finished, and one row per plugin with its scope, its status (`queued`, `updating`, `updated`, `already_current`, `failed`, `skipped`, `update_available`), the versions on either side, and the failure's own words. |
+
+**The read and the frames are one shape.** `plugins_inventory_updated`
+embeds the `snapshot` object and `plugins_update_run_progress` /
+`_finished` embed the run, so a page that took one off the stream and a
+page that read it are drawing the same bytes. The `plugins_*` family
+reaches this subject in full: an action's outcome, a run's rows moving, a
+failed refresh, and a rollback's result. `plugins_cli_action_failed` and
+`plugins_inventory_refresh_failed` carry the core's own words for a press
+that ran and failed, which is what a page draws when it has nothing else.
+
 **Two representations of one conversation cross, and they agree.** A
 settled turn arrives by `more` as the messages it ran as; the turn in
 flight arrives as the same CLI frames, one `update` at a time - except
@@ -540,11 +563,13 @@ than facts about a session.
   ENDS the task, though, so a command still running answers no-path: what
   this carries is the tail of work that has ended. Filed as its own piece
   of work.
-- **The extensions surface.** Only the update records cross, above.
-  Installing, updating, rolling back and repairing a plugin are the
-  `claude plugin` CLI, and the page that drives them reads its inventory
-  from the config dir rather than through the view surface - so neither the
-  inventory nor the actions are here. Filed as its own piece of work.
+- **The rest of the extensions surface.** The inventory, the PATH checks,
+  the last run and six actions cross (`extensions`, above: install, one
+  update, update-all, a check, marketplace add and marketplace repair).
+  What does not is the per-plugin details overlay and the verbs it holds -
+  enable, disable, uninstall, roll back, marketplace remove and update -
+  and the always-on token cost a plugin charges. Filed as its own piece of
+  work (the details overlay and the rest of the plugin verbs).
 - **The emoji set.** Which shortcodes exist is the typeahead's own
   business, so a client carries its own set rather than being handed one.
 - **forge's own command table.** The commands forge handles itself, and

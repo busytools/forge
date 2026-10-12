@@ -19,7 +19,8 @@ just check
 
 That is `cargo fmt --check`, the Unicode punctuation gate, the release
 scripts' tests, the client's Prettier check, ESLint, `svelte-check` and
-`tsc --noEmit` and then its vitest run,
+`tsc --noEmit` and then its vitest run, the shell crate's android warnings
+check (`client-android-warnings`),
 `cargo clippy --all-targets --workspace -- -D warnings` once
 per feature set (with and without `--all-features`),
 `cargo nextest run --workspace --all-features`,
@@ -30,19 +31,25 @@ flag covers the build each step drives, and rustdoc compiles a doctest on
 its own, so it does not deny warnings inside one. This is CI's set minus
 the jobs a checkout cannot carry - CI runs `cargo check --release`, the
 feature-configs builds and the image workflow, which builds and exercises
-the web image on the commits that touch it - and the piecewise client gates
+the web image on the commits that touch it - and plus the android warnings
+check CI cannot run yet (`client-android-warnings`; the vendoring its build
+needs refuses non-macOS hosts, so the CI side is #1959). The piecewise
+client gates
 are `just client-tauri-check`, `just client-android-check` and `just
 web-image-check`. Get it green before you
 open a pull request.
 One command decides both stacks, so its verdict line names the first
 failing step whichever side it is on.
 
-The shell under `client/src-tauri/` is its own workspace root, so
-`just check`'s Rust steps and CI's cargo jobs do not reach it; the Unicode
-punctuation gate, which CI runs as a job of its own, and the client's
-Prettier step do. `just client-tauri-check` builds it in the shipping
-configuration and `just client-tauri-bundle` adds the bundles, and the
-first is the one to run before handing over a change there.
+The shell under `client/src-tauri/` is its own workspace root, so the
+workspace's cargo steps and CI's cargo jobs do not reach it. `just check`
+reaches it through `client-android-warnings` alone - the crate compiled
+for `aarch64-linux-android` with warnings denied, which is what catches
+desktop-only code going dead on Android - and the Unicode punctuation gate
+and the client's Prettier step reach it too. Everything else about the
+shell needs `just client-tauri-check` (the shipping configuration) or
+`just client-tauri-bundle` (plus the bundles), and the first is the one to
+run before handing over a change there.
 
 The last line it prints is its verdict, `[OK] check: ...` or
 `[ERROR] check: <step> failed`, the latter with a `; not run: <later

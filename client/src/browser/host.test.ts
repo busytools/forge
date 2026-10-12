@@ -21,6 +21,7 @@ import {
   bytesOf,
   canHost,
   closeProfile,
+  deleteProfile,
   hideBrowser,
   hostTheBrowser,
   installTakeoverHook,
@@ -109,6 +110,12 @@ describe('the shell command names', () => {
 
     await browserUsed();
     expect(invoke, 'the activity mark').toHaveBeenLastCalledWith('browser_used');
+
+    await deleteProfile('hunt');
+    expect(invoke, 'the delete names its profile').toHaveBeenLastCalledWith(
+      'browser_profile_delete',
+      { name: 'hunt' },
+    );
   });
 
   it('and the phone claims the capability like any other shell', () => {

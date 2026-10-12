@@ -15,6 +15,14 @@ export type Route =
   | { name: 'connect' }
   /** The dictation models: the pins, the catalogue and the updates it proposes. */
   | { name: 'models' }
+  /** The extensions: the plugin inventory, its components and the marketplaces. */
+  | { name: 'extensions' }
+  /**
+   * One project's board: its rows, the waiting-on-you pair, and the
+   * takeover the tasks row above the composer opens. One project only -
+   * nothing of any other project appears on it.
+   */
+  | { name: 'board'; org: string; project: string }
   /** A development route: the home drawn from the fixture, with no server. */
   | { name: 'fixture' }
   | { name: 'notFound' };
@@ -25,7 +33,12 @@ export function parseRoute(path: string): Route {
   if (segments.length === 0) return { name: 'home' };
   if (segments.length === 1 && segments[0] === 'connect') return { name: 'connect' };
   if (segments.length === 1 && segments[0] === 'models') return { name: 'models' };
+  if (segments.length === 1 && segments[0] === 'extensions') return { name: 'extensions' };
   if (segments.length === 1 && segments[0] === 'fixture') return { name: 'fixture' };
+  if (segments.length === 3 && segments[0] === 'board') {
+    const [, org, project] = segments as [string, string, string];
+    return { name: 'board', org: decode(org), project: decode(project) };
+  }
   if (segments.length === 4 && segments[0] === 'session') {
     const [, org, project, label] = segments as [string, string, string, string];
     return {
@@ -45,8 +58,12 @@ export function hrefFor(route: Route): string {
       return '/connect';
     case 'models':
       return '/models';
+    case 'extensions':
+      return '/extensions';
     case 'fixture':
       return '/fixture';
+    case 'board':
+      return `/board/${encode(route.org)}/${encode(route.project)}`;
     case 'session':
       return `/session/${encode(route.slot.org)}/${encode(route.slot.project)}/${encode(route.slot.label)}`;
     case 'notFound':
@@ -72,6 +89,8 @@ export function hrefForSlot(slot: SessionSlot): string {
  */
 export function titleFor(route: Route): string {
   if (route.name === 'models') return 'forge \u{b7} models';
+  if (route.name === 'extensions') return 'forge \u{b7} extensions';
+  if (route.name === 'board') return `forge \u{b7} ${route.project}`;
   if (route.name !== 'session') return 'forge';
   const { project, label } = route.slot;
   return label === 'lead' ? project : `${project} \u{b7} ${label}`;

@@ -2,6 +2,7 @@
   import { untrack, type Snippet } from 'svelte';
   import { SvelteMap } from 'svelte/reactivity';
   import { VList, type VListHandle } from 'virtua/svelte';
+  import { heldReserve, sizes } from './row-sizes';
 
   import Icon from '../components/Icon.svelte';
   import { subjectKey } from '../protocol';
@@ -21,7 +22,7 @@
   } from './conversation';
   import Echo from './Echo.svelte';
   import { echoes, ownWords } from './echoes.svelte';
-  import Pinned from './Pinned.svelte';
+  import { pinnedRow } from './pinnedRow.svelte';
   import Turn from './Turn.svelte';
   import { turnOfDispatch } from './dispatch-jump';
   import { callRow, reachableIds, reveal, subagents } from './subagents.svelte';
@@ -312,6 +313,10 @@
   let timer: ReturnType<typeof setTimeout> | null = null;
 
   const shift = $derived(outstanding > 0 || settling);
+  /** This column's own memory of its rows' heights, kept out of a module global. */
+  const rowSizes = sizes();
+  // The measured heights belong to the turns this conversation holds.
+  $effect(() => rowSizes.prune(held.turns.map((turn) => turn.key)));
 
   /** Whether the events arriving are the reader's own, made moments ago. */
   function readerMoved(): boolean {
@@ -338,6 +343,18 @@
    * enough, a page that shrank - and a reader parked at what is now the very
    * end is at the end, whether or not anything scrolled to say so.
    */
+  /**
+   * Record what a turn's row measures, so a row the send's pull-and-return
+   * keeps mounted holds its own space while it draws nothing (#1890).
+   */
+  function measureTurn(node: HTMLElement, key: string): () => void {
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) rowSizes.remember(key, entry.contentRect.height);
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }
+
   function scrollViewport(node: HTMLElement): () => void {
     viewport = node;
     // A token armed against a previous viewport must not eat this one's first event.
@@ -487,14 +504,13 @@
       fresh = true;
     }
     working = entry.chat;
-    // **The shown seat folds and notifies; the seat left does neither.** A
-    // frame arrives for every visited seat through the home feed, so a kept
-    // conversation left subscribed would grow for every seat ever visited -
-    // and every return would re-mount all of it. Held back, the return's own
-    // reads (the re-subscribe's snapshot and the newest page `showing` asks
-    // for) put the seat current again. Written to the seat's own entry rather
-    // than straight to `held`: a conversation kept for a seat the reader has
-    // left must not draw.
+    // **Every seat folds; only the shown one draws.** The conversation folds
+    // every frame it receives wherever the seat is (and holds the seat's own
+    // subscription - Ved, 2026-10-09), so the state never falls behind;
+    // whether the seat is on screen decides only which value this column
+    // renders. Written to the seat's own entry rather than straight to
+    // `held`: a conversation kept for a seat the reader has left must not
+    // draw.
     entry.chat.showing();
     const unsubscribe = entry.chat.value.subscribe((value) => {
       kept.set(which, value);
@@ -734,6 +750,18 @@
       ? newestRow
       : null,
   );
+
+  // The composer's surface draws this row now, so the column publishes it: the
+  // strip lane lives in the foot, and the fold that mints the row lives here.
+  // Two effects because the cleanup must fire on a seat CHANGE and on unmount,
+  // not on every frame that republishes the row.
+  $effect(() => {
+    const key = seat;
+    return () => pinnedRow.set(key, null);
+  });
+  $effect(() => {
+    pinnedRow.set(seat, pinned?.info ?? null);
+  });
 
   /**
    * Every message the page holds, across every turn.
@@ -976,8 +1004,22 @@
     return null;
   }
 
+  /**
+   * Where the previous scroll event left the reader, so an event's own
+   * DIRECTION is readable - which is what tells the reader's return from a
+   * clamp at the foot.
+   */
+  let movedFrom = 0;
+
   /** Where the reader is, and whether they have reached the top. */
   function scrolled(offset: number): void {
+    // The event's own direction, read before any branch moves on: a scroll
+    // that came down toward the foot is the reader's return, and it arms no
+    // up-capable wheel token at all - Ved's own gesture is "scroll up and
+    // come back down" (2026-10-11). Every event updates the tracker, the
+    // pin's echo included: a pin is a write like any other move.
+    const towardFoot = offset > movedFrom;
+    movedFrom = offset;
     // **An event at the pin's own landing spot is its echo, and reading the
     // layout back for it is the per-frame cost issue #1710 measured.** A
     // write is a scroll, so every pin comes back as an event the reader did
@@ -1038,28 +1080,41 @@
     const shrank = height < shaped;
     shaped = height;
     const foot = atFoot();
-    if (!shrank) {
-      if (foot) {
+    const byReader = readerMoved();
+    if (foot) {
+      // **A return that lands at the foot re-arms, whatever the height did.**
+      // The shrink skip exists for a clamp, and the reader's own down-scroll
+      // can carry one in the SAME event - a row settling from the estimate to
+      // its drawn height corrects the content shorter exactly as their scroll
+      // lands - so the re-arm was swallowed and, with nothing left to fire
+      // another event, the way-back arrow stuck at the foot until pressed
+      // (Ved, 2026-10-11, "even if there is nothing to scroll"). Two things
+      // make such an event theirs: an up-capable gesture heard just before it,
+      // or the event's own direction - the offset moving TOWARD the foot,
+      // which is his gesture ("scroll up and come back down", a down-scroll
+      // that arms no token). A shrink event that moved them nowhere or away
+      // stays the clamp's, and the away-from-foot branch below is untouched.
+      if (!shrank || byReader || towardFoot) {
         working?.following(true);
         // The foot is where a following reader wants to be, so the place they
         // held on the way there is done with.
         anchor = null;
       }
-      // `placed` is where the last pin left the reader; before any pin has
-      // run it is unknown, and a reader above the foot is above it whatever
-      // that number is - so the comparison falls back to any upward move
-      // rather than never disarming, which left the way-back hidden on a
-      // column that had not pinned yet (Ved, 2026-10-03).
-      //
-      // **And an event nobody made may not switch the follow off.** A
-      // re-measure nudges the scroll by a couple of pixels with no reader
-      // behind it, so a move inside `DISARM_SLACK` counts only when the
-      // reader's own wheel, touch or key was heard just before it; their
-      // moves count at any distance.
-      else {
-        const slack = readerMoved() ? 0 : DISARM_SLACK;
-        if (offset < (placed ?? Infinity) - slack) working?.following(false);
-      }
+    }
+    // `placed` is where the last pin left the reader; before any pin has
+    // run it is unknown, and a reader above the foot is above it whatever
+    // that number is - so the comparison falls back to any upward move
+    // rather than never disarming, which left the way-back hidden on a
+    // column that had not pinned yet (Ved, 2026-10-03).
+    //
+    // **And an event nobody made may not switch the follow off.** A
+    // re-measure nudges the scroll by a couple of pixels with no reader
+    // behind it, so a move inside `DISARM_SLACK` counts only when the
+    // reader's own wheel, touch or key was heard just before it; their
+    // moves count at any distance.
+    else if (!shrank || byReader) {
+      const slack = byReader ? 0 : DISARM_SLACK;
+      if (offset < (placed ?? Infinity) - slack) working?.following(false);
     }
     // **A reader away from the foot has a place, and this is where it is read.**
     // Their own scroll is the one moment the page is where they put it, so the
@@ -1167,7 +1222,11 @@
     bind:this={list}
   >
     {#snippet children(turn: HeldTurn)}
-      <div class="turn">
+      <div
+        class="turn"
+        style:min-height={turn.held ? heldReserve(rowSizes.sizeOf(turn.key)) : undefined}
+        {@attach (node: HTMLElement) => measureTurn(node, turn.key)}
+      >
         <Turn
           {turn}
           {slot}
@@ -1203,15 +1262,9 @@
     </button>
   {/if}
 {/if}
-<!-- The waiting prompts and the strip stand in EVERY conversation state,
-     not only under the list: a seat coming up, refused, not yet read or
-     empty holds the same tree, tasks and watchers as one mid-turn, and the
-     rows are the whole way into them. Last in the column, so the strip
-     keeps its place right above the box. -->
+<!-- The waiting prompts stand in EVERY conversation state, not only under the
+     list: a seat coming up, refused, not yet read or empty holds the same tree,
+     tasks and watchers as one mid-turn. The strip and the box are one surface
+     now, drawn by the composer - the column publishes its pinned row through
+     `pinnedRow` and nothing else stands at this foot. -->
 {#if queue !== undefined}{@render queue()}{/if}
-<!-- Outside the list rather than in it, which is what makes the row pinned:
-     the turns scroll under it, and the answer to whether the turn is still
-     being written stops depending on where the reader is looking. It is a
-     sibling of the scroller rather than a row of the grid, so the composer
-     and the dock - both drawn under this column - never have to know it. -->
-<Pinned info={pinned?.info ?? null} {connection} {slot} />

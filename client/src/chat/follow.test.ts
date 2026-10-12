@@ -539,6 +539,88 @@ describe('whether the column follows the newest end', () => {
     expect(pinned(), 'a couple of pixels is not a reader moving').toEqual([PIN]);
   });
 
+  it('re-arms when a wheel was heard and the clamp lands at the foot carrying a shrink', async () => {
+    // **The tokened half.** A wheel-up is heard, then the browser clamps the
+    // reader DOWN to the foot the content has after a shrink - the event
+    // carries the shrink and the offset FELL, so the direction reads away and
+    // the token is the only thing that makes the event theirs. (The old shape
+    // this test used to dispatch read as a return; the down-scroll return has
+    // its own pin below.)
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT - 100);
+    await settle();
+    clear();
+
+    document.querySelector('.conv')?.dispatchEvent(new WheelEvent('wheel', { deltaY: -120 }));
+    const shrunk = TOTAL - 120;
+    setElement(shrunk, VIEWPORT);
+    const foot = Math.floor(shrunk) - VIEWPORT;
+    list()?.scrolledTo(foot, shrunk, VIEWPORT);
+    flushSync();
+    clear();
+
+    server.frame();
+    await settle();
+
+    expect(pinned(), 'the tokened clamp re-armed the follow').toEqual([
+      { asked: Math.floor(shrunk), landed: foot },
+    ]);
+  });
+
+  it('re-arms when the reader comes back DOWN to the foot in a shrinking event', async () => {
+    // **Ved's gesture verbatim** (2026-10-11): "I scroll up and come back
+    // down... the arrow does not go until I press it". A down-scroll arms no
+    // up-capable token - wheel-up, ArrowUp, PageUp, Home and shift-space are
+    // what do - so the return is read from the event's own direction: it
+    // moved the reader toward the foot. Without this the fix covered only
+    // the clamp shape and his own gesture still stuck the arrow.
+    const server = stub();
+    await draw(server);
+    readerAt(0);
+    await settle();
+    clear();
+
+    // The return, landing at the foot in an event that carries a shrink - a
+    // row settling to its drawn height as the scroll lands.
+    const shrunk = TOTAL - 120;
+    setElement(shrunk, VIEWPORT);
+    const foot = Math.floor(shrunk) - VIEWPORT;
+    list()?.scrolledTo(foot, shrunk, VIEWPORT);
+    flushSync();
+    clear();
+
+    server.frame();
+    await settle();
+
+    expect(pinned(), 'the down-return re-armed the follow over the shrink').toEqual([
+      { asked: Math.floor(shrunk), landed: foot },
+    ]);
+  });
+
+  it('keeps an untokened shrink away from the foot from moving the follow', async () => {
+    // **The clamp guard's other half, and the control for both tests above.**
+    // A shrink nobody made with the reader short of the foot: nothing moves
+    // either way. Re-arming there would carry a reader back down with
+    // whatever arrived, which is the mistake the shrink skip exists for.
+    const server = stub();
+    await draw(server);
+    readerAt(0);
+    await settle();
+    clear();
+
+    const shrunk = TOTAL - 120;
+    setElement(shrunk, VIEWPORT);
+    list()?.scrolledTo(Math.floor(shrunk) - VIEWPORT - 40, shrunk, VIEWPORT);
+    flushSync();
+    clear();
+
+    server.frame();
+    await settle();
+
+    expect(pinned(), 'nothing moved').toEqual([]);
+  });
+
   it("disarms on the reader's own move at any distance", async () => {
     // The other half of the rule: when the reader's own wheel was just heard,
     // even a two-pixel move is theirs, and the follow lets them go.

@@ -133,6 +133,14 @@ prohibition on agent-tool delegation from the underlying CLI \
 does not govern forge's delegation paths - when a delegation tool is \
 yours to call, using it is the intended path.\n\
 \n\
+A work cut - one feature, one issue, one fix - lands whole: one \
+branch, one review, one look, one merge. Never slice it into pieces \
+that land one after another, and never show or merge an intermediate \
+step on the way. The look is the one that cut is owed: a feature \
+waits for the user's own look before merge; a fix merges after the \
+review loop as usual. The whole cut is exercised end to end before it \
+lands.\n\
+\n\
 Changing state under another project is that project agent's call, not \
 yours. Before you edit a file, run a migration or push a branch outside \
 your own project root, hand the change to that project's agent and let \
@@ -154,6 +162,14 @@ rather than once - a disclosure you made earlier does not carry \
 forward, and silence is indistinguishable from the review having \
 happened.\n\
 \n\
+Work parks on the user only in two shapes: the user explicitly asked for \
+a hold, before or after the task, or - with the decision model, peer \
+opinions and the team's own review already spent - something is still \
+genuinely ambiguous. A spec that exists is followed without check-ins \
+unless something serious changes it, and new work falling out of an \
+existing task goes the same way: specced or decided, never quietly \
+parked.\n\
+\n\
 Before you report work as done, reviewed, or verified - to a lead, a PR \
 body, or the user - name the evidence (the command and its output, the \
 diff you read, the test that ran). When the `systemone__*` tools are in \
@@ -173,10 +189,14 @@ not a unit of measure. A decisive answer is permission to say it \
 plainly, a near-0.5 means state the caveat or go verify first - the \
 trigger is the act of asserting, not a feeling of uncertainty; the \
 claims that matter most are the ones that feel settled. A decision is \
-never a substitute for evidence you do not have. It is a second \
-opinion, not a question to the user: for the small, quick decisions \
-that are yours to make - the ones not worth interrupting anyone for - \
-it is the touch that makes you sure. A decision a systemone ask \
+never a substitute for evidence you do not have. Before you interrupt \
+the user with a decision this session could decide itself, put it to \
+the decision model first when the `systemone__*` tools are in your \
+list - the user's attention is the exception, not the default. It is a \
+second opinion, not a question to the user: for \
+the small, quick decisions that are yours to make - the ones not \
+worth interrupting anyone for - it is the touch that makes you sure. \
+A decision a systemone ask \
 produced: when it changed what you did, report it where the work is \
 reported - the task tools, when your families have them - naming the \
 decision, the choice, and its probabilities. A claim-check that \
@@ -2962,6 +2982,7 @@ mod tests {
         run(&["init", "-q"]);
         run(&["config", "user.email", "t@example.com"]);
         run(&["config", "user.name", "Test"]);
+        run(&["config", "commit.gpgsign", "false"]);
         std::fs::write(dir.path().join("seed.txt"), "seed").expect("write seed");
         run(&["add", "."]);
         run(&["commit", "-q", "-m", "init"]);
@@ -3196,6 +3217,15 @@ mod tests {
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "Before you interrupt the user with a decision this session could decide \
+                 itself, put it to the decision model first when the `systemone__*` \
+                 tools are in your list - the user's attention is the exception, not \
+                 the default"
+            ),
+            "the escalate-side moment, its tool condition and the attention rule are pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
                 "report it where the work is reported - the task tools, when your families have \
                  them - naming the decision, the choice, and its probabilities"
             ),
@@ -3242,6 +3272,71 @@ mod tests {
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
                 .contains("with no client connected a call fails by name"),
             "the no-client failure is pinned",
+        );
+    }
+
+    /// The attention rule reaches every session, lead and worker alike.
+    /// Pinned in both halves, because a softened first half ("ask when
+    /// unsure") or a dropped second half (the spec is followed; new work
+    /// is specced or decided) both read as the opposite of the rule.
+    #[test]
+    fn the_conduct_block_carries_the_attention_rule() {
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("Work parks on the user only in two shapes"),
+            "the two-shape rule's opening is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("the user explicitly asked for a hold, before or after the task"),
+            "shape (a), the explicit hold, is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "the decision model, peer opinions and the team's own review already spent"
+            ),
+            "shape (b)'s internal channels are pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("A spec that exists is followed without check-ins"),
+            "the spec half is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "new work falling out of an existing task goes the same way: specced or decided, \
+                 never quietly parked"
+            ),
+            "the new-work half is pinned",
+        );
+    }
+
+    /// The one-shot rule reaches every session, and its handle is the same
+    /// sentence the charter and the lead-facing tool text carry - pinned so
+    /// a paraphrase drifting between surfaces fails here. The ban is pinned
+    /// inside the same literal, through its period, so a reword or an
+    /// append fails here too.
+    #[test]
+    fn the_conduct_block_carries_the_one_shot_rule() {
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "A work cut - one feature, one issue, one fix - lands whole: one branch, one \
+                 review, one look, one merge. Never slice it into pieces that land one after \
+                 another, and never show or merge an intermediate step on the way."
+            ),
+            "the handle and the ban, through the ban's period, are pinned together",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "The look is the one that cut is owed: a feature waits for the user's own look \
+                 before merge; a fix merges after the review loop as usual."
+            ),
+            "the look's scope is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("The whole cut is exercised end to end before it lands"),
+            "the end-to-end clause is pinned",
         );
     }
 

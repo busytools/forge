@@ -1,5 +1,8 @@
 <script lang="ts">
   import Chat from '../chat/Chat.svelte';
+  import Pinned from '../chat/Pinned.svelte';
+  import { pinnedRow } from '../chat/pinnedRow.svelte';
+  import { subjectKey } from '../protocol';
   import { connectors } from '../chat/connectors.svelte';
   import { git } from '../chat/git.svelte';
   import { mcp } from '../chat/mcp.svelte';
@@ -309,6 +312,16 @@
   <!-- The column's own height, which in the session page is the grid's. -->
   <div class="devchat">
     <Chat slot={canned.page.slot} connection={canned.held.connection} />
+    <!-- The strip lane, which the session page draws inside the composer's
+         surface: the fixture mounts the column alone, so the lane draws here
+         to keep the rows on screen - and their connection methods exercised. -->
+    <div class="surf devfoot">
+      <Pinned
+        info={pinnedRow.of(subjectKey({ session: canned.page.slot }))}
+        connection={canned.held.connection}
+        slot={canned.page.slot}
+      />
+    </div>
   </div>
   <div class="devbar">
     <button onclick={canned.held.append}>append a turn</button>
@@ -330,6 +343,12 @@
     flex-direction: column;
     height: 78vh;
     margin-top: 24px;
+  }
+
+  /* The strip lane's slot, mirroring the surface's place under the column. */
+  .devfoot {
+    flex: none;
+    margin-top: 8px;
   }
 
   .devbar {

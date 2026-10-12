@@ -773,8 +773,13 @@ describe('the tasks the strip draws', () => {
       active_form: null,
       detail: null,
       parent: null,
-      artifact: null,
+      waiting_on: null,
       estimate: null,
+      rank: null,
+      verify: null,
+      links: [],
+      attempt: 0,
+      archived_at: null,
       created_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
       updated_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
     };
@@ -825,8 +830,13 @@ describe('the tasks the strip draws', () => {
           status: 'completed',
           owner: null,
           parent: null,
-          artifact: null,
+          waiting_on: null,
           estimate: null,
+          rank: null,
+          verify: null,
+          links: [],
+          attempt: 0,
+          archived_at: null,
           created_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
           updated_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
         },
@@ -839,8 +849,21 @@ describe('the tasks the strip draws', () => {
           status: 'in_progress',
           owner: LEAD,
           parent: null,
-          artifact: 'https://example.test/pull/1204',
-          estimate: '2h',
+          waiting_on: null,
+          estimate: { words: '2h', secs: 7200 },
+          rank: null,
+          verify: null,
+          links: [
+            {
+              kind: 'pr',
+              label: null,
+              target: 'https://example.test/pull/1204',
+              state: null,
+              added_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+            },
+          ],
+          attempt: 0,
+          archived_at: null,
           created_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
           updated_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
         },
@@ -857,6 +880,43 @@ describe('the tasks the strip draws', () => {
     expect(rows[0]?.owner, 'the owner rides its own cell').toBe('lead');
     expect(rows[0]?.meta).toBe('in progress \u{b7} PR 1204 \u{b7} 2h');
     expect(rows[1]?.status).toBe('completed');
+  });
+
+  /**
+   * A wait outranks the queue and the rows that are already done, which is the
+   * terminal's own order. The map named `blocked` for a release after the
+   * vocabulary moved to `waiting`, so a waiting row fell to the end by default
+   * - below a completed one - because its state was one the map had forgotten.
+   */
+  it('reads a wait above the queue and what is done', () => {
+    const base = {
+      project_name: 'proj',
+      active_form: null,
+      detail: null,
+      owner: null,
+      parent: null,
+      waiting_on: null,
+      estimate: null,
+      rank: null,
+      verify: null,
+      links: [],
+      attempt: 0,
+      archived_at: null,
+      created_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+      updated_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+    };
+    const rows = taskRows(
+      [
+        { ...base, id: 'done', subject: 'done', status: 'completed' as const },
+        { ...base, id: 'queued', subject: 'queued', status: 'pending' as const },
+        { ...base, id: 'held', subject: 'held', status: 'waiting' as const },
+      ],
+      LEAD,
+    );
+    expect(
+      rows.map((row) => row.status),
+      'a wait did not outrank the queue',
+    ).toEqual(['waiting', 'pending', 'completed']);
   });
 });
 

@@ -1,7 +1,8 @@
 <script lang="ts">
   import Icon from '../components/Icon.svelte';
+  import { runningClock } from './clock.svelte';
   import { money, tokens } from './numbers';
-  import { attributed, cached, elapsed } from './report';
+  import { attributed, cached } from './report';
   import type { TurnInfo } from './units';
 
   /**
@@ -22,23 +23,8 @@
   /** The record with an unattributed usage block dropped, which is the rule `report.ts` holds. */
   const held = $derived(attributed(info));
 
-  /**
-   * The tick a running row's clock moves on.
-   *
-   * The fold's span only grows when a frame lands, and a live turn can wait
-   * minutes on one call, so the row would otherwise freeze mid-turn - which is
-   * the very stretch a reader is watching the clock through.
-   */
-  let now = $state(Date.now());
-  $effect(() => {
-    if (!held.running) return;
-    const id = setInterval(() => {
-      now = Date.now();
-    }, 1000);
-    return () => clearInterval(id);
-  });
-
-  const clock = $derived(elapsed(held, now));
+  /** The clock the row leads with, which `clock.svelte.ts` owns for both rows. */
+  const clock = runningClock(() => held);
   const share = $derived(cached(held));
 </script>
 
@@ -52,7 +38,7 @@
 {:else}
   <Icon name="check" class="st" />
 {/if}
-<span>{clock}</span>
+<span>{clock()}</span>
 {#if held.running && held.thinking_tokens !== null}
   <span class="sep">{'\u{b7}'}</span>
   <span>thinking {tokens(held.thinking_tokens)}</span>

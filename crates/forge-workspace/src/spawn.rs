@@ -3125,6 +3125,7 @@ provider = "anthropic"
         run_git(repo.path(), &["init", "-q"]);
         run_git(repo.path(), &["config", "user.email", "t@example.com"]);
         run_git(repo.path(), &["config", "user.name", "Test"]);
+        run_git(repo.path(), &["config", "commit.gpgsign", "false"]);
         std::fs::write(repo.path().join("README.md"), "seed").expect("write seed");
         run_git(repo.path(), &["add", "."]);
         run_git(repo.path(), &["commit", "-q", "-m", "init"]);
@@ -4197,6 +4198,7 @@ provider = "anthropic"
         run_git(repo.path(), &["init", "-q"]);
         run_git(repo.path(), &["config", "user.email", "t@example.com"]);
         run_git(repo.path(), &["config", "user.name", "Test"]);
+        run_git(repo.path(), &["config", "commit.gpgsign", "false"]);
         std::fs::write(repo.path().join("README.md"), "seed").expect("write seed");
         run_git(repo.path(), &["add", "."]);
         run_git(repo.path(), &["commit", "-q", "-m", "init"]);
@@ -5397,6 +5399,7 @@ provider = "anthropic"
         run_git(repo.path(), &["init", "-q"]);
         run_git(repo.path(), &["config", "user.email", "t@example.com"]);
         run_git(repo.path(), &["config", "user.name", "Test"]);
+        run_git(repo.path(), &["config", "commit.gpgsign", "false"]);
         std::fs::write(repo.path().join("README.md"), "seed").expect("write seed");
         run_git(repo.path(), &["add", "."]);
         run_git(repo.path(), &["commit", "-q", "-m", "init"]);
@@ -5450,6 +5453,7 @@ provider = "anthropic"
         let (workspace, project_key, wt, repo, config) = git_despawn_fixture(label);
         let source = tempdir().expect("submodule source tempdir");
         run_git(source.path(), &["init", "-q"]);
+        run_git(source.path(), &["config", "commit.gpgsign", "false"]);
         std::fs::write(source.path().join("sub.txt"), "submodule seed").expect("write seed");
         run_git(source.path(), &["add", "."]);
         run_git(
@@ -7125,6 +7129,49 @@ mod lead_charter_tests {
             ),
             "the routing cue and its guard are pinned",
         );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains(
+                "if your tools include `systemone__ask_choice`, `ask_score` or `ask_noul`, put \
+                 a decision this session could make to the model rather than the user - the \
+                 user's attention is the exception, not the default"
+            ),
+            "the escalation cue, its guard and the attention rule are pinned",
+        );
+    }
+
+    /// The one-shot rule ships to every lead, and its handle is the same
+    /// sentence the conduct block and the lead-facing tool text carry -
+    /// pinned so a paraphrase drifting between surfaces fails here. The
+    /// planning half rides with it: the ban starts at the plan, and a cut
+    /// that cannot land whole goes to the user before it is cut down.
+    #[test]
+    fn the_charter_carries_the_one_shot_rule() {
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains(
+                "A work cut - one feature, one issue, one fix - lands whole: one branch, one \
+                 review, one look, one merge. Never slice it into pieces that land one after \
+                 another, and never show or merge an intermediate step on the way."
+            ),
+            "the handle and the ban, through the ban's period, are pinned together",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains(
+                "The look is the one that cut is owed: a feature waits for the user's own look \
+                 before merge; a fix merges after the review loop as usual."
+            ),
+            "the look's scope is pinned",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains("never sequence a cut as \"land A, then B, then C\""),
+            "the planning ban is pinned",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains(
+                "if it genuinely cannot land whole, decide that with the user BEFORE anything is \
+                 cut down"
+            ),
+            "the user-decision half is pinned",
+        );
     }
 
     /// The charter is shipped text every lead reads, so a blocked CLI tool
@@ -7171,6 +7218,43 @@ mod lead_charter_tests {
         );
     }
 
+    /// The attention rule is the lead's posture toward the user, and both
+    /// halves read as the opposite of themselves when softened: the two
+    /// shapes become "ask when unsure", and the spec half becomes a
+    /// check-in. Pinned so a later edit cannot unship either silently.
+    #[test]
+    fn lead_charter_carries_the_attention_rule() {
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains(
+                "Nothing waits on the user except a hold the user \
+                 explicitly asked for"
+            ),
+            "the two-shape rule's opening is pinned",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains(
+                "the decision model, peer opinions and your own review already spent - something \
+                 still genuinely ambiguous"
+            ),
+            "shape (b)'s channels and its bar are pinned together",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains("A spec that exists is followed without check-ins"),
+            "the spec half is pinned",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains("never parked on the user"),
+            "the new-work half is pinned",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains(
+                "A long-lived worker is a standing commitment of the user's attention rather \
+                 than a step of work, so raise it with the user rather than deciding it yourself"
+            ),
+            "the long-lived-worker clause is pinned whole, its call included",
+        );
+    }
+
     /// The charter is the only shipped text telling a lead how to maintain
     /// the task list, and the only task surface forge ships is `tasks__*`
     /// over forge's own store. Guidance written against the CLI's tools
@@ -7178,7 +7262,16 @@ mod lead_charter_tests {
     /// session is denied.
     #[test]
     fn lead_charter_maintains_the_task_list_through_forge_s_own_tools() {
-        for tool in ["tasks__create", "tasks__update", "tasks__delete"] {
+        // The whole family the board is worked through: the lead cuts and
+        // dispatches, workers claim and wait, and the list is read.
+        for tool in [
+            "tasks__create",
+            "tasks__update",
+            "tasks__delete",
+            "tasks__claim",
+            "tasks__wait",
+            "tasks__list",
+        ] {
             assert!(
                 DEFAULT_LEAD_CHARTER.contains(tool),
                 "the charter maintains the list through {tool}: {DEFAULT_LEAD_CHARTER}",

@@ -84,7 +84,16 @@ pub mod wire;
 /// reads as nothing, and the third is a value it dereferences (`slice`), so a
 /// same-version skew is a client that throws while drawing rather than one
 /// that shows less. `baselines/socket/6/` is the record a v6 server emitted.
-pub const PROTOCOL_VERSION: u32 = 7;
+///
+/// **v8 is a bump for the board's own read.** A project's `tasks` is renamed
+/// `rows` - each row is its task plus worked time, ages and marks - a row's
+/// `estimate` is an object where a v7 server sent a string, and `artifact` is
+/// gone, folded into `links`. The rename is what makes this a bump rather than
+/// an addition: a v7 client reads `row.tasks.map(...)` and throws on
+/// `undefined` while DRAWING, so a same-version skew would be a page that
+/// never lands rather than one that shows less. `baselines/socket/7/` is the
+/// record a v7 server emitted.
+pub const PROTOCOL_VERSION: u32 = 8;
 
 /// What a connection answers from: the surface it reads and dispatches
 /// through, the working-tree cache behind the git read, the conversations

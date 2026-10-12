@@ -291,8 +291,15 @@ fn flush_keyboard_flags_restore(app: &mut App) {
     }
 }
 
-/// Re-enable raw mode and crossterm features after a child process finishes.
-pub(crate) fn resume_terminal() {
+/// Bring the terminal into the state the TUI runs in: raw mode, bracketed
+/// paste, mouse capture, focus reporting and the keyboard-enhancement flags.
+/// Boot is its only caller.
+///
+/// Returns false when the terminal went away inside the keyboard-enhancement
+/// query: on a closed pane crossterm's query never returns, so the caller has
+/// to take the lost-pane exit rather than open the event stream on a reader
+/// the abandoned query still holds.
+pub(crate) fn resume_terminal() -> bool {
     let _ = crossterm::terminal::enable_raw_mode();
     let _ = crossterm::execute!(
         std::io::stdout(),
@@ -322,12 +329,58 @@ pub(crate) fn resume_terminal() {
     // events, not just drags - needed for the pointer-shape affordance.
     // crossterm's EnableMouseCapture only sets 1000/1002/1006.
     let _ = crossterm::execute!(std::io::stdout(), crossterm::style::Print("\x1b[?1003h"));
-    report_keyboard_enhancement_support();
+    report_keyboard_enhancement_support(bounded_keyboard_enhancement_query())
 }
 
 /// The startup keyboard-enhancement negotiation's answer, set once by
 /// [`report_keyboard_enhancement_support`].
 static KEYBOARD_ENHANCEMENT_SUPPORTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// The longest the boot handshake waits for the terminal's answer to the
+/// keyboard-enhancement query.
+///
+/// Clears crossterm's own 2s poll timeout, so a live but silent terminal
+/// still resolves through crossterm's path; a budget below that would
+/// abandon a slow terminal as if it were a dead one. A query still running
+/// past this is wedged the way a closed pane wedges it: crossterm's event
+/// source takes the pty's EOF in a read loop that never breaks, so
+/// `poll_internal` never returns and the reader guard it holds is never
+/// released.
+const KEYBOARD_ENHANCEMENT_QUERY_BUDGET: Duration = Duration::from_secs(3);
+
+/// The boot query, run off the main thread so a terminal that never answers
+/// cannot park boot inside it. `None` means the budget passed with no answer
+/// and the query is abandoned: a pane lost during boot never returns from
+/// the query at all (#1932), so the caller cannot wait on it.
+fn bounded_keyboard_enhancement_query() -> Option<std::io::Result<bool>> {
+    answer_within_budget(
+        KEYBOARD_ENHANCEMENT_QUERY_BUDGET,
+        crossterm::terminal::supports_keyboard_enhancement,
+    )
+}
+
+/// Run `query` on its own thread and wait at most `budget` for its answer;
+/// `None` when the budget passed with no answer, which is the abandonment
+/// the boot handshake is built around. The thread is not stopped - the bound
+/// is that the caller is not parked in it. A query thread that dies without
+/// answering is an error, not an abandonment: it must not read as a terminal
+/// that is gone.
+fn answer_within_budget(
+    budget: Duration,
+    query: impl FnOnce() -> std::io::Result<bool> + Send + 'static,
+) -> Option<std::io::Result<bool>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(query());
+    });
+    match rx.recv_timeout(budget) {
+        Ok(answered) => Some(answered),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Some(Err(std::io::Error::other(
+            "the keyboard enhancement query thread died before answering",
+        ))),
+    }
+}
 
 /// Ask whether the flags just pushed actually took, so a terminal or
 /// multiplexer that discards them leaves a record rather than silence.
@@ -340,10 +393,29 @@ static KEYBOARD_ENHANCEMENT_SUPPORTED: std::sync::OnceLock<bool> = std::sync::On
 /// reader. GNU screen answers the device-attributes half and not the
 /// flags half, which is a prompt `Ok(false)`; a terminal that answers
 /// neither costs crossterm's 2s timeout once at startup.
-fn report_keyboard_enhancement_support() {
-    let supported = match crossterm::terminal::supports_keyboard_enhancement() {
-        Ok(true) => true,
-        Ok(false) => {
+///
+/// Takes the query's outcome rather than running the query, so the verdict
+/// mapping stays drivable in tests; the boot path passes what
+/// [`bounded_keyboard_enhancement_query`] returned. Returns false when the
+/// query was abandoned at its budget, which is what a terminal that is gone
+/// looks like - an inference, not a fact: every realistic live terminal
+/// resolves through crossterm's own 2s timeout first, and only one starved
+/// past the budget exits where it would otherwise have booted, a cost
+/// accepted against the wedge. The once-lock is left unset on that path:
+/// there is no verdict to report, and the caller is on its way out.
+fn report_keyboard_enhancement_support(answer: Option<std::io::Result<bool>>) -> bool {
+    let supported = match answer {
+        None => {
+            tracing::warn!(
+                target: crate::logging::targets::APP_LIFECYCLE,
+                event_name = "keyboard_enhancement_query_abandoned",
+                message = "the terminal did not answer the keyboard enhancement query within the boot budget; treating it as gone",
+                outcome = "failure",
+            );
+            return false;
+        }
+        Some(Ok(true)) => true,
+        Some(Ok(false)) => {
             tracing::warn!(
                 target: crate::logging::targets::APP_LIFECYCLE,
                 event_name = "keyboard_enhancement_unsupported",
@@ -352,7 +424,7 @@ fn report_keyboard_enhancement_support() {
             );
             false
         }
-        Err(error) => {
+        Some(Err(error)) => {
             tracing::warn!(
                 target: crate::logging::targets::APP_LIFECYCLE,
                 event_name = "keyboard_enhancement_query_failed",
@@ -367,6 +439,7 @@ fn report_keyboard_enhancement_support() {
     // that can never arrive is surfaced on the dictate preflight row
     // rather than left to this log.
     let _ = KEYBOARD_ENHANCEMENT_SUPPORTED.set(supported);
+    true
 }
 
 /// The startup negotiation's verdict, `None` before
@@ -458,9 +531,22 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
     let mut os_shutdown = Box::pin(wait_for_shutdown_signal());
 
     // Enable bracketed paste, mouse capture, and enhanced keyboard protocol
-    resume_terminal();
+    let keyboard_handshake_answered = resume_terminal();
 
     install_panic_hook(default_hook);
+
+    // A pane lost in the boot window leaves crossterm's query spinning while
+    // it holds the event reader, so the stream below would block on that
+    // reader for good. Exit through the lost-pane path now - the same error
+    // return a mid-run loss reaches by failing a draw - rather than entering
+    // the loop with no reader that can return.
+    if !keyboard_handshake_answered {
+        tab_title::restore_tab_title(app.cwd().unwrap_or_default());
+        return Err(std::io::Error::other(
+            "the terminal went away before the keyboard enhancement handshake answered",
+        )
+        .into());
+    }
 
     let mut events = EventStream::new();
     // Measured from the last render, so it only bounds the first wake
@@ -2303,5 +2389,66 @@ mod tests {
         assert_eq!(app.spinner_frame, 1);
         advance_spinner_frame(&mut app, base + Duration::from_millis(121));
         assert_eq!(app.spinner_frame, 2);
+    }
+
+    /// #1932: crossterm's query never returns on a closed pane, so the boot
+    /// handshake cannot park in it. A query that does not answer must be
+    /// abandoned at its budget, and promptly - the point is that it does not
+    /// block boot.
+    #[test]
+    fn a_boot_query_that_never_answers_is_abandoned_at_its_budget() {
+        let (_hold, hold_rx) = std::sync::mpsc::channel::<()>();
+        let started = Instant::now();
+        let answer = answer_within_budget(Duration::from_millis(100), move || {
+            let _ = hold_rx.recv();
+            Ok(true)
+        });
+        assert!(
+            answer.is_none(),
+            "a query past its budget must be abandoned, not waited on; got {answer:?}",
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "the bound trips at its budget, not a multiple of it; took {:?}",
+            started.elapsed(),
+        );
+    }
+
+    /// The bound must not colour the answer it does get: a query that
+    /// answers in time keeps its verdict.
+    #[test]
+    fn a_boot_query_that_answers_passes_its_verdict_through() {
+        let answer = answer_within_budget(Duration::from_secs(5), || Ok(true));
+        assert!(
+            matches!(answer, Some(Ok(true))),
+            "an answered query keeps its verdict; got {answer:?}",
+        );
+    }
+
+    /// The budget must clear crossterm's own 2s poll timeout: below it, a
+    /// live but slow terminal is abandoned as a dead one, and the boot exit
+    /// then ends a startup that would have waited and booted.
+    #[test]
+    fn the_boot_query_budget_clears_crossterms_poll_timeout() {
+        assert!(
+            KEYBOARD_ENHANCEMENT_QUERY_BUDGET > Duration::from_secs(2),
+            "the budget must clear crossterm's 2s poll timeout; got {KEYBOARD_ENHANCEMENT_QUERY_BUDGET:?}",
+        );
+    }
+
+    /// The boot exit hangs off the false: an abandoned query must read as a
+    /// failed handshake, not as a verdict.
+    #[test]
+    fn an_abandoned_query_answers_unsupported() {
+        let (_hold, hold_rx) = std::sync::mpsc::channel::<()>();
+        let answer = answer_within_budget(Duration::from_millis(50), move || {
+            let _ = hold_rx.recv();
+            Ok(true)
+        });
+        assert!(answer.is_none(), "the parked query must be abandoned; got {answer:?}");
+        assert!(
+            !report_keyboard_enhancement_support(answer),
+            "an abandoned query must answer unsupported, which is what run_tui turns into the boot exit",
+        );
     }
 }

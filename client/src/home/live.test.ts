@@ -5,7 +5,7 @@ import { PROTOCOL_VERSION } from '../protocol';
 import type { Connection, ConnectionStatus } from '../socket';
 import { Stores } from '../stores';
 import type { SessionSlot } from '../wire/types';
-import { watchHome } from './live';
+import { watchHome, type HomeRead } from './live';
 
 const HOME: Subject = 'home';
 const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
@@ -189,6 +189,36 @@ describe('the home over a connection', () => {
     } as unknown as ServerMessage);
     await settle();
     expect(forge.refreshed, 'a background task starting asked for no read').toEqual([HOME]);
+    stop();
+  });
+
+  /**
+   * The core's service line reaches the page's own store, not only a re-read:
+   * the snapshot holds no such field, so the report is what a page has to draw
+   * a refused edit with - and a report dropped here is a refusal that reads as
+   * an edit that landed.
+   */
+  it("carries the core's service report into the next read", async () => {
+    const forge = fakeConnection();
+    const seen: HomeRead[] = [];
+    const stop = watchHome(forge.connection).subscribe((read) => seen.push(read));
+
+    forge.arrive({
+      kind: 'update',
+      update: {
+        service_status: { severity: 'warning', message: 'The board refused a move: nope' },
+      },
+    });
+    await settle();
+    // The read the update asked for answers with the words it carried.
+    forge.arrive({ kind: 'snapshot', subject: HOME, data: null });
+    await settle();
+
+    const last = seen.at(-1);
+    expect(last?.report, 'the report never reached the store').toEqual({
+      severity: 'warning',
+      message: 'The board refused a move: nope',
+    });
     stop();
   });
 

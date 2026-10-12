@@ -17,7 +17,7 @@ import { writable, type Readable, type Writable } from 'svelte/store';
 import { canHost } from '../browser/host';
 import type { Connection, ConnectionStatus } from '../socket';
 import type { Store } from '../stores';
-import { coversHome } from '../wire/fleet';
+import { coversHome, serviceReport, type ServiceReport } from '../wire/fleet';
 import { homeFrom, type HomeWire } from '../wire/home';
 
 /**
@@ -34,9 +34,17 @@ export interface HomeRead {
   wire: HomeWire | null;
   /** The server's own words for turning the subscription down, or `null`. */
   refused: string | null;
+  /**
+   * The core's last service report, or `null`. It is carried rather than
+   * folded into the read because the snapshot holds no such field: the
+   * report reaches a subscriber as an UPDATE, and a page that only re-read
+   * on it would drop the words - which is where a refused board edit says
+   * why it did not land.
+   */
+  report: ServiceReport | null;
 }
 
-const NOTHING: HomeRead = { wire: null, refused: null };
+const NOTHING: HomeRead = { wire: null, refused: null, report: null };
 
 /**
  * Watch the home.
@@ -63,6 +71,8 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
    * moment the answer lands.
    */
   let stale = false;
+  /** The core's last service report, read off the update that carried it. */
+  let report: ServiceReport | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let stopMessages: (() => void) | null = null;
   let stopStatus: (() => void) | null = null;
@@ -81,13 +91,17 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
     if (held === null) return;
     const state = held.state();
     if (state.kind === 'refused') {
-      view.set({ wire: null, refused: state.why });
+      view.set({ wire: null, refused: state.why, report });
       return;
     }
     const data = held.snapshot();
     // The snapshot is JSON the server wrote from its own type, and `homeFrom`
     // narrows every union member in it straight afterwards.
-    view.set({ wire: data === null ? null : homeFrom(data as unknown as HomeWire), refused: null });
+    view.set({
+      wire: data === null ? null : homeFrom(data as unknown as HomeWire),
+      refused: null,
+      report,
+    });
   }
 
   function watch(): void {
@@ -123,6 +137,11 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
         return;
       }
       if (message.kind !== 'update' || !coversHome(message.update)) return;
+      // The line is kept BEFORE the read is asked for: the read that follows
+      // is what publishes it, and a report dropped here would leave the page
+      // re-reading with nothing to say why.
+      const said = serviceReport(message.update);
+      if (said !== null) report = said;
       if (reading) {
         stale = true;
         return;

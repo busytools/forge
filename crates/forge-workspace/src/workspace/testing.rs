@@ -372,6 +372,9 @@ impl Workspace {
             browser: Arc::new(crate::browser::BrowserRelay::new()),
             dictate_catalogue: Mutex::new(crate::catalogue::CatalogueState::default()),
             dictate_install: Mutex::new(crate::install::InstallState::default()),
+            plugin_cli: Mutex::new(crate::plugins::PluginCli::real()),
+            plugin_run: Mutex::new(None),
+            plugin_action_running: std::sync::atomic::AtomicBool::new(false),
             dictate_activate: Mutex::new(crate::install::ActivateState::default()),
             dictate_bench: Mutex::new(crate::bench::BenchState::default()),
             dictate_bench_cancel: std::sync::atomic::AtomicBool::new(false),
@@ -395,6 +398,7 @@ impl Workspace {
             review_activity: Mutex::new(HashMap::new()),
             usage_poller_started: std::sync::atomic::AtomicBool::new(false),
             cron_scheduler_started: std::sync::atomic::AtomicBool::new(false),
+            chase_sweep_started: std::sync::atomic::AtomicBool::new(false),
             auto_continue_sweep_started: std::sync::atomic::AtomicBool::new(false),
             kick_dispatcher_tx,
             kick_dispatcher_rx_slot: Mutex::new(Some(kick_dispatcher_rx)),
@@ -512,6 +516,7 @@ impl Workspace {
             model: None,
             env: std::collections::HashMap::new(),
             max_workers,
+            issues: true,
             permission_mode: forge_primitives::permission::PermissionMode::Auto,
         });
     }

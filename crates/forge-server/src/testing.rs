@@ -478,8 +478,22 @@ impl Fleet {
             status: TaskStatus::InProgress,
             owner: Some(SessionSlot::worker(org, project, owner)),
             parent: None,
-            artifact: artifact.map(str::to_owned),
+            waiting_on: None,
             estimate: None,
+            rank: None,
+            verify: None,
+            links: artifact
+                .map(|target| forge_primitives::tasks::TaskLink {
+                    kind: forge_primitives::tasks::LinkKind::for_target(target),
+                    label: None,
+                    target: target.to_owned(),
+                    state: None,
+                    added_at: std::time::SystemTime::UNIX_EPOCH,
+                })
+                .into_iter()
+                .collect(),
+            attempt: 0,
+            archived_at: None,
             created_at: std::time::SystemTime::UNIX_EPOCH,
             updated_at: std::time::SystemTime::UNIX_EPOCH,
         });

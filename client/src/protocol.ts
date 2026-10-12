@@ -24,7 +24,7 @@ import type { ClientSettings, SessionSlot } from './wire/types';
  * rail footer carries both halves' build and socket numbers, and a mismatch
  * raises the notice beside it. Nothing refuses a connection over it.
  */
-export const PROTOCOL_VERSION = 7;
+export const PROTOCOL_VERSION = 8;
 
 /**
  * The release this client was built from, baked in by the build.
@@ -126,10 +126,11 @@ export function skewMessage(skew: Skew): string {
 /**
  * What a client can watch, and the address a subscription is held under.
  *
- * `dictate_models` is the models page's own read: the pins, the catalogue
- * check and the feed, which only that page draws.
+ * `dictate_models` and `extensions` are their pages' own reads: the pins
+ * and catalogue only the models page draws, and the plugin inventory only
+ * the extensions page draws.
  */
-export type Subject = 'home' | { session: SessionSlot } | 'usage' | 'dictate_models';
+export type Subject = 'home' | { session: SessionSlot } | 'usage' | 'dictate_models' | 'extensions';
 
 /**
  * A subscription's address as one string, which is what a store is keyed by.
@@ -301,7 +302,22 @@ export type ServerMessage =
    * the paging contract is built on it and a page that split one would leave
    * a client stitching half a turn to the other half.
    */
-  | { kind: 'page'; conversation: SessionSlot; turns: unknown[]; cursor: string | null }
+  /**
+   * A page of turns.
+   *
+   * `reconciled` is the desktop's own mark: the Rust half sends the
+   * newest window after a parked spell, and the mark is what tells it from
+   * an answer to an ask (a park can kill the ask while its "in flight"
+   * bookkeeping survives, and an unmarked page would then be spliced as an
+   * older one). The web build never sees it.
+   */
+  | {
+      kind: 'page';
+      conversation: SessionSlot;
+      turns: unknown[];
+      cursor: string | null;
+      reconciled?: boolean;
+    }
   /**
    * The inputs forge can record from, in answer to `devices`.
    *

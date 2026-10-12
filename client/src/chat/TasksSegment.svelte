@@ -1,7 +1,7 @@
 <script lang="ts">
   import Icon from '../components/Icon.svelte';
   import { tasks } from './tasks.svelte';
-  import { panelStyle } from './strip-panel';
+  import { panelStyle, portal } from './strip-panel';
 
   /**
    * The tasks row in the strip above the composer: what this seat's project
@@ -13,6 +13,12 @@
    * the row it lands on, and the tint clears itself.
    */
   let open = $state(false);
+  /**
+   * Where this project's board lives, handed in by the page that owns the
+   * seat. The strip is the door: the pill is the count, the list's first
+   * line opens the board itself.
+   */
+  let { href = null }: { href?: string | null } = $props();
   /** The segment and its list, so leaving and opening can be told apart. */
   let segEl: HTMLElement | null = $state(null);
   let listEl: HTMLElement | null = $state(null);
@@ -55,6 +61,9 @@
   function release(event?: FocusEvent) {
     if (event === undefined) {
       if (segEl !== null && segEl.matches(':hover')) return;
+      // The panel is portaled to the body (`use:portal`), so moving off the
+      // segment into the panel is not a departure.
+      if (listEl !== null && listEl.matches(':hover')) return;
       const active = document.activeElement;
       const onRow =
         segEl !== null && listEl !== null && active instanceof Node && listEl.contains(active);
@@ -63,7 +72,14 @@
       return;
     }
     const next = event.relatedTarget ?? document.activeElement;
-    if (segEl !== null && next instanceof Node && segEl.contains(next)) return;
+    // The panel is portaled to the body (`use:portal`), so focus moving INTO
+    // it is not a departure - the segment can no longer contain it.
+    if (
+      next instanceof Node &&
+      ((segEl !== null && segEl.contains(next)) || (listEl !== null && listEl.contains(next)))
+    ) {
+      return;
+    }
     arm();
   }
 
@@ -140,7 +156,13 @@
     </button>
 
     {#if open}
-      <div class="sg-list" bind:this={listEl} style={limits}>
+      <div class="sg-list" bind:this={listEl} style={limits} use:portal>
+        {#if href !== null}
+          <!-- The way into the whole board, in the strip the composer
+               carries. A door rather than a row: it is drawn apart from the
+               task rows so it is never taken for one of them. -->
+          <a class="sg-open" {href} onclick={() => (open = false)}>open board {'\u{2192}'}</a>
+        {/if}
         {#each tasks.rows() as row (row.id)}
           <div
             class="sg-grp"
@@ -178,8 +200,12 @@
             >
               {#if row.status === 'in_progress'}
                 <span class="ring"></span>
-              {:else if row.status === 'blocked'}
+              {:else if row.status === 'waiting'}
+                <span class="wait"></span>
+              {:else if row.status === 'failed'}
                 <Icon name="x" class="bad" />
+              {:else if row.status === 'canceled'}
+                <Icon name="x" class="off" />
               {:else if row.status === 'completed'}
                 <Icon name="check" class="ok" />
               {:else}

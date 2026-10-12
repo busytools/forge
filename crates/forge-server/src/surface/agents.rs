@@ -133,6 +133,16 @@ impl ViewSurface {
     pub fn agents(&self) -> Agents {
         Agents::collect(&self.workspace)
     }
+
+    /// When `slot`'s newest turn ended in failure, or `None` when nothing
+    /// failed or a newer turn has since been committed.
+    ///
+    /// The same fact a row carries, read for one seat: showing the seat
+    /// spends that mark, and whether there was one to spend decides whether
+    /// the home needs re-encoding for the connection that attached.
+    pub fn failed_turn(&self, slot: &SessionSlot) -> Option<SystemTime> {
+        self.workspace.session_failed_turn(slot)
+    }
 }
 
 #[cfg(test)]

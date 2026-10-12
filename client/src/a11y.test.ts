@@ -1,8 +1,7 @@
-import axe from 'axe-core';
-import { JSDOM } from 'jsdom';
 import { render } from 'svelte/server';
 import { describe, expect, it } from 'vitest';
 
+import Board from './board/Board.svelte';
 import Pinned from './chat/Pinned.svelte';
 import { connectors } from './chat/connectors.svelte';
 import { git } from './chat/git.svelte';
@@ -27,6 +26,8 @@ import {
 import Turn from './chat/Turn.svelte';
 import Connect from './connect/Connect.svelte';
 import { homeWire } from './dev/fixture.data';
+import ExtensionsBody from './extensions/ExtensionsBody.svelte';
+import { extensionsWire, project, recorder } from './extensions/testing';
 import Home from './home/Home.svelte';
 import Models from './models/Models.svelte';
 import ModelsBody from './models/ModelsBody.svelte';
@@ -35,6 +36,7 @@ import Palette from './session/Palette.svelte';
 import Session from './session/Session.svelte';
 import { PROTOCOL_VERSION } from './protocol';
 import type { Connection } from './socket';
+import { violationsOf } from './testing/axe';
 import { updateState } from './update/state';
 import { DEFAULT_SETTINGS } from './wire/types';
 
@@ -85,35 +87,6 @@ function browserIdle(): Connection {
   } as unknown as Connection;
 }
 
-type AxeWindow = Window & typeof globalThis & { axe: typeof axe };
-
-/**
- * What axe finds wrong with a rendered page.
- *
- * **jsdom performs no layout**, so `color-contrast` comes back INCOMPLETE
- * rather than passing or failing. That is why contrast stays a rule in the
- * standard and this function only ever reports violations: a clean result
- * here is not a claim about contrast.
- */
-export async function violationsOf(html: string): Promise<axe.Result[]> {
-  // The shell carries what `index.html` carries: a language and a title.
-  // Without the title axe reports `document-title` on every page, which is a
-  // finding about this harness rather than about the page.
-  //
-  // `runScripts` is required for `window.eval` to run inside the document
-  // rather than in the outer context, which is what lets axe see the DOM.
-  const dom = new JSDOM(
-    `<!doctype html><html lang="en"><head><title>forge</title></head><body>${html}</body></html>`,
-    { runScripts: 'dangerously' },
-  );
-  // One cast, and this is its reason: the object is jsdom's window, whose
-  // type cannot carry the `axe` global that the eval below injects into it.
-  const window = dom.window as unknown as AxeWindow;
-  window.eval(axe.source);
-  const results = await window.axe.run(window.document);
-  return results.violations;
-}
-
 /** Every violation id, which is what a failure should name. */
 const idsOf = (html: string) => violationsOf(html).then((found) => found.map((v) => v.id));
 
@@ -136,6 +109,67 @@ describe('axe over the rendered pages', () => {
 
   it('draws the home with no violations', async () => {
     const html = render(Home, { props: { wire: homeWire, address: '127.0.0.1:8790' } }).body;
+    expect(await idsOf(html)).toEqual([]);
+  });
+
+  it('draws a project board with no violations', async () => {
+    // The fixture's board is empty, which is one of its states; a row that
+    // waits on the reader is the other state the page draws controls in.
+    const first = homeWire.projects[0];
+    if (first === undefined) throw new Error('the fixture holds no project');
+    const withWaiting: typeof homeWire = {
+      ...homeWire,
+      projects: [
+        {
+          ...first,
+          rows: [
+            {
+              task: {
+                id: 't1',
+                project_name: 'proj',
+                subject: 'a row waiting on the reader',
+                active_form: null,
+                detail: null,
+                status: 'waiting' as const,
+                owner: null,
+                parent: null,
+                waiting_on: {
+                  kind: 'decision' as const,
+                  detail: 'the mockup',
+                  on: null,
+                  verification: true,
+                },
+                estimate: null,
+                rank: null,
+                verify: 'user' as const,
+                links: [],
+                attempt: 1,
+                archived_at: null,
+                created_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+                updated_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+              },
+              worked_secs: 300,
+              updated_secs_ago: 60,
+              marks: {
+                ready: false,
+                in_review: false,
+                overdue: false,
+                no_movement: false,
+                waiting_too_long: false,
+                stale: false,
+                to_close: false,
+              },
+              rollup: null,
+              parent_subject: null,
+              history: [],
+            },
+          ],
+        },
+      ],
+    };
+    const html = render(Board, {
+      props: { wire: withWaiting, org: 'TestOrg', project: 'proj' },
+    }).body;
     expect(await idsOf(html)).toEqual([]);
   });
 
@@ -682,6 +716,60 @@ describe('axe over the rendered pages', () => {
     const html = render(Models, { props: { connection: null } }).body;
     expect(html).toContain('Reading the models');
     expect(await idsOf(html)).toEqual([]);
+  });
+
+  /**
+   * The extensions page: the rail's tabs, a plugin row whose fold button is
+   * an overlay with its own label, the band's controls and the marketplace
+   * rows. Rendered inside a landmark, which is what the page's own `<main>`
+   * gives it in the app.
+   */
+  it('draws the extensions page with no violations', async () => {
+    const html = render(ExtensionsBody, {
+      props: {
+        wire: extensionsWire(),
+        refusal: null,
+        projects: [project],
+        mark: null,
+        ...recorder().actions,
+      },
+    }).body;
+    expect(html, 'the plugin rows drew, so axe saw them').toContain('superpowers');
+    expect(html, 'and the marketplaces section').toContain('From the marketplaces');
+    expect(await idsOf(`<main>${html}</main>`)).toEqual([]);
+  });
+
+  /**
+   * The page with an unknown inventory: no plugins root resolved, so the
+   * read is `null` and the page says so rather than drawing an empty tree.
+   */
+  it('draws the extensions page with no inventory, with no violations', async () => {
+    const html = render(ExtensionsBody, {
+      props: {
+        wire: extensionsWire({ snapshot: null }),
+        refusal: null,
+        projects: [project],
+        mark: null,
+        ...recorder().actions,
+      },
+    }).body;
+    expect(html).toContain('could not read the plugin inventory');
+    expect(await idsOf(`<main>${html}</main>`)).toEqual([]);
+  });
+
+  /** A refused dispatch, in the core's own words, is the page's own line. */
+  it('draws the extensions page with a refusal, with no violations', async () => {
+    const html = render(ExtensionsBody, {
+      props: {
+        wire: extensionsWire(),
+        refusal: 'a plugin action is already running; wait for it to finish',
+        projects: [project],
+        mark: null,
+        ...recorder().actions,
+      },
+    }).body;
+    expect(html).toContain('a plugin action is already running');
+    expect(await idsOf(`<main>${html}</main>`)).toEqual([]);
   });
 });
 

@@ -1508,6 +1508,31 @@ describe('one turn folded into the units a view draws', () => {
     expect(pairs[0]?.picked_labels).toEqual(['Blue']);
   });
 
+  it('reads a joined multi-select answer as its picks, not as typing', () => {
+    // The wire joins a multi-select answer into ONE string ("Dev client,
+    // App"); tested whole it matched no label, and the card drew the
+    // reader's picks as if they had been typed.
+    const asked = said([
+      use('toolu_q', 'AskUserQuestion', {
+        questions: [
+          {
+            question: 'Which windows?',
+            options: [{ label: 'Dev client' }, { label: 'App' }, { label: 'TUI' }],
+          },
+        ],
+      }),
+    ]);
+    const answered = heard([result('toolu_q', 'answered')], {
+      tool_use_result: { answers: { 'Which windows?': 'Dev client, App' } },
+    });
+
+    const units = fold([asked, answered]);
+    const [card] = units;
+    const pairs = card?.kind === 'question' ? card.asked : [];
+    expect(pairs[0]?.picked_labels).toEqual(['Dev client', 'App']);
+    expect(pairs[0]?.typed_note, 'and nothing was read as typed').toBeNull();
+  });
+
   it('answers with what was typed, not the escape row it was typed through', () => {
     // The bug this pins: the annotation holds the reader's own words, and a
     // selected value that is not one of the question's own labels is the escape

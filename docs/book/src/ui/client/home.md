@@ -1,9 +1,12 @@
 # Home
 
-The client's first page: every project `forge.toml` declares, the agents
-under each, the state each one is in, and what needs a person. It is drawn
-from one snapshot of the `home` subject, and redrawn from the update stream
-after it. The drawing it is held against is
+The client's first page: the fleet - one row per project `forge.toml`
+declares, carrying the strongest state among its seats, its tree, its
+counts and its named misses. Nothing is mixed: a project's own world opens
+as its [board](./board.md), and the home stays the glance. It is drawn from
+one snapshot of the `home` subject, and redrawn from the update stream after
+it - the 30-second chase sweep announces the board, so time-derived marks
+move here too. The drawing it is held against is
 [web-home.html](./web-home.html), beside this page.
 
 The app opens here whenever it has an address that answers - the one it last
@@ -19,43 +22,52 @@ nothing to draw, and the client never falls back to bundled data.
 |---|---|---|
 | Stopped | the core's last fatal, above everything else: `forge stopped:` and the terminal's own words | `fatal_error` |
 | Header | the brand mark, `forge`, the forge build serving the socket, the socket protocol, the claude version, the CLI's update notice, this app's own update line (or, in a browser, the build and the latest published), and the fleet totals | `ClientSettings.mark` from the greeting; `forge_version_short`; `PROTOCOL_VERSION`; `cli_version`; the shell's update check, or the served `latest.json`; `agents` and `projects` counted |
-| Band | four cards: the gateway listener, the client's own address, dictation, and the account pool | `accounts.gateway`, the connection the client made, `dictate.snapshot`, `accounts.loading` |
-| Org | one section per org, alphabetical, with a live and asleep count | `projects`, grouped by `org` |
-| Row | one per agent: its state mark, its name, where it is, what it is doing, and when it last wrote | `agents`, with each row's task from `projects` |
+| Band | five cards: the gateway listener, the client's own address, dictation, the account pool, and the extensions | `accounts.gateway`, the connection the client made, `dictate.snapshot`, `accounts.loading`, the `extensions` subject |
+| Fleet row | one per project: the strongest seat mark, the project, its branch and changed-file count, when it last moved (the newest write among its seats and the sessions its catalog remembers, `now`/`3h`/`2d`, or `never` for a project with neither a seat nor a session behind it), its seats, `live of cap slots · queue · on you`, the named misses, and the ways in - the row itself, each seat, and the board | `fleet` for the counts and the misses; `projects` for the tree; `agents` and `projects[].sessions` for the seats and the age |
 
-A row is the same five columns for a lead and for a worker, and a worker sits
-indented under its project. The name is the link rather than the row, because
-a row can also carry an artifact anchor and an anchor inside an anchor is not
-HTML. A worker's seat with no session behind it is the one row that is not a
-link: its page refuses to open, so the name is drawn as text, the `what` cell
-says `asleep`, and the row carries no pointer, hover ground or chevron.
+Every cell of a fleet row is the server's own read. The mark is the
+strongest of the project's seat states, drawn with the same shapes a seat
+row uses; the counts are the server's (`slots` is the project's resolved
+worker cap); and a miss is named rather than implied - a queue stalling with
+a free slot, a worker holding no row, or a project that cannot start, which
+is the refusal the row drew before the fleet. The whole row opens the
+project's lead in chat - the name's link stretches over the row's area,
+while a seat chip opens its own seat and `open board` opens the
+[board](./board.md). A project with no live seat is started by that same
+click, as a sleeping seat is from the terminal's rail.
 
-**The dictation card is the way into the [models page](./dictate-models.md).**
-The band's cards are facts about this forge, and that one opens `/models`,
-where the pins, the catalogue check and the feed are drawn. It is a link at
-rest - a chevron on the card's title line, dimmed until the pointer is on it -
+**Two cards are ways in.** The dictation card opens the
+[models page](./dictate-models.md), where the pins, the catalogue check and
+the feed are drawn; the extensions card opens the
+[extensions page](./extensions.md), where the plugin inventory, its
+components and the marketplaces are. Both are links at rest - a chevron on
+the card's title line, drawn dim rather than uncovered by the pointer,
 because an affordance only the hover uncovers is one a touch reader cannot
-find. The other three cards open nothing.
+find - and both take Enter and Space. **The other three cards open
+nothing.**
+
+**The extensions card reads its own subject.** What a reader wants on it -
+how many plugins are installed, and whether any is behind its marketplace -
+is in the `extensions` read and nowhere on the home's own wire (the home
+snapshot carries only the update records), so the card subscribes that
+subject from the home and takes it with the page. Its states are its own:
+**reading** before the read lands, **unread** for a refused subscription or
+an inventory with no plugins root to scan (with the core's own reason on
+the page behind it), **a warning** when something is stale, naming how many
+updates wait, and **quiet** when nothing is, naming the marketplaces the
+card draws nothing of.
 
 **The header draws the forge build, not this app's own version.** The header
 states which forge is serving, and the client is a different program, so the
 version in the shell crate's own manifest would name the wrong thing.
 
-**The row's `where` and `what` cells are its two variable columns.** `where`
-carries the branch the tree is on and how much has changed in it, from the
-ROW's own `work`, which is read at that seat's own directory: a worker's row
-draws its worktree's branch, and a lead's draws its project's. A count of zero
-draws nothing, because an unchanged tree is what the cell already means when
-it is empty. A seat forge holds no directory for draws the cell empty rather
-than borrowing another seat's tree - a despawned worker's label is the one
-that happens - and a project nobody has started draws the project's own read,
-which is the only row with no seat behind it. `what` says one thing,
-and the order it picks by is the order a reader needs them: `asleep` first,
-for a row that is not a link, else what the seat is waiting on a person for,
-else the task it holds with that task's status chip
-and artifact, else why a spawn here would be refused, else why the tree could
-not be read (`not a git repository`, `its working directory is not there`),
-and a middot when none of those is true.
+**The row's tree cell is the project's own read.** It carries the branch
+the tree is on and how much has changed in it; a count of zero draws
+nothing, because an unchanged tree is what the cell already means when it
+is empty. A tree that could not be read says so in the cell's place - `not
+a git repository`, `its working directory is not there` - because a blank
+branch beside a real project reads as a tree with nothing to say rather
+than as one that could not be asked.
 
 ## The state a row carries
 
@@ -77,11 +89,12 @@ and draws it as a shape as well as a colour, so the row reads without colour:
 | Asleep | `asleep` | the subprocess is gone, or `/logout` took it |
 | Never started | `never` | nothing has ever run in this project |
 
-A project that cannot start draws its refusal in the row's `what` column
-rather than a state of its own. A row that failed carries its reason as a
-line under it; a failed TURN has no reason text of its own (the failure's
-words are in the seat's conversation), so its line is the words `a turn
-failed`, and its mark goes the moment the seat is opened.
+A project that cannot start does not draw a state of its own: the refusal is
+one of the named misses instead, which is the same fact placed where a miss
+already lives. A row that failed carries its reason as a line under it; a
+failed TURN has no reason text of its own (the failure's words are in the
+seat's conversation), so its line is the words `a turn failed`, and its mark
+goes the moment the seat is opened.
 
 ## The states the page can be in
 
@@ -161,9 +174,10 @@ account on the launchpad's account walk. Neither is a gap in this page.
 
 The page is checked at **1600** and at **430**, against the drawing beside
 it. At 430 the band becomes a two-column grid, the header wraps to two lines,
-and a row's `what` column wraps under its name; nothing overflows
-horizontally at either width.
+and a fleet row's cells flow onto second lines under the project name;
+nothing overflows horizontally at either width.
 
-The sheet's own breakpoints are at 1280, 980, 760 and 560. This page's
-columns are all in the header and the band, so it has no collapse of its own
-to check at the middle two.
+The sheet's own breakpoints are at 900, 760, 700 and 560. This page's own
+collapse is the fleet row's at 900; its chrome's is at 760, where the header
+wraps and the band drops to two columns. Nothing scoped to this page sits
+below that, so the 430 check covers what the sheet changes here.

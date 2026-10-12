@@ -36,7 +36,9 @@ have pages here in the same way the TUI's do, current state only.
 - [The client's surfaces](./ui/client/index.md)
 - [Connect](./ui/client/connect.md)
 - [Home](./ui/client/home.md)
+- [Board](./ui/client/board.md)
 - [Dictation models](./ui/client/dictate-models.md)
+- [Extensions](./ui/client/extensions.md)
 
 # Contributor
 

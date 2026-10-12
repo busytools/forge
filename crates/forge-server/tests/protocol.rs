@@ -36,8 +36,19 @@ async fn a_server() -> (String, Fleet) {
         status: TaskStatus::InProgress,
         owner: None,
         parent: None,
-        artifact: Some("crates/forge-server".to_owned()),
-        estimate: Some("1d".to_owned()),
+        waiting_on: None,
+        estimate: Some(forge_primitives::tasks::Estimate { words: "1d".to_owned(), secs: 86_400 }),
+        rank: None,
+        verify: None,
+        links: vec![forge_primitives::tasks::TaskLink {
+            kind: forge_primitives::tasks::LinkKind::Path,
+            label: None,
+            target: "crates/forge-server".to_owned(),
+            state: None,
+            added_at: std::time::SystemTime::UNIX_EPOCH,
+        }],
+        attempt: 0,
+        archived_at: None,
         created_at: std::time::SystemTime::UNIX_EPOCH,
         updated_at: std::time::SystemTime::UNIX_EPOCH,
     });
@@ -94,8 +105,11 @@ fn of_kind<'a>(transcript: &'a [Value], kind: &str) -> Vec<&'a Value> {
 }
 
 /// The walk the plan asks for: subscribe to the home and to a seat, and hear
-/// a snapshot for each - the seat's attach re-sending the home, because
-/// showing a seat spends the marks its rows carry.
+/// a snapshot for each.
+///
+/// **The seat's attach re-sends the home only when it spent a mark**, and this
+/// fleet carries none - so the walk sees the two reads and no third. Both
+/// halves of that are pinned where the marks are, in `transport.rs`.
 #[tokio::test]
 async fn the_protocol_client_walks_the_whole_protocol() {
     let (url, _fleet) = a_server().await;
@@ -104,10 +118,10 @@ async fn the_protocol_client_walks_the_whole_protocol() {
     let snapshots = of_kind(&transcript, "snapshot");
     assert_eq!(
         snapshots.len(),
-        3,
-        "one snapshot per subscribe, and the home the attach re-sends: {transcript:?}",
+        2,
+        "one snapshot per subscribe, and no home for an attach that spent nothing: {transcript:?}",
     );
-    // The order is the contract: what was asked for, then the refreshed home.
+    // The order is the contract: what was asked for, then the seat's own read.
     assert_eq!(
         snapshots[0]["subject"],
         Value::String("home".to_owned()),
@@ -116,11 +130,6 @@ async fn the_protocol_client_walks_the_whole_protocol() {
     assert!(
         snapshots[1]["subject"].get("session").is_some(),
         "then the seat's own read: {transcript:?}",
-    );
-    assert_eq!(
-        snapshots[2]["subject"],
-        Value::String("home".to_owned()),
-        "and the attach re-sends the home: {transcript:?}",
     );
 }
 
@@ -175,9 +184,24 @@ async fn the_homes_five_reads_arrive_with_real_values() {
         row["work"],
     );
     assert!(
-        row["tasks"].as_array().is_some_and(|tasks| !tasks.is_empty()),
-        "the row's tasks are a populated list, not an empty one: {}",
-        row["tasks"],
+        row["rows"].as_array().is_some_and(|rows| !rows.is_empty()),
+        "the row's board rows are a populated list, not an empty one: {}",
+        row["rows"],
+    );
+    assert!(
+        row["rows"][0]["worked_secs"].is_u64(),
+        "and each row carries its worked time, so the client never derives it: {}",
+        row["rows"][0],
+    );
+    assert!(
+        row["rows"][0]["marks"]["ready"].is_boolean(),
+        "and its marks, one boolean per fact: {}",
+        row["rows"][0]["marks"],
+    );
+    assert!(
+        home["data"]["fleet"].as_array().is_some_and(|fleet| !fleet.is_empty()),
+        "the fleet glance crosses beside the projects: {}",
+        home["data"]["fleet"],
     );
     assert!(row["would_bind"].is_boolean(), "the row says whether a spawn would bind: {row}");
     assert!(

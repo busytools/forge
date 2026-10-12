@@ -37,6 +37,14 @@ pub enum Subject {
     /// them. Unlike `Usage` it does hear updates: a check landing, boot's
     /// or a page's own, arrives as `SessionUpdate::DictateModelsChanged`.
     DictateModels,
+    /// The Extensions page's read: the plugin inventory, the marketplace
+    /// health and the last update run.
+    ///
+    /// A subject of its own for `DictateModels`' reason - only the
+    /// Extensions page draws any of it - and it hears the whole `Plugins*`
+    /// family: an action's outcome, a run's progress, and the refreshed
+    /// inventory are all news about what this subscription is showing.
+    Extensions,
 }
 
 impl Subject {
@@ -53,14 +61,13 @@ impl Subject {
     /// conversation - so a second table of variants here would both drift and
     /// hand a home subscriber every token of every seat in the fleet.
     ///
-    /// **The fleet region is not the whole home.** Two variants carry no slot,
-    /// are not fleet news and are fields of the home's own snapshot - the
-    /// service status and the fatal error - so `fleet_news` alone would drop
-    /// them, leaving a client to draw what it read once at subscribe for the
-    /// life of the connection. They come with the slot-less arm below. (The
-    /// plugin records are slot-less too and reach no home subscriber: the
-    /// terminal folds them onto a channel of its own, so the home's snapshot
-    /// carries them for a client rather than a stream.)
+    /// **The fleet region is not the whole home.** The service status, the
+    /// fatal error and the plugin records carry no slot, are not fleet news,
+    /// and are fields of the home's own snapshot - so `fleet_news` alone
+    /// would drop them, leaving a client to draw what it read once at
+    /// subscribe for the life of the connection. They come with the
+    /// slot-less arm below, which the client mirrors in
+    /// `client/src/wire/fleet.ts`'s `coversHome`.
     pub fn covers(&self, update: &SessionUpdate) -> bool {
         match self {
             Self::Home => fleet_news(update).any() || update.slot().is_none(),
@@ -77,6 +84,22 @@ impl Subject {
             Self::DictateModels => matches!(
                 update,
                 SessionUpdate::DictateModelsChanged { .. } | SessionUpdate::DictateAvailability
+            ),
+            // The whole `Plugins*` family: every one is news about what
+            // this subscription draws - an action's outcome, a run's rows
+            // moving, the refreshed inventory, a failed refresh, a
+            // rollback's result. The family belongs to no seat, so nothing
+            // else routes here.
+            Self::Extensions => matches!(
+                update,
+                SessionUpdate::PluginsInventoryUpdated { .. }
+                    | SessionUpdate::PluginsInventoryRefreshFailed { .. }
+                    | SessionUpdate::PluginsCliActionSucceeded { .. }
+                    | SessionUpdate::PluginsCliActionFailed { .. }
+                    | SessionUpdate::PluginsUpdateRunProgress { .. }
+                    | SessionUpdate::PluginsUpdateRunFinished { .. }
+                    | SessionUpdate::PluginsRollbackSucceeded { .. }
+                    | SessionUpdate::PluginsRollbackFailed { .. }
             ),
         }
     }
@@ -534,6 +557,87 @@ mod tests {
             !Subject::Home.covers(&update),
             "and the home is not: no row draws a conversation's words, and the slot-less arm \
              would take it if the key went",
+        );
+    }
+
+    /// **The Extensions page hears the whole `Plugins` family and nothing
+    /// else.** A variant dropped from the arm leaves the page drawing a run
+    /// that ended, or an inventory an action already moved, with no way to
+    /// tell it has fallen behind; a variant added to the arm would hand the
+    /// page a seat's own news.
+    #[test]
+    fn extensions_covers_the_plugins_family_and_no_seat_news() {
+        for update in [
+            SessionUpdate::PluginsInventoryUpdated {
+                cwd_raw: "/tmp/proj".to_owned(),
+                snapshot: forge_primitives::plugins::PluginsInventorySnapshot::default(),
+                claude_path: std::path::PathBuf::from("claude"),
+            },
+            SessionUpdate::PluginsInventoryRefreshFailed {
+                cwd_raw: "/tmp/proj".to_owned(),
+                message: "no".to_owned(),
+                trigger: forge_primitives::plugins::PluginUpdateTrigger::Manual,
+            },
+            SessionUpdate::PluginsCliActionSucceeded {
+                cwd_raw: "/tmp/proj".to_owned(),
+                result: forge_primitives::plugins::PluginsCliActionSuccess {
+                    snapshot: forge_primitives::plugins::PluginsInventorySnapshot::default(),
+                    message: "done".to_owned(),
+                    claude_path: std::path::PathBuf::from("claude"),
+                },
+            },
+            SessionUpdate::PluginsCliActionFailed {
+                cwd_raw: "/tmp/proj".to_owned(),
+                message: "no".to_owned(),
+            },
+            SessionUpdate::PluginsUpdateRunProgress {
+                cwd_raw: "/tmp/proj".to_owned(),
+                run: forge_primitives::plugins::PluginUpdateRun {
+                    trigger: forge_primitives::plugins::PluginUpdateTrigger::Manual,
+                    finished: false,
+                    rows: Vec::new(),
+                },
+            },
+            SessionUpdate::PluginsUpdateRunFinished {
+                cwd_raw: "/tmp/proj".to_owned(),
+                run: forge_primitives::plugins::PluginUpdateRun {
+                    trigger: forge_primitives::plugins::PluginUpdateTrigger::Manual,
+                    finished: true,
+                    rows: Vec::new(),
+                },
+                snapshot: None,
+                claude_path: None,
+            },
+            SessionUpdate::PluginsRollbackSucceeded {
+                cwd_raw: "/tmp/proj".to_owned(),
+                plugin_id: "a@probe".to_owned(),
+                scope: "user".to_owned(),
+                message: "done".to_owned(),
+                snapshot: forge_primitives::plugins::PluginsInventorySnapshot::default(),
+                claude_path: std::path::PathBuf::from("claude"),
+            },
+            SessionUpdate::PluginsRollbackFailed {
+                cwd_raw: "/tmp/proj".to_owned(),
+                plugin_id: "a@probe".to_owned(),
+                message: "no".to_owned(),
+                snapshot: None,
+            },
+        ] {
+            assert!(
+                Subject::Extensions.covers(&update),
+                "the Extensions page must hear {update:?}; a dropped arm leaves it stale",
+            );
+        }
+
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        let session_news = SessionUpdate::TurnComplete { key: seat.clone(), terminal_reason: None };
+        assert!(
+            !Subject::Extensions.covers(&session_news),
+            "a seat's own news is not the Extensions page's",
+        );
+        assert!(
+            !Subject::Extensions.covers(&SessionUpdate::CatalogLoaded),
+            "and neither is the catalog's",
         );
     }
 

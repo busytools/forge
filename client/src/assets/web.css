@@ -34,7 +34,8 @@ html::-webkit-scrollbar,
 .sg-list::-webkit-scrollbar,
 .pop::-webkit-scrollbar,
 .box textarea::-webkit-scrollbar,
-.dock .notes::-webkit-scrollbar {
+.dock .notes::-webkit-scrollbar,
+.dr-body::-webkit-scrollbar {
   width: 8px;
   cursor: pointer;
 }
@@ -45,7 +46,8 @@ html::-webkit-scrollbar-track,
 .sg-list::-webkit-scrollbar-track,
 .pop::-webkit-scrollbar-track,
 .box textarea::-webkit-scrollbar-track,
-.dock .notes::-webkit-scrollbar-track {
+.dock .notes::-webkit-scrollbar-track,
+.dr-body::-webkit-scrollbar-track {
   background: transparent;
   cursor: pointer;
 }
@@ -56,7 +58,8 @@ html::-webkit-scrollbar-corner,
 .sg-list::-webkit-scrollbar-corner,
 .pop::-webkit-scrollbar-corner,
 .box textarea::-webkit-scrollbar-corner,
-.dock .notes::-webkit-scrollbar-corner {
+.dock .notes::-webkit-scrollbar-corner,
+.dr-body::-webkit-scrollbar-corner {
   background: transparent;
   cursor: pointer;
 }
@@ -67,7 +70,8 @@ html::-webkit-scrollbar-thumb,
 .sg-list::-webkit-scrollbar-thumb,
 .pop::-webkit-scrollbar-thumb,
 .box textarea::-webkit-scrollbar-thumb,
-.dock .notes::-webkit-scrollbar-thumb {
+.dock .notes::-webkit-scrollbar-thumb,
+.dr-body::-webkit-scrollbar-thumb {
   background: var(--s3);
   border-radius: 99px;
   cursor: pointer;
@@ -79,7 +83,8 @@ html::-webkit-scrollbar-thumb:hover,
 .sg-list::-webkit-scrollbar-thumb:hover,
 .pop::-webkit-scrollbar-thumb:hover,
 .box textarea::-webkit-scrollbar-thumb:hover,
-.dock .notes::-webkit-scrollbar-thumb:hover {
+.dock .notes::-webkit-scrollbar-thumb:hover,
+.dr-body::-webkit-scrollbar-thumb:hover {
   background: var(--line);
 }
 html::-webkit-scrollbar-thumb:active,
@@ -89,7 +94,8 @@ html::-webkit-scrollbar-thumb:active,
 .sg-list::-webkit-scrollbar-thumb:active,
 .pop::-webkit-scrollbar-thumb:active,
 .box textarea::-webkit-scrollbar-thumb:active,
-.dock .notes::-webkit-scrollbar-thumb:active {
+.dock .notes::-webkit-scrollbar-thumb:active,
+.dr-body::-webkit-scrollbar-thumb:active {
   background: var(--muted);
 }
 
@@ -167,7 +173,11 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
 
 /* ---------- system band ---------- */
 
-.band { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 22px; }
+/* Five cards across on a wide window, wrapping below - the last card can sit
+   alone in a middling band, and on a phone the fixed override below wraps
+   2+2+1. `auto-fit` at this floor is what puts all five in one row where the
+   room is, which a fixed count of five would refuse on a narrower window. */
+.band { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin-bottom: 22px; }
 .svc {
   background: linear-gradient(180deg, rgba(20,25,38,.75), rgba(13,17,26,.75));
   border: 1px solid var(--line); border-radius: var(--r);
@@ -185,15 +195,19 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
 .svc.bad { border-color: rgba(224,104,62,.4); }
 .svc.bad .v { color: var(--bad); }
 .svc.off { opacity: .72; }
-/* The one card that is a way in. The chevron is drawn at rest rather than
-   uncovered by the pointer - an affordance only hover reveals is what rule 22
-   forbids - and the hover recolours it, the way a row's own chrome does.
-   `opacity: 1` because the shared `.arw` is a DISCLOSURE's mark and rests
-   hidden: this one is a door, and a door nobody can see is not one. */
+/* The cards that are ways in (dictation and extensions). The chevron is
+   drawn at rest rather than uncovered by the pointer - an affordance only
+   hover reveals is what rule 22 forbids - and the hover recolours it, the
+   way a row's own chrome does. `opacity: 1` because the shared `.arw` is a
+   DISCLOSURE's mark and rests hidden: these are doors, and a door nobody
+   can see is not one. */
 .band a.svc { display: block; text-decoration: none; color: inherit; }
 .band a.svc .arw { margin-left: auto; opacity: 1; color: var(--dim); }
 .band a.svc:hover { border-color: var(--ctl); }
 .band a.svc:hover .arw { color: var(--accent); }
+/* A card is far taller than a finger needs; the floor is stated anyway, so
+   the door is sized like every other control on the page. */
+@media (pointer: coarse) { .band a.svc { min-height: 44px; } }
 
 /* The mock's upstream banner is not here: it hangs on a status probe the
    TUI runs once, before a browser can attach, so on the web it could only
@@ -248,6 +262,437 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
 .band .dot.off { background: var(--dim); }
 .band .dot.bad { background: var(--bad); box-shadow: 0 0 7px rgba(224,104,62,.5); }
 .band .dot.warn { background: var(--warn); }
+
+/* The strip's way into the board, first in the tasks list. */
+.sg-open {
+  display: block;
+  font-family: var(--mono); font-size: var(--fs-label);
+  color: var(--blue); text-decoration: none;
+  border-bottom: 1px solid var(--line);
+  padding: 8px 10px;
+}
+.sg-open:hover { background: var(--s2); }
+.sg-open:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
+@media (pointer: coarse) { .sg-open { min-height: 44px; display: flex; align-items: center; } }
+
+/* ---------- one project's board ---------- */
+
+/* The takeover: a slim bar with back and done, the strip of rows waiting
+   on the reader, cards in lanes by state, and the create line. One project
+   only - nothing of any other project reaches this page. Cards carry no
+   border: depth is the surface step, and a hairline is a rule or a divider,
+   never a box. */
+.board { max-width: none; }
+.b-top { display: flex; align-items: center; gap: 8px; margin-bottom: 18px; }
+.b-back, .b-done {
+  font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
+  background: transparent; border: 0; border-radius: 999px; padding: 7px 12px; cursor: pointer;
+}
+.b-back:hover, .b-done:hover { background: var(--s2); color: var(--text); }
+.b-back:focus-visible, .b-done:focus-visible, .b-btn:focus-visible,
+.b-pick:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.b-id { margin-left: 8px; display: flex; align-items: baseline; gap: 12px; }
+.b-nm { font-size: 19px; font-weight: 600; letter-spacing: -.01em; color: var(--text); }
+.b-read { font-size: var(--fs-label); color: var(--dim); }
+.b-read b { font-weight: 560; color: var(--hot); }
+.b-spacer { flex: 1; }
+/* the service line: the core's own words for an edit that did not land */
+.b-said { margin: -6px 0 16px; padding: 9px 13px; border-radius: 10px; font-size: var(--fs-data); }
+.b-said.warning { background: rgba(201,161,59,.12); color: var(--warn); }
+.b-said.error { background: rgba(224,104,62,.12); color: var(--bad); }
+.b-seat {
+  font-family: var(--mono); font-size: var(--fs-label); color: var(--blue);
+  text-decoration: none; background: var(--s2); border-radius: 999px; padding: 4px 11px;
+}
+.b-seat:hover { background: var(--s3); }
+
+/* the strip: the one warm surface */
+.b-you {
+  position: relative; background: var(--sel); border-radius: var(--r);
+  padding: 18px 22px 16px; margin-bottom: 26px; overflow: hidden;
+}
+.b-you::before {
+  content: ""; position: absolute; inset: 0 auto 0 0; width: 2px;
+  background: var(--accent); opacity: .8;
+}
+.b-you h2 {
+  display: flex; align-items: center; gap: 8px; margin: 0 0 7px;
+  font-family: var(--mono); font-size: var(--fs-label); font-weight: 500;
+  letter-spacing: .05em; color: var(--hot);
+}
+.b-n { background: rgba(244,118,0,.16); color: var(--hot); border-radius: 999px; padding: 1px 8px; }
+.b-asks { display: flex; gap: 24px; flex-wrap: wrap; }
+.b-ask { flex: 1; min-width: 320px; }
+.b-ask + .b-ask { border-left: 1px solid var(--line); padding-left: 24px; }
+.b-q { font-size: 15px; font-weight: 550; color: var(--text); }
+.b-why { display: flex; gap: 10px; font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); margin-top: 2px; }
+.b-detail { font-size: var(--fs-label); color: var(--muted); margin-top: 4px; }
+.b-do { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 9px; }
+/* Why a verify row cannot be approved yet: the children it still waits on. */
+.b-hold { font-size: var(--fs-label); color: var(--warn); }
+.b-btn { border: 0; cursor: pointer; font: inherit; border-radius: 10px; font-size: 13px; }
+.b-ok { background: var(--ok); color: var(--bg); font-weight: 640; padding: 8px 15px; }
+.b-ok:hover { filter: brightness(1.06); }
+.b-no {
+  background: transparent; color: var(--bad); padding: 8px 15px;
+  box-shadow: inset 0 0 0 1px rgba(224,104,62,.45);
+}
+.b-no:hover { background: rgba(224,104,62,.08); }
+.b-plain { background: var(--s3); color: var(--text); font-weight: 560; padding: 8px 15px; }
+.b-plain:hover { background: var(--line); }
+.b-add {
+  background: var(--accent); color: var(--bg); font-weight: 640;
+  border-radius: 999px; padding: 9px 16px;
+}
+.b-add:hover { filter: brightness(1.08); }
+.b-in {
+  background: var(--bg); border: 0; box-shadow: inset 0 0 0 1px var(--line);
+  border-radius: 10px; color: var(--text); font: inherit; font-size: var(--fs-data);
+  padding: 8px 11px; min-width: 220px;
+}
+.b-in::placeholder { color: var(--dim); }
+.b-in:focus { outline: none; box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 3px rgba(244,118,0,.12); }
+.b-empty { color: var(--muted); font-size: var(--fs-data); margin: 4px 0 16px; }
+
+/* lanes: a name, a count and a rule - no boxes around the column. Every
+   state keeps its lane, and lanes that do not fit wrap to a second row:
+   the sheet never scrolls sideways, and a missing lane would read as a
+   missing state. */
+.b-lanes { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 18px; }
+
+.b-cap { display: flex; align-items: center; gap: 8px; padding: 0 2px 10px; }
+.b-lane-nm { font-size: var(--fs-label); font-weight: 600; color: var(--muted); letter-spacing: .01em; }
+.b-count { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+.b-rule { flex: 1; height: 1px; background: var(--line); }
+
+/* cards: three lines, the surface step is the elevation */
+.b-card { background: var(--s2); border-radius: 13px; padding: 15px 16px 14px; }
+.b-card + .b-card { margin-top: 10px; }
+.b-card:hover { background: var(--s3); }
+/* `touch-action: none` is what makes the drag work under a finger: without it
+   the scroller claims the gesture and cancels the pointer, so a phone could
+   never move a card - and this client ships on Android. It costs the card as
+   a surface to scroll FROM, which is why the lanes keep their own space
+   between and around them. */
+.b-card { cursor: grab; touch-action: none; }
+.b-card.dragging { opacity: .45; }
+
+/* dragging: the card under the pointer, the lane it would land in, and the
+   seats that would take it. The press suppresses selection, and the card
+   itself is lifted so the gesture reads as a drag. */
+.board.dragging { user-select: none; -webkit-user-select: none; }
+.b-ghost {
+  position: fixed; z-index: 40; max-width: 260px; pointer-events: none;
+  background: var(--s3); color: var(--text); border-radius: 11px;
+  padding: 9px 12px; font-size: var(--fs-data); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+  border: 1px solid var(--line); transform: rotate(1.2deg);
+  box-shadow: 0 26px 52px -24px rgba(0, 0, 0, .9);
+}
+/* The lane fills its column - the whole of it is the drop target, an empty
+   one included - with a floor so a board of near-empty lanes still offers a
+   bucket to drop into. */
+.b-lane { min-height: 120px; transition: background .16s ease; }
+.b-lane.drop { background: rgba(255, 255, 255, .025); border-radius: 14px; }
+.b-lane.drop .b-cap .b-lane-nm { color: var(--text); }
+.b-top.dragging .b-seat.drop { background: var(--accent); color: var(--bg); }
+.b-row1 { display: flex; align-items: flex-start; gap: 9px; }
+.b-sub { flex: 1; min-width: 0; font-size: 14.5px; font-weight: 500; line-height: 1.35; color: var(--text); }
+.b-line { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.b-sub.settled { color: var(--dim); text-decoration: line-through; font-weight: 400; }
+.b-sub2 {
+  display: block; color: var(--dim); font-size: var(--fs-data); font-weight: 400; margin-top: 2px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.b-meta {
+  display: flex; align-items: center; gap: 9px; flex-wrap: wrap; margin-top: 10px;
+  font-size: var(--fs-data); color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.b-owner { display: inline-flex; align-items: center; gap: 6px; }
+.b-ava {
+  width: 18px; height: 18px; border-radius: 50%; background: var(--s3); color: var(--muted);
+  display: inline-flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 600;
+}
+/* The epic's marks: the pill a child's card names its parent in, and the
+   quiet `epic` pill a parent's card wears. A long name ellipsises inside the
+   card rather than painting past it, as the line it replaced did. A row both
+   parent and child (a mid-tree row) wears both classes; the dimmer child
+   spine is the one that wins, because the spine reads the row's place in its
+   own parent's tree. */
+.b-epic-pill {
+  border: 0; font: inherit; font-size: var(--fs-data); max-width: 100%;
+  display: inline-block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+button.b-epic-pill { cursor: pointer; }
+.b-card.epic { border-left: 2px solid var(--blue); }
+.b-card.tree { border-left: 2px solid rgba(97,160,224,.35); }
+.b-flash { outline: 2px solid var(--blue); outline-offset: 2px; }
+.b-meta a { color: var(--blue); text-decoration: none; }
+.b-meta a:hover { text-decoration: underline; }
+.b-link { color: var(--muted); }
+.b-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-left: auto; }
+.b-chip {
+  font-size: var(--fs-data); border-radius: 999px; padding: 3px 10px;
+  background: var(--s3); color: var(--muted); white-space: nowrap;
+}
+.b-chip.warn { background: rgba(201,161,59,.14); color: var(--warn); }
+.b-chip.bad { background: rgba(224,104,62,.14); color: var(--bad); }
+.b-chip.blue { background: rgba(97,160,224,.12); color: var(--blue); }
+.b-chip.dim { background: var(--s3); color: var(--dim); }
+
+/* the last line: the measure under the time, the controls at the end -
+   wrapping onto its own line when a lane is too narrow for both */
+.b-last { display: flex; align-items: center; gap: 12px; margin-top: 13px; flex-wrap: wrap; }
+/* `flex: 1` gives this cell a zero basis, so the line breaker measures only
+   its 90px floor while the nowrap ink runs about 132px - a narrow card kept
+   one line and the items spilled over each other. A content basis lets the
+   line break, and the cell still takes the slack where there is room. */
+.b-prog { display: flex; flex-direction: column; gap: 4px; min-width: 90px; flex: auto; }
+.b-time { color: var(--dim); font-size: var(--fs-data); white-space: nowrap; font-family: var(--mono); }
+.b-bar { height: 2px; border-radius: 99px; background: var(--s3); overflow: hidden; }
+.b-fill { display: block; height: 100%; border-radius: 99px; background: var(--muted); }
+.b-prog.over .b-time { color: var(--warn); }
+.b-prog.over .b-fill { background: var(--warn); }
+.b-prog.bad .b-time { color: var(--bad); }
+.b-prog.bad .b-fill { background: var(--bad); }
+.b-acts { display: flex; gap: 6px; align-items: center; margin-left: auto; }
+.b-card:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+
+/* liveness: how long since the row moved, and a breath while it is
+   running and recently wrote - the board should read as working, not
+   as a still life between updates */
+.b-meta a.b-owner { color: var(--muted); }
+.b-meta a.b-owner:hover { color: var(--text); }
+.b-wrote { color: var(--dim); font-size: var(--fs-label); font-family: var(--mono); white-space: nowrap; }
+.b-wrote.live { color: var(--ok); display: inline-flex; align-items: center; gap: 5px; }
+.b-wrote.live::before {
+  content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--ok);
+  animation: b-breath 2.4s ease-in-out infinite;
+}
+@keyframes b-breath { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .b-wrote.live::before { animation: none; opacity: 1; } }
+.b-drop { position: relative; }
+.b-pick {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: transparent; border: 0; color: var(--dim); font-family: var(--mono);
+  font-size: var(--fs-label); padding: 5px 7px; border-radius: 8px; cursor: pointer;
+}
+.b-pick:hover { background: var(--s3); color: var(--text); }
+.b-chev { width: 12px; height: 12px; }
+.b-menu {
+  position: absolute; z-index: 20; right: 0; top: calc(100% + 4px); min-width: 160px;
+  margin: 0; padding: 4px; background: var(--s2);
+  border: 1px solid var(--line); border-radius: 10px;
+  box-shadow: 0 18px 40px -20px rgba(0, 0, 0, .8);
+}
+.b-item {
+  display: block; width: 100%; text-align: left; border: 0; background: transparent;
+  color: var(--muted); font-family: var(--mono); font-size: var(--fs-label);
+  padding: 6px 9px; border-radius: 7px; cursor: pointer;
+}
+.b-item.hot { background: var(--s3); color: var(--text); }
+.b-item.on { color: var(--hot); }
+
+/* marks: shape first, colour second */
+.b-mark {
+  width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid var(--dim);
+  flex: none; margin-top: 4px;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.b-mark.b-run { background: var(--accent); border-color: var(--accent); }
+.b-mark.b-wait { border-radius: 3px; border: 1.8px solid var(--warn); margin-top: 3px; }
+/* Done and failed carry the house's own glyphs - the tick and the cross the
+   chat draws a settled or a failed turn with - not a coloured blob. */
+.b-mark.b-done { background: none; border: 0; color: var(--ok); margin-top: 0; }
+.b-mark.b-fail { background: none; border: 0; color: var(--bad); margin-top: 0; }
+.b-mark .ic { width: 12px; height: 12px; }
+.b-mark.b-cancel { height: 2px; border: 0; border-radius: 2px; background: var(--dim); margin-top: 6px; }
+
+.b-create { display: flex; gap: 9px; align-items: center; flex-wrap: wrap; margin-top: 22px; }
+@media (pointer: coarse) {
+  .b-btn, .b-pick, .b-in, .b-seat, .b-item, button.b-chip { min-height: 44px; }
+}
+
+/* ---------- the drawer: one row's own page over the board ---------- */
+
+.dr-scrim { position: fixed; inset: 0; background: rgba(4,5,10,.55); z-index: 40; }
+.dr {
+  /* Full-bleed once the window is narrower than the panel: a phone's drawer
+     is the screen, not a strip of it. */
+  position: fixed; top: 0; right: 0; bottom: 0; width: min(520px, 100%);
+  background: var(--s1); border-left: 1px solid var(--line);
+  box-shadow: -18px 0 40px rgba(0,0,0,.4); z-index: 41;
+  display: flex; flex-direction: column;
+}
+.dr:focus { outline: none; }
+.dr-head {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 14px 16px 12px; border-bottom: 1px solid var(--line);
+}
+.dr-head.tree { border-left: 2px solid rgba(97,160,224,.35); }
+.dr-state {
+  display: inline-flex; align-items: center; gap: 5px; margin-top: 2px;
+  font-family: var(--mono); font-size: 11px; color: var(--muted);
+  border: 1px solid var(--line); border-radius: 6px; padding: 1px 7px;
+}
+.dr-state.warn { color: var(--warn); border-color: rgba(201,161,59,.45); }
+.dr-state.ok { color: var(--ok); border-color: rgba(130,199,107,.45); }
+.dr-state.bad { color: var(--bad); border-color: rgba(224,104,62,.45); }
+.dr-state.run { color: var(--accent); border-color: rgba(244,118,0,.45); }
+.dr-state .ic { width: 11px; height: 11px; }
+.dr-title .t { font-size: 15px; font-weight: 600; }
+.dr-title .sub { color: var(--dim); font-family: var(--mono); font-size: 11.5px; margin-top: 2px; }
+.dr-x {
+  margin-left: auto; background: none; border: 0; color: var(--dim);
+  font: inherit; font-size: 15px; cursor: pointer; padding: 4px 8px;
+}
+.dr-body { flex: 1; overflow-y: auto; padding: 14px 16px 24px; }
+.dr-fields { display: grid; grid-template-columns: 92px 1fr; gap: 6px 12px; }
+.dr-fields dt { color: var(--dim); font-family: var(--mono); font-size: 11.5px; }
+.dr-fields dd { color: var(--text); font-family: var(--mono); font-size: 12px; min-width: 0; }
+.dr-fields dd .dim { color: var(--dim); }
+.dr-fields a { color: var(--blue); text-decoration: none; }
+.dr-detail { margin-top: 12px; color: var(--muted); font-size: 12.5px; white-space: pre-wrap; }
+/* a parent's own tasks: each row a door onto its card */
+.dr-kids { display: flex; flex-direction: column; gap: 4px; }
+.dr-kid {
+  display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+  background: var(--s2); border: 0; border-radius: 8px; padding: 8px 10px;
+  color: var(--text); font: inherit; font-family: var(--mono);
+  font-size: var(--fs-label); cursor: pointer;
+}
+.dr-kid:hover { background: var(--s3); }
+.dr-kid .l { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dr-kid .go { color: var(--dim); }
+.dr h3 {
+  margin: 20px 0 8px; font-size: 11px; letter-spacing: .09em;
+  text-transform: uppercase; color: var(--dim); font-weight: 500;
+}
+.dr-none { color: var(--dim); font-family: var(--mono); font-size: 11.5px; }
+.dr-ask {
+  border: 1px solid rgba(201,161,59,.4); border-left: 3px solid var(--warn);
+  border-radius: 9px; background: rgba(201,161,59,.06); padding: 11px 12px;
+}
+.dr-ask .q { color: var(--text); font-size: 13px; }
+.dr-ask .from { color: var(--dim); font-family: var(--mono); font-size: 11px; margin-top: 3px; }
+.dr-ask .answer { display: flex; gap: 8px; margin-top: 10px; }
+.dr-ask input {
+  flex: 1; min-width: 0; background: var(--s2); color: var(--text);
+  border: 1px solid var(--line); border-radius: 7px;
+  padding: 6px 9px; font-family: var(--mono); font-size: 12px;
+}
+.dr-btn {
+  border: 1px solid var(--line); background: var(--s2); color: var(--text);
+  border-radius: 7px; padding: 6px 12px; font: inherit; font-size: 12px; cursor: pointer;
+}
+.dr-btn.go { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 600; }
+.dr-btn.no { background: transparent; color: var(--bad); box-shadow: inset 0 0 0 1px rgba(224,104,62,.45); }
+.dr-hold { font-size: var(--fs-label); color: var(--warn); }
+.dr-said { margin: 0 0 14px; padding: 9px 13px; border-radius: 10px; font-size: var(--fs-data); }
+.dr-said.warning { background: rgba(201,161,59,.12); color: var(--warn); }
+.dr-said.error { background: rgba(224,104,62,.12); color: var(--bad); }
+.dr-ses {
+  display: inline-block; margin-top: 9px; color: var(--blue); text-decoration: none;
+  font-family: var(--mono); font-size: 11.5px;
+}
+.dr-hist .h {
+  display: grid; grid-template-columns: 74px 1fr; gap: 10px;
+  padding: 6px 0; border-bottom: 1px solid rgba(34,42,60,.6);
+  font-family: var(--mono); font-size: 11.5px;
+}
+.dr-hist .h:last-child { border-bottom: 0; }
+.dr-hist .w { color: var(--dim); }
+.dr-hist .what { color: var(--muted); }
+.dr-hist .what b { color: var(--text); font-weight: 500; }
+.dr-last { color: var(--muted); font-family: var(--mono); font-size: 11.5px; }
+.dr-last .dr-ses { margin: 0 0 0 10px; }
+@media (pointer: coarse) {
+  .dr-x { min-width: 44px; min-height: 44px; }
+  .dr-btn, .dr-ask input, .dr-kid { min-height: 44px; }
+  .dr-ses { display: inline-flex; align-items: center; min-height: 44px; }
+}
+
+@media (max-width: 700px) {
+  .b-ask + .b-ask { border-left: 0; padding-left: 0; }
+}
+
+/* ---------- the fleet ---------- */
+
+/* One row per project, nothing mixed: the mark, the name, the tree, the
+   seats, the counts and the misses - and the row is the way into the
+   lead's chat, with the board behind its own control. The columns read
+   left to right in that order, and the counts take the surplus so the name
+   and the tree keep their shape. */
+.fleet { list-style: none; margin: 8px 0 0; padding: 0; }
+.fleet-row {
+  display: grid; position: relative;
+  /* One track per cell (mark, name, tree, age, seats, counts, misses, the
+     way in): a track short and the trailing cells wrap onto an implicit row,
+     where the misses stack one word per line and the link draws over them. */
+  grid-template-columns: 22px minmax(0, 14rem) minmax(0, 1fr) auto auto auto auto auto;
+  align-items: center; gap: 14px;
+  border: 1px solid var(--line); border-radius: var(--r);
+  background: var(--s1);
+  padding: 13px 16px; margin-bottom: 10px;
+}
+.fleet-row:hover { background: var(--s2); }
+/* The mark wrappers carry the home's `.row` class for its state shapes, and
+   the scaffolding under that class lays out or decorates cells this row does
+   not have: the grid and padding inflated a seat's mark to hundreds of
+   pixels, the hover ground washed the chip, and the chevron rode over it and
+   joined its accessible name - so the fleet shapes the wrapper back to its
+   own content. `pointer-events: none` ends the scaffolding's hover at the
+   source: the state wash stays (it is not a hover style), and a click on the
+   mark falls through to the link whose surface it sits on. */
+.fleet-row .row { display: inline-flex; padding: 0; pointer-events: none; }
+.fleet-row .row::after { content: none; }
+.fleet-name { font-weight: 500; }
+/* The row is the way into the lead's chat: this link's box stretches over
+   the whole row, and the controls with targets of their own (a seat chip,
+   the board) ride above it. */
+.fleet-go { color: inherit; text-decoration: none; }
+.fleet-go::after { content: ""; position: absolute; inset: 0; border-radius: var(--r); }
+.fleet-go:focus-visible { outline: none; }
+.fleet-go:focus-visible::after { outline: 2px solid var(--blue); outline-offset: 2px; }
+.fleet-where { color: var(--muted); font-size: var(--fs-label); font-family: var(--mono); }
+.fleet-where .files { color: var(--text); }
+.fleet-when { color: var(--dim); font-size: var(--fs-label); font-family: var(--mono); }
+.fleet-seats { display: flex; gap: 12px; flex-wrap: wrap; }
+.fleet-seat {
+  display: inline-flex; align-items: center; gap: 7px;
+  color: var(--dim); font-size: var(--fs-label); font-family: var(--mono);
+  position: relative; z-index: 1; text-decoration: none;
+}
+.fleet-seat:hover { color: var(--text); }
+.fleet-counts { color: var(--muted); font-size: var(--fs-label); font-family: var(--mono); white-space: nowrap; }
+.fleet-you { color: var(--hot); }
+.fleet-misses { display: flex; gap: 8px; flex-wrap: wrap; }
+.fleet-miss {
+  font-family: var(--mono); font-size: var(--fs-label);
+  border: 1px solid var(--line); border-radius: 6px;
+  padding: 2px 8px; color: var(--muted);
+}
+.fleet-miss.stalled { border-color: rgba(201,161,59,.5); color: var(--warn); }
+.fleet-miss.no-row { border-color: rgba(224,104,62,.5); color: var(--bad); }
+.fleet-open {
+  color: var(--blue); text-decoration: none; font-family: var(--mono);
+  font-size: var(--fs-label); border: 1px solid var(--line); border-radius: 6px;
+  padding: 6px 10px; white-space: nowrap;
+  position: relative; z-index: 1;
+}
+.fleet-open:hover { border-color: var(--ctl); }
+.fleet-open:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+@media (pointer: coarse) {
+  /* Every control a finger reaches takes a 44px target. */
+  .fleet-open { min-height: 44px; display: inline-flex; align-items: center; }
+  .fleet-seat { min-height: 44px; }
+  .fleet-row { padding-top: 16px; padding-bottom: 16px; }
+}
+@media (max-width: 900px) {
+  .fleet-row { grid-template-columns: 22px minmax(0, 1fr) auto; row-gap: 8px; }
+  .fleet-where, .fleet-when, .fleet-seats, .fleet-counts, .fleet-misses, .fleet-open { grid-column: 2 / -1; }
+}
 
 /* the mark inside a row: the shared shapes, with the row's own reset so a
    state that is not a ring cannot inherit the ring's border or spin. */
@@ -343,14 +788,6 @@ section.org > h2 .counts {
 .row.failed::after { color: var(--bad); }
 .row.needs::after { color: var(--warn); }
 .row.auth::after { color: var(--bad); }
-/* A row whose seat refuses is not a way in: the chrome that says "this goes
-   somewhere" - the pointer, the hover ground, the chevron - belongs to rows
-   that do. Keyed on whether the row opens rather than on the `asleep` mark,
-   because a dormant lead is asleep and openable. The row says why in words
-   instead. */
-.row.unopenable { cursor: default; }
-.row.unopenable::after { display: none; }
-.row.unopenable:hover { background: none; }
 /* Not the mock's `display: flex`: the row's mark is a grid sibling, not a
    child, so the flex only stops the text from ellipsising - and a name
    like `pure-black-github-intellij` has to shorten rather than clip. */
@@ -702,7 +1139,7 @@ details.gfold[open] > summary .arw { color: var(--accent); }
 .pr .x, .wk .x { margin-left: auto; flex: none; color: var(--muted);
   background: none; border: 0; display: flex; align-items: center;
   border-radius: 5px; padding: 2px 5px; cursor: pointer;
-  opacity: 0; pointer-events: none; }
+  opacity: 0; pointer-events: none; position: relative; z-index: 1; }
 /* The chip arrives with the pointer, like the chevron: a column of rail rows
    carries no close marks it does not need. **Instant, not a fade**: crossing
    rows leaves two fading chips on screen at once, which reads as a fragment
@@ -727,6 +1164,13 @@ details.gfold[open] > summary .arw { color: var(--accent); }
 .pr.on .dot.live, .wk.on .dot.live { border-top-color: var(--accent); }
 .wk { display: flex; align-items: center; gap: 9px; padding: 5px 10px 5px 34px; cursor: pointer; }
 .wk:hover { background: rgba(27,33,48,.4); border-radius: 0 8px 8px 0; }
+/* The row is the way into its session, as a home row is: the name's box
+   stretches over the whole row, and the close chip rides above it with a
+   target of its own. */
+.pr, .wk { position: relative; }
+.rail-go::after { content: ""; position: absolute; inset: 0; border-radius: 8px; }
+.rail-go:focus-visible { outline: none; }
+.rail-go:focus-visible::after { outline: 2px solid var(--blue); outline-offset: -2px; }
 .wk .nm { font-family: var(--mono); font-size: var(--fs-data); color: var(--muted);
   flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* A worker's mark is a step down from its project's: the size is what makes
@@ -1049,6 +1493,20 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
 .bz-list .bz-it .nm { color: var(--accent); font-weight: 600; font-family: var(--mono); flex: none; }
 .bz-list .bz-it .tx { color: var(--dim); font-family: var(--mono); min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* **The delete verb, worn apart from close.** Close frees the name and keeps
+   the logins; delete removes them, so it takes the sheet's destructive tone
+   (the `.dock .btn.d` idiom) and goes solid once the row is confirming
+   (`.b-mark.b-fail`'s solid mark). */
+.bz-list .bz-take.bz-del { color: var(--bad);
+  border-color: color-mix(in srgb, var(--bad) 45%, transparent); }
+.bz-list .bz-take.bz-del:hover { color: var(--bad);
+  background: color-mix(in srgb, var(--bad) 12%, transparent); }
+.bz-list .bz-take.bz-del.confirm { color: var(--bg); background: var(--bad);
+  border-color: var(--bad); font-weight: 600; }
+/* The row's own line WRAPS for a warning: it is nowrap for the owner text it
+   usually carries, and the confirm's copy is longer than that - truncated,
+   the warning loses exactly the words it exists for. */
+.bz-list .bz-it .tx.warn { color: var(--warn); white-space: normal; }
 @media (pointer: coarse) { .bz-seg .bz-tog, .bz-list .bz-it, .bz-list .bz-take { min-height: 44px; } }
 
 /* A narrow window compacts the panel: the same rows, tighter, and never
@@ -1100,9 +1558,14 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
 /* A task nothing has started: the ring's own shape, hollow and still. */
 .sg-list .sg-it .hollow { width: 9px; height: 9px; flex: none; border-radius: 50%;
   border: 1px solid var(--dim); }
+/* A row that is waiting on something, in the board's own vocabulary: the
+   warning square, at the strip's own size. */
+.sg-list .sg-it .wait { width: 9px; height: 9px; flex: none; border-radius: 2px;
+  border: 1.5px solid var(--warn); }
 .sg-list .sg-it .ic { flex: none; }
 .sg-list .sg-it .ic.ok { color: var(--ok); }
 .sg-list .sg-it .ic.bad { color: var(--bad); }
+.sg-list .sg-it .ic.off { color: var(--dim); }
 .sg-list .sg-it .nm { color: var(--accent); font-weight: 600; font-size: var(--fs-data); flex: none; }
 /* A row that LEADS with its name: the accent name takes what is left and
    elides, so a long key gives way instead of pushing the right figure out. */
@@ -1461,9 +1924,8 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
   /* The mag door takes both axes, like the chip beside it. */
   .pal-btn { min-width: 44px; min-height: 44px; }
   /* A row's own link is the finger's target: its box carries the 44, and the
-     row grows with it. The rail's rows also stretch the link over the whole
-     row - the way the home rows' own rule already stretches theirs - so the
-     middle of a row is the link rather than dead space.
+     row grows with it. The rail's link stretches over the whole row (its
+     base rule, as the home rows' does).
      Block, and the height in the line, so a long name still ellipsises: an
      inline-block box here is shrink-to-fit, so under `nowrap` it draws as wide
      as its whole text and has no overflow of its own - the phone showed the
@@ -1471,11 +1933,9 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
      width, which is the overflow an ellipsis needs. */
   .pr .nm a, .wk .nm a, .row .name a { display: block; min-width: 0; min-height: 44px;
     line-height: 44px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .pr, .wk { position: relative; }
-  .pr .nm a::after, .wk .nm a::after { content: ""; position: absolute; inset: 0; }
   /* The row's chip is a live control and sits above the stretch, so its own
      presses are the chip's and its box is a finger's to hit. */
-  .pr .x, .wk .x { min-width: 44px; position: relative; z-index: 1; }
+  .pr .x, .wk .x { min-width: 44px; }
   /* An artifact link inside a home row is its own control, above that row's
      stretch, and takes the 44 the same way - the width too, since a short
      label draws one narrower than a finger. Block rather than flex, and the
@@ -1526,22 +1986,37 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
   font-display: swap;
 }
 
-/* ---------- the strip pinned above the box ---------- */
+/* ---------- the strip, the surface's first lane ---------- */
 
-/* The running turn's metadata row, pinned above the composer for as long as
-   the turn is incomplete and through the beat that follows it. It shares the
-   box's edges and sits outside its ring, so the row's height is the only thing
-   it ever costs the column.
+/* The running turn's metadata row, drawn in the surface's first lane for as
+   long as the turn is incomplete and through the beat that follows it - one
+   child of `.surf`, hairline-separated from the lane below.
    Its fields are the settled row's own, under `.turninfo`, and its element is
-   the flex row the fields wrap in - the strip renders no box of its own.
-   No margin of its own: the composer cancels the grid's row gap for its own
-   row, so the column's foot is this row's bottom edge with only the composer's
-   padding under it - which is what puts it nearer the box than the turn above
-   it. */
-.strip { flex: none; padding: 8px 13px 9px;
-  border: 1px solid var(--line); border-radius: var(--r); background: var(--s1); }
+   the flex row the fields wrap in - the strip renders no box of its own. */
+.strip { flex: none; padding: 8px 13px 9px; }
 .strip .ti { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; row-gap: 2px;
   font-family: var(--mono); font-size: var(--fs-base); color: var(--dim); }
+/* Below the width that holds the figures and the chips together, the chips
+   take a lane of their own that scrolls sideways (Ved, 2026-10-10: the ragged
+   wrap "does not look great") - deliberate, not accidental, and the turn's
+   figures keep their line. Desktop is untouched: one lane, everything on it. */
+@container (max-width: 720px) {
+  .strip .sg-fill {
+    flex-basis: 100%;
+    margin-left: 0;
+    /* **nowrap is the lane**: without it the chips still wrap (measured: three
+       ragged rows at 400px, and the mask faded the last chip of each), so the
+       scroll never happens and the ragged wrap the redesign replaced stays. */
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    padding-right: 26px;
+    -webkit-mask-image: linear-gradient(90deg, #000 84%, transparent);
+    mask-image: linear-gradient(90deg, #000 84%, transparent);
+  }
+  .strip .sg-fill > * { flex: none; }
+  .strip .sg-fill::-webkit-scrollbar { display: none; }
+}
 /* Wrap between fields, never inside one: a broken token pair reads as two
    numbers rather than as in and out. */
 .strip .ti > span { white-space: nowrap; }
@@ -1562,30 +2037,40 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
    the only thing keeping the box off the column's bottom edge, and its margin
    cancels the app grid's row gap for this row alone: `row-gap: 0` on the app
    draws the same today and would leave any row added later unspaced too. */
-.composer { padding: 4px 0 2px; margin-top: calc(-1 * var(--ins)); }
+.composer { padding: 4px 0 2px; }
 .comp { position: relative; display: flex; flex-direction: column; gap: 2px; }
+/* The one surface: the strip lane, the prompt lane and the composer lane are
+   children of this box and split by hairlines. Its ring is the box's state -
+   recording, transcribing, the landed beat and an error each take it, and at
+   rest it answers whether the keyboard is here - and what it is DOING wins
+   over focus, which the `:not` list states rather than leaving to order. */
+/* No `overflow: hidden` here, deliberately: the rounded corners need no clip
+   (nothing inside paints to them), and clipping would cut every panel drawn to
+   leave the surface - the strip's segment lists, which are PORTALED to the
+   body since this surface and the chips lane both clipped them. */
+.surf { position: relative; container-type: inline-size;
+  border: 1.5px solid var(--ctl); border-radius: 16px;
+  background: linear-gradient(180deg, rgba(20,25,38,.72), rgba(13,17,26,.78));
+  backdrop-filter: blur(10px); box-shadow: 0 14px 38px rgba(0,0,0,.42);
+  display: flex; flex-direction: column;
+  transition: border-color .3s ease; }
+.surf > * + * { border-top: 1px solid var(--line); }
+.surf.rec { border-color: color-mix(in srgb, var(--accent) 35%, var(--hot)); }
+.surf.tr { border-color: var(--blue); }
+.surf.done { border-color: var(--ok); }
+.surf.err { border-color: var(--bad); }
+.surf:focus-within:not(.rec, .tr, .done, .err) { border-color: var(--accent); }
 .hint { font-size: var(--fs-base); padding-left: 4px; }
 .hint.login { color: var(--warn); }
 .hint.login .sub { color: var(--dim); display: block; font-size: var(--fs-data); }
 
-.box { position: relative; container-type: inline-size;
-  border: 1.5px solid var(--ctl); border-radius: 16px;
-  background: linear-gradient(180deg, rgba(20,25,38,.72), rgba(13,17,26,.78));
-  backdrop-filter: blur(10px); box-shadow: 0 14px 38px rgba(0,0,0,.42);
-  padding: 10px 13px; display: flex; flex-direction: column; gap: 0;
-  transition: border-color .3s ease; }
-/* The ring's colour is the box's state, and what it is DOING wins over focus:
-   recording, transcribing, the landed beat and an error each take it, and at
-   rest it answers whether the keyboard is here. The `:not` list is what states
-   that precedence rather than leaving it to source order. */
-.box.rec { border-color: color-mix(in srgb, var(--accent) 35%, var(--hot)); }
-.box.tr { border-color: var(--blue); }
-.box.done { border-color: var(--ok); }
-.box.err { border-color: var(--bad); }
-.box:focus-within:not(.rec, .tr, .done, .err) { border-color: var(--accent); }
-/* The draft's own row, which is now the field alone: the controls that used to
-   hold a column of its width sit in the foot below. */
-.line { display: flex; }
+/* A lane of the surface now, not a box of its own: the ring lives on `.surf`. */
+.box { position: relative;
+  padding: 10px 13px; display: flex; flex-direction: column; gap: 0; }
+/* The draft's own row: the field, and the controls too while the bar is one
+   row. A draft long enough to need the keys takes the second row instead, and
+   the controls follow it down. */
+.line { display: flex; align-items: center; gap: 8px; }
 /* The separation the box's gap gave every row above the draft: C moved the
    field and the footer together and left only that pair tight, so this stays
    per pair rather than a gap. */
@@ -1601,21 +2086,23 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
    its own. */
 .line .txt:focus { outline: none; }
 .line .txt::placeholder { color: var(--dim); font-style: italic; }
-/* The controls sit together at the foot's right end, the keys at its left, so
-   the draft keeps the box's whole width and the controls still land under the
-   caret's last line. 24px is the floor a pointer target takes. */
-.foot .ctls { margin-left: auto; flex: none; display: flex; align-items: center;
+/* The controls sit together at the right end of whichever row holds them - the
+   field's own line while the bar is one row, the foot once a draft or a
+   recording gives it a second - so the draft keeps the box's whole width and
+   the controls still land at the caret's last line. 24px is the floor a
+   pointer target takes. */
+.ctls { margin-left: auto; flex: none; display: flex; align-items: center;
   gap: 10px; }
-.foot .mic { flex: none; width: 24px; height: 24px;
+.mic { flex: none; width: 24px; height: 24px;
   display: grid; place-items: center; color: var(--dim); background: none;
   border: 0; padding: 0; cursor: pointer; }
 /* The mic lifts to the primary on hover, matching its sibling controls (the
    send's accent), rather than the sheet's generic text lift. */
-.foot .mic:hover { color: var(--accent); }
+.mic:hover { color: var(--accent); }
 /* The mic is the phone's primary dictate control and carries the hold, so its
    width takes the same 44px floor as the dock's (the sheet's button rule gives
    the height; a finger drifting off 24px would cancel the hold). */
-@media (pointer: coarse) { .foot .mic { min-height: 44px; min-width: 44px; } .pop .hd .x { min-width: 44px; } }
+@media (pointer: coarse) { .mic { min-height: 44px; min-width: 44px; } .pop .hd .x { min-width: 44px; } }
 /* The send, at the same 24px pointer floor as the mic and centred in whatever
    box it gets, since the phone width gives every control a 44px floor and the
    icon would otherwise sit at the top of it. */
@@ -1680,6 +2167,28 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
 .tc .x { color: var(--dim); background: none; border: 0; cursor: pointer;
   font-family: inherit; font-size: inherit; padding: 0 3px; line-height: 1; }
 .tc .x:hover { color: var(--text); }
+/* **The take takes the line, and the graph takes the line's room** (Ved,
+   2026-10-11): the draft's own line in the composer and the question's words
+   row in the dock both hand the card everything the controls leave, and the
+   card wears none of the pill's chrome - the surface's ring carries the state,
+   and the row is the one the words land in rather than something above it. */
+.takeline .tc, .dock .qrow .tc { align-self: center; margin: 0; border: 0; background: none;
+  box-shadow: none; padding: 0; flex: 1 1 auto; min-width: 0; }
+/* The graph inside the card takes whatever the readings leave: pinned at the
+   pill's 116px it read as a bead between the counts rather than as the meter of
+   what is being recorded. */
+.takeline .tc .bar, .dock .qrow .tc .bar { flex: 1 1 auto; width: auto; min-width: 0; }
+.takeline .tc .ticks, .dock .qrow .tc .ticks { flex: 1 1 auto; justify-content: space-between; }
+/* **One smooth envelope, a deeper track for it** (Ved, 2026-10-11, on the
+   stretched take): the pill's per-cell bars read as chunks once the graph has
+   the row's width, and their 16px track made the readings look flat - the
+   highs and lows of what is being recorded sat inside two pixels. A spread
+   card draws the same readings as one path, and the box stretches to the
+   row, so the amplitude scales with it. The pill keeps its own bars. */
+.tc .wave { flex: 1 1 auto; min-width: 0; height: 26px; align-self: center; }
+.tc .wave .area { fill: var(--accent); }
+.tc .wave .edge { fill: none; stroke: var(--hot); stroke-width: 1.5px;
+  vector-effect: non-scaling-stroke; }
 /* The phase, for a screen reader only: the card's counts are visual readings
    and would be unreadable announced fifty times a second. */
 .tc .sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
@@ -1727,7 +2236,7 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
    box under ~51px, narrower than the pill's 22px of padding and border, which
    nothing draws at. */
 @container (max-width: 505px) { .tc .clock { display: none; } }
-@container (max-width: 456px) { .tc .bars, .tc .ticks, .tc .bar { display: none; } }
+@container (max-width: 456px) { .tc .bars, .tc .wave, .tc .ticks, .tc .bar { display: none; } }
 @container (max-width: 330px) { .tc .ready, .tc .count { display: none; } }
 @container (max-width: 266px) { .tc .fr { display: none; } }
 @container (max-width: 195px) { .tc .kb { display: none; } }
@@ -1880,19 +2389,12 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .ac .it.sel .p { color: var(--text); }
 .ac .it .g { width: 20px; flex: 0 0 20px; text-align: center; }
 
-/* ---------- the dock: the box morphed into a prompt ---------- */
+/* ---------- the dock: the prompt's lane of the surface ---------- */
 
-/* The dock is a panel, not a warning: a neutral edge and the page's own
-   surface, with the accent left to the row being marked and the question's
-   own mark. The warm border and the orange-tinted gradient read as a state
-   rather than as a surface. */
-/* A container as well as a card: the take's own ladder measures its container,
-   and in here that is this dock - without it a card drawing in the words row
-   keeps every reading and runs the row out past the dock's edge. */
-.dock { container-type: inline-size;
-  border: 1px solid var(--line); border-radius: 14px;
-  background: linear-gradient(180deg, rgba(20,25,38,.85), rgba(13,17,26,.92));
-  box-shadow: 0 16px 44px rgba(0,0,0,.5); padding: 13px 15px;
+/* A lane of `.surf` now rather than a panel: the surface's ring and ground
+   carry it, and the accent is left to the row being marked and the question's
+   own mark. */
+.dock { padding: 13px 15px;
   display: flex; flex-direction: column; gap: 10px; }
 .dock .queue { display: flex; align-items: center; gap: 6px;
   font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
@@ -1912,6 +2414,27 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .dock .segs { display: flex; align-items: center; gap: 5px; margin-left: auto; flex: none; }
 .dock .segs i { width: 14px; height: 3px; border-radius: 999px; background: var(--s3); }
 .dock .segs i.on { background: var(--accent); }
+/* The head's right end: the batch marks and the fold control together, so one
+   auto margin carries both to the edge whether or not there is a batch. */
+.dock .headend { margin-left: auto; display: flex; align-items: center; gap: 5px; flex: none; }
+.dock .headend .segs { margin-left: 0; }
+.dock .chevb { color: var(--dim); background: none; border: 0; padding: 0 2px;
+  cursor: pointer; display: grid; place-items: center; margin-left: 6px; }
+.dock .chevb:hover { color: var(--accent); }
+/* The folded state: the bar is the question and nothing else (Ved, 2026-10-10
+   - the count is the one other thing it carries, so a reader knows more wait
+   behind it). A click, Enter or Space unfolds. It is a real `<button>` and
+   wears the house reset, or the UA's chrome paints through - measured: a
+   light-mode ground with a 2px outset border, inside the dark surface. */
+.dock .qbar { display: flex; align-items: center; gap: 9px; padding: 12px 14px;
+  background: none; border: 0; font: inherit; color: inherit; text-align: left;
+  font-size: var(--fs-base); cursor: pointer; }
+.dock .qbar .qm { color: var(--accent); font-weight: 700; flex: none; }
+.dock .qbar .t { color: var(--text); font-weight: 600; letter-spacing: -.01em;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.dock .qbar .cnt { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); flex: none; }
+.dock .qbar .chevc { margin-left: auto; color: var(--dim); flex: none; font-size: 13px; }
+.dock .qbar:hover .chevc { color: var(--accent); }
 /* What kind of decision this is, and where a post would go. */
 .dock .tag { display: inline-flex; align-items: center; gap: 7px;
   font-family: var(--mono); font-size: var(--fs-label); border-radius: 999px;
@@ -1922,7 +2445,11 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
   border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; }
 .dock .reason { color: var(--warn); font-size: var(--fs-base); }
 .dock .desc { color: var(--dim); font-size: var(--fs-base); }
-.dock .opts { display: flex; flex-direction: column; gap: 1px; }
+/* A long option list scrolls in place rather than pushing the foot off a
+   phone: the prompt lane is a lane, not a page, and the words row below it
+   must stay reachable however many options the wire sent. */
+.dock .opts { display: flex; flex-direction: column; gap: 1px;
+  max-height: min(46vh, 420px); overflow-y: auto; }
 /* The listbox takes the keyboard when the dock arrives, and its own marked row
    is what shows where the keyboard is - so the page's accent focus ring, which
    drew an orange rectangle around every option at once, is not drawn here. */
@@ -1975,9 +2502,10 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .opt .radio.on { border-color: var(--ok); }
 .opt .radio.on::after { content: ''; width: 7px; height: 7px; border-radius: 50%;
   background: var(--ok); }
-/* A permission's actions, and a held post's verbs: buttons, with the trusting
-   one primary and the refusal as reachable as the approval. */
-.dock .acts { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+/* A permission's actions, and a held post's verbs: buttons, the approving one
+   primary and leading (the settled design), the refusal last - left-aligned
+   under the body rather than scattered to the far edge. */
+.dock .acts { display: flex; gap: 8px; justify-content: flex-start; flex-wrap: wrap; }
 .dock .btn { border: 1px solid var(--line); border-radius: 9px; background: none;
   color: var(--muted); font-family: var(--mono); font-size: var(--fs-label);
   padding: 7px 13px; cursor: pointer; }
@@ -1985,31 +2513,26 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .dock .btn.p { border-color: color-mix(in srgb, var(--accent) 50%, transparent);
   color: var(--hot); background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .dock .btn.d { border-color: color-mix(in srgb, var(--bad) 45%, transparent); color: var(--bad); }
-/* The one row that takes words, which is also where a take's words land: the
-   field, and the mic that is this surface's own door to a take. */
-/* The row wraps rather than pushing the mic out of the dock: the card in here
-   is the composer's own, shed by the ladder above only so far, and at a narrow
-   dock the mic is what would otherwise hang past the edge. */
-.dock .custom { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  border-top: 1px solid var(--line); padding-top: 10px; }
-.dock .custom .notes { flex: 1; min-width: 0; }
-.dock .custom .micb { flex: none; width: 26px; height: 26px; border-radius: 8px;
+/* The words row, which is the prompt's LAST row and its input: it draws like
+   any option, and the field inside it is the answer. Arriving on it puts the
+   caret in it - no tint for that, the caret is the signal - and the mic rides
+   its end. A take draws here too, in the composer's own card. */
+.dock .qrow { align-items: center; gap: 10px; margin-top: 1px;
+  flex-wrap: wrap; }
+.dock .qrow .notes { flex: 1; min-width: 0; width: auto; caret-color: var(--hot); }
+.dock .qrow:focus-within .n { color: var(--hot); }
+.dock .qrow .micb { flex: none; margin-left: auto; width: 26px; height: 26px; border-radius: 8px;
   border: 1px solid var(--line); background: none; color: var(--dim);
   display: grid; place-items: center; cursor: pointer; }
-.dock .custom .micb:hover { color: var(--accent); border-color: var(--ctl); }
-/* The take's card is built for the composer - top left, its draft below it -
-   and `align-self: flex-start` with the trailing margin is what that shape
-   reserves. In the dock's row there is no draft under it and the mic stands
-   beside it, so left alone the card pins to the row's top and the mic centres
-   against the card's margin box: four pixels below the card's own centre, and
-   the recording dot's. Centred here instead, with the margin the composer's
-   shape reserved dropped. */
-.dock .custom .tc { align-self: center; margin-bottom: 0; }
-.dock .custom .sendb { flex: none; width: 26px; height: 26px; border-radius: 8px;
+.dock .qrow .micb:hover { color: var(--accent); border-color: var(--ctl); }
+/* The dock's take card rides the same rule as the composer's line above: one
+   look for one thing - the question's row and the draft's row draw the take
+   the same way (Ved, 2026-10-11). */
+.dock .qrow .sendb { flex: none; width: 26px; height: 26px; border-radius: 8px;
   border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
   background: none; color: var(--accent); display: grid; place-items: center; cursor: pointer; }
-.dock .custom .sendb:hover { border-color: var(--accent); color: var(--hot); }
-.dock .custom.live .micb { border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+.dock .qrow .sendb:hover { border-color: var(--accent); color: var(--hot); }
+.dock .qrow.on .micb { border-color: color-mix(in srgb, var(--accent) 45%, transparent);
   color: var(--hot); }
 /* A refusal is a row of its own, in the tone of a thing gone wrong. */
 .dock .refusal { border: 1px solid color-mix(in srgb, var(--bad) 45%, transparent);
@@ -2025,8 +2548,10 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
    floor, so its width is stated here. */
 @media (pointer: coarse) {
   .dock .btn { min-height: 44px; }
-  .dock .custom .micb { min-height: 44px; min-width: 44px; }
-  .dock .custom .sendb { min-height: 44px; min-width: 44px; }
+  /* The fold control is a glyph: its box is ~19px wide without this floor. */
+  .dock .chevb { min-width: 44px; }
+  .dock .qrow .micb { min-height: 44px; min-width: 44px; }
+  .dock .qrow .sendb { min-height: 44px; min-width: 44px; }
 }
 /* The phase or the batch, for a screen reader only: the marks say nothing. */
 .dock .sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
@@ -2297,7 +2822,7 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .fam-meta .lb { color: var(--muted); margin-right: 5px; }
 .fam-meta .sep { padding: 0 6px; color: var(--line); }
 .fam-quote { border-left: 1px solid var(--line); padding: 3px 0 3px 13px; margin: 5px 0;
-  color: var(--muted); font-size: var(--fs-base); white-space: pre-wrap;
+  color: var(--muted); font-size: var(--fs-base);
   overflow-wrap: anywhere; }
 .fam-tag { color: var(--dim); font-family: var(--mono); font-size: var(--fs-label);
   margin-top: 6px; }
@@ -2568,4 +3093,238 @@ details > summary:hover .arw { opacity: 1; color: var(--muted); }
 details[open] > summary .arw { opacity: 1; }
 @media (hover: none) {
   .arw { opacity: 1; color: var(--dim); }
+}
+
+/* ---------- the extensions page ----------
+   Everything under `.extensions`, for the reason the `.models` block gives:
+   `.split`, `.rail`, `.pane`, `.legend`, `.title` and `.back` are short names
+   another surface already uses, and a bare rule here would reach it by coming
+   later. The pieces it genuinely shares with the shipped sheet are the header
+   row, the four state marks (`.dot.warn`, `.dot.failed`, `.dot.ok`, `.ring`)
+   and the empty treatment. `.chip` and `.btn` live under the models block's
+   and the dock's own scopes (there is no `.models .btn`), so this page
+   declares its own copies here. The row chrome - the band gradient over
+   `--line` - is the second copy of that recipe, `.models .model` being the
+   other (the board's rows are flat `.b-card`, no gradient); when a third page
+   needs it the recipe earns a shared class, and until then a lift would have
+   to choose between two layouts that only look alike. */
+
+.extensions .pending { color: var(--muted); font-size: var(--fs-base); margin-top: 12vh;
+  text-align: center; }
+
+/* the page's own controls: the chip at this page's scale, as span (a state)
+   or button (an action), and the three button weights */
+.extensions .chip { display: inline-flex; align-items: center; gap: 7px;
+  font-family: var(--mono); font-size: var(--fs-label); padding: 4px 10px;
+  border: 1px solid var(--line); border-radius: 9px; color: var(--muted);
+  background: none; white-space: nowrap; }
+.extensions .chip.warn { color: var(--warn); border-color: rgba(201,161,59,.45);
+  background: rgba(201,161,59,.08); }
+.extensions .chip.dim { color: var(--dim); border-color: var(--line); background: none; }
+.extensions .chip.blue { color: var(--blue); border-color: rgba(97,160,224,.35); }
+.extensions .chip.bad { color: var(--bad); border-color: rgba(224,104,62,.45);
+  background: rgba(224,104,62,.08); }
+.extensions button.chip { cursor: pointer; }
+.extensions button.chip:hover { border-color: var(--ctl); color: var(--text); }
+.extensions button.chip:disabled { opacity: .5; cursor: default; }
+.extensions .btn { border: 0; cursor: pointer; font: inherit; font-family: var(--mono);
+  font-size: 13px; border-radius: 10px; }
+.extensions .btn.go { background: var(--ok); color: var(--bg); font-weight: 640; padding: 7px 14px; }
+.extensions .btn.go:hover { filter: brightness(1.06); }
+.extensions .btn.ghost { background: transparent; color: var(--muted);
+  box-shadow: inset 0 0 0 1px var(--line); padding: 7px 12px; }
+.extensions .btn.ghost:hover { color: var(--text); box-shadow: inset 0 0 0 1px var(--ctl); }
+.extensions .btn.add { background: var(--accent); color: var(--bg); font-weight: 640;
+  border-radius: 999px; padding: 8px 15px; }
+.extensions .btn.add:hover { filter: brightness(1.08); }
+.extensions .btn:disabled { opacity: .5; cursor: default; }
+
+/* the header's name block and the way back */
+.extensions .title { display: flex; flex-direction: column; }
+.extensions .title .t { font-size: var(--fs-title); font-weight: 650; letter-spacing: -.01em;
+  color: var(--text); }
+.extensions .title .s { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+.extensions .back { margin-left: auto; font-family: var(--mono); font-size: var(--fs-label);
+  color: var(--muted); text-decoration: none; border: 1px solid var(--line);
+  border-radius: 9px; padding: 6px 11px; }
+.extensions .back:hover { border-color: var(--ctl); color: var(--text); }
+
+/* the refusal line: the core's own words, above the page */
+.extensions .ext-said { margin: 0 0 14px; padding: 9px 13px; border-radius: 10px;
+  font-size: var(--fs-data); background: rgba(224,104,62,.12); color: var(--bad); }
+
+/* the marks' legend: said once, in words, so a shape is never a guess */
+.extensions .ext-legend { display: flex; gap: 18px; flex-wrap: wrap;
+  font-family: var(--mono); font-size: 11px; color: var(--dim); margin: -4px 0 16px; }
+.extensions .ext-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.extensions .ext-legend .dot { width: 9px; height: 9px; flex-basis: 9px; }
+
+.extensions .ext-split { display: flex; align-items: flex-start; }
+.extensions .ext-rail { flex: 0 0 216px; padding: 2px 16px 2px 0; }
+.extensions .ext-rail-item {
+  display: flex; align-items: center; gap: 9px; width: 100%; text-align: left;
+  font-family: var(--mono); font-size: var(--fs-data); color: var(--muted);
+  background: none; border: 1px solid transparent; border-radius: 9px;
+  padding: 9px 11px; margin-bottom: 2px; cursor: pointer;
+}
+.extensions .ext-rail-item:hover { background: var(--s2); color: var(--text); }
+.extensions .ext-rail-item.on { background: var(--sel); color: var(--hot);
+  border-color: rgba(244,118,0,.25); }
+.extensions .ext-rail-item .n { margin-left: auto; font-size: var(--fs-label); color: var(--dim); }
+.extensions .ext-rail-item.on .n { color: var(--hot); }
+.extensions .ext-rail-item .dot { width: 8px; height: 8px; flex-basis: 8px; }
+.extensions .ext-rule { height: 1px; background: var(--line); margin: 10px 11px; }
+
+.extensions .ext-pane { flex: 1 1 auto; min-width: 0; padding-left: 22px;
+  border-left: 1px solid var(--line); }
+.extensions .ext-pane-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  margin: 2px 0 14px; }
+.extensions .ext-pane-head .t { font-size: 19px; font-weight: 620; letter-spacing: -.01em;
+  color: var(--text); }
+.extensions .ext-pane-head .s { font-family: var(--mono); font-size: var(--fs-label);
+  color: var(--dim); }
+.extensions .ext-pane-head .right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.extensions .find { display: block; width: 100%; font-family: var(--mono); font-size: var(--fs-data);
+  color: var(--text); background: var(--s1); border: 1px solid var(--line);
+  border-radius: 9px; padding: 9px 12px; margin-bottom: 12px; }
+.extensions .find::placeholder { color: var(--dim); }
+.extensions .find:focus { outline: none; border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(244,118,0,.12); }
+
+.extensions .ext-add-in { background: var(--bg); border: 0; box-shadow: inset 0 0 0 1px var(--line);
+  border-radius: 10px; color: var(--text); font-family: var(--mono);
+  font-size: var(--fs-data); padding: 8px 11px; min-width: 220px; }
+.extensions .ext-add-in::placeholder { color: var(--dim); }
+.extensions .ext-add-in:focus { outline: none;
+  box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 3px rgba(244,118,0,.12); }
+
+/* the updates band: the band card's own ground, toned by what it says */
+.extensions .ext-band { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  border: 1px solid var(--line); border-radius: var(--r); background: rgba(13,17,26,.6);
+  padding: 12px 15px; margin-bottom: 14px; }
+.extensions .ext-band.in { border-color: rgba(201,161,59,.35); background: rgba(201,161,59,.07); }
+.extensions .ext-band.in .t { color: var(--warn); }
+.extensions .ext-band.done { border-color: rgba(130,199,107,.4); background: rgba(130,199,107,.07); }
+.extensions .ext-band.done .t { color: var(--ok); }
+.extensions .ext-band .t { font-family: var(--mono); font-size: var(--fs-data); color: var(--text); }
+.extensions .ext-band .pairs { font-family: var(--mono); font-size: var(--fs-label);
+  color: var(--dim); }
+.extensions .ext-band .right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.extensions .ext-band .dot { width: 9px; height: 9px; flex-basis: 9px; }
+.extensions .ext-band .ring { flex: none; }
+
+/* one plugin: the row, and the fold under it */
+.extensions .ext-group { margin-bottom: 8px; }
+.extensions .ext-row { display: flex; align-items: center; gap: 11px; position: relative;
+  background: linear-gradient(180deg, rgba(20,25,38,.75), rgba(13,17,26,.75));
+  border: 1px solid var(--line); border-radius: var(--r); padding: 11px 13px;
+  cursor: pointer; -webkit-user-select: none; user-select: none; }
+.extensions .ext-row:hover { background: linear-gradient(180deg, rgba(27,33,48,.9), rgba(17,22,33,.9)); }
+.extensions .ext-row.flat { cursor: default; margin-bottom: 8px; }
+.extensions .ext-row.failed .ext-nm { color: var(--bad); }
+.extensions .ext-row.avail { opacity: .66; }
+.extensions .ext-row.avail .ext-nm { color: var(--muted); }
+.extensions .ext-group .ext-row.open { border-color: rgba(244,118,0,.45);
+  border-radius: var(--r) var(--r) 0 0; margin-bottom: 0; }
+/* The row is the fold toggle, so the whole card takes the press: the hit
+   target is an overlay behind the content, and the row's own controls sit
+   above it so they stay pressable. */
+.extensions .ext-row .pick { position: absolute; inset: 0; z-index: 1; background: none;
+  border: 0; padding: 0; cursor: pointer; border-radius: var(--r); }
+.extensions .ext-row.flat .pick { display: none; }
+.extensions .ext-row .pick:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.extensions .ext-row .side { position: relative; z-index: 2; display: flex; align-items: center;
+  gap: 8px; flex: none; margin-left: auto; }
+/* The shared chevron arrives with the pointer; here it is the fold's own
+   affordance and a phone has no pointer to arrive with, so it is drawn at
+   rest and turns with the open state. */
+.extensions .ext-row .arw { opacity: 1; color: var(--dim); flex: none; position: relative;
+  z-index: 2; transition: transform 120ms ease; }
+.extensions .ext-row.open .arw { transform: rotate(90deg); color: var(--accent); }
+.extensions .ext-row .dot { width: 10px; height: 10px; flex-basis: 10px; }
+.extensions .ext-row .ring { flex: none; }
+.extensions .ext-nm { font-family: var(--mono); font-size: var(--fs-data); color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.extensions .ext-src { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.extensions .ext-src .to { color: var(--warn); }
+.extensions .ext-problem { color: var(--warn); }
+
+.extensions .ext-subs { padding: 4px 0 10px 24px; border-left: 2px solid var(--line);
+  border-right: 1px solid var(--line); border-bottom: 1px solid var(--line);
+  border-radius: 0 0 var(--r) var(--r);
+  background: linear-gradient(180deg, rgba(13,17,26,.55), rgba(13,17,26,.3)); }
+.extensions .ext-subkind { display: flex; align-items: baseline; gap: 8px; font-family: var(--mono);
+  font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--dim);
+  padding: 9px 4px 4px; }
+.extensions .ext-subkind .c { letter-spacing: 0; color: var(--dim); text-transform: none; }
+.extensions .ext-subwrap { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 0 18px; }
+.extensions .ext-sub { display: flex; align-items: center; gap: 6px; padding: 3px 4px;
+  font-family: var(--mono); font-size: var(--fs-label); color: var(--muted); min-width: 0; }
+.extensions .ext-sub .k { color: var(--text); overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.extensions .ext-sub .w { color: var(--dim); }
+
+.extensions .ext-mp { display: flex; align-items: center; gap: 11px; flex-wrap: wrap;
+  background: linear-gradient(180deg, rgba(20,25,38,.75), rgba(13,17,26,.75));
+  border: 1px solid var(--line); border-radius: var(--r); padding: 11px 13px; margin-bottom: 8px; }
+.extensions .ext-mp .side { margin-left: auto; display: flex; gap: 8px; }
+.extensions .ext-mp .dot { width: 10px; height: 10px; flex-basis: 10px; }
+
+.extensions .ext-sect { display: flex; align-items: baseline; gap: 9px; margin: 22px 0 10px;
+  font-size: var(--fs-label); font-weight: 600; letter-spacing: .11em; text-transform: uppercase;
+  color: var(--muted); }
+.extensions .ext-sect .c { letter-spacing: 0; text-transform: none; font-family: var(--mono);
+  font-size: 11px; color: var(--dim); font-weight: 400; }
+.extensions .ext-note { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+  margin: 10px 2px 0; }
+
+/* the install dialog: a scrim and a panel, the board's takeover shape at
+   one question's size */
+.extensions .ext-scrim { position: fixed; inset: 0; z-index: 40; display: flex;
+  align-items: center; justify-content: center; padding: 24px;
+  background: rgba(4,5,10,.62); }
+.extensions .ext-dialog { width: min(480px, 100%); background: var(--s1);
+  border: 1px solid var(--line); border-radius: 14px; padding: 20px 22px 18px;
+  box-shadow: 0 24px 60px rgba(0,0,0,.5); }
+.extensions .ext-dlg-t { font-size: 17px; font-weight: 620; color: var(--text); }
+.extensions .ext-dlg-s { font-size: var(--fs-data); color: var(--muted); margin: 6px 0 14px; }
+.extensions .ext-scopes { display: flex; flex-direction: column; gap: 6px; }
+.extensions .ext-scope { display: flex; align-items: center; gap: 10px; font-size: var(--fs-data);
+  color: var(--text); padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px;
+  cursor: pointer; }
+.extensions .ext-scope:hover { border-color: var(--ctl); }
+.extensions .ext-scope b { font-weight: 600; }
+.extensions .ext-scope span { color: var(--muted); }
+.extensions .ext-dlg-field { display: flex; align-items: center; gap: 10px; margin-top: 12px;
+  font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+.extensions .ext-dlg-field select { background: var(--bg); color: var(--text);
+  border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px; }
+.extensions .ext-dlg-note { margin-top: 12px; font-size: var(--fs-label); color: var(--warn); }
+.extensions .ext-dlg-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+
+@media (pointer: coarse) {
+  /* A row, a rail item and a control are all things a finger reaches. */
+  .extensions .ext-row, .extensions .ext-rail-item, .extensions .ext-mp,
+  .extensions .ext-scope, .extensions .back { min-height: 44px; }
+  .extensions .back { display: inline-flex; align-items: center; }
+  .extensions .chip, .extensions .btn { min-height: 44px; }
+}
+
+@media (max-width: 760px) {
+  /* The rail wraps rather than scrolling sideways: the sheet has no
+     horizontal scroller anywhere, and a rail that had one would be the
+     first - the invariant `wrap.test.ts` pins. */
+  .extensions .ext-split { flex-direction: column; }
+  .extensions .ext-rail { flex: none; width: 100%; padding: 0 0 10px; display: flex;
+    flex-wrap: wrap; gap: 6px; }
+  .extensions .ext-rail-item { width: auto; flex: 0 0 auto; margin-bottom: 0; }
+  .extensions .ext-rail-item .n { margin-left: 6px; }
+  .extensions .ext-rail-item .dot { width: 8px; height: 8px; flex-basis: 8px; margin-left: 0; }
+  .extensions .ext-rule { display: none; }
+  .extensions .ext-pane { padding-left: 0; border-left: 0; }
+  .extensions .ext-row { flex-wrap: wrap; }
+  .extensions .ext-row .ext-src { flex-basis: 100%; order: 3; padding-left: 22px; }
+  .extensions .ext-subwrap { grid-template-columns: 1fr; }
 }

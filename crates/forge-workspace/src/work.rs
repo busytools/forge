@@ -786,6 +786,7 @@ provider = "anthropic"
         git(dir.path(), &["init", "-q", "-b", "main"]);
         git(dir.path(), &["config", "user.email", "test@example.test"]);
         git(dir.path(), &["config", "user.name", "test"]);
+        git(dir.path(), &["config", "commit.gpgsign", "false"]);
         // The commit below leaves git's auto-maintenance behind (`git
         // maintenance run --auto --detach`, gc --auto's modern form), which
         // writes and removes `.git/objects/maintenance.lock` - the measured

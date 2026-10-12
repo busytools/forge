@@ -609,16 +609,21 @@ async fn fetch_plugin_details_inner(
 }
 
 /// One future handed back by the [`UpdateRunner`] seams.
-pub type RunnerFut<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T>>>;
+///
+/// `Send` so a runner can drive a batch from a task that moves across
+/// threads, which is how `forge-workspace` runs one on the socket's
+/// behalf; the terminal awaits its batches on a local task either way.
+pub type RunnerFut<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>>;
 /// The update seam's result: the resolved claude path plus the CLI's
 /// combined stdout+stderr.
 pub type RunnerUpdateResult = Result<(PathBuf, String), String>;
 /// The refresh seam's result: the inventory plus a resolved claude path.
 pub type RunnerRefreshResult = Result<(PluginsInventorySnapshot, PathBuf), String>;
-type SharedUpdateFn =
-    std::sync::Arc<dyn Fn(Option<PathBuf>, String, Vec<String>) -> RunnerFut<RunnerUpdateResult>>;
+type SharedUpdateFn = std::sync::Arc<
+    dyn Fn(Option<PathBuf>, String, Vec<String>) -> RunnerFut<RunnerUpdateResult> + Send + Sync,
+>;
 type SharedRefreshFn =
-    std::sync::Arc<dyn Fn(Option<PathBuf>, String) -> RunnerFut<RunnerRefreshResult>>;
+    std::sync::Arc<dyn Fn(Option<PathBuf>, String) -> RunnerFut<RunnerRefreshResult> + Send + Sync>;
 
 /// The CLI surface one update batch runs through; injectable so tests
 /// drive a whole batch without shelling out. The production instance

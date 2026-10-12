@@ -8,10 +8,11 @@
 //! argument is a prompt that resolves to something else. The additions this
 //! family carries beyond upstream are marked as such, and each names an
 //! argument upstream does not have - `force`, `expression` - or stands as a
-//! tool of its own built from the same driver.
+//! tool of its own: built from the same driver, or - `browser_profile_delete`
+//! alone - answered by the client's host and never reaching a driver.
 //!
 //! Kept apart from the tools themselves so the surface a model reads is one
-//! table rather than twenty-eight structs: a shape is edited here and nowhere
+//! table rather than twenty-nine structs: a shape is edited here and nowhere
 //! else.
 
 use serde_json::{Value, json};
@@ -27,7 +28,9 @@ pub(crate) struct ToolSpec {
 /// The whole surface, in upstream's own order.
 ///
 /// Every tool carries the optional `profile` name: a session says which
-/// profile a call drives, and the client routes on it.
+/// profile a call drives, and the client routes on it - except
+/// `browser_profile_delete`, which names the profile to remove in `name` and
+/// is answered by the client's host.
 pub(crate) fn specs() -> Vec<ToolSpec> {
     let mut specs = vec![
         ToolSpec {
@@ -739,6 +742,27 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
         },
+        // **Answered by the client's host, not the driver**: a profile's
+        // delete never drives a page, so this one addition rides the relay
+        // and stops at the host. It is a session's own door - only the
+        // profile this session opened can go through it; the person's
+        // wider door is the browser strip.
+        ToolSpec {
+            name: "browser_profile_delete",
+            description: "Delete one of this session's own browser profiles, removing its saved logins, cookies and sessions for good. Only the profile this session opened can be deleted; the shared browser and another session's profiles are refused.",
+            schema: json!({
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "The name of the profile to delete"
+                    }
+                },
+                "required": ["name"],
+                "additionalProperties": false
+            }),
+        },
     ];
     for spec in &mut specs {
         let Some(schema) = spec.schema.as_object_mut() else { continue };
@@ -747,7 +771,11 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
         };
         // The hand-off is the one tool whose `profile` chooses what the PERSON
         // is shown rather than what this session drives, so its description
-        // says that instead.
+        // says that instead. The delete is the one tool that carries no
+        // `profile` at all: its own `name` argument IS the profile it acts on.
+        if spec.name == "browser_profile_delete" {
+            continue;
+        }
         let description = if spec.name == "browser_hand_off" {
             "Name of the browser profile to raise for the person. Omit to raise the browser's \
              own profile."
@@ -767,13 +795,13 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
 mod tests {
     use super::*;
 
-    /// The surface is twenty-eight tools: the 25 upstream published and the
-    /// three this family adds. A count is the cheap half; the shape of each
+    /// The surface is twenty-nine tools: the 25 upstream published and the
+    /// four this family adds. A count is the cheap half; the shape of each
     /// is pinned below.
     #[test]
     fn the_surface_is_the_captures_tools_and_the_additions() {
         let names: Vec<&str> = specs().iter().map(|spec| spec.name).collect();
-        assert_eq!(names.len(), 28, "25 upstream tools and three additions: {names:?}");
+        assert_eq!(names.len(), 29, "25 upstream tools and four additions: {names:?}");
         for upstream in [
             "browser_close",
             "browser_resize",
@@ -806,8 +834,9 @@ mod tests {
         assert!(
             names.contains(&"browser_click_and_capture")
                 && names.contains(&"browser_form_state")
-                && names.contains(&"browser_hand_off"),
-            "the three beyond-upstream tools are on the surface: {names:?}",
+                && names.contains(&"browser_hand_off")
+                && names.contains(&"browser_profile_delete"),
+            "the four beyond-upstream tools are on the surface: {names:?}",
         );
     }
 
@@ -833,7 +862,8 @@ mod tests {
         }
     }
 
-    /// **Every tool takes an optional `profile` name.** A session says which
+    /// **Every tool takes an optional `profile` name - except the delete,
+    /// whose own `name` IS the profile it acts on.** A session says which
     /// profile a call drives; a call that names none drives the browser's own.
     /// The schema is where the model learns the argument exists, and a closed
     /// schema that did not declare it would REFUSE the call - so this is the
@@ -841,6 +871,20 @@ mod tests {
     #[test]
     fn every_tool_takes_an_optional_profile_name() {
         for spec in specs() {
+            if spec.name == "browser_profile_delete" {
+                assert!(
+                    spec.schema["properties"].get("profile").is_none(),
+                    "the delete carries its profile as `name`, not as the driving argument: {}",
+                    spec.schema,
+                );
+                assert_eq!(
+                    spec.schema["required"],
+                    json!(["name"]),
+                    "and `name` is what it requires: {}",
+                    spec.schema,
+                );
+                continue;
+            }
             assert_eq!(
                 spec.schema["properties"]["profile"]["type"],
                 json!("string"),

@@ -7,7 +7,7 @@ import { homeWire } from '../dev/fixture.data';
 import { PROTOCOL_VERSION } from '../protocol';
 import type { ServerMessage } from '../protocol';
 import type { Connection } from '../socket';
-import type { AgentRow } from '../wire/home';
+import type { AgentRow, HomeWire } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
 import { closeSeat, forgetClosed, watchReleases } from './close';
 import Rail from './Rail.svelte';
@@ -397,23 +397,64 @@ describe('a row that is not a way in', () => {
   /**
    * The chrome is the other half of the claim: a row that says "information"
    * in its markup still reads as a link if it points, glows under the pointer
-   * and carries the chevron. Keyed on the way-in class rather than on the
-   * `asleep` mark, because a dormant lead is asleep and still a link. The
-   * rail's fold is scoped to div.wk so its summary - drawn as a worker row,
-   * and still the fold's control - keeps its own.
+   * and carries the chevron. The rail's fold is scoped to div.wk so its
+   * summary - drawn as a worker row, and still the fold's control - keeps its
+   * own.
    */
-  it('draws no pointer, hover ground or chevron', () => {
-    expect(rule('.row.unopenable'), 'the row still points like a link').toContain(
-      'cursor: default',
-    );
-    expect(rule('.row.unopenable::after'), 'the chevron still says it goes somewhere').toContain(
-      'display: none',
-    );
-    expect(rule('.row.unopenable:hover'), 'the row still glows under the pointer').toContain(
-      'background: none',
-    );
+  it('draws no pointer on the fold row', () => {
     expect(rule('details.sfold div.wk'), 'the fold row still points like a link').toContain(
       'cursor: default',
     );
+  });
+});
+
+describe('the rail rows are ways in', () => {
+  /**
+   * **The whole row opens its session.** The name's box stretches over the
+   * row (`.rail-go::after` in the sheet), so the whitespace is the link; the
+   * close chip keeps a target of its own above the stretch. Both halves are
+   * pinned where each lives: the door in the rendered markup, the stretch in
+   * the sheet - no rendered assertion can see a pseudo-element.
+   */
+  it("stretches each row's link over the whole row", () => {
+    const [first] = homeWire.agents;
+    if (first === undefined) throw new Error('the fixture holds no agent');
+    const withWorker: HomeWire = {
+      ...homeWire,
+      agents: [
+        ...homeWire.agents,
+        { ...first, slot: { org: 'TestOrg', project: 'proj', label: 'w1' } },
+      ],
+    };
+    const drawn = render(Rail, {
+      props: { home: withWorker, current: LEAD, now: Date.now(), connection: untouched() },
+    }).body;
+    expect(drawn, 'the project row links its lead').toMatch(
+      /class="rail-go" href="\/session\/TestOrg\/proj\/lead"/,
+    );
+    expect(drawn, 'a worker row links its own seat').toMatch(
+      /class="rail-go" href="\/session\/TestOrg\/proj\/w1"/,
+    );
+    expect(rule('.rail-go::after'), 'the name stretches over the row').toContain('inset: 0');
+    expect(rule('.pr .x, .wk .x'), 'and the chip sits above the stretch').toContain('z-index: 1');
+    expect(rule('.pr, .wk'), 'the rows are positioned at every pointer').toContain(
+      'position: relative',
+    );
+    // **Where the rules SIT is half the fix.** The stretch lived inside the
+    // coarse-pointer block before this change, and a `rule()` read is
+    // media-blind - slid back under a media block, every rendered assertion
+    // above still passes and the dead whitespace returns on a mouse. The
+    // 560 block's own comment is the anchor: it sits just above the
+    // coarse-pointer block the rules used to hide in, so clearing it clears
+    // both. Each index asserts it FOUND its rule first - `-1 < anchor`
+    // passes vacuously otherwise.
+    const widthBlock = sheet.indexOf('A thumb, not a cursor. The by-width checks');
+    expect(widthBlock, 'the 560 block is in the sheet').toBeGreaterThan(-1);
+    const positioned = sheet.indexOf('.pr, .wk { position: relative; }');
+    expect(positioned, 'the positioning rule is in the sheet').toBeGreaterThan(-1);
+    expect(positioned, 'the positioning slid back under the 560 block').toBeLessThan(widthBlock);
+    const stretched = sheet.indexOf('.rail-go::after {');
+    expect(stretched, 'the stretch rule is in the sheet').toBeGreaterThan(-1);
+    expect(stretched, 'the stretch slid back under the 560 block').toBeLessThan(widthBlock);
   });
 });

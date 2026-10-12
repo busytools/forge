@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The page listens for the shell's client:// events.",
+  "windows": ["main"],
+  "permissions": ["core:event:default"]
+}
