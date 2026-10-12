@@ -42,14 +42,14 @@ The first message in a fresh chat - a regular scrollback message, not an overlay
   <pre class="indent">
   <span class="accent-bold">Overview</span>
 
-  <span class="accent">--------------------------------- </span>
-  <span class="accent">&lt; Welcome back to Claude, in Rust! &gt;</span>
-  <span class="accent">--------------------------------- </span>
+  <span class="accent"> ------------------------ </span>
+  <span class="accent">&lt; Welcome back to Forge! &gt;</span>
+  <span class="accent"> ------------------------ </span>
   <span class="accent">        \             </span>
   <span class="accent">         \            </span>
   <span class="accent">            _~^~^~_  </span>
   <span class="accent">        \) /  o o  \ (/</span>
-  <span class="accent">          '_ - _' </span>
+  <span class="accent">          '_   -   _' </span>
   <span class="accent">          / '-----' \ </span>
 
 
