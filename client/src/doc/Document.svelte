@@ -22,6 +22,8 @@
    * document opened.
    */
   import { report } from '../socket';
+  import { mintPromptId } from '../wire/ids';
+  import { goTo } from '../routes';
   import Prose from '../chat/Prose.svelte';
   import type { DocumentKind } from '../protocol';
   import { authorName } from '../review/view';
@@ -138,6 +140,15 @@
     | { kind: 'refused'; why: string }
   >({ kind: 'idle' });
 
+  /** Whether this page has been destroyed, which a pending return checks
+   *  before it moves the app out from under whatever the reader is on. */
+  let left = false;
+  $effect(() => {
+    return () => {
+      left = true;
+    };
+  });
+
   function openComposer(row: DocRow): void {
     composing = composing === row.line ? null : row.line;
     commentText = '';
@@ -180,6 +191,12 @@
     finishState = { kind: 'busy' };
     let reviewId: string | null = null;
     let number: number | null = null;
+    // Nothing to release - a deep link, or a state with no comments: the
+    // one door is still the way back.
+    if (drafts.length === 0 && handoff === null) {
+      returnTo(null, 0);
+      return;
+    }
     if (drafts.length > 0) {
       const ids = drafts.map((draft) => draft.id);
       let answer: unknown;
@@ -202,6 +219,29 @@
       const filed = answer as { id?: unknown; number?: unknown };
       reviewId = typeof filed.id === 'string' ? filed.id : null;
       number = typeof filed.number === 'number' ? filed.number : null;
+      // **The nudge the terminal's own drop sends**, so the chat shows the
+      // review to the reader AND reaches the agent - one line, not the
+      // comments - with the document's scope named, which is how the agent
+      // reads it back.
+      if (number !== null) {
+        try {
+          void connection.dispatch(
+            {
+              prompt_under: {
+                key: slot,
+                text: `Review #${number} ready on the document - address it via the review MCP (\`review__list\` with the scope ${scope}).`,
+                attachments: [],
+                uuid: mintPromptId(),
+                source: 'you',
+              },
+            },
+            slot,
+          );
+        } catch {
+          // The review is filed either way; a nudge that could not leave is
+          // the reader's own line missing, never a lost review.
+        }
+      }
     }
     if (handoff !== null) {
       try {
@@ -220,7 +260,20 @@
         return;
       }
     }
+    // **The done is the way back.** The reader came here from the session's
+    // ask; the review and the nudge line are what they take with them, and
+    // the page returns where they were - the beat is so the confirmation
+    // above is read before it goes.
+    returnTo(number, 1200);
+  }
+
+  /** Leave the viewer for the session it came from, drawing the one-line
+   *  confirmation first when `after` gives it a beat to be read. */
+  function returnTo(number: number | null, after: number): void {
     finishState = { kind: 'done', number };
+    setTimeout(() => {
+      if (!left) goTo({ name: 'session', slot });
+    }, after);
   }
 
   /** The threads a row is the home of: their anchor's line is inside it. */
@@ -244,7 +297,7 @@
   }
 </script>
 
-<main class="wrap doc">
+<main class="wrap doc" class:wide={held.kind === 'pdf'}>
   {#if held.state === 'reading'}
     <p class="pending">Opening {path}...</p>
   {:else if held.state === 'refused'}
@@ -344,32 +397,38 @@
           {/each}
         </section>
       {/if}
-
-      {#if drafts.length > 0 || handoff !== null}
-        <div class="doc-finish">
-          {#if finishState.kind === 'done'}
-            <p class="doc-left">
-              done{finishState.number === null
-                ? ''
-                : ` - review left (R${finishState.number})`}{handoff === null
-                ? '.'
-                : ' - the agent has it.'}
-            </p>
-          {:else}
-            <button
-              class="doc-finish-btn"
-              disabled={finishState.kind === 'busy'}
-              onclick={() => void done()}
-              >done{drafts.length > 0 ? ` (${drafts.length})` : ''}</button
-            >
-            {#if finishState.kind === 'refused'}
-              <p class="doc-said">{finishState.why}</p>
-            {/if}
-          {/if}
-        </div>
-      {/if}
     </article>
   {:else}
     <p class="doc-said">{otherLine(held.kind)}</p>
+  {/if}
+
+  <!-- **Every opened document carries ONE door**, drawn on the page itself
+       rather than left to the browser's chrome: `done`. It files the
+       comments and answers the parked hand-off when there is something to
+       release - a PDF or a read-only document included, which is what
+       gives those states an exit at all - and simply returns to the
+       session when there is nothing (a deep link). One verb a reader
+       learns once. -->
+  {#if held.state !== 'reading'}
+    <div class="doc-exit">
+      {#if finishState.kind === 'done'}
+        <p class="doc-left">
+          done{finishState.number === null
+            ? ''
+            : ` - review left (R${finishState.number})`}{handoff === null
+            ? '.'
+            : ' - the agent has it.'}
+        </p>
+      {:else}
+        <button
+          class="doc-finish-btn"
+          disabled={finishState.kind === 'busy'}
+          onclick={() => void done()}>done{drafts.length > 0 ? ` (${drafts.length})` : ''}</button
+        >
+        {#if finishState.kind === 'refused'}
+          <p class="doc-said">{finishState.why}</p>
+        {/if}
+      {/if}
+    </div>
   {/if}
 </main>

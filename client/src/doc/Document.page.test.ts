@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
 import { flushSync, mount, unmount } from 'svelte';
+import { get } from 'svelte/store';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { currentRoute } from '../routes';
 import { clearDrafts, docScope, draftsFor } from './comments';
 import { fakeDoc, SLOT, type DocAnswer } from './testing';
 import Document from './Document.svelte';
@@ -269,6 +271,80 @@ describe('the reviewable document', () => {
       'the answer carries the review the finish minted',
     ).toBe('r9');
     expect(document.querySelector('.doc-draft'), 'the drafts were filed').toBeNull();
+  });
+
+  /** **The nudge the terminal's own drop sends.** The finish pushes the
+   *  review-ready line into the session, so the chat shows the review to
+   *  the reader and reaches the agent - with the document's scope named. */
+  it('pushes the review-ready line into the session on done', async () => {
+    const page = drawReviewable();
+
+    blockTarget('line two').click();
+    flushSync();
+    const box = document.querySelector('textarea');
+    if (!(box instanceof HTMLTextAreaElement)) throw new Error('no composer');
+    box.value = 'hello';
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    buttonByText('comment').click();
+    flushSync();
+
+    page.submitAnswer = { body: { id: 'r9', number: 4, summary: null, created_at: 'x' } };
+    buttonByText('done (1)').click();
+    await vi.waitFor(() => {
+      expect(document.querySelector('.doc-left')?.textContent).toContain('review left (R4)');
+    });
+
+    const nudge = (page.sent as Record<string, Record<string, unknown>>[]).find(
+      (command) => 'prompt_under' in command,
+    )?.['prompt_under'] as { text?: unknown } | undefined;
+    expect(nudge?.text, 'the line names the review and the document scope').toContain(
+      'Review #4 ready on the document',
+    );
+    expect(nudge?.text).toContain(`doc:${PATH}`);
+  });
+
+  /** **Every opened document draws its one door.** A PDF has no comments
+   *  and no review, but it still parked a call: the done answers it and is
+   *  the way back - the same single verb every state carries. */
+  it('draws the one done on a PDF hand-off', () => {
+    drawReviewable({
+      kind: 'landed',
+      document_kind: 'pdf',
+      bytes: enc('%PDF-1.4 fake'),
+      reviewable: false,
+      content_hash: '42',
+    });
+
+    expect(document.querySelector('embed'), 'the PDF itself is drawn').not.toBeNull();
+    expect(buttonByText('done'), 'a PDF answers the parked hand-off').toBeDefined();
+    expect(
+      document.querySelector('a.doc-back'),
+      'and there is no second door beside it',
+    ).toBeNull();
+  });
+
+  /** Nothing to release (a deep link): the one door is still the way back,
+   *  answering nothing and filing nothing. */
+  it('returns from a bare viewer without dispatching anything', async () => {
+    const fake = fakeDoc({
+      kind: 'landed',
+      document_kind: 'markdown',
+      bytes: enc('# hi'),
+      reviewable: false,
+      content_hash: '42',
+    });
+    app = mount(Document, {
+      target: document.body,
+      props: { slot: SLOT, path: PATH, reviewable: false, connection: fake.connection },
+    });
+    flushSync();
+
+    buttonByText('done').click();
+    await vi.waitFor(() => {
+      expect(get(currentRoute)).toEqual({ name: 'session', slot: SLOT });
+    });
+    expect(fake.sent, 'a viewer with nothing to release sends nothing').toEqual([]);
   });
 
   it("draws a refused done in the core's own words, drafts kept", async () => {
