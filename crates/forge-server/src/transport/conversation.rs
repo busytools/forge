@@ -7,20 +7,28 @@
 //! holds the read's own output and shares it: a page slices a window out of
 //! it, and a subscribe encodes the newest of it.
 //!
-//! **The seed comes from the task that produces the conversation, never from
-//! a second walk of the file.** The fold sees `Connected` for every seat that
-//! starts or resumes while the transport runs, and asks for
-//! [`SessionUpdate::HistoryReplayed`] for a seat whose connect it missed
-//! (a session already running when this transport started). Both are emitted
-//! by the session task in its own sequence, so the seed and the frames that
-//! follow it have one producer and one order.
+//! **A seat's history has two sources, and neither races the other.** The
+//! first is the session task, which produces the conversation: the fold sees
+//! `Connected` for every seat that starts or resumes while the transport
+//! runs, and asks for [`SessionUpdate::HistoryReplayed`] for a seat whose
+//! connect it missed (a session already running when this transport started).
+//! Both are emitted by the task in its own sequence, so the seed and the
+//! frames that follow it have one producer and one order.
+//!
+//! The second is the seat's own transcript, read when the transport holds
+//! nothing and a page opens on it - a sleeping seat has no task to replay
+//! from, and waiting for the spawn that would carry the same history back
+//! is the wait this exists to remove (`transport::wire::seed_from_transcript`).
+//! It cannot race the first: it inserts only where nothing is held, the
+//! replay that follows REPLACES what it seeded, and a connect's own reseed
+//! does the same when the spawn is the thing that was coming.
 //!
 //! **That is what makes a buffer unnecessary rather than merely deleted.** A
 //! frame emitted before the replay reaches the fold first, finds no
 //! conversation, and is dropped - and it is inside the replay's cut, because
 //! the task emitted it before it handled the command. A frame emitted after
-//! is applied to what the replay left. Two producers is what made the earlier
-//! design race with itself; there is one here.
+//! is applied to what the replay left. Two producers of FRAMES is what made
+//! the earlier design race with itself; there is one here.
 //!
 //! **What is released is the front, and no more of it than the cap.** A page
 //! cursor names a message in the conversation's own numbering rather than in
@@ -547,15 +555,16 @@ impl Drop for Folding<'_> {
     }
 }
 
-/// The conversations the transport is holding, one per live seat.
+/// The conversations the transport is holding, one per seat it has heard of.
 ///
 /// **Every live seat, not only the watched ones, and no seat is let go.** A
 /// conversation has no read behind it any more, so releasing one is not a
 /// bound - nothing could rebuild it, and the next ask for that seat would
 /// have no answer. What it holds is therefore proportional to what is
-/// RUNNING rather than to what is being read, which is the price of having
-/// one producer of the conversation rather than two. What one seat costs is
-/// the cap's window rather than its transcript.
+/// RUNNING plus the sleeping seats someone has opened: a sleeping seat's
+/// copy is seeded from its transcript and kept, which is what makes the
+/// read land before any spawn. What one seat costs is the cap's window
+/// rather than its transcript, and the window is the bound.
 #[derive(Default)]
 pub struct Conversations {
     held: Mutex<HashMap<SessionSlot, Arc<Held>>>,

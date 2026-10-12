@@ -41,10 +41,12 @@ async fn a_server() -> (String, Fleet) {
 /// [`a_server`], keeping the state a test needs to put a seat's conversation
 /// where a `Connected` would have left it.
 ///
-/// **The transport does not read a transcript**, so a fixture that seeds one
-/// has to hand the conversation over itself - see
-/// [`Fleet::hold_conversation`]. A test that skipped that would ask for a page
-/// on a seat nothing has seeded and get the empty one.
+/// **A fixture that seeds a transcript has to say which seat it is for.** One
+/// registered as a RUNNING session (`Fleet::seed_transcript`) is held over by
+/// [`Fleet::hold_conversation`] where a test wants the window a `Connected`
+/// carries; one registered in the store alone
+/// (`Fleet::seed_asleep_transcript`) is read off the file by the transport
+/// itself, which is what a sleeping seat's page gets.
 async fn a_server_with_state() -> (String, Fleet, Arc<TransportState>) {
     let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
     let state = Arc::new(TransportState::for_workspace(
@@ -2733,6 +2735,60 @@ async fn a_more_is_answered_with_a_page_of_whole_turns() {
         "a page opens on a turn the user wrote rather than inside one: {turns:?}",
     );
     assert!(cursor.is_some(), "and it carries the handle that asks for the ones above");
+}
+
+/// **A sleeping seat's history answers from the transcript it left.**
+///
+/// The seat's last session wrote its file and the store still names its id,
+/// and that is all a page needs: a column opening on an asleep seat draws the
+/// conversation now rather than waiting for a spawn to carry the same history
+/// back. Measured live 2026-10-12 on a sleeping lead: the first page waited on
+/// the connect and the client's own retry cadence, ~2.6s for a history that
+/// was already on disk.
+#[tokio::test]
+async fn a_sleeping_seats_history_answers_from_its_own_transcript() {
+    let (url, fleet) = a_server().await;
+    let rows: Vec<String> = (0..20).map(a_turns_rows).collect();
+    let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
+    fleet
+        .seed_asleep_transcript("TestOrg", "proj", "lead", &borrowed)
+        .expect("the transcript seeds");
+
+    let mut socket = connect(&url).await;
+    send(&mut socket, ClientMessage::More { conversation: lead_seat(), before: None, turns: 5 })
+        .await;
+
+    let ServerMessage::Page { turns, cursor, .. } = next_server(&mut socket).await else {
+        panic!("an asleep seat's own transcript answers the page rather than refusing it")
+    };
+    assert_eq!(turns.len(), 5, "the newest turns come from the file the seat left");
+    assert!(cursor.is_some(), "and the handle above them is the conversation's own");
+}
+
+/// The same read on the seat's own record, which is what a page opens on: a
+/// subscribe to a sleeping seat is answered with the turns of its transcript
+/// rather than with an empty conversation.
+#[tokio::test]
+async fn a_sleeping_seats_snapshot_carries_its_transcripts_turns() {
+    let (url, fleet) = a_server().await;
+    let rows: Vec<String> = (0..20).map(a_turns_rows).collect();
+    let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
+    fleet
+        .seed_asleep_transcript("TestOrg", "proj", "lead", &borrowed)
+        .expect("the transcript seeds");
+
+    let mut socket = connect(&url).await;
+    let held = snapshot_until(&mut socket, Subject::Session(lead_seat()), |data| {
+        data["conversation"]["turns"].as_array().is_some_and(|turns| {
+            turns.len() == forge_server::transport::wire::SUBSCRIBE_TURNS as usize
+        })
+    })
+    .await;
+
+    assert!(
+        held,
+        "the record a client attaches to carries the seat's history, not an empty conversation",
+    );
 }
 
 /// A page that cannot be answered is REFUSED, because an empty one lies.

@@ -699,6 +699,14 @@ impl Workspace {
         );
     }
 
+    /// Record `session_id` as the store's row for `key` with nothing live
+    /// behind it: the seat a wake resumes, whose transcript is the last
+    /// session it ran. Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn seed_test_stored_session_id(&self, key: &SessionSlot, session_id: &str) {
+        self.record_session_id(key.org(), key.project(), key.label(), session_id);
+    }
+
     #[cfg(any(test, feature = "testing"))]
     pub fn seed_test_usage(&self, account: &str, snapshot: forge_primitives::usage::UsageSnapshot) {
         self.accounts.set_usage(&AccountKey(account.to_owned()), snapshot);
