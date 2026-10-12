@@ -181,7 +181,9 @@ async fn show_raises_the_named_profiles_own_browser_on_its_own_page_raises_a_win
         .await
         .unwrap_or_else(|why| panic!("alpha could not open the profile: {why}"));
 
-    host.show(Some("hunt")).await.unwrap_or_else(|why| panic!("the raise failed: {why}"));
+    host.show(Some("hunt"), Some(&alpha))
+        .await
+        .unwrap_or_else(|why| panic!("the raise failed: {why}"));
 
     // The raised window is the profile's own: its marker names the page it
     // opened on, and the launch behind it is the headed one.

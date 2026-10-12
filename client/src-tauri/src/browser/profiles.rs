@@ -326,6 +326,23 @@ pub(super) fn verdict(name: &str, seat: &Seat, held: Option<&Seat>) -> Verdict {
     }
 }
 
+/// Whether a session may raise `name`'s WINDOW - a hand-off's Open. Another
+/// seat's profile is refused where the name resolves to a browser; a legacy
+/// directory (no record) is nobody's and stays raisable by the person's own
+/// door, which carries no seat at all, and an unreadable record refuses by
+/// its own reason.
+#[cfg(desktop)]
+pub(super) fn raise_refusal(name: &str, dir: &Path, seat: &Seat) -> Result<(), String> {
+    match owner_of(dir) {
+        Ok(Some(owner)) if owner != *seat => Err(format!(
+            "the profile '{name}' belongs to {owner}; a session raises only its own profile's \
+             window"
+        )),
+        Ok(_) => Ok(()),
+        Err(why) => Err(why),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -432,5 +449,35 @@ mod tests {
     #[test]
     fn a_seat_prints_as_its_slot() {
         assert_eq!(seat("lead").to_string(), "Busytools/forge/lead");
+    }
+
+    /// A hand-off's raise is refused only for another seat's recorded
+    /// profile: the owner's own, a legacy unowned directory and the
+    /// unreadable-record reason each answer their own way.
+    #[test]
+    fn a_raise_is_refused_only_for_another_seats_record() {
+        let root = tempfile::tempdir().expect("a temp dir");
+        let mine = seat("job-hunt");
+        let other = Seat { org: "Other".to_owned(), ..seat("job-hunt") };
+
+        let mine_dir = root.path().join("mine");
+        record_owner(&mine_dir, &mine).expect("the record");
+        assert_eq!(raise_refusal("mine", &mine_dir, &mine), Ok(()), "its own is raisable");
+
+        let theirs_dir = root.path().join("theirs");
+        record_owner(&theirs_dir, &other).expect("the record");
+        let refused = raise_refusal("theirs", &theirs_dir, &mine).expect_err("another seat's");
+        assert!(refused.contains("Other/forge/job-hunt"), "{refused}");
+        assert!(refused.contains("raises only its own"), "{refused}");
+
+        let legacy_dir = root.path().join("legacy");
+        std::fs::create_dir_all(&legacy_dir).expect("the legacy dir");
+        assert_eq!(raise_refusal("legacy", &legacy_dir, &mine), Ok(()), "nobody's is nobody's");
+
+        let broken_dir = root.path().join("broken");
+        std::fs::create_dir_all(&broken_dir).expect("the dir");
+        std::fs::write(broken_dir.join(OWNER_FILE), b"not json").expect("a bad record");
+        let why = raise_refusal("broken", &broken_dir, &mine).expect_err("unreadable");
+        assert!(why.contains("cannot be read"), "{why}");
     }
 }

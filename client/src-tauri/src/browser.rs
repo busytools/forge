@@ -709,17 +709,29 @@ impl BrowserHost {
     /// window is raised over its own browser, on its own page, which is what
     /// a CAPTCHA hand-off on a named profile needs.
     ///
+    /// **A hand-off raises only the profile of the seat that asked.** The
+    /// dock passes the asking seat down, and another seat's name is refused
+    /// where the name resolves to a browser; the person's own show carries no
+    /// seat and reaches any of them.
+    ///
     /// Serialized with every other launch, so a show racing a first call
     /// cannot leave two browsers on one profile. This is the client's own
     /// act and answers the core nothing: the hand-off's answer is Done or
     /// Not now, and never the window itself.
     #[cfg(desktop)]
-    pub async fn show(&self, profile: Option<&str>) -> Result<chromium::ActivePort, String> {
+    pub async fn show(
+        &self,
+        profile: Option<&str>,
+        seat: Option<&Seat>,
+    ) -> Result<chromium::ActivePort, String> {
         let paths = self.paths.clone()?;
         let dir = match profile {
             Some(name) => {
                 if let Some(refusal) = profiles::name_refusal(name) {
                     return Err(refusal);
+                }
+                if let Some(seat) = seat {
+                    profiles::raise_refusal(name, &paths.profiles.join(name), seat)?;
                 }
                 paths.profiles.join(name)
             }
@@ -734,7 +746,7 @@ impl BrowserHost {
     /// page full-screen over the client, one slim bar, Back and hardware Back
     /// the door).
     #[cfg(target_os = "android")]
-    pub async fn show(&self, profile: Option<&str>) -> Result<(), String> {
+    pub async fn show(&self, profile: Option<&str>, _seat: Option<&Seat>) -> Result<(), String> {
         self.paths.clone()?;
         if let Some(name) = profile {
             return Err(phone_profile_refusal(name));
@@ -945,13 +957,16 @@ pub async fn browser_call(
 
 /// Bring the browser up visibly, for a hand-off's Open. Answers nothing to
 /// the core: the window is the client's act, and Done or Not now is the
-/// answer.
+/// answer. `seat` is the asking session's, when a hand-off is what raises
+/// the window - the dock passes it - and `None` is the person's own show,
+/// which reaches any profile.
 #[tauri::command]
 pub async fn browser_show(
     host: tauri::State<'_, Arc<BrowserHost>>,
     profile: Option<String>,
+    seat: Option<Seat>,
 ) -> Result<(), String> {
-    host.show(profile.as_deref()).await.map(|_| ())
+    host.show(profile.as_deref(), seat.as_ref()).await.map(|_| ())
 }
 
 /// Take the hand-off's window back down; the next agent call relaunches that
@@ -1450,6 +1465,7 @@ mod tests {
             .call(&who, "browser_navigate", json!({ "url": "https://example.com" }))
             .await
             .expect_err("no browser stack is vendored in a test");
+        reap(&paths.user_data);
         assert!(why.contains("vendored"), "the call reached the launch: {why}");
 
         let auto = paths.profiles.join("lead");
@@ -1549,6 +1565,7 @@ mod tests {
             .call(&owner, "browser_navigate", json!({ "url": "https://example.com", "profile": "hunt" }))
             .await
             .expect_err("no browser stack is vendored in a test");
+        reap(&paths.profiles.join("hunt"));
         assert!(!answered.contains("belongs to"), "the owner is not refused its own name: {answered}");
 
         // A record that cannot be read refuses with its reason.
@@ -1638,6 +1655,46 @@ mod tests {
         assert_eq!(row.owner, "", "a directory with no record is ownerless");
         assert!(!row.running, "and nothing is running behind it");
         assert!(!rows.iter().any(|row| row.name == "stray.txt"), "a file is not a profile",);
+    }
+
+    /// **A hand-off raises only the asking seat's own profile's window.**
+    /// The dock passes the seat down with the raise, and another seat's name
+    /// is refused BEFORE anything launches - which is what lets this test
+    /// run without a browser on the machine. The owner's own raise and the
+    /// person's seatless one are `raise_refusal`'s own arms, tested there:
+    /// driving them through `show` here would launch, and a unit test may
+    /// not put a process (or a window) on the machine.
+    #[tokio::test]
+    async fn a_hand_off_raises_only_the_asking_seats_profile() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let host = BrowserHost::new(paths.clone());
+        let mine = seat();
+        let other = Seat { org: "Other".to_owned(), ..seat() };
+        Named::open(other, "scout", &paths).expect("the other seat's profile");
+        Named::open(mine.clone(), "hunt", &paths).expect("mine");
+
+        let refused = host
+            .show(Some("scout"), Some(&mine))
+            .await
+            .expect_err("another seat's profile");
+        assert!(refused.contains("belongs to Other/forge/lead"), "{refused}");
+        assert!(refused.contains("raises only its own"), "{refused}");
+    }
+
+    /// Kill the browser a test's own call launched, by the pid the launch
+    /// wrote. **A unit test may not leave a browser behind** - the machine
+    /// always has one to drive, so a call that reaches `browser_for`
+    /// launches, and the routine suite would leak a process per run.
+    fn reap(profile: &std::path::Path) {
+        let Ok(pid) = std::fs::read_to_string(profile.join("browser.pid")) else { return };
+        let Ok(pid) = pid.trim().parse::<i32>() else { return };
+        let _ = std::process::Command::new("kill").args(["-TERM", &pid.to_string()]).status();
     }
 
     /// **The listing is served per seat.** A seat's read answers its own rows
