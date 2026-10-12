@@ -1530,13 +1530,19 @@ fn row_cursor_of(offset: u64, row: &str) -> String {
 fn boundary_of(
     held: &crate::transport::conversation::Conversation,
 ) -> Option<forge_primitives::TranscriptAnchor> {
-    // **Only frames the file carries.** What the seat holds is not what the
-    // file holds: a delivery row was forged here and written nowhere, and a
-    // sub-agent's frames are dropped by the row rule at the read. Naming
-    // either answers the file nothing, and nothing reads as the end of the
-    // history - so the walk steps past every such frame to the first the file
-    // can hand back, and names nothing at all when the window holds none.
-    let mut rows = held.messages().iter().filter(|message| held.has_a_row(message));
+    // **Only frames the file carries, and only ones it can be asked for.**
+    // What the seat holds is not what the file holds: a delivery row was
+    // forged here and written nowhere, and a sub-agent's frames are dropped by
+    // the row rule at the read. And what the file carries is not always
+    // namable: a user row the wire sent without a uuid is a row the read has
+    // no search key for. Naming either kind answers the file nothing, and
+    // nothing reads as the end of the history - so the walk steps past them
+    // to the first row that is both, and names nothing at all when the window
+    // holds none.
+    let mut rows = held
+        .messages()
+        .iter()
+        .filter(|message| held.has_a_row(message) && row_id(message).is_some());
     let mut anchor = rows.next()?;
     while carries_a_result(anchor) {
         let Some(next) = rows.next() else {
@@ -2672,6 +2678,89 @@ mod tests {
             boundary_of(&window).is_none(),
             "and the boundary passes over every such frame, naming nothing to the file: {:?}",
             boundary_of(&window),
+        );
+    }
+
+    /// A row with no id at all: a user frame the wire carries without a uuid
+    /// (the queued-prompt/typed-prompt shape), which no transcript row can be
+    /// named by.
+    fn unnameable_row() -> forge_primitives::Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "user",
+            "session_id": "s1",
+            "message": {"role": "user", "content": "no id on this row"},
+        }))
+        .expect("a user frame")
+    }
+
+    /// Whether a frame is the fixture's uuid-less row.
+    fn is_unnameable(message: &forge_primitives::Message) -> bool {
+        serde_json::to_value(message)
+            .ok()
+            .and_then(|value| value["message"]["content"][0]["text"].as_str().map(str::to_owned))
+            .as_deref()
+            == Some("no id on this row")
+    }
+
+    /// **A front the file cannot be NAMED still pages to the row behind it.**
+    ///
+    /// A frame the file carries can still be one the file cannot be asked for:
+    /// a user row the wire sent without a uuid (`row_id` is `None`) is a row
+    /// the read has nothing to search by, so naming it answers nothing - and
+    /// nothing reads as the end of the history. The boundary must step past it
+    /// to the first row that is both carried AND namable, rather than falling
+    /// all the way to the file's newest rows - which a client already holds,
+    /// so the answer is a redundant page instead of the one under the front.
+    #[tokio::test]
+    async fn a_front_the_file_cannot_be_named_by_still_pages_to_the_row_behind_it() {
+        let dir = tempfile::tempdir().expect("a config dir of its own");
+        let fleet =
+            crate::testing::Fleet::in_dir(dir.path(), &[("TestOrg", &["proj"])]).expect("a fleet");
+        fleet.start("TestOrg", "proj").expect("a live lead session");
+        let seat = SessionSlot::lead("TestOrg", "proj");
+
+        // The seed sizes the count cut's next landing for the first append,
+        // the same construction the forged-row arm uses.
+        let mut frames = live_frames(2_600);
+        frames.extend((0..999).map(result_frame));
+        let conversations = crate::transport::conversation::Conversations::new();
+        conversations.insert(&seat, crate::transport::conversation::Conversation::new(frames, 0));
+        conversations.apply(&SessionUpdate::ChatAppended {
+            key: seat.clone(),
+            msg: unnameable_row(),
+            origin: None,
+        });
+        conversations.apply(&SessionUpdate::ChatAppended {
+            key: seat.clone(),
+            msg: resulting_row(9_999),
+            origin: None,
+        });
+        for at in 0..5_000_usize {
+            let window = conversations.get(&seat).expect("the seat is held");
+            let front = window.lock().messages().first().cloned().expect("a front");
+            if is_unnameable(&front) {
+                break;
+            }
+            conversations.apply(&SessionUpdate::ChatAppended {
+                key: seat.clone(),
+                msg: result_frame(at),
+                origin: None,
+            });
+        }
+        let held = conversations.get(&seat).expect("the seat is held");
+        let window = held.lock();
+        let front = window.messages().first().expect("a front");
+        assert!(
+            is_unnameable(front),
+            "precondition: the count cut landed on the row with no id ({:?})",
+            row_id(front),
+        );
+        let boundary = boundary_of(&window);
+        assert_eq!(
+            boundary.as_ref().map(|anchor| anchor.row.as_str()),
+            Some("result9999"),
+            "the boundary names the first row behind the front that the file both carries and can \
+             be asked for: {boundary:?}",
         );
     }
 
