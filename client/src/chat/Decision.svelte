@@ -1,7 +1,7 @@
 <script lang="ts">
   import Chevron from '../components/Chevron.svelte';
   import { num, type Decision, type DecisionState } from './decisions';
-  import { renderInlineProse } from './prose';
+  import Prose from './Prose.svelte';
 
   /**
    * One System One decision, drawn as the picked record: the question it
@@ -169,14 +169,11 @@
     <!-- The whole question over the answer: the row's own line cuts it, and
          the block used to join it to one line with its block marks stripped
          (Ved, 2026-10-12) - so a reader expanding it saw the answer with only
-         a fragment of what it answered. -->
+         a fragment of what it answered. Rendered as the family renders a
+         quote, lines preserved: an inline render emitted the lines and the
+         page collapsed them, so a list question drew as its own marks. -->
     <div class="fam-tag">question</div>
-    <div class="fam-quote">
-      <!-- Rendered from escaped input: the same renderer the row's own line
-           and a thought's row use. -->
-      <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-      {@html renderInlineProse(decision.question.text)}
-    </div>
+    <div class="fam-quote"><Prose text={decision.question.text} preserveLines /></div>
     {#if decision.question.raw !== null}
       <details class="raw" bind:open={questionRaw}>
         <summary

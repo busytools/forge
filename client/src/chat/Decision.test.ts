@@ -43,7 +43,7 @@ const optionNames = (body: string): string[] =>
   [...body.matchAll(/class="fam-sub">([^<]*)</g)].map((match) => match[1] ?? '');
 
 describe('the block one decision draws', () => {
-  it('quotes the whole question under its own tag, not joined to one line', () => {
+  it('quotes the whole question under its own tag, its own lines kept', () => {
     const body = drawn({
       question: {
         text: 'Which team owns this?\n- payments owns the ledger\n- frontend owns the surface',
@@ -53,8 +53,19 @@ describe('the block one decision draws', () => {
     expect(body, 'the tag names what the quote is').toContain(
       '<div class="fam-tag">question</div>',
     );
-    expect(body, 'the quote draws under it').toContain('class="fam-quote"');
-    expect(body, 'and the question keeps its own lines').toContain('- payments owns the ledger');
+    // The family's own quote: markdown with the lines preserved, so what the
+    // caller wrote - a list, a break - is what the page draws. `renderInline`
+    // emitted the lines and the page collapsed them.
+    expect(body, 'the quote draws as the family renders one').toContain(
+      'class="fam-quote"><div class="prose">',
+    );
+    expect(body, 'the list the caller wrote draws as a list').toContain(
+      '<li>payments owns the ledger</li>',
+    );
+    expect(
+      drawn({ question: { text: 'Is this mechanical?\nAnd nothing else.', raw: null } }),
+      'and a plain line break is a break on the page',
+    ).toContain('Is this mechanical?<br>');
     expect(drawn({}), 'a call that asked nothing draws no question tag').not.toContain(
       '<div class="fam-tag">question</div>',
     );
