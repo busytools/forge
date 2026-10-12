@@ -11,6 +11,7 @@
   import Home from '../home/Home.svelte';
   import type { HomeRead } from '../home/live';
   import Models from '../models/Models.svelte';
+  import { subjectKey } from '../protocol';
   import Review from '../review/Review.svelte';
   import { titleFor, type Route } from '../routes';
   import Session from '../session/Session.svelte';
@@ -137,20 +138,27 @@
          missing column from a quiet one. It is also where the composer's
          presence decides whether this client can answer the prompts it
          shows; absent it, the seat is subscribed as an observer. -->
-    <Session
-      slot={route.slot}
-      {connection}
-      wire={home.wire}
-      mark={settings.mark}
-      notice={sessionNotice}
-    >
-      {#snippet conversation(props)}
-        <Chat {...props} />
-      {/snippet}
-      {#snippet composer(props)}
-        <Composer {...props} dictation={dictate} />
-      {/snippet}
-    </Session>
+    <!-- **Keyed on the seat.** A palette switch from one session to another
+         moves the route in place, and without this the page keeps the
+         instance it had: every per-mount fact (its reads, its folds, its
+         chosen panes) is the OLD seat's until an unrelated change resets
+         it. A different seat is a different page. -->
+    {#key subjectKey({ session: route.slot })}
+      <Session
+        slot={route.slot}
+        {connection}
+        wire={home.wire}
+        mark={settings.mark}
+        notice={sessionNotice}
+      >
+        {#snippet conversation(props)}
+          <Chat {...props} />
+        {/snippet}
+        {#snippet composer(props)}
+          <Composer {...props} dictation={dictate} />
+        {/snippet}
+      </Session>
+    {/key}
   {:else if connected}
     <!-- Connected, and the fleet has not been read yet. The session page's
          rail and four of its inspector sections are the home's, so handing it
