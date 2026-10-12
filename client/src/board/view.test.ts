@@ -107,6 +107,25 @@ describe("one project's board", () => {
   });
 
   /**
+   * **The header's `running` is the In progress lane.** The read took the
+   * first lane's count, which is Backlog's: the header said "24 running"
+   * while ten rows ran. The state the word names is the one it counts.
+   */
+  it("counts the header's running from the in-progress lane", () => {
+    const wire = wireWith([
+      row(task('p1', 'queued', 'pending')),
+      row(task('p2', 'queued too', 'pending')),
+      row(task('r1', 'running', 'in_progress')),
+      row(task('r2', 'also running', 'in_progress')),
+      row(task('r3', 'and this one', 'in_progress')),
+    ]);
+
+    const view = boardView(wire, 'TestOrg', 'proj');
+    expect(view.read.rows).toBe(5);
+    expect(view.read.running, 'the header counted the backlog as running').toBe(3);
+  });
+
+  /**
    * **A parent's own tasks, for the row's page**: the children in the
    * queue's order, each labelled with its lane's word, and a child carries
    * its parent's id so the jump has somewhere to land.

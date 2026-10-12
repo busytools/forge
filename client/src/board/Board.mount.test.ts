@@ -1011,3 +1011,201 @@ describe("the row's own page", () => {
     expect(document.querySelector('.dr'), 'Space opens the row page').not.toBeNull();
   });
 });
+
+describe("the completed group's fold", () => {
+  /** A finished row whose last move was `secs` - for a completed row, the moment it finished. */
+  const done = (id: string, secs: number, rank: number, over: Partial<Task> = {}): BoardRow =>
+    row(
+      task(id, `subject ${id}`, 'completed', {
+        rank,
+        updated_at: { secs_since_epoch: secs, nanos_since_epoch: 0 },
+        ...over,
+      }),
+    );
+
+  const lane = '.b-lane[data-state="completed"]';
+  const drawn = (): (string | undefined)[] =>
+    [...document.querySelectorAll<HTMLElement>(`${lane} .b-card`)].map((card) => card.dataset.id);
+
+  /**
+   * **The finished rows fold.** A board that draws every completed row puts
+   * a project's whole history between the reader and the work. The five most
+   * recently finished draw by default - chosen by when they last moved, not
+   * by their place in the lane, so a row that finished late shows whatever
+   * its rank - and the toggle opens the rest. The lane's count stays the
+   * true total: the fold hides rows without hiding how many there are.
+   */
+  it('folds the finished rows to the five most recent, and the toggle opens the rest', async () => {
+    summon(
+      wireWith([
+        done('c1', 100, 1),
+        done('c2', 10, 2),
+        done('c3', 20, 3),
+        done('c4', 30, 4),
+        done('c5', 40, 5),
+        done('c6', 90, 6),
+        done('c7', 80, 7),
+      ]),
+    );
+
+    // The five latest finishes (100, 90, 80, 40, 30), drawn where the lane's
+    // own order puts them; c2 and c3 finished before those and fold away.
+    expect(drawn(), 'the older rows were not held back').toEqual(['c1', 'c4', 'c5', 'c6', 'c7']);
+    expect(
+      document.querySelector(`${lane} .b-count`)?.textContent?.trim(),
+      'the count stopped naming the whole group',
+    ).toBe('7');
+
+    const toggle = document.querySelector<HTMLButtonElement>(`${lane} .b-fold`);
+    if (toggle === null) throw new Error('the finished group drew no fold control');
+    expect(toggle.textContent?.trim(), 'the toggle names the whole group').toBe('show all (7)');
+    expect(toggle.getAttribute('aria-expanded'), 'the toggle reads as closed').toBe('false');
+
+    toggle.click();
+    flushSync();
+    expect(drawn(), 'the toggle did not open the rest').toEqual([
+      'c1',
+      'c2',
+      'c3',
+      'c4',
+      'c5',
+      'c6',
+      'c7',
+    ]);
+    expect(toggle.textContent?.trim(), 'the open fold offers the close').toBe('show less');
+    expect(toggle.getAttribute('aria-expanded'), 'the toggle reads as open').toBe('true');
+
+    toggle.click();
+    flushSync();
+    expect(drawn(), 'the toggle did not fold back').toEqual(['c1', 'c4', 'c5', 'c6', 'c7']);
+
+    // Under the last card, where a reader scrolling the group meets it: a
+    // control at the lane's head is passed before they know rows are held back.
+    const walk = [...document.querySelectorAll<HTMLElement>(`${lane} .b-card, ${lane} .b-fold`)];
+    expect(
+      walk.at(-1)?.classList.contains('b-fold'),
+      'the fold control is not under the last card',
+    ).toBe(true);
+
+    expect(await violationsOf(document.body.innerHTML)).toEqual([]);
+  });
+
+  /** A group small enough to see whole draws whole: nothing folds, and no control offers to open nothing. */
+  it('draws a finished group of five or fewer whole, with no fold control', () => {
+    summon(
+      wireWith([
+        done('c1', 100, 1),
+        done('c2', 90, 2),
+        done('c3', 80, 3),
+        done('c4', 70, 4),
+        done('c5', 60, 5),
+      ]),
+    );
+    expect(document.querySelectorAll(`${lane} .b-card`)).toHaveLength(5);
+    expect(document.querySelector(`${lane} .b-fold`), 'a whole group offered a fold').toBeNull();
+  });
+
+  /** And a lane with nothing finished draws its empty self: no rows, count zero, no control. */
+  it('draws an empty finished lane with no fold control', () => {
+    summon(wireWith([row(task('p1', 'live', 'pending'))]));
+    const empty = document.querySelector(lane);
+    expect(empty, 'the finished lane went missing').not.toBeNull();
+    expect(empty?.querySelector('.b-count')?.textContent?.trim()).toBe('0');
+    expect(empty?.querySelector('.b-fold'), 'an empty lane offered a fold').toBeNull();
+  });
+
+  /**
+   * **A card being dropped into the folded lane stays drawn.** A drop is
+   * immediate on the page while the core's answer comes later, and a row
+   * that has not finished yet is not one of the five most recent - so a
+   * plain fold would swallow the card mid-gesture and give it back only
+   * when the wire caught up.
+   */
+  it('keeps a card the reader drops into the folded lane drawn', () => {
+    summon(
+      wireWith([
+        ...Array.from({ length: 6 }, (_, i) => done(`c${i + 1}`, 100 + i, i + 1)),
+        row(task('t1', 'moving', 'pending')),
+      ]),
+    );
+
+    const original = Object.getOwnPropertyDescriptor(document, 'elementFromPoint');
+    document.elementFromPoint = () => document.querySelector(lane);
+    const card = document.querySelector<HTMLElement>('.b-card[data-id="t1"]');
+    if (card === null) throw new Error('the card is not on the page');
+    card.dispatchEvent(
+      new MouseEvent('pointerdown', { bubbles: true, clientX: 10, clientY: 10, button: 0 }),
+    );
+    window.dispatchEvent(new MouseEvent('pointermove', { clientX: 60, clientY: 60 }));
+    window.dispatchEvent(new MouseEvent('pointerup', {}));
+    flushSync();
+
+    expect(acts[0]).toEqual({
+      task_move: { project: 'proj', id: 't1', to: 'completed', place: { before: null } },
+    });
+    expect(
+      document.querySelector(`${lane} .b-card[data-id="t1"]`),
+      'the dropped card vanished into the fold',
+    ).not.toBeNull();
+    expect(
+      document.querySelector(`${lane} .b-card[data-id="c1"]`),
+      'the fold stopped holding the older rows back',
+    ).toBeNull();
+
+    if (original !== undefined) {
+      Object.defineProperty(document, 'elementFromPoint', original);
+    } else {
+      Reflect.deleteProperty(document, 'elementFromPoint');
+    }
+  });
+
+  /**
+   * **Every finished row stays reachable.** A folded row is off the page,
+   * and the epic pill and the row page's task list land on cards by id: a
+   * jump aimed at a folded card opens the fold and lands, rather than dying
+   * on a missing element.
+   */
+  it('opens the fold to land a jump on a folded row', async () => {
+    // jsdom performs no layout: scrollIntoView is a browser call the jump
+    // makes, so it is stubbed for the length of the case.
+    const original = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollIntoView');
+    Object.defineProperty(Element.prototype, 'scrollIntoView', {
+      value: (): void => {},
+      configurable: true,
+      writable: true,
+    });
+    summon(
+      wireWith([
+        done('epic', 10, 1, { subject: 'the epic' }),
+        done('c2', 120, 2),
+        done('c3', 130, 3),
+        done('c4', 140, 4),
+        done('c5', 150, 5),
+        done('c6', 160, 6),
+        row(task('kid', 'a child', 'failed', { parent: 'epic' })),
+      ]),
+    );
+
+    expect(document.querySelector('.b-card[data-id="epic"]'), 'the epic drew unfolded').toBeNull();
+    const pill = document.querySelector<HTMLElement>('button[aria-label="jump to the epic"]');
+    if (pill === null) throw new Error('the epic pill is not on the page');
+    pill.click();
+    flushSync();
+    await vi.waitFor(() =>
+      expect(document.activeElement, 'the jump never landed').toBe(
+        document.querySelector('.b-card[data-id="epic"]'),
+      ),
+    );
+
+    expect(
+      document.querySelector('.b-card[data-id="epic"]')?.classList.contains('b-flash'),
+      'the landed card flashes',
+    ).toBe(true);
+
+    if (original !== undefined) {
+      Object.defineProperty(Element.prototype, 'scrollIntoView', original);
+    } else {
+      Reflect.deleteProperty(Element.prototype, 'scrollIntoView');
+    }
+  });
+});
