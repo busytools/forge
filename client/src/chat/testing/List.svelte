@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
 
-  import { element, layout, list, pins, records, register, reported } from './records';
+  import { boxes, element, layout, list, pins, records, register, reported } from './records';
 
   /**
    * A stand-in for `virtua`'s list, for tests that have to see what the column
@@ -94,6 +94,12 @@
         return elementHeight();
       },
     });
+    // The container's committed height, which a column reads to tell a drawn
+    // row from a reserved slot: read LIVE, so a test sets it after the mount.
+    Object.defineProperty(node, 'offsetHeight', {
+      configurable: true,
+      get: () => boxes.container,
+    });
     Object.defineProperty(node, 'clientHeight', {
       configurable: true,
       get: elementViewport,
@@ -120,6 +126,26 @@
       },
     });
     return () => undefined;
+  }
+
+  /**
+   * One item's own box, as the list has it: the offset it was placed at and
+   * the height it drew.
+   *
+   * Live getters over the test's model, like the rows' rects: a test sets the
+   * numbers after the mount and the next read sees them.
+   */
+  function itemBox(at: number): (node: HTMLElement) => void {
+    return (node: HTMLElement) => {
+      Object.defineProperty(node, 'offsetTop', {
+        configurable: true,
+        get: () => boxes.items[at]?.top ?? 0,
+      });
+      Object.defineProperty(node, 'offsetHeight', {
+        configurable: true,
+        get: () => boxes.items[at]?.height ?? 0,
+      });
+    };
   }
 
   /** Where the list is scrolled to, which a test drives the reader with. */
@@ -170,7 +196,7 @@
 
 <div class="conv" {@attach container} {...rest}>
   {#each data as row, at (keyOf(row, at))}
-    <div class="turn" {...itemProps?.({ item: row, index: at }) ?? {}}>
+    <div class="turn" {@attach itemBox(at)} {...itemProps?.({ item: row, index: at }) ?? {}}>
       {@render children?.(row)}
     </div>
   {/each}
