@@ -12,6 +12,9 @@ const PAGE = readFileSync(
   'utf8',
 );
 
+/** The same page with the entity its separators are written as decoded. */
+const PAGE_TEXT = PAGE.replaceAll('&#183;', '\u{b7}');
+
 /** One decision, as the fold hands it to the block. */
 const decision = (over: Partial<Parsed>): Parsed => ({
   model: 'jev-1.13.0',
@@ -19,75 +22,115 @@ const decision = (over: Partial<Parsed>): Parsed => ({
   answer: { kind: 'noul', noul: 0.93 },
   question: null,
   criteria: {},
+  state: null,
+  chips: [{ text: 'yes', tone: 'ok' }],
+  figure: '0.93',
   ...over,
 });
 
-/** The block, as the reader sees it. */
+/**
+ * The block, as the reader sees it.
+ *
+ * Svelte's own block markers come off first: they sit between a `{#if}`'s
+ * arms, and an assertion on what the block composes should read the way a
+ * browser does rather than counting markers.
+ */
 const drawn = (over: Partial<Parsed>): string =>
-  render(Decision, { props: { decision: decision(over) } }).body;
+  render(Decision, { props: { decision: decision(over) } }).body.replaceAll(/<!--[\s\S]*?-->/g, '');
+
+/** The option names the list draws, in the order they draw. */
+const optionNames = (body: string): string[] =>
+  [...body.matchAll(/class="fam-sub">([^<]*)</g)].map((match) => match[1] ?? '');
 
 describe('the block one decision draws', () => {
-  it('draws a noul as its number, its word, and both sides of the yes/no', () => {
-    const body = drawn({});
-    expect(body, 'the number as the result returned it').toContain('>0.93<');
-    // The verdict's own span, not `>yes<`: the distribution's yes row draws
-    // the same word, so the loose form survives a swapped verdict word.
-    expect(body, 'the word the majority side reads as').toContain('class="read">yes</span>');
-    expect(body, 'and the other side, derived, as a value of its own').toContain('>0.07<');
-    expect(body, 'the number carries the sure tone').toContain('num sure');
-    expect(body, 'and the side that won carries the mark').toContain('opt win');
-    expect(body, 'the derived side fills at the rounded grain').toContain('width:7%');
-  });
-
-  it('draws the whole question over the answer, and each option its description', () => {
+  it('quotes the whole question under its own tag, not joined to one line', () => {
     const body = drawn({
-      question: { text: 'Is this mechanical?\nOr does it touch the shared module?', raw: null },
-      criteria: {
-        yes: { text: 'a single import line', raw: null },
-        no: { text: 'anything else moves', raw: null },
+      question: {
+        text: 'Which team owns this?\n- payments owns the ledger\n- frontend owns the surface',
+        raw: null,
       },
     });
-    expect(body, 'the whole question, joined and its marks kept').toContain(
-      'Is this mechanical? Or does it touch the shared module?',
+    expect(body, 'the tag names what the quote is').toContain(
+      '<div class="fam-tag">question</div>',
     );
-    expect(body, 'and what the winning side meant').toContain('a single import line');
-    expect(body, 'under the row that side names').toContain('anything else moves');
-
-    expect(drawn({}), 'a call that asked nothing draws no question line').not.toContain(
-      'class="q"',
+    expect(body, 'the quote draws under it').toContain('class="fam-quote"');
+    expect(body, 'and the question keeps its own lines').toContain('- payments owns the ledger');
+    expect(drawn({}), 'a call that asked nothing draws no question tag').not.toContain(
+      '<div class="fam-tag">question</div>',
     );
   });
 
-  it('tones a coin flip without changing the words', () => {
-    const body = drawn({ answer: { kind: 'noul', noul: 0.52 } });
-    expect(body, 'the number draws unsure').toContain('num unsure');
-    expect(body, 'and the word is still the majority side').toContain('class="read">yes</span>');
+  it('states the answer as a facts line: the label, then the fact', () => {
+    expect(drawn({}), 'a noul states its number and the word it reads as').toContain(
+      '<span class="lb">noul</span>0.93<span class="sep">\u{b7}</span><span class="lb">reads</span>yes',
+    );
+    expect(
+      drawn({
+        answer: {
+          kind: 'choice',
+          choice: 'payments',
+          probabilities: [{ name: 'payments', value: 0.84 }],
+          confidence: 0.72,
+        },
+      }),
+      'a choice its pick and its confidence',
+    ).toContain(
+      '<span class="lb">pick</span>payments<span class="sep">\u{b7}</span><span class="lb">confidence</span>0.72',
+    );
+    expect(
+      drawn({
+        answer: {
+          kind: 'score',
+          score: 1.79,
+          levels: [
+            { name: 'Routine', value: 0.08, raw: null },
+            { name: 'Soon', value: 0.31, raw: null },
+            { name: 'Urgent', value: 0.61, raw: null },
+          ],
+          confidence: 0.5,
+        },
+      }),
+      'a score where it landed, with the confidence the old card parsed and never drew',
+    ).toContain(
+      '<span class="lb">score</span>1.79 of 2<span class="sep">\u{b7}</span><span class="lb">confidence</span>0.5',
+    );
   });
 
-  it('draws a choice as its pick and its distribution', () => {
+  it('draws the options as a plain list: the given order, the winner the one bright row, no bars', () => {
     const body = drawn({
       answer: {
         kind: 'choice',
         choice: 'payments',
         probabilities: [
-          { name: 'frontend', value: 0.16 },
           { name: 'payments', value: 0.84 },
+          { name: 'frontend', value: 0.16 },
         ],
-        confidence: 0.72,
+        confidence: null,
+      },
+      criteria: {
+        payments: { text: 'owns the ledger', raw: null },
+        frontend: { text: 'the surface is the web client only', raw: null },
       },
     });
-    expect(body, 'the pick, emphasised').toContain('<b>payments</b>');
-    expect(body, 'with its confidence beside it').toContain('confidence 0.72');
-    expect(body, 'every option draws its value as text').toContain('>0.16<');
-    expect([...body.matchAll(/opt win/g)], 'and only the pick carries the mark').toHaveLength(1);
+    expect(body, 'the rows draw as a list').toContain('class="fam-list"');
+    expect(optionNames(body), 'in the order the read handed them over').toEqual([
+      'payments',
+      'frontend',
+    ]);
+    expect([...body.matchAll(/fam-opt win/g)], 'one bright row, the pick').toHaveLength(1);
+    expect(body, 'every option draws its value as text').toContain('class="fam-when">0.16');
+    expect(body, 'the description under its own option').toContain(
+      'class="fam-desc">owns the ledger',
+    );
+    expect(body, 'and no bar anywhere').not.toContain('class="track"');
   });
 
   it('draws a bare pick with no distribution and no confidence', () => {
     const body = drawn({
       answer: { kind: 'choice', choice: 'payments', probabilities: null, confidence: null },
     });
-    expect(body, 'the pick still draws').toContain('<b>payments</b>');
-    expect(body, 'no distribution table').not.toContain('class="dist"');
+    expect(body, 'the pick still draws').toContain('<span class="lb">pick</span>payments');
+    expect(body, 'no option rows').not.toContain('class="fam-list"');
     expect(body, 'and no confidence clause').not.toContain('confidence');
   });
 
@@ -104,19 +147,16 @@ describe('the block one decision draws', () => {
         confidence: null,
       },
     });
-    expect(body, 'the number as returned').toContain('1.79');
-    expect(body, 'of the last level index, between the levels it sits in').toContain(
-      'of 2 - between Soon and Urgent',
-    );
+    expect(body, 'where it landed, of the last level index').toContain('1.79 of 2');
     expect(
-      [...body.matchAll(/opt win/g)],
+      [...body.matchAll(/fam-opt win/g)],
       'the two levels it sits between carry the mark',
     ).toHaveLength(2);
   });
 
-  it('draws a level the result left without a probability, which the verdict still names', () => {
-    // One row per level: skipping the value-less one made the verdict say
-    // "between Soon and Urgent" while Soon drew nowhere.
+  it('draws a level the result left without a probability, which the facts line still counts', () => {
+    // One row per level: skipping the value-less one made the facts line count
+    // levels the list did not draw.
     const body = drawn({
       answer: {
         kind: 'score',
@@ -129,52 +169,96 @@ describe('the block one decision draws', () => {
         confidence: null,
       },
     });
-    expect(body, 'the level still draws its row').toContain('>Soon<');
-    expect([...body.matchAll(/class="opt/g)], 'one row per level').toHaveLength(3);
+    expect(optionNames(body), 'every level draws its row').toEqual(['Routine', 'Soon', 'Urgent']);
     expect(body, 'with no value text where none was reported').not.toContain('>null<');
   });
 
   it('draws a score with no levels as its number alone', () => {
     const body = drawn({ answer: { kind: 'score', score: 1.79, levels: null, confidence: null } });
     expect(body).toContain('1.79');
-    expect(body, 'no level words').not.toContain('of 2');
-    expect(body, 'and no distribution').not.toContain('class="dist"');
+    expect(body, 'no count of levels').not.toContain('of 2');
+    expect(body, 'and no option rows').not.toContain('class="fam-list"');
   });
 
-  it('draws the model, the tokens and the cost when the provider reported one', () => {
+  it('keeps the state behind one line naming its size', () => {
+    // What waits behind the fold is the mount test's to read: the material
+    // is drawn onto the open, like every other disclosure on the page.
+    const body = drawn({
+      state: {
+        kind: 'lines',
+        lines: [{ key: 'claim', text: 'the PR is ready', depth: 0, dim: false }],
+        size: '1 field',
+      },
+    });
+    expect(body, 'the fold line names what is behind it').toContain('state - 1 field</summary>');
+    expect(body, 'and the material itself waits behind the open').not.toContain('the PR is ready');
+    expect(drawn({ state: null }), 'a call that carried no state draws no fold').not.toContain(
+      'class="fold"',
+    );
+  });
+
+  it('names a string state by its size, in characters', () => {
+    const body = drawn({
+      state: { kind: 'prose', text: 'the ticket moves to payments', size: '28 chars' },
+    });
+    expect(body, 'the size the fold line names').toContain('state - 28 chars');
+  });
+
+  it('names a primitive state without a size, which is the whole of it', () => {
+    const body = drawn({ state: { kind: 'prose', text: '3', size: null } });
+    expect(body, 'the fold line still names the state').toContain('state</summary>');
+    expect(body, 'with no count invented for it').not.toContain('state - ');
+  });
+
+  it('states what answered and what it cost along the bottom', () => {
     const body = drawn({ usage: { input_tokens: 280, output_tokens: 20, cost: 0.00001176 } });
-    expect(body, 'the model').toContain('jev-1.13.0');
-    expect(body, 'the tokens').toContain('280 in - 20 out');
-    expect(body, 'and the cost').toContain('$0.00001176');
+    expect(body, 'the model').toContain('<span class="lb">model</span>jev-1.13.0');
+    expect(body, 'the tokens').toContain('<span class="lb">tokens</span>280 in / 20 out');
+    expect(body, 'and the cost').toContain('<span class="lb">cost</span>$0.00001176');
     expect(
       drawn({ usage: { input_tokens: 280, output_tokens: 20, cost: null } }),
       'no cost segment where the provider reported none',
     ).not.toContain('$');
-
-    expect(drawn({ usage: null }), 'no usage reported, no footer drawn').not.toContain(
-      'class="foot"',
-    );
+    expect(
+      drawn({ usage: null, model: '' }),
+      'nothing to state, so the run does not draw',
+    ).not.toContain('class="fam-meta">');
   });
 
-  it("composes the same verdict and rows the book's specimen draws", () => {
-    // The page's specimen and the block are composed from the same strings,
-    // so the page can only say what an input could produce - and nothing
-    // compared the two until this (the 1723 review found the specimen's
-    // verdict reading "between Soon and Urgent" over rows named the full
-    // descriptions, a combination no input can make).
-    const levels = [
-      { name: 'Routine - no deadline pressure', value: 0.08, raw: null },
-      { name: 'Soon - worth doing this week', value: 0.31, raw: null },
-      { name: 'Urgent - blocks others right now', value: 0.61, raw: null },
-    ];
-    const body = drawn({ answer: { kind: 'score', score: 1.79, levels, confidence: null } });
+  it("composes the same facts line the book's score specimen draws", () => {
+    // The page's specimen and the block are composed from the same words, so
+    // the page can only say what an input could produce.
+    const body = drawn({
+      answer: {
+        kind: 'score',
+        score: 1.79,
+        levels: [
+          { name: 'Routine - no deadline pressure', value: 0.08, raw: null },
+          { name: 'Soon - worth doing this week', value: 0.31, raw: null },
+          { name: 'Urgent - blocks others right now', value: 0.61, raw: null },
+        ],
+        confidence: 0.62,
+      },
+    });
 
-    const verdict = /of 2 - between [^<]*/.exec(body)?.[0] ?? '';
-    expect(verdict, 'the block composes a verdict').not.toBe('');
-    expect(PAGE, 'and the page draws it word for word').toContain(verdict);
-    for (const level of levels) {
-      expect(PAGE, `with the row "${level.name}"`).toContain(level.name);
-    }
+    const facts = /<div class="fam-meta answer">([\s\S]*?)<\/div>/.exec(body)?.[1] ?? '';
+    expect(facts, 'the block composes a facts line').not.toBe('');
+    expect(PAGE_TEXT, 'and the page draws it markup for markup').toContain(facts);
+  });
+
+  it("composes the same fold line the book's state specimen draws", () => {
+    const body = drawn({
+      state: {
+        kind: 'lines',
+        lines: [
+          { key: 'claim', text: 'the fix is a single import line', depth: 0, dim: false },
+          { key: 'evidence', text: 'covered by tests', depth: 0, dim: false },
+        ],
+        size: '2 fields',
+      },
+    });
+    expect(body, 'the block composes the fold line').toContain('state - 2 fields</summary>');
+    expect(PAGE, 'and the page draws it word for word').toContain('state - 2 fields');
   });
 
   it('draws a structured question as its line, with the value one click away', () => {
@@ -230,7 +314,7 @@ describe('the block one decision draws', () => {
     ).toHaveLength(1);
   });
 
-  it('carries a level value behind its own disclosure, the note naming the same words', () => {
+  it('carries a level value behind its own disclosure', () => {
     const body = drawn({
       answer: {
         kind: 'score',
@@ -243,9 +327,6 @@ describe('the block one decision draws', () => {
         confidence: null,
       },
     });
-    expect(body, 'the note names the level the way its row does').toContain(
-      'of 2 - between Soon and structured value',
-    );
     expect(
       [...body.matchAll(/class="raw"/g)],
       'one disclosure per structured level, none for the string one',
@@ -287,8 +368,8 @@ describe('the block one decision draws', () => {
   });
 
   it("composes the same disclosure the book's structured specimen draws", () => {
-    // The same tie the verdict test above keeps, and tighter: the page's
-    // specimen must be what the block would print, the pretty JSON included.
+    // The same tie the facts line keeps, and tighter: the page's specimen must
+    // be what the block would print, the pretty JSON included.
     const value = {
       label: 'owns the ledger and the settlement path',
       files: ['a.rs', 'ledger.rs'],
@@ -324,16 +405,5 @@ describe('the block one decision draws', () => {
     expect(drawnText, 'the block prints the pretty form behind the open').not.toContain(printed);
     expect(PAGE, 'and the page draws it word for word').toContain('structured value - 2 fields');
     expect(PAGE, 'and the specimen is exactly what the block prints').toContain(printed);
-  });
-
-  it('leaves no separator behind for a result that named no model', () => {
-    const body = drawn({
-      model: '',
-      usage: { input_tokens: 280, output_tokens: 20, cost: 0.00001176 },
-    });
-    expect(
-      [...body.matchAll(/class="sep"/g)],
-      'one separator, between the tokens and the cost',
-    ).toHaveLength(1);
   });
 });

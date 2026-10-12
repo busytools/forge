@@ -8,6 +8,8 @@
  */
 
 import { isDecisionTool } from './families';
+import type { ForgeChip } from './forge';
+import { firstLine } from './text';
 
 /**
  * One row's words, and the value in full when it was not a string.
@@ -44,7 +46,42 @@ export interface Decision {
    * descriptions, so its map is empty.
    */
   criteria: Record<string, Row>;
+  /**
+   * The material the call judged, as the block draws it.
+   *
+   * `null` only where the call carried no state at all; a state of JSON
+   * `null` is a value a caller sent and draws as itself.
+   */
+  state: DecisionState | null;
+  /** The row's own words: the answer as a chip, its leading number beside it. */
+  chips: ForgeChip[];
+  figure: string | null;
 }
+
+/** One line the state draws: a field's name, or an item of an array state. */
+export interface StateLine {
+  /**
+   * The field's name; null for an array's items and for a value's own
+   * continuation lines, where the first line already set the column.
+   */
+  key: string | null;
+  text: string;
+  /** How far under the state's own level the line sits. */
+  depth: number;
+  /** True where the text counts what follows rather than being a value. */
+  dim: boolean;
+}
+
+/**
+ * The material the call judged, drawn by the shape it arrived in: a string as
+ * prose, an array as its own rows, an object as its named fields.
+ *
+ * `size` is what the fold line names, and is null for a primitive, which is
+ * the whole of itself and has no size to count.
+ */
+export type DecisionState =
+  | { kind: 'prose'; text: string; size: string | null }
+  | { kind: 'lines'; lines: StateLine[]; size: string };
 
 /** One typed answer, as the three tools return them. */
 export type DecisionAnswer =
@@ -71,7 +108,10 @@ export interface Level {
   raw: unknown;
 }
 
-/** The word a decision call's row leads with, by tool. */
+/**
+ * The word a decision's row falls back to, by tool: what the call is called
+ * where it named no question.
+ */
 const DECISION_WORDS: Readonly<Record<string, string>> = {
   mcp__forge__systemone__ask_noul: 'ask noul',
   mcp__forge__systemone__ask_choice: 'ask choice',
@@ -81,6 +121,31 @@ const DECISION_WORDS: Readonly<Record<string, string>> = {
 /** What the tool is called on its own row, or null for every other call. */
 export function decisionWord(name: string): string | null {
   return DECISION_WORDS[name] ?? null;
+}
+
+/**
+ * The line a decision's row is titled by: the question's own words.
+ *
+ * The row carries the question and never the tool's name - `ask choice` is
+ * plumbing a reader scans past, and the question is the one thing they scan
+ * for (Ved, 2026-10-12). `null` where the call named nothing, which leaves
+ * the caller its own word for the row.
+ */
+export function decisionTitle(input: unknown): string | null {
+  const question = rowOf(obj(input)['instructions'], '');
+  if (question === null) return null;
+  const line = firstLine(question.text);
+  return line === '' ? null : line;
+}
+
+/**
+ * A number as the card writes it: two decimals at most, zeros trimmed.
+ *
+ * One spelling for the whole card, because the row's figure and the number
+ * the body draws beside it are the same fact and must not read two ways.
+ */
+export function num(value: number): string {
+  return String(Math.round(value * 100) / 100);
 }
 
 /**
@@ -107,6 +172,8 @@ export function decisionOf(
     answer,
     question: instructionsOf(input),
     criteria: criteriaOf(answer, input),
+    state: stateOf(input),
+    ...rowFacts(answer),
   };
 }
 
@@ -226,7 +293,7 @@ function answerOf(value: unknown, input: unknown): DecisionAnswer | null {
     return {
       kind: 'choice',
       choice,
-      probabilities: probabilitiesOf(answer['probabilities']),
+      probabilities: probabilitiesOf(answer['probabilities'], obj(input)['criteria']),
       confidence: unitOrNull(answer['confidence']),
     };
   }
@@ -244,10 +311,19 @@ function answerOf(value: unknown, input: unknown): DecisionAnswer | null {
 }
 
 /**
- * The distribution as rows in the result's own key order, or null where it
- * is absent or carries anything that is not a number.
+ * The distribution as rows, or null where it is absent or carries anything
+ * that is not a number.
+ *
+ * The rows come in the order the CALLER wrote the criteria, not the result's
+ * own key order: that order is alphabetical and carries nothing, while the
+ * one the caller wrote is what the model saw and what a reader recognises as
+ * the options they gave (Ved, 2026-10-12). A row the criteria never named
+ * keeps its own place after them.
  */
-function probabilitiesOf(value: unknown): { name: string; value: number }[] | null {
+function probabilitiesOf(
+  value: unknown,
+  criteria: unknown,
+): { name: string; value: number }[] | null {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
   const rows: { name: string; value: number }[] = [];
   for (const [name, held] of Object.entries(value)) {
@@ -255,7 +331,13 @@ function probabilitiesOf(value: unknown): { name: string; value: number }[] | nu
     if (number === null) return null;
     rows.push({ name, value: number });
   }
-  return rows.length === 0 ? null : rows;
+  if (rows.length === 0) return null;
+  const order = Object.keys(obj(criteria));
+  const rank = new Map(order.map((name, at) => [name, at]));
+  // A stable sort: unnamed rows share one rank and keep their own order.
+  return rows.sort(
+    (a, b) => (rank.get(a.name) ?? order.length) - (rank.get(b.name) ?? order.length),
+  );
 }
 
 /**
@@ -289,4 +371,109 @@ function usageOf(value: unknown): Decision['usage'] {
   const output_tokens = finite(held['output_tokens']);
   if (input_tokens === null || output_tokens === null) return null;
   return { input_tokens, output_tokens, cost: finite(held['cost']) };
+}
+
+/** Where a noul stops reading as sure, and starts reading as a coin flip. */
+const SURE = 0.8;
+const UNSURE = 0.6;
+
+/**
+ * The answer as the row states it: the word it reads as, with its leading
+ * number as the figure - the shape every other card's row already carries.
+ *
+ * The number is the answer's own (a noul's probability, the pick's share, a
+ * score's confidence); the tone rides the chip and never replaces the word.
+ */
+function rowFacts(answer: DecisionAnswer): Pick<Decision, 'chips' | 'figure'> {
+  if (answer.kind === 'noul') {
+    const confidence = Math.max(answer.noul, 1 - answer.noul);
+    return {
+      chips: [
+        {
+          text: answer.noul >= 0.5 ? 'yes' : 'no',
+          tone: confidence >= SURE ? 'ok' : confidence <= UNSURE ? 'warn' : 'plain',
+        },
+      ],
+      figure: num(answer.noul),
+    };
+  }
+  if (answer.kind === 'choice') {
+    const pick = answer.probabilities?.find((held) => held.name === answer.choice);
+    return {
+      chips: [{ text: `pick: ${answer.choice}`, tone: 'info' }],
+      figure: pick === undefined ? null : num(pick.value),
+    };
+  }
+  const of = answer.levels === null ? '' : ` of ${answer.levels.length - 1}`;
+  return {
+    chips: [{ text: `score ${num(answer.score)}${of}`, tone: 'plain' }],
+    figure: answer.confidence === null ? null : `conf ${num(answer.confidence)}`,
+  };
+}
+
+/**
+ * The material the call judged, or null for a call that carried none.
+ *
+ * The state is the one thing that answers what all was used in the call, and
+ * it went unread until the picked card (Ved, 2026-10-12). It is read by its
+ * shape rather than dropped: a string as prose, an array as its own rows, an
+ * object as its named fields, a nested value as the count of what it holds
+ * with its own fields under it.
+ */
+function stateOf(input: unknown): DecisionState | null {
+  const state = obj(input)['state'];
+  if (state === undefined) return null;
+  if (typeof state === 'string') {
+    return { kind: 'prose', text: state, size: countText(state.length, 'char') };
+  }
+  if (Array.isArray(state)) {
+    return {
+      kind: 'lines',
+      lines: state.map((item) => ({ key: null, text: wordOf(item), depth: 0, dim: false })),
+      size: countText(state.length, 'item'),
+    };
+  }
+  if (typeof state === 'object' && state !== null) {
+    const fields = Object.entries(state);
+    return {
+      kind: 'lines',
+      lines: fields.flatMap(([key, held]) => fieldLines(key, held, 0)),
+      size: countText(fields.length, 'field'),
+    };
+  }
+  // The schema takes any JSON, so a caller can send a primitive: it draws as
+  // its own word, which is the whole of it and has no size to count.
+  return { kind: 'prose', text: wordOf(state), size: null };
+}
+
+/** One field of a state, as the lines it draws. */
+function fieldLines(key: string, value: unknown, depth: number): StateLine[] {
+  if (Array.isArray(value)) {
+    if (value.length === 0) return [{ key, text: '[]', depth, dim: true }];
+    return value.map((item, at) => ({
+      key: at === 0 ? key : null,
+      text: wordOf(item),
+      depth,
+      dim: false,
+    }));
+  }
+  if (typeof value === 'object' && value !== null) {
+    const fields = Object.entries(value);
+    return [
+      { key, text: countText(fields.length, 'field'), depth, dim: true },
+      ...fields.flatMap(([name, held]) => fieldLines(name, held, depth + 1)),
+    ];
+  }
+  if (value === null || value === undefined) return [{ key, text: 'null', depth, dim: true }];
+  return [{ key, text: wordOf(value), depth, dim: false }];
+}
+
+/** A count as the fold line names it: `2 fields`, `1 char`. */
+function countText(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? '' : 's'}`;
+}
+
+/** A value as the words a line draws it with: its own text, else its JSON. */
+function wordOf(value: unknown): string {
+  return typeof value === 'string' ? value : (JSON.stringify(value) ?? String(value));
 }
