@@ -144,6 +144,18 @@ pub enum ClientMessage {
         /// unable rather than as refused.
         #[serde(default)]
         browser: bool,
+        /// Whether this frame is the role DECLARE: the re-statement of the
+        /// browser capability a client makes as it claims the role, answered
+        /// with the subject's snapshot like any subscribe but holding NOTHING
+        /// - no watch entry, no attachment, no seat hold.
+        ///
+        /// It has to hold nothing because the client never counts it: a
+        /// declared seat was left counted as watched for the life of the
+        /// connection, its unwatched-completion mark never arming.
+        /// Off unless said otherwise, so a client that predates the field
+        /// keeps a plain subscribe's meaning.
+        #[serde(default)]
+        declare: bool,
     },
     Unsubscribe {
         what: Subject,
@@ -392,27 +404,37 @@ mod tests {
 
     /// A subscribe declares whether the client can host the browser, and one
     /// that says nothing about it is not a host: the field is additive, so a
-    /// client built before it reads as unable rather than as a refusal.
+    /// client built before it reads as unable rather than as a refusal. The
+    /// declare flag is the same shape, and its default is the safe one: a
+    /// subscribe that does not say it is a declare holds what it watches.
     #[test]
     fn a_subscribe_declares_the_browser_capability_and_defaults_to_none() {
-        let sent =
-            ClientMessage::Subscribe { what: Subject::Home, answering: false, browser: true };
+        let sent = ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: false,
+            browser: true,
+            declare: true,
+        };
         let json = serde_json::to_string(&sent).expect("encode");
         assert!(json.contains("\"browser\":true"), "{json}");
-        let ClientMessage::Subscribe { browser, .. } = serde_json::from_str(&json).expect("decode")
+        assert!(json.contains("\"declare\":true"), "{json}");
+        let ClientMessage::Subscribe { browser, declare, .. } =
+            serde_json::from_str(&json).expect("decode")
         else {
             panic!("{json} decoded into another message")
         };
         assert!(browser, "the declaration survives the round trip");
+        assert!(declare, "and so does the declare flag");
 
         // The shape a client that predates the field sends.
         let older: ClientMessage =
             serde_json::from_str(r#"{"kind":"subscribe","what":"home","answering":false}"#)
                 .expect("an older subscribe decodes");
-        let ClientMessage::Subscribe { browser, .. } = older else {
+        let ClientMessage::Subscribe { browser, declare, .. } = older else {
             panic!("an older subscribe is still a subscribe")
         };
         assert!(!browser, "a client that says nothing is not a host");
+        assert!(!declare, "and a subscribe that says nothing is a plain subscribe");
     }
 
     /// The on-demand read a picker makes, and the answer it gets.
@@ -448,8 +470,12 @@ mod tests {
 
     #[test]
     fn a_subscribe_round_trips_through_json() {
-        let sent =
-            ClientMessage::Subscribe { what: Subject::Home, answering: true, browser: false };
+        let sent = ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: true,
+            browser: false,
+            declare: false,
+        };
         let json = serde_json::to_string(&sent).expect("encode");
         assert!(json.contains("\"kind\":\"subscribe\""), "{json}");
 

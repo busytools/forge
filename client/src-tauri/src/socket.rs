@@ -90,6 +90,7 @@ impl Held {
                 "what": self.what,
                 "answering": self.answering,
                 "browser": self.browser,
+                "declare": false,
             })
             .to_string()
             .into(),
@@ -212,7 +213,9 @@ impl Socket {
     /// declare that went through `subscribe` would raise the Held count with
     /// no reader behind it, and every reconnect from then on would re-ask a
     /// surplus - a released seat asked for forever (`socket.ts`'s `declare`
-    /// asks the same way, through `askFor`).
+    /// asks the same way, through `askFor`). **The frame says it is a
+    /// declare**, which is what keeps the server's own bookkeeping out of it
+    /// too: the client cannot give back what it never counted.
     pub fn declare(&self, what: Value, answering: bool) {
         let _ = self.tx.send(Outbound::Declare { what, answering });
     }
@@ -462,6 +465,7 @@ async fn run(
                                             "what": what,
                                             "answering": answering,
                                             "browser": true,
+                                            "declare": true,
                                         })
                                         .to_string()
                                         .into(),

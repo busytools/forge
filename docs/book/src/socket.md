@@ -96,8 +96,10 @@ as the name alone - `"catalog_loaded"`, `"cli_version_changed"`,
 
 ## What a client sends
 
-**`subscribe {what, answering, browser}`** - answered with a `snapshot` of
-the whole subject. The subscription this opens is the one updates arrive on.
+**`subscribe {what, answering, browser, declare}`** - answered with a
+`snapshot` of the whole subject. The subscription this opens is the one
+updates arrive on; a frame carrying `declare` opens no subscription and is
+described below.
 
 **`answering` declares whether this client can answer a prompt, and it is
 off unless you say otherwise.** The core parks a turn on the reply of
@@ -134,15 +136,30 @@ that is false about the machine. With no capable client attached at all, a
 browser tool answers that named error rather than waiting for one to
 appear.
 
-Neither declaration takes the pre-attach backlog: it goes to the first
-subscriber, and the view that draws the boot notice is the terminal. A
+**`declare` says the frame is a role DECLARE rather than a subscription,
+and it is off unless you say otherwise.** A client re-states its browser
+capability as it claims the role (`browser_take_role` below): the relay
+answers a host down the channel a declaration created, and a connection
+displaced by an earlier take is no longer registered - so the claim
+re-declares first, or it would come back `false` with the click visibly
+doing nothing. A declare rides a subject the connection ALREADY watches,
+and it is answered with that subject's snapshot like any `subscribe` -
+**but it holds nothing**: no watch entry, no "showing" count for the seat,
+and no working-tree scan behind it. The client never counts the declare,
+so there is nothing it could give one back with: the entry would outlive
+the page that made it. Sent on a subject nothing watches yet, a
+declare leaves it unwatched: the plain frame is the one that opens a
+subscription.
+
+Neither capability declaration takes the pre-attach backlog: it goes to the
+first subscriber, and the view that draws the boot notice is the terminal. A
 client reads what it missed from the subject's snapshot.
 
 **`unsubscribe {what}`** - nothing comes back, because the client asked to
-stop hearing. Note that a second `subscribe` to one subject adds a second
-entry rather than replacing the first, so **one `unsubscribe` drops one
-entry**: a client that subscribed twice and unsubscribed once still hears
-that subject, and needs a second `unsubscribe` to stop. It is counted
+stop hearing. Note that a second plain `subscribe` to one subject adds a
+second entry rather than replacing the first, so **one `unsubscribe` drops
+one entry**: a client that subscribed twice and unsubscribed once still
+hears that subject, and needs a second `unsubscribe` to stop. It is counted
 rather than flagged for a reason - two subscriptions to one seat are one
 seat still being shown, and a single unsubscribe must not take the seat
 out of the set a view is watching.

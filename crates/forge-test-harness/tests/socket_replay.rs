@@ -624,7 +624,12 @@ fn frames_record() -> Value {
     // All five, because they are cheap and the client writes these tags by
     // hand: nothing else in the tree would notice one moving.
     let client_messages = [
-        ClientMessage::Subscribe { what: Subject::Home, answering: false, browser: true },
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: false,
+            browser: true,
+            declare: false,
+        },
         ClientMessage::Unsubscribe { what: Subject::Home },
         ClientMessage::Command {
             command: Box::new(Command::OpenUrl { url: String::new() }),
@@ -1145,7 +1150,12 @@ fn client_sampled() -> BTreeMap<String, BTreeMap<String, Value>> {
     );
     sampled.insert(
         "Subscribe".to_owned(),
-        sample(ClientMessage::Subscribe { what: Subject::Home, answering: false, browser: true }),
+        sample(ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: false,
+            browser: true,
+            declare: false,
+        }),
     );
     sampled
 }

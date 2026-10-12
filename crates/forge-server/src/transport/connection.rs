@@ -666,7 +666,7 @@ async fn handle_client(
         .await;
     };
     match client {
-        ClientMessage::Subscribe { what, answering, browser } => {
+        ClientMessage::Subscribe { what, answering, browser, declare } => {
             // **The browser role, offered once per connection.** A capable
             // client declares it on every subscribe it makes; the first
             // declaration while the role is free takes it, and a later one
@@ -701,7 +701,14 @@ async fn handle_client(
             // was before this subscription, and nothing would correct it: the
             // seat's viewers are seeded with the row the hold read, so the
             // loop announces only what moves after it.
-            if let Subject::Session(slot) = &what {
+            //
+            // **A declare holds nothing**, like the watch entry and the
+            // attachment below: it re-states the browser capability against a
+            // subject the client already watches, and the client never counts
+            // it, so nothing would ever give a hold back.
+            if let Subject::Session(slot) = &what
+                && !declare
+            {
                 // **Every session subscribe holds the seat**, a sessionless
                 // one included - its watch waits for the session (#1706) - and
                 // every taken hold is remembered here so the two paths a
@@ -730,14 +737,21 @@ async fn handle_client(
                     // then - a re-encode with nothing to carry is 448 KB and
                     // 113-263 ms of server time for a home the client already
                     // holds (measured 2026-10-09).
+                    //
+                    // A declare is not a page opening the subject, so it
+                    // neither attaches nor watches: both are owed back one
+                    // per unsubscribe, and the client never counts the
+                    // declare to send one.
                     let spent = match &seat {
-                        Some(slot) => {
+                        Some(slot) if !declare => {
                             let failed = state.surface.failed_turn(slot);
                             Live::lock(&state.live).attach(slot, failed)
                         }
-                        None => false,
+                        _ => false,
                     };
-                    watched.push(what.clone());
+                    if !declare {
+                        watched.push(what.clone());
+                    }
                     send(socket, ServerMessage::Snapshot { subject: what, data }).await?;
                     // Rather than keeping a spent mark until the next unrelated
                     // redraw, which can be half a minute away.
@@ -776,8 +790,12 @@ async fn handle_client(
                 Err(refusal) => {
                     // The hold every session subscribe takes goes back with
                     // the refusal, or a view of a seat that does not exist
-                    // would keep its loop running behind nothing.
-                    if let Subject::Session(slot) = &what {
+                    // would keep its loop running behind nothing. A DECLARE
+                    // takes none - giving one back here would return the hold
+                    // the client's own subscribe is still using.
+                    if let Subject::Session(slot) = &what
+                        && !declare
+                    {
                         holds.give_back(slot);
                     }
                     send(

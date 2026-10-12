@@ -372,8 +372,8 @@ export function connect(url: string): Connection {
   }
 
   /** One subscribe on the wire, remembered as outstanding until it is answered. */
-  function askFor(what: Subject, answering: boolean, browser: boolean): void {
-    sendNow({ kind: 'subscribe', what, answering, browser });
+  function askFor(what: Subject, answering: boolean, browser: boolean, declare = false): void {
+    sendNow({ kind: 'subscribe', what, answering, browser, declare });
     awaiting.push(subjectKey(what));
   }
 
@@ -384,12 +384,15 @@ export function connect(url: string): Connection {
    * A take needs it: the relay registers only connections that declared, and
    * one displaced by an earlier take is no longer in its line - so the claim
    * below would be answered `false` with the click visibly doing nothing.
-   * Nothing is declared when the page watches nothing yet.
+   * Nothing is declared when the page watches nothing yet. **The frame says
+   * it is a declare**, so the server answers it with the watched subject's
+   * snapshot but counts no watch, attachment or hold for it: the client never
+   * counts it either, so there would be nothing to give one back with.
    */
   function declare(): void {
     const watching = held.values().next();
     if (watching.done) return;
-    askFor(watching.value.subject, watching.value.answering, true);
+    askFor(watching.value.subject, watching.value.answering, true, true);
   }
 
   /** A subject the server has answered, which is no longer outstanding. */
@@ -760,8 +763,7 @@ export function connect(url: string): Connection {
       // connection that declared, and a connection displaced by an earlier
       // take is no longer registered - so the bare claim would come back
       // `false` with nothing re-registered. The declare puts this connection
-      // back in the line the claim moves; the watch entry and hold it adds
-      // are balanced when the page leaves.
+      // back in the line the claim moves, and holds nothing while it does.
       declare();
       sendNow({ kind: 'browser_take_role' });
     },
