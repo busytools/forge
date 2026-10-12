@@ -369,9 +369,9 @@ describe('the reviewable document', () => {
     await vi.waitFor(() => {
       expect(document.querySelector('.doc-left')).not.toBeNull();
     });
-    const answered = (fake.sent as Record<string, Record<string, unknown>>[])
-      .find((command) => 'answer_document_hand_off' in command)
-      ?.['answer_document_hand_off'] as { id?: unknown } | undefined;
+    const answered = (fake.sent as Record<string, Record<string, unknown>>[]).find(
+      (command) => 'answer_document_hand_off' in command,
+    )?.['answer_document_hand_off'] as { id?: unknown } | undefined;
     expect(answered?.id, 'the parked call is answered, not left held').toBe('h-1');
     await vi.waitFor(
       () => {
