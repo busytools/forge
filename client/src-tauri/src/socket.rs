@@ -24,11 +24,21 @@ use futures_util::{SinkExt as _, StreamExt as _};
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 
 /// The first reconnect wait; it doubles up to the ceiling and resets on an
 /// open, exactly as `socket.ts`'s `retryDelay` does.
 const RETRY_MS: u64 = 50;
 const MAX_RETRY_MS: u64 = 2000;
+
+/// The largest frame this side will read. A seat's whole conversation
+/// snapshot crosses as ONE frame and the window it carries is frame-capped
+/// (4,000 + 1,000), not byte-capped - measured snapshots reach 146.9 MB, so
+/// tungstenite's 16 MiB frame default refused a real seat ("Message too
+/// long: 17214131 > 16777216") and the socket died on every reconnect. A
+/// bound rather than none, ~1.8x the measured maximum; capping the window
+/// itself is #1637's work, not this half's.
+const MAX_FRAME_BYTES: usize = 256 << 20;
 
 /// Where the connection is, as the page's status line reads it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -396,7 +406,11 @@ async fn run(
         }
         first = false;
 
-        let ws = match tokio_tungstenite::connect_async(&url).await {
+        let config = WebSocketConfig::default()
+            .max_message_size(Some(MAX_FRAME_BYTES))
+            .max_frame_size(Some(MAX_FRAME_BYTES));
+        let ws = match tokio_tungstenite::connect_async_with_config(&url, Some(config), false).await
+        {
             Ok((ws, _)) => ws,
             Err(why) => {
                 // A dial that did not land says so, at DEBUG: the shipping
@@ -816,6 +830,37 @@ pub(crate) mod tests {
         stub.say.send(greeting.clone()).expect("the stub broadcasts");
         match event_of(&mut rx, "message").await {
             SocketEvent::Message(value) => assert_eq!(value, greeting),
+            other => panic!("a message expected, got {other:?}"),
+        }
+        let _ = socket;
+    }
+
+    /// **A frame past both of tungstenite's defaults is delivered, not
+    /// refused.** A seat's whole conversation snapshot crosses as ONE frame,
+    /// and the kdp-test seat's is 16.4 MiB - past the 16 MiB frame default,
+    /// which killed the socket on every reconnect (the app's "Reading the
+    /// conversation..." / "Reconnecting" loop). Sized past the 64 MiB message
+    /// default too, so both caps the connect sets are load-bearing here.
+    #[tokio::test]
+    async fn carries_a_frame_past_the_old_default_caps() {
+        let stub = stub().await;
+        let (socket, mut rx) = connected(&stub).await;
+        let blob = "x".repeat(70 * 1024 * 1024);
+        let snapshot = json!({ "kind": "snapshot", "subject": "home", "data": { "blob": blob } });
+        stub.say.send(snapshot.clone()).expect("the stub broadcasts");
+        // A frame this size takes seconds to serialize, cross and parse, so
+        // it gets its own bound - the shared two seconds fit the small ones.
+        let event = tokio::time::timeout(Duration::from_secs(15), rx.recv())
+            .await
+            .expect("the oversized frame within the bound")
+            .expect("the socket still feeding");
+        match event {
+            SocketEvent::Message(value) => {
+                assert_eq!(value, snapshot, "the whole frame arrives intact");
+            }
+            // The production failure, named: the read that refuses the
+            // frame is what killed the socket.
+            SocketEvent::Malformed(why) => panic!("the frame was refused: {why}"),
             other => panic!("a message expected, got {other:?}"),
         }
         let _ = socket;
