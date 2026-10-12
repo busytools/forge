@@ -528,7 +528,7 @@ The ceiling on one document a session hands the reader through
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
-| `max_size_mib` | integer | `10` | The largest document the viewer opens, in MiB. A read over it is refused naming the size, before any bytes are read. `0` fails the load: a ceiling of nothing would refuse every document, which reads as a bug rather than a choice. |
+| `max_size_mib` | integer | `10` | The largest document the viewer opens, in MiB, between `1` and `190`. A read over it is refused naming the size, before any bytes are read. `0` fails the load: a ceiling of nothing would refuse every document, which reads as a bug rather than a choice. A value past `190` fails the load too: a document crosses the socket base64-encoded and the desktop client's frame cap is 256 MiB, so a larger ceiling would read and raise and then die at the client. |
 
 A row's motion is not configurable. Each view animates its own: the
 TUI's spinner styles name glyph cycles, which is a terminal idiom a

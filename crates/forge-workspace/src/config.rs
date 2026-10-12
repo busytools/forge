@@ -116,6 +116,13 @@ struct ForgeToml {
 /// `[documents] max_size_mib` key is absent, in MiB.
 pub const DEFAULT_DOCUMENT_MAX_MIB: u64 = 10;
 
+/// The highest `[documents] max_size_mib` forge accepts, in MiB. A document
+/// crosses the socket base64-encoded, a third larger, and the desktop
+/// client's frame cap is 256 MiB (`client/src-tauri`'s `MAX_FRAME_BYTES`):
+/// 190 MiB raw lands at ~253.3 MiB, inside the cap with room for the
+/// answer's other fields.
+pub const DOCUMENT_MAX_MIB_LIMIT: u64 = 190;
+
 /// One `[documents]` table. Unknown fields are rejected so a mistyped
 /// key fails the load instead of being ignored.
 #[derive(Debug, Default, Deserialize)]
@@ -130,11 +137,18 @@ struct DocumentsSettings {
 
 impl DocumentsSettings {
     /// The resolved ceiling in bytes. 0 and a magnitude a byte count
-    /// cannot hold are refused rather than obeyed: each would silently
-    /// mean something other than a ceiling.
+    /// cannot hold are refused rather than obeyed, and so is a value past
+    /// [`DOCUMENT_MAX_MIB_LIMIT`]: each would mean something other than a
+    /// ceiling a client can receive.
     fn resolved_max_bytes(&self, path: &Path) -> Result<u64, WorkspaceError> {
         match self.max_size_mib {
             None => Ok(DEFAULT_DOCUMENT_MAX_MIB * 1024 * 1024),
+            Some(mib) if mib > DOCUMENT_MAX_MIB_LIMIT => {
+                Err(WorkspaceError::DocumentCeilingTooLarge {
+                    path: path.to_path_buf(),
+                    value: mib,
+                })
+            }
             Some(mib) => mib.checked_mul(1024 * 1024).filter(|bytes| *bytes > 0).ok_or_else(|| {
                 WorkspaceError::DocumentCeilingInvalid { path: path.to_path_buf(), value: mib }
             }),
@@ -1245,6 +1259,39 @@ max_size_mib = 0
             err.to_string().contains("max_size_mib = 0"),
             "the error names the unusable key, got: {err}",
         );
+    }
+
+    /// **A ceiling past what the wire can carry is refused at load, with
+    /// the reason in the error.** A document crosses the socket
+    /// base64-encoded and the desktop client's frame cap is 256 MiB, so a
+    /// ceiling above [`DOCUMENT_MAX_MIB_LIMIT`] would read, raise, and then
+    /// die at the client - after a full read the reader never sees. The
+    /// limit itself is usable.
+    #[test]
+    fn a_document_ceiling_past_the_wire_cap_is_refused_at_load() {
+        assert_eq!(
+            DOCUMENT_MAX_MIB_LIMIT, 190,
+            "the most the 256 MiB frame cap carries once a document crosses base64-encoded",
+        );
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            &format!("{}\n[documents]\nmax_size_mib = 191\n", minimal_config()),
+        );
+        let err = load_from_dir(dir.path()).expect_err("over the wire cap must not load");
+        let said = err.to_string();
+        assert!(said.contains("max_size_mib = 191"), "the error names the value: {said}");
+        assert!(said.contains("256 MiB"), "and the reason names the frame cap: {said}");
+
+        write_config(
+            dir.path(),
+            &format!(
+                "{}\n[documents]\nmax_size_mib = {DOCUMENT_MAX_MIB_LIMIT}\n",
+                minimal_config()
+            ),
+        );
+        let config = load_from_dir(dir.path()).expect("the limit itself is usable");
+        assert_eq!(config.document_max_bytes, DOCUMENT_MAX_MIB_LIMIT * 1024 * 1024);
     }
 
     /// On unless it is turned off, and on loopback: "on by default" must
