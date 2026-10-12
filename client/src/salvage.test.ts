@@ -157,9 +157,12 @@ describe('the salvage copies', () => {
     // before the extensions page's drawing landed, which declares the whole
     // palette in its own `:root` like every other page, and the review
     // drawing's thirteen add to that: the two sums add, so this is the
-    // merged tree's count rather than either branch's alone. The document
-    // viewer's drawing declares the palette's sixteen and adds the same way.
-    expect(compared, 'the sweep no longer reaches the same tokens').toBe(217);
+    // merged tree's count rather than either branch's alone. 203 after the
+    // home drawing declared the `--ctl` and `--blue` its rules already used;
+    // its other addition, `--fs-label`, is not a palette token, so it does
+    // not move the count. The document viewer's drawing declares the
+    // palette's sixteen and adds the same way.
+    expect(compared, 'the sweep no longer reaches the same tokens').toBe(219);
   });
 
   /**

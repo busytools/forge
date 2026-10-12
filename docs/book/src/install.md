@@ -80,7 +80,8 @@ the shell crate's android warnings check (`client-android-warnings`:
 set (with and without `--all-features`),
 `cargo nextest run --workspace --all-features`,
 `cargo test --doc --workspace --all-features`, and
-`cargo doc --workspace --no-deps --all-features`. The clippy, test,
+`cargo doc --workspace --no-deps --all-features
+--document-private-items`. The clippy, test,
 doctest and doc steps each set `RUSTFLAGS=-D warnings` so a warning CI
 would reject fails locally too; CI sets it once at workflow level
 instead. It covers the build each step drives, and rustdoc compiles a

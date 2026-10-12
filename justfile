@@ -210,7 +210,8 @@ conformance-capture-sdk test:
     FORGE_WIRE_CAPTURE=1 cargo nextest run -p forge-test-harness \
         --no-capture --run-ignored only --no-tests=fail -P capture {{test}}
 
-# Mirrors CI's `cargo doc --workspace --no-deps --all-features`.
+# Mirrors CI's published build (`--document-private-items` included),
+# so a private item's doc warning fails here, not only in the docs job.
 # `RUSTDOCFLAGS=-D warnings` denies rustdoc lints (broken links,
 # private intra-doc links, etc.); `RUSTFLAGS=-D warnings` mirrors
 # CI's workflow-level env so the underlying compile that `cargo doc`
@@ -218,7 +219,7 @@ conformance-capture-sdk test:
 #
 # Build docs with warnings as errors.
 doc:
-    RUSTDOCFLAGS="-D warnings" RUSTFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
+    RUSTDOCFLAGS="-D warnings" RUSTFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features --document-private-items
 
 # Deliberately not part of `check`: the only errors it finds are ones
 # dev cannot see (`cfg(debug_assertions)`, and anything reachable only

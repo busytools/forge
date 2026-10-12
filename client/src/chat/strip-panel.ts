@@ -33,10 +33,11 @@ export function panelStyle(el: HTMLElement | null): string {
   // own scroll did to the segment.
   const right = Math.min(box.right, window.innerWidth - 6);
   // **Viewport terms, not segment ones.** The panel is portaled to the body
-  // (see `portal`), so `right:` resolves against the viewport: an inset kept
-  // in segment terms drew the panel's right edge at the viewport's own -
-  // measured, 23px past a 1577px segment on a 1600px window, and flush with
-  // the screen edge on a phone.
+  // (see `portal`), so `right:` resolves against the initial containing
+  // block, which coincides with the viewport only because the session page's
+  // document does not scroll: an inset kept in segment terms drew the panel's
+  // right edge at the viewport's own - measured, 23px past a 1577px segment
+  // on a 1600px window, and flush with the screen edge on a phone.
   const inset = Math.round(Math.max(0, window.innerWidth - right));
   // -18, not -12: the panel's bottom sits 6px above the segment, so this
   // lands its top 12px under the viewport's. The zero floors are honesty

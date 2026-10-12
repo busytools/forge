@@ -12,12 +12,13 @@
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
   :root {
-    --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130; --line:#222a3c;
+    --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130; --line:#222a3c; --ctl:#516590;
     --text:#c9d1d9; --muted:#8f98a8; --dim:#788294;
-    --accent:#f47600; --ok:#82c76b; --bad:#e0683e; --warn:#c9a13b;
+    --accent:#f47600; --ok:#82c76b; --bad:#e0683e; --warn:#c9a13b; --blue:#61a0e0;
     --ui: "Fira Code", system-ui, -apple-system, "Segoe UI", sans-serif;
     --mono: "Fira Code", ui-monospace, Menlo, monospace;
     --r: 10px;
+    --fs-label: 12.5px;
     /* one line per entity: state | name | where | what | when.
        no action column - the whole row is the target. */
     --cols: 13px minmax(0, 22rem) minmax(0, 20rem) minmax(0, 1fr) 74px;
@@ -512,6 +513,7 @@
       align-items: center; gap: 14px;
       border: 1px solid var(--line); border-radius: var(--r);
       background: var(--s1); padding: 13px 16px; margin-bottom: 10px; }
+    .fleet-row:hover { background: var(--s2); }
     .fleet-name { font-weight: 500; }
     /* The row is the way into the lead's chat: this link's box stretches over
        the whole row, and the controls with targets of their own (a seat chip,
@@ -540,12 +542,26 @@
       font-size: 12.5px; border: 1px solid var(--line); border-radius: 6px;
       padding: 6px 10px; white-space: nowrap;
       position: relative; z-index: 1; }
+    .fleet-open:hover { border-color: var(--ctl); }
+    .fleet-open:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+    /* A finger's floors, the sheet's own: the open link and a seat chip take
+       44px, and the row takes the taller padding. */
+    @media (pointer: coarse) {
+      .fleet-open { min-height: 44px; display: inline-flex; align-items: center; }
+      .fleet-seat { min-height: 44px; }
+      .fleet-row { padding-top: 16px; padding-bottom: 16px; }
+    }
     /* The marks the fleet borrows from the sheet's vocabulary. */
     .fleet .dot { width: 11px; height: 11px; border-radius: 50%; flex: 0 0 11px; }
     .fleet .dot.live { background: var(--ok); }
     .fleet .dot.off { background: var(--dim); }
     .fleet .dot.warn { background: var(--warn); }
     .fleet .dot.bad { background: var(--bad); }
+    /* The sheet's narrow step for the fleet, carried at the same 900. */
+    @media (max-width: 900px) {
+      .fleet-row { grid-template-columns: 22px minmax(0, 1fr) auto; row-gap: 8px; }
+      .fleet-where, .fleet-when, .fleet-seats, .fleet-counts, .fleet-misses, .fleet-open { grid-column: 2 / -1; }
+    }
   </style>
 
   <ul class="fleet">
