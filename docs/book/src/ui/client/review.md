@@ -65,8 +65,8 @@ connection was down recovers rather than reading for ever.
 one row per directory and per file, folders before files at every level,
 indented by depth, and a directory's row carries every file beneath it -
 which is what its collapsed row hides. A file states a side of its change
-only where it has one, so a file with no removals carries no `-0`, and each
-row carries its full path as its hover title.
+only where it has one, so a file with no removals carries no `-0`, and
+each file row carries its full path as its hover title.
 
 **The canvas draws what is on screen.** The sections are virtualised over
 files - the browser holds the two or three a reader can see and the rest
