@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { flushSync, mount, unmount } from 'svelte';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import session from '../dev/fixtures/session.json';
 import { reviewRows } from '../session/view';
@@ -65,11 +65,16 @@ afterEach(async () => {
   app = null;
   document.body.innerHTML = '';
   review.sync(null);
+  vi.useRealTimers();
 });
 
-function draw(held: SessionRecord): void {
+beforeEach(() => {
+  vi.useFakeTimers();
+});
+
+function draw(held: SessionRecord, href: string | null = null): void {
   review.sync(reviewRows(held));
-  app = mount(ReviewSegment, { target: document.body });
+  app = mount(ReviewSegment, { target: document.body, props: { href } });
   flushSync();
 }
 
@@ -98,5 +103,40 @@ describe("the review row's draw", () => {
     app = mount(ReviewSegment, { target: document.body });
     flushSync();
     expect(toggle(), 'no read, no row').toBeNull();
+  });
+});
+
+describe("the review panel's placement", () => {
+  it('portals its panel to the body, where the viewport terms land', () => {
+    // The panel's style is measured in viewport terms (`strip-panel.ts`), so
+    // a panel left inside the segment - its `offsetParent` - lands hundreds
+    // of pixels from the toggle (measured on the shallow look: the panel drew
+    // at x=-128 under a segment at x=518). Every sibling segment portals for
+    // the same reason.
+    draw(record);
+    toggle()?.click();
+    flushSync();
+    const list = document.querySelector('.sg-list');
+    expect(list, 'the click opened the panel').not.toBeNull();
+    expect(
+      document.body.querySelector(':scope > .sg-list'),
+      'the panel lives in the body, not inside the segment',
+    ).toBe(list);
+  });
+
+  it('keeps the panel while focus moves into it', () => {
+    // The portaled panel is outside the segment, so focus entering it is not
+    // a departure - the guard reads the panel as well as the segment.
+    draw(record, '/session/Busytools/forge/lead/review');
+    toggle()?.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+    flushSync();
+    const door = document.querySelector<HTMLAnchorElement>('.sg-open');
+    expect(door, 'the panel drew its door').not.toBeNull();
+    door?.focus();
+    toggle()?.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: door }));
+    flushSync();
+    vi.advanceTimersByTime(150);
+    flushSync();
+    expect(document.querySelector('.sg-list'), 'focus inside keeps it').not.toBeNull();
   });
 });
