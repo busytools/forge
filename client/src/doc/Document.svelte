@@ -185,19 +185,17 @@
    * command a code review rides), then release the parked hand-off with
    * what was filed - a refusal keeps the drafts and says why, and nothing
    * is answered until the review actually landed.
+   *
+   * **The door opens even when the document never did.** A refused read
+   * has no path and no drafts, so there is nothing to file - but the
+   * reader is still owed the way back, and a parked hand-off still needs
+   * its answer: the guard that skips the FILING must not skip the return.
    */
   async function done(): Promise<void> {
-    if (held.path === null) return;
     finishState = { kind: 'busy' };
     let reviewId: string | null = null;
     let number: number | null = null;
-    // Nothing to release - a deep link, or a state with no comments: the
-    // one door is still the way back.
-    if (drafts.length === 0 && handoff === null) {
-      returnTo(null, 0);
-      return;
-    }
-    if (drafts.length > 0) {
+    if (held.path !== null && drafts.length > 0) {
       const ids = drafts.map((draft) => draft.id);
       let answer: unknown;
       try {

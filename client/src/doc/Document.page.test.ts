@@ -324,6 +324,42 @@ describe('the reviewable document', () => {
     ).toBeNull();
   });
 
+  /** **The door opens even when the document never did.** A refused read
+   *  has no path and no drafts; the one done still returns the reader -
+   *  and answers a parked hand-off - rather than standing there inert. */
+  it('returns from a refused read, answering the parked hand-off', async () => {
+    const fake = fakeDoc({ kind: 'refused', why: 'no document at /proj/docs/gone.md' });
+    app = mount(Document, {
+      target: document.body,
+      props: {
+        slot: SLOT,
+        path: PATH,
+        reviewable: true,
+        handoff: 'h-1',
+        connection: fake.connection,
+      },
+    });
+    flushSync();
+    expect(document.querySelector('.doc-said')?.textContent, 'the refusal is drawn').toContain(
+      'no document at',
+    );
+
+    buttonByText('done').click();
+    await vi.waitFor(() => {
+      expect(document.querySelector('.doc-left')).not.toBeNull();
+    });
+    const answered = (fake.sent as Record<string, Record<string, unknown>>[])
+      .find((command) => 'answer_document_hand_off' in command)
+      ?.['answer_document_hand_off'] as { id?: unknown } | undefined;
+    expect(answered?.id, 'the parked call is answered, not left held').toBe('h-1');
+    await vi.waitFor(
+      () => {
+        expect(get(currentRoute)).toEqual({ name: 'session', slot: SLOT });
+      },
+      { timeout: 3000 },
+    );
+  });
+
   /** Nothing to release (a deep link): the one door is still the way back,
    *  answering nothing and filing nothing. */
   it('returns from a bare viewer without dispatching anything', async () => {
@@ -341,9 +377,12 @@ describe('the reviewable document', () => {
     flushSync();
 
     buttonByText('done').click();
-    await vi.waitFor(() => {
-      expect(get(currentRoute)).toEqual({ name: 'session', slot: SLOT });
-    });
+    await vi.waitFor(
+      () => {
+        expect(get(currentRoute)).toEqual({ name: 'session', slot: SLOT });
+      },
+      { timeout: 3000 },
+    );
     expect(fake.sent, 'a viewer with nothing to release sends nothing').toEqual([]);
   });
 
