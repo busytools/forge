@@ -225,6 +225,13 @@ function stub() {
         },
       });
     },
+    /** The core saying that prompt is waiting in the CLI's queue, which retracts its row into the hold. */
+    queued(): void {
+      send({
+        kind: 'update',
+        update: { prompt_queued: { key: LEAD, uuid: 'said-once', text: 'what is this' } },
+      });
+    },
   };
 }
 
@@ -390,6 +397,42 @@ describe('whether the column follows the newest end', () => {
     const drawn = Math.floor(TOTAL + 60);
     expect(pinned(), 'the corrected foot is pinned once the row is drawn').toEqual([
       { asked: drawn, landed: drawn - VIEWPORT },
+    ]);
+  });
+
+  it("does not pin onto a queued prompt's held row either, which draws nothing at all", async () => {
+    // The queue hold is the same reservation with nothing in it: the prompt's
+    // row is retracted into the pile, so the turn stands empty at the list's
+    // estimate - a row of zero drawn under a slot of a few hundred. A send
+    // mid-turn is exactly this, and its shake is the same sweep.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    const reserved = [
+      { top: 0, height: TOTAL / 2 },
+      { top: TOTAL / 2, height: TOTAL / 2 },
+    ];
+    measured(TOTAL + 300, [...reserved, { top: TOTAL, height: 0 }]);
+    element.height = TOTAL + 300;
+
+    server.prompt();
+    server.queued();
+    await settle();
+
+    expect(pinned(), 'a held row is not a foot to pin onto').toEqual([]);
+
+    // The row measures as the nothing it draws, and the foot corrects to it.
+    measured(TOTAL, [...reserved, { top: TOTAL, height: 0 }]);
+    element.height = TOTAL;
+    resized();
+    await settle();
+
+    const foot = Math.floor(TOTAL);
+    expect(pinned(), 'the corrected foot is pinned once the hold is measured').toEqual([
+      { asked: foot, landed: foot - VIEWPORT },
     ]);
   });
 

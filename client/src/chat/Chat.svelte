@@ -793,19 +793,19 @@
    *
    * **Both sides in the list's own coordinates**, so the scroll element's own
    * padding stays out of it: the container's committed height minus the
-   * item's own box, read live. Zero where nothing can be read - the row
-   * outside the drawn window, a DOM with no layout - which is the honest
+   * item's own box, read live. Zero where nothing can be read - the newest
+   * turn outside the drawn window, a DOM with no layout - which is the honest
    * answer where a reservation and a drawn row cannot be told apart.
    */
   function undrawnOverhang(): number {
     if (viewport === null || newest === null) return 0;
-    const row = viewport.querySelector(`[data-k^="${CSS.escape(newest)}:"]`);
-    const item = row?.closest('.turn')?.parentElement;
+    const wrapper = viewport.querySelector(`[data-t="${CSS.escape(newest)}"]`);
+    const item = wrapper?.parentElement;
     const container = item?.parentElement;
     if (!(item instanceof HTMLElement) || !(container instanceof HTMLElement)) return 0;
     const drawn = item.offsetHeight;
     const reserved = container.offsetHeight - item.offsetTop;
-    return drawn > 0 && drawn < reserved - 1 ? reserved - drawn : 0;
+    return drawn < reserved - 1 ? reserved - drawn : 0;
   }
 
   /**
@@ -1261,8 +1261,12 @@
     bind:this={list}
   >
     {#snippet children(turn: HeldTurn)}
+      <!-- `data-t` names the wrapper for the turn it draws, which is how the
+           foot's reservation check finds the newest row's box - the row's own
+           keys ride its units, and a held turn has none. -->
       <div
         class="turn"
+        data-t={turn.key}
         style:min-height={turn.held ? heldReserve(rowSizes.sizeOf(turn.key)) : undefined}
         {@attach (node: HTMLElement) => measureTurn(node, turn.key)}
       >
