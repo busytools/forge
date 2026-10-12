@@ -29,7 +29,7 @@ vi.mock('./conversation', async (importOriginal) => {
   return frozenConversation(await importOriginal<typeof import('./conversation')>());
 });
 
-const { clear, element, layout, list, pinned, setElement, setMeasured } =
+const { clear, element, layout, list, measured, pinned, setElement, setMeasured } =
   await import('./testing/records');
 const { default: Chat } = await import('./Chat.svelte');
 const { default: Seats } = await import('./testing/Seats.svelte');
@@ -350,6 +350,46 @@ describe('whether the column follows the newest end', () => {
     expect(pinned(), 'the late layout lands one more pin, at the new foot').toEqual([
       PIN,
       { asked: grown, landed: grown - VIEWPORT },
+    ]);
+  });
+
+  it('does not pin onto a slot the list has reserved for the newest turn but not drawn', async () => {
+    // **The foot a send lands on.** An appended turn is reserved a slot at the
+    // list's estimate and drawn a frame later, so for that frame the element's
+    // foot runs past the content: pinning to it lands the reader on empty
+    // space, and the clamp back - the row measures shorter than the estimate -
+    // sweeps the window down and up again, dropping and re-creating every row
+    // in the band. The pass waits for the draw; the size change the
+    // measurement lands re-fires it.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    // The list's own boxes: two turns drawn, and the arriving third reserved
+    // at 300 with 60 of it drawn - the element's foot counts the reservation.
+    const reserved = [
+      { top: 0, height: TOTAL / 2 },
+      { top: TOTAL / 2, height: TOTAL / 2 },
+    ];
+    measured(TOTAL + 300, [...reserved, { top: TOTAL, height: 60 }]);
+    element.height = TOTAL + 300;
+
+    server.prompt();
+    await settle();
+
+    expect(pinned(), 'the reserved slot is not a foot to pin onto').toEqual([]);
+
+    // The measurement lands and the slot corrects to what the row drew.
+    measured(TOTAL + 60, [...reserved, { top: TOTAL, height: 60 }]);
+    element.height = TOTAL + 60;
+    resized();
+    await settle();
+
+    const drawn = Math.floor(TOTAL + 60);
+    expect(pinned(), 'the corrected foot is pinned once the row is drawn').toEqual([
+      { asked: drawn, landed: drawn - VIEWPORT },
     ]);
   });
 

@@ -788,6 +788,27 @@
   });
 
   /**
+   * How much of the foot is a slot the list has reserved for the newest turn
+   * and not drawn yet.
+   *
+   * **Both sides in the list's own coordinates**, so the scroll element's own
+   * padding stays out of it: the container's committed height minus the
+   * item's own box, read live. Zero where nothing can be read - the row
+   * outside the drawn window, a DOM with no layout - which is the honest
+   * answer where a reservation and a drawn row cannot be told apart.
+   */
+  function undrawnOverhang(): number {
+    if (viewport === null || newest === null) return 0;
+    const row = viewport.querySelector(`[data-k^="${CSS.escape(newest)}:"]`);
+    const item = row?.closest('.turn')?.parentElement;
+    const container = item?.parentElement;
+    if (!(item instanceof HTMLElement) || !(container instanceof HTMLElement)) return 0;
+    const drawn = item.offsetHeight;
+    const reserved = container.offsetHeight - item.offsetTop;
+    return drawn > 0 && drawn < reserved - 1 ? reserved - drawn : 0;
+  }
+
+  /**
    * Pin the foot: the scroll's own maximum, which is where the browser clamps.
    *
    * **Through the element rather than through the list's handle, and that is
@@ -797,7 +818,9 @@
    * the end of the previous total and leaves the newest content below the fold
    * until the next frame happens to arrive, which on a turn that has just
    * settled is never. Asking the element for `scrollHeight` cannot be early or
-   * late: the browser clamps it to the foot of what is actually drawn.
+   * late for a row the list has DRAWN: the browser clamps it to that row's own
+   * foot - and where the number counts a row not drawn yet, the reservation
+   * check below holds the pass back rather than land on it.
    *
    * The terminal pins the same way: while `auto_scroll` is on, every render
    * sets its scroll target to its own max.
@@ -805,6 +828,22 @@
   function land(): number {
     if (viewport === null) return 0;
     const foot = viewport.scrollHeight;
+    // **Except where that number counts a row the list has not drawn yet.**
+    // An appended turn is reserved a slot at the list's estimate and drawn a
+    // frame later, so the foot runs past the content: pinning to it lands the
+    // reader on empty space, and the clamp back - the row measures shorter
+    // than the estimate - sweeps the window down and up again, dropping and
+    // re-creating every row in the band. That is the blink on a send, where a
+    // turn is appended while the reader is at the foot and the sweep crosses
+    // the rows they are looking at. The pass waits for the draw instead; the
+    // size change the measurement lands re-fires it.
+    //
+    // **Only an overhang counts, and only the newest turn's.** A foot SHORT
+    // of the drawn rows is the model lagging a row that grew, where the pin
+    // is what pulls the reader down after it; and a reader away from the foot
+    // has the newest turn outside the window, where their pin is the jump
+    // down to it and must go through.
+    if (undrawnOverhang() > 0) return foot;
     // **The write is unconditional, and the token comes from the read-back.**
     // `scrollTop` clamps to `scrollHeight - clientHeight`, so what the write
     // lands on is not what it asked for, and only the read-back knows whether
