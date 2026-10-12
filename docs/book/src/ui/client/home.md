@@ -61,6 +61,13 @@ card draws nothing of.
 states which forge is serving, and the client is a different program, so the
 version in the shell crate's own manifest would name the wrong thing.
 
+**The band's server card is the way back to the connect screen** (Ved,
+2026-10-12): the card names the forge this client is on - `host:port`, as a
+reader recognises it - and the whole card is a link to `/connect`, the
+dictation and extensions cards' own pattern. It is how the client is
+pointed at another forge - a scratch stack, a second machine - without a
+relaunch.
+
 **The row's tree cell is the project's own read.** It carries the branch
 the tree is on and how much has changed in it; a count of zero draws
 nothing, because an unchanged tree is what the cell already means when it

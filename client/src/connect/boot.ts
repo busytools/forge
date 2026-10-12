@@ -30,7 +30,8 @@ export interface Launch {
 }
 
 /**
- * Open on the address that was remembered, or on the door.
+ * Open on the address this launch targets - the one a `?server=` parameter
+ * named, else the remembered one - or on the door.
  *
  * `opened` decides one thing: whether this launch may move the app off the
  * route it was addressed at. `connect` is a parameter for the same reason
@@ -38,20 +39,20 @@ export interface Launch {
  * deadline a real one is given can be shortened to the one a test is about.
  *
  * The address itself is not returned: the shell holds it, and starts on
- * `remembered ?? DEFAULT_ADDRESS`, which is the one this would hand back.
+ * `target ?? DEFAULT_ADDRESS`, which is the one this would hand back.
  */
 export async function boot(
   opened: Route,
-  remembered: string | null,
+  target: string | null,
   connect: (input: string) => Promise<Attempt> = connectTo,
 ): Promise<Launch> {
   const lands = opened.name === 'home';
 
-  if (remembered === null) {
+  if (target === null) {
     return { route: lands ? { name: 'connect' } : null, connected: null, failure: null };
   }
 
-  const answer = await attempt(remembered, connect);
+  const answer = await attempt(target, connect);
   return {
     route: lands ? (answer.ok ? { name: 'home' } : { name: 'connect' }) : null,
     connected: answer.ok ? answer : null,

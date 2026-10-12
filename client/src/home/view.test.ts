@@ -579,12 +579,16 @@ describe('a row over the fleet', () => {
 
   it('draws the band with the address a reader recognises, not the socket URL', () => {
     const view = homeView(homeWire, 'ws://127.0.0.1:8790/socket');
-    const web = view.band.find((card) => card.title === 'web');
-    expect(web?.value).toBe('127.0.0.1:8790');
-    expect(web?.detail).toBe('this page');
+    // **The server card is the third way in** (Ved, 2026-10-12): it names
+    // the forge this client is on, and the whole card opens the connect
+    // screen - dictation and extensions' own pattern.
+    const server = view.band.find((card) => card.title === 'server');
+    expect(server?.value).toBe('127.0.0.1:8790');
+    expect(server?.detail).toBe('connect elsewhere');
+    expect(server?.href, 'the whole card is the door').toBe('/connect');
     expect(view.band.map((card) => card.title)).toEqual([
       'gateway',
-      'web',
+      'server',
       'dictation',
       'accounts',
     ]);
@@ -927,15 +931,20 @@ describe('the band', () => {
   });
 
   /**
-   * The dictation card is the way into the models page, and it is the only
-   * card that opens anything: the band is where a reader looks for
-   * dictation, and that page is what draws it.
+   * The band is where a reader looks for each page: dictation opens the
+   * models page, and the server card opens the connect screen - its own
+   * pattern, and the way to point the client at another forge.
    */
-  it('opens the models page from the dictation card alone', () => {
+  it('opens the models page and the connect screen from their own cards', () => {
     const cards = homeView(homeWire, '').band;
 
-    expect(cards.map((entry) => entry.title)).toEqual(['gateway', 'web', 'dictation', 'accounts']);
-    expect(cards.map((entry) => entry.href)).toEqual([null, null, '/models', null]);
+    expect(cards.map((entry) => entry.title)).toEqual([
+      'gateway',
+      'server',
+      'dictation',
+      'accounts',
+    ]);
+    expect(cards.map((entry) => entry.href)).toEqual([null, '/connect', '/models', null]);
   });
 
   it('reads dictation as off when the config turned it off', () => {

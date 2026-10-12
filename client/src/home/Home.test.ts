@@ -40,6 +40,20 @@ const withGate = (gate: Gate): HomeWire => {
 
 describe('the home page as it draws', () => {
   /**
+   * **The server card is the door back to the connect screen** (Ved,
+   * 2026-10-12): the band names the forge this client is on, and the whole
+   * card is a link - pointing the client at another forge needs no
+   * relaunch.
+   */
+  it('names the server this client is on, and the whole card is the door', () => {
+    const html = draw({ address: '127.0.0.1:8790' });
+    const at = html.indexOf('127.0.0.1:8790');
+    expect(at, 'the band names the server it is pointed at').toBeGreaterThan(-1);
+    const card = html.slice(Math.max(0, at - 220), at + 140);
+    expect(card, 'and the whole card is the link to the door').toContain('href="/connect"');
+    expect(card, 'under the server title').toContain('server');
+  });
+  /**
    * The core's last fatal draws above everything (#1638): the words are the
    * terminal's own, carried on the home wire.
    */
