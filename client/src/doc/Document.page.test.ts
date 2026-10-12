@@ -325,6 +325,42 @@ describe('the reviewable document', () => {
     ).toBeNull();
   });
 
+  /** **The keyboard half of the link rule.** A reader tabbed onto a link
+   *  inside a block is on the link: Enter must reach it (not be swallowed
+   *  by the block) and open no composer - while Enter ON the block still
+   *  opens its composer, which is the block's own affordance. */
+  it('gives a focused link its Enter, and the block its own', () => {
+    drawReviewable({
+      kind: 'landed',
+      document_kind: 'markdown',
+      bytes: enc('# hi\n\nsee [the plan](./plan.md) for more\n'),
+      reviewable: true,
+      content_hash: '42',
+    });
+
+    const link = document.querySelector('.doc-block a');
+    expect(link, 'the markdown link rendered').not.toBeNull();
+    const onLink = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      bubbles: true,
+      cancelable: true,
+    });
+    link?.dispatchEvent(onLink);
+    flushSync();
+    expect(onLink.defaultPrevented, "the link's Enter was not swallowed").toBe(false);
+    expect(
+      document.querySelector('.doc-compose'),
+      'and the block did not open its composer over the link',
+    ).toBeNull();
+
+    const block = blockTarget('see');
+    const onBlock = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+    block.dispatchEvent(onBlock);
+    flushSync();
+    expect(onBlock.defaultPrevented, 'the block still answers its own Enter').toBe(true);
+    expect(document.querySelector('.doc-compose'), 'and opens its composer').not.toBeNull();
+  });
+
   /** **Every opened document draws its one door.** A PDF has no comments
    *  and no review, but it still parked a call: the done answers it and is
    *  the way back - the same single verb every state carries. */

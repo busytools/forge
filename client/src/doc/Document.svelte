@@ -334,6 +334,10 @@
             openComposer(row);
           }}
           onkeydown={(event) => {
+            // The keyboard half of the link rule: a reader tabbed onto a
+            // link inside the block is on the link, and Enter/Space there
+            // must reach it - the block answers only its own.
+            if (event.target instanceof Element && event.target.closest('a') !== null) return;
             if (event.key === 'Enter' || event.key === ' ') {
               event.preventDefault();
               openComposer(row);
