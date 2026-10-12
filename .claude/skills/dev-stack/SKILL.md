@@ -108,9 +108,10 @@ history is the record.
    - `script -q /dev/null /bin/sh $STACK/boot.sh < /dev/null &`
    - **Launch it `nohup`-detached, never bare `&`**: a background job started
      inside a tool call can die with that call's process group (measured: a
-     scratch was gone ~30s after its launch call returned and another stack
-     took its ports; a detached launch held). Wrap this line as `nohup script
-     -q ... > $STACK/boot.out 2>&1 &` from a `launch.sh`.
+     scratch was gone ~30s after launch while another stack took its ports,
+     and a bare launch has also held for hours; detaching costs nothing).
+     Wrap this line as `nohup script -q ... > $STACK/boot.out 2>&1 &` from a
+     `launch.sh`.
    - **The HOME redirect is mandatory, not optional**: the durable store
      resolves under `HOME`, so without it the scratch forge points at the
      real `db.redb`, fails redb's exclusive lock, and boots degraded with no
