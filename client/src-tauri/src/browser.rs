@@ -835,11 +835,13 @@ impl BrowserHost {
     ///
     /// **The sweep is idempotent**, so it may run on every capable connect
     /// and after every despawn: the server sends the seats that exist, the
-    /// client deletes what is no longer any of theirs. The record is re-read
-    /// at the delete's own moment, so a name adopted between the frame and
-    /// the delete is kept rather than raced, and the delete is the same act
-    /// the UI's own is - a call in flight is waited out. A failure is logged
-    /// and leaves the profile; the sweep never half-deletes.
+    /// client deletes what is no longer any of theirs. The record is read
+    /// once, immediately before the delete - not atomically with it: a name
+    /// adopted in the instant between the two keeps its profile until the
+    /// NEXT sweep (single-user, in-process; the idempotence is the
+    /// correction, not a lock). The delete is the same act the UI's own is -
+    /// a call in flight is waited out. A failure is logged and leaves the
+    /// profile; the sweep never half-deletes.
     #[cfg(desktop)]
     pub async fn sweep(&self, live: &[Seat]) -> Vec<String> {
         let Ok(paths) = self.paths.clone() else { return Vec::new() };
@@ -854,10 +856,10 @@ impl BrowserHost {
         let mut gone = Vec::new();
         for name in names {
             let dir = paths.profiles.join(&name);
-            // The record read IS the delete's own moment: a live seat's
-            // profile - adopted since the frame, or owned before it - is
-            // kept, and everything else (another seat's, legacy, or an
-            // unreadable record) goes.
+            // The record, as it stands just before the delete: a live
+            // seat's profile - owned before the frame - is kept, and
+            // everything else (another seat's, legacy, or an unreadable
+            // record) goes.
             match profiles::owner_of(&dir) {
                 Ok(Some(owner)) if live.contains(&owner) => continue,
                 Ok(_) | Err(_) => {}
