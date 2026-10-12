@@ -1149,7 +1149,7 @@
   }
 </script>
 
-{#if waking || spawning}
+{#if (waking || spawning) && held.turns.length === 0}
   <!-- Each state below is the column in that state, so each carries the
        column's own rules: without them the copy is the one thing on the page
        drawn at no padding and no gutter, while the list beside it is not. -->
@@ -1159,7 +1159,12 @@
          yet - the one this page dispatched on open. Both draw the waking
          line, so the wake reads as one state rather than two. A worker's
          seat the roster does not name has no spawn coming toward it - only
-         its lead can start it - and its line claims nothing. -->
+         its lead can start it - and its line claims nothing.
+         **A wake with history in hand draws the history instead** (Ved,
+         2026-10-12): the server answers a sleeping seat's own transcript, so
+         the page lands while the spawn is still in flight - and the waking
+         line is for a seat with nothing to draw yet, not a cover over a
+         conversation already loaded. -->
     {#if spawning || slot.label === 'lead'}
       <div class="hold"><span class="shimmer">Waking up agent...</span></div>
     {:else}
