@@ -341,6 +341,7 @@ async fn attach(
         answering: false,
         // Not hosting either, for the same reason.
         browser: false,
+        declare: false,
     };
     socket.send(Message::Text(serde_json::to_string(&opening)?.into())).await?;
     let mut uncounted = Measured::default();
@@ -365,6 +366,7 @@ async fn work(
                 what: Subject::Session(seat.clone()),
                 answering: false,
                 browser: false,
+                declare: false,
             },
             // The client's own order: let the seat go, then ask for it again.
             // Nothing answers an unsubscribe, so the read below waits for the
@@ -376,6 +378,7 @@ async fn work(
                     what: Subject::Session(seat.clone()),
                     answering: false,
                     browser: false,
+                    declare: false,
                 }
             }
             Arm::Idle | Arm::More => ClientMessage::More {

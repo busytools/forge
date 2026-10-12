@@ -1005,6 +1005,29 @@ mod tests {
         assert_eq!(again["what"], json!("home"), "the home is re-read, not copied");
     }
 
+    /// **The take-role declare says it is a declare.** The server counts a
+    /// plain subscribe as a watch the connection has to give back, and the
+    /// client never counts the declare - so without the flag the seat stayed
+    /// counted as watched for the life of the connection, its completion mark
+    /// never arming.
+    #[tokio::test]
+    async fn a_take_declares_the_capability_as_a_declare() {
+        let mut server = stub().await;
+        let (bridge, _rx) = bridge();
+        bridge.connect(server.url.clone());
+        connected(&bridge).await;
+        bridge.subscribe(seat(), false, false);
+        let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
+
+        bridge.take_role();
+
+        let declare = server.heard_until(|v| v["kind"] == "subscribe").await;
+        assert_eq!(declare["what"], seat(), "the declare rides the first-held subject");
+        assert_eq!(declare["browser"], true, "carrying the capability it re-states");
+        assert_eq!(declare["declare"], true, "and saying it is a declare, which holds nothing");
+        let _ = server.heard_until(|v| v["kind"] == "browser_take_role").await;
+    }
+
     /// The page's own `refresh` re-declares the held declaration too - the
     /// same mapping as the REPLACES fold, on the other door a `(true, true)`
     /// revert could slip in through.

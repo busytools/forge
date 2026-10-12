@@ -246,6 +246,16 @@ export type ClientMessage =
        * shows up as a session's tool call failing, not as the client's.
        */
       browser: boolean;
+      /**
+       * Whether this frame is the role DECLARE: the re-statement of the
+       * browser capability a client makes as it claims the role.
+       *
+       * The server answers it with the subject's snapshot like any
+       * subscribe, but holds NOTHING for it - no watch entry, no
+       * attachment, no seat hold - because the client never counts it and
+       * so would never give one back.
+       */
+      declare: boolean;
     }
   | { kind: 'unsubscribe'; what: Subject }
   | { kind: 'command'; command: Command; reply_to: number | null }
