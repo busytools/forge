@@ -149,20 +149,29 @@ impl Workspace {
             // record of a filing, so a row that is gone is still findable
             // through its issue; without this every done row leaks an
             // open issue.
-            let archived = self.archived_task_ids(&view.name);
+            let archived = self.archived_rows(&view.name);
             for issue in &issues {
                 if issue.state != "open" {
                     continue;
                 }
                 let Some(id) = marker_id(&view.name, &issue.body) else { continue };
                 let ended = match rows.iter().find(|row| row.task.id == id) {
-                    Some(row) if row.task.status == TaskStatus::Completed => CloseReason::Completed,
-                    // A live row that has not completed keeps its issue.
-                    Some(_) => continue,
-                    // A closed tree's rows live in the archive.
-                    None if archived.contains(&id) => CloseReason::Completed,
-                    // The row is gone: the issue goes with it.
-                    None => CloseReason::NotPlanned,
+                    Some(row) => match row.task.status {
+                        TaskStatus::Completed => CloseReason::Completed,
+                        // A failed or canceled row reads as not planned,
+                        // like a row that is gone.
+                        TaskStatus::Failed | TaskStatus::Canceled => CloseReason::NotPlanned,
+                        // The row has not ended: its issue stays open.
+                        _ => continue,
+                    },
+                    // A closed tree's rows live in the archive, each
+                    // closing by its own end.
+                    None => match archived.iter().find(|(at, _)| at == &id) {
+                        Some((_, TaskStatus::Completed)) => CloseReason::Completed,
+                        // A failed or canceled row in a closed tree, and
+                        // any row the archive does not know: gone.
+                        Some(_) | None => CloseReason::NotPlanned,
+                    },
                 };
                 if !backend.close(&view.path, issue.number, ended).await {
                     continue;
@@ -206,15 +215,15 @@ impl Workspace {
         });
     }
 
-    /// The ids of `project`'s archived rows, which is where a completed
-    /// tree's rows end up.
-    fn archived_task_ids(&self, project: &str) -> Vec<TaskId> {
+    /// `project`'s archived rows with their own ends, which is where a
+    /// completed tree's rows end up.
+    fn archived_rows(&self, project: &str) -> Vec<(TaskId, TaskStatus)> {
         let guard = self.db.lock();
         let Some(db) = guard.as_ref() else { return Vec::new() };
         crate::store::task_archive::list_for_project(db, project)
             .unwrap_or_default()
             .iter()
-            .map(|task| task.id.clone())
+            .map(|task| (task.id.clone(), task.status))
             .collect()
     }
 
@@ -447,10 +456,10 @@ provider = "anthropic"
         assert_eq!(stored[0].updated_at, before, "and the row did not move");
     }
 
-    /// Move a row to completed by the same door the tools use.
-    fn complete(ws: &Workspace, id: &str) {
+    /// Move a row by the same door the tools use.
+    fn move_to(ws: &Workspace, id: &str, status: TaskStatus) {
         ws.update_task(PROJECT, &TaskId::from(id), By::System, |task| {
-            task.status = TaskStatus::Completed;
+            task.status = status;
         })
         .expect("move")
         .expect("the row is there");
@@ -470,7 +479,7 @@ provider = "anthropic"
             "nothing has ended, so nothing closes",
         );
 
-        complete(&ws, "sub-a");
+        move_to(&ws, "sub-a", TaskStatus::Completed);
         ws.issue_pass(&backend, epoch(200)).await;
         assert_eq!(
             backend.closes.lock().expect("lock").clone(),
@@ -494,6 +503,52 @@ provider = "anthropic"
         assert_eq!(backend.closes.lock().expect("lock").len(), 1, "a closed issue stays closed");
     }
 
+    /// A failed or canceled row closes as not planned; a row still in
+    /// progress or waiting keeps its issue.
+    #[tokio::test]
+    async fn a_terminal_row_closes_by_its_own_end() {
+        let (_dir, ws) = workspace_with_project(true);
+        ws.seed_test_task(row("epic", None));
+        ws.seed_test_task(row("sub-a", Some("epic")));
+        ws.seed_test_task(row("sub-b", Some("epic")));
+        ws.seed_test_task(row("sub-c", Some("epic")));
+        let backend = MockBackend { supported: true, ..Default::default() };
+        ws.issue_pass(&backend, epoch(100)).await;
+
+        move_to(&ws, "sub-a", TaskStatus::Failed);
+        move_to(&ws, "sub-b", TaskStatus::Canceled);
+        move_to(&ws, "sub-c", TaskStatus::InProgress);
+        ws.issue_pass(&backend, epoch(200)).await;
+
+        assert_eq!(
+            backend.closes.lock().expect("lock").clone(),
+            vec![(101, CloseReason::NotPlanned), (102, CloseReason::NotPlanned)],
+            "a failed and a canceled row close as not planned; the epic and the in-progress row keep theirs",
+        );
+    }
+
+    /// A closed tree closes each issue by its own row's end: a canceled
+    /// child is not planned, not completed.
+    #[tokio::test]
+    async fn a_closed_tree_closes_each_issue_by_its_rows_end() {
+        let (_dir, ws) = workspace_with_project(true);
+        ws.seed_test_task(row("epic", None));
+        ws.seed_test_task(row("sub-a", Some("epic")));
+        let backend = MockBackend { supported: true, ..Default::default() };
+        ws.issue_pass(&backend, epoch(100)).await;
+
+        move_to(&ws, "sub-a", TaskStatus::Canceled);
+        move_to(&ws, "epic", TaskStatus::Completed);
+        assert!(ws.tasks_for_project(PROJECT).is_empty(), "the tree is archived");
+        ws.issue_pass(&backend, epoch(200)).await;
+
+        assert_eq!(
+            backend.closes.lock().expect("lock").clone(),
+            vec![(100, CloseReason::Completed), (101, CloseReason::NotPlanned)],
+            "the epic's issue is completed and the canceled child's is not planned",
+        );
+    }
+
     /// A root completing archives its tree, and the archived rows' issues
     /// close as completed - the only way the epic's own issue ever ends.
     #[tokio::test]
@@ -503,7 +558,7 @@ provider = "anthropic"
         let backend = MockBackend { supported: true, ..Default::default() };
         ws.issue_pass(&backend, epoch(100)).await;
 
-        complete(&ws, "epic");
+        move_to(&ws, "epic", TaskStatus::Completed);
         assert!(ws.tasks_for_project(PROJECT).is_empty(), "the tree is archived");
         ws.issue_pass(&backend, epoch(200)).await;
         assert_eq!(
