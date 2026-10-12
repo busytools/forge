@@ -149,7 +149,11 @@ impl Workspace {
             // record of a filing, so a row that is gone is still findable
             // through its issue; without this every done row leaks an
             // open issue.
-            let archived = self.archived_rows(&view.name);
+            let Some(archived) = self.archived_rows(&view.name) else {
+                // Skipping the closes beats misreading an archived row as
+                // a gone one: the pass runs again in a few minutes.
+                continue;
+            };
             for issue in &issues {
                 if issue.state != "open" {
                     continue;
@@ -216,15 +220,25 @@ impl Workspace {
     }
 
     /// `project`'s archived rows with their own ends, which is where a
-    /// completed tree's rows end up.
-    fn archived_rows(&self, project: &str) -> Vec<(TaskId, TaskStatus)> {
+    /// completed tree's rows end up. `None` when the store cannot be
+    /// read: an unreadable archive is not an empty one, and the caller
+    /// must not close a closed tree's rows as gone.
+    fn archived_rows(&self, project: &str) -> Option<Vec<(TaskId, TaskStatus)>> {
         let guard = self.db.lock();
-        let Some(db) = guard.as_ref() else { return Vec::new() };
-        crate::store::task_archive::list_for_project(db, project)
-            .unwrap_or_default()
-            .iter()
-            .map(|task| (task.id.clone(), task.status))
-            .collect()
+        let db = guard.as_ref()?;
+        match crate::store::task_archive::list_for_project(db, project) {
+            Ok(rows) => Some(rows.iter().map(|task| (task.id.clone(), task.status)).collect()),
+            Err(error) => {
+                tracing::warn!(
+                    target: "forge_workspace::issues",
+                    event_name = "task_archive_unreadable",
+                    project = %project,
+                    %error,
+                    "the task archive could not be read; this pass closes no mirror issues",
+                );
+                None
+            }
+        }
     }
 
     /// Write one link's read state, without stamping the row as moved.
@@ -546,6 +560,26 @@ provider = "anthropic"
             backend.closes.lock().expect("lock").clone(),
             vec![(100, CloseReason::Completed), (101, CloseReason::NotPlanned)],
             "the epic's issue is completed and the canceled child's is not planned",
+        );
+    }
+
+    /// A store that cannot be read is not an empty one: the close step
+    /// skips the pass rather than close a closed tree's row as gone.
+    #[tokio::test]
+    async fn an_unreadable_archive_skips_the_close_step() {
+        let (_dir, ws) = workspace_with_project(true);
+        ws.seed_test_task(row("epic", None));
+        let backend = MockBackend { supported: true, ..Default::default() };
+        ws.issue_pass(&backend, epoch(100)).await;
+
+        move_to(&ws, "epic", TaskStatus::Completed);
+        assert!(ws.tasks_for_project(PROJECT).is_empty(), "the tree is archived");
+        *ws.db.lock() = None;
+        ws.issue_pass(&backend, epoch(200)).await;
+
+        assert!(
+            backend.closes.lock().expect("lock").is_empty(),
+            "an unreadable archive must not close the epic's issue as a gone row's",
         );
     }
 
