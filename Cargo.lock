@@ -812,7 +812,7 @@ checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
 
 [[package]]
 name = "forge-agent"
-version = "1.1.12"
+version = "1.1.13"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -842,7 +842,7 @@ dependencies = [
 
 [[package]]
 name = "forge-connectors"
-version = "1.1.12"
+version = "1.1.13"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -861,7 +861,7 @@ dependencies = [
 
 [[package]]
 name = "forge-dictate"
-version = "1.1.12"
+version = "1.1.13"
 dependencies = [
  "cpal",
  "dirs",
@@ -884,7 +884,7 @@ dependencies = [
 
 [[package]]
 name = "forge-gateway"
-version = "1.1.12"
+version = "1.1.13"
 dependencies = [
  "async-trait",
  "bytes",
@@ -906,7 +906,7 @@ dependencies = [
 
 [[package]]
 name = "forge-primitives"
-version = "1.1.12"
+version = "1.1.13"
 dependencies = [
  "base64 0.23.1",
  "serde",
@@ -918,7 +918,7 @@ dependencies = [
 
 [[package]]
 name = "forge-sdk"
-version = "1.1.12"
+version = "1.1.13"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -939,7 +939,7 @@ dependencies = [
 
 [[package]]
 name = "forge-server"
-version = "1.1.12"
+version = "1.1.13"
 dependencies = [
  "anyhow",
  "axum",
@@ -967,7 +967,7 @@ dependencies = [
 
 [[package]]
 name = "forge-system-one"
-version = "1.1.12"
+version = "1.1.13"
 dependencies = [
  "axum",
  "reqwest",
@@ -980,7 +980,7 @@ dependencies = [
 
 [[package]]
 name = "forge-test-harness"
-version = "1.1.12"
+version = "1.1.13"
 dependencies = [
  "async-trait",
  "forge-dictate",
@@ -998,7 +998,7 @@ dependencies = [
 
 [[package]]
 name = "forge-workspace"
-version = "1.1.12"
+version = "1.1.13"
 dependencies = [
  "anyhow",
  "async-trait",

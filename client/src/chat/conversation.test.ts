@@ -1283,6 +1283,130 @@ describe('the conversation the chat draws', () => {
     }
   });
 
+  /**
+   * **The deadline survives a lost paint AND a lost timer** (#2132).
+   *
+   * A page suspended at the moment a publish is armed loses the paint
+   * (WebKit stops producing frames once its window is not being shown) and
+   * can lose the deadline timer with it - and a callback is the only thing
+   * that ever cleared `queued`, so every frame after the wedge was swallowed
+   * by the in-flight guard and the column was dead until a read landed (the
+   * playground seat, live, 2026-10-13). The armed-at stamp is wall-clock: a
+   * write past the deadline flushes what the paint never did.
+   */
+  it('flushes a publish that lost its paint and its deadline at the next write past the deadline', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    // The suspended page's shape: the armed frame is captured and never
+    // painted, and the deadline timer is never advanced.
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1);
+    const start = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(start);
+    try {
+      const server = fakeConnection();
+      const chat = new Chat(server.connection, LEAD);
+      chat.start();
+      server.send(page([turn('t1', 'first')], null));
+      let drawn = '';
+      const stop = chat.value.subscribe((value) => {
+        drawn = JSON.stringify(value);
+      });
+
+      server.update({ chat_appended: { key: LEAD, msg: said('armed, and never painted') } });
+      expect(drawn, 'folded, and its draw waits for a paint nobody delivers').not.toContain(
+        'armed, and never painted',
+      );
+
+      // Inside the deadline the guard still holds: the wedge as it stands on
+      // the screen, frames folding into a column nobody sees.
+      server.update({ chat_appended: { key: LEAD, msg: said('swallowed inside the deadline') } });
+      expect(drawn, 'inside the deadline the publish is still waited for').not.toContain(
+        'swallowed inside the deadline',
+      );
+
+      // Wall-clock time passes - the page spent it suspended - and the next
+      // write finds the stamp stale: it flushes instead of being swallowed.
+      clock.mockReturnValue(start + 1_000);
+      server.update({ chat_appended: { key: LEAD, msg: said('the frame that heals') } });
+
+      expect(drawn, 'a write past the deadline draws everything the paint never did').toContain(
+        'the frame that heals',
+      );
+      expect(drawn, 'and the frame the wedge began with is in it').toContain(
+        'armed, and never painted',
+      );
+
+      // And the gate is restored rather than bypassed: the next frame waits
+      // for its paint again, and a deadline that does fire still draws it.
+      server.update({ chat_appended: { key: LEAD, msg: said('gate restored') } });
+      expect(drawn, 'the next frame waits for a paint again').not.toContain('gate restored');
+      vi.advanceTimersByTime(1_000);
+      expect(drawn, 'and its own deadline draws it').toContain('gate restored');
+      stop();
+    } finally {
+      clock.mockRestore();
+      raf.mockRestore();
+    }
+  });
+
+  /**
+   * **A return draws the publish no paint delivered** (#2132).
+   *
+   * The other half of the wedge, and the half no frame can give: recovery
+   * must not depend on a new frame arriving or on a read being asked. The
+   * page becoming reachable again IS the moment - visibility returning, a
+   * bfcache restore, the window regaining focus - and what a return draws is
+   * everything the suspended page folded.
+   */
+  it.each([
+    [
+      'visibilitychange',
+      (): void => {
+        document.dispatchEvent(new Event('visibilitychange'));
+      },
+    ],
+    [
+      'focus',
+      (): void => {
+        window.dispatchEvent(new Event('focus'));
+      },
+    ],
+    [
+      'pageshow',
+      (): void => {
+        window.dispatchEvent(new Event('pageshow'));
+      },
+    ],
+  ])('a %s return flushes the publish the suspended page never painted', (_door, arrive) => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1);
+    try {
+      const server = fakeConnection();
+      const chat = new Chat(server.connection, LEAD);
+      chat.start();
+      server.send(page([turn('t1', 'first')], null));
+      let drawn = '';
+      const stop = chat.value.subscribe((value) => {
+        drawn = JSON.stringify(value);
+      });
+
+      server.update({
+        chat_appended: { key: LEAD, msg: said('folded while the window was away') },
+      });
+      expect(drawn, 'armed, and no paint is coming').not.toContain(
+        'folded while the window was away',
+      );
+
+      arrive();
+
+      expect(drawn, 'the return draws it, with no frame and no read').toContain(
+        'folded while the window was away',
+      );
+      stop();
+    } finally {
+      raf.mockRestore();
+    }
+  });
+
   it("joins a skill's body to the turn whose Skill call loaded it, not a row of its own", () => {
     // The CLI injects the body as a user frame, and it can arrive above a
     // settled turn - where it opened a second row telling the same thing the

@@ -153,9 +153,14 @@ const SEATS = new WeakMap<Connection, Map<string, Seat>>();
  *
  * `requestAnimationFrame` is the coalescer, not the guarantee: a scheduled
  * callback that never fires - whatever lost it, which is nothing this code
- * can know - would leave the record dead until a read landed, because the
- * flag clears only inside that callback. A painting page clears the deadline
- * long before it: a frame is 16ms at 60Hz and this is a quarter second.
+ * can know - must not leave the record dead, rows folded and never drawn. A
+ * painting page clears the deadline long before it: a frame is 16ms at 60Hz
+ * and this is a quarter second.
+ *
+ * **And the deadline is a STAMP, not only a timer, because a suspended page
+ * loses both callbacks together** (#2132): the armed-at time is kept, the
+ * next update past this flushes what the paint never did, and a return to
+ * the page flushes with no update at all (`wake`).
  */
 const PAINT_WATCHDOG_MS = 250;
 
@@ -377,6 +382,21 @@ function createSeat(connection: Connection, subject: Subject, answering: boolean
   let watchdog: ReturnType<typeof setTimeout> | null = null;
 
   /**
+   * When the waiting publish was armed, by the wall clock - `0` when none is.
+   *
+   * The timer is a promise from the page that a suspended page can break, so
+   * the wait keeps its own record: `soon` and `wake` read this rather than
+   * trusting either callback to come.
+   *
+   * **The clock's one hole is a backward wall-clock step**, which under-counts
+   * the interval and withholds the stamp heal until the clock re-advances or a
+   * return fires. Accepted because `performance.now` freezes while the machine
+   * sleeps, so a monotonic stamp would read near zero after a lid close -
+   * exactly where the heal is needed.
+   */
+  let armedAt = 0;
+
+  /**
    * Whether a page is showing the seat, which is when a frame is waited for.
    *
    * A seat the client holds and nobody is drawing has no paint to wait for, so
@@ -402,6 +422,7 @@ function createSeat(connection: Connection, subject: Subject, answering: boolean
       clearTimeout(watchdog);
       watchdog = null;
     }
+    armedAt = 0;
     seat.view.set({ wire: seat.wire, refused: seat.refused });
   }
 
@@ -423,13 +444,52 @@ function createSeat(connection: Connection, subject: Subject, answering: boolean
       flush();
       return;
     }
-    if (queued !== null) return;
+    if (queued !== null) {
+      // **The deadline is the stamp, not the timer.** A suspended page can
+      // lose both callbacks, and the guard would then swallow this update and
+      // every update after it: one this far past the arming flushes what the
+      // callbacks never did.
+      if (Date.now() - armedAt >= PAINT_WATCHDOG_MS) flush();
+      return;
+    }
     if (!shown) {
       flush();
       return;
     }
     queued = requestAnimationFrame(flush);
+    armedAt = Date.now();
     watchdog = setTimeout(flush, PAINT_WATCHDOG_MS);
+  }
+
+  /**
+   * The page can paint again: draw what a suspended paint never did.
+   *
+   * **Recovery here must not depend on a new update or a read**, which is
+   * what the armed callbacks failed to give - the window coming back is
+   * itself the moment. Only a pending publish is drawn: with none, the
+   * drawn record is already the held one, because every write either
+   * published or armed, and nothing else clears that.
+   */
+  function wake(): void {
+    if (queued !== null) flush();
+  }
+
+  const visible = (): void => {
+    if (!document.hidden) wake();
+  };
+
+  // **The page's own returns**: a suspended window loses the armed paint and
+  // can take its deadline with it, so visibility returning, a bfcache restore
+  // and the window regaining focus each draw the pending publish.
+  //
+  // **These ride the DOCUMENT for the page's life, where the seat's other
+  // listeners ride the connection and die with it** - registered once per
+  // seat, never unregistered, so a seat that is let go leaves its three
+  // behind, and the count grows with address changes (#2136).
+  if (typeof document !== 'undefined' && typeof window !== 'undefined') {
+    document.addEventListener('visibilitychange', visible);
+    window.addEventListener('pageshow', wake);
+    window.addEventListener('focus', wake);
   }
 
   /**

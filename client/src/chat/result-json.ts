@@ -23,6 +23,26 @@ export function parsedText(content: unknown): unknown {
   return null;
 }
 
+/**
+ * The JSON inside a result whose text opens with a clock line - the `now
+ * <rfc3339>` line `tasks__list` prints before its array, so a session reading
+ * it never does date arithmetic - read past that line. A text with no clock
+ * line reads as `parsedText` reads it, and a body still not JSON answers null
+ * like its sibling.
+ */
+export function parsedTextPastClock(content: unknown): unknown {
+  const text = firstText(content);
+  if (text === null) return null;
+  const newline = text.indexOf('\n');
+  const opens = newline === -1 ? text : text.slice(0, newline);
+  const body = opens.startsWith('now ') ? text.slice(newline + 1) : text;
+  try {
+    return JSON.parse(body) as unknown;
+  } catch {
+    return null;
+  }
+}
+
 /** The first text block's own words, for a result that is a sentence. */
 export function firstText(content: unknown): string | null {
   if (!Array.isArray(content)) return null;
