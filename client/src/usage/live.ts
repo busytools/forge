@@ -30,19 +30,27 @@ export interface UsageRead {
 const NOTHING: UsageRead = { wire: null, refused: null };
 
 /**
- * How long after an unpriced report the page asks once more.
+ * How long after an unpriced report the page asks again, and how many times
+ * it will.
  *
- * **One re-ask, because the server's answer to an unpriced scan is a
+ * **The re-ask loop, because the server's answer to an unpriced scan is a
  * background fetch.** The ask that scanned also kicked the pricing refill,
  * which re-scans with the fetched table and leaves the priced report in the
  * cache - but nothing pushes, so the fresh figures are only ever seen by
- * asking again. This is the terminal's own re-price (it draws a fresh scan
- * when one arrives) translated into the one move this subject offers. A
- * delay past the usual fetch and re-scan; `pricing pending or failed` is a
- * terminal caption, so a failing fetch asks exactly once and stops rather
- * than polling.
+ * asking again. That is the terminal's own re-price (it draws a fresh scan
+ * when one arrives) translated into the one move this subject offers.
+ *
+ * **One re-ask cannot cover the fetch's budget.** The litellm fetch carries
+ * a 20s timeout, so a fetch landing at, say, 9s would leave the page on
+ * blank costs until a manual refresh; four re-asks at 6s reach past that
+ * budget. And the count is the ceiling: a fetch that FAILED stops here
+ * rather than looping - `pricing pending or failed` is a terminal caption,
+ * and asking past it would be a poll.
  */
 export const PRICING_RETRY_MS = 6_000;
+
+/** How many times an unpriced report is asked again. */
+export const PRICING_REASK_LIMIT = 4;
 
 /**
  * What watching the usage needs of a socket: the subject, its pushes, the
@@ -66,10 +74,10 @@ export function watchUsage(connection: UsageConnection): Readable<UsageRead> {
   let held: Store | null = null;
   let stopMessages: (() => void) | null = null;
   let stopStatus: (() => void) | null = null;
-  // Whether the unpriced re-ask has been spent. Latched when the timer is
-  // SET, so a second unpriced answer arriving before it fires cannot
-  // schedule a second one.
-  let reasked = false;
+  // How many re-asks the unpriced loop has spent, and the one pending. The
+  // count is taken when a timer is SET, so an answer arriving before it
+  // fires cannot schedule a second in the same round.
+  let reasks = 0;
   let retry: ReturnType<typeof setTimeout> | null = null;
 
   function read(): void {
@@ -84,8 +92,17 @@ export function watchUsage(connection: UsageConnection): Readable<UsageRead> {
     // narrows every field straight afterwards.
     const wire = data === null ? null : usageFrom(data);
     view.set({ wire, refused: null });
-    if (wire !== null && !wire.pricingAvailable && !reasked) {
-      reasked = true;
+    if (wire === null) return;
+    if (wire.pricingAvailable) {
+      // The loop's goal is reached: a re-ask already scheduled has nothing
+      // left to learn, and the stray scan would be one ask the reader did
+      // not make.
+      if (retry !== null) clearTimeout(retry);
+      retry = null;
+      return;
+    }
+    if (retry === null && reasks < PRICING_REASK_LIMIT) {
+      reasks += 1;
       retry = setTimeout(() => {
         retry = null;
         connection.refresh(USAGE);

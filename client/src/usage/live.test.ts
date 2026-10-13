@@ -1,7 +1,7 @@
 import { get } from 'svelte/store';
 import { describe, expect, it, vi } from 'vitest';
 
-import { PRICING_RETRY_MS, watchUsage } from './live';
+import { PRICING_REASK_LIMIT, PRICING_RETRY_MS, watchUsage } from './live';
 import { fakeConnection, USAGE, usageWire } from './testing';
 
 describe('the usage page over a connection', () => {
@@ -60,38 +60,98 @@ describe('the usage page over a connection', () => {
   });
 
   /**
-   * **An unpriced answer is asked once more, and only once.** The server
-   * kicks its pricing refill off the scan that answered, and nothing pushes
-   * - so the priced report is only ever seen by asking again, which is the
-   * terminal's own re-price translated. A retry against a forge that cannot
-   * fetch stops after the one ask rather than polling.
+   * **The re-ask loop, because the server's answer to an unpriced scan is a
+   * background fetch that nothing pushes.** The first re-ask answers
+   * unpriced again while the fetch is still out - the trip the fetch's 20s
+   * budget makes real - and the next one, after the fetch has landed, is
+   * the priced report. Asking stops the moment one prices.
    */
-  it('asks once more when the report arrives unpriced', () => {
+  it('keeps asking while the report is unpriced, and stops the moment it prices', () => {
     vi.useFakeTimers();
     try {
       const forge = fakeConnection();
       const view = watchUsage(forge.connection);
       const stop = view.subscribe(() => {});
+      const unpriced = (): void => {
+        forge.arrive({
+          kind: 'snapshot',
+          subject: USAGE,
+          data: { ...usageWire, pricing_available: false },
+        });
+      };
 
-      forge.arrive({
-        kind: 'snapshot',
-        subject: USAGE,
-        data: { ...usageWire, pricing_available: false },
-      });
+      unpriced();
       expect(forge.refreshed, 'the page asked before the re-price delay').toEqual([]);
 
       vi.advanceTimersByTime(PRICING_RETRY_MS);
       expect(forge.refreshed, 'the unpriced answer was never asked again').toEqual([USAGE]);
 
-      // The fetch failed, or took past the delay: a second unpriced answer
-      // starts no loop.
+      // **A fetch slower than one re-ask reaches**: the first re-ask answers
+      // unpriced again, and the loop must not stop there.
+      unpriced();
+      vi.advanceTimersByTime(PRICING_RETRY_MS);
+      expect(forge.refreshed, 'a slow fetch was abandoned after one re-ask').toEqual([
+        USAGE,
+        USAGE,
+      ]);
+
+      // The fetch lands; the next answer is priced, and asking ends.
+      forge.arrive({ kind: 'snapshot', subject: USAGE, data: usageWire });
+      vi.advanceTimersByTime(PRICING_RETRY_MS * 6);
+      expect(forge.refreshed, 'asking continued past the priced answer').toEqual([USAGE, USAGE]);
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /** **The loop is bounded**: a forge whose fetch never lands is asked the
+   * ceiling and no further - past it the caption is terminal, and more asks
+   * would be a poll. */
+  it('stops at the ceiling when the report never prices', () => {
+    vi.useFakeTimers();
+    try {
+      const forge = fakeConnection();
+      const stop = watchUsage(forge.connection).subscribe(() => {});
+
+      for (let round = 0; round <= PRICING_REASK_LIMIT + 2; round += 1) {
+        forge.arrive({
+          kind: 'snapshot',
+          subject: USAGE,
+          data: { ...usageWire, pricing_available: false },
+        });
+        vi.advanceTimersByTime(PRICING_RETRY_MS);
+      }
+
+      expect(forge.refreshed.length, 'an always-unpriced forge was polled').toBe(
+        PRICING_REASK_LIMIT,
+      );
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /**
+   * **A priced report drops a pending re-ask.** The loop's goal is reached,
+   * so the scan still scheduled is one the reader did not make.
+   */
+  it('drops a pending re-ask the moment a priced report arrives', () => {
+    vi.useFakeTimers();
+    try {
+      const forge = fakeConnection();
+      const stop = watchUsage(forge.connection).subscribe(() => {});
       forge.arrive({
         kind: 'snapshot',
         subject: USAGE,
         data: { ...usageWire, pricing_available: false },
       });
-      vi.advanceTimersByTime(PRICING_RETRY_MS * 5);
-      expect(forge.refreshed, 'the retry became a poll').toEqual([USAGE]);
+
+      // Priced before the timer fires (a re-subscribe, or the reader's own
+      // refresh).
+      forge.arrive({ kind: 'snapshot', subject: USAGE, data: usageWire });
+      vi.advanceTimersByTime(PRICING_RETRY_MS * 2);
+      expect(forge.refreshed, 'a priced report left a re-ask scheduled').toEqual([]);
       stop();
     } finally {
       vi.useRealTimers();
