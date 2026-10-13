@@ -1,0 +1,358 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>forge &middot; usage</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cg fill='none' stroke='%23f47600' stroke-width='2.4'%3E%3Crect x='3.2' y='3.2' width='17.6' height='17.6' rx='4'/%3E%3Cpath d='M13.6 3.2V20.8'/%3E%3C/g%3E%3Cpath fill='%23f47600' d='M4.4 6.4a2 2 0 0 1 2-2h4v15.2h-4a2 2 0 0 1-2-2Z'/%3E%3C/svg%3E">
+<style>
+  /* ============================================================
+     forge - the usage page, as the client draws it.
+     The palette and the type scale are the shipped ones, token for
+     token; the page's own rules are `client/src/assets/web.css`'s
+     `.usage` block (and the shared `header.top` chrome), and the
+     frame around them is this drawing's.
+     ============================================================ */
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130; --line:#222a3c;
+    --text:#c9d1d9; --muted:#8f98a8; --dim:#788294; --ctl:#516590;
+    --accent:#f47600; --hot:#ffb058; --ok:#82c76b; --bad:#e0683e; --warn:#c9a13b;
+    --blue:#61a0e0; --teal:#4ec9c9; --violet:#b79ae0;
+    --ui: "Fira Code", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "Fira Code", ui-monospace, Menlo, monospace;
+    /* The app sheet's own type scale, token for token, so the page's rules
+       read here the way they read there. */
+    --fs-prose: 15.5px; --fs-base: 15.5px; --fs-data: 14px; --fs-label: 12.5px; --fs-title: 18px;
+    --r: 10px;
+    --pad: 16px;
+  }
+
+  html, body { height: 100%; }
+  body {
+    background:
+      radial-gradient(1100px 520px at 8% -12%, rgba(244,118,0,.07), transparent 60%),
+      radial-gradient(900px 460px at 96% 108%, rgba(91,156,248,.05), transparent 62%),
+      var(--bg);
+    color: var(--text);
+    font-family: var(--ui);
+    font-size: 15.5px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ---------- the drawing's own frame ---------- */
+
+  .page { max-width: 1180px; margin: 0 auto; padding: 30px 22px 90px; }
+  h1 { font-size: 18px; font-weight: 500; margin-bottom: 6px; }
+  .sub { color: var(--dim); max-width: 96ch; margin-bottom: 8px; }
+  h2 { font-size: 15.5px; font-weight: 500; margin: 44px 0 10px; }
+  .mono { font-family: var(--mono); }
+  .tile { border: 1px solid var(--line); border-radius: 14px; overflow: hidden;
+    background: linear-gradient(180deg, rgba(13,17,26,.65), rgba(4,5,10,.4));
+    padding: 14px 16px 16px; margin-bottom: 18px; }
+  .tcap { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted); margin-bottom: 12px; }
+  .tcap b { color: var(--text); font-weight: 400; }
+  .tnote { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); margin-top: 10px; }
+
+  /* ---------- the page's own rules (web.css: `header.top`, `.usage`) ---------- */
+
+  .wrap { padding: 0; }
+  header.top {
+    display: flex; align-items: center; gap: 14px;
+    padding-bottom: 18px; margin-bottom: 18px;
+    border-bottom: 1px solid var(--line);
+  }
+  .brand { display: flex; align-items: center; gap: 10px; }
+  .brand .mark { width: 30px; height: 30px; flex: 0 0 30px; color: var(--accent);
+    position: relative; top: -1px; }
+  .brand .mark svg { display: block; width: 100%; height: 100%; }
+  .brand .word { font-size: 22px; font-weight: 650; letter-spacing: -.02em; }
+  header.top.pagetop .title { display: flex; flex-direction: column; }
+  header.top.pagetop .title .t { font-size: var(--fs-title); font-weight: 650;
+    letter-spacing: -.01em; color: var(--text); }
+  header.top.pagetop .title .s { font-family: var(--mono); font-size: var(--fs-label);
+    color: var(--dim); }
+  header.top.pagetop .back { margin-left: auto; font-family: var(--mono);
+    font-size: var(--fs-label); color: var(--muted); text-decoration: none;
+    border: 1px solid var(--line); border-radius: 9px; padding: 6px 11px; }
+  header.top.pagetop .back:hover { border-color: var(--ctl); color: var(--text); }
+
+  .usage .sum { background: linear-gradient(180deg, rgba(20,25,38,.75), rgba(13,17,26,.75));
+    border: 1px solid var(--line); border-radius: var(--r); padding: 16px 18px;
+    margin-bottom: 18px; }
+  .usage .head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .usage .head .lbl { font-family: var(--mono); font-size: var(--fs-label); letter-spacing: .11em;
+    text-transform: uppercase; color: var(--muted); }
+  .usage .head .big { font-size: 21px; font-weight: 650; letter-spacing: -.01em; color: var(--text); }
+  .usage .head .dk { font-size: var(--fs-label); color: var(--dim); }
+  .usage .head .cost { font-family: var(--mono); font-size: var(--fs-data); color: var(--accent);
+    font-weight: 650; }
+  .usage .head .cost.off { color: var(--dim); font-weight: 400; }
+  .usage .head .counts { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+  .usage .head .cap { margin-left: auto; font-family: var(--mono); font-size: 11px;
+    color: var(--dim); }
+  .usage .head .cap.warn { color: var(--warn); }
+
+  .usage .roll { display: flex; gap: 30px; flex-wrap: wrap; margin-top: 13px; }
+  .usage .roll .tot { display: inline-flex; align-items: baseline; gap: 7px; }
+  .usage .roll .k { font-size: var(--fs-label); color: var(--dim); }
+  .usage .roll .n { font-family: var(--mono); font-size: var(--fs-data); color: var(--text); }
+  .usage .roll .c { font-family: var(--mono); font-size: var(--fs-data); color: var(--accent); }
+
+  .usage .split { display: flex; gap: 20px; flex-wrap: wrap; margin-top: 13px;
+    font-family: var(--mono); font-size: var(--fs-label); }
+  .usage .split .k { color: var(--dim); letter-spacing: .11em; text-transform: uppercase; }
+  .usage .split .in, .usage .split .out { color: var(--dim); }
+  .usage .split b { font-weight: 500; color: var(--text); }
+  .usage .split .cw, .usage .split .cw b { color: var(--warn); }
+  .usage .split .cr, .usage .split .cr b { color: var(--ok); }
+
+  .usage .controls { display: flex; align-items: baseline; gap: 22px; flex-wrap: wrap;
+    margin: 0 0 12px; }
+  .usage .sel { display: inline-flex; align-items: baseline; gap: 2px; }
+  .usage .sel .k { font-size: var(--fs-label); color: var(--dim); margin-right: 7px; }
+  .usage .pick { background: none; border: 0; padding: 4px 8px; border-radius: 8px;
+    font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); cursor: pointer; }
+  .usage .pick:hover { color: var(--text); }
+  .usage .pick[aria-pressed='true'] { color: var(--accent); font-weight: 650; }
+  .usage .pick:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .usage .re { margin-left: auto; font-family: var(--mono); font-size: var(--fs-label);
+    color: var(--muted); background: none; border: 1px solid var(--line); border-radius: 9px;
+    padding: 6px 11px; cursor: pointer; }
+  .usage .re:hover { border-color: var(--ctl); color: var(--text); }
+  .usage .re:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .usage .tbl { width: 100%; border-collapse: collapse; font-family: var(--mono);
+    overflow-wrap: anywhere; }
+  .usage .tbl th, .usage .tbl td { text-align: left; font-size: var(--fs-label); font-weight: 400;
+    padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: baseline; }
+  .usage .tbl thead th { color: var(--muted); font-size: 11px; letter-spacing: .08em;
+    text-transform: uppercase; }
+  .usage .tbl thead th:nth-child(n + 2), .usage .tbl td { text-align: right; }
+  .usage .tbl tbody th[scope='row'] { color: var(--text); font-family: var(--mono);
+    font-size: var(--fs-data); font-weight: 650; }
+  .usage .tbl tr.quiet th[scope='row'] { color: var(--dim); font-weight: 400; }
+  .usage .tbl td.in, .usage .tbl td.out { color: var(--dim); }
+  .usage .tbl td.cw { color: var(--warn); }
+  .usage .tbl td.cr { color: var(--ok); }
+  .usage .tbl td.tk { color: var(--text); font-weight: 650; }
+  .usage .tbl td.cost { color: var(--accent); }
+  .usage .tbl td.cost.off { color: var(--dim); }
+  .usage .tbl td.cost.gpt { color: var(--warn); }
+  .usage .tbl .approx { color: var(--dim); margin-left: 7px; }
+  .usage .tbl tfoot th, .usage .tbl tfoot td { border-bottom: 0; border-top: 1px solid var(--line);
+    padding-top: 11px; }
+  .usage .tbl tfoot th[scope='row'], .usage .tbl tfoot td.cost { color: var(--accent);
+    font-weight: 650; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <h1>Usage</h1>
+  <p class="sub">The page at <span class="mono">/usage</span>, as the client draws it: the
+  lifetime headline with its notional caption, the three rolling totals, the split, and the
+  table - any of the four windows, grouped by project or by model. One read of
+  <span class="mono">Subject::Usage</span> fills all of it; the subject scans on the ask and
+  hears nothing after it, so fresh figures arrive by asking again - the refresh control, or the
+  page's own bounded re-ask while the report is unpriced.</p>
+
+  <h2>The page</h2>
+  <div class="tile">
+    <div class="tcap">the ordinary case, grouped by model: the priced rows in cost order, a GPT row flagged, an unpriced model on its dash. The figures are a real forge's - the machine this drawing was taken on runs on OpenRouter accounts today, which the pricing table does not carry, so their rows draw as dashes while the Claude and GPT rows price.</div>
+    <main class="wrap usage">
+      <header class="top pagetop">
+        <div class="brand">
+          <span class="mark"><svg viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2.4"><rect x="3.2" y="3.2" width="17.6" height="17.6" rx="4"/><path d="M13.6 3.2V20.8"/></g><path fill="currentColor" d="M4.4 6.4a2 2 0 0 1 2-2h4v15.2h-4a2 2 0 0 1-2-2Z"/></svg></span>
+          <span class="word">forge</span>
+        </div>
+        <div class="title">
+          <h1 class="t">Usage</h1>
+          <span class="s">tokens &middot; cost &middot; by project or model</span>
+        </div>
+        <a class="back" href="#">&larr; home</a>
+      </header>
+
+      <section class="sum" aria-label="lifetime">
+        <div class="head">
+          <span class="lbl">lifetime</span>
+          <span class="big">1.8B</span>
+          <span class="dk">tokens</span>
+          <span class="cost">$476.51&asymp;</span>
+          <span class="counts">1 projects &middot; 7 models</span>
+          <span class="cap">notional &middot; at API pricing &middot; not a bill</span>
+        </div>
+
+        <div class="roll">
+          <span class="tot"><span class="k">this month</span><span class="n">1.2B</span><span class="c">$476.50</span></span>
+          <span class="tot"><span class="k">this week</span><span class="n">457.8M</span><span class="c">$368.75</span></span>
+          <span class="tot"><span class="k">today</span><span class="n">457.8M</span><span class="c">$368.75</span></span>
+        </div>
+
+        <div class="split">
+          <span class="k">split</span>
+          <span class="in">input <b>62.8M</b></span>
+          <span class="cw">cache-write <b>23.4M</b></span>
+          <span class="cr">cache-read <b>1.7B</b><b>(95%)</b></span>
+          <span class="out">output <b>2.8M</b></span>
+        </div>
+      </section>
+
+      <div class="controls">
+        <div class="sel" role="group" aria-label="grouping">
+          <span class="k">group</span>
+          <button class="pick" aria-pressed="false">by project</button>
+          <button class="pick" aria-pressed="true">by model</button>
+        </div>
+        <div class="sel" role="group" aria-label="window">
+          <span class="k">window</span>
+          <button class="pick" aria-pressed="false">today</button>
+          <button class="pick" aria-pressed="false">week</button>
+          <button class="pick" aria-pressed="false">month</button>
+          <button class="pick" aria-pressed="true">lifetime</button>
+        </div>
+        <button class="re">refresh</button>
+      </div>
+
+      <table class="tbl" aria-label="token usage by model">
+        <thead>
+          <tr>
+            <th scope="col">model</th>
+            <th scope="col">input</th>
+            <th scope="col">cache&middot;wr</th>
+            <th scope="col">cache&middot;rd</th>
+            <th scope="col">output</th>
+            <th scope="col">tokens</th>
+            <th scope="col">cost&asymp;</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">claude-opus-5</th>
+            <td class="in">2.9M</td>
+            <td class="cw">23.4M</td>
+            <td class="cr">550.0M</td>
+            <td class="out">1.5M</td>
+            <td class="tk">577.8M</td>
+            <td class="cost">$473.25</td>
+          </tr>
+          <tr>
+            <th scope="row">gpt-5-codex</th>
+            <td class="in">400.0K</td>
+            <td class="cw">0</td>
+            <td class="cr">6.0M</td>
+            <td class="out">200.0K</td>
+            <td class="tk">6.6M</td>
+            <td class="cost gpt">$3.25 <span class="approx">(GPT approx)</span></td>
+          </tr>
+          <tr>
+            <th scope="row">gpt-5.6-luna</th>
+            <td class="in">54.9K</td>
+            <td class="cw">0</td>
+            <td class="cr">0</td>
+            <td class="out">103</td>
+            <td class="tk">55.0K</td>
+            <td class="cost gpt">$0.01 <span class="approx">(GPT approx)</span></td>
+          </tr>
+          <tr class="quiet">
+            <th scope="row">&lt;synthetic&gt;</th>
+            <td class="in">0</td>
+            <td class="cw">0</td>
+            <td class="cr">0</td>
+            <td class="out">0</td>
+            <td class="tk">0</td>
+            <td class="cost off">-</td>
+          </tr>
+          <tr>
+            <th scope="row">deepseek/deepseek-v4.1-flash</th>
+            <td class="in">59.4M</td>
+            <td class="cw">0</td>
+            <td class="cr">1.2B</td>
+            <td class="out">1.1M</td>
+            <td class="tk">1.2B</td>
+            <td class="cost off">-</td>
+          </tr>
+          <tr>
+            <th scope="row">glm-5.3-flash</th>
+            <td class="in">59</td>
+            <td class="cw">0</td>
+            <td class="cr">49.6K</td>
+            <td class="out">3</td>
+            <td class="tk">49.6K</td>
+            <td class="cost off">-</td>
+          </tr>
+          <tr>
+            <th scope="row">z-ai/glm-5.3-flash</th>
+            <td class="in">84.0K</td>
+            <td class="cw">0</td>
+            <td class="cr">768</td>
+            <td class="out">53</td>
+            <td class="tk">84.8K</td>
+            <td class="cost off">-</td>
+          </tr>
+        </tbody>
+        <tfoot>
+          <tr class="total">
+            <th scope="row">TOTAL</th>
+            <td class="in">62.8M</td>
+            <td class="cw">23.4M</td>
+            <td class="cr">1.7B</td>
+            <td class="out">2.8M</td>
+            <td class="tk">1.8B</td>
+            <td class="cost">$476.51</td>
+          </tr>
+        </tfoot>
+      </table>
+    </main>
+
+    <div class="tnote">The rows arrive sorted by cost, descending, with the TOTAL pinned in the
+    table's own footer; the pooled labels (<span class="mono">&lt;synthetic&gt;</span>,
+    <span class="mono">scratch</span>) draw quiet. A row the pricing table does not carry keeps
+    its tokens and draws the dash - the cost is unknown, not zero.</div>
+  </div>
+
+  <h2>The unpriced state</h2>
+  <div class="tile">
+    <div class="tcap">the first open with a stale cache: the tokens are here, the costs are not, and the caption says which. The scan that answered also kicked the server's pricing fetch; the page's own bounded re-ask draws the priced figures over these a beat later.</div>
+    <main class="wrap usage">
+      <section class="sum" aria-label="lifetime">
+        <div class="head">
+          <span class="lbl">lifetime</span>
+          <span class="big">1.8B</span>
+          <span class="dk">tokens</span>
+          <span class="cost off">-</span>
+          <span class="counts">1 projects &middot; 7 models</span>
+          <span class="cap warn">pricing pending or failed</span>
+        </div>
+
+        <div class="roll">
+          <span class="tot"><span class="k">this month</span><span class="n">1.2B</span><span class="c">-</span></span>
+          <span class="tot"><span class="k">this week</span><span class="n">457.8M</span><span class="c">-</span></span>
+          <span class="tot"><span class="k">today</span><span class="n">457.8M</span><span class="c">-</span></span>
+        </div>
+
+        <div class="split">
+          <span class="k">split</span>
+          <span class="in">input <b>62.8M</b></span>
+          <span class="cw">cache-write <b>23.4M</b></span>
+          <span class="cr">cache-read <b>1.7B</b><b>(95%)</b></span>
+          <span class="out">output <b>2.8M</b></span>
+        </div>
+      </section>
+    </main>
+
+    <div class="tnote">The headline cost blanks to the dash rather than a misleading
+    <span class="mono">$0.00</span>, and the caption takes the warning tone. The loop is
+    bounded: four re-asks at six seconds cover the fetch's own 20-second budget, and a fetch
+    that failed stops there - the caption is terminal.</div>
+  </div>
+
+</div>
+</body>
+</html>

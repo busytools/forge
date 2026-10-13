@@ -34,6 +34,9 @@ import Models from './models/Models.svelte';
 import Review from './review/Review.svelte';
 import ModelsBody from './models/ModelsBody.svelte';
 import { modelsWire } from './models/testing';
+import UsageBody from './usage/UsageBody.svelte';
+import { usageWire } from './usage/testing';
+import { usageFrom } from './wire/usage';
 import Palette from './session/Palette.svelte';
 import Session from './session/Session.svelte';
 import { PROTOCOL_VERSION } from './protocol';
@@ -736,6 +739,15 @@ describe('axe over the rendered pages', () => {
   it('draws the models route waiting for its read, with no violations', async () => {
     const html = render(Models, { props: { connection: null } }).body;
     expect(html).toContain('Reading the models');
+    expect(await idsOf(html)).toEqual([]);
+  });
+
+  /** The usage report: the summary band, the controls and the table. */
+  it('draws the usage page with no violations', async () => {
+    const html = render(UsageBody, {
+      props: { wire: usageFrom(usageWire), onrefresh: () => {} },
+    }).body;
+    expect(html, 'the report drew, so axe saw it').toContain('notional');
     expect(await idsOf(html)).toEqual([]);
   });
 

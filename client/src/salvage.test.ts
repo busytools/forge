@@ -161,8 +161,9 @@ describe('the salvage copies', () => {
     // home drawing declared the `--ctl` and `--blue` its rules already used;
     // its other addition, `--fs-label`, is not a palette token, so it does
     // not move the count. The document viewer's drawing declares the
-    // palette's sixteen and adds the same way.
-    expect(compared, 'the sweep no longer reaches the same tokens').toBe(219);
+    // palette's sixteen and adds the same way; the usage page's drawing
+    // declares the palette's seventeen.
+    expect(compared, 'the sweep no longer reaches the same tokens').toBe(236);
   });
 
   /**
@@ -237,8 +238,8 @@ describe('the salvage copies', () => {
     // `:root` like every drawing does. 24 before the extensions page's
     // drawing, which declares both stacks the same way, and the review
     // drawing's two add to both: this is the merged tree's count. The
-    // document viewer's drawing declares both too.
-    expect(compared, 'the sweep no longer reaches every stack').toBe(30);
+    // document viewer's drawing declares both too, as the usage page's does.
+    expect(compared, 'the sweep no longer reaches every stack').toBe(32);
   });
 });
 

@@ -496,7 +496,7 @@ export function ageOf(row: Pick<FleetViewRow, 'lastActivity' | 'seats'>, now: nu
   return row.seats.length > 0 ? 'now' : 'never';
 }
 
-/** The band's four cards, each quiet until its own state says otherwise. */
+/** The band's own cards, each quiet until its own state says otherwise. */
 export function band(wire: HomeWire, address: string): BandCard[] {
   const gateway = wire.accounts.gateway;
   const gatewayCard: BandCard = gateway.bind_error
@@ -599,11 +599,21 @@ export function band(wire: HomeWire, address: string): BandCard[] {
     },
     dictation,
     accounts,
+    // **Another way in, and a door with no state of its own**: the usage
+    // report is a scan of the transcript pool, and the home is not the page
+    // that should pay for one - the card is the door, and the page reads.
+    {
+      title: 'usage',
+      tone: 'ready',
+      value: 'tokens \u{b7} cost',
+      detail: 'by project or model',
+      href: hrefFor({ name: 'usage' }),
+    },
   ];
 }
 
 /**
- * The extensions card: the fifth band card, and the second way in.
+ * The extensions card: the band card the home appends, and a way in.
  *
  * It reads the `extensions` subject rather than the home snapshot, because
  * what a reader wants here - how many plugins are installed and whether any

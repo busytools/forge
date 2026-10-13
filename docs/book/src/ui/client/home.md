@@ -22,7 +22,7 @@ nothing to draw, and the client never falls back to bundled data.
 |---|---|---|
 | Stopped | the core's last fatal, above everything else: `forge stopped:` and the terminal's own words | `fatal_error` |
 | Header | the brand mark, `forge`, the forge build serving the socket, the socket protocol, the claude version, the CLI's update notice, this app's own update line (or, in a browser, the build and the latest published), and the fleet totals | `ClientSettings.mark` from the greeting; `forge_version_short`; `PROTOCOL_VERSION`; `cli_version`; the shell's update check, or the served `latest.json`; `agents` and `projects` counted |
-| Band | five cards: the gateway listener, the client's own address, dictation, the account pool, and the extensions | `accounts.gateway`, the connection the client made, `dictate.snapshot`, `accounts.loading`, the `extensions` subject |
+| Band | six cards: the gateway listener, the client's own address, dictation, the account pool, the usage, and the extensions | `accounts.gateway`, the connection the client made, `dictate.snapshot`, `accounts.loading`, the `extensions` subject; the usage card reads nothing - it is a door |
 | Fleet row | one per project: the strongest seat mark, the project, its branch and changed-file count, when it last moved (the newest write among its seats and the sessions its catalog remembers, `now`/`3h`/`2d`, or `never` for a project with neither a seat nor a session behind it), its seats, `live of cap slots · queue · on you`, the named misses, and the ways in - the row itself, each seat, and the board | `fleet` for the counts and the misses; `projects` for the tree; `agents` and `projects[].sessions` for the seats and the age |
 
 Every cell of a fleet row is the server's own read. The mark is the
@@ -36,15 +36,22 @@ while a seat chip opens its own seat and `open board` opens the
 [board](./board.md). A project with no live seat is started by that same
 click, as a sleeping seat is from the terminal's rail.
 
-**Two cards are ways in.** The dictation card opens the
+**Four cards are ways in.** The dictation card opens the
 [models page](./dictate-models.md), where the pins, the catalogue check and
 the feed are drawn; the extensions card opens the
 [extensions page](./extensions.md), where the plugin inventory, its
-components and the marketplaces are. Both are links at rest - a chevron on
-the card's title line, drawn dim rather than uncovered by the pointer,
-because an affordance only the hover uncovers is one a touch reader cannot
-find - and both take Enter and Space. **The other three cards open
-nothing.**
+components and the marketplaces are; the usage card opens the
+[usage page](./usage.md), where the windows, the groupings and the priced
+table are; and the server card opens the connect screen (below). All are
+links at rest - a chevron on the card's title line, drawn dim rather than
+uncovered by the pointer, because an affordance only the hover uncovers is
+one a touch reader cannot find - and all take Enter and Space. **The other
+two cards, the gateway listener and the account pool, open nothing.**
+
+The usage card is a door with no read of its own: the report behind the
+page is a scan of the transcript pool, and the home is not the page that
+should pay for one. The card states what the page is - tokens and cost, by
+project or by model - and the page does the reading when it is opened.
 
 **The extensions card reads its own subject.** What a reader wants on it -
 how many plugins are installed, and whether any is behind its marketplace -
@@ -64,9 +71,8 @@ version in the shell crate's own manifest would name the wrong thing.
 **The band's server card is the way back to the connect screen** (Ved,
 2026-10-12): the card names the forge this client is on - `host:port`, as a
 reader recognises it - and the whole card is a link to `/connect`, the
-dictation and extensions cards' own pattern. It is how the client is
-pointed at another forge - a scratch stack, a second machine - without a
-relaunch.
+other door cards' own pattern. It is how the client is pointed at another
+forge - a scratch stack, a second machine - without a relaunch.
 
 **The row's tree cell is the project's own read.** It carries the branch
 the tree is on and how much has changed in it; a count of zero draws

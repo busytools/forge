@@ -172,6 +172,19 @@ header.top {
   position: relative; top: -1px; }
 .brand .mark svg { display: block; width: 100%; height: 100%; }
 .brand .word { font-size: 22px; font-weight: 650; letter-spacing: -.02em; }
+/* The title-and-back chrome of a page header, shared by the pages that wear
+   that shape (`pagetop`); the home's and the review's headers are shapes of
+   their own and stay unmarked. This block was two copies of itself before
+   the usage page arrived as a third. */
+header.top.pagetop .title { display: flex; flex-direction: column; }
+header.top.pagetop .title .t { font-size: var(--fs-title); font-weight: 650;
+  letter-spacing: -.01em; color: var(--text); }
+header.top.pagetop .title .s { font-family: var(--mono); font-size: var(--fs-label);
+  color: var(--dim); }
+header.top.pagetop .back { margin-left: auto; font-family: var(--mono);
+  font-size: var(--fs-label); color: var(--muted); text-decoration: none;
+  border: 1px solid var(--line); border-radius: 9px; padding: 6px 11px; }
+header.top.pagetop .back:hover { border-color: var(--ctl); color: var(--text); }
 .versions { font-family: var(--mono); font-size: 13.5px; color: var(--dim); }
 .versions b { color: var(--muted); font-weight: 500; }
 /* The installed version is context; an available update is something to
@@ -2892,14 +2905,8 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
    the header, the band card's gradient, the chip, the empty box and the four
    state shapes - are the shipped ones; these are the page's own layout. */
 
-.models .title { display: flex; flex-direction: column; }
-.models .title .t { font-size: var(--fs-title); font-weight: 650; letter-spacing: -.01em;
-  color: var(--text); }
-.models .title .s { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
-.models .back { margin-left: auto; font-family: var(--mono); font-size: var(--fs-label);
-  color: var(--muted); text-decoration: none; border: 1px solid var(--line);
-  border-radius: 9px; padding: 6px 11px; }
-.models .back:hover { border-color: var(--ctl); color: var(--text); }
+/* The page's title and back chrome is the shared `header.top.pagetop`
+   block's, up with `header.top` itself. */
 /* The one line a page with no read yet draws, and the one a refused
    subscription draws: the session page's own pending treatment. */
 .models .pending { color: var(--muted); font-size: var(--fs-base); margin-top: 12vh;
@@ -3118,6 +3125,100 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
   .models .role, .models .side { flex-basis: 100%; }
   .models .cand { flex-wrap: wrap; }
   .models .cand .col { flex-basis: 100%; }
+}
+
+/* ---------- the usage page ----------
+   The terminal's `/usage` overlay is the reference for what is drawn
+   (`crates/forge-tui/src/ui/usage_overlay.rs`): the scales, the two caption
+   tones and which cell carries which tone. These are the page's own layout.
+   Every rule is prefixed: `.totals`, `.dim` and the rest of the sheet's short
+   names are another surface's, and a bare rule here would reach it by coming
+   later. */
+
+.usage .sum { background: linear-gradient(180deg, rgba(20,25,38,.75), rgba(13,17,26,.75));
+  border: 1px solid var(--line); border-radius: var(--r); padding: 16px 18px;
+  margin-bottom: 18px; }
+.usage .head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.usage .head .lbl { font-family: var(--mono); font-size: var(--fs-label); letter-spacing: .11em;
+  text-transform: uppercase; color: var(--muted); }
+.usage .head .big { font-size: 21px; font-weight: 650; letter-spacing: -.01em; color: var(--text); }
+.usage .head .dk { font-size: var(--fs-label); color: var(--dim); }
+/* The notional cost: what the caption below says, as a mark. */
+.usage .head .cost { font-family: var(--mono); font-size: var(--fs-data); color: var(--accent);
+  font-weight: 650; }
+.usage .head .cost.off { color: var(--dim); font-weight: 400; }
+.usage .head .counts { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+.usage .head .cap { margin-left: auto; font-family: var(--mono); font-size: 11px;
+  color: var(--dim); }
+.usage .head .cap.warn { color: var(--warn); }
+
+.usage .roll { display: flex; gap: 30px; flex-wrap: wrap; margin-top: 13px; }
+.usage .roll .tot { display: inline-flex; align-items: baseline; gap: 7px; }
+.usage .roll .k { font-size: var(--fs-label); color: var(--dim); }
+.usage .roll .n { font-family: var(--mono); font-size: var(--fs-data); color: var(--text); }
+.usage .roll .c { font-family: var(--mono); font-size: var(--fs-data); color: var(--accent); }
+
+.usage .split { display: flex; gap: 20px; flex-wrap: wrap; margin-top: 13px;
+  font-family: var(--mono); font-size: var(--fs-label); }
+.usage .split .k { color: var(--dim); letter-spacing: .11em; text-transform: uppercase; }
+.usage .split .in, .usage .split .out { color: var(--dim); }
+.usage .split b { font-weight: 500; color: var(--text); }
+.usage .split .cw, .usage .split .cw b { color: var(--warn); }
+.usage .split .cr, .usage .split .cr b { color: var(--ok); }
+
+.usage .controls { display: flex; align-items: baseline; gap: 22px; flex-wrap: wrap;
+  margin: 0 0 12px; }
+.usage .sel { display: inline-flex; align-items: baseline; gap: 2px; }
+.usage .sel .k { font-size: var(--fs-label); color: var(--dim); margin-right: 7px; }
+.usage .pick { background: none; border: 0; padding: 4px 8px; border-radius: 8px;
+  font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); cursor: pointer; }
+.usage .pick:hover { color: var(--text); }
+/* The pressed option is the accent AND bold, never colour alone. */
+.usage .pick[aria-pressed='true'] { color: var(--accent); font-weight: 650; }
+.usage .pick:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.usage .re { margin-left: auto; font-family: var(--mono); font-size: var(--fs-label);
+  color: var(--muted); background: none; border: 1px solid var(--line); border-radius: 9px;
+  padding: 6px 11px; cursor: pointer; }
+.usage .re:hover { border-color: var(--ctl); color: var(--text); }
+.usage .re:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* The table wraps rather than scrolling: the sheet admits no sideways
+   scroller (`wrap.test.ts`), so a narrow window breaks a long model id
+   inside its cell instead of pushing the page wide. */
+.usage .tbl { width: 100%; border-collapse: collapse; font-family: var(--mono);
+  overflow-wrap: anywhere; }
+.usage .tbl th, .usage .tbl td { text-align: left; font-size: var(--fs-label); font-weight: 400;
+  padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: baseline; }
+.usage .tbl thead th { color: var(--muted); font-size: 11px; letter-spacing: .08em;
+  text-transform: uppercase; }
+.usage .tbl thead th:nth-child(n + 2), .usage .tbl td { text-align: right; }
+.usage .tbl tbody th[scope='row'] { color: var(--text); font-family: var(--mono);
+  font-size: var(--fs-data); font-weight: 650; }
+/* The pooled labels name a place, not a project, and the terminal draws them
+   quiet. */
+.usage .tbl tr.quiet th[scope='row'] { color: var(--dim); font-weight: 400; }
+.usage .tbl td.in, .usage .tbl td.out { color: var(--dim); }
+.usage .tbl td.cw { color: var(--warn); }
+.usage .tbl td.cr { color: var(--ok); }
+.usage .tbl td.tk { color: var(--text); font-weight: 650; }
+.usage .tbl td.cost { color: var(--accent); }
+.usage .tbl td.cost.off { color: var(--dim); }
+/* The GPT price is the approximation, and the flag says so beside it. */
+.usage .tbl td.cost.gpt { color: var(--warn); }
+.usage .tbl .approx { color: var(--dim); margin-left: 7px; }
+.usage .tbl tfoot th, .usage .tbl tfoot td { border-bottom: 0; border-top: 1px solid var(--line);
+  padding-top: 11px; }
+.usage .tbl tfoot th[scope='row'], .usage .tbl tfoot td.cost { color: var(--accent);
+  font-weight: 650; }
+
+@media (pointer: coarse) {
+  /* The pick chips are buttons and take the 44 from the shared rule; the way
+     back is the one it cannot reach here. */
+  .usage .back { min-height: 44px; display: inline-flex; align-items: center; }
+}
+
+@media (max-width: 700px) {
+  .usage .tbl th, .usage .tbl td { padding: 8px 6px; }
 }
 
 /* ---------- the review page ----------
@@ -3407,14 +3508,8 @@ details[open] > summary .arw { opacity: 1; }
 .extensions .btn:disabled { opacity: .5; cursor: default; }
 
 /* the header's name block and the way back */
-.extensions .title { display: flex; flex-direction: column; }
-.extensions .title .t { font-size: var(--fs-title); font-weight: 650; letter-spacing: -.01em;
-  color: var(--text); }
-.extensions .title .s { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
-.extensions .back { margin-left: auto; font-family: var(--mono); font-size: var(--fs-label);
-  color: var(--muted); text-decoration: none; border: 1px solid var(--line);
-  border-radius: 9px; padding: 6px 11px; }
-.extensions .back:hover { border-color: var(--ctl); color: var(--text); }
+/* The page's title and back chrome is the shared `header.top.pagetop`
+   block's, up with `header.top` itself. */
 
 /* the refusal line: the core's own words, above the page */
 .extensions .ext-said { margin: 0 0 14px; padding: 9px 13px; border-radius: 10px;

@@ -36,7 +36,8 @@
   } from './dictation';
   import { focusOf, type Where } from './editors';
   import { busyLine, LocalTake } from './take';
-  import { FORGE_COMMANDS } from './forge-commands';
+  import { FORGE_COMMANDS, routeForCommand } from './forge-commands';
+  import { goTo } from '../routes';
   import {
     blocked,
     composerState,
@@ -660,6 +661,16 @@
     // out as `/compact ` is one nothing asked for.
     const text = box.draft.trim();
     if (text === '') return;
+    // A command this view answers itself never crosses the wire: the page it
+    // opens is this view's overlay, and a name given arguments it does not
+    // take is answered with its usage line, the way the terminal answers it.
+    const move = routeForCommand(text);
+    if (move !== null) {
+      if (move.kind === 'route') goTo(move.route);
+      else box.dictateLine = { tone: 'q', text: move.text };
+      box.draft = '';
+      return;
+    }
     // The prompt's own id is minted here and rides the frame: the CLI emits
     // that prompt's lifecycle frames only under a client-supplied uuid, and
     // the queued row the core echoes back carries the same id - so this send,

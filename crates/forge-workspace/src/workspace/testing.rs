@@ -361,6 +361,9 @@ impl Workspace {
             systemone,
             catalog: Arc::new(Mutex::new(HashMap::new())),
             pool: Mutex::new(HashMap::new()),
+            // A stub reaches no network either: the refill has nothing to
+            // fetch.
+            pricing_fetcher: crate::workspace::default_pricing_fetcher(),
             #[cfg(any(test, feature = "testing"))]
             test_spawn_handle: Mutex::new(None),
             test_spawn_listing: Mutex::new(crate::workspace::RecordedListing::None),

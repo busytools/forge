@@ -111,7 +111,7 @@ describe('the command palette', () => {
   it("sends a command row as the composer's own prompt", () => {
     const { connection, dispatched } = stub();
     draw({ connection });
-    type('usage');
+    type('compact');
     press('Enter');
 
     expect(dispatched, 'Enter sent nothing').toHaveLength(1);
@@ -120,9 +120,25 @@ describe('the command palette', () => {
     };
     expect(sent.prompt_under?.key, 'the prompt did not go to the shown seat').toEqual(LEAD);
     expect(sent.prompt_under?.text, 'the command text was not what the composer sends').toBe(
-      '/usage',
+      '/compact',
     );
     expect(typeof sent.prompt_under?.uuid, 'the prompt went without its id').toBe('string');
+  });
+
+  /**
+   * **A command this view answers itself opens its page instead of sending
+   * the name to the core**, the same move the composer makes for the same
+   * text - so the row and a hand-typed `/usage` cannot disagree.
+   */
+  it('opens the usage page for the usage row rather than sending it', () => {
+    const { connection, dispatched } = stub();
+    const { closed } = draw({ connection });
+    type('usage');
+    press('Enter');
+
+    expect(dispatched, 'the name crossed the wire').toEqual([]);
+    expect(location.pathname, 'the row did not open the usage page').toBe('/usage');
+    expect(closed, 'the palette stayed up').toHaveBeenCalled();
   });
 
   /** The doings run their own things: peek opens the rail, Escape closes. */
