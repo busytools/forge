@@ -24,6 +24,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 
 import { CLIENT_VERSION } from './protocol';
 import type { Route } from './routes';
+import { mintPromptId } from './wire/ids';
 
 /** The record schema, shared with the log the shell writes. */
 const SCHEMA = 'forge-perf/v1';
@@ -51,7 +52,15 @@ export interface PerfRecord {
   ms?: number;
   /** A long task's own name. */
   name?: string;
-  /** The route the page was on, and the seat it held. */
+  /**
+   * The route the page was on, and the seat it held.
+   *
+   * A frame and a long task carry where they happened. A `run_started`
+   * carries boot's own reading, and a `summary` the reading as of when its
+   * window OPENED - a window can span a seat switch, so one value cannot
+   * say where every frame inside it happened, and the frames carry their
+   * own. Null is honest for "the router has not wired a route yet".
+   */
   surface?: string | null;
   session?: string | null;
   window_ms?: number;
@@ -121,9 +130,12 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
   const schedule = options.schedule ?? nextFrame;
   const observe = options.observeLongTasks ?? observeLongTasks;
 
-  const runId = crypto.randomUUID();
+  const runId = mintPromptId();
   let surface: string | null = null;
   let session: string | null = null;
+  /** Where the OPEN window began, which is what its summary reports. */
+  let windowSurface: string | null = null;
+  let windowSession: string | null = null;
   let frames = 0;
   let slow = 0;
   let maxMs = 0;
@@ -134,6 +146,30 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
 
   function emit(record: PerfRecord): void {
     sink([record]);
+  }
+
+  /** Close the open window: one summary line, then a fresh window under
+   *  wherever the page is now. A window with no frames says nothing. */
+  function flushWindow(at: number): void {
+    if (frames === 0) return;
+    emit({
+      schema: SCHEMA,
+      kind: 'summary',
+      run_id: runId,
+      ts_ms: Date.now(),
+      window_ms: at - windowStart,
+      frames,
+      slow,
+      max_ms: maxMs,
+      surface: windowSurface,
+      session: windowSession,
+    });
+    frames = 0;
+    slow = 0;
+    maxMs = 0;
+    windowStart = at;
+    windowSurface = surface;
+    windowSession = session;
   }
 
   function tick(): void {
@@ -157,22 +193,7 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
       }
     }
     last = at;
-    if (at - windowStart >= summaryIntervalMs) {
-      emit({
-        schema: SCHEMA,
-        kind: 'summary',
-        run_id: runId,
-        ts_ms: Date.now(),
-        window_ms: at - windowStart,
-        frames,
-        slow,
-        max_ms: maxMs,
-      });
-      frames = 0;
-      slow = 0;
-      maxMs = 0;
-      windowStart = at;
-    }
+    if (at - windowStart >= summaryIntervalMs) flushWindow(at);
     cancelFrame = schedule(tick);
   }
 
@@ -183,12 +204,18 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
       slow = 0;
       maxMs = 0;
       windowStart = now();
+      // Boot's own reading: the router has usually not wired a route yet,
+      // so null here is the honest answer rather than a gap.
+      windowSurface = surface;
+      windowSession = session;
       emit({
         schema: SCHEMA,
         kind: 'run_started',
         run_id: runId,
         ts_ms: Date.now(),
         version,
+        surface,
+        session,
       });
       cancelObserver = observe((ms, name) => {
         emit({
@@ -205,6 +232,10 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
       cancelFrame = schedule(tick);
     },
     stop(): void {
+      // The open window still lands, the terminal's own rule at shutdown:
+      // a partial window is what the reader wants when the page is going
+      // away, and dropping it is a silence nobody can act on.
+      flushWindow(now());
       cancelFrame?.();
       cancelObserver?.();
       cancelFrame = null;

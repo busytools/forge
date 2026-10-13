@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { perfProbe, perfSurface, type PerfRecord } from './perf';
+import { perfProbe, perfSurface, startPerfProbe, type PerfRecord } from './perf';
 
 /**
  * The probe's clock and frame source, driven by the test.
@@ -9,7 +9,13 @@ import { perfProbe, perfSurface, type PerfRecord } from './perf';
  * `requestAnimationFrame` itself, which is the whole reason a known slow
  * frame can be produced here instead of hoped for on a machine.
  */
-function harness(options: { summaryIntervalMs?: number } = {}) {
+function harness(
+  options: {
+    summaryIntervalMs?: number;
+    surface?: string | null;
+    session?: string | null;
+  } = {},
+) {
   const records: PerfRecord[][] = [];
   let clock = 1_000;
   const callbacks: (() => void)[] = [];
@@ -37,6 +43,9 @@ function harness(options: { summaryIntervalMs?: number } = {}) {
       ? {}
       : { summaryIntervalMs: options.summaryIntervalMs }),
   });
+  // Boot's own reading, before the probe opens its first window - the order
+  // main.ts has (the probe starts, the router wires the route later).
+  if (options.surface !== undefined) probe.setSurface(options.surface, options.session ?? null);
   probe.start();
 
   /** One frame's arrival, `ms` after the previous one. */
@@ -60,12 +69,15 @@ function harness(options: { summaryIntervalMs?: number } = {}) {
 
 describe('the frame probe', () => {
   it('opens its log with a run line', () => {
-    const h = harness();
+    const h = harness({ surface: 'connect', session: null });
     const first = h.records.flat()[0];
     expect(first?.kind).toBe('run_started');
     expect(first?.schema).toBe('forge-perf/v1');
     expect(first?.run_id).toBeTruthy();
     expect(first?.version).toBeTruthy();
+    // Boot's own reading rides along, so even the run line is attributable.
+    expect(first?.surface).toBe('connect');
+    expect(first?.session).toBeNull();
   });
 
   it('records a slow frame and nothing for the fast ones between', () => {
@@ -105,6 +117,43 @@ describe('the frame probe', () => {
     expect(summaries[0]?.frames).toBe(3);
     expect(summaries[0]?.slow).toBe(1);
     expect(summaries[0]?.max_ms).toBe(200);
+  });
+
+  it('names the window it summarises, and leaves frames their own place', () => {
+    const h = harness({ summaryIntervalMs: 100, surface: 'home', session: null });
+    h.frame(16);
+    h.frame(16);
+    h.frame(200);
+
+    const summary = h.records.flat().find((record) => record.kind === 'summary');
+    expect(summary?.surface, 'the summary says where its window opened').toBe('home');
+
+    // A seat switch mid-window: the next frame carries where IT happened
+    // (the 200 ms crossing frame above is its own record, under `home`).
+    h.probe.setSurface('session', 'Busytools/forge/lead');
+    h.frame(120);
+    const frames = h.records.flat().filter((record) => record.kind === 'frame');
+    const after = frames[frames.length - 1];
+    expect(after?.ms).toBe(120);
+    expect(after?.surface).toBe('session');
+    expect(after?.session).toBe('Busytools/forge/lead');
+  });
+
+  it('lands the open window when stopped, the terminal rule at shutdown', () => {
+    const h = harness();
+    h.frame(16);
+    h.frame(16);
+    h.probe.stop();
+
+    const summaries = h.records.flat().filter((record) => record.kind === 'summary');
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]?.frames, 'a partial window is not dropped').toBe(2);
+  });
+
+  it('starts nothing where there is no shell to write to', () => {
+    // The vitest page has no `isTauri`, which is the web build's own state:
+    // a record with nothing behind it would help no one.
+    expect(startPerfProbe()).toBeNull();
   });
 
   it('carries a long task with its own name', () => {

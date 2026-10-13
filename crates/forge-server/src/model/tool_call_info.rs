@@ -128,9 +128,8 @@ impl ToolCallInfo {
     /// stamps each entry with the epoch it was rendered at, so bumping
     /// it is the whole invalidation.
     ///
-    /// The invalidation counter lives in the view rather than here, because
-    /// this type moves to `forge-server` and cannot carry a perf
-    /// dependency. `tool_calls::request_*` are the marked entry points.
+    /// The invalidation counter lives in the view rather than here.
+    /// `tool_calls::request_*` are the marked entry points.
     pub fn mark_tool_call_render_dirty(&mut self) {
         self.render_epoch = self.render_epoch.wrapping_add(1);
     }

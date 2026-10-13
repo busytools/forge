@@ -142,15 +142,15 @@ mod tests {
         assert!(parsed.ms.is_none(), "an absent optional is absence, not zero");
     }
 
-    /// The cap is armed: a file that reached it rolls to `.1` and the fresh
-    /// file holds only what came after.
+    /// The cap is armed at its own boundary: a file exactly AT the cap
+    /// rolls to `.1` and the fresh file holds only what came after.
     #[test]
     fn a_file_at_the_cap_rolls_to_one_before_the_next_batch() {
         let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(dir.path().join(PERF_LOG_NAME), "x".repeat(100)).expect("seed");
+        std::fs::write(dir.path().join(PERF_LOG_NAME), "x".repeat(50)).expect("seed at the cap");
         append(dir.path(), &[record("summary")], 50).expect("append");
 
-        assert!(rolled_path(dir.path()).exists(), "the over-cap file rolled to .1");
+        assert!(rolled_path(dir.path()).exists(), "a file exactly at the cap rolls to .1");
         let fresh = std::fs::read_to_string(dir.path().join(PERF_LOG_NAME)).expect("read back");
         assert_eq!(fresh.lines().count(), 1, "only the new batch is in the fresh file: {fresh}");
     }
