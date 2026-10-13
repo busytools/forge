@@ -379,11 +379,65 @@ describe('the tasks card', () => {
     ]);
   });
 
+  it('reads the tasks list past the clock line the tool opens it with', () => {
+    // The real result text, as `tasks__list` writes it: the `now <rfc3339>`
+    // line the server pins first (crates/forge-workspace/src/mcp/tasks.rs),
+    // then the pretty-printed rows array.
+    const rows = [
+      { ...RECORD, worked: '3h', updated_ago: '12m', marks: ['in_review'] },
+      { ...RECORD, id: 't-2', subject: 'Sweep', status: 'pending', owner: null, estimate: null },
+    ];
+    const text = `now 2026-10-13T06:23:51.696933Z\n${JSON.stringify(rows, null, 2)}`;
+    const card = forgeCardOf('mcp__forge__tasks__list', {}, result(text));
+    expect(card?.title, 'the clock line does not cost the card').toBe('tasks');
+    expect(card?.figure).toBe('2 in flight');
+    expect(itemsOf(card)).toEqual([
+      {
+        id: 't-1',
+        state: { text: 'in progress', tone: 'info' },
+        text: RECORD.subject,
+        tag: null,
+        when: 'lead \u{b7} 2h',
+      },
+      {
+        id: 't-2',
+        state: { text: 'pending', tone: 'dim' },
+        text: 'Sweep',
+        tag: null,
+        when: 'unclaimed',
+      },
+    ]);
+  });
+
+  it('falls to the raw row for a body past the clock line that is not JSON', () => {
+    // The failing half is the BODY, not the clock line - the read steps over
+    // the line and the body does not parse. The helper's own null contract is
+    // pinned in result-json.test.ts, which the card layer cannot see.
+    expect(
+      forgeCardOf(
+        'mcp__forge__tasks__list',
+        {},
+        result('now 2026-10-13T06:23:51.696933Z\nnot json at all'),
+      ),
+    ).toBeNull();
+  });
+
   it('draws a list of nothing as a row, not as an empty box', () => {
     const card = forgeCardOf('mcp__forge__tasks__list', {}, result('[]'));
     expect(card?.title).toBe('tasks');
     expect(card?.figure, 'no count for no rows').toBeNull();
     expect(card?.pieces, 'what it found nothing of, in words').toEqual([
+      { kind: 'empty', text: 'no tasks in flight - anything this project declares lands here' },
+    ]);
+  });
+
+  it('reads an empty board past the clock line the tool opens it with', () => {
+    // The empty result in its real wire shape: the clock line, then `[]` -
+    // the shortest body a read that assumes a pretty-printed array would lose.
+    const card = forgeCardOf('mcp__forge__tasks__list', {}, result('now 2026-01-02T03:04:05Z\n[]'));
+    expect(card?.title, 'the empty board still draws the card').toBe('tasks');
+    expect(card?.figure, 'no count for no rows').toBeNull();
+    expect(card?.pieces).toEqual([
       { kind: 'empty', text: 'no tasks in flight - anything this project declares lands here' },
     ]);
   });
