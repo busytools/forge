@@ -225,8 +225,9 @@ one, bias toward the deeper crate.
 - **Cross-crate type duplication.** Same-shaped `Foo` in two crates
   means one is wrong; lift to primitives or import the re-export. The
   exceptions are the leaf crates that may not depend on any forge-*
-  crate, `forge-dictate` and `forge-system-one`: their types stay in
-  them and consumers import them from there.
+  crate, `forge-capture`, `forge-system-one` and `forge-dictate` (which
+  leans on the first and on nothing else of the workspace): their types
+  stay in them and consumers import them from there.
 - **Provider dispatch outside `forge-gateway`.** A match on
   `Provider` in workspace or a view is the thing this crate exists to
   delete; route through `forge_gateway::backend(token)` instead.
