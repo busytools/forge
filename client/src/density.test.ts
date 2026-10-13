@@ -20,10 +20,13 @@ import { describe, expect, it } from 'vitest';
  * deliberate edit here rather than a silent drift.
  */
 
-const SHEET = readFileSync(new URL('./assets/web.css', import.meta.url), 'utf8').replace(
-  /\s*\{/g,
-  ' {',
-);
+const SHEET = readFileSync(new URL('./assets/web.css', import.meta.url), 'utf8')
+  // **Comments go first.** The patterns below read everything between `}` and
+  // `{` as a selector, and a comment may name another selector - the notice
+  // rules name the conversation's, to say why they are scoped to `.comp` -
+  // which would then read as a rule for the selector it mentions.
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+  .replace(/\s*\{/g, ' {');
 
 /**
  * The declarations of the first rule whose selector contains `fragment`.
