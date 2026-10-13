@@ -205,6 +205,14 @@ impl Workspace {
         self.update_tx.answering_count()
     }
 
+    /// Whether the usage poller's start has run. Test-only: the poller's
+    /// first tick is a minute out and its pass reaches the network, so a
+    /// cross-crate boot test reads the guard rather than watching it poll.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn test_usage_poller_started(&self) -> bool {
+        self.usage_poller_started.load(std::sync::atomic::Ordering::Acquire)
+    }
+
     /// Hold a claude version snapshot, so a cross-crate test can render the
     /// version line without a real `claude --version` and npm probe.
     /// Test-only.
