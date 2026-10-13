@@ -498,6 +498,9 @@ impl TasksFacade for MockTasksFacade {
                 .owner
                 .clone()
                 .map(|label| SessionSlot::new(caller.org(), caller.project(), label)),
+            // The mock keeps the parent as stated; resolving it to the row
+            // it names is the prod facade's step, so a tool-level test must
+            // read a prefix here as unresolved.
             parent: draft.parent.as_deref().map(TaskId::from),
             waiting_on: None,
             estimate: draft.estimate.as_deref().and_then(Estimate::parse),
