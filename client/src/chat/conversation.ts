@@ -624,6 +624,12 @@ export class Chat {
    * The timer is a promise from the page that a suspended page can break, so
    * the wait keeps its own record: `soon` and `wake` read this rather than
    * trusting either callback to come.
+   *
+   * **The clock's one hole is a backward wall-clock step**, which under-counts
+   * the interval and withholds the stamp heal until the clock re-advances or a
+   * return fires. Accepted because `performance.now` freezes while the machine
+   * sleeps, so a monotonic stamp would read near zero after a lid close -
+   * exactly where the heal is needed.
    */
   private armedAt = 0;
   private readonly inner = writable<Conversation>(NOTHING, () => {

@@ -388,6 +388,12 @@ function createSeat(connection: Connection, subject: Subject, answering: boolean
    * The timer is a promise from the page that a suspended page can break, so
    * the wait keeps its own record: `soon` and `wake` read this rather than
    * trusting either callback to come.
+   *
+   * **The clock's one hole is a backward wall-clock step**, which under-counts
+   * the interval and withholds the stamp heal until the clock re-advances or a
+   * return fires. Accepted because `performance.now` freezes while the machine
+   * sleeps, so a monotonic stamp would read near zero after a lid close -
+   * exactly where the heal is needed.
    */
   let armedAt = 0;
 
@@ -473,11 +479,14 @@ function createSeat(connection: Connection, subject: Subject, answering: boolean
     if (!document.hidden) wake();
   };
 
-  // **The page's own returns, registered with the seat like its other
-  // listeners** (see `watch`): a suspended window loses the armed paint and
+  // **The page's own returns**: a suspended window loses the armed paint and
   // can take its deadline with it, so visibility returning, a bfcache restore
-  // and the window regaining focus each draw the pending publish. Nothing
-  // unregisters them, for the reason the seat's listeners are not either.
+  // and the window regaining focus each draw the pending publish.
+  //
+  // **These ride the DOCUMENT for the page's life, where the seat's other
+  // listeners ride the connection and die with it** - registered once per
+  // seat, never unregistered, so a seat that is let go leaves its three
+  // behind, and the count grows with address changes (#2136).
   if (typeof document !== 'undefined' && typeof window !== 'undefined') {
     document.addEventListener('visibilitychange', visible);
     window.addEventListener('pageshow', wake);
