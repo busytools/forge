@@ -1313,9 +1313,10 @@ describe('the key', () => {
    *
    * This is the lie Ved reported: the row said recording while the microphone
    * was still warming up, so the first words were spoken into a take that
-   * already claimed to be keeping them. The open is the notice line - the
-   * field keeps the keyboard until there is a take to draw (#1669) - and then
-   * the row says `ready` until a frame carries a real sample, which is where
+   * already claimed to be keeping them. **The open is the band's own state
+   * now, and adds no line** - the words read here are its status line for a
+   * screen reader, which is the state said rather than drawn - and then the
+   * row says `ready` until a frame carries a real sample, which is where
    * recording actually begins.
    */
   it('names the open, says ready, and only calls it recording on real audio', async () => {
