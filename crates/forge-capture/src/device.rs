@@ -34,13 +34,36 @@ pub fn devices() -> Result<Vec<Device>, Error> {
     Ok(found
         .filter_map(|device| {
             let id = device.id().ok()?;
-            Some(Device {
-                is_default: Some(&id) == default.as_ref(),
-                id: id.to_string(),
-                name: device.to_string(),
-            })
+            Some(record(&device, Some(&id), default.as_ref()))
         })
         .collect())
+}
+
+/// One device as the host describes it: the id a host persists, the label a
+/// picker shows, and whether the system would pick it unaided.
+fn record(
+    device: &cpal::Device,
+    id: Option<&cpal::DeviceId>,
+    default: Option<&cpal::DeviceId>,
+) -> Device {
+    Device {
+        is_default: id.is_some() && id == default,
+        id: id.map(ToString::to_string).unwrap_or_default(),
+        name: device.to_string(),
+    }
+}
+
+/// The host's own record of a device already resolved: its id, its label,
+/// and whether the system would have picked it unaided.
+///
+/// A capture carries this back to its caller, which is how a host names the
+/// input the system default resolved to - the picker's list itself carries
+/// no default mark. A device whose id cannot be read is still described: the
+/// label is what a host draws, and refusing the take over an unreadable id
+/// would lose the recording rather than just its name.
+pub(crate) fn describe(device: &cpal::Device) -> Device {
+    let default = cpal::default_host().default_input_device().and_then(|d| d.id().ok());
+    record(device, device.id().ok().as_ref(), default.as_ref())
 }
 
 /// Resolve a caller's choice to a cpal device.

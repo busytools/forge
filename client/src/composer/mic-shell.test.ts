@@ -10,14 +10,18 @@ const shell = vi.hoisted(() => {
   const hearing: { event: string; handler: ((event: { payload: number[] }) => void) | null }[] = [];
   /** What the shell answers the NEXT start with, when a case wants a refusal. */
   const refuses: { why: string | null } = { why: null };
+  /** The input the shell reports for the NEXT start, the way `client_mic_start` does. */
+  const opens: { resolved: { id: string; label: string } | null } = { resolved: null };
   return {
     invoked,
     hearing,
     refuses,
+    opens,
     invoke: (command: string, args?: unknown): Promise<unknown> => {
       invoked.push({ command, args });
-      if (command === 'client_mic_start' && refuses.why !== null) {
-        return Promise.reject(new Error(refuses.why));
+      if (command === 'client_mic_start') {
+        if (refuses.why !== null) return Promise.reject(new Error(refuses.why));
+        return Promise.resolve(opens.resolved);
       }
       return Promise.resolve(undefined);
     },
@@ -52,6 +56,7 @@ function handler(): (event: { payload: number[] }) => void {
 beforeEach(() => {
   shell.invoked.length = 0;
   shell.hearing.length = 0;
+  shell.opens.resolved = null;
 });
 
 describe('the shell capture', () => {
@@ -60,6 +65,16 @@ describe('the shell capture', () => {
     expect(shell.hearing, 'the listener is up first').toHaveLength(1);
     expect(shell.invoked.map((call) => call.command)).toEqual(['client_mic_start']);
     expect(shell.invoked[0]?.args).toEqual({ device: 'coreaudio:one' });
+  });
+
+  it('reports the input the shell opened, the one place a plain take names the default', async () => {
+    shell.opens.resolved = { id: 'coreaudio:builtin', label: 'MacBook Pro Microphone' };
+    const mic = await ShellMic.open(null);
+
+    expect(
+      mic.resolved,
+      'the take hands this to rememberDefaultDevice, so the panel draws the resolved row',
+    ).toEqual({ id: 'coreaudio:builtin', label: 'MacBook Pro Microphone' });
   });
 
   it('hands the frames the shell sends to the take', async () => {
