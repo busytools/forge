@@ -322,6 +322,14 @@ pub fn run() {
                             tauri_plugin_log::log::warn!("the browser did not start: {why}")
                         }
                     }
+                    // **After the start, never before**: the launch above
+                    // claims the shared profile, and the sweep must read that
+                    // claim rather than reap the browser this client just
+                    // brought up. This is also the only cover for a client
+                    // that never ran its exit - a crash, a SIGKILL, or the
+                    // update restart, whose main-thread path skips
+                    // `RunEvent::Exit` by design.
+                    starting.reap_orphans().await;
                 });
                 app.manage(host);
             }
@@ -344,7 +352,21 @@ pub fn run() {
         }
     };
 
-    app.run(|_handle, _event| {});
+    // The parameters are underscore-prefixed because the phone build strips
+    // the only block that reads them, and its warnings check denies an unused
+    // variable.
+    app.run(|_handle, _event| {
+        // **A host must not outlive its client.** Every browser this client
+        // claimed dies with it. `RunEvent::Exit` covers a quit and `exit()`;
+        // a crash, a SIGKILL and the update restart's main-thread path run no
+        // exit handler at all, and the next boot's sweep is what reaps those.
+        #[cfg(desktop)]
+        if let tauri::RunEvent::Exit = _event
+            && let Some(host) = _handle.try_state::<std::sync::Arc<browser::BrowserHost>>()
+        {
+            tauri::async_runtime::block_on(host.reap_owned());
+        }
+    });
 }
 
 /// The version an update check found, or `None` when this build is current.

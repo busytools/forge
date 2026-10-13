@@ -3,12 +3,16 @@
 //! send over the socket.
 //!
 //! **One shared browser for every session, and a browser of its own per
-//! named profile**, and each outlives the client: it is launched detached
-//! against a data directory under the app-support directory, so logins and
-//! cookies survive a client restart and a forge restart touches nothing here
-//! (spec section 3). The shared browser is driven by every session that
-//! names no profile; a NAMED profile is a browser and a data directory of
-//! its own, owned by the session that opened it and kept in [`profiles`] -
+//! named profile**, each launched detached against a data directory under
+//! the app-support directory - so logins and cookies survive a client restart
+//! and a forge restart touches nothing here (spec section 3). **The process
+//! does not outlive the client that launched it**: the client claims every
+//! profile it launches or adopts, reaps its browsers when it exits, and
+//! sweeps at boot for browsers whose owning client is gone - the cover for a
+//! crash, a SIGKILL, and the update restart's main-thread path, which skips
+//! the exit event by design. The shared browser is driven by every session
+//! that names no profile; a NAMED profile is a browser and a data directory
+//! of its own, owned by the session that opened it and kept in [`profiles`] -
 //! which is what makes a hand-off's Open able to raise that profile's own
 //! window on its own page.
 //!
@@ -158,6 +162,11 @@ pub struct BrowserHost {
     /// name), so the map exists only where profiles do.
     #[cfg(desktop)]
     named: Mutex<HashMap<String, Arc<Named>>>,
+    /// This client's claims on the profiles it launched or adopted: one entry
+    /// per directory, its lock held for the process lifetime. What the exit
+    /// reap closes, and what the boot sweep must never read as an orphan.
+    #[cfg(desktop)]
+    owned: Mutex<HashMap<PathBuf, chromium::ClientLock>>,
     /// The seats whose auto-profile refusal this run has already told a
     /// session about: the create is retried on every unnamed call, and the
     /// note belongs on the first one, not on each.
@@ -183,6 +192,8 @@ impl BrowserHost {
             shared: Mutex::new(None),
             #[cfg(desktop)]
             named: Mutex::new(HashMap::new()),
+            #[cfg(desktop)]
+            owned: Mutex::new(HashMap::new()),
             #[cfg(desktop)]
             auto_refused: Mutex::new(std::collections::HashSet::new()),
             used: std::sync::atomic::AtomicBool::new(false),
@@ -213,6 +224,8 @@ impl BrowserHost {
             shared: Mutex::new(None),
             #[cfg(desktop)]
             named: Mutex::new(HashMap::new()),
+            #[cfg(desktop)]
+            owned: Mutex::new(HashMap::new()),
             #[cfg(desktop)]
             auto_refused: Mutex::new(std::collections::HashSet::new()),
             used: std::sync::atomic::AtomicBool::new(false),
@@ -547,6 +560,9 @@ impl BrowserHost {
         let _launch = chromium::LaunchLock::acquire(&dir).await?;
         chromium::close_held_launch(&dir).await;
         self.named.lock().await.remove(name);
+        // The claim goes with the files: a stale entry would read as "this
+        // client already owns the directory" for a name created again later.
+        self.owned.lock().await.remove(&dir);
         match tokio::fs::remove_dir_all(&dir).await {
             Ok(()) => Ok(()),
             Err(why) if why.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -590,6 +606,40 @@ impl BrowserHost {
         engine.ensure().await
     }
 
+    /// This client's claim on `dir`'s browser, taken before anything is
+    /// launched or adopted on it.
+    ///
+    /// **Before the launch, deliberately**: the boot sweep reads a free claim
+    /// as "the owning client is gone", so a launch must be owned from the
+    /// moment it starts - a claim taken after would let the sweep reap the
+    /// browser this client is bringing up. A directory another live client
+    /// already holds is not claimed and not owned: this client still drives
+    /// the browser on it, and the exit reap leaves it to its own client.
+    #[cfg(desktop)]
+    async fn claim(&self, dir: &Path) {
+        let mut owned = self.owned.lock().await;
+        if owned.contains_key(dir) {
+            return;
+        }
+        match chromium::claim(dir) {
+            Ok(Some(lock)) => {
+                owned.insert(dir.to_path_buf(), lock);
+            }
+            Ok(None) => {}
+            Err(why) => {
+                // Not fatal to the call - the browser is driven either way -
+                // but the profile has no owner this run, so its browser is
+                // reaped by the next boot's sweep rather than by this
+                // client's exit.
+                tauri_plugin_log::log::debug!(
+                    "a browser profile could not be claimed by this client (event_name \
+                     browser_client_lock_refused, profile {}): {why}",
+                    dir.display(),
+                );
+            }
+        }
+    }
+
     /// One profile's live browser, launched when nothing is up: the shared
     /// profile's directory for most calls, a named profile's own for its.
     ///
@@ -604,6 +654,7 @@ impl BrowserHost {
     #[cfg(desktop)]
     async fn browser_for(&self, user_data: &Path) -> Result<chromium::ActivePort, String> {
         let _launching = self.launch.lock().await;
+        self.claim(user_data).await;
         let binary = chromium::browser_binary()?;
         chromium::ensure(&binary, user_data, None).await
     }
@@ -754,6 +805,7 @@ impl BrowserHost {
             None => paths.user_data,
         };
         let _launching = self.launch.lock().await;
+        self.claim(&dir).await;
         let binary = chromium::browser_binary()?;
         chromium::show(&binary, &dir).await
     }
@@ -884,6 +936,93 @@ impl BrowserHost {
             }
         }
         gone
+    }
+
+    /// Reap the browsers THIS client owns: every profile it claimed, closed
+    /// for real. The app's exit door - a host must not outlive its client.
+    ///
+    /// **Only what it owns**: a directory whose claim is another live
+    /// client's is not in the map, so this client's exit never closes a
+    /// browser that client is still driving. Run on `RunEvent::Exit`, which
+    /// covers a quit and `exit()`; the update restart's main-thread path
+    /// skips that event by design (tauri 2.12), and a crash or a SIGKILL
+    /// runs no handler at all - [`BrowserHost::reap_orphans`] is the cover
+    /// for those.
+    #[cfg(desktop)]
+    pub async fn reap_owned(&self) -> Vec<String> {
+        let dirs: Vec<PathBuf> = self.owned.lock().await.keys().cloned().collect();
+        let mut reaped = Vec::new();
+        for dir in dirs {
+            chromium::close(&dir).await;
+            if let Some(name) = dir.file_name().and_then(std::ffi::OsStr::to_str) {
+                reaped.push(name.to_owned());
+            }
+        }
+        if !reaped.is_empty() {
+            tauri_plugin_log::log::info!(
+                "reaped this client's browser hosts on exit (event_name \
+                 browser_hosts_reaped_on_exit, profiles {reaped:?})"
+            );
+        }
+        reaped
+    }
+
+    /// Reap the browsers in this client's own browser root whose owning
+    /// client is gone: every profile directory whose port answers while no
+    /// client holds its claim.
+    ///
+    /// **The boot door, and the only cover for a client that never ran its
+    /// exit** - a crash, a SIGKILL, the update restart's main-thread path.
+    /// Runs after [`BrowserHost::start`] has claimed the shared profile, so
+    /// this client's own launch is never read as an orphan. Scoped to this
+    /// app's own root: another app's browsers (a scratch rig's, the person's
+    /// own) are never touched.
+    #[cfg(desktop)]
+    pub async fn reap_orphans(&self) -> Vec<String> {
+        let Ok(paths) = self.paths.clone() else { return Vec::new() };
+        let mut dirs = vec![paths.user_data.clone()];
+        if let Ok(entries) = std::fs::read_dir(&paths.profiles) {
+            for entry in entries.flatten() {
+                if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                    dirs.push(entry.path());
+                }
+            }
+        }
+        let mut reaped = Vec::new();
+        for dir in dirs {
+            if self.owned.lock().await.contains_key(&dir) {
+                continue;
+            }
+            if chromium::verified(&dir).await.is_none() {
+                continue;
+            }
+            match chromium::claim(&dir) {
+                // The claim was free and a browser is up: the client that
+                // owned it is gone, and this is what it left.
+                Ok(Some(lock)) => {
+                    chromium::close(&dir).await;
+                    drop(lock);
+                    if let Some(name) = dir.file_name().and_then(std::ffi::OsStr::to_str) {
+                        reaped.push(name.to_owned());
+                    }
+                }
+                Ok(None) => {}
+                Err(why) => {
+                    tauri_plugin_log::log::debug!(
+                        "a browser whose client may be gone could not be claimed by the sweep \
+                         (event_name browser_orphan_sweep_refused, profile {}): {why}",
+                        dir.display(),
+                    );
+                }
+            }
+        }
+        if !reaped.is_empty() {
+            tauri_plugin_log::log::info!(
+                "reaped browser hosts whose client is gone (event_name browser_orphans_reaped, \
+                 profiles {reaped:?})"
+            );
+        }
+        reaped
     }
 
     /// The seat's own profile, named after the seat, ensured on the seat's
