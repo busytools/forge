@@ -77,15 +77,35 @@ fn run() -> anyhow::Result<()> {
             Err(err) => return Err(anyhow::anyhow!("forge: {err}")),
         };
         let workspace = forge_server::boot::start_core(config_dir, cli.project.as_deref())?;
-        let _serving = forge_server::boot::serve_socket(&workspace).await?;
+        // A headless server with no view serves nothing if the socket could
+        // not bind: a supervisor watching the process would see a healthy
+        // zombie. The failure is fatal here; the terminal boots on, since
+        // its view comes up either way.
+        if matches!(
+            forge_server::boot::serve_socket(&workspace).await?,
+            forge_server::boot::SocketServing::BindFailed
+        ) {
+            return Err(anyhow::anyhow!(
+                "forge: the socket could not bind; a headless server with no view serves nothing \
+                 (see the server_socket_bind_failed record)"
+            ));
+        }
         // The boot spawn the terminal releases once its accounts settle:
         // here there is no screen to hold it back, so it goes out as a
         // task.
         forge_server::boot::start_boot_wave(Arc::clone(&workspace), cli.project.clone(), cli.new);
 
-        // Park until interrupted; Ctrl-C is the shutdown signal. The
+        // Park until interrupted. Both signals a system sends a long-lived
+        // server - Ctrl-C (SIGINT) and SIGTERM - take the same path, so a
+        // supervisor stopping the process releases the single-instance lock
+        // and the store exactly as an interactive Ctrl-C does. The
         // subsystems own everything else.
-        let _ = tokio::signal::ctrl_c().await;
+        let mut sigterm =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = sigterm.recv() => {}
+        }
         workspace.shutdown();
         Ok(())
     })

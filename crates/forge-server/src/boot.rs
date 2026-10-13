@@ -133,15 +133,28 @@ pub fn start_core(config_dir: PathBuf, project: Option<&str>) -> anyhow::Result<
     Ok(workspace)
 }
 
+/// What [`serve_socket`] did.
+///
+/// Its own type rather than an `Option` so each caller decides what an
+/// unbound socket means to it: the terminal has a view either way and boots
+/// on, while a headless server with no view serves nothing and treats the
+/// failure as fatal.
+pub enum SocketServing {
+    /// `[server] enabled = false`: nothing serves, by configuration.
+    Disabled,
+    /// The socket is listening; the handle ends when the process does.
+    Bound(tokio::task::JoinHandle<()>),
+    /// The bind failed, its log line already written.
+    BindFailed,
+}
+
 /// Serve the socket on the address `[server]` names, spawning the serve
 /// task and returning its handle when one is serving.
 ///
-/// A bind that fails still boots: this is not on the boot path, and the
-/// failure is logged here rather than returned so the caller's boot
-/// cannot die of it.
-pub async fn serve_socket(
-    workspace: &Arc<Workspace>,
-) -> anyhow::Result<Option<tokio::task::JoinHandle<()>>> {
+/// A bind that fails never fails the boot here: this is not on the boot
+/// path, and the failure is logged plus reported as
+/// [`SocketServing::BindFailed`] so the caller's boot cannot die of it.
+pub async fn serve_socket(workspace: &Arc<Workspace>) -> anyhow::Result<SocketServing> {
     let server = workspace.server_config();
     if !server.enabled {
         tracing::debug!(
@@ -149,7 +162,7 @@ pub async fn serve_socket(
             event_name = "server_socket_disabled",
             "[server] enabled = false; nothing is serving this run",
         );
-        return Ok(None);
+        return Ok(SocketServing::Disabled);
     }
     let addr = std::net::SocketAddr::new(server.bind, server.port);
     // Built from the workspace so every piece the socket needs is
@@ -178,7 +191,7 @@ pub async fn serve_socket(
                     );
                 }
             });
-            Ok(Some(handle))
+            Ok(SocketServing::Bound(handle))
         }
         Err(error) => {
             tracing::error!(
@@ -187,10 +200,20 @@ pub async fn serve_socket(
                 error = %error,
                 "the socket is not serving",
             );
-            Ok(None)
+            Ok(SocketServing::BindFailed)
         }
     }
 }
+
+/// How long the boot wave holds for the accounts and the listener before it
+/// fires anyway.
+///
+/// The terminal holds for as long as the reader is on its preflight screen,
+/// which is a signal a headless process does not have. A listener that never
+/// binds - a port someone else holds is the case - would otherwise make
+/// `all_accounts_loaded` false forever and turn the wave into a spawn that
+/// never fires, silently.
+const BOOT_WAVE_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// The boot spawn, for a process with no view: hold until the accounts
 /// settle, then dispatch the wave the terminal's connect path dispatches -
@@ -202,12 +225,31 @@ pub async fn serve_socket(
 /// it, so holding would wait on nothing. The terminal's own gate reads the
 /// same predicate (`accounts().all_loaded`).
 ///
+/// **The hold is bounded** (`BOOT_WAVE_WAIT`). On expiry the wave goes
+/// out regardless and a WARN names what was not ready: a refused spawn
+/// carries its own reason (the spawn entries attach it), which beats a wave
+/// that never fires and says nothing.
+///
 /// Spawned rather than awaited: the boot must not block on accounts, and
 /// nothing downstream reads the result.
 pub fn start_boot_wave(workspace: Arc<Workspace>, project: Option<String>, force_new: bool) {
     tokio::spawn(async move {
-        while !workspace.all_accounts_loaded() {
+        let deadline = tokio::time::Instant::now() + BOOT_WAVE_WAIT;
+        while !workspace.all_accounts_loaded() && tokio::time::Instant::now() < deadline {
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
+        if !workspace.all_accounts_loaded() {
+            let accounts_settled =
+                crate::surface::ViewSurface::new(Arc::clone(&workspace)).accounts().all_loaded;
+            tracing::warn!(
+                target: crate::logging::targets::APP_LIFECYCLE,
+                event_name = "boot_wave_wait_expired",
+                accounts_settled,
+                gateway_ready = workspace.gateway_ready(),
+                gateway_bind_error = workspace.gateway_bind_error().as_deref().unwrap_or(""),
+                "the boot spawn is going out with the accounts or the gateway listener not ready; \
+                 a refused spawn carries its own reason",
+            );
         }
         // Boot wave only: --new makes the boot leads start fresh instead
         // of resuming (and cascades to their workers), the terminal's own

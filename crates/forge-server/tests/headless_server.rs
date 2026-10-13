@@ -85,11 +85,30 @@ fn server_command(home: &std::path::Path, config: &std::path::Path) -> tokio::pr
     let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_forge-server"));
     command
         .env("HOME", home)
+        // The data dir too: on a Linux runner with XDG_DATA_HOME exported,
+        // the store and the single-instance lock would resolve outside the
+        // scratch tree and onto a live path.
+        .env("XDG_DATA_HOME", home.join(".local").join("share"))
         .env("CLAUDE_CONFIG_DIR", config)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        // A panicking assertion must not leak a detached server against a
+        // deleted tempdir.
+        .kill_on_drop(true);
     command
+}
+
+/// Send SIGTERM the way a system does, without linking a signal crate:
+/// `/bin/kill` is the instrument.
+async fn terminate(pid: u32) {
+    let status = tokio::process::Command::new("kill")
+        .arg("-TERM")
+        .arg(pid.to_string())
+        .status()
+        .await
+        .expect("kill runs");
+    assert!(status.success(), "kill -TERM {pid} lands: {status}");
 }
 
 /// Wait until the server answers on `port`, or fail with its stderr.
@@ -153,9 +172,10 @@ async fn walk(script: &str, url: &str) -> Vec<Value> {
 }
 
 /// The boot stands alone: the binary binds the socket, greets a client and
-/// answers the home read - with no terminal anywhere in the process.
+/// answers the home read - with no terminal anywhere in the process - and
+/// the stop a system sends releases what the boot took.
 #[tokio::test]
-async fn headless_boot_serves_the_home_over_the_socket() {
+async fn headless_boot_serves_the_home_and_stops_clean() {
     let dir = tempfile::tempdir().expect("tempdir");
     let (port, gateway) = two_free_ports();
     let (home, config) = write_fixture(dir.path(), port, gateway);
@@ -178,14 +198,26 @@ async fn headless_boot_serves_the_home_over_the_socket() {
         .iter()
         .find(|message| message["kind"] == "snapshot" && message["subject"] == "home")
         .expect("the home subscription is answered");
+    let projects =
+        home_snapshot["data"]["projects"].as_array().expect("projects crosses as a list");
     assert!(
-        home_snapshot["data"]["projects"].as_array().is_some(),
-        "with the roster the fixture declares: {home_snapshot}",
+        projects.iter().any(|row| row["project"]["name"] == "forge"),
+        "with the project the fixture declares, not an empty roster: {home_snapshot}",
     );
 
-    drop(server.kill().await);
+    // SIGTERM takes the same path Ctrl-C does: shutdown, then a clean exit.
+    // The lock's release is the property a long-lived headless run leans on,
+    // so it is asserted rather than assumed - by the next boot taking it.
+    let holder = server.id().expect("the server has a pid while it runs");
+    terminate(holder).await;
     let status = server.wait().await.expect("the server is reaped");
-    assert!(!status.success(), "a killed server does not report success");
+    assert!(status.success(), "the signal path exits clean: {status}");
+
+    let mut again = server_command(&home, &config).spawn().expect("the server boots again");
+    wait_for_port(port, &mut again).await;
+    terminate(again.id().expect("the restarted server has a pid")).await;
+    let status = again.wait().await.expect("the restarted server is reaped");
+    assert!(status.success(), "and stops clean in turn: {status}");
 }
 
 /// One forge per config dir, headless included: the second boot is refused
@@ -212,8 +244,16 @@ async fn a_second_instance_is_refused_with_the_holders_pid() {
         "and names the holder (PID {holder}): {refusal}",
     );
 
+    // SIGKILL frees the lock too: the flock lives with the process, so the
+    // next boot takes it rather than being refused.
     drop(first.kill().await);
     let _ = first.wait().await.expect("the first server is reaped");
+
+    let mut third = server_command(&home, &config).spawn().expect("a third boot runs");
+    wait_for_port(port, &mut third).await;
+    terminate(third.id().expect("the third server has a pid")).await;
+    let status = third.wait().await.expect("the third server is reaped");
+    assert!(status.success(), "and it stops clean: {status}");
 }
 
 /// The hidden completion flag survives the move: `scripts/install.sh` calls
@@ -232,5 +272,9 @@ async fn generate_completion_survives_on_the_server_binary() {
         String::from_utf8_lossy(&output.stderr),
     );
     let script = String::from_utf8_lossy(&output.stdout);
-    assert!(script.contains("#compdef forge"), "a zsh completion for the installed name: {script}");
+    assert_eq!(
+        script.lines().next(),
+        Some("#compdef forge"),
+        "the script's first line names the command exactly, `forgex` included: {script}",
+    );
 }
