@@ -173,7 +173,7 @@ impl Tool for Create {
                 "parent": {
                     "type": "string",
                     "description": "The id of the task this one belongs under, in the same \
-                                    project.",
+                                    project; a full id or any unique prefix of one.",
                 },
                 "estimate": {
                     "type": "string",
@@ -252,9 +252,10 @@ impl Tool for Update {
          failed / canceled), and `owner` takes a session label (\"lead\" for the lead) or the \
          label of a worker. Any session in the project may move any of its tasks, so a lead can \
          complete a worker's task and a worker can put a row it holds into waiting. A task is \
-         named by its full id or any unique prefix of one; a prefix matching more than one row is \
-         refused with the matching rows named. An unknown id is an error, not a no-op. Returns \
-         the task as the write left it."
+         named by its full id or any unique prefix of one; an exact id wins over any longer id \
+         that starts with it, and a prefix matching more than one row is refused with the \
+         matching rows named. An unknown id is an error, not a no-op. Returns the task as the \
+         write left it."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -282,7 +283,8 @@ impl Tool for Update {
                 },
                 "parent": {
                     "type": "string",
-                    "description": "The id of the task this one now belongs under.",
+                    "description": "The id of the task this one now belongs under, or any \
+                                    unique prefix of one.",
                 },
                 "rank": { "type": "integer", "description": "New queue order; lower reads first." },
                 "verify": {
@@ -441,7 +443,8 @@ impl Tool for List {
                 },
                 "parent": {
                     "type": "string",
-                    "description": "Only the tasks under this task id.",
+                    "description": "Only the tasks under this task id, or any unique prefix \
+                                    of one.",
                 },
                 "status": {
                     "type": "string",
@@ -499,9 +502,10 @@ impl Tool for Delete {
         "Remove a task in YOUR project by id together with its children in the same call, so a \
          parent never leaves subtasks pointing at a task that is gone. Use this to clear work \
          that is over; nothing is archived. The task is named by its full id or any unique \
-         prefix of one; a prefix matching more than one row is refused with the matching rows \
-         named. An unknown id is an error, not a no-op. Returns the removed task and how many \
-         descendants went with it. Any session in the project may call this."
+         prefix of one; an exact id wins over any longer id that starts with it, and a prefix \
+         matching more than one row is refused with the matching rows named. An unknown id is an \
+         error, not a no-op. Returns the removed task and how many descendants went with it. Any \
+         session in the project may call this."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -562,10 +566,11 @@ impl Tool for Claim {
         "Claim a task in YOUR project: one atomic write that makes you its owner and marks it \
          in progress, ticking the attempt. Pass `id` for a named row, or `epic` to pull the top \
          ready row of that epic by rank - exactly one of the two. `id` and `epic` each take a \
-         full task id or any unique prefix of one; a prefix matching more than one row is \
-         refused with the matching rows named. Refused when a live seat holds the row (named), \
-         when it is not pending, or when you already have a row in progress: one in progress \
-         per worker. Returns the claimed record."
+         full task id or any unique prefix of one; an exact id wins over any longer id that \
+         starts with it, and a prefix matching more than one row is refused with the matching \
+         rows named. Refused when a live seat holds the row (named), when it is not pending, or \
+         when you already have a row in progress: one in progress per worker. Returns the \
+         claimed record."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -632,10 +637,10 @@ impl Tool for Wait {
          (an account, a CI run, a machine). Route a decision to the user only when the user \
          explicitly asked for a hold, or something is still genuinely ambiguous after the \
          decision model, peer opinions and the team's own review. `detail` is the words. The row \
-         and the `on` blocker are each named by a full id or any unique prefix of one; a prefix \
-         matching more than one row is refused with the matching rows named. The row must be \
-         yours. Refused for a row you do not hold, or one that is not there. Returns the record \
-         in waiting."
+         and the `on` blocker are each named by a full id or any unique prefix of one; an exact \
+         id wins over any longer id that starts with it, and a prefix matching more than one row \
+         is refused with the matching rows named. The row must be yours. Refused for a row you \
+         do not hold, or one that is not there. Returns the record in waiting."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -1084,26 +1089,50 @@ mod tests {
         let update = Update { facade: facade.clone(), slot: slot.clone() };
         let wait = Wait { facade: facade.clone(), slot: slot.clone() };
         let delete = Delete { facade: facade.clone(), slot: slot.clone() };
-        for (name, description, schema) in [
-            ("tasks__claim", claim.description(), claim.input_schema()),
-            ("tasks__update", update.description(), update.input_schema()),
-            ("tasks__wait", wait.description(), wait.input_schema()),
-            ("tasks__delete", delete.description(), delete.input_schema()),
+        let create = Create { facade: facade.clone(), slot: slot.clone() };
+        let list = List { facade: facade.clone(), slot: slot.clone() };
+        for (name, description, schema, also_named) in [
+            ("tasks__claim", claim.description(), claim.input_schema(), &["epic"] as &[&str]),
+            ("tasks__update", update.description(), update.input_schema(), &[]),
+            ("tasks__wait", wait.description(), wait.input_schema(), &["on"]),
+            ("tasks__delete", delete.description(), delete.input_schema(), &[]),
         ] {
-            assert!(
-                description.contains("unique prefix of one"),
-                "{name} does not say how a stated id resolves: {description}",
-            );
-            assert!(
-                description.contains("refused with the matching rows named"),
-                "{name} does not say what an ambiguous prefix answers: {description}",
-            );
-            let property = schema["properties"]["id"]["description"]
+            for clause in [
+                "unique prefix of one",
+                // An exact id is a name, not a prefix of a longer one, and
+                // no other site says so.
+                "an exact id wins over any longer id that starts with it",
+                "refused with the matching rows named",
+            ] {
+                assert!(
+                    description.contains(clause),
+                    "{name} does not state the rule ({clause}): {description}",
+                );
+            }
+            for property_name in ["id"].into_iter().chain(also_named.iter().copied()) {
+                let property =
+                    schema["properties"][property_name]["description"].as_str().unwrap_or_else(
+                        || panic!("{name} carries no {property_name} property description"),
+                    );
+                assert!(
+                    property.contains("unique prefix"),
+                    "{name}'s {property_name} property does not carry the rule: {property}",
+                );
+            }
+        }
+        // `parent` is an id a caller states too: the two writes store the
+        // row it names, and the list narrows by it.
+        for (name, schema) in [
+            ("tasks__create", create.input_schema()),
+            ("tasks__update", update.input_schema()),
+            ("tasks__list", list.input_schema()),
+        ] {
+            let property = schema["properties"]["parent"]["description"]
                 .as_str()
-                .unwrap_or_else(|| panic!("{name} carries no id property description"));
+                .unwrap_or_else(|| panic!("{name} carries no parent property description"));
             assert!(
                 property.contains("unique prefix"),
-                "{name}'s id property does not carry the rule: {property}",
+                "{name}'s parent property does not carry the rule: {property}",
             );
         }
     }
