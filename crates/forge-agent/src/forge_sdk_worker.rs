@@ -114,6 +114,17 @@ line for each command and falls back to the raw command when it is \
 missing, so omitting it turns a readable list of intent into a wall of \
 shell.\n\
 \n\
+Never kill by pattern - kill by PID, or by port. `pkill -f`, `killall` \
+and `pgrep`-then-kill match the full command line, and a forge session \
+carries its entire prompt in the `claude --append-system-prompt` argv, \
+so a pattern you pick may be sitting in another session's prompt. A \
+worker cleaning up its own browser ran `pkill -f \
+\"chrome-headless-shell\"` and killed two other workers mid-task. For a \
+server you started, `lsof -t -iTCP:<port> | xargs kill`; otherwise kill \
+the PID you hold. If you must match a name, make it one only your own \
+processes can carry - a scratch script named a minute ago, never a \
+binary, a path or a flag.\n\
+\n\
 If you were spawned by a lead, route through the lead. The user reads \
 the lead's chat, not yours - your session is reachable, but nobody is \
 watching it - so do not address the user, do not park waiting for the \
@@ -3247,6 +3258,37 @@ mod tests {
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
                 .contains("with no client connected a call fails by name"),
             "the no-client failure is pinned",
+        );
+    }
+
+    /// The kill rule reaches every session, and its hazard is forge's own
+    /// shape: the whole prompt rides in the argv, so a pattern kill aimed
+    /// at one's own process can take a colleague's session with it. Pinned
+    /// with its reason and its remedies, because the rule runs against
+    /// ordinary habit and softens into "prefer the PID" without them.
+    #[test]
+    fn the_conduct_block_carries_the_kill_by_pid_rule() {
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("Never kill by pattern - kill by PID, or by port"),
+            "the rule's handle is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("carries its entire prompt in the `claude --append-system-prompt` argv"),
+            "the reason the hazard exists is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains("`lsof -t -iTCP:<port> | xargs kill`"),
+            "the port remedy is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains("otherwise kill the PID you hold"),
+            "the PID remedy is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains("killed two other workers mid-task"),
+            "the measured case is pinned",
         );
     }
 
