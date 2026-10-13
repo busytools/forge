@@ -1,12 +1,14 @@
 //! The Chromium the browser host drives: where it lives, how it is launched,
 //! and how a launch is found again after the client restarts.
 //!
-//! **The browser outlives the client.** It is launched detached, against a
-//! profile under the client's app-support directory, so a login survives both
-//! a client restart and a forge restart - and a relaunch is not needed to get
-//! back to the page that was open. The `DevToolsActivePort` file Chromium
-//! writes into the profile is what makes that work: the port a launch really
-//! bound, and the browser target's own path, are in it.
+//! **The browser outlives the LAUNCH, never the client.** It is spawned
+//! detached, against a profile under the client's app-support directory, so a
+//! login survives both a client restart and a forge restart - the profile
+//! keeps the logins, and a relaunch opens on the page the last raise carried -
+//! while the process itself is claimed by the client that launched it (see
+//! [`claim`]) and dies with it. The `DevToolsActivePort` file Chromium writes
+//! into the profile is what makes a relaunch findable: the port a launch
+//! really bound, and the browser target's own path, are in it.
 //!
 //! **The port is the browser's own choice, read back from that file, and
 //! this is measured rather than assumed.** Measured on Chrome for Testing
@@ -233,6 +235,60 @@ impl LaunchLock {
     }
 }
 
+/// The client's own claim on a profile's browser: an exclusive flock on
+/// `<profile>/client.lock`, held for the claiming client's process lifetime.
+///
+/// **The lock IS the liveness truth.** A recorded pid cannot be: a recycled
+/// pid reads as a live owner, and one that died between two reads says
+/// nothing a reader can trust. A process death of any kind releases the
+/// flock, so a sweep's non-blocking take answering "free" is the one
+/// trustworthy reading of "the client that owned this browser is gone". The
+/// owning pid still rides the file as text, for a reader's log line.
+#[cfg(desktop)]
+pub struct ClientLock {
+    _file: std::fs::File,
+}
+
+/// The client's claim on `profile`, or `None` when another live client holds
+/// it. Makes the directory the lock lives in, so a claim can be the first
+/// thing to touch a fresh profile.
+///
+/// The same idiom and reasoning as [`LaunchLock`]: a crash releases the flock
+/// with the process, so there is no stale-lock cleanup.
+#[cfg(desktop)]
+pub fn claim(profile: &Path) -> Result<Option<ClientLock>, String> {
+    std::fs::create_dir_all(profile)
+        .map_err(|why| format!("the browser profile directory cannot be made: {why}"))?;
+    let path = client_lock_path(profile);
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&path)
+        .map_err(|why| format!("the client lock at {} cannot be opened: {why}", path.display()))?;
+    match rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
+        Ok(()) => {
+            // The pid is written for a reader, never for a decision: the
+            // flock above is what the sweep trusts.
+            use std::io::Write as _;
+            let _ = file.set_len(0);
+            let _ = (&file).write_all(std::process::id().to_string().as_bytes());
+            Ok(Some(ClientLock { _file: file }))
+        }
+        Err(why) if why == rustix::io::Errno::WOULDBLOCK || why == rustix::io::Errno::AGAIN => {
+            Ok(None)
+        }
+        Err(why) => Err(format!("the client lock at {} cannot be taken: {why}", path.display())),
+    }
+}
+
+/// The file the client's claim lives on, beside the launch lock.
+#[cfg(desktop)]
+fn client_lock_path(profile: &Path) -> PathBuf {
+    profile.join("client.lock")
+}
+
 /// One launch, as `DevToolsActivePort` records it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActivePort {
@@ -244,7 +300,7 @@ pub struct ActivePort {
     /// A browser this process launched can be reaped by pid, which is what a
     /// run that ends without finishing - a failed test, a cancelled one -
     /// needs: `None` for one found rather than launched, which is nobody's
-    /// child here and is meant to outlive the client.
+    /// child here and is left to its own client's claim.
     pub pid: Option<u32>,
 }
 
@@ -582,7 +638,7 @@ async fn move_out_of_sight(active: &ActivePort) -> Result<(), String> {
 /// launch: the probe's own `/devtools/browser/<uuid>` compared against the
 /// port file's. A port another program took over answers without that path,
 /// which is what keeps a port file from being taken for a live browser.
-async fn verified(profile: &Path) -> Option<ActivePort> {
+pub(super) async fn verified(profile: &Path) -> Option<ActivePort> {
     let active = read_active_port(profile)?;
     answers_as(profile, active.port).await.then_some(active)
 }
@@ -1174,6 +1230,50 @@ mod tests {
         );
         drop(first);
         assert!(matches!(try_lock(dir.path()), Locked::Held(_)), "and free once the first drops",);
+    }
+
+    /// **The client's claim is the sweep's liveness truth.** A free lock
+    /// reads as "no client owns this browser"; a held one as "a live client
+    /// does" - and the hold is exclusive across open file descriptions, which
+    /// is what makes the sweep (another process, or another task of this one)
+    /// read a live client's claim rather than its own. The owning pid rides
+    /// the file as text for a reader's log line, never as the authority: a
+    /// pid can be recycled, and the flock cannot.
+    #[cfg(desktop)]
+    #[test]
+    fn the_client_claim_is_exclusive_and_carries_the_pid_as_text() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let first = claim(dir.path())
+            .expect("a free profile claims")
+            .expect("nothing holds a free profile");
+        assert_eq!(
+            std::fs::read_to_string(client_lock_path(dir.path())).expect("the pid text"),
+            std::process::id().to_string(),
+            "the owning pid is written down for a reader's log line",
+        );
+        assert!(
+            claim(dir.path()).expect("a second take answers").is_none(),
+            "a second claim on a held profile is contended, not taken",
+        );
+        drop(first);
+        assert!(
+            claim(dir.path()).expect("a claim after the holder went").is_some(),
+            "the claim frees the moment its holder dies, which is the sweep's signal",
+        );
+    }
+
+    /// A claim makes the directory it lives in: the first reach for a fresh
+    /// profile claims before anything else touches the tree.
+    #[cfg(desktop)]
+    #[test]
+    fn a_claim_makes_the_directory_it_lives_in() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let fresh = dir.path().join("profiles").join("hunt");
+        let lock = claim(&fresh)
+            .expect("a fresh directory claims")
+            .expect("nothing holds a fresh directory");
+        assert!(fresh.join("client.lock").is_file(), "the claim's file is there");
+        drop(lock);
     }
 
     /// **The wait path, with the clock under the test's hand**: a contended

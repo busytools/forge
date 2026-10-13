@@ -83,9 +83,12 @@ does not, because it copies no resources.
 `src-tauri/src/browser/` is the host, and four things in it are worth
 knowing before changing them:
 
-- **The browser outlives the client**, so it is launched detached against a
-  profile under the app's data directory, and a launch is found again by the
-  `DevToolsActivePort` file Chromium writes into that profile. Measured on
+- **The browser is launched detached, and it dies with the client that
+  launched it**: the client claims each profile it launches or adopts, reaps
+  its browsers on exit, and sweeps at boot for the ones a dead client left.
+  The profile under the app's data directory is what survives a restart, and
+  a launch is found again by the `DevToolsActivePort` file Chromium writes
+  into that profile. Measured on
   Chrome for Testing 155 and true of the Brave and Chrome builds this runs
   against: the file appears only when the launch asks for
   `--remote-debugging-port=0` - handed a number the browser writes none - so
