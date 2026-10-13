@@ -16,6 +16,7 @@ use forge_primitives::tasks::{
 
 use crate::SessionSlot;
 use crate::mcp::caller_context::caller_context;
+use crate::tasks::IdError;
 use crate::workspace::Workspace;
 
 /// Why a `tasks__*` call failed.
@@ -171,6 +172,22 @@ impl TaskPatch {
     }
 }
 
+/// The parent a write stores: the row a stated id names when it lands on
+/// one, the words as stated when it names nothing (a child may point at a
+/// row that is gone), and a refusal naming the rows when it names several.
+fn resolve_parent(
+    ws: &Workspace,
+    project_name: &str,
+    stated: Option<&str>,
+) -> Result<Option<TaskId>, TasksError> {
+    let Some(stated) = stated else { return Ok(None) };
+    match ws.resolve_task_id(project_name, &TaskId::from(stated)) {
+        Ok(id) => Ok(Some(id)),
+        Err(IdError::NotFound) => Ok(Some(TaskId::from(stated))),
+        Err(error @ IdError::Ambiguous(_)) => Err(TasksError::Refused(error.to_string())),
+    }
+}
+
 /// The list's narrowing, one definition for the real path and the mock:
 /// `owner` by label, `parent` by id, `status` by state, `ready` by the
 /// board's own mark.
@@ -282,7 +299,7 @@ impl TasksFacade for ProdTasksFacade {
             owner: draft
                 .owner
                 .map(|label| SessionSlot::new(&cx.project_org, &cx.project_name, label)),
-            parent: draft.parent.as_deref().map(TaskId::from),
+            parent: resolve_parent(&ws, &cx.project_name, draft.parent.as_deref())?,
             waiting_on: None,
             estimate,
             rank: draft.rank,
@@ -309,7 +326,13 @@ impl TasksFacade for ProdTasksFacade {
         let Some(cx) = caller_context(&ws, caller) else { return Vec::new() };
         let rows =
             ws.board_rows(&cx.project_name, SystemTime::now(), crate::board::DEFAULT_STALE_SECS);
-        narrow_rows(rows, owner, parent, status, ready)
+        // The filter names a row the same way an id does. An id naming
+        // nothing, or several, keeps the literal comparison - the empty
+        // answer a filter gives a name that is not there.
+        let parent = parent.map(|stated| {
+            ws.resolve_task_id(&cx.project_name, stated).unwrap_or_else(|_| stated.clone())
+        });
+        narrow_rows(rows, owner, parent.as_ref(), status, ready)
     }
 
     fn update_task(
@@ -326,11 +349,15 @@ impl TasksFacade for ProdTasksFacade {
             ),
             None => None,
         };
+        let mut patch = patch;
+        if let Some(parent) = resolve_parent(&ws, &cx.project_name, patch.parent.as_deref())? {
+            patch.parent = Some(parent.as_str().to_owned());
+        }
         let at = SystemTime::now();
         ws.update_task(&cx.project_name, id, By::Seat(caller.clone()), |task| {
             patch.apply(task, &cx.project_org, &cx.project_name, estimate, at);
         })
-        .map_err(|refused| TasksError::Refused(format!("{refused:?}")))
+        .map_err(|refused| TasksError::Refused(refused.to_string()))
     }
 
     fn delete_task(
@@ -340,14 +367,18 @@ impl TasksFacade for ProdTasksFacade {
     ) -> Result<Option<RemovedTaskTree>, TasksError> {
         let ws = self.workspace.upgrade().ok_or(TasksError::UnknownCallerProject)?;
         let cx = caller_context(&ws, caller).ok_or(TasksError::UnknownCallerProject)?;
-        // The named task itself has to be there. The cascade also collects
-        // orphans pointing at the id, so "something was removed" would be
-        // true for an id that never existed.
-        if !ws.tasks_for_project(&cx.project_name).iter().any(|t| t.id == *id) {
-            return Ok(None);
-        }
-        let removed = ws.remove_task_tree(&cx.project_name, id);
-        let Some(task) = removed.iter().find(|t| t.id == *id).cloned() else {
+        // The stated id resolves before anything is removed: the cascade
+        // also collects orphans pointing at the id, so "something was
+        // removed" would be true for an id that never existed.
+        let id = match ws.resolve_task_id(&cx.project_name, id) {
+            Ok(id) => id,
+            Err(IdError::NotFound) => return Ok(None),
+            Err(error @ IdError::Ambiguous(_)) => {
+                return Err(TasksError::Refused(error.to_string()));
+            }
+        };
+        let removed = ws.remove_task_tree(&cx.project_name, &id);
+        let Some(task) = removed.iter().find(|t| t.id == id).cloned() else {
             return Ok(None);
         };
         Ok(Some(RemovedTaskTree { task, descendants_removed: removed.len() - 1 }))
@@ -467,6 +498,9 @@ impl TasksFacade for MockTasksFacade {
                 .owner
                 .clone()
                 .map(|label| SessionSlot::new(caller.org(), caller.project(), label)),
+            // The mock keeps the parent as stated; resolving it to the row
+            // it names is the prod facade's step, so a tool-level test must
+            // read a prefix here as unresolved.
             parent: draft.parent.as_deref().map(TaskId::from),
             waiting_on: None,
             estimate: draft.estimate.as_deref().and_then(Estimate::parse),
@@ -762,6 +796,112 @@ mod prod_facade_tests {
             1,
             "only the sibling survives"
         );
+    }
+
+    /// Delete resolves the stated id the way the other verbs do: a unique
+    /// prefix lands on its row, and a prefix two rows share refuses with
+    /// both named rather than removing nothing under a "no such row".
+    #[test]
+    fn delete_resolves_a_stated_id_by_exact_or_unique_prefix() {
+        let (ws, facade, lead, _worker) = fixture();
+        ws.seed_test_task(seeded_task("7ed0aaaa-0000-4000-8000-000000000001", "fix the rail"));
+        ws.seed_test_task(seeded_task("7ed0bbbb-0000-4000-8000-000000000002", "add tests"));
+
+        let said = match facade.delete_task(&lead, &TaskId::from("7ed0")) {
+            Err(TasksError::Refused(said)) => said,
+            other => panic!("a refusal naming the rows it matched, got {other:?}"),
+        };
+        assert!(
+            said.contains("7ed0aaaa-0000-4000-8000-000000000001")
+                && said.contains("7ed0bbbb-0000-4000-8000-000000000002"),
+            "the refusal names both rows it matched: {said}",
+        );
+
+        let removed = facade
+            .delete_task(&lead, &TaskId::from("7ed0bb"))
+            .expect("one row carries that prefix")
+            .expect("the row is there to remove");
+        assert_eq!(removed.task.id, TaskId::from("7ed0bbbb-0000-4000-8000-000000000002"));
+        assert_eq!(removed.task.subject, "add tests", "the prefix removed its own row");
+        assert_eq!(
+            facade.list_tasks(&lead, None, None, None, None).len(),
+            1,
+            "and left the other row alone",
+        );
+    }
+
+    /// A parent is an id too, and the store holds the row it names: a
+    /// child created - or re-parented - under a short form is the epic's
+    /// child for every literal comparison the board makes, the claim by
+    /// epic included.
+    #[test]
+    fn a_stated_parent_is_stored_as_the_row_it_names() {
+        let (ws, facade, lead, worker) = fixture();
+        let epic = "7ed0aaaa-0000-4000-8000-000000000001";
+        ws.seed_test_task(seeded_task(epic, "the epic"));
+
+        let child =
+            facade.create_task(&lead, draft("the child", None, Some("7ed0aaaa"))).expect("create");
+        assert_eq!(
+            child.parent,
+            Some(TaskId::from(epic)),
+            "the store holds the row the stated prefix named",
+        );
+
+        let claimed = facade
+            .claim_task(&worker, None, Some("7ed0aaaa"))
+            .expect("the epic's own prefix pulls the child it now holds");
+        assert_eq!(claimed.id, child.id);
+
+        let moved = facade
+            .update_task(
+                &lead,
+                &child.id,
+                TaskPatch { parent: Some("7ed0aaaa".to_owned()), ..TaskPatch::default() },
+            )
+            .expect("update")
+            .expect("the child is there");
+        assert_eq!(moved.parent, Some(TaskId::from(epic)), "the patch resolves it the same way");
+    }
+
+    /// The other half of the rule: a parent naming nothing stays as
+    /// stated - a child may point at a row that is gone - and one naming
+    /// several rows refuses with the rows named.
+    #[test]
+    fn a_parent_naming_nothing_stays_and_naming_several_refuses() {
+        let (ws, facade, lead, _worker) = fixture();
+        ws.seed_test_task(seeded_task("7ed0aaaa-0000-4000-8000-000000000001", "fix the rail"));
+        ws.seed_test_task(seeded_task("7ed0bbbb-0000-4000-8000-000000000002", "add tests"));
+
+        let orphan = facade
+            .create_task(&lead, draft("orphan", None, Some("ghost")))
+            .expect("a parent naming nothing is stored as stated");
+        assert_eq!(orphan.parent, Some(TaskId::from("ghost")));
+
+        let said = match facade.create_task(&lead, draft("ambiguous", None, Some("7ed0"))) {
+            Err(TasksError::Refused(said)) => said,
+            other => panic!("a parent naming several rows refuses, got {other:?}"),
+        };
+        assert!(
+            said.contains("7ed0aaaa-0000-4000-8000-000000000001")
+                && said.contains("7ed0bbbb-0000-4000-8000-000000000002"),
+            "the refusal names both rows it matched: {said}",
+        );
+    }
+
+    /// The list's parent filter names a row the same way a write does, so
+    /// narrowing by the short form a caller holds finds the children.
+    #[test]
+    fn list_narrows_by_a_stated_parent_prefix() {
+        let (ws, facade, lead, _worker) = fixture();
+        let epic = "7ed0aaaa-0000-4000-8000-000000000001";
+        ws.seed_test_task(seeded_task(epic, "the epic"));
+        facade.create_task(&lead, draft("child", None, Some(epic))).expect("child");
+        facade.create_task(&lead, draft("sibling", None, None)).expect("sibling");
+
+        let kids = facade.list_tasks(&lead, None, Some(&TaskId::from("7ed0aaaa")), None, None);
+        assert_eq!(kids.len(), 1, "the prefix names the parent row: {kids:?}");
+        assert_eq!(kids[0].task.subject, "child");
     }
 
     /// An estimate that is not a duration is refused with its own words,
