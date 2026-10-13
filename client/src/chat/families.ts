@@ -74,9 +74,7 @@ export type KindRow =
   | { kind: 'forge'; family: ForgeFamily }
   | { kind: 'browser' }
   | { kind: 'mcp' }
-  | { kind: 'systemone' }
-  | { kind: 'inbound' }
-  | { kind: 'outbound' };
+  | { kind: 'systemone' };
 
 /**
  * Whether a call drives the sessions' browser.
@@ -223,9 +221,6 @@ export function iconOf(row: KindRow): string {
       return 'mcp';
     case 'systemone':
       return 'decide';
-    case 'inbound':
-    case 'outbound':
-      return 'in';
     case 'family':
       return FAMILY_GLYPH[row.family];
   }
