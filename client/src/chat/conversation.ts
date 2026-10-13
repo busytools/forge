@@ -578,10 +578,14 @@ const RETRY_MS = 2_000;
  *
  * `requestAnimationFrame` is the coalescer, not the guarantee: a scheduled
  * callback that never fires - whatever lost it, which is nothing this code
- * can know - would leave the column dead, new rows folded and never drawn,
- * until a read landed, because the flag clears only inside that callback.
- * A painting page clears the deadline long before it: a frame is 16ms at
- * 60Hz and this is a quarter second.
+ * can know - must not leave the column dead, new rows folded and never
+ * drawn. A painting page clears the deadline long before it: a frame is
+ * 16ms at 60Hz and this is a quarter second.
+ *
+ * **And the deadline is a STAMP, not only a timer, because a suspended page
+ * loses both callbacks together** (#2132): the armed-at time is kept, the
+ * next write past this flushes what the paint never did, and a return to the
+ * page flushes with no write at all (`wake`).
  */
 const PAINT_WATCHDOG_MS = 250;
 
@@ -614,6 +618,14 @@ export class Chat {
   private queued: number | null = null;
   /** The paint's own deadline, armed while `queued` is: see [`PAINT_WATCHDOG_MS`]. */
   private watchdog: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * When the waiting publish was armed, by the wall clock - `0` when none is.
+   *
+   * The timer is a promise from the page that a suspended page can break, so
+   * the wait keeps its own record: `soon` and `wake` read this rather than
+   * trusting either callback to come.
+   */
+  private armedAt = 0;
   private readonly inner = writable<Conversation>(NOTHING, () => {
     this.readers += 1;
     return () => {
@@ -788,7 +800,21 @@ export class Chat {
       clearTimeout(this.watchdog);
       this.watchdog = null;
     }
+    this.armedAt = 0;
     this.inner.set(this.held);
+  }
+
+  /**
+   * The page can paint again: draw what a suspended paint never did.
+   *
+   * **Recovery here must not depend on a new frame or a read**, which is
+   * what the armed callbacks failed to give - the window coming back is
+   * itself the moment. Only a pending publish is drawn: with none, the
+   * drawn record is already the held one, because every write either
+   * published or armed, and nothing else clears that.
+   */
+  private wake(): void {
+    if (this.queued !== null) this.flush();
   }
 
   /**
@@ -807,12 +833,20 @@ export class Chat {
       this.flush();
       return;
     }
-    if (this.queued !== null) return;
+    if (this.queued !== null) {
+      // **The deadline is the stamp, not the timer.** A suspended page can
+      // lose both callbacks, and the guard would then swallow this fold and
+      // every fold after it: a write this far past the arming flushes what
+      // the callbacks never did.
+      if (Date.now() - this.armedAt >= PAINT_WATCHDOG_MS) this.flush();
+      return;
+    }
     if (this.readers === 0) {
       this.flush();
       return;
     }
     this.queued = requestAnimationFrame(() => this.flush());
+    this.armedAt = Date.now();
     this.watchdog = setTimeout(() => this.flush(), PAINT_WATCHDOG_MS);
   }
 
@@ -962,10 +996,34 @@ export class Chat {
         text: line.text,
       });
     });
+    // **The page's own returns, which are the recovery no frame can give.** A
+    // suspended window loses the armed paint and can take its deadline with
+    // it, so the page becoming able to paint is itself the heal: visibility
+    // returning (a display coming back on), a bfcache restore, and the window
+    // regaining focus - the live case's shape, a switch to another app rather
+    // than a page that went hidden.
+    const wake = (): void => this.wake();
+    const visible = (): void => {
+      if (!document.hidden) wake();
+    };
+    // A node-env caller drives the store with no page at all
+    // (`chat/one-row-per-running-turn.test.ts`), so the page is asked for
+    // rather than assumed.
+    const hasPage = typeof document !== 'undefined' && typeof window !== 'undefined';
+    if (hasPage) {
+      document.addEventListener('visibilitychange', visible);
+      window.addEventListener('pageshow', wake);
+      window.addEventListener('focus', wake);
+    }
     this.running = () => {
       stopMessages();
       stopStatus();
       stopRefusals();
+      if (hasPage) {
+        document.removeEventListener('visibilitychange', visible);
+        window.removeEventListener('pageshow', wake);
+        window.removeEventListener('focus', wake);
+      }
       release();
       this.clearRetry();
       this.running = null;
