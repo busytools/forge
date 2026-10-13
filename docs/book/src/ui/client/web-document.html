@@ -310,7 +310,9 @@
         color: var(--muted);
         font-size: var(--fs-label);
       }
-      .strip .doc-words {
+      /* The words are the chat's own prose - the sheet's `.prose` rules
+         carry the marks; this carries the note's tone. */
+      .strip .doc-note .prose {
         color: var(--text);
       }
       .strip .doc-cc {
@@ -512,8 +514,8 @@ max_size_mib = 10</pre>
               </p>
             </div>
             <div class="doc-note">
-              <span class="doc-who">you</span
-              ><span class="doc-words">name which document this is</span>
+              <span class="doc-who">you</span>
+              <div class="prose"><p>name which document this is</p></div>
             </div>
             <div class="doc-block target">
               <p>
@@ -535,9 +537,9 @@ max_size_mib = 10</pre>
               </p>
             </div>
             <div class="doc-note">
-              <span class="doc-who">you</span
-              ><span class="doc-words">state the 10 MiB default here</span
-              ><span class="doc-cc">drafted</span>
+              <span class="doc-who">you</span>
+              <div class="prose"><p>state the 10 MiB default here</p></div>
+              <span class="doc-cc">drafted</span>
             </div>
           </div>
           <div class="doc-stale">
@@ -546,10 +548,8 @@ max_size_mib = 10</pre>
               <div class="doc-quote">
                 the block this was written beside, as it stood then
               </div>
-              <span class="doc-who">you</span
-              ><span class="doc-words"
-                >the address belongs in this paragraph</span
-              >
+              <span class="doc-who">you</span>
+              <div class="prose"><p>the address belongs in this paragraph</p></div>
             </div>
           </div>
           <div class="doc-finish">

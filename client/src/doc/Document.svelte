@@ -359,13 +359,17 @@
             <span class="doc-who"
               >{authorName(thread.comments[0]?.author ?? { kind: 'unknown', raw: null })}</span
             >
-            <span class="doc-words">{thread.comments[0]?.text ?? ''}</span>
+            <!-- The words go through the chat's renderer, the same
+                 `Prose` the review page's turns draw with, so a comment's
+                 marks and its author's own lines read here as they read
+                 there. -->
+            <Prose text={thread.comments[0]?.text ?? ''} preserveLines />
           </div>
         {/each}
         {#each drafts.filter((draft) => draft.line === row.line) as draft (draft.id)}
           <div class="doc-note doc-draft">
             <span class="doc-who">you</span>
-            <span class="doc-words">{draft.text}</span>
+            <Prose text={draft.text} preserveLines />
             <span class="doc-cc">drafted</span>
           </div>
         {/each}
@@ -400,7 +404,7 @@
               <span class="doc-who"
                 >{authorName(thread.comments[0]?.author ?? { kind: 'unknown', raw: null })}</span
               >
-              <span class="doc-words">{thread.comments[0]?.text ?? ''}</span>
+              <Prose text={thread.comments[0]?.text ?? ''} preserveLines />
             </div>
           {/each}
         </section>
