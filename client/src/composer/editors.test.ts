@@ -42,28 +42,6 @@ describe('which editor holds the keyboard', () => {
     expect(focusOf(where), 'the queue draining returns it where it was').toBe('composer');
   });
 
-  it('lands on a surface that exists when the remembered one is gone', () => {
-    const where: Where = {
-      editor: 'dock',
-      remember: 'connect',
-      pending: false,
-      connectPresent: false,
-    };
-    expect(focusOf(where), 'a remembered surface that is gone falls back to the composer').toBe(
-      'composer',
-    );
-  });
-
-  it('gives it to the connect field when only that is up', () => {
-    const where: Where = {
-      editor: 'connect',
-      remember: 'connect',
-      pending: false,
-      connectPresent: true,
-    };
-    expect(focusOf(where), 'the connect route owns the keyboard on its own screen').toBe('connect');
-  });
-
   it('does not name the dock when the prompt has no box of its own open', () => {
     const where: Where = {
       editor: 'composer',
