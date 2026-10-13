@@ -76,25 +76,15 @@ impl LoggingRuntime {
 
 /// Default tracing filter. `info` baseline keeps signal-to-noise
 /// sensible; the targets at `debug` are the ones we actually stare at
-/// when triaging UI/event drops (session lifecycle, command dispatch,
-/// input submission, bridge connect path). `app.tool` and
-/// `agent.env_git` are there for a second reason: they carry a
-/// session's own tool failures and a git probe missing
-/// `refs/remotes/origin/HEAD`, which are real and are not forge's
-/// problems. At `debug` they stay readable without raising a warning
+/// when triaging UI/event drops (input submission, the bridge connect
+/// path). `agent.env_git` is there for a second reason: a git probe
+/// missing `refs/remotes/origin/HEAD` is real and is not forge's
+/// problem. At `debug` it stays readable without raising a warning
 /// that says forge is unwell. `forge_workspace::output_tail` is there for
 /// the same reason: a line in a command's output file that cannot be
 /// decoded is the watched command's own output rather than a problem with
 /// forge. (`forge_server` too: its session reads are one session's own
 /// work.)
-/// `tui_markdown`
-/// is pinned to `error` because it emits per-frame WARN events for
-/// every HTML element and unknown-language code block it encounters
-/// during streaming markdown rendering (peaks at 50K+/sec on chats
-/// with HTML content). Dropping to `error` rejects the events at the
-/// tracing filter before serialisation. The architectural fix
-/// (HTML-strip in `preprocess_prose` at the call site) lands as
-/// a separate PR; this filter bump is defence-in-depth.
 ///
 /// `forge_dictate` and `forge_workspace::dictate` are there for the
 /// same reason again: a take that reaches its capture cap, a normalizer
@@ -107,9 +97,6 @@ impl LoggingRuntime {
 /// hyphenated target and its module path. What it reports is the model
 /// loading itself, not forge, so it is not forge's warning to raise.
 const DEFAULT_LOG_DIRECTIVES: &str = "info,\
-    app.session=debug,\
-    app.command=debug,\
-    app.tool=debug,\
     app.input=debug,\
     app.lifecycle=debug,\
     bridge.lifecycle=debug,\
@@ -390,20 +377,14 @@ mod tests {
 
     #[test]
     fn default_log_directives_target_the_drop_diagnosis_paths() {
-        // `sdk_message_dropped` and `turn_complete_dropped` warns
-        // live under `app.session`. `app.command` covers the
-        // dispatch path. `bridge.lifecycle` covers connect/spawn.
-        // Anything dropping out of these regresses the always-on
-        // debug coverage we ship for triage.
-        assert!(DEFAULT_LOG_DIRECTIVES.contains("app.session=debug"));
-        assert!(DEFAULT_LOG_DIRECTIVES.contains("app.command=debug"));
+        // `app.input` covers input submission; `bridge.lifecycle`
+        // covers connect/spawn. Anything dropping out of these
+        // regresses the always-on debug coverage we ship for triage.
         assert!(DEFAULT_LOG_DIRECTIVES.contains("app.input=debug"));
         assert!(DEFAULT_LOG_DIRECTIVES.contains("bridge.lifecycle=debug"));
-        // `app.tool` and `agent.env_git` are the two targets whose
-        // records were demoted out of WARN; dropping them from this set
-        // would silence a session's own tool failure and the git probe
-        // miss entirely, which is the state the levels moved away from.
-        assert!(DEFAULT_LOG_DIRECTIVES.contains("app.tool=debug"));
+        // `agent.env_git` is the target whose records were demoted out of
+        // WARN; dropping it from this set would silence the git probe miss
+        // entirely, which is the state the levels moved away from.
         assert!(DEFAULT_LOG_DIRECTIVES.contains("agent.env_git=debug"));
         // `forge_workspace::output_tail` carries the tail read's
         // unreadable-line record, demoted there for the same reason: a line
