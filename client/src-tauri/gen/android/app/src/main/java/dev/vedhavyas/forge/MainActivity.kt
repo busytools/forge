@@ -1,5 +1,7 @@
 package dev.vedhavyas.forge
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Bundle
 import android.webkit.WebView
 import androidx.activity.enableEdgeToEdge
@@ -12,6 +14,9 @@ class MainActivity : TauriActivity() {
   private var webView: WebView? = null
 
   companion object {
+    /** The microphone request's own code, for the answer that comes back. */
+    private const val MIC_REQUEST = 1
+
     // The page the client draws, for the browser engine: hardware Back asks
     // the takeover first, and the engine reports the UI's origin so the shell
     // can keep the driver off this page (its devtools target is one of many
@@ -22,6 +27,16 @@ class MainActivity : TauriActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
+    // Android grants the microphone at runtime; the manifest's declaration
+    // only makes it askable. Both capture legs need it - the shell's own
+    // device, and the webview's stream behind getUserMedia - and neither can
+    // open anything until the person has said yes.
+    if (
+      checkSelfPermission(Manifest.permission.RECORD_AUDIO) !=
+        PackageManager.PERMISSION_GRANTED
+    ) {
+      requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), MIC_REQUEST)
+    }
   }
 
   override fun onWebViewCreate(webView: WebView) {

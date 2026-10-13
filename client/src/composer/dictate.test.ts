@@ -43,6 +43,9 @@ const mic = vi.hoisted(() => {
       return held.resolved ?? undefined;
     },
     flush: (): Uint8Array | null => null,
+    // The take asks the source for what it still holds when its release
+    // drains (#2159); a stand-in holds nothing beyond `flush`.
+    flushWorklet: (): void => undefined,
     stop: (): void => {
       held.stops += 1;
     },
@@ -71,7 +74,7 @@ vi.mock('./mic', () => ({
 
 import { DEFAULT_AXES } from '../session/wire';
 import type { SessionSlot } from '../wire/types';
-import { Dictation } from './dictate.svelte';
+import { Dictation, openCapture } from './dictate.svelte';
 import { defaultDeviceFor, rememberDefaultDevice } from './dictation';
 import { busyLine, microphoneLine } from './take';
 import { wire as fakeWire, type Wire } from './testing';
@@ -110,6 +113,7 @@ function wired(held: Held) {
     shown: held.shown,
     options: held.options,
     device: held.device,
+    capture: openCapture,
     onStart: () => {
       started += 1;
       lines.length = 0;
@@ -200,6 +204,9 @@ describe('the press', () => {
     await vi.waitUntil(() => dictate.take !== null);
 
     dictate.toggle();
+    // The release drains the capture before it sends its stop (#2159), so the
+    // stop lands a drain window after the press rather than at it.
+    await vi.waitUntil(() => shared.sent.length > 1);
     expect(shared.sent[1]?.command).toEqual({ dictate_stop: { key: SEAT, submit: true } });
     expect(dictate.take, 'and the page is holding nothing').toBeNull();
   });

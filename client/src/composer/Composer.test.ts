@@ -34,10 +34,11 @@ const mic = vi.hoisted(() => {
   const held: {
     onFrame: ((bytes: Uint8Array) => void) | null;
     stops: number;
+    asked: number;
     gated: boolean;
     release: (() => void) | null;
     resolved: { id: string; label: string } | null;
-  } = { onFrame: null, stops: 0, gated: false, release: null, resolved: null };
+  } = { onFrame: null, stops: 0, asked: 0, gated: false, release: null, resolved: null };
   const source = {
     get onFrame(): ((bytes: Uint8Array) => void) | null {
       return held.onFrame;
@@ -49,6 +50,9 @@ const mic = vi.hoisted(() => {
       return held.resolved ?? undefined;
     },
     flush: (): Uint8Array | null => null,
+    flushWorklet: (): void => {
+      held.asked += 1;
+    },
     stop: (): void => {
       held.stops += 1;
     },
@@ -96,7 +100,19 @@ import {
 import { DEFAULT_SETTINGS, type SessionSlot } from '../wire/types';
 import { axesFor, deviceFor, rememberAxes, rememberDevice } from './dictation';
 import { inputs } from './mic';
+import { DRAIN_MS, FLUSH_SETTLE_MS } from './take';
 import { TRUNCATED, type ComposerProps, type ComposerRecord, type SeatRead } from './view';
+
+/**
+ * A submitted take's release, past its drain.
+ *
+ * The release holds the capture open for the drain window and asks the
+ * worklet for what it still holds, and only then sends the stop - so a case
+ * that reads what went on the wire after a release advances the clock first.
+ */
+function settle(): void {
+  vi.advanceTimersByTime(DRAIN_MS + FLUSH_SETTLE_MS + 10);
+}
 
 /** Everything the page is drawing, as a reader reads it. */
 const drawn = () => document.body.textContent ?? '';
@@ -1283,12 +1299,187 @@ describe('the key', () => {
 
       vi.advanceTimersByTime(500);
       key('ControlRight', 'keyup');
+      settle();
       expect(harness.sent.at(-1)?.command, 'a hold released transcribes what was said').toEqual({
         dictate_stop: { key: { org: 'Busytools', project: 'forge', label: 'lead' }, submit: true },
       });
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  /**
+   * The states a take passes through, named in order.
+   *
+   * This is the lie Ved reported: the row said recording while the microphone
+   * was still warming up, so the first words were spoken into a take that
+   * already claimed to be keeping them. **The open is the band's own state
+   * now, and adds no line** - the words read here are its status line for a
+   * screen reader, which is the state said rather than drawn - and then the
+   * row says `ready` until a frame carries a real sample, which is where
+   * recording actually begins.
+   */
+  it('names the open, says ready, and only calls it recording on real audio', async () => {
+    mic.held.gated = true;
+    try {
+      const harness = open({ dictation: true });
+      harness.page.record = bound('right_cmd', 'auto');
+      flushSync();
+
+      key('ControlRight', 'keydown');
+      flushSync();
+      expect(
+        document.querySelector('.tc'),
+        'no row claims a take that does not exist yet',
+      ).toBeNull();
+      expect(
+        document.querySelector('.comp .box > .notice'),
+        'and the press writes no line into the composer',
+      ).toBeNull();
+
+      mic.held.release?.();
+      await opened();
+      expect(drawn(), 'the capture is open, and nothing has arrived yet').toContain('ready');
+      expect(document.querySelector('.tc'), 'the row is up once there is a take').not.toBeNull();
+
+      // A frame of digital silence is a device still waking, not a reader
+      // speaking: the row must not call that recording.
+      mic.held.onFrame?.(new Uint8Array(641));
+      flushSync();
+      expect(drawn(), 'silence is not speech').toContain('ready');
+      expect(document.querySelector('.tc .wave'), 'and there is no audio to draw').toBeNull();
+
+      mic.held.onFrame?.(encodeFrame([0.5]));
+      flushSync();
+      expect(
+        document.querySelector('.tc .wave'),
+        'the first real sample starts the graph',
+      ).not.toBeNull();
+      expect(
+        document.querySelector('.tc .sr')?.textContent,
+        'and the state a screen reader hears says so',
+      ).toBe('dictating');
+    } finally {
+      mic.held.gated = false;
+      mic.held.release = null;
+    }
+  });
+
+  /**
+   * A press inside the release's drain window is absorbed, not refused.
+   *
+   * The release keeps the capture open for a moment so the audio in flight
+   * lands, and the take is still on this side until it does. The press has
+   * nothing to start - the take it would refuse is the one the reader just
+   * let go of - so it is a no-op rather than the "in use" line, which would
+   * name the reader's own take back at them.
+   */
+  it('absorbs a press that lands while the release is draining', async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = open({ dictation: true });
+      harness.page.record = bound('right_cmd', 'auto');
+      flushSync();
+
+      key('ControlRight', 'keydown');
+      await opened();
+      vi.advanceTimersByTime(500); // a hold, not a tap
+      key('ControlRight', 'keyup'); // the release starts the drain
+      flushSync();
+
+      key('ControlRight', 'keydown'); // a press inside the window
+      flushSync();
+      expect(harness.sent, 'nothing new starts').toHaveLength(1);
+      expect(drawn(), 'and nothing is refused by name').not.toContain('in use');
+
+      settle();
+      await Promise.resolve();
+      expect(harness.sent.at(-1)?.command, 'and the take still stops once').toEqual({
+        dictate_stop: { key: { org: 'Busytools', project: 'forge', label: 'lead' }, submit: true },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /**
+   * The press writes no line into the composer.
+   *
+   * Ved, in the #2159 look: "the layout of the composer shifts up and down
+   * ... the text comes in between". The open is the band's own state now - a
+   * colour that breathes, and a status line for a screen reader - so pressing
+   * the key adds no row and moves nothing.
+   */
+  it('draws the open on the band only once it takes a moment', async () => {
+    mic.held.gated = true;
+    try {
+      vi.useFakeTimers();
+      const harness = open({ dictation: true });
+      harness.page.record = bound('right_cmd', 'auto');
+      flushSync();
+      expect(document.querySelector('.comp .box > .notice'), 'nothing is said yet').toBeNull();
+
+      key('ControlRight', 'keydown');
+      flushSync();
+      expect(
+        document.querySelector('.comp .surf')?.classList.contains('load'),
+        'a press alone draws nothing: the desktop open is tens of milliseconds',
+      ).toBe(false);
+
+      // An open that outlasts the delay is a state worth drawing: a browser's
+      // is the permission round trip and the audio graph's start.
+      vi.advanceTimersByTime(500);
+      flushSync();
+      expect(
+        document.querySelector('.comp .surf')?.classList.contains('load'),
+        'an open that takes a moment says so on the band',
+      ).toBe(true);
+      expect(document.querySelector('.comp .sr')?.textContent, 'and a screen reader hears it').toBe(
+        'opening the microphone',
+      );
+      expect(document.querySelector('.comp .box > .notice'), 'and no line is added').toBeNull();
+
+      mic.held.release?.();
+      await opened();
+      expect(
+        document.querySelector('.comp .box > .notice'),
+        'and none once the open is over either',
+      ).toBeNull();
+    } finally {
+      mic.held.gated = false;
+      mic.held.release = null;
+      vi.useRealTimers();
+    }
+  });
+
+  /**
+   * A record still transcribing is not what the band is about once this page
+   * holds a take of its own.
+   *
+   * The record keeps the last take through its transcription, so it can still
+   * be showing one while this page's next take is live - and the band must
+   * follow this page's own take rather than the one the record is finishing
+   * (Ved, in the look: "the color changes, and then goes back to orange").
+   */
+  it("keeps the band on this page's take while the record shows a transcribing one", async () => {
+    const harness = open({ dictation: true });
+    harness.page.record = bound('right_cmd', 'auto');
+    flushSync();
+
+    key('ControlRight', 'keydown');
+    await opened();
+
+    // The record now carries the previous take, still transcribing.
+    harness.page.record = bound(
+      'right_cmd',
+      'auto',
+      take({ phase: 'transcribing', progress: [1, 4] }),
+    );
+    flushSync();
+
+    const surf = () => document.querySelector('.comp .surf');
+    expect(surf()?.classList.contains('tr'), "the record's transcribing must not win").toBe(false);
+    expect(surf()?.classList.contains('rec'), "the band is this page's own take").toBe(true);
   });
 
   /**
@@ -1618,6 +1809,7 @@ describe('the key', () => {
    * this path had no cover for.
    */
   it('holds a release that lands while the microphone is opening', async () => {
+    vi.useFakeTimers();
     mic.held.gated = true;
     mic.held.stops = 0;
     try {
@@ -1631,7 +1823,8 @@ describe('the key', () => {
       mic.held.release?.(); // the permission lands
       await opened();
 
-      expect(mic.held.stops, 'the take must let go of the microphone at once').toBe(1);
+      settle();
+      expect(mic.held.stops, 'the take lets go of the microphone once its drain is done').toBe(1);
       expect(
         mic.held.onFrame,
         'and unhook the frames: audio posted after the release must go nowhere',
@@ -1642,6 +1835,7 @@ describe('the key', () => {
     } finally {
       mic.held.gated = false;
       mic.held.release = null;
+      vi.useRealTimers();
     }
   });
 
@@ -1796,6 +1990,7 @@ describe('the key', () => {
       flushSync();
       vi.advanceTimersByTime(500);
       key('ControlRight', 'keyup');
+      settle();
 
       expect(
         harness.sent.at(-1)?.command,
@@ -4938,6 +5133,8 @@ describe('the dock', () => {
     ]);
 
     await micPress();
+    // The release drains the pipeline before its stop goes out.
+    await new Promise((resolve) => setTimeout(resolve, DRAIN_MS + FLUSH_SETTLE_MS + 20));
     expect(harness.sent.at(-1)?.command, 'and the second press submits it').toMatchObject({
       dictate_stop: { key: { org: 'Busytools', project: 'forge', label: 'lead' }, submit: true },
     });

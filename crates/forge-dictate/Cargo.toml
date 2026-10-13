@@ -43,10 +43,10 @@ serde = { workspace = true }
 # The fetched-at stamp on a fetched catalogue, in the RFC 3339 the rest
 # of the wire's timestamps use.
 time = { workspace = true }
-# Microphone capture. The stream is !Send, which is why it lives on a
-# thread of its own rather than inside `Capture`.
-cpal = { workspace = true }
-rubato = "0.16"
+# Microphone capture: the device, the input plan and the resampler. Its own
+# crate because a client's shell opens the same device and must not carry
+# this crate's models to do it.
+forge-capture = { workspace = true }
 
 # Metal is the only backend worth naming: elsewhere ggml selects one
 # itself and falls back to CPU.

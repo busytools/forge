@@ -17,6 +17,9 @@ const mic = vi.hoisted(() => ({
       onFrame: null as ((bytes: Uint8Array) => void) | null,
       resolved: undefined,
       flush: () => null,
+      // The take asks the source for what it still holds when its release
+      // drains (#2159); a stand-in holds nothing beyond `flush`.
+      flushWorklet: () => undefined,
       stop: () => undefined,
     }),
 }));
@@ -29,7 +32,7 @@ vi.mock('./mic', () => ({
 
 import { DEFAULT_AXES } from '../session/wire';
 import type { SessionSlot } from '../wire/types';
-import { Dictation } from './dictate.svelte';
+import { Dictation, openCapture } from './dictate.svelte';
 import DictateControl from './DictateControl.svelte';
 import { wire as fakeWire, type Wire } from './testing';
 
@@ -63,6 +66,7 @@ function drawn(shown = false): Drawn {
     shown: () => shown,
     options: () => DEFAULT_AXES,
     device: () => null,
+    capture: openCapture,
     onStart: () => undefined,
     onLine: () => undefined,
     onRefused: () => undefined,
@@ -113,6 +117,9 @@ describe('the mic', () => {
     );
 
     press(at);
+    // The release drains the capture before it sends its stop (#2159), so the
+    // stop lands a drain window after the press rather than at it.
+    await vi.waitUntil(() => at.shared.sent.length > 1);
     expect(at.shared.sent[1]?.command).toEqual({ dictate_stop: { key: SEAT, submit: true } });
   });
 

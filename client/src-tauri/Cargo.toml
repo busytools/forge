@@ -41,6 +41,11 @@ base64 = "0.22"
 # The launch lock: flock, the same idiom the workspace's single-instance
 # guard uses.
 rustix = { version = "1", features = ["fs"] }
+# The desktop's own microphone: the server workspace's capture leaf, so a
+# take opens the device natively instead of through the webview's audio
+# pipeline. Deliberately NOT `forge-dictate`: that crate carries the speech
+# models, which this shell has no use for and Android cannot build.
+forge-capture = { path = "../../crates/forge-capture" }
 
 # Desktop-only: no plugin path exists for Android, where the APK updates
 # through the system installer instead (a Kotlin side of its own).

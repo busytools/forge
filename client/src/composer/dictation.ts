@@ -7,6 +7,8 @@
  * values are the reference's, the form is the web's own.
  */
 
+import { isTauri } from '@tauri-apps/api/core';
+
 import type { Mode } from './dictate-key';
 import { axesFrom, type DictateAxes } from '../session/wire';
 import type { DictateContext, DictateStructure, DictateStyling } from '../session/wire';
@@ -85,7 +87,15 @@ function keep(key: string, value: unknown): void {
 }
 
 const axesKey = (seat: string): string => `forge.dictate.axes.${seat}`;
-const deviceKey = (seat: string): string => `forge.dictate.device.${seat}`;
+/**
+ * The pick's key, per capture leg.
+ *
+ * A browser names its inputs and the shell names the device itself, so an id
+ * kept by one means nothing to the other: the desktop reads and writes under
+ * its own key rather than handing the shell an id it cannot resolve.
+ */
+const deviceKey = (seat: string): string =>
+  isTauri() ? `forge.dictate.device.shell.${seat}` : `forge.dictate.device.${seat}`;
 
 /** What this seat dictates with: its own edits over the greeting's defaults. */
 export function axesFor(seat: string, defaults: DictateAxes): DictateAxes {

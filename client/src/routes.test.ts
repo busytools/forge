@@ -17,6 +17,17 @@ describe('the URLs the server serves', () => {
     expect(parseRoute('/')).toEqual({ name: 'home' });
   });
 
+  /**
+   * A pathname that names the document is the root it was served at.
+   *
+   * A shell's window url, a hand-typed address or a link can spell
+   * `index.html`; parsing that segment as a route lands the launch on the
+   * not-a-page screen, which no reader can act on and which #2159's look hit.
+   */
+  it('reads a pathname carrying the document as the root it was served at', () => {
+    expect(parseRoute('/index.html')).toEqual({ name: 'home' });
+  });
+
   it('resolves a session to the slot its three segments name', () => {
     expect(parseRoute('/session/Busytools/forge/lead')).toEqual({
       name: 'session',
@@ -185,6 +196,27 @@ describe('the document route', () => {
       name: 'doc',
       slot: { org: 'Busytools', project: 'forge', label: 'lead' },
       path: '/Users/me/Projects/forge/docs/plan.md',
+      reviewable: false,
+    });
+  });
+
+  /**
+   * **A document named `index.html` is a document, not the app's own file.**
+   * The root-document normalization is an exact match on `/index.html` and
+   * nothing else: a tail-strip would take these two addresses apart - the
+   * first resolving no route at all, the second opening the directory.
+   */
+  it('keeps the app-document normalization off a doc path that ends in one', () => {
+    expect(parseRoute('/doc/Busytools/forge/lead/index.html')).toEqual({
+      name: 'doc',
+      slot: { org: 'Busytools', project: 'forge', label: 'lead' },
+      path: '/index.html',
+      reviewable: false,
+    });
+    expect(parseRoute('/doc/Busytools/forge/lead/web/index.html')).toEqual({
+      name: 'doc',
+      slot: { org: 'Busytools', project: 'forge', label: 'lead' },
+      path: '/web/index.html',
       reviewable: false,
     });
   });

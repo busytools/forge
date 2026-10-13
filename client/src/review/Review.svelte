@@ -1,7 +1,7 @@
 <script lang="ts">
   import { SvelteSet } from 'svelte/reactivity';
   import { boxKey } from '../composer/box.svelte';
-  import { Dictation, type TakeLine } from '../composer/dictate.svelte';
+  import { Dictation, openCapture, type TakeLine } from '../composer/dictate.svelte';
   import { axesFor, deviceFor } from '../composer/dictation';
   import { hrefForSlot } from '../routes';
   import { DEFAULT_AXES } from '../session/wire';
@@ -148,6 +148,7 @@
     shown: () => composer.take !== null,
     options: () => axesFor(boxKey(slot), defaults),
     device: () => deviceFor(boxKey(slot)),
+    capture: openCapture,
     onStart: () => {
       dictateLine = null;
     },

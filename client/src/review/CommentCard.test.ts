@@ -14,6 +14,9 @@ const mic = vi.hoisted(() => ({
       onFrame: null as ((bytes: Uint8Array) => void) | null,
       resolved: undefined,
       flush: () => null,
+      // The take asks the source for what it still holds when its release
+      // drains (#2159); a stand-in holds nothing beyond `flush`.
+      flushWorklet: () => undefined,
       stop: () => undefined,
     }),
 }));
@@ -24,7 +27,8 @@ vi.mock('../composer/mic', () => ({
   inputLine: (): string => 'the inputs could not be listed \u{b7} try again',
 }));
 
-import { Dictation } from '../composer/dictate.svelte';
+import { Dictation, openCapture } from '../composer/dictate.svelte';
+import { DRAIN_MS, FLUSH_SETTLE_MS } from '../composer/take';
 import { wire as fakeWire, type Wire } from '../composer/testing';
 import { DEFAULT_AXES } from '../session/wire';
 import type { SessionSlot } from '../wire/types';
@@ -64,6 +68,7 @@ function drawn(
     shown: () => false,
     options: () => DEFAULT_AXES,
     device: () => null,
+    capture: openCapture,
     onStart: () => undefined,
     onLine: () => undefined,
     onRefused: () => undefined,
@@ -241,6 +246,9 @@ describe('the bound key', () => {
 
     vi.advanceTimersByTime(400);
     bound('keyup');
+    // The release drains the capture before it sends its stop (#2159), so the
+    // stop lands a drain window after the key rather than at it.
+    vi.advanceTimersByTime(DRAIN_MS + FLUSH_SETTLE_MS + 10);
     expect(at.shared.sent[1]?.command, 'a long press transcribes on the release').toEqual({
       dictate_stop: { key: SEAT, submit: true },
     });

@@ -17,6 +17,18 @@ class ForgeMic extends AudioWorkletProcessor {
     super();
     this.held = new Float32Array(CHUNK);
     this.at = 0;
+    // A take on its way out asks for what is held here: these samples are
+    // newer than the last chunk posted, and nothing can reach them once the
+    // graph is stopped.
+    this.port.onmessage = () => this.post();
+  }
+
+  /** Post the samples held so far, whole, and start the next chunk empty. */
+  post() {
+    if (this.at === 0) return;
+    this.port.postMessage(this.held.slice(0, this.at));
+    this.held = new Float32Array(CHUNK);
+    this.at = 0;
   }
 
   /**
@@ -38,9 +50,7 @@ class ForgeMic extends AudioWorkletProcessor {
       if (this.at === CHUNK) {
         // A fresh buffer per chunk: the one posted is the caller's, and
         // this thread starts filling the next one immediately.
-        this.port.postMessage(this.held);
-        this.held = new Float32Array(CHUNK);
-        this.at = 0;
+        this.post();
       }
     }
     return true;
@@ -48,3 +58,7 @@ class ForgeMic extends AudioWorkletProcessor {
 }
 
 registerProcessor('forge-mic', ForgeMic);
+
+// A module, as `addModule` evaluates it: the export is what lets the client's
+// own tests load this same file rather than a copy of its logic.
+export {};

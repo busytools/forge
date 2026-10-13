@@ -2,8 +2,12 @@
  * The microphone: the inputs this device offers, and one open stream.
  *
  * Browser plumbing, kept out of `capture.ts` so the encoding and the ring
- * stay testable with no audio stack in the test run.
+ * stay testable with no audio stack in the test run. The desktop's own
+ * capture is `mic-shell.ts`; what lives here is the browser's, plus the one
+ * list a panel asks for, whichever half can answer it.
  */
+
+import { invoke, isTauri } from '@tauri-apps/api/core';
 
 import { FrameChunker, SAMPLE_RATE } from './capture.svelte';
 
@@ -11,18 +15,25 @@ import { FrameChunker, SAMPLE_RATE } from './capture.svelte';
 export interface Input {
   /** Stable identity, which is what a pick persists. */
   id: string;
-  /** The browser's label, empty until this origin has been granted the
-   * microphone once - the browser's own rule, not a failure. */
+  /** Human label for a picker. Empty until the browser's origin has been
+   * granted the microphone once - the browser's own rule, not a failure. */
   label: string;
 }
 
 /**
- * Every input the browser offers, in its own order.
+ * Every input this client can record from.
  *
- * `enumerateDevices` needs no permission; the LABELS do, so a fresh origin
- * lists unnamed rows until a take has been granted once.
+ * On the desktop that is the shell's own list, because the shell is what
+ * opens the device there: its ids are the ones a take resolves, and the
+ * browser's own ids mean nothing to it. In a browser it is
+ * `enumerateDevices`, which needs no permission - the LABELS do, so a fresh
+ * origin lists unnamed rows until a take has been granted once.
  */
 export async function inputs(): Promise<Input[]> {
+  if (isTauri()) {
+    const listed = await invoke<{ id: string; label: string }[]>('client_mic_devices');
+    return listed.map((held) => ({ id: held.id, label: held.label }));
+  }
   const devices = await navigator.mediaDevices.enumerateDevices();
   return devices
     .filter((device) => device.kind === 'audioinput')
@@ -92,6 +103,17 @@ export class Microphone {
   /** The take's last partial frame, if the microphone still holds one. */
   flush(): Uint8Array | null {
     return this.chunker.flush();
+  }
+
+  /**
+   * Ask the worklet to post what it is holding.
+   *
+   * The samples it has gathered since the last chunk are newer than anything
+   * this side has, and stopping the graph drops them - so a take asks for
+   * them before it lets go, and they arrive as one short chunk.
+   */
+  flushWorklet(): void {
+    this.node.port.postMessage('flush');
   }
 
   /** Release the device and close the context. */

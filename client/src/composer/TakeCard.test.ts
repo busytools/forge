@@ -58,9 +58,18 @@ function open(
   wire: ReturnType<typeof produced> | null = produced(),
   spread = false,
 ) {
+  // The fixture's own phase is the row's, which is where a case states what
+  // the take is doing; the record's take carries the rest.
+  const phase = (over['phase'] ?? 'recording') as 'ready' | 'recording' | 'transcribing';
   app = mount(TakeCard, {
     target: document.body,
-    props: { take: narrowed(over), wire, oncancel: () => (cancelled += 1), spread },
+    props: {
+      take: narrowed(over),
+      wire,
+      phase,
+      oncancel: () => (cancelled += 1),
+      spread,
+    },
   });
   flushSync();
 }
@@ -141,6 +150,22 @@ describe('the take card', () => {
       "the record's readings are the newest three here",
     ).toEqual(['height: 29%;', 'height: 54%;', 'height: 96%;']);
     expect(drawn(), "and the record's clock is what the card reads").toContain('0:07');
+  });
+
+  /**
+   * A capture that is open and has produced nothing is not recording.
+   *
+   * The state a take passes through between its open and its first real
+   * sample: a device waking, a graph starting. The row says `ready` and
+   * draws no graph, so it never shows audio it does not have (#2159).
+   */
+  it('says ready, drawing no graph, until the capture produces', () => {
+    open({ phase: 'ready' }, produced({ dbfs: [], frames: 0, bytes: 0, rate: null }));
+
+    expect(drawn(), 'the state is named').toContain('ready');
+    expect(document.querySelector('.tc .wave'), 'and nothing is drawn as audio').toBeNull();
+    expect(document.querySelector('.tc .dot'), 'the take is live, so the dot stays').not.toBeNull();
+    expect(document.querySelector('.tc .sr')?.textContent).toBe('the microphone is ready');
   });
 
   it('counts the segments ready, and draws nothing for none', () => {

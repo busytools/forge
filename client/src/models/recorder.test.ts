@@ -54,6 +54,10 @@ function fakeMic() {
       this.tail = null;
       return tail;
     },
+    flushWorklet() {
+      // The recorder reads a model's speech, not a take's: nothing is held
+      // in a worklet on its path.
+    },
     stop() {
       this.stopped = true;
     },

@@ -12,6 +12,7 @@
  * starting another.
  */
 
+import { isTauri } from '@tauri-apps/api/core';
 import { untrack } from 'svelte';
 
 import type { DictateAxes } from '../session/wire';
@@ -29,7 +30,21 @@ import {
   type Mode,
 } from './dictate-key';
 import { rememberDefaultDevice } from './dictation';
-import { busyLine, LocalTake, type TakeConnection } from './take';
+import { Microphone } from './mic';
+import { openShellMic } from './mic-shell';
+import { busyLine, LocalTake, type MicSource, type TakeConnection } from './take';
+
+/**
+ * How this client opens a microphone, on the platform it runs on.
+ *
+ * The desktop's shell captures natively and hands the frames back, so a press
+ * captures from the press; in a browser it is the webview's own stream, cold
+ * start and all. One definition, so every surface that takes typing opens the
+ * device the same way; everything after the open is one path.
+ */
+export function openCapture(device: string | null): Promise<MicSource> {
+  return isTauri() ? openShellMic(device) : Microphone.open(device);
+}
 
 /** What registering the push-to-talk key needs of one surface. */
 export interface PushToTalk {
@@ -118,6 +133,12 @@ export interface DictationWiring {
   /** The input in force, or `null` for the system default. */
   device: () => string | null;
   /**
+   * How this client opens a microphone: the browser's own stream, or the
+   * desktop shell's native capture. The surface states which, because the
+   * choice is the platform's rather than the take's.
+   */
+  capture: (device: string | null) => Promise<MicSource>;
+  /**
    * A take is being attempted: whatever line the last attempt left is stale,
    * so a retry does not open under it.
    */
@@ -177,6 +198,12 @@ export class Dictation {
     if (this.opening) return;
     const live = untrack(() => this.take);
     if (live !== null) {
+      // **A take this seat is still closing is absorbed, not refused.** Its
+      // release is draining the capture for a moment - up to a fifth of a
+      // second (#2159) - and a press inside that window has nothing to start
+      // and nothing to stop: the take it would name is the one the reader
+      // just let go of. A take on another seat is the one worth naming.
+      if (live.closing && boxKey(live.seat) === boxKey(this.#wiring.seat())) return;
       this.#wiring.onRefused({ tone: 'bad', text: busyLine(live.seat) });
       return;
     }
@@ -195,6 +222,7 @@ export class Dictation {
         seat: this.#wiring.seat(),
         options: this.#wiring.options(),
         device: picked,
+        capture: this.#wiring.capture,
         onLine: (text) => this.#wiring.onLine({ tone: 'bad', text }),
         onEnded: () => {
           const finished = this.take;

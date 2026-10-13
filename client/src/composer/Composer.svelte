@@ -21,7 +21,7 @@
   import { LIST_ID, offer, rowId, type Sources } from './autocomplete';
   import { axesFor, deviceFor, rememberAxes, rememberDevice } from './dictation';
   import { focusOf, type Where } from './editors';
-  import { bindPushToTalk, Dictation } from './dictate.svelte';
+  import { bindPushToTalk, Dictation, openCapture } from './dictate.svelte';
   import { FORGE_COMMANDS } from './forge-commands';
   import {
     blocked,
@@ -148,6 +148,13 @@
   let lineBox: Box | null = null;
 
   /**
+   * What the take's row can say it is doing, across both capture legs. The
+   * capture's own open is the band's state, not a row state: it is drawn
+   * before there is a take for the row to draw.
+   */
+  type RowPhase = 'ready' | 'recording' | 'transcribing';
+
+  /**
    * The take this page owns.
    *
    * One, not one per seat: the microphone is the client's own, so the box's
@@ -161,6 +168,7 @@
     shown: () => composer.take !== null,
     options: () => untrack(() => seatAxes),
     device: () => deviceFor(boxKey(untrack(() => slot))),
+    capture: openCapture,
     onStart: () => {
       const target = boxes.of(boxKey(untrack(() => slot)));
       lineBox = target;
@@ -215,12 +223,67 @@
   /**
    * What the ring is doing: one state rather than three that can overlap.
    *
-   * A live take owns the ring, and the landed beat reaches it only when no take
-   * does.
+   * **This page's own take first.** A record still showing the PREVIOUS take
+   * transcribing outlives it - it is the record's, not this page's - so on the
+   * next press it would paint the new take's first moment blue and then snap
+   * to orange, which is the glitch Ved named in the look ("the color changes,
+   * and then goes back to orange"). A take this page holds, or one it is
+   * opening, is what the band is about; another view's take is what the record
+   * has. The landed beat reaches it only when no take does.
    */
   const ring = $derived.by(() => {
+    // The capture being opened, before there is a take to record: the band
+    // says "working" without claiming to hear anything, and without writing a
+    // line into the composer - a line that came with the press moved the
+    // composer under the reader's hands (Ved, in the #2159 look).
+    if (openingShown) return 'load';
+    if (dictate.take !== null) return 'rec';
     if (composer.take !== null) return composer.take.phase === 'recording' ? 'rec' : 'tr';
     return beat ? 'done' : null;
+  });
+
+  /**
+   * Whether the open has lasted long enough to draw on the band.
+   *
+   * **The delay is the point.** An open that lands inside it is not a state,
+   * it is the press itself: the desktop's native capture is tens of
+   * milliseconds, so drawing its breath made the band flash between colours
+   * on every press - Ved, in the look: "the color changes, and then goes back
+   * to orange in a glitch like that", and "if we are running it on the Rust
+   * side ... I should not rightly be seeing any at all". A browser's open is
+   * the permission round trip and the audio graph's start, which outlasts it
+   * and is what the state is for.
+   */
+  const OPEN_DRAWN_MS = 180;
+  let openingShown = $state(false);
+  $effect(() => {
+    if (!dictate.opening) {
+      openingShown = false;
+      return;
+    }
+    const at = setTimeout(() => {
+      openingShown = true;
+    }, OPEN_DRAWN_MS);
+    return () => {
+      clearTimeout(at);
+    };
+  });
+
+  /**
+   * What the take's row says it is doing, or `null` when there is no row.
+   *
+   * `ready` is a capture that is open and has produced nothing yet - a device
+   * waking, a graph starting - and `recording` begins at the first frame
+   * carrying a real sample, which is the moment the take is actually keeping
+   * a voice (#2159).
+   */
+  const rowPhase = $derived.by((): RowPhase | null => {
+    if (composer.take?.phase === 'transcribing') return 'transcribing';
+    const live = dictate.take;
+    if (live !== null && boxKey(live.seat) === boxKey(slot)) {
+      return live.wire.flowing ? 'recording' : 'ready';
+    }
+    return composer.take !== null ? 'recording' : null;
   });
 
   /** What the reader wrote in the dock's box, which a landed take has to reach. */
@@ -893,8 +956,15 @@
     class:rec={ring === 'rec'}
     class:tr={ring === 'tr'}
     class:done={ring === 'done'}
+    class:load={ring === 'load'}
     class:err={blocker !== null && blocker.bad}
   >
+    <!-- The open, said on the band rather than in a line: a line that comes
+         with it moves the composer (Ved, in the #2159 look), and the band is
+         what carries the state anyway. One status per state, not per frame. -->
+    {#if ring === 'load'}
+      <span class="sr" role="status">opening the microphone</span>
+    {/if}
     <Pinned info={pinnedRow.of(seatKey)} {connection} {slot} />
     {#if blocker !== null}
       <div class="box">
@@ -980,13 +1050,19 @@
         {#if list !== null}
           <Autocomplete offer={list} marked={box.marked} onpick={pick} />
         {/if}
-        <div class="line" class:takeline={composer.take !== null}>
-          {#if composer.take !== null}
+        <div class="line" class:takeline={rowPhase !== null}>
+          {#if rowPhase !== null}
             <!-- **The take takes the draft's own line.** The row the words
                  would be typed into is the row they arrive on, so nothing is
                  added and nothing moves when a take starts or ends; the
                  controls ride it, and the surface's ring carries the state. -->
-            <TakeCard take={composer.take} {wire} oncancel={() => dictate.act('cancel')} spread />
+            <TakeCard
+              take={composer.take}
+              {wire}
+              phase={rowPhase}
+              oncancel={() => dictate.act('cancel')}
+              spread
+            />
             {@render ctls()}
           {:else}
             <!-- The list belongs to the field rather than being a surface the reader

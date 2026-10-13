@@ -26,7 +26,7 @@ vi.mock('@git-diff-view/svelte', async () => {
 });
 
 import { installResizeObserver } from '../chat/testing/viewport';
-import { Dictation } from '../composer/dictate.svelte';
+import { Dictation, openCapture } from '../composer/dictate.svelte';
 import { wire as fakeWire } from '../composer/testing';
 import { DEFAULT_AXES, type DiffLayerRecord, type ReviewThreadRecord } from '../session/wire';
 import type { SessionSlot } from '../wire/types';
@@ -147,6 +147,7 @@ function draw(): void {
     shown: () => false,
     options: () => DEFAULT_AXES,
     device: () => null,
+    capture: openCapture,
     onStart: () => undefined,
     onLine: () => undefined,
     onRefused: () => undefined,

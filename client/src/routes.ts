@@ -49,9 +49,25 @@ export type Route =
   | { name: 'fixture' }
   | { name: 'notFound' };
 
+/**
+ * The root the app is served at, when a pathname names the document itself.
+ *
+ * A shell's window url, a hand-typed address or a link may spell out
+ * `index.html` at the root, which is the app rather than a route; without
+ * this it lands on the not-a-page screen, where no reader can act on it
+ * (#2159's look hit it). **The root document, and only it**: a doc route's
+ * own `/…/index.html` is a document's path, and stripping that tail as well
+ * would resolve a different file - or none.
+ */
+function withoutDocument(path: string): string {
+  return path === '/index.html' ? '/' : path;
+}
+
 /** The route a path names. Anything the server does not serve is `notFound`. */
 export function parseRoute(path: string): Route {
-  const segments = path.split('/').filter((segment) => segment !== '');
+  const segments = withoutDocument(path)
+    .split('/')
+    .filter((segment) => segment !== '');
   if (segments.length === 0) return { name: 'home' };
   if (segments.length === 1 && segments[0] === 'connect') return { name: 'connect' };
   if (segments.length === 1 && segments[0] === 'models') return { name: 'models' };

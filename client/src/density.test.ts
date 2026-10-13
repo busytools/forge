@@ -20,10 +20,21 @@ import { describe, expect, it } from 'vitest';
  * deliberate edit here rather than a silent drift.
  */
 
-const SHEET = readFileSync(new URL('./assets/web.css', import.meta.url), 'utf8').replace(
-  /\s*\{/g,
-  ' {',
-);
+/**
+ * A sheet, in the shape the two readers below parse.
+ *
+ * **Comments go first.** The patterns read everything between `}` and `{` as
+ * a selector, and a comment may name another selector - the notice rules name
+ * the conversation's, to say why they are scoped to `.comp` - which would then
+ * read as a rule for the selector it mentions. `does not read a comment as a
+ * selector` below is the pin: drop this stripping and it fails by its own
+ * message.
+ */
+function readable(raw: string): string {
+  return raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\s*\{/g, ' {');
+}
+
+const SHEET = readable(readFileSync(new URL('./assets/web.css', import.meta.url), 'utf8'));
 
 /**
  * The declarations of the first rule whose selector contains `fragment`.
@@ -50,16 +61,21 @@ function body(fragment: string): string {
  * rules - the pair it shares with `.prose td`, and the header's own.
  */
 function declared(fragment: string, property: string): string {
+  const found = declaredIn(SHEET, fragment, property);
+  expect(found, `${fragment} declares no ${property}`).toBeDefined();
+  return found?.trim() ?? '';
+}
+
+/** The same read over any sheet, so the reader itself can be pinned. */
+function declaredIn(sheet: string, fragment: string, property: string): string | undefined {
   const escaped = fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const rules = new RegExp(`(^|\\})([^{}]*${escaped}[^{}]*)\\{([^{}]*)\\}`, 'gm');
-  const found = [...SHEET.matchAll(rules)]
+  return [...sheet.matchAll(rules)]
     .flatMap((hit) => {
       const value = new RegExp(`(?:^|;)\\s*${property}:\\s*([^;]+)`).exec(hit[3] ?? '')?.[1];
       return value === undefined ? [] : [value];
     })
     .at(-1);
-  expect(found, `${fragment} declares no ${property}`).toBeDefined();
-  return found?.trim() ?? '';
 }
 
 /** Every weight the sheet's own `@font-face` blocks declare, ascending. */
@@ -163,5 +179,26 @@ describe("an icon's optical alignment", () => {
     const rule = /(^|\})\.ic \{[^}]*\}/m.exec(SHEET)?.[0] ?? '';
     expect(rule, 'the base .ic rule').not.toBe('');
     expect(rule, 'carries the lift').toContain('top: -1px');
+  });
+});
+
+describe('the sheet reader', () => {
+  /**
+   * **A comment is not a selector.** The defect shape: a comment naming
+   * `.conv` sitting above a rule of its own. The readers here take everything
+   * between `}` and `{` as a selector, so without the stripping that rule's
+   * declarations are read as `.conv`'s - which is exactly how a new rule's
+   * line-height became the conversation's. The fixture is that shape, so
+   * dropping the strip fails this by its own message rather than silently
+   * handing one selector's assertions to another rule.
+   */
+  it('does not read a comment as a selector', () => {
+    const sheet = readable('/* scoped like `.conv` */\n.tc .sr { line-height: 1.5; }\n');
+
+    expect(
+      declaredIn(sheet, '.conv', 'line-height'),
+      'a comment naming a selector is not a rule for it',
+    ).toBeUndefined();
+    expect(declaredIn(sheet, '.tc .sr', 'line-height'), 'and the rule keeps its own').toBe('1.5');
   });
 });

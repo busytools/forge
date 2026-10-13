@@ -125,6 +125,15 @@ export class FrameRing {
   /** Frames the take has PRODUCED, since it began. */
   frames = $state(0);
   /**
+   * Whether any frame has carried a real sample yet.
+   *
+   * A capture's first frames can be digital silence - a device waking, a
+   * graph's own start - and until one is not, the take is not recording
+   * anything a reader would recognise as their voice. Sticky: a pause
+   * later in the take does not unmake it.
+   */
+  flowing = $state(false);
+  /**
    * Bytes the SOCKET has taken, since it began. A frame produced while the
    * socket is down counts in `frames` and not here, which is the difference
    * the pair exists to show: what was spoken and what has left.
@@ -143,7 +152,11 @@ export class FrameRing {
   /** Send if nothing is held and the socket takes it, else hold. */
   push(bytes: Uint8Array): void {
     this.frames += 1;
-    this.heard.push(frameDbfs(bytes));
+    const peak = frameDbfs(bytes);
+    // A frame of nothing but zeros is a capture that is not producing yet:
+    // the peak reads as no signal, and the row must not call that recording.
+    if (Number.isFinite(peak)) this.flowing = true;
+    this.heard.push(peak);
     if (this.heard.length > LEVEL_CELLS) this.heard.shift();
     if (this.held.length === 0 && this.sendNow(bytes)) return;
     this.held.push(bytes);

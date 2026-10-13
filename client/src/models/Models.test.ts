@@ -1130,6 +1130,9 @@ describe('the models route as it draws', () => {
     const mic = {
       onFrame: null as ((bytes: Uint8Array) => void) | null,
       flush: () => null,
+      // The take asks the source for what it still holds when its release
+      // drains (#2159); a stand-in holds nothing beyond `flush`.
+      flushWorklet: () => undefined,
       stop: () => {
         micStopped = true;
       },

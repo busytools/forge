@@ -25,7 +25,8 @@ Strictly acyclic:
 
 ```
 forge-primitives      leaf: pure data, no logic, no I/O, no async
-forge-dictate         leaf: dictation, depends on no forge-* crate
+forge-capture         leaf: microphone capture, depends on no forge-* crate
+forge-dictate     ->  capture
 forge-system-one      leaf: decision-model client, depends on no forge-* crate
 forge-gateway     ->  primitives
 forge-connectors  ->  primitives
@@ -39,7 +40,8 @@ forge-test-harness->  primitives + sdk
 | Crate | Description |
 |---|---|
 | [`forge-primitives`](crates/forge-primitives) | Every type that crosses a crate boundary: message envelopes, content blocks, hook and permission payloads, IDs, render-side views. Pure data. |
-| [`forge-dictate`](crates/forge-dictate) | The dictation primitive: audio in, text out. Owns its model files, speech recognition and normalization. Depends on no forge-* crate and knows nothing about a host. |
+| [`forge-capture`](crates/forge-capture) | Microphone capture: the input device, the input plan, the downmix and resampler, and the mono model-rate audio a host reads from it. A leaf: depends on no forge-* crate, so both capture legs - `forge-dictate`'s device take and a client's own shell - share one open. |
+| [`forge-dictate`](crates/forge-dictate) | The dictation primitive: audio in, text out. Owns its model files, speech recognition and normalization, and builds its device take on `forge-capture`. Depends only on that capture leaf and knows nothing about a host. |
 | [`forge-system-one`](crates/forge-system-one) | The System One decision-model client: the `[systemone]` config shape, the wire question/answer types with their validation, and the HTTP call with its timeout and error mapping. Depends on no forge-* crate. |
 | [`forge-gateway`](crates/forge-gateway) | The account pool: one backend per provider token (credential resolution, the usage probe's HTTP and payload mapping, billing shape), plus account selection by declared models, account health, probe scheduling and backoff. Depends on forge-primitives only. |
 | [`forge-connectors`](crates/forge-connectors) | One module per inbound connector: the stream client, REST lookups and matching for one external integration (Gotify and Slack today). Depends on forge-primitives only. |
