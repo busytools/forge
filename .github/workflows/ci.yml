@@ -47,9 +47,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      # forge-dictate captures audio through cpal, whose Linux backend
-      # is ALSA; without the headers `alsa-sys` fails to build and every
-      # compiling job dies. Removing this breaks audio, not just CI.
+      # forge-capture opens the microphone through cpal, whose Linux
+      # backend is ALSA; without the headers `alsa-sys` fails to build and
+      # every compiling job dies. Removing this breaks audio, not just CI.
       - run: sudo apt-get update && sudo apt-get install -y libasound2-dev
       - uses: ./.github/actions/rust
         with:
@@ -66,9 +66,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      # forge-dictate captures audio through cpal, whose Linux backend
-      # is ALSA; without the headers `alsa-sys` fails to build and every
-      # compiling job dies. Removing this breaks audio, not just CI.
+      # forge-capture opens the microphone through cpal, whose Linux
+      # backend is ALSA; without the headers `alsa-sys` fails to build and
+      # every compiling job dies. Removing this breaks audio, not just CI.
       - run: sudo apt-get update && sudo apt-get install -y libasound2-dev
       - uses: ./.github/actions/rust
       - uses: Swatinem/rust-cache@v2
@@ -90,9 +90,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      # forge-dictate captures audio through cpal, whose Linux backend
-      # is ALSA; without the headers `alsa-sys` fails to build and every
-      # compiling job dies. Removing this breaks audio, not just CI.
+      # forge-capture opens the microphone through cpal, whose Linux
+      # backend is ALSA; without the headers `alsa-sys` fails to build and
+      # every compiling job dies. Removing this breaks audio, not just CI.
       - run: sudo apt-get update && sudo apt-get install -y libasound2-dev
       - uses: ./.github/actions/rust
       - uses: Swatinem/rust-cache@v2
@@ -112,9 +112,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      # forge-dictate captures audio through cpal, whose Linux backend
-      # is ALSA; without the headers `alsa-sys` fails to build and every
-      # compiling job dies. Removing this breaks audio, not just CI.
+      # forge-capture opens the microphone through cpal, whose Linux
+      # backend is ALSA; without the headers `alsa-sys` fails to build and
+      # every compiling job dies. Removing this breaks audio, not just CI.
       - run: sudo apt-get update && sudo apt-get install -y libasound2-dev
       - uses: ./.github/actions/rust
       - uses: Swatinem/rust-cache@v2
@@ -131,9 +131,9 @@ jobs:
       RUSTDOCFLAGS: -D warnings
     steps:
       - uses: actions/checkout@v7
-      # forge-dictate captures audio through cpal, whose Linux backend
-      # is ALSA; without the headers `alsa-sys` fails to build and every
-      # compiling job dies. Removing this breaks audio, not just CI.
+      # forge-capture opens the microphone through cpal, whose Linux
+      # backend is ALSA; without the headers `alsa-sys` fails to build and
+      # every compiling job dies. Removing this breaks audio, not just CI.
       - run: sudo apt-get update && sudo apt-get install -y libasound2-dev
       - uses: ./.github/actions/rust
       - uses: Swatinem/rust-cache@v2
