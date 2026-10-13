@@ -92,8 +92,9 @@ impl Tool for HandOffTool {
                 },
                 "reviewable": {
                     "type": "boolean",
-                    "description": "Whether the reader can leave review comments on it. Off by \
-                                    default; a PDF always opens read-only.",
+                    "description": "Ask the reader for a review of this document. A document a \
+                                    client can read offers its review either way; a PDF always \
+                                    opens read-only.",
                 },
             },
             "required": ["path"],

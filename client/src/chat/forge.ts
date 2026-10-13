@@ -596,7 +596,7 @@ function pendingCard(family: ForgeFamily, verb: string, input: unknown): ForgeCa
       title: `handing the reader ${leafName(handed)}`,
       chips: [{ text: 'waiting for the reader', tone: 'warn' }],
       figure: null,
-      pieces: held['reviewable'] === true ? [{ kind: 'tag', text: 'reviewable' }] : [],
+      pieces: [],
     };
   }
   if (verb === 'post') {

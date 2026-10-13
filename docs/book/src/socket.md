@@ -294,9 +294,10 @@ half-done.
 seat's own working tree, for the client's viewer. `path` resolves against
 that tree and nothing outside it reads, however the path is spelled: a `..`
 walk, an absolute path elsewhere and a symlink pointing out are each refused
-BY NAME. `reviewable` is what a hand-off flagged, in the one shape that is
-not the reader's to change - a PDF opens read-only always, and the flag on
-one is refused with the reason rather than quietly dropped. The read is
+BY NAME. `reviewable` is what a hand-off asked for - the hand-off's own
+fact rather than the reader's, so it decides nothing about whether the
+viewer offers the document's review - and a PDF asked reviewable is refused
+with the reason rather than quietly dropped. The read is
 bounded by the `[documents] max_size_mib` ceiling (`10` unless `forge.toml`
 says otherwise), and a document over it is refused naming the size before
 any bytes are read. **Every refusal is an `error` naming `document_read`,
@@ -416,8 +417,10 @@ content_hash, threads, reviews}`** - in answer to `document_read`: the
   seat it was read for, the resolved absolute path the viewer addresses by,
   the kind the read detected (`markdown`, `pdf`, `text`, or `{"other":
 "<extension>"}` kept as itself), the bytes base64 - the ceiling keeps a
-  document well inside the socket's frame bound - the flag the hand-off
-  passed, the document's own hash as DECIMAL DIGITS (the same convention an
+  document well inside the socket's frame bound - whether the DOCUMENT is
+  reviewable, which is its own fact: markdown and text are, a PDF and an
+  unrecognised kind are not, so the viewer's door does not depend on how the
+  page was reached - the document's own hash as DECIMAL DIGITS (the same convention an
   anchor's `content_hash` crosses under), and the document's scope read:
   its comment threads and the reviews they were filed into. `session` is
   named back so a client holding two seats routes each answer to its own

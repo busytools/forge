@@ -58,7 +58,8 @@ pub enum DocumentKind {
 }
 
 /// One document, as the read answered: the path it resolved to, the bytes,
-/// the detected kind, and the reviewable flag the hand-off passed.
+/// the detected kind, and whether the DOCUMENT is reviewable - markdown and
+/// text are, a PDF or an unrecognised kind is not.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DocumentRead {
     /// The resolved absolute path - what a viewer deep-links by, and what

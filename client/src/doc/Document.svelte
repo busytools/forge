@@ -302,6 +302,9 @@
     <p class="doc-said">{held.refused}</p>
   {:else if held.bytes !== null && held.bytes.length === 0}
     <p class="doc-empty">The document is empty.</p>
+    <!-- A read that says not reviewable draws read-only: the wire's own shape,
+         and what a server from before the read answered the document's own
+         reviewability answers a cold markdown or text open with. -->
   {:else if held.kind === 'markdown' && !held.reviewable}
     <article class="doc-body"><Prose {text} /></article>
   {:else if held.kind === 'text' && !held.reviewable}

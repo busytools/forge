@@ -1012,8 +1012,9 @@
          basename would be the client guessing at which file was meant. -->
       <div class="d-q">{ask.request.path}</div>
       <div class="desc">
-        Open reads it in the viewer{ask.request.reviewable ? ', where you can leave comments' : ''};
-        the session waits until you finish. Not now tells it you are not reading this one.
+        Open reads it in the viewer{ask.request.reviewable
+          ? ', where the session asked for comments'
+          : ''}; the session waits until you finish. Not now tells it you are not reading this one.
       </div>
     {:else}
       <div class="d-head">

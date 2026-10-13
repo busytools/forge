@@ -37,6 +37,16 @@ interface FakeDoc {
 }
 
 /**
+ * Whether the server would call this kind reviewable - the read's own
+ * answer, so the double says what the server says and not what the caller
+ * asked for. A markdown or text document is reviewable whoever opened it;
+ * a PDF or any other kind opens read-only.
+ */
+function reviewableKind(kind: DocumentKind): boolean {
+  return kind === 'markdown' || kind === 'text';
+}
+
+/**
  * A socket that answers every read with `answer`. The answer is emitted
  * synchronously inside `readDocument`, which is safe because the watcher
  * registers its listener before it asks.
@@ -65,7 +75,7 @@ export function fakeDoc(answer: DocAnswer): FakeDoc {
           path: asked,
           document_kind: answer.document_kind,
           bytes: base64Of(answer.bytes),
-          reviewable: answer.reviewable ?? reviewable,
+          reviewable: answer.reviewable ?? reviewableKind(answer.document_kind),
           content_hash: answer.content_hash ?? '0',
           threads: answer.threads ?? [],
           reviews: answer.reviews ?? [],

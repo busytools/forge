@@ -128,7 +128,11 @@ impl Workspace {
         )
         .map_err(|refusal| refusal.to_string())?;
         let resolved = read.path.to_string_lossy().into_owned();
-        let Some((id, ending)) = self.register_document_hand_off(seat, &resolved, read.reviewable)
+        // The ask carries what the AGENT asked for, not the document's own
+        // reviewability: a reader can comment on any document a client can
+        // read, so the flag is the hand-off's own fact and nothing gates on
+        // the read's answer.
+        let Some((id, ending)) = self.register_document_hand_off(seat, &resolved, reviewable)
         else {
             return Err(NO_VIEWER_CLIENT.to_owned());
         };
