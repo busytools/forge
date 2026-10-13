@@ -9,13 +9,7 @@ import { perfProbe, perfSurface, startPerfProbe, type PerfRecord } from './perf'
  * `requestAnimationFrame` itself, which is the whole reason a known slow
  * frame can be produced here instead of hoped for on a machine.
  */
-function harness(
-  options: {
-    summaryIntervalMs?: number;
-    surface?: string | null;
-    session?: string | null;
-  } = {},
-) {
+function harness(options: { summaryIntervalMs?: number } = {}) {
   const records: PerfRecord[][] = [];
   let clock = 1_000;
   const callbacks: (() => void)[] = [];
@@ -43,9 +37,8 @@ function harness(
       ? {}
       : { summaryIntervalMs: options.summaryIntervalMs }),
   });
-  // Boot's own reading, before the probe opens its first window - the order
-  // main.ts has (the probe starts, the router wires the route later).
-  if (options.surface !== undefined) probe.setSurface(options.surface, options.session ?? null);
+  // The order main.ts has: the probe starts at boot, and the router wires
+  // the route a moment later - so the run line's reading is boot's own.
   probe.start();
 
   /** One frame's arrival, `ms` after the previous one. */
@@ -68,16 +61,24 @@ function harness(
 }
 
 describe('the frame probe', () => {
-  it('opens its log with a run line', () => {
-    const h = harness({ surface: 'connect', session: null });
+  it('opens its log with a run line carrying the boot reading', () => {
+    const h = harness();
     const first = h.records.flat()[0];
     expect(first?.kind).toBe('run_started');
     expect(first?.schema).toBe('forge-perf/v1');
     expect(first?.run_id).toBeTruthy();
     expect(first?.version).toBeTruthy();
-    // Boot's own reading rides along, so even the run line is attributable.
-    expect(first?.surface).toBe('connect');
+    // The router wires the route after this line, so null is boot's own
+    // reading rather than a missing field.
+    expect(first?.surface).toBeNull();
     expect(first?.session).toBeNull();
+
+    // And once the route IS wired, the frames carry it.
+    h.probe.setSurface('connect', null);
+    h.frame(16);
+    h.frame(120);
+    const frame = h.records.flat().find((record) => record.kind === 'frame');
+    expect(frame?.surface).toBe('connect');
   });
 
   it('records a slow frame and nothing for the fast ones between', () => {
@@ -119,19 +120,26 @@ describe('the frame probe', () => {
     expect(summaries[0]?.max_ms).toBe(200);
   });
 
-  it('names the window it summarises, and leaves frames their own place', () => {
-    const h = harness({ summaryIntervalMs: 100, surface: 'home', session: null });
-    h.frame(16);
-    h.frame(16);
-    h.frame(200);
+  it('names the surface its window OPENED under, even when the seat changes inside it', () => {
+    const h = harness({ summaryIntervalMs: 100 });
+    h.probe.setSurface('home', null);
+    h.frame(60);
+    h.frame(60); // window 1 is summarised here; window 2 opens under `home`.
 
-    const summary = h.records.flat().find((record) => record.kind === 'summary');
-    expect(summary?.surface, 'the summary says where its window opened').toBe('home');
-
-    // A seat switch mid-window: the next frame carries where IT happened
-    // (the 200 ms crossing frame above is its own record, under `home`).
+    // The switch lands INSIDE window 2, before its crossing.
     h.probe.setSurface('session', 'Busytools/forge/lead');
-    h.frame(120);
+    h.frame(120); // window 2's crossing: its summary must still say `home`.
+
+    const summaries = h.records.flat().filter((record) => record.kind === 'summary');
+    expect(summaries).toHaveLength(2);
+    expect(summaries[0]?.surface, 'window 1 opened at boot, before the route was wired').toBeNull();
+    expect(
+      summaries[1]?.surface,
+      'the summary says where its window opened, not where it closed',
+    ).toBe('home');
+    expect(summaries[1]?.session).toBeNull();
+
+    // The frame after the switch carries where IT happened.
     const frames = h.records.flat().filter((record) => record.kind === 'frame');
     const after = frames[frames.length - 1];
     expect(after?.ms).toBe(120);
