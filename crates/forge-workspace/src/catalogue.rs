@@ -707,15 +707,14 @@ impl crate::Workspace {
         if let Some(dir) = self.test_catalogue_dir.lock().clone() {
             return Some(dir);
         }
-        match &self.app_support {
-            Some(base) => Some(base.join("dictate-catalogue")),
-            None => {
-                tracing::warn!(
-                    event_name = "dictate_catalogue_dir_unresolved",
-                    "no app-support base was resolved at boot: the fetched catalogue is not cached"
-                );
-                None
-            }
+        if let Some(base) = &self.app_support {
+            Some(base.join("dictate-catalogue"))
+        } else {
+            tracing::warn!(
+                event_name = "dictate_catalogue_dir_unresolved",
+                "no app-support base was resolved at boot: the fetched catalogue is not cached"
+            );
+            None
         }
     }
 }
