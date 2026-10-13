@@ -20,7 +20,7 @@ describe('a landed take', () => {
     ).toBeNull();
   });
 
-  it('is not this page’s when it never watched the take', () => {
+  it("is not this page's when it never watched the take", () => {
     // A page that attaches finds the previous take's notice still held; its
     // words are the box's only if this page saw the take that left them.
     expect(landed(words, false, null)).toBeNull();

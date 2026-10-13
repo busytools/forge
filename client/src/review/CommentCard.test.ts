@@ -145,7 +145,7 @@ describe('the comment box', () => {
 });
 
 describe('the mic', () => {
-  it('starts a take on the page’s seat, from the box itself', async () => {
+  it("starts a take on the page's seat, from the box itself", async () => {
     const at = drawn();
     at.button().click();
     await vi.waitUntil(() => at.dictate.take !== null);
