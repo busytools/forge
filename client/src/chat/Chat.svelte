@@ -1253,9 +1253,14 @@
   <!-- The list draws its own scroll viewport, so the sheet's `.conv` rules go
        on that element rather than a wrapper around it: they are the column's
        padding, its scrollbar gutter and its scrollbar, and a wrapper would put
-       them outside the thing that scrolls. -->
+       them outside the thing that scrolls. **`display:flex` rides here as an
+       inline style on purpose**: the list's own viewport style sets
+       `display:block` inline (composed before this one, so this wins), and a
+       class cannot beat it - without the flex column the foot anchor's auto
+       margin resolves to zero on every real conversation. -->
   <VList
     class="conv"
+    style="display:flex;flex-direction:column"
     data={held.turns}
     getKey={(turn: HeldTurn) => turn.key}
     itemProps={({ item }: { item: HeldTurn }) =>
