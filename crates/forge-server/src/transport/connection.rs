@@ -1343,12 +1343,17 @@ fn forwards(update: &SessionUpdate, watched: &[Subject], me: u64) -> bool {
 /// facts.
 ///
 /// **The bound has to be the frame's, not the window's.** The window holds
-/// four thousand messages, and on the largest seat measured those weigh
-/// 382MB - past the 256MiB frame the client's socket carries
-/// (`MAX_FRAME_BYTES`, client/src-tauri/socket.rs), which is what a live
-/// 2.5GiB seat's resume did to a connection (#2150) when the whole read rode
-/// one `Connected`. A frame whose size does not depend on the conversation's
-/// size is the only one that holds whatever the seat weighs.
+/// four thousand messages and no byte ceiling, and on the largest seat
+/// measured those weigh 382MB - past the 256MiB frame the client's socket
+/// carries (`MAX_FRAME_BYTES`, client/src-tauri/socket.rs), which is what a
+/// live 2.5GiB seat's resume did to a connection (#2150) when the whole read
+/// rode one `Connected`. What a client reads instead is a page, and a page is
+/// bounded by TURNS rather than bytes (twenty a subscribe, twenty a `more`):
+/// on that seat the newest twenty-turn window weighs 103MB and the heaviest
+/// 126MB (measured 2026-10-13), roughly 2x under the cap rather than orders
+/// under it, so a frame carrying any message list leans on that cap. A frame
+/// whose size does not depend on the conversation's size is the only one that
+/// holds whatever the seat weighs.
 fn for_a_client(mut update: SessionUpdate) -> SessionUpdate {
     match &mut update {
         SessionUpdate::Connected { history, .. }
@@ -2726,7 +2731,7 @@ mod tests {
             )
             .expect("the session's transcript");
         let held = crate::transport::conversation::Held::new(
-            crate::transport::conversation::Conversation::new(live_frames(TURNS), 0),
+            crate::transport::conversation::Conversation::new(live_frames(TURNS), 0, 0),
         );
         assert!(
             held.lock().dropped() > 0,
@@ -2786,7 +2791,7 @@ mod tests {
         // on a turn's first frame.
         frames.push(calling_row(9_999));
         let held = crate::transport::conversation::Held::new(
-            crate::transport::conversation::Conversation::new(frames, 0),
+            crate::transport::conversation::Conversation::new(frames, 0, 0),
         );
         let window = held.lock();
         assert!(window.dropped() > 0, "precondition: the conversation outgrew its window");
@@ -2826,7 +2831,7 @@ mod tests {
             )
             .expect("the session's transcript");
         let held = crate::transport::conversation::Held::new(
-            crate::transport::conversation::Conversation::new(transcript_frames(ROWS), 0),
+            crate::transport::conversation::Conversation::new(transcript_frames(ROWS), 0, 0),
         );
         assert!(held.lock().dropped() > 0, "precondition: the copy outgrew its window");
         let state = TransportState {
@@ -2911,7 +2916,8 @@ mod tests {
         let mut frames = live_frames(2_600);
         frames.extend((0..999).map(result_frame));
         let conversations = crate::transport::conversation::Conversations::new();
-        conversations.insert(&seat, crate::transport::conversation::Conversation::new(frames, 0));
+        conversations
+            .insert(&seat, crate::transport::conversation::Conversation::new(frames, 0, 0));
         conversations.apply(&SessionUpdate::CronPromptAppended {
             key: seat.clone(),
             text: "the cron fired".to_owned(),
@@ -2989,7 +2995,7 @@ mod tests {
         let mut frames = live_frames(2_600);
         frames.extend((0..5_400).map(subagent_frame));
         let held = crate::transport::conversation::Held::new(
-            crate::transport::conversation::Conversation::new(frames, 0),
+            crate::transport::conversation::Conversation::new(frames, 0, 0),
         );
         let window = held.lock();
         let front = window.messages().first().expect("a front");
@@ -3051,7 +3057,8 @@ mod tests {
         let mut frames = live_frames(2_600);
         frames.extend((0..999).map(result_frame));
         let conversations = crate::transport::conversation::Conversations::new();
-        conversations.insert(&seat, crate::transport::conversation::Conversation::new(frames, 0));
+        conversations
+            .insert(&seat, crate::transport::conversation::Conversation::new(frames, 0, 0));
         conversations.apply(&SessionUpdate::ChatAppended {
             key: seat.clone(),
             msg: unnameable_row(),
@@ -3114,7 +3121,7 @@ mod tests {
             )
             .expect("the session's transcript");
         let held = crate::transport::conversation::Held::new(
-            crate::transport::conversation::Conversation::new(live_frames(TURNS), 0),
+            crate::transport::conversation::Conversation::new(live_frames(TURNS), 0, 0),
         );
         assert!(
             held.lock()

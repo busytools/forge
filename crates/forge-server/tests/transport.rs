@@ -4568,9 +4568,10 @@ async fn a_walk_pages_back_through_a_running_turn_to_its_first_message() {
     let rows_json: Vec<String> = rows.iter().map(serde_json::Value::to_string).collect();
     let lines: Vec<&str> = rows_json.iter().map(String::as_str).collect();
     fleet.seed_transcript("TestOrg", "proj", "lead", &lines).expect("the session's transcript");
-    state
-        .conversations
-        .insert(&lead_seat(), forge_server::transport::conversation::Conversation::new(history, 0));
+    state.conversations.insert(
+        &lead_seat(),
+        forge_server::transport::conversation::Conversation::new(history, 0, 0),
+    );
 
     // **Preconditions, and they are the live shape**: the window is the newest
     // 4,000 frames, its front is a thinking-token frame (the count cut landed
@@ -5578,14 +5579,18 @@ async fn a_giant_seats_history_crosses_bounded_and_the_connection_survives() {
     let (subject, ..) = snapshot_answering(&mut socket).await;
     assert_eq!(subject, Subject::Session(seat.clone()), "precondition: the client shows the seat");
 
-    // The resume's handover, as `emit_connected` builds it: the transcript
-    // read whole, past both the window's cap and its slack.
-    let giant = a_giant_history(
+    // The resume's handover as the session task builds it: the read is the
+    // whole transcript - past both the window's cap and its slack - and the
+    // update carries the newest window of it plus the cut the window left
+    // behind.
+    let read = a_giant_history(
         forge_workspace::conversation_window::CONVERSATION_CAP
             + forge_workspace::conversation_window::CONVERSATION_SLACK
             + 1,
         4 * 1024,
     );
+    let dropped = read.len() - forge_workspace::conversation_window::CONVERSATION_CAP;
+    let window = read[dropped..].to_vec();
     let session_id = SessionId::new("5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45");
 
     fleet.emit(SessionUpdate::Connected {
@@ -5595,7 +5600,8 @@ async fn a_giant_seats_history_crosses_bounded_and_the_connection_survives() {
         current_model: a_current_model(),
         available_models: Vec::new(),
         mode: None,
-        history: giant.clone(),
+        history: window.clone(),
+        dropped,
         compaction_count: 0,
     });
     let frame = frame_until(
@@ -5613,7 +5619,8 @@ async fn a_giant_seats_history_crosses_bounded_and_the_connection_survives() {
         current_model: a_current_model(),
         available_models: Vec::new(),
         mode: None,
-        history: giant.clone(),
+        history: window.clone(),
+        dropped,
         compaction_count: 0,
     });
     let frame = frame_until(
@@ -5629,7 +5636,7 @@ async fn a_giant_seats_history_crosses_bounded_and_the_connection_survives() {
     // from it weighs 382MB, past the same cap.
     fleet.emit(SessionUpdate::HistoryReplayed {
         key: seat.clone(),
-        history: giant.clone(),
+        history: window,
         compaction_count: 0,
     });
     let frame = frame_until(
@@ -5680,6 +5687,142 @@ fn assert_transcript_free(frame: &str, what: &str) {
         "the {what} carries the seat's session facts and not its transcript: a client reads \
          the conversation through its page and `more`, which is what it answers these variants \
          with",
+    );
+}
+
+/// **A connect's window still hands the walk its floor.**
+///
+/// The update carries a window now rather than the whole read, and a consumer
+/// holding the window alone reads it as the conversation's front: the
+/// transport's floor - `dropped`, what a page cursor below the window is
+/// measured against - used to come out of cutting a whole read down, so a
+/// windowed handover carrying no cut would leave the floor at zero. `floor >
+/// 0` is the only thing that mints the cursor crossing into the transcript
+/// (connection.rs's `more` arm gates on it), so the walk would stop at the
+/// window's front and draw "the history ends here" over every turn below it -
+/// on exactly the giant seats the window exists for, with nothing failing.
+/// The cut rides the update for this, and the walk below proves it end to
+/// end.
+#[tokio::test]
+async fn a_windowed_connect_still_gives_the_walk_its_floor() {
+    let (url, fleet, state) = a_server_with_state().await;
+    let seat = lead_seat();
+
+    // The transcript the file carries: 100 turns, one row each. The update's
+    // window holds only the newest 40, so 60 turns live below its front.
+    let rows: Vec<String> = (0..100)
+        .map(|at| {
+            serde_json::json!({
+                "type": "user",
+                "uuid": format!("u{at}"),
+                "message": {"role": "user", "content": format!("turn {at}")},
+                "session_id": "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
+            })
+            .to_string()
+        })
+        .collect();
+    let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
+    fleet.seed_transcript("TestOrg", "proj", "lead", &borrowed).expect("the transcript seeds");
+
+    let dropped = 60;
+    let window: Vec<forge_primitives::Message> = rows[dropped..]
+        .iter()
+        .map(|row| serde_json::from_str(row).expect("a user frame"))
+        .collect();
+
+    // The handover, before anyone is watching: the seat is materialised by
+    // the UPDATE, so the floor under test is the one the update carried
+    // rather than the file read's own. The transport's fold has to be
+    // attached first, or the update is held for the next subscriber - the
+    // client - and the seat is never seeded by it.
+    for _ in 0..200 {
+        if fleet.subscriber_count() > 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        fleet.emit_and_report(SessionUpdate::Connected {
+            key: seat.clone(),
+            session_id: SessionId::new("5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45"),
+            cwd: "/tmp".to_owned(),
+            current_model: a_current_model(),
+            available_models: Vec::new(),
+            mode: None,
+            history: window,
+            dropped,
+            compaction_count: 0,
+        }),
+        "precondition: the transport's fold takes the handover",
+    );
+    for _ in 0..200 {
+        if state.conversations.get(&seat).is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        state.conversations.get(&seat).is_some(),
+        "precondition: the connect's handover holds the seat",
+    );
+
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+    let (_, data, _) = snapshot_answering(&mut socket).await;
+    assert!(
+        data["conversation"]["turns"].as_array().is_some_and(|turns| !turns.is_empty()),
+        "the connect seeds the transport's copy, so the seat's read answers its window: {data}",
+    );
+
+    // Walk back the way a client does, and the walk has to cross: a page
+    // below the floor answers from the transcript and hands back a row
+    // cursor (`r:<byte>[:<id>]`), which is the one signal a client keeps
+    // walking on.
+    let mut cursor: Option<String> = None;
+    let mut crossed = false;
+    let mut answered_the_window = None;
+    for _ in 0..8 {
+        send(
+            &mut socket,
+            ClientMessage::More { conversation: seat.clone(), before: cursor.take(), turns: 20 },
+        )
+        .await;
+        let (turns, next) = loop {
+            match next_server(&mut socket).await {
+                ServerMessage::Page { turns, cursor, .. } => break (turns, cursor),
+                // The core raises updates of its own: skipped, for the reason
+                // `snapshot_answering` gives.
+                ServerMessage::Update { .. } => {}
+                other => panic!("`more` is answered with a page, and this is {other:?}"),
+            }
+        };
+        answered_the_window.get_or_insert(turns.len());
+        match next {
+            Some(next) if next.starts_with("r:") => {
+                crossed = true;
+                break;
+            }
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
+    assert!(
+        answered_the_window.is_some_and(|turns| turns > 0),
+        "`more` answers the window the connect seeded, not an empty conversation",
+    );
+    assert!(
+        crossed,
+        "the walk crosses into the transcript below the window rather than stopping at its \
+         front: with no floor carried, the window reads as the whole history",
     );
 }
 

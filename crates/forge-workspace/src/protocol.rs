@@ -1364,6 +1364,17 @@ pub enum SessionUpdate {
         available_models: Vec<AvailableModel>,
         mode: Option<ModeState>,
         history: Vec<Message>,
+        /// Messages the read carried that `history`'s window left behind its
+        /// front, which is the floor a page cursor below the window is
+        /// measured against.
+        ///
+        /// **Carried because the window cannot say it.** The read is windowed
+        /// before it crosses - a resume's whole transcript is gigabytes - so a
+        /// consumer holding the window alone reads it as the conversation's
+        /// front, and a walk below it would stop there instead of crossing
+        /// into the transcript. Additive on the wire, and zero for a read the
+        /// window holds whole.
+        dropped: usize,
         /// Compactions the resumed transcript records. Seeds the
         /// per-session count, which has no other durable source.
         compaction_count: u32,
@@ -1413,6 +1424,9 @@ pub enum SessionUpdate {
         available_models: Vec<AvailableModel>,
         mode: Option<ModeState>,
         history: Vec<Message>,
+        /// Messages the read carried that `history`'s window left behind its
+        /// front: the same floor a `Connected` carries, for the same reason.
+        dropped: usize,
         /// Compactions the resumed transcript records. Seeds the
         /// per-session count, which has no other durable source.
         compaction_count: u32,

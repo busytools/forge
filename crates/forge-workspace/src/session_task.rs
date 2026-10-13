@@ -282,6 +282,13 @@ impl SessionTask {
                 // per consumer: one cut, and the window is what is kept and
                 // what is handed over alike.
                 let window = crate::conversation_window::tail_of(&read);
+                // **And the cut itself rides along.** A consumer holding the
+                // window alone reads it as the conversation's front, and a
+                // client's walk below the window would stop there rather than
+                // crossing into the transcript - the floor a cursor below the
+                // window is measured against is exactly what the window left
+                // behind.
+                let left_behind = read.len() - window.len();
                 // The read goes before the window's second copy is taken, so
                 // the peak is the window's rather than the transcript plus it.
                 drop(read);
@@ -416,6 +423,7 @@ impl SessionTask {
                         available_models,
                         mode,
                         history,
+                        dropped: left_behind,
                         compaction_count,
                     });
                     // After SessionReplaced so the echo lands on the
@@ -451,6 +459,7 @@ impl SessionTask {
                         available_models,
                         mode,
                         history,
+                        dropped: left_behind,
                         compaction_count,
                     });
                     // Everything parked for this session's slot while
@@ -5644,17 +5653,26 @@ provider = "anthropic"
             let mut handed = None;
             while let Ok(update) = update_rx.try_recv() {
                 match update {
-                    SessionUpdate::Connected { history, .. }
-                    | SessionUpdate::SessionReplaced { history, .. } => handed = Some(history),
+                    SessionUpdate::Connected { history, dropped, .. }
+                    | SessionUpdate::SessionReplaced { history, dropped, .. } => {
+                        handed = Some((history, dropped));
+                    }
                     _ => {}
                 }
             }
-            let handed = handed.expect("a connect crosses as Connected or SessionReplaced");
+            let (handed, cut) = handed.expect("a connect crosses as Connected or SessionReplaced");
             assert!(
                 (cap..=cap + slack).contains(&handed.len()),
                 "the update hands over the window the task keeps, not the read: {} messages of \
                  the {read} the connect carried (connected_once: {connected_once})",
                 handed.len(),
+            );
+            assert_eq!(
+                cut,
+                read - handed.len(),
+                "and the cut the window left behind rides with it: a consumer holding the window \
+                 alone reads its front as the conversation's, so a walk below it would stop \
+                 there instead of crossing into the transcript (connected_once: {connected_once})",
             );
             assert!(
                 handed.last().is_some_and(|message| {

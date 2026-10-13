@@ -494,6 +494,7 @@ mod tests {
             available_models: Vec::new(),
             mode: None,
             history: Vec::new(),
+            dropped: 0,
             compaction_count: 0,
         });
 
