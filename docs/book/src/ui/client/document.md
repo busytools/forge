@@ -84,6 +84,13 @@ re-finds a moved line by its content, and a document has no diff to move
 within. A plain-text document has no blocks, so its rows are its own lines,
 drawn as the text they are.
 
+**A comment's words render as markdown, through the chat's own renderer** -
+the same `Prose` the review page's turns draw with, the author's lines kept:
+a comment carrying backticks or an emphasis reads here the way it reads in
+the conversation. That is every surface the viewer draws a comment's words
+on - under its block, as a draft waiting for the done, and in the outdated
+section.
+
 **The drafts outlive the viewer.** Unsent comments are held per document,
 module-wide, so a second hand-off that raises another document does not take
 the first's unsent comments with it - they wait in their own scope until
