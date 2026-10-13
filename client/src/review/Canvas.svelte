@@ -40,6 +40,7 @@
   } from './diff';
   import { canvasLine, statusName, threadsInScope } from './view';
   import { captureContext, type ComposedComment } from './write';
+  import { Mounts } from './mounts';
   import ThreadTurn from './ThreadTurn.svelte';
 
   type DiffFile = NonNullable<ComponentProps<typeof DiffView>['diffFile']>;
@@ -325,6 +326,9 @@
     void now;
     const observers: MutationObserver[] = [];
     const draw = (el: HTMLDivElement, path: string) => {
+      // Rows come and go under Svelte's own section swap as well as under this
+      // pass, so every pass starts by letting go of the ones already gone.
+      mounts.sweep();
       injectDoors(el, path);
       armClicks(el, path);
       const want: {
@@ -390,7 +394,7 @@
       }
       for (const [key, row] of existing) {
         if (kept.has(key)) continue;
-        releaseRow(row);
+        mounts.release(row);
         row.remove();
       }
     };
@@ -405,6 +409,11 @@
       for (const observer of observers) observer.disconnect();
     };
   });
+
+  // The canvas going away - the other tab, the page - takes its rows' roots
+  // with it: an effect of its own, because the pass above cleans up between
+  // every pair of runs and must leave the rows it is keeping alone.
+  $effect(() => () => mounts.releaseAll());
 
   /**
    * A click anywhere on a line row opens the composer there, the way the
@@ -444,11 +453,9 @@
     return node;
   }
 
-  /**
-   * The Svelte roots a built row owns, so a row the reconciler drops lets
-   * them go with it. Keyed by the element the root was mounted into.
-   */
-  const roots = new WeakMap<Element, () => void>();
+  /** The roots the rows built here own, released where a row is dropped and
+   *  swept where one leaves without the reconciler seeing it. */
+  const mounts = new Mounts();
 
   /** One turn, drawn by the piece both halves of the page draw. */
   function turnBlock(turn: ReviewThreadRecord['comments'][number], index: number): HTMLElement {
@@ -457,18 +464,8 @@
       target: host,
       props: { turn, rounds: reviews, index, now },
     });
-    roots.set(host, () => void unmount(held));
+    mounts.hold(host, () => void unmount(held));
     return host;
-  }
-
-  /** Let go of every root a row's subtree owns, before the row is dropped. */
-  function releaseRow(row: Element): void {
-    for (const el of row.querySelectorAll('*')) {
-      const letGo = roots.get(el);
-      if (letGo === undefined) continue;
-      letGo();
-      roots.delete(el);
-    }
   }
 
   function threadCard(thread: ReviewThreadRecord, movedFrom: number | null): HTMLElement {
