@@ -1306,6 +1306,108 @@ describe('the record a page holds over an update stream', () => {
   });
 
   /**
+   * **The record's deadline survives a lost paint AND a lost timer** (#2132).
+   *
+   * The twin of the chat's case: a page suspended at the moment an update's
+   * publish is armed loses the paint and can lose the deadline with it, and a
+   * callback is the only thing that ever cleared `queued` - so every later
+   * update was swallowed and the record was dead until a read landed. The
+   * armed-at stamp is wall-clock: an update past the deadline flushes what
+   * the paint never did.
+   */
+  it('flushes a record that lost its paint and its deadline at the next update past the deadline', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    // The suspended page's shape: `stubFrames` holds the armed frame and no
+    // paint runs, and the deadline timer is never advanced.
+    const start = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(start);
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD));
+
+    page.land(updateOf({ chat_appended: { key: LEAD, msg: spoke('armed, and never painted') } }));
+    expect(spoken(page), 'folded, and its draw waits for a paint nobody delivers').not.toContain(
+      'armed, and never painted',
+    );
+
+    // Inside the deadline the guard still holds: the wedge as it stands, the
+    // record moving where nobody sees it.
+    page.land(
+      updateOf({ chat_appended: { key: LEAD, msg: spoke('swallowed inside the deadline', 'u2') } }),
+    );
+    expect(spoken(page), 'inside the deadline the publish is still waited for').not.toContain(
+      'swallowed inside the deadline',
+    );
+
+    // Wall-clock time passes - the page spent it suspended - and the next
+    // update finds the stamp stale: it flushes instead of being swallowed.
+    clock.mockReturnValue(start + 1_000);
+    page.land(updateOf({ chat_appended: { key: LEAD, msg: spoke('the frame that heals', 'u3') } }));
+
+    expect(spoken(page), 'an update past the deadline draws what the paint never did').toContain(
+      'the frame that heals',
+    );
+    expect(spoken(page), 'and the frame the wedge began with is in it').toContain(
+      'armed, and never painted',
+    );
+
+    // And the gate is restored rather than bypassed: the next update waits
+    // for its paint again, and a deadline that does fire still draws it.
+    page.land(updateOf({ chat_appended: { key: LEAD, msg: spoke('gate restored', 'u4') } }));
+    expect(spoken(page), 'the next update waits for a paint again').not.toContain('gate restored');
+    vi.advanceTimersByTime(1_000);
+    expect(spoken(page), 'and its own deadline draws it').toContain('gate restored');
+    page.stop();
+  });
+
+  /**
+   * **A return draws the newest, with no frame and no read** (#2132).
+   *
+   * The other half of the wedge, and the half no update can give: the page
+   * becoming reachable again IS the moment - visibility returning, a bfcache
+   * restore, the window regaining focus - and what a return draws is the
+   * record the suspended page folded.
+   */
+  it.each([
+    [
+      'visibilitychange',
+      (): void => {
+        document.dispatchEvent(new Event('visibilitychange'));
+      },
+    ],
+    [
+      'focus',
+      (): void => {
+        window.dispatchEvent(new Event('focus'));
+      },
+    ],
+    [
+      'pageshow',
+      (): void => {
+        window.dispatchEvent(new Event('pageshow'));
+      },
+    ],
+  ])('a %s return draws the newest after a suspended paint', (_door, arrive) => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD));
+
+    page.land(
+      updateOf({ chat_appended: { key: LEAD, msg: spoke('folded while the window was away') } }),
+    );
+    expect(spoken(page), 'armed, and no paint is coming').not.toContain(
+      'folded while the window was away',
+    );
+
+    arrive();
+
+    expect(spoken(page), 'the return draws it, with no update and no read').toContain(
+      'folded while the window was away',
+    );
+    page.stop();
+  });
+
+  /**
    * **A fired cron's schedule is on the frame and on no field of the record.**
    * The row's prose carries the prompt alone, so the pump keeps the pairing
    * the frame states - and it has to do so where the record's own early return
