@@ -7434,4 +7434,28 @@ mod lead_charter_tests {
             "no fixed worker figure in the prose - the cap is the config's: {DEFAULT_LEAD_CHARTER}",
         );
     }
+
+    /// The guardrails say what a lead serializes; this rule says what a
+    /// lead must NOT - a read-only stage queued behind a write idles for
+    /// the whole write and reads as waiting rather than blocked. The
+    /// one-question test is pinned with its verdict, since the verdict is
+    /// what stops a cautious lead from holding a whole chain.
+    #[test]
+    fn lead_charter_carries_the_serialize_the_write_rule() {
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains("**Serialize the write, not the read.**"),
+            "the rule's handle is pinned: {DEFAULT_LEAD_CHARTER}",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains("ask which of its next stages touches shared state"),
+            "the test before a HOLD is pinned: {DEFAULT_LEAD_CHARTER}",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains(
+                "if I start this now, what does it touch? If nothing shared, it starts now, \
+                 whatever the merge order"
+            ),
+            "the test question and its verdict are pinned together: {DEFAULT_LEAD_CHARTER}",
+        );
+    }
 }
