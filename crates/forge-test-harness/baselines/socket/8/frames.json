@@ -117,7 +117,6 @@
     "DictateReadAloudDelete": "dictate_read_aloud_delete",
     "DictateReadAloudStart": "dictate_read_aloud_start",
     "DictateReadAloudStop": "dictate_read_aloud_stop",
-    "DictateStart": "dictate_start",
     "DictateStop": "dictate_stop",
     "DictateStream": "dictate_stream",
     "DictateUninstall": "dictate_uninstall",

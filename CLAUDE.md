@@ -23,14 +23,14 @@ forge-test-harness ─→ primitives + sdk + workspace + server
 - **`forge-capture`** - microphone capture: the device, the input plan,
   the downmix and resampler, and the mono frames a host reads from it.
   A leaf: no forge-* dependency, and no knowledge of a host, a take or
-  a wire - so `forge-dictate`'s device take and a client shell's own
-  capture share one open.
+  a wire - so a client's shell captures through it and `forge-dictate`
+  re-exports its device list.
 - **`forge-dictate`** - the dictation primitive: audio in, text out.
-  Owns its model files, speech recognition and normalization, and
-  builds its device take on `forge-capture`. Depends only on that
-  capture leaf and knows nothing about a host, so it must not grow one;
-  a doc comment mentioning a keypress, a composer or a session is a
-  bug.
+  Owns its model files, speech recognition and normalization, and takes
+  audio as mono frames a host pushes in. Its one forge-* dependency is
+  the capture leaf, for the device list; it knows nothing about a host,
+  so it must not grow one, and a doc comment mentioning a keypress, a
+  composer or a session is a bug.
 - **`forge-system-one`** - the System One decision-model client: the
   `[systemone]` config shape, the wire question/answer types with their
   validation, and the HTTP call with its timeout and error mapping. A
@@ -118,8 +118,8 @@ Work top-down; first match wins.
 2. **Opening a microphone?** (the device, its config negotiation, the
    downmix and resampler, the frames a host reads)
    -> `forge-capture`. A leaf: it may not depend on any forge-* crate and
-   knows nothing about a host, so both capture legs - the server's device
-   take and a client's own shell - build on it.
+   knows nothing about a host, so a host that captures - a client's own
+   shell - builds on it.
 3. **System One decision-model I/O?** (the `[systemone]` config shape,
    the wire question and answer types with their validation, the HTTP
    call) -> `forge-system-one`. A leaf: it may not depend on any forge-*

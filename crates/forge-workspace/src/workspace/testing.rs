@@ -622,10 +622,10 @@ impl Workspace {
         *self.dictate.snapshot.lock() = snapshot;
     }
 
-    /// Arm dictation with an engine over `models_dir`: its microphone is
-    /// a stand-in and its weights are absent, so a take registers, meters
-    /// and resolves without hardware or a model. The caller holds the
-    /// directory for as long as the engine is wanted. Test-only.
+    /// Arm dictation with an engine over `models_dir`: its weights are
+    /// absent, so a take registers, meters and resolves without a model.
+    /// The caller holds the directory for as long as the engine is
+    /// wanted. Test-only.
     ///
     /// **The read-aloud set moves here too**, because its own resolution
     /// falls back to the machine's app-support dir whatever config dir a
@@ -636,7 +636,7 @@ impl Workspace {
         &self,
         models_dir: &std::path::Path,
     ) -> Result<(), forge_dictate::Error> {
-        let engine = forge_dictate::test_support::engine_with_synthetic_microphone(
+        let engine = forge_dictate::Engine::new(
             forge_dictate::ConfigBuilder::new().models_dir(models_dir).normalizer(None).build(),
         )?;
         *self.dictate.engine.lock() = Some(engine);

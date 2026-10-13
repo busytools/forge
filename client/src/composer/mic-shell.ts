@@ -1,8 +1,8 @@
 /**
  * The desktop's microphone: the shell's own capture, framed in Rust.
  *
- * The page does not open a device here. The shell does, natively through the
- * same capture crate the server's own device take uses, and hands the frames
+ * The page does not open a device here. The shell does, natively through
+ * `forge-capture`, and hands the frames
  * back as `client://mic` events - the bytes of the very frames the browser's
  * capture sends, so the server and the take feed see no difference at all.
  * This side owns the take around them exactly as it does for a browser's

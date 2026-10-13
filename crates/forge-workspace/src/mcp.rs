@@ -905,6 +905,11 @@ mod tests {
     /// are `.jsonl`, so the extension filter leaves them out: a capture
     /// holds whatever the capture machine printed.
     ///
+    /// **An untracked file is the one blind spot**: `git ls-files` lists
+    /// the index, so a source file added but not yet staged is not
+    /// scanned. The mirror case - deleted but not staged - fails the
+    /// caller's count assertion rather than passing quietly.
+    ///
     /// **The client's own files count, and they are the ones this most
     /// rewrote.** A rename that reached `client/src/` and stopped there leaves
     /// the page calling a tool nothing registers, which is the failure the scan

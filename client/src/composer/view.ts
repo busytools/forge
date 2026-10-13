@@ -160,7 +160,7 @@ export interface ComposerProps {
  * **A model is loaded when it is `ready`, which is the same reading the home's
  * own card takes** (`home/view.ts` counts `state === 'ready'` and calls the
  * install ready only when every model is). Anything less draws a mic whose
- * click dispatches a `dictate_start` the core cannot honour, because the engine
+ * click dispatches a `dictate_stream` the core cannot honour, because the engine
  * is parked only when the whole set loaded. The mic still arrives - the page
  * re-reads the home when `DictateAvailability` lands - so the wait is a delay
  * rather than an absence.

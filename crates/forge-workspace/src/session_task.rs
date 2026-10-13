@@ -1628,7 +1628,6 @@ pub(crate) fn execute_command_via_handle(
         misrouted @ (Command::SetDictateOverride { .. }
         | Command::ResetDictateOverrides { .. }
         | Command::SetDictateDevice { .. }
-        | Command::DictateStart { .. }
         | Command::DictateStream { .. }
         | Command::DictateStop { .. }
         | Command::SpawnProject { .. }

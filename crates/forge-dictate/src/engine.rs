@@ -347,8 +347,6 @@ impl Readiness {
 /// weights means one caller at a time whatever the API looks like.
 pub struct Engine {
     max_capture: Duration,
-    device: Option<String>,
-    recorder: crate::capture::Recorder,
     normalize_options: NormalizeOptions,
     silence_floor: f32,
     /// Where take diagnostics land, if the caller pointed them
@@ -365,8 +363,6 @@ pub struct Engine {
     /// `None` only while dropping.
     jobs: Option<Sender<Job>>,
     worker: Option<std::thread::JoinHandle<()>>,
-    /// Label of whoever holds the microphone, if anyone.
-    holder: Arc<Mutex<Option<String>>>,
     /// Answers [`Engine::wait_ready`] once the worker has the weights.
     readiness: Arc<Readiness>,
 }
@@ -406,20 +402,9 @@ impl Engine {
     /// cannot be loaded surfaces from the first [`Ticket::recv`] rather
     /// than here, because that is where it is first used.
     pub fn new(cfg: Config) -> Result<Arc<Engine>, Error> {
-        Self::with_recorder(cfg, Arc::new(crate::capture::record))
-    }
-
-    /// Build the engine recording through `recorder` instead of
-    /// [`crate::capture::record`]. The seam that keeps tests off real
-    /// input hardware.
-    pub(crate) fn with_recorder(
-        cfg: Config,
-        recorder: crate::capture::Recorder,
-    ) -> Result<Arc<Engine>, Error> {
         let dir = crate::fetch::models_dir(&cfg)?;
         let asr_path = dir.join(&cfg.asr_model.file);
         let max_capture = cfg.max_capture;
-        let device = cfg.device.clone();
         let normalize_options = cfg.normalize_options;
         let silence_floor = cfg.silence_floor;
         let diagnostics_dir = cfg.diagnostics_dir.clone();
@@ -440,8 +425,6 @@ impl Engine {
 
         Ok(Arc::new(Engine {
             max_capture,
-            device,
-            recorder,
             normalize_options,
             silence_floor,
             diagnostics_dir,
@@ -449,7 +432,6 @@ impl Engine {
             in_flight,
             jobs: Some(jobs),
             worker: Some(handle),
-            holder: Arc::new(Mutex::new(None)),
             readiness,
         }))
     }
@@ -516,104 +498,10 @@ impl Engine {
         self.submit(pcm, resample, false, options)
     }
 
-    /// The configured input device id, when one is pinned. A caller
-    /// resolving its own per-capture choice (a session pick over this
-    /// pin) reads it here rather than rebuilding the config.
-    pub fn device(&self) -> Option<&str> {
-        self.device.as_deref()
-    }
-
-    /// Take the microphone, labelling the holder so a competing caller
-    /// can be told who has it.
+    /// Start a take fed by pushed frames.
     ///
-    /// Exclusive WITHIN THIS PROCESS ONLY. A second process running its
-    /// own engine is not arbitrated; the operating system decides, and
-    /// both may record.
-    pub fn try_capture(self: &Arc<Self>, holder: impl Into<String>) -> Result<Capture, Busy> {
-        self.try_capture_with(holder, self.device.as_deref())
-    }
-
-    /// [`Engine::try_capture`], recording from `device` for this one
-    /// capture. `None` is the system default - the same semantics as
-    /// [`crate::Config::device`] - so a caller that resolved a session
-    /// pick passes the resolved value outright rather than layering on
-    /// the configured pin.
-    pub fn try_capture_with(
-        self: &Arc<Self>,
-        holder: impl Into<String>,
-        device: Option<&str>,
-    ) -> Result<Capture, Busy> {
-        // Resolved before the microphone claim: a take whose queue is
-        // already gone (the engine is dropping) must refuse without
-        // taking the holder slot it could not release.
-        let jobs =
-            self.jobs.as_ref().ok_or(Busy { holder: "the engine is stopping".to_owned() })?.clone();
-
-        let mut lock = self.holder.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(held) = lock.as_deref() {
-            return Err(Busy { holder: held.to_owned() });
-        }
-        *lock = Some(holder.into());
-        drop(lock);
-
-        // The take side both capture paths share: the recording, its
-        // segmenter and the channels finish hands on.
-        let parts = self.begin_take(jobs);
-        let (ready, started) = channel();
-        let max_capture = self.max_capture;
-        let shared = Arc::clone(&parts.recording);
-        let wanted = device.map(str::to_owned);
-        let record_fn = Arc::clone(&self.recorder);
-        let recorder = std::thread::Builder::new()
-            .name("forge-dictate-mic".into())
-            .spawn(move || record_fn(&shared, max_capture, wanted.as_deref(), &ready))
-            .ok();
-
-        // Carried on the capture rather than returned here: `Busy`
-        // answers "who has the microphone", and a device that will not
-        // open is a different question with a different answer.
-        let failed_to_open = match started.recv() {
-            Ok(Err(error)) => {
-                tracing::warn!(
-                    event_name = "input_device_open_failed",
-                    %error,
-                    "input device did not open"
-                );
-                Some(error)
-            }
-            Ok(Ok(())) => None,
-            Err(_) => Some(Error::Capture { message: "the recorder thread did not start".into() }),
-        };
-        // A take whose segmenter did not start can never resolve, so the
-        // capture is refused, not degraded. Same rule as the recorder.
-        let failed_to_open = failed_to_open.or({
-            parts
-                .segmenter
-                .is_none()
-                .then(|| Error::Capture { message: "the take segmenter did not start".into() })
-        });
-
-        Ok(Capture {
-            holder: Some(Arc::clone(&self.holder)),
-            engine: Arc::clone(self),
-            recording: parts.recording,
-            recorder,
-            max_capture,
-            failed_to_open,
-            segmenter: parts.segmenter,
-            finish_tx: Some(parts.finish_tx),
-            answer_rx: Some(parts.answer_rx),
-            progress_rx: Some(parts.progress_rx),
-            cancel: parts.cancel,
-        })
-    }
-
-    /// Start a take fed by pushed frames rather than a device.
-    ///
-    /// No device is opened and none is claimed, so a stream take runs
-    /// beside a device take instead of contending with it. The one
-    /// refusal is an engine that is winding down, whose drain would
-    /// discard every job the take queued.
+    /// The one refusal is an engine that is winding down, whose drain
+    /// would discard every job the take queued.
     pub fn capture_stream(self: &Arc<Self>) -> Result<StreamCapture, Error> {
         if self.stopping.load(Ordering::Relaxed) {
             return Err(Error::EngineStopped);
@@ -629,12 +517,9 @@ impl Engine {
                 limit: crate::capture::sample_cap(self.max_capture),
             },
             capture: Capture {
-                holder: None,
                 engine: Arc::clone(self),
                 recording: parts.recording,
-                recorder: None,
                 max_capture: self.max_capture,
-                failed_to_open: None,
                 segmenter: Some(segmenter),
                 finish_tx: Some(parts.finish_tx),
                 answer_rx: Some(parts.answer_rx),
@@ -644,7 +529,7 @@ impl Engine {
         })
     }
 
-    /// The take side both capture paths share: the recording `sample_cap`
+    /// The take side: the recording `sample_cap`
     /// samples long, the segmenter cutting windows off it as it grows,
     /// and the channels a [`Capture`] hands on at `finish`.
     fn begin_take(self: &Arc<Self>, jobs: Sender<Job>) -> TakeParts {
@@ -726,8 +611,8 @@ impl Engine {
 ///
 /// The sink is what a transport holds and pushes into; the capture is
 /// what the host finishing the take holds. Both share one recording, so
-/// a take fed this way meters, caps, segments, cancels and finishes
-/// exactly as a device take does.
+/// a take fed this way meters, caps, segments, cancels and finishes on
+/// one path.
 pub struct StreamCapture {
     pub sink: FrameSink,
     pub capture: Capture,
@@ -745,11 +630,10 @@ pub struct FrameSink {
 impl FrameSink {
     /// Push mono samples at [`SAMPLE_RATE`].
     ///
-    /// The loudest sample is folded into the meter exactly as the audio
-    /// callback's is, so a level bar reads pushed and recorded audio the
-    /// same way. Samples past [`Config::max_capture`] are dropped and the
-    /// take flags itself truncated, as a device capture's are. Answers
-    /// `false` once the take is over, so a caller can stop feeding.
+    /// The loudest sample is folded into the meter, so a level bar reads
+    /// pushed audio. Samples past [`Config::max_capture`] are dropped and
+    /// the take flags itself truncated. Answers `false` once the take is
+    /// over, so a caller can stop feeding.
     pub fn push_mono(&self, samples: &[f32]) -> bool {
         if self.recording.stopped() {
             return false;
@@ -763,14 +647,6 @@ impl std::fmt::Debug for FrameSink {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FrameSink").field("limit", &self.limit).finish_non_exhaustive()
     }
-}
-
-/// Somebody else holds the microphone.
-#[derive(Debug, Clone, thiserror::Error)]
-#[error("the microphone is claimed by {holder}")]
-pub struct Busy {
-    /// Label the current holder passed to [`Engine::try_capture`].
-    pub holder: String,
 }
 
 /// The polling view of a live capture: the level read and the cap
@@ -808,34 +684,15 @@ impl std::fmt::Debug for CaptureMeter {
     }
 }
 
-/// Records from the microphone, and holds the crate's claim on it until
-/// dropped.
+/// One take in flight: the recording it grows, its segmenter, and the
+/// channels `finish` hands on.
 ///
-/// Release is tied to the value rather than to a method so a caller that
-/// panics mid-capture cannot wedge the input for everyone else in the
-/// process.
-///
-/// EXCLUSIVE WITHIN THIS PROCESS ONLY. A second process running its own
-/// engine is not arbitrated - the operating system decides and both may
-/// record - and forge's own single-instance lock is per config
-/// directory, so several of its profiles can be running at once. That
-/// contention is one of the cases [`Outcome::NoAudio`] exists to make
-/// legible, because the loser typically records silence.
+/// Release is tied to the value rather than to a method, so a caller
+/// that panics mid-take cannot leave the take's threads running.
 pub struct Capture {
-    /// The engine's device claim, released with this value. `None` on a
-    /// stream take, which claims no device and so must never clear one.
-    holder: Option<Arc<Mutex<Option<String>>>>,
     engine: Arc<Engine>,
     recording: Arc<crate::capture::Recording>,
-    /// Taken by `finish`/`cancel`; otherwise joined by `Drop`.
-    recorder: Option<std::thread::JoinHandle<()>>,
     max_capture: Duration,
-    /// Why the input never opened, if it did not. Held rather than
-    /// logged-and-forgotten: an empty buffer and a refused device both
-    /// produce no samples, and reporting the second as
-    /// [`Outcome::NoAudio`] would hide a denied permission behind a
-    /// message about silence.
-    failed_to_open: Option<Error>,
     /// The take's segmenter. Taken by `finish`, which hands it to the
     /// ticket; joined by `Drop` on the abandon path.
     segmenter: Option<std::thread::JoinHandle<()>>,
@@ -886,9 +743,7 @@ impl Capture {
         self.progress_rx.take()
     }
 
-    /// Stop recording and queue what was captured. Releases the
-    /// microphone before the transcription starts, so the next caller
-    /// does not wait for inference.
+    /// Stop the take and queue what was captured.
     pub fn finish(self) -> Result<Ticket, Error> {
         let options = self.engine.normalize_options;
         self.finish_with(options)
@@ -903,9 +758,6 @@ impl Capture {
     /// join once on the worker. The returned ticket resolves when the
     /// whole transcript does.
     pub fn finish_with(mut self, options: NormalizeOptions) -> Result<Ticket, Error> {
-        if let Some(error) = self.failed_to_open.take() {
-            return Err(error);
-        }
         self.stop_recording();
         let truncated = self.recording.was_truncated();
         if truncated {
@@ -936,62 +788,37 @@ impl Capture {
         drop(self);
     }
 
-    /// Why the input never opened, if it did not. Reading it at capture
-    /// time is what lets a host refuse a dead device eagerly instead of
-    /// running the level bar over a microphone that was never open and
-    /// reporting the failure only when the caller lets go.
-    pub fn open_error(&self) -> Option<&Error> {
-        self.failed_to_open.as_ref()
-    }
-
     /// The cap this take is bounded by. A host feeding the take itself has
-    /// to enforce it: the recorder's own loop is what notices it for a
-    /// device, and a take fed by frames has no loop at all.
+    /// to enforce it: a take fed by frames has no loop at all.
     pub fn max_capture(&self) -> Duration {
         self.max_capture
     }
 
-    /// Whether the capture reached [`Config::max_capture`] and stopped
+    /// Whether the take reached [`Config::max_capture`] and stopped
     /// itself. A host polling the level reads this so it can submit the
-    /// take instead of holding a microphone that is no longer running.
+    /// take instead of holding a seat whose take is no longer running.
     pub fn was_truncated(&self) -> bool {
         self.recording.was_truncated()
     }
 
-    /// Stop the recorder and join it, so the device is released before
-    /// this returns rather than at some later point. The captured
-    /// samples stay where they are: the segmenter holds the recording
-    /// and reads the tail out of it at finish.
+    /// Stop the take: the recording's stop flag is what tells a pusher
+    /// the take is over. The captured samples stay where they are: the
+    /// segmenter holds the recording and reads the tail out of it at
+    /// finish.
     fn stop_recording(&mut self) {
         self.recording.stop();
-        if let Some(recorder) = self.recorder.take() {
-            let _ = recorder.join();
-        }
-    }
-}
-
-impl std::fmt::Debug for Capture {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let held = self.holder.as_ref().and_then(|holder| {
-            holder.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
-        });
-        f.debug_struct("Capture").field("holder", &held).finish_non_exhaustive()
     }
 }
 
 impl Drop for Capture {
     fn drop(&mut self) {
-        // Device first, then the segmenter: the closed finish channel
-        // is the abandon signal, and the join makes sure no take
-        // thread outlives the value that owns its result.
+        // Stop first, then the segmenter: the closed finish channel is
+        // the abandon signal, and the join makes sure no take thread
+        // outlives the value that owns its result.
         self.stop_recording();
         self.finish_tx.take();
         if let Some(segmenter) = self.segmenter.take() {
             let _ = segmenter.join();
-        }
-        if let Some(holder) = &self.holder {
-            let mut lock = holder.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            *lock = None;
         }
     }
 }
@@ -1738,15 +1565,13 @@ mod tests_engine {
     use super::*;
     use crate::{ConfigBuilder, Samples};
 
-    /// An engine whose weights live in an empty directory and whose
-    /// microphone is a stand-in. Enough for anything decided before a
-    /// job is queued; a job would fail at `recv`, and these tests never
-    /// queue one.
+    /// An engine whose weights live in an empty directory. Enough for
+    /// anything decided before a job is queued; a job would fail at
+    /// `recv`, and these tests never queue one.
     fn engine_without_weights() -> (tempfile::TempDir, Arc<Engine>) {
         let dir = tempfile::tempdir().unwrap();
         let cfg = ConfigBuilder::new().models_dir(dir.path()).normalizer(None).build();
-        let engine =
-            crate::test_support::engine_with_synthetic_microphone(cfg).expect("engine must start");
+        let engine = Engine::new(cfg).expect("engine must start");
         (dir, engine)
     }
 
@@ -1801,62 +1626,6 @@ mod tests_engine {
         );
     }
 
-    /// Refuses to open with the device it was handed in the error, so a
-    /// test can read back exactly which choice reached the recorder
-    /// without touching hardware.
-    fn device_echoing_recorder(
-        _shared: &Arc<crate::capture::Recording>,
-        _max_capture: Duration,
-        wanted: Option<&str>,
-        ready: &std::sync::mpsc::Sender<Result<(), Error>>,
-    ) {
-        let _ = ready.send(Err(Error::DeviceNotFound {
-            wanted: wanted.unwrap_or("<system default>").to_owned(),
-            available: String::new(),
-        }));
-    }
-
-    fn echo_engine(device: Option<&str>) -> Arc<Engine> {
-        let dir = tempfile::tempdir().unwrap();
-        let mut builder = ConfigBuilder::new().models_dir(dir.path()).normalizer(None);
-        if let Some(device) = device {
-            builder = builder.device(device);
-        }
-        Engine::with_recorder(builder.build(), Arc::new(device_echoing_recorder))
-            .expect("engine must start")
-    }
-
-    /// `try_capture` records from the configured device;
-    /// `try_capture_with` replaces it for the one capture, where `None`
-    /// means the system default and not "whatever is configured".
-    #[test]
-    fn the_per_capture_device_choice_reaches_the_recorder() {
-        let engine = echo_engine(Some("config-device"));
-        let which = |capture: Result<Capture, Busy>| match capture {
-            Ok(capture) => match capture.open_error() {
-                Some(Error::DeviceNotFound { wanted, .. }) => wanted.clone(),
-                other => panic!("the recorder echoes the device back, got {other:?}"),
-            },
-            Err(busy) => panic!("the engine is free: {busy:?}"),
-        };
-
-        assert_eq!(
-            which(engine.try_capture("test")),
-            "config-device",
-            "try_capture must carry the configured device"
-        );
-        assert_eq!(
-            which(engine.try_capture_with("test", Some("pin-device"))),
-            "pin-device",
-            "an explicit per-capture device must replace the configured one"
-        );
-        assert_eq!(
-            which(engine.try_capture_with("test", None)),
-            "<system default>",
-            "None must mean the system default, not the configured device"
-        );
-    }
-
     #[test]
     fn a_stereo_source_is_refused_before_it_is_queued() {
         let (_dir, engine) = engine_without_weights();
@@ -1866,17 +1635,6 @@ mod tests_engine {
         assert!(
             matches!(err, Error::Channels { actual: 2 }),
             "stereo must be refused, not read as a doubled-rate mono signal, got: {err:?}"
-        );
-    }
-
-    #[test]
-    fn the_microphone_is_exclusive_and_names_who_holds_it() {
-        let (_dir, engine) = engine_without_weights();
-        let _held = engine.try_capture("first").expect("an idle microphone must be available");
-        let busy = engine.try_capture("second").expect_err("a held microphone must refuse");
-        assert_eq!(
-            busy.holder, "first",
-            "a refused caller must be told who holds it, or it cannot say anything useful"
         );
     }
 
@@ -1896,43 +1654,6 @@ mod tests_engine {
             (engine.silence_floor() + 3.0).abs() < f32::EPSILON,
             "the getter must carry the configured floor, got {}",
             engine.silence_floor()
-        );
-    }
-
-    /// On a machine with a working default input, a fresh capture is not
-    /// carrying an open failure. Skipped where there is no audio stack,
-    /// since there the failure arm is the only one reachable. Skipped too
-    /// when the recorder cannot open a REAL default - the workspace-level
-    /// refusal tests cover that arm without hardware.
-    #[test]
-    #[ignore = "opens the real default input; run with --run-ignored all on a machine with a microphone"]
-    fn a_fresh_capture_over_a_working_device_carries_no_open_error() {
-        let Ok(found) = crate::devices() else { return };
-        if !found.iter().any(|d| d.is_default) {
-            return;
-        }
-        // The real recorder, not the synthetic helper: a stand-in that
-        // always opens would make the assertion a tautology.
-        let dir = tempfile::tempdir().unwrap();
-        let cfg = ConfigBuilder::new().models_dir(dir.path()).normalizer(None).build();
-        let engine = Engine::new(cfg).expect("an engine must start without waiting for weights");
-        let capture = engine.try_capture("open-error").expect("an idle microphone must be held");
-        assert!(
-            capture.open_error().is_none(),
-            "a capture over a working default input must not report an open failure: {:?}",
-            capture.open_error().map(std::string::ToString::to_string)
-        );
-    }
-
-    #[test]
-    fn dropping_a_capture_releases_the_microphone() {
-        let (_dir, engine) = engine_without_weights();
-        let held = engine.try_capture("first").expect("an idle microphone must be available");
-        drop(held);
-        let again = engine.try_capture("second");
-        assert!(
-            again.is_ok(),
-            "release must ride on Drop, or a panicking caller wedges the microphone for everyone"
         );
     }
 
@@ -2111,90 +1832,51 @@ mod tests_engine {
         }
     }
 
-    /// The pipelined queue, weightless: the feeding microphone crosses
-    /// the window ceiling, the segmenter cuts and queues while the
-    /// capture is still open, and the take answers through the
-    /// pipeline (here with the load failure a weightless engine gives
-    /// every job).
-    #[test]
-    fn a_segment_settles_while_the_recording_is_still_open() {
-        let dir = tempfile::tempdir().unwrap();
-        let cfg = ConfigBuilder::new().models_dir(dir.path()).normalizer(None).build();
-        let engine = crate::test_support::engine_with_feeding_microphone(
-            cfg,
-            Arc::new(loud(70)),
-            Duration::from_millis(1),
-        )
-        .expect("engine must start");
-        let mut capture = engine.try_capture("pipeline").expect("an idle microphone must be held");
-        let mut progress = capture.take_progress().expect("the capture carries a progress stream");
-        let seen = wait_for_a_settled_segment(&mut progress);
-        assert!(
-            seen.iter().all(|step| step.total.is_none()),
-            "a live recording cannot know its total, got {seen:?}"
-        );
-        let ticket = capture.finish().expect("the take must finish");
-        assert!(
-            matches!(ticket.recv(), Err(Error::ModelLoad { .. })),
-            "the segment job reached the worker, so its failure is the take's answer"
-        );
-    }
-
     #[test]
     fn a_take_without_cuts_still_resolves_through_the_pipeline() {
-        let dir = tempfile::tempdir().unwrap();
-        let cfg = ConfigBuilder::new().models_dir(dir.path()).normalizer(None).build();
-        let engine = crate::test_support::engine_with_feeding_microphone(
-            cfg,
-            Arc::new(loud(5)),
-            Duration::from_millis(1),
-        )
-        .expect("engine must start");
-        let capture = engine.try_capture("pipeline").expect("an idle microphone must be held");
-        std::thread::sleep(Duration::from_millis(100));
-        let ticket = capture.finish().expect("the take must finish");
+        let (_dir, engine) = engine_without_weights();
+        let stream = engine.capture_stream().expect("an idle engine must take a stream");
+        for chunk in loud(5).chunks(SAMPLE_RATE as usize) {
+            assert!(stream.sink.push_mono(chunk), "a push below the cap must be kept");
+        }
+        let ticket = stream.capture.finish().expect("the take must finish");
         assert!(matches!(ticket.recv(), Err(Error::ModelLoad { .. })));
     }
 
     #[test]
-    fn abandoning_a_take_mid_recording_does_not_hang_or_wedge_the_microphone() {
-        let dir = tempfile::tempdir().unwrap();
-        let cfg = ConfigBuilder::new().models_dir(dir.path()).normalizer(None).build();
-        let engine = crate::test_support::engine_with_feeding_microphone(
-            cfg,
-            Arc::new(loud(70)),
-            Duration::from_millis(1),
-        )
-        .expect("engine must start");
-        let mut capture = engine.try_capture("pipeline").expect("an idle microphone must be held");
-        let mut progress = capture.take_progress().expect("the capture carries a progress stream");
+    fn abandoning_a_stream_take_mid_recording_does_not_hang() {
+        let (_dir, engine) = engine_without_weights();
+        let mut stream = engine.capture_stream().expect("an idle engine must take a stream");
+        let mut progress =
+            stream.capture.take_progress().expect("the capture carries a progress stream");
+        for chunk in loud(70).chunks(SAMPLE_RATE as usize) {
+            assert!(stream.sink.push_mono(chunk), "a push below the cap must be kept");
+        }
         wait_for_a_settled_segment(&mut progress);
-        drop(capture);
-        engine.try_capture("second").expect("the abandon must release the microphone");
+        drop(stream);
+        engine.capture_stream().expect("the abandon must leave the engine able to take another");
     }
 
     #[test]
     fn dropping_the_ticket_mid_pipeline_cancels_without_hanging() {
-        let dir = tempfile::tempdir().unwrap();
-        let cfg = ConfigBuilder::new().models_dir(dir.path()).normalizer(None).build();
-        let engine = crate::test_support::engine_with_feeding_microphone(
-            cfg,
-            Arc::new(loud(70)),
-            Duration::from_millis(1),
-        )
-        .expect("engine must start");
-        let mut capture = engine.try_capture("pipeline").expect("an idle microphone must be held");
-        let mut progress = capture.take_progress().expect("the capture carries a progress stream");
+        let (_dir, engine) = engine_without_weights();
+        let mut stream = engine.capture_stream().expect("an idle engine must take a stream");
+        let mut progress =
+            stream.capture.take_progress().expect("the capture carries a progress stream");
+        for chunk in loud(70).chunks(SAMPLE_RATE as usize) {
+            assert!(stream.sink.push_mono(chunk), "a push below the cap must be kept");
+        }
         wait_for_a_settled_segment(&mut progress);
-        let ticket = capture.finish().expect("the take must finish");
+        let ticket = stream.capture.finish().expect("the take must finish");
         drop(ticket);
-        engine.try_capture("second").expect("the cancelled take must release the microphone");
+        engine
+            .capture_stream()
+            .expect("the cancelled take must leave the engine able to take another");
     }
 
     /// The stream-fed take, weightless: pushed samples cross the window
     /// ceiling, the segmenter cuts and queues while the take is still
-    /// open, and the take answers through the same pipeline a device
-    /// take uses.
+    /// open, and the take answers through the pipeline.
     #[test]
     fn a_segment_settles_while_the_stream_is_still_open() {
         let (_dir, engine) = engine_without_weights();
@@ -2216,9 +1898,9 @@ mod tests_engine {
         );
     }
 
-    /// A stream-fed take meters and caps exactly as a device take does:
-    /// the peak read is the pushed samples' own, and the cap stops the
-    /// take rather than letting the buffer grow without bound.
+    /// A stream-fed take meters and caps: the peak read is the pushed
+    /// samples' own, and the cap stops the take rather than letting the
+    /// buffer grow without bound.
     #[test]
     fn a_stream_take_meters_and_caps_what_it_is_pushed() {
         let dir = tempfile::tempdir().unwrap();
@@ -2227,8 +1909,7 @@ mod tests_engine {
             .normalizer(None)
             .max_capture(Duration::from_secs(1))
             .build();
-        let engine =
-            crate::test_support::engine_with_synthetic_microphone(cfg).expect("engine must start");
+        let engine = Engine::new(cfg).expect("engine must start");
         let stream = engine.capture_stream().expect("an idle engine must take a stream");
 
         assert!(stream.sink.push_mono(&[0.5; 160]), "a push below the cap must be kept");
@@ -2246,26 +1927,6 @@ mod tests_engine {
         assert!(!stream.sink.push_mono(&[0.5; 16]), "a stopped take keeps nothing further");
         let ticket = stream.capture.finish().expect("a capped take still finishes");
         assert!(matches!(ticket.recv(), Err(Error::ModelLoad { .. })));
-    }
-
-    /// A stream take touches no device, so it must not claim one: a
-    /// device take can record at the same time, and dropping the stream take
-    /// must never release a claim it never took.
-    #[test]
-    fn a_stream_take_never_claims_or_releases_the_device() {
-        let (_dir, engine) = engine_without_weights();
-        let stream = engine.capture_stream().expect("an idle engine must take a stream");
-        let device =
-            engine.try_capture("terminal").expect("a stream take must not hold the device");
-
-        drop(stream);
-        assert!(
-            engine.try_capture("second").is_err(),
-            "dropping the stream take must not clear the device take's claim"
-        );
-
-        drop(device);
-        engine.try_capture("third").expect("the device take releases the microphone when it goes");
     }
 
     /// The only refusal a stream take can meet is an engine that is
