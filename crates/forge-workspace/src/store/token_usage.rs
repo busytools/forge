@@ -1,7 +1,7 @@
 //! Per-file usage-summary cache on the redb `token_usage` table.
 //!
 //! Keyed by canonical session-file path; the value is that file's
-//! deduped `FileUsageSummary`. The cache is incremental: `/usage`
+//! deduped `FileUsageSummary`. The cache is incremental: the scan
 //! reuses a file whose mtime and size still match the cached entry
 //! rather than re-parsing a transcript that can reach 100 MB.
 

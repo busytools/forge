@@ -1,7 +1,7 @@
 //! The host's local IANA timezone, resolved dynamically, and the wall
 //! clock an RFC-3339 timestamp reads as in it. A generic OS-env probe
-//! shared by `/usage` day-bucketing, the SCHEDULES schedule formatter and
-//! the turn rows a view draws from a transcript.
+//! shared by the usage scan's day-bucketing, the SCHEDULES schedule
+//! formatter and the turn rows a view draws from a transcript.
 
 use time::format_description::well_known::Rfc3339;
 use time_tz::{OffsetDateTimeExt, Tz, timezones};

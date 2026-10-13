@@ -1,4 +1,4 @@
-//! Token/cost accounting for the `/usage` view.
+//! Token/cost accounting for the `usage` subject.
 //!
 //! [`pricing`] is the LiteLLM-sourced per-model USD table used to turn
 //! JSONL token counts into a notional cost. This root holds the
@@ -180,7 +180,7 @@ pub fn usage_files(projects_dir: &Path) -> Vec<PathBuf> {
                 target: "forge_agent::env::token_usage",
                 %error,
                 path = %projects_dir.display(),
-                "reading the projects dir failed; /usage renders empty",
+                "reading the projects dir failed; the usage scan answers empty",
             );
             return files;
         }
@@ -263,7 +263,7 @@ pub fn parse_file(path: &Path, tz: &Tz) -> Option<FileUsageSummary> {
         let Some(day) = calendar_day(&timestamp, tz) else {
             // A strict rfc3339 parse drops off-spec timestamps; warn once
             // per file so a systemic format drift is greppable rather than
-            // silently rendering /usage all-zero.
+            // the usage scan answering all-zero in silence.
             if !timestamp_error_logged {
                 tracing::warn!(
                     target: "forge_agent::env::token_usage",
@@ -349,7 +349,7 @@ struct CacheCreation {
 }
 
 /// Roll per-file summaries up into the four windows the `/usage`
-/// overlay renders. Windows are calendar periods relative to `now`, in
+/// overlay drew. Windows are calendar periods relative to `now`, in
 /// the same local timezone the day buckets already use: today, the
 /// current week (from Monday), the current month (from the 1st), and
 /// all-time. Each window carries both groupings and a total row, priced
