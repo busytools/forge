@@ -57,11 +57,10 @@ accounts = [] list`.
 `fallback_accounts` is walked after the org's `accounts`: a fallback
 declaring the project's model outranks a saturated or bailed primary,
 and the primary is taken again once it heals. The names also render in
-the `/gateway` view's fallback pin. The list is validated at load
+the account pool's fallback pin. The list is validated at load
 exactly like `accounts`: a name matching no `[[accounts]]` entry fails
 the boot, naming the account and the valid names. An account may appear
-in both lists; it is then a primary only. See [the launchpad's chip
-description](./ui/launchpad.md) for the walk order.
+in both lists; it is then a primary only.
 
 `accounts` and `fallback_accounts` must also agree on any env that
 changes the _shape_ of a request, not only where it is sent. A child's
@@ -255,7 +254,7 @@ in an env layer is dropped at load, so it can reach neither the child
 nor the pool the usage probe and the forward leg read: the flat keys
 own them. Setting `ANTHROPIC_BASE_URL` or `ANTHROPIC_AUTH_TOKEN` at the
 _project_ layer instead desynchronises forge's own accounting, because
-the usage probe, plan detection and the `/gateway` view all read the
+the usage probe, plan detection and the account pool all read the
 account map.
 
 An `"anthropic"` account's flat `token` - minted by

@@ -32,7 +32,7 @@ forge-connectors  ->  primitives
 forge-sdk         ->  primitives
 forge-agent       ->  primitives + sdk + gateway
 forge-workspace   ->  primitives + agent + sdk + dictate + gateway + connectors
-forge-server      ->  primitives + workspace
+forge-server      ->  primitives + workspace + sdk
 forge-test-harness->  primitives + sdk
 ```
 
@@ -50,7 +50,7 @@ forge-test-harness->  primitives + sdk
 | [`forge-test-harness`](crates/forge-test-harness) | Wire-conformance harness: replay-based offline tests plus opt-in live capture. |
 
 The client lives in `client/` - a Svelte page inside a Rust shell - and
-the `The client` part of [the book](https://busytools.github.io/forge/)
+the client part of [the book](https://busytools.github.io/forge/)
 is the visual map of every surface it can draw.
 
 ## Getting started

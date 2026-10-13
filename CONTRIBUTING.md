@@ -139,7 +139,7 @@ is smaller and slightly incomplete.
 
 ## Where code goes
 
-The workspace is twelve crates with a strictly acyclic dependency graph,
+The workspace is ten crates with a strictly acyclic dependency graph,
 and putting something in the wrong one is the most common structural
 review comment. The
 [architecture page](https://busytools.github.io/forge/architecture.html)

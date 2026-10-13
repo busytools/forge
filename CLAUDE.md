@@ -13,7 +13,7 @@ forge-connectors ───→ primitives
 forge-sdk        ───→ primitives
 forge-agent      ───→ primitives + sdk + gateway
 forge-workspace  ───→ primitives + agent + sdk + dictate + gateway + connectors
-forge-server     ───→ primitives + workspace
+forge-server     ───→ primitives + workspace + sdk
 forge-test-harness ─→ primitives + sdk + workspace + server
 ```
 
@@ -590,9 +590,10 @@ inspected.
     something every time produces noise forever.** #744 is the clean
     example: a user-visible change to whether a question answers on the
     first Enter, which owed the visual-truth surface - then the
-    separate `docs/forge-map.html`; today the unified-prompt section of
-    `ui/input.md` - and touched no other book page. User-visible is not
-    the test; a page reading false is.
+    separate `docs/forge-map.html`; today the composer's drawing in the
+    client's pages (`docs/book/src/ui/client/web-composer.html`) - and
+    touched no other book page. User-visible is not the test; a page
+    reading false is.
 
     #751 is the other shape. Adding the seventh crate falsified
     `architecture.md`'s crate count, layering diagram, crate table and

@@ -1,6 +1,6 @@
 [book]
 title = "forge"
-description = "A Rust workspace that drives Anthropic's claude CLI: a multi-session terminal UI plus an SDK that speaks the CLI's stream-json wire protocol."
+description = "A Rust workspace that drives Anthropic's claude CLI: a server that runs multi-session orchestration, and the clients that draw it."
 src = "src"
 language = "en"
 
