@@ -1058,7 +1058,11 @@ async fn seed_from_transcript(state: &TransportState, slot: &SessionSlot) -> Opt
     if read.messages.is_empty() {
         return None;
     }
-    Some(state.conversations.insert(slot, Conversation::new(read.messages, read.compaction_count)))
+    Some(state.conversations.insert(
+        slot,
+        // A file read, whole: the cap's own drop is what the floor counts.
+        Conversation::new(read.messages, read.compaction_count, 0),
+    ))
 }
 
 /// How many of a conversation's newest turns a subscribe carries.

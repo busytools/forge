@@ -655,8 +655,9 @@ function createSeat(connection: Connection, subject: Subject, answering: boolean
 
       // The three variants that REPLACE the record rather than patching it: a
       // seat waking up, connecting, or taking a new occupant. What they carry
-      // is not a record - the seat's own session facts and the folded
-      // transcript - so only a read answers them.
+      // is not a record - the seat's own session facts, and no transcript
+      // (the wire empties it; a seat's history arrives as a page, never as an
+      // update payload) - so only a read answers them.
       const [name, payload] = variantOf(message.update);
       if (name !== null && REPLACES.includes(name)) {
         seat.replaceWanted = true;

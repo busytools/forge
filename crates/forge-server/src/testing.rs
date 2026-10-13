@@ -360,7 +360,11 @@ impl Fleet {
         );
         state.conversations.insert(
             &slot,
-            crate::transport::conversation::Conversation::new(read.messages, read.compaction_count),
+            crate::transport::conversation::Conversation::new(
+                read.messages,
+                read.compaction_count,
+                0,
+            ),
         );
         Ok(())
     }
