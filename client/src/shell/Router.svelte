@@ -11,6 +11,7 @@
   import Home from '../home/Home.svelte';
   import type { HomeRead } from '../home/live';
   import Models from '../models/Models.svelte';
+  import { notePerfSurface, perfSurface } from '../perf';
   import Review from '../review/Review.svelte';
   import { titleFor, type Route } from '../routes';
   import Session from '../session/Session.svelte';
@@ -72,8 +73,14 @@
 
   // The tab's name follows what is on screen: forge at the home, the seat's
   // project on a session, and its label too when it is a worker's.
+  //
+  // **And the frame probe learns where the page is** (perf.ts): every
+  // record it writes names the surface and the seat it was measured on, so
+  // the same effect carries both - they are two readings of one fact.
   $effect(() => {
     document.title = titleFor(route);
+    const where = perfSurface(route);
+    notePerfSurface(where.surface, where.session);
   });
 </script>
 

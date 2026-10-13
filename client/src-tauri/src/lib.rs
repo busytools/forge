@@ -32,6 +32,7 @@ use tauri::Manager as _;
 pub mod asks;
 pub mod bridge;
 pub mod browser;
+pub mod perf;
 pub mod records;
 pub mod socket;
 
@@ -231,7 +232,8 @@ pub fn run() {
             commands::client_commit_diff,
             commands::client_take_role,
             commands::client_heartbeat,
-            commands::client_close
+            commands::client_close,
+            perf::client_perf
         ],
     );
     // iOS lands here too, and it registers nothing: no host exists there to
@@ -273,7 +275,8 @@ pub fn run() {
             commands::client_commit_diff,
             commands::client_take_role,
             commands::client_heartbeat,
-            commands::client_close
+            commands::client_close,
+            perf::client_perf
         ],
     );
 
