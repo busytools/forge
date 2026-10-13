@@ -40,7 +40,7 @@ impl ViewSurface {
     ///
     /// Forge's own commands are not in this list. A view rendering the `/`
     /// dropdown reads those from [`Self::forge_commands`], and a name in
-    /// both is forge's, which handles it rather than forwarding it.
+    /// both is drawn from the catalogue rather than the CLI's copy.
     pub fn slash_commands(&self, slot: &SessionSlot) -> Vec<AvailableCommand> {
         self.workspace
             .available_commands_for(slot)
@@ -58,8 +58,8 @@ impl ViewSurface {
     /// different lists.
     ///
     /// A name here shadows the CLI's row for the same name
-    /// (`crate::commands::is_forge_command`), because forge handles it
-    /// rather than forwarding it.
+    /// (`crate::commands::is_forge_command`), so one row is drawn, with the
+    /// catalogue's words.
     pub fn forge_commands() -> &'static [ForgeCommand] {
         crate::commands::FORGE_COMMANDS
     }

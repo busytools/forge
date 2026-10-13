@@ -2,7 +2,6 @@
   import { untrack } from 'svelte';
 
   import Icon from '../components/Icon.svelte';
-  import { routeForCommand } from '../composer/forge-commands';
   import { goTo, parseRoute } from '../routes';
   import { report, type Connection } from '../socket';
   import type { HomeWire } from '../wire/home';
@@ -119,15 +118,6 @@
       return;
     }
     if (row.text !== undefined) {
-      // A command this view answers itself never crosses the wire - the same
-      // move the composer makes for the same text; a command row is a bare
-      // name, so its move is always the route.
-      const move = routeForCommand(row.text);
-      if (move !== null) {
-        if (move.kind === 'route') goTo(move.route);
-        onclose();
-        return;
-      }
       // Exactly what the composer sends for a typed command, id included:
       // the CLI emits that prompt's lifecycle frames only under our uuid.
       void connection.dispatch(

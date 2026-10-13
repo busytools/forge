@@ -88,8 +88,8 @@ export interface Store {
 /**
  * Whether a subject is one seat's, rather than the fleet's or the pool's.
  *
- * The rule below is about a seat's record, and the home and usage stores hold
- * subjects of their own: a seat's swap is news for the home, not a reason to
+ * The rule below is about a seat's record, and the home store holds a
+ * subject of its own: a seat's swap is news for the home, not a reason to
  * drop what the home holds.
  */
 function isSeat(subject: Subject): boolean {

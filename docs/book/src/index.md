@@ -14,8 +14,8 @@ three things sharing a repository:
   control-request dispatch, and an in-process MCP host.
 - **A client that draws it.** The app under `client/` - a Svelte page
   inside a Rust shell - connects to the socket and renders everything:
-  the fleet, per-session chat, a projects board, the inspector, tasks,
-  reviews and the token/cost pool. A client subscribes to a subject -
+  the fleet, per-session chat, a projects board, the inspector, tasks
+  and reviews. A client subscribes to a subject -
   the home, a session, the
   token/cost pool - is answered with that subject in full and then with
   the updates that change it (`usage` is the exception: it is a scan, and

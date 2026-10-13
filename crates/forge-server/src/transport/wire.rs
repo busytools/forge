@@ -2762,7 +2762,7 @@ mod tests {
         }
     }
 
-    /// The token/cost report, on the subject a usage view subscribes to.
+    /// The token/cost report, on the `usage` subject.
     /// Nothing carried it: the pool is scanned off-thread by the server,
     /// and a client had no way to ask for the same numbers.
     ///
