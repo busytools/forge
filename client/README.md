@@ -343,20 +343,22 @@ the phone first, since Android cannot replace an app across signatures.
 
 ## What is here
 
-- `src/wire/` - the server's shapes, copied from the fixtures on
-  `origin/forge-server-socket`. The pages type their props against these,
-  so the two halves cannot disagree about what a home looks like.
+- `src/wire/` - the server's shapes, typed against the fixtures under
+  `src/dev/` and pinned to the server's own copies by `salvage.test.ts`.
+  `src/wire/README.md` carries the provenance and every re-sync since. The
+  pages type their props against these, so the two halves cannot disagree
+  about what a home looks like.
 - `src/components/` - the pieces every page draws with: the row, the band
   card, the lifecycle mark, the brand mark, the icon sprite. One theme, one
   copy of each.
 
-**The sprite is inlined by the shell on every page and nothing yet points at
-it.** No page in the base slice draws an icon, so `Icon.svelte` has no
-caller and removing `<Sprite />` from `Shell.svelte` would break nothing a
-test sees. It is here because the plan's salvage set names it and because
-the session and composer tasks run in parallel and cannot edit this shared
-base. The first icon belongs to Task 5's inspector, and that is where the
-sprite stops being dead weight.
+**The sprite is inlined by the shell on every page, and every icon a page
+draws is a `<use>` reference to it.** `Sprite.svelte` inlines it once per
+page and rows and pages draw through `Icon.svelte`, which is what lets a
+page's own rule colour an icon by the row it sits in. The set is Lucide's
+(MIT), and `Sprite.test.ts` holds the sprite to what the session and
+composer drawings ask for, so an icon a page draws and the sprite lacks
+fails the suite rather than drawing as a gap.
 
 - `src/theme.ts` - the palettes and typeface stacks the names resolve to.
   The greeting carries the NAMES; the values live here, and there is no
@@ -396,9 +398,11 @@ design, and a page opened later has nothing to replay it from. A forge that
 failed at startup draws nothing anywhere - no client ever reached its
 socket, and the connect screen is all there is.
 
-Two more ride the home row and no page in this slice draws them: `crons`,
-which is the inspector's schedules section, and `chip`, which is the
-account a row binds. Both belong to pages that do not exist yet.
+Two more ride the home row and this page does not draw them: `crons` and
+`chip`. Each is drawn elsewhere: the schedules row on the session page's
+strip keeps the seat's own set (a cron names the seat that created it),
+and the account a row chips shows on the session page's rail footer,
+beside what it is costing. Neither is a gap in this page.
 
 ## Where a cold load lands
 
