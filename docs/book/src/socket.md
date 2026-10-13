@@ -601,11 +601,12 @@ only for the forged frame below.**
 **Not every frame on the stream is the CLI's, and for the forged kind the
 id is the tell.** A prompt handed to `claude` on stdin is not echoed back,
 so forge forges the user turn itself and sends it as a `chat_appended` like
-any other frame - a cron fire, a Gotify notification, a Slack message, a
-peer comm, and a reader's own send, which without it no viewer but the
-sender would ever see. **The folded frame is the other kind, and its id is
-the CLI's**: it is the last arrival's, because the one frame stands for the
-run the flush carried.
+any other frame: a delivery (a cron fire, a Gotify notification, a Slack
+message, a peer comm), forge's own machinery (a worker kick, an
+auto-continue, a board chase, a board notice), and a reader's own send,
+which without it no viewer but the sender would ever see. **The folded frame
+is the other kind, and its id is the CLI's**: it is the last arrival's,
+because the one frame stands for the run the flush carried.
 
 **A prompt frame carries an `origin`**, `ui` or `view`. It says who
 submitted the words, is stamped where the dispatch happened rather than
