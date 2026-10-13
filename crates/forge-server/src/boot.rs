@@ -215,6 +215,20 @@ pub async fn serve_socket(workspace: &Arc<Workspace>) -> anyhow::Result<SocketSe
 /// never fires, silently.
 const BOOT_WAVE_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// Hold until the accounts and the listener are ready, or `timeout` passes.
+///
+/// `true` when they settled, `false` at expiry; the caller decides what a
+/// hold that ran out means (the wave fires anyway and warns). The bound is
+/// the whole point - see [`start_boot_wave`] - so it is a parameter, which
+/// is what lets a test pin it at a millisecond instead of a minute.
+async fn wait_for_accounts(workspace: &Arc<Workspace>, timeout: std::time::Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + timeout;
+    while !workspace.all_accounts_loaded() && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+    workspace.all_accounts_loaded()
+}
+
 /// The boot spawn, for a process with no view: hold until the accounts
 /// settle, then dispatch the wave the terminal's connect path dispatches -
 /// the named project's lead, or every `auto_start` project, in forge.toml
@@ -234,21 +248,15 @@ const BOOT_WAVE_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 /// nothing downstream reads the result.
 pub fn start_boot_wave(workspace: Arc<Workspace>, project: Option<String>, force_new: bool) {
     tokio::spawn(async move {
-        let deadline = tokio::time::Instant::now() + BOOT_WAVE_WAIT;
-        while !workspace.all_accounts_loaded() && tokio::time::Instant::now() < deadline {
-            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-        }
-        if !workspace.all_accounts_loaded() {
-            let accounts_settled =
-                crate::surface::ViewSurface::new(Arc::clone(&workspace)).accounts().all_loaded;
+        if !wait_for_accounts(&workspace, BOOT_WAVE_WAIT).await {
             tracing::warn!(
                 target: crate::logging::targets::APP_LIFECYCLE,
                 event_name = "boot_wave_wait_expired",
-                accounts_settled,
                 gateway_ready = workspace.gateway_ready(),
                 gateway_bind_error = workspace.gateway_bind_error().as_deref().unwrap_or(""),
-                "the boot spawn is going out with the accounts or the gateway listener not ready; \
-                 a refused spawn carries its own reason",
+                "the boot spawn is going out with the accounts or the gateway listener not ready \
+                 (a bound listener here means the account map is what held it); a refused spawn \
+                 carries its own reason",
             );
         }
         // Boot wave only: --new makes the boot leads start fresh instead
@@ -276,4 +284,46 @@ pub fn start_boot_wave(workspace: Arc<Workspace>, project: Option<String>, force
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BOOT_WAVE_WAIT, wait_for_accounts};
+    use std::time::Duration;
+
+    /// The hold gives up at its deadline rather than waiting for ever - the
+    /// behaviour a listener that never binds would otherwise hang on. Pinned
+    /// against the production bound's VALUE as well, so raising it is a
+    /// change this test has to be told about.
+    #[tokio::test]
+    async fn the_boot_wave_hold_expires_rather_than_waiting_for_ever() {
+        let (workspace, _dir) = crate::surface::testing::workspace();
+        assert!(
+            !workspace.all_accounts_loaded(),
+            "the fixture's accounts start unsettled, or this test proves nothing",
+        );
+        assert_eq!(BOOT_WAVE_WAIT, Duration::from_secs(60), "the production bound");
+
+        let settled = wait_for_accounts(&workspace, Duration::from_millis(1)).await;
+        assert!(!settled, "the hold gives up at its deadline instead of waiting for ever");
+    }
+
+    /// And it releases the moment the accounts settle, without waiting the
+    /// bound out.
+    #[tokio::test]
+    async fn the_boot_wave_hold_releases_once_the_accounts_settle() {
+        let (workspace, _dir) = crate::surface::testing::workspace();
+        workspace.seed_test_ready_account("Granite");
+        workspace.seed_test_ready_account("OpenRouter-TM");
+        assert!(workspace.all_accounts_loaded(), "both accounts terminal and the listener ready");
+
+        let started = std::time::Instant::now();
+        let settled = wait_for_accounts(&workspace, Duration::from_secs(60)).await;
+        assert!(settled, "a settled boot is released at once");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "and it does not wait the bound out: {:?}",
+            started.elapsed(),
+        );
+    }
 }

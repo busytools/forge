@@ -99,8 +99,8 @@ fn server_command(home: &std::path::Path, config: &std::path::Path) -> tokio::pr
     command
 }
 
-/// Send SIGTERM the way a system does, without linking a signal crate:
-/// `/bin/kill` is the instrument.
+/// Send SIGTERM the way a system does, without linking a signal crate: the
+/// `kill` the PATH resolves is the instrument.
 async fn terminate(pid: u32) {
     let status = tokio::process::Command::new("kill")
         .arg("-TERM")

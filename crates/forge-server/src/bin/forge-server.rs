@@ -72,6 +72,16 @@ fn run() -> anyhow::Result<()> {
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async move {
+        // Both stop signals a system sends a long-lived server are registered
+        // BEFORE anything binds: a SIGTERM racing the socket's bind would
+        // otherwise meet the default disposition and kill the process
+        // mid-boot. Ctrl-C (SIGINT) and SIGTERM then take the same path, so a
+        // supervisor's stop releases the single-instance lock and the store
+        // exactly as an interactive Ctrl-C does.
+        let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
+        let mut sigterm =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+
         let config_dir = match forge_server::boot::resolve_config_dir() {
             Ok(p) => p,
             Err(err) => return Err(anyhow::anyhow!("forge: {err}")),
@@ -95,15 +105,9 @@ fn run() -> anyhow::Result<()> {
         // task.
         forge_server::boot::start_boot_wave(Arc::clone(&workspace), cli.project.clone(), cli.new);
 
-        // Park until interrupted. Both signals a system sends a long-lived
-        // server - Ctrl-C (SIGINT) and SIGTERM - take the same path, so a
-        // supervisor stopping the process releases the single-instance lock
-        // and the store exactly as an interactive Ctrl-C does. The
-        // subsystems own everything else.
-        let mut sigterm =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        // Park until interrupted; the subsystems own everything else.
         tokio::select! {
-            _ = tokio::signal::ctrl_c() => {}
+            _ = sigint.recv() => {}
             _ = sigterm.recv() => {}
         }
         workspace.shutdown();
