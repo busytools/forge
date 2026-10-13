@@ -994,18 +994,23 @@ impl BrowserHost {
             if self.owned.lock().await.contains_key(&dir) {
                 continue;
             }
-            if chromium::verified(&dir).await.is_none() {
-                continue;
-            }
             match chromium::claim(&dir) {
-                // The claim was free and a browser is up: the client that
-                // owned it is gone, and this is what it left.
+                // The claim was free: the client that owned this directory is
+                // gone. The look and the close both run UNDER the claim, so
+                // no other sweep can interleave with them - and a browser
+                // that answers the look is what the dead client left. (A
+                // second live client attaching to that browser while the
+                // claim is held is not stopped by this - it cannot claim,
+                // and attaching is not gated on the claim - but its call
+                // fails and its next one relaunches.)
                 Ok(Some(lock)) => {
-                    chromium::close(&dir).await;
-                    drop(lock);
-                    if let Some(name) = dir.file_name().and_then(std::ffi::OsStr::to_str) {
-                        reaped.push(name.to_owned());
+                    if chromium::verified(&dir).await.is_some() {
+                        chromium::close(&dir).await;
+                        if let Some(name) = dir.file_name().and_then(std::ffi::OsStr::to_str) {
+                            reaped.push(name.to_owned());
+                        }
                     }
+                    drop(lock);
                 }
                 Ok(None) => {}
                 Err(why) => {
