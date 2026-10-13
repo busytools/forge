@@ -523,10 +523,25 @@ impl Workspace {
     /// second scan path is a second answer about one tree.
     pub async fn scan_work_at(&self, slot: &SessionSlot, cwd: &Path) -> WorkSnapshot {
         let previous = self.work_snapshot(slot).map(|held| held.diff);
-        let diff = forge_agent::env::git_diff::scan(cwd, previous.as_ref()).await;
+        let env = self.project_env(slot.project());
+        let diff = forge_agent::env::git_diff::scan(cwd, &env, previous.as_ref()).await;
         let held = WorkSnapshot { diff, cwd: cwd.to_path_buf(), read_at: Instant::now() };
         self.store_work_snapshot(slot, held.clone());
         held
+    }
+
+    /// `project`'s own declared environment, `env_file` included, which
+    /// is the identity a `gh` spawn on its behalf carries: the scan's PR
+    /// row must read as the project, not as the server's ambient login.
+    /// A name no project has declares none, so `gh` falls back to its
+    /// own login.
+    fn project_env(&self, project: &str) -> std::collections::HashMap<String, String> {
+        self.config
+            .projects
+            .iter()
+            .find(|candidate| candidate.name == project)
+            .map(|candidate| candidate.env.clone())
+            .unwrap_or_default()
     }
 }
 
@@ -1622,5 +1637,63 @@ provider = "anthropic"
             "and the last one lets the seat and its loop go",
         );
         assert!(workspace.work_snapshot(&seat).is_some(), "while what was read stays readable");
+    }
+
+    /// The scan's `gh` spawn carries the identity of the seat's OWN
+    /// project: a seat in one project must never read as another's, and a
+    /// project that no longer resolves declares nothing, so `gh` falls
+    /// back to its own login rather than to the server's environment.
+    #[test]
+    fn a_seats_scan_carries_its_own_projects_declared_env() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let forge = dir.path().join("forge");
+        std::fs::create_dir_all(&forge).expect("forge dir");
+        std::fs::write(
+            forge.join("forge.toml"),
+            r#"
+[[orgs]]
+name = "TestOrg"
+accounts = ["acct-a"]
+
+[[orgs.projects]]
+name = "alpha"
+path = "/tmp/tp-alpha"
+model = "claude-sonnet-5"
+
+[orgs.projects.env]
+GH_TOKEN = "alpha-token"
+
+[[orgs.projects]]
+name = "beta"
+path = "/tmp/tp-beta"
+model = "claude-sonnet-5"
+
+[orgs.projects.env]
+GH_TOKEN = "beta-token"
+
+[[accounts]]
+display_name = "acct-a"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+"#,
+        )
+        .expect("write forge.toml");
+        let workspace = Workspace::new_for_test(dir.path().to_owned()).expect("workspace");
+
+        assert_eq!(
+            workspace.project_env("alpha").get("GH_TOKEN").map(String::as_str),
+            Some("alpha-token"),
+            "alpha's scan carries alpha's own token",
+        );
+        assert_eq!(
+            workspace.project_env("beta").get("GH_TOKEN").map(String::as_str),
+            Some("beta-token"),
+            "and beta's carries beta's, not the first project's",
+        );
+        assert!(
+            workspace.project_env("gone").is_empty(),
+            "a project that no longer resolves declares none",
+        );
     }
 }

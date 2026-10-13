@@ -317,10 +317,15 @@ mod tests {
     use tempfile::TempDir;
 
     use super::super::hunks::DiffLineKind;
-    use super::super::scan as scan_stats;
     use super::*;
     use forge_primitives::git::GitBranch;
     use forge_primitives::git_diff::RepoGate;
+
+    /// The snapshot these tests read, taken with no project env: they
+    /// exercise the content walk, never identity.
+    async fn scan_stats(cwd: &std::path::Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot {
+        super::super::scan(cwd, &std::collections::HashMap::new(), prev).await
+    }
 
     const MODIFIED: &str = r"diff --git a/x.rs b/x.rs
 index 1111111..2222222 100644

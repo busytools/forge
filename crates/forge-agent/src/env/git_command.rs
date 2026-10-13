@@ -9,6 +9,7 @@
 //! process (`-C` for git, `current_dir` for gh) and args stay with
 //! the call site; nothing there may set a repo-location variable.
 
+use std::collections::HashMap;
 use std::process::Command;
 
 /// A `git` / `gh` spawn with the ambient repo-location env scrubbed,
@@ -24,6 +25,27 @@ pub(crate) fn command(program: &str) -> Command {
 /// std -> tokio conversion.
 pub(super) fn tokio_command(program: &str) -> tokio::process::Command {
     command(program).into()
+}
+
+/// The environment variables `gh` reads for auth, in its own precedence
+/// order; GITHUB_PAT_TOKEN is not one of them, but the environment that
+/// carries the hazard declares it beside the two that are.
+const AMBIENT_IDENTITY_VARS: [&str; 3] = ["GH_TOKEN", "GITHUB_TOKEN", "GITHUB_PAT_TOKEN"];
+
+/// A `gh` spawn for one project's own work: [`command`]'s scrub, the
+/// ambient identity removed, then the project's declared `env` applied -
+/// so a project that declares its own token acts as that project, and
+/// one that declares none falls back to gh's own login rather than
+/// silently to the server's environment.
+pub(super) fn gh_tokio_command<S: std::hash::BuildHasher>(
+    env: &HashMap<String, String, S>,
+) -> tokio::process::Command {
+    let mut command = tokio_command("gh");
+    for key in AMBIENT_IDENTITY_VARS {
+        command.env_remove(key);
+    }
+    command.envs(env);
+    command
 }
 
 #[cfg(test)]
@@ -62,6 +84,46 @@ mod tests {
                     "{program} (tokio) is missing the {key} scrub",
                 );
             }
+        }
+        // Production gh spawns leave `command` for `gh_tokio_command`, so
+        // the repo-location scrub is pinned on that path too.
+        let gh_removed = tokio_removed_keys(&gh_tokio_command(&HashMap::new()));
+        for key in ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"] {
+            let scrubbed = gh_removed.iter().any(|k| k == key);
+            assert!(scrubbed, "the gh spawn is missing the {key} scrub");
+        }
+    }
+
+    /// The project's own identity reaches the child: a gh spawn built
+    /// for a project that declares its own GH_TOKEN carries it, so that
+    /// project's PR read answers as the project rather than as whoever
+    /// the server's environment says.
+    #[test]
+    fn the_gh_constructor_carries_the_projects_own_identity() {
+        let env = HashMap::from([("GH_TOKEN".to_owned(), "project-token".to_owned())]);
+        let command = gh_tokio_command(&env);
+        let carried = command
+            .as_std()
+            .get_envs()
+            .find(|(key, _)| *key == "GH_TOKEN")
+            .and_then(|(_, value)| value)
+            .and_then(|value| value.to_str());
+        assert_eq!(carried, Some("project-token"), "the project's GH_TOKEN is on the spawn");
+    }
+
+    /// And the server's identity never reaches it: a project that
+    /// declares no token of its own gets gh's own login, not the
+    /// environment forge itself was launched with. `gh` reads GH_TOKEN
+    /// then GITHUB_TOKEN; GITHUB_PAT_TOKEN rides along because the
+    /// environment that carries the hazard declares it beside them.
+    #[test]
+    fn the_gh_constructor_scrubs_the_ambient_identity_variables() {
+        let removed = tokio_removed_keys(&gh_tokio_command(&HashMap::new()));
+        for key in ["GH_TOKEN", "GITHUB_TOKEN", "GITHUB_PAT_TOKEN"] {
+            assert!(
+                removed.iter().any(|k| k == key),
+                "{key} is not removed from a gh spawn: {removed:?}",
+            );
         }
     }
 }
