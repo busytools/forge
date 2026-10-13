@@ -7458,4 +7458,25 @@ mod lead_charter_tests {
             "the test question and its verdict are pinned together: {DEFAULT_LEAD_CHARTER}",
         );
     }
+
+    /// The gate is independent review lenses, not the lead's own read of
+    /// the diff - pinned with the fresh-install guard, so the sentence can
+    /// never read as a mandate for tooling that is not there.
+    #[test]
+    fn lead_charter_carries_the_merge_gate_lens_rule() {
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains("The merge gate is not met by a solo diff-read"),
+            "the rule's handle is pinned: {DEFAULT_LEAD_CHARTER}",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER
+                .contains("independent review lenses where they exist are what satisfies it"),
+            "the lenses and their condition are pinned: {DEFAULT_LEAD_CHARTER}",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER
+                .contains("nothing here mandates tooling a fresh install does not have"),
+            "the fresh-install guard is pinned: {DEFAULT_LEAD_CHARTER}",
+        );
+    }
 }
