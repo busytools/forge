@@ -1601,18 +1601,6 @@ pub(crate) fn execute_command_via_handle(
         Command::ResumeSession { key: _, session_id, cwd, launch_settings } => {
             handle.resume_session(session_id, cwd, launch_settings)
         }
-        Command::ReconnectMcpServer { key: _, server_name } => {
-            let Some(sid) = session_id else {
-                return Err(warn_no_session(key, "ReconnectMcpServer"));
-            };
-            handle.reconnect_mcp_server(sid.to_owned(), server_name)
-        }
-        Command::ToggleMcpServer { key: _, server_name, enabled } => {
-            let Some(sid) = session_id else {
-                return Err(warn_no_session(key, "ToggleMcpServer"));
-            };
-            handle.toggle_mcp_server(sid.to_owned(), server_name, enabled)
-        }
         Command::RespondPermission { .. } | Command::RespondQuestion { .. } => {
             tracing::error!(
                 target: "forge_workspace::session_task",
@@ -1631,8 +1619,6 @@ pub(crate) fn execute_command_via_handle(
         | Command::DictateStream { .. }
         | Command::DictateStop { .. }
         | Command::SpawnProject { .. }
-        | Command::SpawnSession { .. }
-        | Command::StartDefault { .. }
         | Command::DeliverPeerPrompt { .. }
         | Command::SpawnWorker { .. }
         | Command::CloseWorker { .. }
@@ -1654,9 +1640,6 @@ pub(crate) fn execute_command_via_handle(
         | Command::DictateReadAloudDelete { .. }
         | Command::DictateBenchDelete { .. }
         | Command::DictateUninstall { .. }
-        | Command::OpenUrl { .. }
-        | Command::SaveReviewThreads { .. }
-        | Command::RemoveReviewThread { .. }
         | Command::SetReviewThreadStatus { .. }
         | Command::CloseSession { .. }
         | Command::UpsertReviewThread { .. }
@@ -2703,10 +2686,10 @@ mod tests {
         workspace.install_db_for_test(
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
-        workspace.save_review_threads(
+        workspace.upsert_review_thread(
             "forge",
             "feat",
-            &[ReviewThread {
+            ReviewThread {
                 id: "a".to_owned(),
                 anchor: ReviewAnchor {
                     path: "src/x.rs".to_owned(),
@@ -2726,7 +2709,7 @@ mod tests {
                 created_at: "t".to_owned(),
                 updated_at: "t".to_owned(),
                 commit: None,
-            }],
+            },
         );
         let reviewer = SessionSlot::from_str_for_test("reviewer");
         let worker = SessionSlot::from_str_for_test("worker");
@@ -7621,29 +7604,6 @@ provider = "anthropic"
                 assert_eq!(mode, PermissionMode::Plan);
             }
             other => panic!("expected SetMode, got {other:?}"),
-        }
-    }
-
-    /// `Command::ReconnectMcpServer` reaches the bridge with the
-    /// server name carried through.
-    #[test]
-    fn execute_reconnect_mcp_server_forwards() {
-        let (handle, mut rx) = stub_handle_with_rx();
-        let key = SessionSlot::from_str_for_test("sess");
-        execute_command_via_handle(
-            &handle,
-            &key,
-            Some("sess-1"),
-            None,
-            Command::ReconnectMcpServer { key: key.clone(), server_name: "fs".into() },
-        )
-        .expect("dispatch succeeds");
-        let cmd = rx.try_recv().expect("command queued");
-        match cmd {
-            forge_primitives::AgentCommand::ReconnectMcpServer { server_name, .. } => {
-                assert_eq!(server_name, "fs");
-            }
-            other => panic!("expected ReconnectMcpServer, got {other:?}"),
         }
     }
 

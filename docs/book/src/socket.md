@@ -104,8 +104,8 @@ variant's own name rather than on `kind`:
 }
 ```
 
-A command's variant is its name around its field bag - `Command` has 62
-variants, 58 of them struct variants; the four unit variants,
+A command's variant is its name around its field bag - `Command` has 55
+variants, 51 of them struct variants; the four unit variants,
 `dictate_catalogue_check`, `dictate_bench_stop`, `plugin_update_all` and
 `plugin_check_updates`, cross as the name alone. An update is the same
 shape one level in,

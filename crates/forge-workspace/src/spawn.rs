@@ -1,6 +1,6 @@
 //! App-level spawn command handlers. Called from
 //! [`crate::Workspace::dispatch`] when an App-level
-//! `Command::SpawnProject` / `SpawnSession` / `StartDefault` arrives.
+//! `Command::SpawnProject` arrives.
 //! Each handler resolves the id the session will run under, emits
 //! `SessionUpdate::Spawning` under it, and kicks off the agent spawn.
 //! The matching `Connected` arrives later under the same key.
@@ -1085,189 +1085,6 @@ pub(crate) fn push_slack_message_into_chat(
         prose: prose.to_owned(),
         uuid: uuid.to_owned(),
     });
-}
-
-/// Spawn for a non-lead session row. The slot names the session and the
-/// store row under it holds the id to resume, so this resumes via
-/// `SessionTarget::Session`.
-pub(crate) fn handle_spawn_session(
-    workspace: &Arc<Workspace>,
-    slot: &SessionSlot,
-    role: &crate::protocol::SpawnRole,
-    launch_settings: SessionLaunchSettings,
-) {
-    let Some(parent) = workspace.project_for_slot(slot) else {
-        tracing::warn!(
-            target: "forge_workspace::spawn",
-            slot = %slot.display(),
-            "Command::SpawnSession for a slot no project declares; ignoring"
-        );
-        try_emit(
-            workspace,
-            "spawn_session::unknown_session",
-            SessionUpdate::ServiceStatus {
-                severity: forge_primitives::cloud::service_status::ServiceSeverity::Warning,
-                message: format!("Session {} names no configured project", slot.display()),
-            },
-        );
-        return;
-    };
-
-    // Resume path stamps no lead charter: the drilldown resume that
-    // would dispatch SpawnSession lists worker rows too, so wiring it
-    // needs lead-vs-worker awareness first or a resumed worker gets
-    // branded a lead. Fresh leads get the charter on their spawn paths.
-
-    let cwd = parent.path.to_string_lossy().to_string();
-    let display_name = parent.display_path.clone();
-
-    try_emit(
-        workspace,
-        "spawn_session::Spawning",
-        SessionUpdate::Spawning {
-            key: slot.clone(),
-            project_name: parent.name.clone(),
-            cwd,
-            display_name,
-        },
-    );
-
-    match workspace.get_agent_handle_at_key(
-        SessionTarget::Session(slot.clone()),
-        launch_settings,
-        Some(slot.clone()),
-        role,
-    ) {
-        Ok(_handle) => {
-            tracing::info!(
-                target: "forge_workspace::spawn",
-                slot = %slot.display(),
-                "spawn dispatched for session resume"
-            );
-        }
-        Err(err) => {
-            tracing::error!(
-                target: "forge_workspace::spawn",
-                slot = %slot.display(),
-                error = %err,
-                "spawn_session: get_agent_handle failed"
-            );
-            // No SessionTask exists to run its ConnectionFailed arm, so
-            // record everything parked for this session's slot here.
-            workspace.expire_parked_for_slot(
-                slot,
-                crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
-            );
-            // The only record of the failure for the same reason: a view
-            // reading the slot afterwards would otherwise see a session
-            // that never started and no way to say why.
-            let message = format!("agent spawn failed: {err}");
-            workspace.record_spawn_failure(slot, &message);
-            try_emit(
-                workspace,
-                "spawn_session::ConnectionFailed",
-                SessionUpdate::ConnectionFailed { key: slot.clone(), message, fatal: false },
-            );
-        }
-    }
-}
-
-/// Startup spawn. Resolves the default project (or the named one
-/// passed on argv) and spawns its lead under the id it will run under.
-/// Failure before the first Connected emits `SessionUpdate::FatalError`
-/// so the app exits cleanly.
-pub(crate) fn handle_start_default(
-    workspace: &Arc<Workspace>,
-    project_name: Option<String>,
-    mut launch_settings: SessionLaunchSettings,
-) {
-    // Resolved before `target` takes `project_name`: a spawn that fails
-    // has to expire what this project's lead has parked.
-    let lead_project = match project_name.as_deref() {
-        Some(name) => workspace.find_project_view_by_name(name),
-        None => Some(workspace.config.default_project().clone()),
-    };
-    let target = match project_name {
-        Some(name) => SessionTarget::Named(name),
-        None => SessionTarget::Default,
-    };
-
-    apply_lead_charter(&mut launch_settings);
-
-    let session_key = match workspace.resolve_slot(&target) {
-        Ok(key) => key,
-        Err(err) => {
-            tracing::error!(
-                target: "forge_workspace::spawn",
-                error = %err,
-                "start_default: target resolution failed"
-            );
-            // The same shape the spawn's own Err arm emits: startup is
-            // fatal, so the typed failure follows the connection one.
-            // No slot was resolved, so the failure names the project it
-            // was asked for.
-            try_emit(
-                workspace,
-                "start_default::ConnectionFailed",
-                SessionUpdate::ConnectionFailed {
-                    key: lead_project.as_ref().map_or_else(
-                        || SessionSlot::lead("unknown", "unknown"),
-                        |p| SessionSlot::lead(&p.org, &p.name),
-                    ),
-                    message: format!("agent spawn failed: {err}"),
-                    fatal: true,
-                },
-            );
-            try_emit(workspace, "start_default::FatalError", {
-                let error = forge_primitives::error::AppError::ConnectionFailed;
-                SessionUpdate::FatalError { message: error.user_message().to_owned(), error }
-            });
-            return;
-        }
-    };
-    match workspace.get_agent_handle_at_key(
-        target,
-        launch_settings,
-        Some(session_key.clone()),
-        &crate::protocol::SpawnRole::Lead,
-    ) {
-        Ok(_handle) => {
-            tracing::info!(
-                target: "forge_workspace::spawn",
-                slot = %session_key.display(),
-                "startup spawn dispatched"
-            );
-        }
-        Err(err) => {
-            tracing::error!(
-                target: "forge_workspace::spawn",
-                error = %err,
-                "start_default: get_agent_handle failed"
-            );
-            // No SessionTask exists to run its ConnectionFailed arm, so
-            // record everything parked for this project's lead here.
-            if let Some(project) = lead_project {
-                workspace.expire_parked_for_slot(
-                    &crate::SessionSlot::lead(&project.org, &project.name),
-                    crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
-                );
-            }
-            // The only record of the failure for the same reason: a view
-            // reading the slot afterwards would otherwise see a project
-            // that never started and no way to say why.
-            let message = format!("agent spawn failed: {err}");
-            workspace.record_spawn_failure(&session_key, &message);
-            try_emit(
-                workspace,
-                "start_default::ConnectionFailed",
-                SessionUpdate::ConnectionFailed { key: session_key, message, fatal: true },
-            );
-            try_emit(workspace, "start_default::FatalError", {
-                let error = forge_primitives::error::AppError::ConnectionFailed;
-                SessionUpdate::FatalError { message: error.user_message().to_owned(), error }
-            });
-        }
-    }
 }
 
 /// The caller-facing refusal for an at-cap worker spawn. One source so
@@ -2589,30 +2406,6 @@ pub(crate) fn handle_deliver_worker_prompt_to_lead(
     }
 }
 
-/// Open a URL in the user's browser off the dispatch thread, surfacing
-/// a failure as a warning notice.
-pub(crate) fn handle_open_url(workspace: &Arc<Workspace>, url: String) {
-    let ws = Arc::clone(workspace);
-    tokio::spawn(async move {
-        if let Err(err) = forge_agent::env::open_url::open_url(&url).await {
-            // The notice is the user-visible surface; the warn is the
-            // triage trail. Never both-swallowed.
-            tracing::warn!(
-                target: "forge_workspace",
-                event_name = "open_url_failed",
-                message = "browser open failed",
-                outcome = "failure",
-                url = %url,
-                error = %err,
-            );
-            let _ = ws.update_sender().send(SessionUpdate::ServiceStatus {
-                severity: forge_primitives::cloud::service_status::ServiceSeverity::Warning,
-                message: format!("Failed to open {url}: {err}"),
-            });
-        }
-    });
-}
-
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
@@ -2836,81 +2629,6 @@ provider = "anthropic"
             record.contains("agent spawn failed"),
             "the record carries the reason the envelope announced: {record}",
         );
-    }
-
-    /// `handle_start_default` is the startup spawn path; on failure
-    /// it must emit `SessionUpdate::ConnectionFailed { fatal: true }`
-    /// followed by `SessionUpdate::FatalError`. Startup failures are
-    /// fatal; sleeping-session-spawn failures are not.
-    ///
-    /// Drives the failure path by passing a non-existent project
-    /// name (`SessionTarget::Named` resolves via `find_project_by_name`
-    /// in `get_agent_handle`, which errors with `ProjectNotFound`).
-    #[tokio::test]
-    async fn start_default_failure_is_fatal() {
-        let dir = tempdir().expect("tempdir");
-        write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
-        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let mut rx = workspace.subscribe();
-
-        // Drive a failure by passing a project name that doesn't
-        // exist in forge.toml.
-        handle_start_default(
-            &workspace,
-            Some("nonexistent".to_owned()),
-            SessionLaunchSettings::default(),
-        );
-
-        // Expect ConnectionFailed { fatal: true } then FatalError.
-        let first = rx.try_recv().expect("first update");
-        match first {
-            SessionUpdate::ConnectionFailed { fatal, .. } => {
-                assert!(fatal, "startup spawn failure must be fatal");
-            }
-            other => panic!("expected ConnectionFailed; got {other:?}"),
-        }
-        let second = rx.try_recv().expect("second update");
-        assert!(
-            matches!(second, SessionUpdate::FatalError { .. }),
-            "startup spawn failure must follow with FatalError"
-        );
-    }
-
-    /// `handle_spawn_session` failure path emits
-    /// `ConnectionFailed { fatal: false }` - a sleeping-session
-    /// spawn failure must NOT kill the app. Distinguished from
-    /// `handle_start_default`'s fatal contract by route.
-    ///
-    /// Drives the failure by naming a slot no project declares:
-    /// `project_for_slot` returns None, the handler warns and returns
-    /// after a `ServiceStatus` note. This regression test confirms it
-    /// does NOT emit a fatal envelope.
-    #[tokio::test]
-    async fn spawn_session_unknown_session_emits_no_fatal() {
-        let dir = tempdir().expect("tempdir");
-        write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
-        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let mut rx = workspace.subscribe();
-
-        handle_spawn_session(
-            &workspace,
-            &SessionSlot::from_str_for_test("no-such-session-id"),
-            &crate::protocol::SpawnRole::Lead,
-            SessionLaunchSettings::default(),
-        );
-
-        // An unknown slot warns and returns, so the only envelope this
-        // path may send is the non-fatal ServiceStatus. The important
-        // assertion is that nothing here is a FatalError.
-        while let Ok(update) = rx.try_recv() {
-            assert!(
-                !matches!(update, SessionUpdate::FatalError { .. }),
-                "spawn_session failure must not emit FatalError"
-            );
-            if let SessionUpdate::ConnectionFailed { fatal, .. } = update {
-                assert!(!fatal, "spawn_session ConnectionFailed must be non-fatal");
-            }
-        }
     }
 
     fn fixture_wrapped() -> WrappedPrompt {
@@ -6274,7 +5992,7 @@ provider = "anthropic"
         std::fs::write(wt.join("work.txt"), "the worker's real work").expect("write work");
         run_git(&wt, &["add", "."]);
         run_git(&wt, &["commit", "-q", "-m", "real work"]);
-        workspace.save_review_threads("forge", "feature-x", &[review_thread("a")]);
+        workspace.upsert_review_thread("forge", "feature-x", review_thread("a"));
         workspace
             .submit_review(
                 "forge",
@@ -6315,7 +6033,7 @@ provider = "anthropic"
         run_git(&wt, &["add", "."]);
         run_git(&wt, &["commit", "-q", "-m", "real work"]);
         run_git(&wt, &["push", "-q", "-u", "origin", "worktree-reviewer"]);
-        workspace.save_review_threads("forge", "worktree-reviewer", &[review_thread("a")]);
+        workspace.upsert_review_thread("forge", "worktree-reviewer", review_thread("a"));
 
         let (tx, rx) = tokio::sync::oneshot::channel();
         handle_despawn_worker(&workspace, &project_key, "reviewer", false, tx);
@@ -6341,8 +6059,8 @@ provider = "anthropic"
         let (workspace, project_key, wt, repo, _config) = git_despawn_fixture("reviewer");
         let branch = forge_agent::env::worktree::worktree_branch(&wt).expect("worktree branch");
         let thread = review_thread;
-        workspace.save_review_threads("forge", &branch, &[thread("a")]);
-        workspace.save_review_threads("forge", "survivor", &[thread("b")]);
+        workspace.upsert_review_thread("forge", &branch, thread("a"));
+        workspace.upsert_review_thread("forge", "survivor", thread("b"));
         // Seal a review on each branch (empty thread set just mints the row).
         let origin = SessionSlot::from_str_for_test("reviewer");
         workspace
@@ -6384,7 +6102,7 @@ provider = "anthropic"
     async fn despawn_with_detached_head_skips_cleanup_gracefully() {
         let (workspace, project_key, wt, _repo, _config) = git_despawn_fixture("reviewer");
         run_git(&wt, &["checkout", "--detach"]);
-        workspace.save_review_threads("forge", "survivor", &[review_thread("a")]);
+        workspace.upsert_review_thread("forge", "survivor", review_thread("a"));
 
         let (tx, rx) = tokio::sync::oneshot::channel();
         handle_despawn_worker(&workspace, &project_key, "reviewer", false, tx);

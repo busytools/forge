@@ -308,17 +308,16 @@ census!(Command,
         DictateActivate struct, DictateDeactivate struct, DictateBench struct,
         DictateBenchStop struct, DictateReadAloudStart struct, DictateReadAloudStop struct,
         DictateReadAloudDelete struct, DictateBenchDelete struct, DictateUninstall struct,
-        ReconnectMcpServer struct, ToggleMcpServer struct,
         PluginInstall struct, PluginUpdate struct, PluginUpdateAll struct,
         PluginCheckUpdates struct, MarketplaceAdd struct, MarketplaceRepair struct,
-        SpawnProject struct, SpawnSession struct, StartDefault struct,
+        SpawnProject struct,
         TaskVerdict struct, TaskAnswer struct, TaskRank struct, TaskAssign struct,
         TaskCreate struct, TaskMove struct, DeliverPeerPrompt struct,
-        SpawnWorker struct, CloseWorker struct, OpenUrl struct, DespawnWorker struct,
+        SpawnWorker struct, CloseWorker struct, DespawnWorker struct,
         DeliverWorkerPrompt struct, DeliverWorkerPromptToLead struct,
         DeliverGotifyMessage struct, DictateStream struct,
         DictateStop struct,
-        SaveReviewThreads struct, RemoveReviewThread struct, SetReviewThreadStatus struct,
+        SetReviewThreadStatus struct,
         CloseSession struct, UpsertReviewThread struct, SubmitReview struct,
     ],
     command_census, COMMAND_VARIANTS);
@@ -772,7 +771,7 @@ fn frames_record() -> Value {
         );
     }
 
-    let command = Command::OpenUrl { url: String::new() };
+    let command = Command::Cancel { key: seat.clone() };
     let encoded = serde_json::to_value(&command).expect("a command encodes");
     assert_eq!(
         external_tag(&encoded),
@@ -791,7 +790,7 @@ fn frames_record() -> Value {
         },
         ClientMessage::Unsubscribe { what: Subject::Home },
         ClientMessage::Command {
-            command: Box::new(Command::OpenUrl { url: String::new() }),
+            command: Box::new(Command::Cancel { key: seat.clone() }),
             reply_to: None,
         },
         ClientMessage::More { conversation: seat.clone(), before: None, turns: 1 },

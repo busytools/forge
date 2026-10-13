@@ -111,15 +111,4 @@ pub enum AgentCommand {
         tool_call_id: ToolUseId,
         outcome: QuestionOutcome,
     },
-
-    // --- MCP management ---
-    ReconnectMcpServer {
-        session_id: SessionId,
-        server_name: String,
-    },
-    ToggleMcpServer {
-        session_id: SessionId,
-        server_name: String,
-        enabled: bool,
-    },
 }

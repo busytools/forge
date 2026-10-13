@@ -216,27 +216,6 @@ impl AgentHandle {
         self.send(AgentCommand::GetMcpSnapshot { session_id: session_id.into() })
     }
 
-    pub fn reconnect_mcp_server(
-        &self,
-        session_id: String,
-        server_name: String,
-    ) -> Result<(), AgentError> {
-        self.send(AgentCommand::ReconnectMcpServer { session_id: session_id.into(), server_name })
-    }
-
-    pub fn toggle_mcp_server(
-        &self,
-        session_id: String,
-        server_name: String,
-        enabled: bool,
-    ) -> Result<(), AgentError> {
-        self.send(AgentCommand::ToggleMcpServer {
-            session_id: session_id.into(),
-            server_name,
-            enabled,
-        })
-    }
-
     pub fn permission_response(
         &self,
         session_id: String,
@@ -435,12 +414,6 @@ fn dispatch(cmd: AgentCommand, bridge: &ForgeSdkBridge) -> anyhow::Result<()> {
         ),
         C::QuestionResponse { session_id, tool_call_id, outcome } => {
             bridge.question_response(session_id.into_string(), tool_call_id.into_string(), outcome)
-        }
-        C::ReconnectMcpServer { session_id, server_name } => {
-            bridge.reconnect_mcp_server(session_id.into_string(), server_name)
-        }
-        C::ToggleMcpServer { session_id, server_name, enabled } => {
-            bridge.toggle_mcp_server(session_id.into_string(), server_name, enabled)
         }
     }
 }

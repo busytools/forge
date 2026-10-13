@@ -4174,9 +4174,8 @@ impl Workspace {
 
     /// Route a [`Command`]. Per-session commands (`cmd.key() ==
     /// Some(key)`) fan out to the matching `SessionTask`. App-level
-    /// commands (`cmd.key() == None` - `SpawnProject`,
-    /// `SpawnSession`, `StartDefault`) route to the workspace's own
-    /// handler.
+    /// commands (`cmd.key() == None` - `SpawnProject`) route to the
+    /// workspace's own handler.
     ///
     /// Test fallback: when no `SessionTask` is registered for `key`
     /// but a `DomainSession` carries a stub `AgentHandle` (e.g., the
@@ -4734,22 +4733,6 @@ impl Workspace {
                     let _enter = span.enter();
                     spawn::handle_spawn_project(self, &project_name, launch_settings);
                 }
-                Command::SpawnSession { key, role, launch_settings } => {
-                    let span = tracing::info_span!(
-                        "spawn_session",
-                        slot = %key.display(),
-                    );
-                    let _enter = span.enter();
-                    spawn::handle_spawn_session(self, &key, &role, launch_settings);
-                }
-                Command::StartDefault { project_name, launch_settings } => {
-                    let span = tracing::info_span!(
-                        "start_default",
-                        project = ?project_name,
-                    );
-                    let _enter = span.enter();
-                    spawn::handle_start_default(self, project_name, launch_settings);
-                }
                 Command::DeliverPeerPrompt { caller, target_project, wrapped } => {
                     let span = tracing::info_span!(
                         "deliver_peer_prompt",
@@ -4926,11 +4909,6 @@ impl Workspace {
                         });
                     }
                 }
-                Command::OpenUrl { url } => {
-                    let span = tracing::info_span!("open_url", url = %url);
-                    let _enter = span.enter();
-                    spawn::handle_open_url(self, url);
-                }
                 Command::DictateCatalogueCheck => {
                     return self.check_dictate_catalogue();
                 }
@@ -5040,25 +5018,6 @@ impl Workspace {
                 // bus. Synchronous inline handlers - the writes are
                 // local redb operations, and the view has already
                 // applied its optimistic state.
-                Command::SaveReviewThreads { project, branch, threads } => {
-                    let span = tracing::info_span!(
-                        "save_review_threads",
-                        project = %project,
-                        branch = %branch,
-                    );
-                    let _enter = span.enter();
-                    self.save_review_threads(&project, &branch, &threads);
-                }
-                Command::RemoveReviewThread { project, branch, thread_id } => {
-                    let span = tracing::info_span!(
-                        "remove_review_thread",
-                        project = %project,
-                        branch = %branch,
-                        thread_id = %thread_id,
-                    );
-                    let _enter = span.enter();
-                    self.remove_review_thread(&project, &branch, &thread_id);
-                }
                 Command::SetReviewThreadStatus { project, branch, thread_id, status } => {
                     let span = tracing::info_span!(
                         "set_review_thread_status",
@@ -12196,11 +12155,10 @@ provider = "anthropic"
         );
     }
 
-    /// The review/close store writes route through the command
-    /// bus: a `SaveReviewThreads` dispatch lands in the redb store
-    /// (observable via the query-side load), and an `UpsertReviewThread`
-    /// dispatch carries its confirmation back on the responder - the
-    /// overlay's at-risk flag depends on it.
+    /// The review store write routes through the command bus: an
+    /// `UpsertReviewThread` dispatch lands in the redb store (observable
+    /// via the query-side load) and carries its confirmation back on the
+    /// responder - the overlay's at-risk flag depends on it.
     #[test]
     fn dispatch_buses_the_review_and_spinner_writes() {
         use forge_primitives::review::{ReviewAnchor, ReviewSide, ReviewStatus, ReviewThread};
@@ -12226,16 +12184,6 @@ provider = "anthropic"
             commit: None,
         };
 
-        workspace
-            .dispatch(Command::SaveReviewThreads {
-                project: "forge".to_owned(),
-                branch: "feat".to_owned(),
-                threads: vec![thread.clone()],
-            })
-            .expect("dispatch");
-        let loaded = workspace.load_review_threads("forge", "feat").expect("load");
-        assert_eq!(loaded.len(), 1, "the bus-routed save landed in the store");
-
         let (respond_tx, mut respond_rx) = tokio::sync::oneshot::channel();
         workspace
             .dispatch(Command::UpsertReviewThread {
@@ -12249,6 +12197,8 @@ provider = "anthropic"
             respond_rx.try_recv().expect("response present"),
             "an open store confirms the upsert on the responder"
         );
+        let loaded = workspace.load_review_threads("forge", "feat").expect("load");
+        assert_eq!(loaded.len(), 1, "the bus-routed upsert landed in the store");
     }
 
     /// `/new` and `/resume` re-spawn on the already-pooled handle, where
@@ -18714,8 +18664,8 @@ provider = "anthropic"
         assert!(!workspace.catalog_ready(), "new_for_test leaves the scan unstarted");
 
         workspace
-            .dispatch(Command::StartDefault {
-                project_name: Some("proj".to_owned()),
+            .dispatch(Command::SpawnProject {
+                project_name: "proj".to_owned(),
                 launch_settings: SessionLaunchSettings::default(),
             })
             .expect("dispatch");
@@ -18779,8 +18729,8 @@ provider = "anthropic"
         assert!(!workspace.catalog_ready(), "the scan has not landed yet");
 
         workspace
-            .dispatch(Command::StartDefault {
-                project_name: Some("proj".to_owned()),
+            .dispatch(Command::SpawnProject {
+                project_name: "proj".to_owned(),
                 launch_settings: SessionLaunchSettings::default(),
             })
             .expect("dispatch");
