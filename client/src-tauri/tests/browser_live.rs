@@ -730,7 +730,18 @@ async fn where_the_move_actually_lands() {
     // The screen the window server reports: one display, its own frame.
     let screen = (0_i64, 0_i64, 2048_i64, 1152_i64);
     let at = win::window(&page, &mut cdp).await.expect("the window answers");
-    eprintln!("at launch: {}", visible(&at, screen));
+    let (area, whole) = visible(&at, screen);
+    eprintln!("at launch: {:?}, on-screen area {area} of {whole} sq pt", at.bounds);
+    // **The birth move is clamped too, and the clamp is the hide's residual**:
+    // the window is mostly off every screen, and some of it stays in the
+    // frame. An engine that ever let it go entirely would make the design's
+    // residual disappear - and this is where that would be noticed.
+    assert!(
+        area > 0 && area < whole / 10,
+        "the born-hidden window sits mostly off the screen, with a sliver kept in the frame \
+         (measured 40x40 in a corner): {}",
+        at.bounds,
+    );
 
     for (left, top) in [
         (-10000, -10000),
@@ -744,27 +755,45 @@ async fn where_the_move_actually_lands() {
         win::move_to(&page, &mut cdp, left, top).await.expect("the move");
         std::thread::sleep(std::time::Duration::from_millis(400));
         let landed = win::window(&page, &mut cdp).await.expect("the window answers");
-        eprintln!("asked ({left}, {top}): {}", visible(&landed, screen));
+        let (area, whole) = visible(&landed, screen);
+        eprintln!(
+            "asked ({left}, {top}): {} bounds, on-screen area {area} of {whole} sq pt",
+            landed.bounds,
+        );
+        // **The clamp, asserted**: a far ask still leaves part of the window
+        // in the frame and most of it out - what makes the hide a sliver
+        // rather than nothing, and the position answerable rather than
+        // assumed. `(10, -10000)` is the one ask the clamp refuses outright,
+        // leaving the window fully in view.
+        if (left, top) == (10, -10000) {
+            assert_eq!(area, whole, "a sideways-and-up ask keeps the whole window in view");
+        } else {
+            assert!(
+                area > 0 && area < whole / 10,
+                "a far ask leaves a sliver in the frame, not nothing and not the window: {}",
+                landed.bounds,
+            );
+        }
     }
 
     guard.reap();
 }
 
-/// The window's bounds and the part of them inside the screen, in points.
-fn visible(window: &forge_client::browser::window::Window, screen: (i64, i64, i64, i64)) -> String {
+/// The window's bounds and the part of them inside the screen, in points:
+/// the overlap area, and the window's own whole area.
+fn visible(
+    window: &forge_client::browser::window::Window,
+    screen: (i64, i64, i64, i64),
+) -> (i64, i64) {
     let (l, t) = (window.number("left"), window.number("top"));
     let (w, h) = (window.number("width"), window.number("height"));
     let (Some(l), Some(t), Some(w), Some(h)) = (l, t, w, h) else {
-        return format!("bounds {:?} (unnamed)", window.bounds);
+        return (0, 0);
     };
     let (sx, sy, sw, sh) = screen;
     let overlap_w = (l + w).min(sx + sw) - l.max(sx);
     let overlap_h = (t + h).min(sy + sh) - t.max(sy);
-    let area = overlap_w.max(0) * overlap_h.max(0);
-    format!(
-        "bounds ({l}, {t}) {w}x{h} state {:?}; on-screen area {area} sq pt ({overlap_w} x {overlap_h})",
-        window.state(),
-    )
+    (overlap_w.max(0) * overlap_h.max(0), w * h)
 }
 
 /// **The decisive question for a minimized hide**: can the vendored driver
@@ -819,37 +848,64 @@ async fn a_minimized_window_can_still_be_driven() {
     let page = cdp.page().await.unwrap_or_else(|why| panic!("no page: {why}"));
     win::minimize(&page, &mut cdp).await.expect("the minimize");
     std::thread::sleep(std::time::Duration::from_millis(900));
-    eprintln!("minimized: {}", awake(&mut cdp, &page).await);
+    let state = awake(&mut cdp, &page).await;
+    eprintln!("minimized: {state}");
+    assert!(
+        state.contains("hidden") && state.contains("frames stopped"),
+        "a minimized window's page reads hidden and its frames stop - the fact the hide rests \
+         on: {state}",
+    );
 
     let snapshot = driver.call("browser_snapshot", json!({})).await;
-    eprintln!("snapshot while minimized: {snapshot:?}");
-
-    let clicked = driver.call("browser_click", json!({ "target": "button" })).await;
-    eprintln!("click while minimized: {clicked:?}");
-
+    assert!(snapshot.is_ok(), "a snapshot still answers while minimized: {snapshot:?}");
     let filled = driver
         .call("browser_type", json!({ "target": "input[name=email]", "text": "a@b.c" }))
         .await;
-    eprintln!("type while minimized: {filled:?}");
+    assert!(filled.is_ok(), "a fill still lands while minimized: {filled:?}");
 
-    // The other hide, with the page awake: the click must work off-screen.
+    // **The click must die, and die the way the design says** - the
+    // stability wait on animation frames, against its own timeout - because
+    // that death is the whole reason minimize is not the hide.
+    let clicked = driver.call("browser_click", json!({ "target": "button" })).await;
+    eprintln!("click while minimized: {clicked:?}");
+    let Err(why) = &clicked else {
+        panic!("a click into a minimized window must not answer Ok: {clicked:?}");
+    };
+    assert!(
+        why.contains("Timeout") && why.contains("stable"),
+        "the click dies in the stability wait on frames, by its own bound: {why}",
+    );
+
+    // The forced click skips the actionability gate - and still dies, which
+    // is why nothing can route around the freeze.
+    let forced = driver.call("browser_click", json!({ "target": "button", "force": true })).await;
+    eprintln!("forced click while minimized: {forced:?}");
+    assert!(forced.is_err(), "even a forced click dies behind the freeze: {forced:?}");
+
+    // The other hide, with the page awake: the SAME click works, and lands.
     win::bring_forward(&page, &mut cdp, 40, 60).await.expect("back to normal");
     win::move_to(&page, &mut cdp, -10000, -10000).await.expect("the move");
     std::thread::sleep(std::time::Duration::from_millis(700));
-    eprintln!("off-screen: {}", awake(&mut cdp, &page).await);
+    let state = awake(&mut cdp, &page).await;
+    eprintln!("off-screen: {state}");
+    assert!(
+        state.contains("visible") && state.contains("frames live"),
+        "an off-screen NORMAL window's page stays a visible page: {state}",
+    );
     let clicked = driver.call("browser_click", json!({ "target": "button" })).await;
-    eprintln!("click while off-screen: {clicked:?}");
-
-    // And the escape hatch: a forced click skips the stability wait.
-    win::minimize(&page, &mut cdp).await.expect("minimize again");
-    std::thread::sleep(std::time::Duration::from_millis(700));
-    let forced = driver.call("browser_click", json!({ "target": "button", "force": true })).await;
-    eprintln!("forced click while minimized: {forced:?}");
+    assert!(clicked.is_ok(), "the click lands while off-screen: {clicked:?}");
+    let title = driver
+        .call("browser_evaluate", json!({ "function": "() => document.title" }))
+        .await
+        .unwrap_or_else(|why| panic!("the read-back failed: {why}"));
+    assert!(
+        format!("{title:?}").contains("clicked"),
+        "and it really fired - the page's own title says so: {title:?}",
+    );
 
     guard.reap();
 }
 
-/// **The flash question**: can a window be born without ever being shown?
 /// **Can the driver work in the profile's hidden window?** The whole
 /// pre-raise life of a profile's browser sits here: the launch is the
 /// production one, its window was born off every screen, and nothing is
