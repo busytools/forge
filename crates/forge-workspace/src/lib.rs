@@ -45,12 +45,11 @@
 //! the **dependency graph** level: no view depends on `forge-agent`;
 //! everything routes through forge-workspace. The
 //! workspace exposes forge-agent's submodules verbatim via
-//! pass-through `pub use` (see `cloud`, `commands`, `env::git_diff`,
-//! `session_lifecycle`, `tooling`, `translate`, `userdata` below).
-//! Types like `forge_workspace::cloud::oauth_credentials::OauthCredentials`
-//! are *defined* in
-//! forge-agent - the workspace just exposes them under the workspace
-//! name so a view can keep its dep graph clean.
+//! pass-through `pub use` (see the `env`, `tooling`, `translate`,
+//! `user_interaction` and `userdata` modules below). Types reached
+//! through them are *defined* in forge-agent - the workspace just
+//! exposes them under the workspace name so a view can keep its dep
+//! graph clean.
 
 mod account_cache;
 mod account_loader;
