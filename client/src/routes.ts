@@ -50,17 +50,17 @@ export type Route =
   | { name: 'notFound' };
 
 /**
- * A pathname without the document it may name.
+ * The root the app is served at, when a pathname names the document itself.
  *
- * The routes are the paths the server serves, and the document serving them
- * is `index.html` at the root - which a shell's window url, a hand-typed
- * address or a link may spell out. Dropping that one segment leaves the root
- * it was served at, so such a launch lands on the app rather than on the
- * not-a-page screen, where no reader can act on it.
+ * A shell's window url, a hand-typed address or a link may spell out
+ * `index.html` at the root, which is the app rather than a route; without
+ * this it lands on the not-a-page screen, where no reader can act on it
+ * (#2159's look hit it). **The root document, and only it**: a doc route's
+ * own `/…/index.html` is a document's path, and stripping that tail as well
+ * would resolve a different file - or none.
  */
 function withoutDocument(path: string): string {
-  const document = '/index.html';
-  return path.endsWith(document) ? path.slice(0, -document.length) || '/' : path;
+  return path === '/index.html' ? '/' : path;
 }
 
 /** The route a path names. Anything the server does not serve is `notFound`. */

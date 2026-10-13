@@ -200,6 +200,27 @@ describe('the document route', () => {
     });
   });
 
+  /**
+   * **A document named `index.html` is a document, not the app's own file.**
+   * The root-document normalization is an exact match on `/index.html` and
+   * nothing else: a tail-strip would take these two addresses apart - the
+   * first resolving no route at all, the second opening the directory.
+   */
+  it('keeps the app-document normalization off a doc path that ends in one', () => {
+    expect(parseRoute('/doc/Busytools/forge/lead/index.html')).toEqual({
+      name: 'doc',
+      slot: { org: 'Busytools', project: 'forge', label: 'lead' },
+      path: '/index.html',
+      reviewable: false,
+    });
+    expect(parseRoute('/doc/Busytools/forge/lead/web/index.html')).toEqual({
+      name: 'doc',
+      slot: { org: 'Busytools', project: 'forge', label: 'lead' },
+      path: '/web/index.html',
+      reviewable: false,
+    });
+  });
+
   it('addresses a document back to the same path', () => {
     const route: Route = {
       name: 'doc',
