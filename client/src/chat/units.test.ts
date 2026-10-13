@@ -1782,28 +1782,37 @@ describe('one turn folded into the units a view draws', () => {
     // never as the reader's turn and never as nothing: a turn woken by one
     // must not read as prompted by nothing. The terminal drops the kind
     // outright; the client's own standard governs (rule 24's freeze clause).
-    // **Two signals, each pinned alone**: across 10,148 queued blocks in this
-    // machine's transcripts, 3,113 carry the mode, 3,113 open with the tag,
-    // and none disagrees - so a row carrying both could not tell a two-signal
-    // guard from a one-signal one.
+    // **Two signals, each pinned alone**: across this machine's transcripts
+    // (13,366 queued blocks at the last count), 3,872 carry the mode, 3,872
+    // open with the tag, and none disagrees - so a row carrying both could
+    // not tell a two-signal guard from a one-signal one.
     const envelope =
       '<task-notification>\n<task-id>t1</task-id>\n<status>completed</status>\n' +
       '<summary>Background command "Run both gates" completed (exit code 0)</summary>\n</task-notification>';
     const byTag = heard([{ type: 'queued_command', commandMode: 'prompt', prompt: envelope }]);
+    // The mode case carries NO tag, or it would pin the tag's clause twice
+    // and leave the mode's own unpinned.
     const byMode = heard([
-      { type: 'queued_command', commandMode: 'task-notification', prompt: envelope },
+      {
+        type: 'queued_command',
+        commandMode: 'task-notification',
+        prompt:
+          'A command ended.\n<summary>Background command "Run both gates" completed (exit code 0)</summary>',
+      },
     ]);
 
     const tagUnits = fold([byTag]);
     expect(kinds(tagUnits), 'the tag alone draws the line').toEqual(['notice']);
     const [tagRow] = tagUnits;
+    expect(tagRow?.kind === 'notice' ? tagRow.notice.severity : '', 'informational').toBe('info');
     expect(tagRow?.kind === 'notice' ? tagRow.notice.text : '', 'the summary it carries').toBe(
       'Background command "Run both gates" completed (exit code 0)',
     );
 
     const modeUnits = fold([byMode]);
-    expect(kinds(modeUnits), 'and so does the mode alone').toEqual(['notice']);
+    expect(kinds(modeUnits), 'and so does the mode alone, tag or no tag').toEqual(['notice']);
     const [modeRow] = modeUnits;
+    expect(modeRow?.kind === 'notice' ? modeRow.notice.severity : '', 'informational').toBe('info');
     expect(modeRow?.kind === 'notice' ? modeRow.notice.text : '', 'the same summary').toBe(
       'Background command "Run both gates" completed (exit code 0)',
     );
@@ -1814,6 +1823,18 @@ describe('one turn folded into the units a view draws', () => {
       { type: 'queued_command', commandMode: 'task-notification', prompt: 'Task bj5g0t2kq done' },
     ]);
     expect(kinds(fold([bare])), 'a summary-less completion is not claimed').toEqual(['user']);
+
+    // An EMPTY summary is absent too, the text carrier's own reading - a
+    // present-but-empty tag must not draw a blank line.
+    const empty = heard([
+      {
+        type: 'queued_command',
+        commandMode: 'task-notification',
+        prompt:
+          '<task-notification>\n<task-id>t2</task-id>\n<status>completed</status>\n<summary></summary>\n</task-notification>',
+      },
+    ]);
+    expect(kinds(fold([empty])), 'an empty summary is not a line').toEqual(['user']);
   });
 
   it('reads the image in a tool result the way the wire nests it', () => {

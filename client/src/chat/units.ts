@@ -2184,8 +2184,11 @@ export function fold(
           // default the text carrier keeps. (The terminal drops the kind
           // outright; the client's own standard governs - rule 24's freeze
           // clause.)
-          const said = noticeFields(words);
-          if (said.summary !== null) {
+          // Escapes stripped, and an empty summary read as absent: both the
+          // text carrier's own parse (#1680's `taskNotificationOf`), so the
+          // two carriers agree on what counts as a summary.
+          const said = noticeFields(stripEscapes(words));
+          if (said.summary !== null && said.summary !== '') {
             push({
               kind: 'notice',
               key: keyOf(at, frame, blockAt),
