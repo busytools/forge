@@ -113,7 +113,7 @@ goes the moment the seat is opened.
 
 - **A fleet**, which is the ordinary case.
 - **A stopped forge**: the core's last fatal draws above everything, in the
-  terminal's own words. It reaches this page from the snapshot's recorded
+  core's own words. It reaches this page from the snapshot's recorded
   fatal, so the attach that sees it is one landing inside the wind-down
   window before the process goes; the live announcement is the fatal's own
   frame, drawn in the chat.
@@ -181,7 +181,8 @@ Two things the home subject carries and this page does not draw are the
 schedules a project holds and the account a row chips. Each is drawn
 elsewhere: the schedules on the session page's strip, whose schedules row
 keeps the seat's own set (a cron names the seat that created it), and the
-account on the launchpad's account walk. Neither is a gap in this page.
+account on the session page's rail footer, beside what it is costing.
+Neither is a gap in this page.
 
 ## The two widths
 
