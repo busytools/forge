@@ -33,8 +33,10 @@ import { busyLine, LocalTake, type TakeConnection } from './take';
 
 /** What registering the push-to-talk key needs of one surface. */
 export interface PushToTalk {
-  /** The take the key begins and ends. */
-  dictate: Dictation;
+  /** The take the key begins and ends, read where it is used: a surface's
+   *  driver arrives as a prop, and a value taken once would be the one the
+   *  page first drew with. */
+  dictate: () => Dictation;
   /** Whether this install offers dictation at all. */
   offered: () => boolean;
   /** The push-to-talk key `forge.toml` configured. */
@@ -78,16 +80,16 @@ export function bindPushToTalk(wiring: PushToTalk): void {
         if (!isBareModifier(event.key)) pressed = markChorded(pressed);
         return;
       }
-      const step = down(pressed, wiring.dictate.held, Date.now(), wiring.mode());
+      const step = down(pressed, wiring.dictate().held, Date.now(), wiring.mode());
       pressed = step.held;
       if (step.action === 'begin') wiring.onBegin();
-      if (step.action !== null) wiring.dictate.act(step.action);
+      if (step.action !== null) wiring.dictate().act(step.action);
     };
     const onUp = (event: KeyboardEvent): void => {
       if (event.code !== boundCode(wiring.bind(), mac)) return;
       const step = up(pressed, Date.now(), wiring.mode());
       pressed = step.held;
-      if (step.action !== null) wiring.dictate.act(step.action);
+      if (step.action !== null) wiring.dictate().act(step.action);
     };
     window.addEventListener('keydown', onDown, true);
     window.addEventListener('keyup', onUp);

@@ -100,7 +100,7 @@
   // while this box is drawn, because the box is where a take's words land and
   // a page with no box has nowhere to put them.
   bindPushToTalk({
-    dictate,
+    dictate: () => dictate,
     offered: () => dictation,
     bind: () => bind,
     mode: () => mode,

@@ -767,7 +767,7 @@
    * under the dock.
    */
   bindPushToTalk({
-    dictate,
+    dictate: () => dictate,
     offered: () => dictation,
     bind: () => composer.bind,
     mode: () => composer.mode,
