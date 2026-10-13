@@ -20,8 +20,9 @@ log_info()    { printf '\033[0;34m[INFO]\033[0m %s\n' "$*"; }
 log_success() { printf '\033[0;32m[OK]\033[0m %s\n' "$*"; }
 log_warn()    { printf '\033[0;33m[WARN]\033[0m %s\n' "$*"; }
 
-# The same candidate order `forge_sdk::paths::app_support_dir` resolves:
-# the platform data dir, then the cache dir, then `$HOME`.
+# The platform data dir - the first candidate `forge_sdk::paths::app_support_dir`
+# resolves. Set FORGE_APP_SUPPORT_BASE if that resolver fell through to the
+# cache dir or `$HOME` instead.
 pick_base() {
     if [ -n "${FORGE_APP_SUPPORT_BASE:-}" ]; then
         printf '%s\n' "$FORGE_APP_SUPPORT_BASE"
@@ -40,6 +41,10 @@ CURRENT="$BASE/forge"
 report() {
     local dir="$1"
     local label="$2"
+    if [ -L "$dir" ]; then
+        log_info "$label: $dir (a symlink to $(readlink "$dir"); the move takes the link itself)"
+        return
+    fi
     local count
     count=$(find "$dir" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')
     log_info "$label: $dir ($count entries)"
