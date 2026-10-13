@@ -196,8 +196,6 @@ fn apply_tool_call_update_to_indexed_block(
                 tc.mark_tool_call_layout_dirty_only();
             }
             out.layout_dirty_idx = Some(mi);
-        } else {
-            crate::perf::mark("tool_update_noop_skips");
         }
     }
     if should_engage_auto_scroll && let Some(viewport) = app.active_viewport_mut() {

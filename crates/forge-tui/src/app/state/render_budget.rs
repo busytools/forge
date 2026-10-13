@@ -228,12 +228,10 @@ impl super::App {
     fn resize_render_cache_row(&mut self, msg_idx: usize) -> bool {
         let protected_tail = self.protected_streaming_message_idx();
         if protected_tail != self.render_cache_tail_msg_idx() {
-            crate::perf::mark("rc::row_fallback_tail_moved");
             self.rebuild_render_cache_accounting();
             return false;
         }
         if !self.render_cache_slots_match_messages() {
-            crate::perf::mark("rc::row_fallback_row_count");
             self.rebuild_render_cache_accounting();
             return false;
         }
@@ -247,7 +245,6 @@ impl super::App {
                 message_count,
                 outcome = "full_rebuild",
             );
-            crate::perf::mark("rc::row_fallback_bad_index");
             self.rebuild_render_cache_accounting();
             return false;
         }

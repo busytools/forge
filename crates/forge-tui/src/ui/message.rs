@@ -771,10 +771,7 @@ fn append_user_blocks(
 ) {
     let width = render_context.width;
     let streaks = envelope_streak_positions(&msg.blocks);
-    let owned_units = {
-        let _t = crate::perf::start_with("msg::partition_user", "blocks", msg.blocks.len());
-        grouping::partition_blocks_into_render_units(&msg.blocks)
-    };
+    let owned_units = grouping::partition_blocks_into_render_units(&msg.blocks);
     for unit in owned_units {
         match unit {
             grouping::RenderUnit::MessagingGroup { segment, group_leader_id } => {
@@ -953,10 +950,7 @@ fn append_assistant_blocks(
 
     let show_compacting = spinner.show_compacting;
     let mut state = AssistantLayoutState::default();
-    let owned_units = {
-        let _t = crate::perf::start_with("msg::partition_assistant", "blocks", msg.blocks.len());
-        grouping::partition_blocks_into_render_units(&msg.blocks)
-    };
+    let owned_units = grouping::partition_blocks_into_render_units(&msg.blocks);
     for unit in owned_units {
         match unit {
             grouping::RenderUnit::Individual(idx) => {
@@ -2062,10 +2056,7 @@ fn build_message_render_signature(
     render_context.project_root.hash(&mut hasher);
     // Fold each group's level so a `cycle_*_collapse_level` flip
     // invalidates this message's cached render.
-    let owned_units = {
-        let _t = crate::perf::start_with("msg::partition_signature", "blocks", msg.blocks.len());
-        grouping::partition_blocks_into_render_units(&msg.blocks)
-    };
+    let owned_units = grouping::partition_blocks_into_render_units(&msg.blocks);
     for unit in &owned_units {
         match unit {
             grouping::RenderUnit::Group { leader_id, range, aggregate_status, .. } => {
@@ -2553,10 +2544,7 @@ fn render_welcome_cached(
     }
 
     let fresh = welcome_lines(block, width);
-    let h = {
-        let _t = crate::perf::start_with("msg::wrap_height", "lines", fresh.len());
-        Paragraph::new(Text::from(fresh.clone())).wrap(Wrap { trim: false }).line_count(width)
-    };
+    let h = Paragraph::new(Text::from(fresh.clone())).wrap(Wrap { trim: false }).line_count(width);
     cache.store(fresh);
     cache.set_height(h, width);
     if let Some(stored) = cache.get() {
@@ -2856,14 +2844,10 @@ pub(super) fn render_text_cached(
         && let Some(cached_copy) = cache.copy_rows().map(<[crate::ui::copy::CopyRowMeta]>::to_vec)
         && cached_copy.len() == cached_lines.len()
     {
-        crate::perf::mark_with("msg::cache_hit", "lines", cached_lines.len());
         out.extend_from_slice(cached_lines);
         copy_rows.extend(cached_copy);
         return;
     }
-    crate::perf::mark("msg::cache_miss");
-
-    let _t = crate::perf::start("msg::render_text");
 
     // Build a render function that handles preprocessing + tui_markdown
     let render_fn = |src: &str| -> crate::app::RenderedChunk {
@@ -2881,10 +2865,9 @@ pub(super) fn render_text_cached(
     // Store in the full block cache with wrapped height.
     // For streaming messages this will be invalidated on the next chunk,
     // but for completed messages it persists.
-    let h = {
-        let _t = crate::perf::start_with("msg::wrap_height", "lines", fresh.lines.len());
-        Paragraph::new(Text::from(fresh.lines.clone())).wrap(Wrap { trim: false }).line_count(width)
-    };
+    let h = Paragraph::new(Text::from(fresh.lines.clone()))
+        .wrap(Wrap { trim: false })
+        .line_count(width);
     cache.store(fresh.lines.clone());
     cache.set_copy_rows(fresh.copy_rows.clone());
     cache.set_height(h, width);

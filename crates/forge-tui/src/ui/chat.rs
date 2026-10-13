@@ -142,7 +142,6 @@ pub(super) fn update_visual_heights(
 ) -> HeightUpdateStats {
     app.ensure_running_turn_spinner_anchor();
     let msg_count = app.messages().map_or(0, <[ChatMessage]>::len);
-    let _t = app.perf.as_ref().map(|p| p.start_with("chat::update_heights", "msgs", msg_count));
     if let Some(viewport) = app.active_viewport_mut() {
         viewport.sync_message_count(msg_count);
     }
@@ -505,17 +504,11 @@ fn measure_message_height_at(
     .with_group_collapse_levels(&group_collapse_levels)
     .with_messaging_group_collapse_levels(&messaging_group_collapse_levels)
     .with_project_root(invariants.project_root.unwrap_or(""));
-    // Scope the perf span to the measure call only - the cache-sync +
-    // viewport writes below are not part of the measure timing.
     let (h, rendered_lines) = {
         let Some(msg) = app.active_messages_mut().and_then(|messages| messages.get_mut(idx)) else {
             return;
         };
-        let _t = crate::perf::start_with("chat::measure_msg", "blocks", msg.blocks.len());
-        let measured =
-            message::measure_message_height_cached_with_context(msg, &sp, render_context);
-        crate::perf::mark_with("chat::measure_msg_wrapped_lines", "lines", measured.1);
-        measured
+        message::measure_message_height_cached_with_context(msg, &sp, render_context)
     };
     budget.consume(rendered_lines);
     app.sync_render_cache_message(idx);
@@ -577,7 +570,6 @@ pub(super) fn sync_chat_layout(app: &mut App, area: Rect, base_spinner: &Spinner
     let viewport_height = usize::from(area.height);
 
     {
-        let _t = app.perf.as_ref().map(|p| p.start("chat::on_frame"));
         let resized = app
             .active_viewport_mut()
             .is_some_and(|viewport| viewport.on_frame(width, area.height).resized());
@@ -585,30 +577,16 @@ pub(super) fn sync_chat_layout(app: &mut App, area: Rect, base_spinner: &Spinner
             metrics.record_resize();
         }
     }
-    let height_stats = update_visual_heights(
+    let _height_stats = update_visual_heights(
         app,
         base_spinner,
         width,
         viewport_height,
         MeasureBudget::per_frame(viewport_height),
     );
-    crate::perf::mark_with(
-        "chat::update_heights_measured_msgs",
-        "msgs",
-        height_stats.measured_msgs,
-    );
-    crate::perf::mark_with("chat::update_heights_reused_msgs", "msgs", height_stats.reused_msgs);
-    crate::perf::mark_with(
-        "chat::update_heights_measured_lines",
-        "lines",
-        height_stats.measured_lines,
-    );
 
-    {
-        let _t = app.perf.as_ref().map(|p| p.start("chat::prefix_sums"));
-        if let Some(viewport) = app.active_viewport_mut() {
-            viewport.rebuild_prefix_sums();
-        }
+    if let Some(viewport) = app.active_viewport_mut() {
+        viewport.rebuild_prefix_sums();
     }
     if let Some(vp) = app.active_viewport_mut()
         && let Some((anchor_idx, anchor_offset)) = vp.take_ready_scroll_anchor()
@@ -616,16 +594,7 @@ pub(super) fn sync_chat_layout(app: &mut App, area: Rect, base_spinner: &Spinner
         vp.restore_scroll_anchor(anchor_idx, anchor_offset);
     }
 
-    let content_height =
-        app.active_viewport_mut().map_or(0, |viewport| viewport.total_message_height());
-    crate::perf::mark_with("chat::content_height", "rows", content_height);
-    crate::perf::mark_with("chat::viewport_height", "rows", viewport_height);
-    crate::perf::mark_with(
-        "chat::content_overflow_rows",
-        "rows",
-        content_height.saturating_sub(viewport_height),
-    );
-    content_height
+    app.active_viewport_mut().map_or(0, |viewport| viewport.total_message_height())
 }
 
 /// The rendered paragraph window: the rows and the scroll bookkeeping the
@@ -675,28 +644,14 @@ pub(super) fn assemble_scrolled_window(
     clamp_scroll_to_content(vp, max_scroll, reduced_motion);
 
     let scroll_offset = vp.scroll_offset;
-    crate::perf::mark_with("chat::max_scroll", "rows", max_scroll);
-    crate::perf::mark_with("chat::scroll_offset", "rows", scroll_offset);
 
     let mut all_lines = Vec::new();
     let auto_scroll = app.viewport().is_some_and(|viewport| viewport.auto_scroll);
-    let stats = {
-        let _t = app.perf.as_ref().map(|p| {
-            p.start_with(
-                "chat::render_msgs",
-                "msgs",
-                app.messages().map_or(0, <[ChatMessage]>::len),
-            )
-        });
-        if auto_scroll {
-            render_tail_anchored(app, base, width, viewport_height, &mut all_lines)
-        } else {
-            render_culled_messages(app, base, width, scroll_offset, viewport_height, &mut all_lines)
-        }
+    let stats = if auto_scroll {
+        render_tail_anchored(app, base, width, viewport_height, &mut all_lines)
+    } else {
+        render_culled_messages(app, base, width, scroll_offset, viewport_height, &mut all_lines)
     };
-    crate::perf::mark_with("chat::render_scrolled_lines", "lines", all_lines.len());
-    crate::perf::mark_with("chat::render_scrolled_msgs", "msgs", stats.rendered_msgs);
-    crate::perf::mark_with("chat::render_scrolled_start", "idx", stats.render_start);
 
     ScrolledWindow { all_lines, stats, max_scroll, scroll_offset }
 }
@@ -709,15 +664,9 @@ fn build_scrolled_render_data(
     viewport_height: usize,
 ) -> ScrolledRenderData {
     let window = assemble_scrolled_window(app, base, width, content_height, viewport_height);
-    let paragraph = {
-        let _t = app
-            .perf
-            .as_ref()
-            .map(|p| p.start_with("chat::paragraph_build", "lines", window.all_lines.len()));
-        // Moves the rows in; the copy path keeps its own window instead, so
-        // the frame never clones them.
-        Paragraph::new(Text::from(window.all_lines)).wrap(Wrap { trim: false })
-    };
+    // Moves the rows in; the copy path keeps its own window instead, so
+    // the frame never clones them.
+    let paragraph = Paragraph::new(Text::from(window.all_lines)).wrap(Wrap { trim: false });
 
     ScrolledRenderData {
         paragraph,
@@ -737,7 +686,6 @@ pub(super) fn render_scrolled(
     content_height: usize,
     viewport_height: usize,
 ) {
-    let _t = app.perf.as_ref().map(|p| p.start("chat::render_scrolled"));
     let render_data = build_scrolled_render_data(app, base, width, content_height, viewport_height);
     let pinned_to_bottom = render_data.scroll_offset == render_data.max_scroll;
     emit_render_summary(
@@ -750,18 +698,10 @@ pub(super) fn render_scrolled(
     );
 
     app.rendered_chat_area = area;
-    {
-        let _t = app
-            .perf
-            .as_ref()
-            .map(|p| p.start_with("chat::render_widget", "scroll", render_data.stats.local_scroll));
-        frame.render_widget(
-            render_data
-                .paragraph
-                .scroll((paragraph_scroll_offset(render_data.stats.local_scroll), 0)),
-            area,
-        );
-    }
+    frame.render_widget(
+        render_data.paragraph.scroll((paragraph_scroll_offset(render_data.stats.local_scroll), 0)),
+        area,
+    );
     paint_user_gutter(frame, area, &render_data.stats.gutter_rows, render_data.stats.local_scroll);
 }
 
@@ -1060,7 +1000,6 @@ fn render_message_range(
     // Even at one row per message this many messages cover `rows_needed`, so
     // walking past it means the cached-height sum is lying (0 or a bad estimate).
     let message_cap = viewport_height + overscan + 1;
-    crate::perf::mark_with("chat::cull_lines_needed", "lines", rows_needed);
     let mut structural_skip = initial_structural_skip;
     let mut rendered_rows = 0usize;
     let mut rendered_msgs = 0usize;
@@ -1236,23 +1175,11 @@ fn paint_user_gutter(
 }
 
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
-    let _t = app.perf.as_ref().map(|p| p.start("chat::render"));
-    crate::perf::mark_with(
-        "chat::message_count",
-        "msgs",
-        app.messages().map_or(0, <[ChatMessage]>::len),
-    );
     let content_area = chat_content_area(area);
     let width = content_area.width;
     let viewport_height = content_area.height as usize;
     let base_spinner = build_base_spinner(app);
     let content_height = sync_chat_layout(app, content_area, &base_spinner);
-
-    if content_height <= viewport_height {
-        crate::perf::mark_with("chat::path_short", "active", 1);
-    } else {
-        crate::perf::mark_with("chat::path_scrolled", "active", 1);
-    }
 
     render_scrolled(
         frame,
@@ -1357,11 +1284,6 @@ fn remember_render_trace_state(
 
 fn enforce_and_emit_cache_metrics(app: &mut App) {
     let budget_stats = app.enforce_render_cache_budget();
-    crate::perf::mark_with("cache::bytes_before", "bytes", budget_stats.total_before_bytes);
-    crate::perf::mark_with("cache::bytes_after", "bytes", budget_stats.total_after_bytes);
-    crate::perf::mark_with("cache::protected_bytes", "bytes", budget_stats.protected_bytes);
-    crate::perf::mark_with("cache::evicted_bytes", "bytes", budget_stats.evicted_bytes);
-    crate::perf::mark_with("cache::evicted_blocks", "count", budget_stats.evicted_blocks);
 
     // -- Accumulate and conditionally log render cache metrics --
     let render_cache_budget = app.render_cache_budget;
@@ -1418,14 +1340,6 @@ fn enforce_and_emit_cache_metrics(app: &mut App) {
         };
         if let Some(snap) = snap {
             cache_metrics::emit_render_metrics(&snap);
-
-            crate::perf::mark_with("cache::entry_count", "count", entry_count);
-            crate::perf::mark_with(
-                "cache::utilization_pct_x10",
-                "pct",
-                (snap.render_utilization_pct * 10.0) as usize,
-            );
-            crate::perf::mark_with("cache::peak_bytes", "bytes", snap.render_peak_bytes);
         }
     }
 }
@@ -4108,87 +4022,5 @@ mod tests {
             draw_chat_rows(&mut progressive, 80, 30),
             "converged progressive paint must match the full first measure"
         );
-    }
-
-    fn realistic_session_app(message_count: usize) -> App {
-        let bodies = [
-            String::from("ok"),
-            "word ".repeat(24),
-            format!("header\n{}", "detail line\n".repeat(18)),
-            format!("{}\n", "x".repeat(76)).repeat(56),
-        ];
-        let mut app = App::test_default();
-        *app.active_messages_mut().expect("active session") = (0..message_count)
-            .map(|i| {
-                let body = &bodies[i % bodies.len()];
-                assistant_text_message(&format!("msg {i}\n{body}"))
-            })
-            .collect();
-        app
-    }
-
-    /// Re-measure harness for #1080. The perf log only records frames at or
-    /// above SLOW_FRAME_THRESHOLD_MS (50ms), so a cold open of a large
-    /// session that stays under budget yields zero chat::update_heights
-    /// samples at all. The logger rides on `app.perf`, the same path the
-    /// render spans read, so an unwired logger cannot fake a clean run.
-    /// Ignored by default: wall-clock based; run in release with the perf
-    /// feature via
-    /// `cargo nextest run -p forge-tui --features perf --release --run-ignored ignored-only`.
-    #[test]
-    #[ignore = "wall-clock re-measure; run in release with --features perf"]
-    fn cold_open_of_a_large_session_records_no_slow_frames() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let log_path = dir.path().join("perf.jsonl");
-        {
-            let mut app = realistic_session_app(2000);
-            let logger = crate::perf::PerfLogger::open(&log_path).expect("perf log opens");
-            app.perf = Some(logger);
-            let spinner = idle_spinner();
-            let area = Rect::new(0, 0, 80, 30);
-            for _ in 0..120 {
-                let _frame = app.perf.as_ref().map(|p| p.start("frame_total"));
-                let _ = sync_chat_layout(&mut app, area, &spinner);
-            }
-        }
-        let logged = std::fs::read_to_string(&log_path).expect("perf log readable");
-        let slow_update_heights = logged
-            .lines()
-            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-            .filter(|v| v.get("metric").and_then(|m| m.as_str()) == Some("chat::update_heights"))
-            .count();
-        assert_eq!(slow_update_heights, 0, "slow frames recorded during cold open:\n{logged}");
-    }
-
-    /// Proves the harness above can record a slow frame: a deliberately
-    /// over-budget frame_total must land in the log through the same
-    /// `app.perf` route the render spans read. Without this the zero-sample
-    /// assertion cannot distinguish a clean run from an unwired logger.
-    #[test]
-    #[ignore = "wall-clock re-measure; run in release with --features perf"]
-    fn perf_log_captures_a_deliberately_slow_frame() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let log_path = dir.path().join("perf.jsonl");
-        {
-            let mut app = App::test_default();
-            let logger = crate::perf::PerfLogger::open(&log_path).expect("perf log opens");
-            app.perf = Some(logger);
-            {
-                let _frame = app.perf.as_ref().map(|p| p.start("frame_total"));
-                std::thread::sleep(std::time::Duration::from_millis(60));
-            }
-        }
-        let logged = std::fs::read_to_string(&log_path).expect("perf log readable");
-        let captured = logged
-            .lines()
-            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-            .find(|v| {
-                v.get("metric").and_then(|m| m.as_str()) == Some("frame_total")
-                    && v.get("duration_ms")
-                        .and_then(serde_json::Value::as_f64)
-                        .is_some_and(|d| d >= 50.0)
-            })
-            .is_some();
-        assert!(captured, "the deliberately slow frame was not captured: {logged}");
     }
 }

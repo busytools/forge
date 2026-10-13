@@ -424,10 +424,7 @@ fn render_scrollable_body(
     }
 
     let mut body_lines: Vec<Line<'static>> = Vec::new();
-    let hit_ranges = {
-        let _t = crate::perf::start("ui::inspector_pane::append_body");
-        append_body(&mut body_lines, app, body_area.width, subagents)
-    };
+    let hit_ranges = append_body(&mut body_lines, app, body_area.width, subagents);
     let has_open_diff_glyph = snapshot_has_diff(app);
     let total = body_lines.len();
     let visible = usize::from(body_area.height);
@@ -610,10 +607,7 @@ fn append_body(
     width: u16,
     subagents: &[crate::app::SubagentEntry],
 ) -> BodyHitRanges {
-    let git_pr_range = {
-        let _t = crate::perf::start("ui::inspector_pane::git_section");
-        append_git_section(lines, app, width)
-    };
+    let git_pr_range = append_git_section(lines, app, width);
 
     // The section renders the store's rows, so an empty store suppresses
     // the header and the rule with it, like every other section.
@@ -623,7 +617,6 @@ fn append_body(
         lines.push(Line::default());
         push_section_rule(lines, width);
         lines.push(Line::default());
-        let _t = crate::perf::start("ui::inspector_pane::tasks_section");
         append_tasks_section(lines, app, width)
     };
 
@@ -634,7 +627,6 @@ fn append_body(
         lines.push(Line::default());
         push_section_rule(lines, width);
         lines.push(Line::default());
-        let _t = crate::perf::start("ui::inspector_pane::subagents_section");
         append_subagents_section(lines, app, width, subagents);
     }
 
@@ -647,7 +639,6 @@ fn append_body(
         lines.push(Line::default());
         push_section_rule(lines, width);
         lines.push(Line::default());
-        let _t = crate::perf::start("ui::inspector_pane::schedules_section");
         append_schedules_section(lines, app, width);
     }
 
@@ -658,7 +649,6 @@ fn append_body(
         lines.push(Line::default());
         push_section_rule(lines, width);
         lines.push(Line::default());
-        let _t = crate::perf::start("ui::inspector_pane::gotify_section");
         append_gotify_section(lines, app, width);
     }
 
@@ -670,7 +660,6 @@ fn append_body(
         lines.push(Line::default());
         push_section_rule(lines, width);
         lines.push(Line::default());
-        let _t = crate::perf::start("ui::inspector_pane::slack_section");
         append_slack_section(lines, app, width);
     }
 
@@ -678,10 +667,7 @@ fn append_body(
     // the session's MCP snapshot, so every configured server renders -
     // sdk/in-process servers with no process, pending and failed ones
     // included. Whole section is a click-through to the /mcp view.
-    let mcp_section = {
-        let _t = crate::perf::start("ui::inspector_pane::collect_mcp_servers");
-        crate::app::mcp_servers::collect_mcp_servers(app)
-    };
+    let mcp_section = { crate::app::mcp_servers::collect_mcp_servers(app) };
     let mcp_range = if mcp_section.rows.is_empty() {
         None
     } else {
@@ -689,7 +675,6 @@ fn append_body(
         push_section_rule(lines, width);
         lines.push(Line::default());
         let start = lines.len();
-        let _t = crate::perf::start("ui::inspector_pane::mcp_servers_section");
         append_mcp_servers_section(lines, &mcp_section.rows, width);
         Some((start, lines.len() - start))
     };
@@ -699,15 +684,11 @@ fn append_body(
     // `local_bash` registry (agents render in SUBAGENTS; MCP servers
     // render in MCP SERVERS above). The join ran once above; its claimed
     // pids hand off here. Auto-hidden when nothing is active.
-    let processes = {
-        let _t = crate::perf::start("ui::inspector_pane::collect_active_processes");
-        collect_active_processes(app, &mcp_section.claimed_pids)
-    };
+    let processes = collect_active_processes(app, &mcp_section.claimed_pids);
     if !processes.is_empty() {
         lines.push(Line::default());
         push_section_rule(lines, width);
         lines.push(Line::default());
-        let _t = crate::perf::start("ui::inspector_pane::processes_section");
         append_processes_section(lines, &processes, width, app.active_spinner_glyph());
     }
 
@@ -1067,14 +1048,8 @@ fn append_diff_layer(lines: &mut Vec<Line<'static>>, layer: &DiffDisplay<'_>, wi
     // Blank between the subtitle row and the file tree.
     lines.push(Line::default());
 
-    let tree = {
-        let _t = crate::perf::start("ui::inspector_pane::build_tree");
-        build_tree(layer.files)
-    };
-    {
-        let _t = crate::perf::start("ui::inspector_pane::render_tree");
-        render_tree(lines, &tree, width);
-    }
+    let tree = build_tree(layer.files);
+    render_tree(lines, &tree, width);
 
     // Overflow row when the trimmed top-N is shorter than the total
     // changed-files count.

@@ -693,12 +693,6 @@ impl super::App {
         stats.total_dropped_bytes =
             self.history_retention_stats().map_or(0, |stats| stats.total_dropped_bytes);
 
-        crate::perf::mark_with("history::bytes_before", "bytes", stats.total_before_bytes);
-        crate::perf::mark_with("history::bytes_after", "bytes", stats.total_after_bytes);
-        crate::perf::mark_with("history::dropped_messages", "count", stats.dropped_messages);
-        crate::perf::mark_with("history::dropped_bytes", "bytes", stats.dropped_bytes);
-        crate::perf::mark_with("history::total_dropped", "count", stats.total_dropped_messages);
-
         stats
     }
 

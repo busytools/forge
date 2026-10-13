@@ -9,20 +9,13 @@ use super::types::ToolCallScope;
 use super::{AnsweredQuestion, MessageBlock, ToolCallInfo};
 use crate::agent::model;
 
-/// Mark a tool call's render cache stale, counting the request.
-///
-/// The counter is the view's, not the model's: `ToolCallInfo` moves to
-/// `forge-server`, which carries no perf dependency. Every request for an
-/// invalidation goes through one of these, so the count keeps meaning what
-/// it did when the mark sat on the model.
+/// Mark a tool call's render cache stale.
 pub(crate) fn request_tool_call_render_dirty(tc: &mut ToolCallInfo) {
-    crate::perf::mark("tc_invalidations_requested");
     tc.mark_tool_call_render_dirty();
 }
 
 /// As above for a layout-only change, which also requests a render.
 pub(crate) fn request_tool_call_layout_dirty(tc: &mut ToolCallInfo) {
-    crate::perf::mark("tc_invalidations_requested");
     tc.mark_tool_call_layout_dirty();
 }
 

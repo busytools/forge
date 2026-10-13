@@ -45,21 +45,12 @@ fn run() -> anyhow::Result<()> {
     // the bump's log line lands. See #251.
     forge_tui::startup::raise_fd_limit();
     forge_tui::startup::report_build_provenance();
-    let perf_path = forge_tui::logging::resolve_perf_path(&cli)?;
-
-    #[cfg(not(feature = "perf"))]
-    if perf_path.is_some() {
-        return Err(anyhow::anyhow!(
-            "perf telemetry requires a binary built with `--features perf`"
-        ));
-    }
 
     {
         let startup_bootstrap_span = info_span!(
             target: forge_tui::logging::targets::APP_LIFECYCLE,
             "startup_bootstrap",
             resume_requested = false,
-            perf_telemetry_requested = perf_path.is_some(),
         );
         let _entered = startup_bootstrap_span.enter();
     }

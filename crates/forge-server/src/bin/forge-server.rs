@@ -62,13 +62,6 @@ fn run() -> anyhow::Result<()> {
     // the bump's log line lands. See #251.
     forge_server::startup::raise_fd_limit();
     forge_server::startup::report_build_provenance();
-    if cli.perf_log.is_some() {
-        tracing::warn!(
-            target: forge_server::logging::targets::APP_LIFECYCLE,
-            event_name = "perf_log_ignored",
-            "the headless server has no render loop to sample; --perf-log has no effect",
-        );
-    }
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async move {

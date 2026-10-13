@@ -120,9 +120,6 @@ impl RenderCacheStore {
             return SlotCache::Uncached(BlockCache::default());
         };
         if !entries.get(id).is_some_and(|entry| stored_at(entry, render_epoch)) {
-            if entries.contains_key(id) {
-                crate::perf::mark("tc_invalidations_applied");
-            }
             entries.insert(id.into(), fresh_tool_call(render_epoch));
         }
         match RefMut::filter_map(entries, |map| map.get_mut(id)) {

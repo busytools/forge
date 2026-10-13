@@ -102,11 +102,11 @@ jobs:
       - run: cargo check --release --workspace --all-targets --all-features
 
   # The two forge-tui configurations nothing else builds: the one
-  # `scripts/install.sh` produces (release, `perf` on, the test-only
-  # features off) and `testing` on its own. The job above covers
-  # neither - with every feature on, it never exercises which
-  # configuration enables what: the install build leaving
-  # `test-helpers` off, or `testing` having to forward it.
+  # `scripts/install.sh` produces (release, the test-only features off)
+  # and `testing` on its own. The job above covers neither - with every
+  # feature on, it never exercises which configuration enables what: the
+  # install build leaving `test-helpers` off, or `testing` having to
+  # forward it.
   feature-configs:
     name: cargo check (install.sh + testing configs)
     runs-on: ubuntu-latest
@@ -121,7 +121,7 @@ jobs:
         with:
           shared-key: cargo-${{ runner.os }}
           key: feature-configs
-      - run: cargo check --locked --release -p forge-tui --bin forge --features perf
+      - run: cargo check --locked --release -p forge-tui --bin forge
       - run: cargo check --locked -p forge-tui --features testing
 
   docs:

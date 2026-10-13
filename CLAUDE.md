@@ -431,11 +431,11 @@ inspected.
     The page-first step forces a clear visual target before code edits
     begin, and it keeps the doc honest. When in doubt about whether a
     page reflects reality, re-read the implementation and reconcile.
-12. **Diagnostics are self-serve.** The artifacts are the perf log and
-    tracing log under forge's app-support `logs/` dir, plus the JSONL
-    session captures. Telemetry that needs a user to opt in is a forge
-    bug: fix the always-on instrumentation instead of asking for a
-    repro recipe.
+12. **Diagnostics are self-serve.** The artifacts are the tracing log
+    under forge's app-support `logs/` dir, the client's own frame log
+    (`forge-perf.log` beside its `forge.log`), plus the JSONL session
+    captures. Telemetry that needs a user to opt in is a forge bug: fix
+    the always-on instrumentation instead of asking for a repro recipe.
 13. **Deferred work goes to an issue, not an inline TODO.** A
     concrete-fix `TODO(<name>):` naming a specific one-to-three-line
     change is fine. "Consider adding X someday" is not: it rots,
