@@ -13,23 +13,15 @@
 # sudo / Touch ID prompt when a cert is actually present.
 #
 # Env overrides:
-#   FORGE_CA_DIR   CA directory (default: both app-support names are tried)
+#   FORGE_CA_DIR   CA directory (default: the app-support `forge` name)
 
 set -euo pipefail
 
-# The CA was installed under the legacy `forge-tui` name, and the
-# app-support tree later moved to `forge` - so the key material sits under
-# whichever name was current when it was written: `forge/ca` on a machine
-# that has run the migration, `forge-tui/ca` on one that has not. Both are
-# tried unless FORGE_CA_DIR overrides.
 CA_DIRS=()
 if [ -n "${FORGE_CA_DIR:-}" ]; then
     CA_DIRS=("$FORGE_CA_DIR")
 else
-    CA_DIRS=(
-        "$HOME/Library/Application Support/forge/ca"
-        "$HOME/Library/Application Support/forge-tui/ca"
-    )
+    CA_DIRS=("$HOME/Library/Application Support/forge/ca")
 fi
 # `security find-certificate -c <name>` matches the CN field only, not
 # the O. The old CA carried CN="forge wire-classification rewriter",
@@ -68,5 +60,5 @@ for dir in "${CA_DIRS[@]}"; do
     fi
 done
 if [ "$removed" -eq 0 ]; then
-    log_info "No CA key material under the app-support CA names"
+    log_info "No CA key material under the app-support CA name"
 fi
