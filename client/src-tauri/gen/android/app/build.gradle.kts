@@ -41,7 +41,11 @@ android {
         // connect where the same page in Chrome worked (Ved, 2026-10-08).
         manifestPlaceholders["usesCleartextTraffic"] = "true"
         applicationId = "dev.vedhavyas.forge"
-        minSdk = 24
+        // 26 is AAudio's floor: cpal's Android backend links libaaudio.so,
+        // which the NDK sysroot ships only from API 26, so a 24 floor fails
+        // the link (`unable to find library -laaudio`). Android 7.x is
+        // dropped deliberately for the native capture.
+        minSdk = 26
         targetSdk = 37
         versionCode = clientVersionCode
         versionName = clientVersion
