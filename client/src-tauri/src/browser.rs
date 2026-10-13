@@ -29,6 +29,7 @@ pub mod chromium;
 pub mod custom;
 pub mod driver;
 pub mod profiles;
+pub mod window;
 
 #[cfg(desktop)]
 use std::collections::HashMap;
@@ -228,7 +229,8 @@ impl BrowserHost {
     ///
     /// **Every call resolves the browser first**, so the endpoint it hands the
     /// profile is the one the browser answers on NOW. On the desktop a browser
-    /// that died (or was relaunched for a window) moves that endpoint, and the
+    /// that died moves that endpoint - a close, the person's own X, the
+    /// engine taking the window down - and the
     /// profile rebuilds its driver rather than talking to a port nobody
     /// listens on. The phone's browser cannot move: its WebView is the app's
     /// own, so a claimed renderer death keeps the app alive but leaves later
@@ -352,11 +354,6 @@ impl BrowserHost {
                         endpoint: &endpoint,
                         identity: &active.path,
                         output: &paths.output,
-                        // The launch's own fact, read where it is written: a
-                        // headed launch marks the profile, and the hint mask
-                        // keeps off it.
-                        windowed: chromium::launched_windowed(&paths.user_data),
-                        profile_label: "shared",
                     };
                     let outcome = shared.call(&start, tool, args).await;
                     self.forget_a_dead_browser(
@@ -387,8 +384,6 @@ impl BrowserHost {
                         endpoint: &endpoint,
                         identity: &active.path,
                         output: &paths.output,
-                        windowed: chromium::launched_windowed(&named.dir),
-                        profile_label: &name,
                     };
                     let outcome = named.profile.call(&start, tool, args).await;
                     self.forget_a_dead_browser(
@@ -482,8 +477,9 @@ impl BrowserHost {
     /// **The human's door, and no seat.** A session drives only the profile it
     /// opened - the verdict refuses the rest - but the row is the person's, and
     /// a profile whose owning session is GONE is exactly what this is for.
-    /// The profile's BROWSER goes with its name: the next call relaunches it
-    /// over the same directory, so a close ends the run and never the logins.
+    /// The profile's BROWSER goes with its name - a real close, unlike an
+    /// answer's lower - and the next call relaunches it over the same
+    /// directory, so a close ends the run and never the logins.
     #[cfg(desktop)]
     pub async fn close(&self, name: &str) -> Result<(), String> {
         let entry = {
@@ -493,7 +489,7 @@ impl BrowserHost {
             };
             entry
         };
-        chromium::hide(&entry.dir).await;
+        chromium::close(&entry.dir).await;
         let mut named = self.named.lock().await;
         named.remove(name);
         Ok(())
@@ -549,7 +545,7 @@ impl BrowserHost {
             return Err(format!("the profile's directory cannot be made: {why}"));
         }
         let _launch = chromium::LaunchLock::acquire(&dir).await?;
-        chromium::hide_under_lock(&dir).await;
+        chromium::close_held_launch(&dir).await;
         self.named.lock().await.remove(name);
         match tokio::fs::remove_dir_all(&dir).await {
             Ok(()) => Ok(()),
@@ -597,18 +593,19 @@ impl BrowserHost {
     /// One profile's live browser, launched when nothing is up: the shared
     /// profile's directory for most calls, a named profile's own for its.
     ///
-    /// **The machine's own browser, headless.** CEF was measured out on
-    /// 2026-10-07: its windowed runtime drops CDP-dispatched input whenever
-    /// the window is not frontmost, and the pinned driver's click wedges on
-    /// its target bookkeeping - full playwright parity wins over the native
-    /// view (see `chromium::show` for how the person sees it). The launch
-    /// lock serializes across every profile: one launch at a time, whichever
-    /// directory it is for.
+    /// **The machine's own browser, with its window born hidden.** CEF was
+    /// measured out on 2026-10-07: its windowed runtime drops CDP-dispatched
+    /// input whenever the window is not frontmost, and the pinned driver's
+    /// click wedges on its target bookkeeping - full playwright parity wins
+    /// over the native view (see `chromium::show` for how the person sees
+    /// it). A call launches with no carried page: a fresh browser a session
+    /// drives itself starts blank. The launch lock serializes across every
+    /// profile: one launch at a time, whichever directory it is for.
     #[cfg(desktop)]
     async fn browser_for(&self, user_data: &Path) -> Result<chromium::ActivePort, String> {
         let _launching = self.launch.lock().await;
         let binary = chromium::browser_binary()?;
-        chromium::ensure(&binary, user_data).await
+        chromium::ensure(&binary, user_data, None).await
     }
 
     /// The named profiles this host holds, by name, for its own strip. A
@@ -776,9 +773,10 @@ impl BrowserHost {
         engine.show().await
     }
 
-    /// Take the window back down: the browser closes, and the next agent
-    /// call relaunches it headless over the same directory. **The hand-off is
-    /// not answered by this** - Done or Not now is.
+    /// Take the window back out of the person's sight: the browser keeps
+    /// running, with its tabs and its page, and the next call drives that
+    /// same browser. **The hand-off is not answered by this** - Done or Not
+    /// now is.
     #[cfg(desktop)]
     pub async fn hide(&self, profile: Option<&str>) -> Result<(), String> {
         let paths = self.paths.clone()?;
@@ -1076,8 +1074,8 @@ pub async fn browser_show(
     host.show(profile.as_deref(), seat.as_ref()).await.map(|_| ())
 }
 
-/// Take the hand-off's window back down; the next agent call relaunches that
-/// profile's browser headless over the same directory.
+/// Take the hand-off's window back out of sight; the browser keeps running
+/// over the same directory, and the next agent call drives it.
 #[tauri::command]
 pub async fn browser_hide(
     host: tauri::State<'_, Arc<BrowserHost>>,

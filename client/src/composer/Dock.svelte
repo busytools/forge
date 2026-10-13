@@ -574,9 +574,11 @@
    * core's.
    *
    * **The window, not an in-app overlay** (Ved, 2026-10-07): the browser
-   * runs headless until this moment, and Open raises the person's own
-   * browser over the profile the agents drive. A raise that does not land
-   * says so rather than claiming a window is up.
+   * is the person's own, its window born hidden and kept out of every
+   * screen, and Open moves that window forward over the profile the agents
+   * drive - nothing is relaunched, so the page the session prepared is the
+   * page that comes up. A raise that does not land says so rather than
+   * claiming a window is up.
    */
   function open(): void {
     if (ask.kind !== 'browser_hand_off') return;
@@ -596,8 +598,9 @@
 
   /** A hand-off's answer, which is the only release for its blocked handler.
    *  **Answering also lowers the window**: Open raises it, Done or Not now
-   *  takes it down, and the browser relaunches headless on the next call
-   *  (Ved, 2026-10-07: "I said done, but the browser is still open"). */
+   *  sends it back out of sight, and the browser keeps running with its
+   *  page and tabs intact (Ved, 2026-10-07: "I said done, but the browser
+   *  is still open" - he stops seeing it, and the next call drives it). */
   function handOff(done: boolean): void {
     if (answered || ask.kind !== 'browser_hand_off') return;
     const id = ask.request.id;
@@ -1018,7 +1021,7 @@
       <div class="d-q">{ask.request.reason}</div>
       <div class="desc">
         {raiseFailed ??
-          'Open browser raises the window over the profile the session drives; until then the browser is headless. The session waits, with no timeout, until Done or Not now.'}
+          'Open browser shows the page the session prepared, exactly as it stands. The session waits, with no timeout, until Done or Not now.'}
       </div>
     {/if}
 

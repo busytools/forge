@@ -74,7 +74,8 @@ driver into the gitignored `src-tauri/browser-stack/` directory - node
 and `@playwright/mcp` - and `bundle.resources` carries that tree into the
 bundle, so nothing downloads at first use. **The browser itself is the
 machine's own**: the host drives the installed Brave, else Google Chrome,
-headless until a hand-off's Open raises the window - install one of those
+started with no window at all and its window born hidden - a hand-off's
+Open, or the strip's show, is what brings it forward - install one of those
 for the browser tools to answer, as there is no vendored fallback. The
 bundling recipes run the vendoring themselves; `just client-tauri-check`
 does not, because it copies no resources.

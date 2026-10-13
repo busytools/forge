@@ -161,9 +161,9 @@ async fn two_named_profiles_are_two_browsers_and_see_different_cookies() {
     }
 }
 
-/// **Show raises the NAMED profile's own browser, headed, on its own page** -
-/// the piece a CAPTCHA hand-off on a profile stands on. The shared browser
-/// stays headless throughout.
+/// **Show raises the NAMED profile's own browser window on its own page** -
+/// the piece a CAPTCHA hand-off on a profile stands on. The shared browser's
+/// window is untouched by it, whichever way that one stands.
 #[tokio::test]
 #[ignore = "raises a REAL window; run it deliberately - see the module doc"]
 async fn show_raises_the_named_profiles_own_browser_on_its_own_page_raises_a_window() {
@@ -202,7 +202,7 @@ async fn show_raises_the_named_profiles_own_browser_on_its_own_page_raises_a_win
         .unwrap_or_default();
     assert!(
         args.contains("--keep-alive-for-test"),
-        "the raise relaunched the profile's browser headed: {args}",
+        "the profile's browser is the headed one, launched as every launch is: {args}",
     );
 
     let port = std::fs::read_to_string(paths.profiles.join("hunt/DevToolsActivePort"))
@@ -251,11 +251,13 @@ async fn a_named_profile_refuses_another_session_and_keeps_its_logins_across_a_d
     assert!(refusal.contains("'hunt'"), "the refusal names the profile: {refusal}");
     assert!(refusal.contains("Busytools/forge/alpha"), "and the session holding it: {refusal}",);
 
-    // The browser is closed the way Done closes it - a clean shutdown, which
-    // is what flushes Chromium's cookie store. **A SIGKILL would lose the
-    // just-set cookie instead**: Chromium writes cookies periodically, so a
-    // crash drops the last stretch of logins, and that is the person's own
-    // browser's behaviour too, not this host's.
+    // The browser is closed the way the profile's close verb does it - a
+    // clean shutdown, which is what flushes Chromium's cookie store. **A
+    // SIGKILL would lose the just-set cookie instead**: Chromium writes
+    // cookies periodically, so a crash drops the last stretch of logins, and
+    // that is the person's own browser's behaviour too, not this host's.
+    // (An ANSWER - Done or Not now - no longer closes the browser at all: it
+    // moves the window out of sight and everything stays.)
     let port_file = paths.profiles.join("hunt/DevToolsActivePort");
     let port = std::fs::read_to_string(&port_file)
         .expect("the launch wrote its port file")
@@ -263,7 +265,7 @@ async fn a_named_profile_refuses_another_session_and_keeps_its_logins_across_a_d
         .next()
         .and_then(|first| first.trim().parse::<u16>().ok())
         .expect("the port file names a port");
-    forge_client::browser::chromium::hide(&paths.profiles.join("hunt")).await;
+    host.close("hunt").await.expect("the profile closes");
     assert!(
         !forge_client::browser::chromium::probe(port).await,
         "precondition: the browser really closed",
