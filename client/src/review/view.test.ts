@@ -6,9 +6,11 @@ import {
   authorName,
   awaitsReviewer,
   canvasLine,
+  latestRound,
   loopState,
   outdatedThreads,
   parkedReason,
+  roundHasWork,
   roundTally,
   roundsNewestFirst,
   statusName,
@@ -143,6 +145,58 @@ describe('a round and its members', () => {
       roundsNewestFirst([r1, r2]).map((r) => r.number),
       'newest first',
     ).toEqual([2, 1]);
+  });
+
+  it('names the round a reopen is about: the thread latest filed turn', () => {
+    // The view this client replaced read it the same way - the most recent
+    // review the thread has a turn in, because that is the exchange the
+    // reviewer is unhappy with. The origin round would point the worker at
+    // an exchange nobody reopened.
+    const spanning = thread('s', 'resolved', [
+      { author: 'you', review_id: 'r1' },
+      { author: 'agent', review_id: null },
+      { author: 'you', review_id: 'r2' },
+    ]);
+    const answered = thread('a', 'open', [
+      { author: 'you', review_id: 'r1' },
+      { author: 'agent', review_id: null },
+    ]);
+    const drafted = thread('d', 'open', [{ author: 'you', review_id: null }]);
+    const r1 = round('r1', 1);
+    const r2 = round('r2', 2);
+
+    expect(latestRound([r1, r2], spanning), 'the newest round it was sealed into').toBe(2);
+    expect(latestRound([r1, r2], answered), 'an unfiled answer does not clear it').toBe(1);
+    expect(latestRound([r1, r2], drafted), 'nothing filed names no round').toBeNull();
+    expect(
+      latestRound([r1], thread('gone', 'open', [{ author: 'you', review_id: 'r9' }])),
+      'a turn naming a round the read does not carry names none',
+    ).toBeNull();
+  });
+
+  it('tells a round with work in it from one that is only housekeeping', () => {
+    // The view this client replaced sealed by this predicate: a round whose
+    // authored threads are all resolved or outdated has nothing for the
+    // worker to act on, so the finish files it and nudges nobody.
+    const open = thread('o', 'open', [{ author: 'you', review_id: null }]);
+    const answered = thread('a', 'addressed', [{ author: 'you', review_id: null }]);
+    const done = thread('d', 'resolved', [{ author: 'you', review_id: null }]);
+    const drifted = thread('p', 'outdated', [{ author: 'you', review_id: null }]);
+    const odd = thread('u', { unknown: 'Pondered' }, [{ author: 'you', review_id: null }]);
+    const threads = [open, answered, done, drifted, odd];
+
+    expect(roundHasWork(threads, ['o']), 'an open comment is work').toBe(true);
+    expect(roundHasWork(threads, ['d', 'a']), 'and an addressed one in the mix').toBe(true);
+    expect(roundHasWork(threads, ['d']), 'a resolved comment alone is not').toBe(false);
+    expect(roundHasWork(threads, ['d', 'p']), 'nor resolved and outdated together').toBe(false);
+    expect(roundHasWork(threads, ['u']), 'a state this build cannot name counts as work').toBe(
+      true,
+    );
+    expect(
+      roundHasWork(threads, ['gone']),
+      'a thread the read does not carry cannot be shown settled',
+    ).toBe(true);
+    expect(roundHasWork(threads, []), 'nothing named is no work').toBe(false);
   });
 
   it('counts a state this build cannot name without folding it into a neighbour', () => {

@@ -9,9 +9,11 @@
   import {
     ageOf,
     authorName,
+    latestRound,
     loopState,
     outdatedThreads,
     parkedReason,
+    roundHasWork,
     roundTally,
     roundsNewestFirst,
     statusName,
@@ -19,12 +21,15 @@
     turnRound,
   } from './view';
   import {
+    finishRound,
     newThread,
+    reopenThread,
     statusCommand,
-    submitCommand,
     upsertCommand,
     withReply,
     type ComposedComment,
+    type Sends,
+    type SendOutcome,
   } from './write';
 
   /**
@@ -106,31 +111,33 @@
    * Send one write and read its outcome.
    *
    * **The reply IS the outcome** for the two commands that answer through
-   * one - it rejects on a refusal - and a dead socket throws before
-   * anything goes. Both are drawn where the reader acted rather than
-   * swallowed: a refused submit that cleared the drafts would take the
-   * words with it, and a comment counted as filed before the server said
-   * so would mint an empty round later. The caller adds the thread to the
-   * drafts only after this says the write landed.
+   * one, so its body rides back to the caller - the store's own answer, or
+   * the server's word for a refusal - and the finish reads the round out of
+   * it. A dead socket is the one case that never resolves, and it is drawn
+   * where the reader acted rather than swallowed: a refused submit that
+   * cleared the drafts would take the words with it, and a comment counted
+   * as filed before the server said so would mint an empty round later. The
+   * caller adds the thread to the drafts only after this says the write
+   * landed.
    */
-  async function write(command: unknown): Promise<boolean> {
+  async function write(command: unknown): Promise<SendOutcome> {
     const open = connection;
     if (open === null) {
       refusal = 'the socket is not open';
-      return false;
+      return { went: false, body: null };
     }
     if (branch === '') {
       refusal = 'this seat has no branch to file a review against yet';
-      return false;
+      return { went: false, body: null };
     }
     busy = true;
     try {
-      await open.dispatch(command as never, slot);
+      const body = await open.dispatch(command as never, slot);
       refusal = null;
-      return true;
+      return { went: true, body };
     } catch (why) {
       refusal = why instanceof Error ? why.message : String(why);
-      return false;
+      return { went: false, body: null };
     } finally {
       busy = false;
       // The reviews ride the record, so the write's own outcome arrives by
@@ -147,31 +154,55 @@
       baseRef: record?.git.defaultBranch ?? '',
       commit: scopeCommit,
     });
-    const filed = await write(upsertCommand(slot, branch, thread));
-    if (filed) drafts.add(thread.id);
-    return filed;
+    const { went } = await write(upsertCommand(slot, branch, thread));
+    if (went) drafts.add(thread.id);
+    return went;
   }
 
   async function replied(thread: { id: string }, text: string): Promise<boolean> {
     const full = threads.find((held) => held.id === thread.id);
     if (full === undefined) return false;
-    const filed = await write(upsertCommand(slot, branch, withReply(full, text)));
-    if (filed) drafts.add(full.id);
-    return filed;
+    const { went } = await write(upsertCommand(slot, branch, withReply(full, text)));
+    if (went) drafts.add(full.id);
+    return went;
   }
 
   async function resolved(thread: { id: string }): Promise<void> {
     await write(statusCommand(slot, branch, thread.id, 'Resolved'));
   }
 
+  /**
+   * The page's two ways to the socket, as the writes take them: the write
+   * whose outcome is drawn where the reader acted, and the raw dispatch a
+   * nudge rides - a nudge is best-effort, because the round or the flip it
+   * follows is filed either way.
+   */
+  const sends: Sends = {
+    write,
+    dispatch: (command) =>
+      connection === null ? null : connection.dispatch(command as never, slot),
+  };
+
   async function reopened(thread: { id: string }): Promise<void> {
-    await write(statusCommand(slot, branch, thread.id, 'Open'));
+    const full = threads.find((held) => held.id === thread.id);
+    await reopenThread(
+      sends,
+      slot,
+      branch,
+      thread.id,
+      full === undefined ? null : latestRound(rounds, full),
+    );
   }
 
   async function finish(): Promise<void> {
     if (drafts.size === 0) return;
-    const sealed = await write(
-      submitCommand(slot, branch, [...drafts], summary.trim() === '' ? null : summary.trim()),
+    const sealed = await finishRound(
+      sends,
+      slot,
+      branch,
+      [...drafts],
+      summary.trim() === '' ? null : summary.trim(),
+      roundHasWork(threads, drafts),
     );
     // The words survive a refusal: the reader's round is still theirs to
     // send once whatever refused it is fixed.
