@@ -131,8 +131,10 @@ impl Tool for Create {
          headline. If that session isn't open at fire time, forge spawns it first, unless it can \
          no longer be started (a worker whose directory is gone). Returns the cron's id (use it \
          with cron__delete). Recurring crons repeat; run-once crons delete themselves after \
-         firing. The cron is registered to you, and cron__list and cron__delete act on the crons \
-         you registered. Any session in the project may create crons."
+         firing. A run-once cron is a poor fit for retrying a transient failure - a rate limit \
+         or a blip clears in seconds, so the retry fires later as a user turn into a session \
+         that has moved on. The cron is registered to you, and cron__list and cron__delete act \
+         on the crons you registered. Any session in the project may create crons."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -595,6 +597,24 @@ mod tests {
         assert!(
             desc.contains("unless it can no longer be started"),
             "the spawn promise must carry the case where the owner cannot be started: {desc}",
+        );
+    }
+
+    /// Run-once scheduling is advertised as a feature, so the description
+    /// is where a session decides to schedule a retry - and a transient
+    /// failure clears in seconds, long before the cron fires. The rule
+    /// and the staleness that makes it a rule are pinned together.
+    #[test]
+    fn cron_create_description_discourages_retry_crons() {
+        let create = Create { facade: MockCronFacade::new().into_arc(), slot: caller_slot() };
+        let desc = create.description();
+        assert!(
+            desc.contains("A run-once cron is a poor fit for retrying a transient failure"),
+            "the retry-cron rule is pinned: {desc}",
+        );
+        assert!(
+            desc.contains("the retry fires later as a user turn into a session that has moved on"),
+            "the reason the retry is stale is pinned: {desc}",
         );
     }
 
