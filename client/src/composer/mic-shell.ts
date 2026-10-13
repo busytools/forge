@@ -66,12 +66,15 @@ export class ShellMic implements MicSource {
   }
 
   /**
-   * Let the shell drain its pipeline, hand over the frames still in it, and
-   * release the device.
+   * Ask the shell to drain its pipeline, hand over the frames still in it,
+   * and release the device.
    *
-   * Resolves once they have arrived, which is what the take's stop waits on:
-   * the server finalises the take on that stop, so a frame after it would
-   * have no take to land in.
+   * **This waits on the shell's answer, not on the frames.** Frames cross as
+   * events and the answer as this invoke's reply, and the two channels are
+   * not ordered against each other: the last partial frame (up to 20 ms) can
+   * land after this resolves, and the stop the take sends next can overtake
+   * it. The drained audio - the part that was being cut - is out by then, so
+   * what that costs is one partial frame, bounded.
    */
   async drain(): Promise<void> {
     await invoke('client_mic_drain');
