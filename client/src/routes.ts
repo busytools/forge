@@ -49,9 +49,25 @@ export type Route =
   | { name: 'fixture' }
   | { name: 'notFound' };
 
+/**
+ * A pathname without the document it may name.
+ *
+ * The routes are the paths the server serves, and the document serving them
+ * is `index.html` at the root - which a shell's window url, a hand-typed
+ * address or a link may spell out. Dropping that one segment leaves the root
+ * it was served at, so such a launch lands on the app rather than on the
+ * not-a-page screen, where no reader can act on it.
+ */
+function withoutDocument(path: string): string {
+  const document = '/index.html';
+  return path.endsWith(document) ? path.slice(0, -document.length) || '/' : path;
+}
+
 /** The route a path names. Anything the server does not serve is `notFound`. */
 export function parseRoute(path: string): Route {
-  const segments = path.split('/').filter((segment) => segment !== '');
+  const segments = withoutDocument(path)
+    .split('/')
+    .filter((segment) => segment !== '');
   if (segments.length === 0) return { name: 'home' };
   if (segments.length === 1 && segments[0] === 'connect') return { name: 'connect' };
   if (segments.length === 1 && segments[0] === 'models') return { name: 'models' };

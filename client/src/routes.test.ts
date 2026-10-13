@@ -17,6 +17,17 @@ describe('the URLs the server serves', () => {
     expect(parseRoute('/')).toEqual({ name: 'home' });
   });
 
+  /**
+   * A pathname that names the document is the root it was served at.
+   *
+   * A shell's window url, a hand-typed address or a link can spell
+   * `index.html`; parsing that segment as a route lands the launch on the
+   * not-a-page screen, which no reader can act on and which #2159's look hit.
+   */
+  it('reads a pathname carrying the document as the root it was served at', () => {
+    expect(parseRoute('/index.html')).toEqual({ name: 'home' });
+  });
+
   it('resolves a session to the slot its three segments name', () => {
     expect(parseRoute('/session/Busytools/forge/lead')).toEqual({
       name: 'session',
