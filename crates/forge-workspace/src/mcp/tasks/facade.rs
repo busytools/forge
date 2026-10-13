@@ -172,6 +172,22 @@ impl TaskPatch {
     }
 }
 
+/// The parent a write stores: the row a stated id names when it lands on
+/// one, the words as stated when it names nothing (a child may point at a
+/// row that is gone), and a refusal naming the rows when it names several.
+fn resolve_parent(
+    ws: &Workspace,
+    project_name: &str,
+    stated: Option<&str>,
+) -> Result<Option<TaskId>, TasksError> {
+    let Some(stated) = stated else { return Ok(None) };
+    match ws.resolve_task_id(project_name, &TaskId::from(stated)) {
+        Ok(id) => Ok(Some(id)),
+        Err(IdError::NotFound) => Ok(Some(TaskId::from(stated))),
+        Err(error @ IdError::Ambiguous(_)) => Err(TasksError::Refused(error.to_string())),
+    }
+}
+
 /// The list's narrowing, one definition for the real path and the mock:
 /// `owner` by label, `parent` by id, `status` by state, `ready` by the
 /// board's own mark.
@@ -283,7 +299,7 @@ impl TasksFacade for ProdTasksFacade {
             owner: draft
                 .owner
                 .map(|label| SessionSlot::new(&cx.project_org, &cx.project_name, label)),
-            parent: draft.parent.as_deref().map(TaskId::from),
+            parent: resolve_parent(&ws, &cx.project_name, draft.parent.as_deref())?,
             waiting_on: None,
             estimate,
             rank: draft.rank,
@@ -327,6 +343,10 @@ impl TasksFacade for ProdTasksFacade {
             ),
             None => None,
         };
+        let mut patch = patch;
+        if let Some(parent) = resolve_parent(&ws, &cx.project_name, patch.parent.as_deref())? {
+            patch.parent = Some(parent.as_str().to_owned());
+        }
         let at = SystemTime::now();
         ws.update_task(&cx.project_name, id, By::Seat(caller.clone()), |task| {
             patch.apply(task, &cx.project_org, &cx.project_name, estimate, at);
@@ -798,6 +818,65 @@ mod prod_facade_tests {
             facade.list_tasks(&lead, None, None, None, None).len(),
             1,
             "and left the other row alone",
+        );
+    }
+
+    /// A parent is an id too, and the store holds the row it names: a
+    /// child created - or re-parented - under a short form is the epic's
+    /// child for every literal comparison the board makes, the claim by
+    /// epic included.
+    #[test]
+    fn a_stated_parent_is_stored_as_the_row_it_names() {
+        let (ws, facade, lead, worker) = fixture();
+        let epic = "7ed0aaaa-0000-4000-8000-000000000001";
+        ws.seed_test_task(seeded_task(epic, "the epic"));
+
+        let child =
+            facade.create_task(&lead, draft("the child", None, Some("7ed0aaaa"))).expect("create");
+        assert_eq!(
+            child.parent,
+            Some(TaskId::from(epic)),
+            "the store holds the row the stated prefix named",
+        );
+
+        let claimed = facade
+            .claim_task(&worker, None, Some("7ed0aaaa"))
+            .expect("the epic's own prefix pulls the child it now holds");
+        assert_eq!(claimed.id, child.id);
+
+        let moved = facade
+            .update_task(
+                &lead,
+                &child.id,
+                TaskPatch { parent: Some("7ed0aaaa".to_owned()), ..TaskPatch::default() },
+            )
+            .expect("update")
+            .expect("the child is there");
+        assert_eq!(moved.parent, Some(TaskId::from(epic)), "the patch resolves it the same way");
+    }
+
+    /// The other half of the rule: a parent naming nothing stays as
+    /// stated - a child may point at a row that is gone - and one naming
+    /// several rows refuses with the rows named.
+    #[test]
+    fn a_parent_naming_nothing_stays_and_naming_several_refuses() {
+        let (ws, facade, lead, _worker) = fixture();
+        ws.seed_test_task(seeded_task("7ed0aaaa-0000-4000-8000-000000000001", "fix the rail"));
+        ws.seed_test_task(seeded_task("7ed0bbbb-0000-4000-8000-000000000002", "add tests"));
+
+        let orphan = facade
+            .create_task(&lead, draft("orphan", None, Some("ghost")))
+            .expect("a parent naming nothing is stored as stated");
+        assert_eq!(orphan.parent, Some(TaskId::from("ghost")));
+
+        let said = match facade.create_task(&lead, draft("ambiguous", None, Some("7ed0"))) {
+            Err(TasksError::Refused(said)) => said,
+            other => panic!("a parent naming several rows refuses, got {other:?}"),
+        };
+        assert!(
+            said.contains("7ed0aaaa-0000-4000-8000-000000000001")
+                && said.contains("7ed0bbbb-0000-4000-8000-000000000002"),
+            "the refusal names both rows it matched: {said}",
         );
     }
 
