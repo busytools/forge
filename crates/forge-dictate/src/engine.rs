@@ -754,7 +754,7 @@ impl FrameSink {
         if self.recording.stopped() {
             return false;
         }
-        self.recording.push(samples, 1, self.limit);
+        self.recording.push(samples, self.limit);
         !self.recording.stopped()
     }
 }
@@ -1907,7 +1907,7 @@ mod tests_engine {
     #[test]
     #[ignore = "opens the real default input; run with --run-ignored all on a machine with a microphone"]
     fn a_fresh_capture_over_a_working_device_carries_no_open_error() {
-        let Ok(found) = crate::capture::devices() else { return };
+        let Ok(found) = crate::devices() else { return };
         if !found.iter().any(|d| d.is_default) {
             return;
         }

@@ -1,7 +1,8 @@
 //! The audio a transcription reads from.
 
-/// Sample rate every model in this crate expects.
-pub const SAMPLE_RATE: u32 = 16_000;
+/// Sample rate every model in this crate expects, which is the rate
+/// capture opens a device at: one constant, so the two cannot drift.
+pub use forge_capture::SAMPLE_RATE;
 
 /// A pull-based source of mono audio.
 ///

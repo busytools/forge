@@ -1,12 +1,13 @@
 # forge - project guide
 
 A Rust workspace around Anthropic's `claude` CLI: a server that runs
-multi-session orchestration, and the clients that draw it. Ten crates,
+multi-session orchestration, and the clients that draw it. Eleven crates,
 layered acyclically:
 
 ```
 forge-primitives ───── leaf (pure data, no logic)
-forge-dictate    ───── leaf (dictation; depends on no forge-* crate)
+forge-capture    ───── leaf (microphone capture; depends on no forge-* crate)
+forge-dictate    ───→ capture (dictation)
 forge-system-one ───── leaf (decision-model client; depends on no forge-* crate)
 forge-gateway    ───→ primitives
 forge-connectors ───→ primitives
@@ -19,11 +20,17 @@ forge-test-harness ─→ primitives + sdk + workspace + server
 
 - **`forge-primitives`** - every type that crosses a forge-* crate
   boundary. No logic, no I/O, no async.
+- **`forge-capture`** - microphone capture: the device, the input plan,
+  the downmix and resampler, and the mono frames a host reads from it.
+  A leaf: no forge-* dependency, and no knowledge of a host, a take or
+  a wire - so `forge-dictate`'s device take and a client shell's own
+  capture share one open.
 - **`forge-dictate`** - the dictation primitive: audio in, text out.
-  Owns its model files, speech recognition and normalization. Depends
-  on no forge-* crate and knows nothing about a host, so it must not
-  grow one; a doc comment mentioning a keypress, a composer or a
-  session is a bug.
+  Owns its model files, speech recognition and normalization, and
+  builds its device take on `forge-capture`. Depends only on that
+  capture leaf and knows nothing about a host, so it must not grow one;
+  a doc comment mentioning a keypress, a composer or a session is a
+  bug.
 - **`forge-system-one`** - the System One decision-model client: the
   `[systemone]` config shape, the wire question/answer types with their
   validation, and the HTTP call with its timeout and error mapping. A
@@ -102,59 +109,64 @@ binary file cannot be merged, and the lock's inode must stay put.
 
 Work top-down; first match wins.
 
-1. **Audio, speech recognition, or turning either into text?** (capture,
-   model fetch, transcription, transcript normalization)
-   -> `forge-dictate`. A leaf: it may not depend on any forge-* crate,
-   and its own types stay there even once another crate reads them.
-   Wanting a forge-* dependency here is a design problem, not a
-   dependency problem.
-2. **System One decision-model I/O?** (the `[systemone]` config shape,
+1. **Audio, speech recognition, or turning either into text?** (model
+   fetch, transcription, transcript normalization)
+   -> `forge-dictate`. It leans on the capture leaf below and on nothing
+   else of the workspace, and its own types stay there even once another
+   crate reads them. Wanting a forge-* dependency here beyond the capture
+   leaf is a design problem, not a dependency problem.
+2. **Opening a microphone?** (the device, its config negotiation, the
+   downmix and resampler, the frames a host reads)
+   -> `forge-capture`. A leaf: it may not depend on any forge-* crate and
+   knows nothing about a host, so both capture legs - the server's device
+   take and a client's own shell - build on it.
+3. **System One decision-model I/O?** (the `[systemone]` config shape,
    the wire question and answer types with their validation, the HTTP
    call) -> `forge-system-one`. A leaf: it may not depend on any forge-*
    crate, and its own types stay there even once another crate reads
    them.
-3. **A type that crosses a crate boundary?** (envelope, snapshot
+4. **A type that crosses a crate boundary?** (envelope, snapshot
    struct, hook payload, anything sent over a channel or touched by
    more than one crate) -> `forge-primitives`. Pure data shapes only.
-4. **Provider credential, probe, usage mapping, billing or repair?**
+5. **Provider credential, probe, usage mapping, billing or repair?**
    (how one `forge.toml` provider token authenticates, what endpoint
    its usage probe hits, how the payload maps to a snapshot, what a
    failure allows), or is it which account a session spawns under,
    whether an account is healthy, or when it is next probed? ->
    `forge-gateway`, one backend per token and the account pool.
-5. **Inbound connector I/O for an external integration?** (its stream
+6. **Inbound connector I/O for an external integration?** (its stream
    client, REST lookups, subscription matching, reconnecting
    subsystem pump) -> `forge-connectors`, one module per connector.
    The connector holds no workspace state: Gotify reaches the
    workspace through the `GotifyHost` port forge-workspace implements,
    and Slack holds only its Web API client.
-6. **Speaks stream-json to the `claude` subprocess?** (decoder,
+7. **Speaks stream-json to the `claude` subprocess?** (decoder,
    control_request subtype, transport, MCP host, OptionsBuilder)
    -> `forge-sdk`. Pair with a wire-conformance scenario.
-7. **Live state about the user's environment?** (git watcher, cwd
+8. **Live state about the user's environment?** (git watcher, cwd
    resolution, env probes, OAuth, plugins, settings IO, plugin catalog
    scan)
    -> `forge-agent`: `env::*` for environment, `cloud::*` for Anthropic
    API / OAuth, `userdata::*` for `~/.claude*` files. Async, may shell
    out.
-8. **Orchestration across projects, sessions, accounts, `forge.toml`,
+9. **Orchestration across projects, sessions, accounts, `forge.toml`,
    or the command bus?** -> `forge-workspace`. Adds `Workspace` methods,
    `Command` variants, `SessionUpdate` events. A read a VIEW needs is a
    verb on the view surface below, not a bare method.
-9. **A session record as a view sees it, or a decision any view would
+10. **A session record as a view sees it, or a decision any view would
    make over one?** (the render-ready record, the reducer that derives
    it, the policy that decides how a run of blocks folds, the peer
    envelope parsing in both directions) -> `forge-server`. Sits
    between workspace and the views; the test is "does this render?" -
    if it does, it is the view's.
-10. **A widget, screen, layout, or per-view presentation state?** -> the
+11. **A widget, screen, layout, or per-view presentation state?** -> the
     client: draw it in `client/src/`, and take anything that needs the
     OS, a process or the socket to the shell behind the typed invoke
     surface. A further Rust view is a crate of its own, built against
     the socket in `forge-server` rather than against the core: it reads
     through the view surface in `forge-server` and never
     `forge-workspace`, and starts no subsystem of its own.
-11. **A wire-conformance scenario?** -> `forge-test-harness`.
+12. **A wire-conformance scenario?** -> `forge-test-harness`.
 
 **The view surface is built, reads and writes.** A view reads the core
 through named verbs by subject - `roster`, `session`, `agents`,

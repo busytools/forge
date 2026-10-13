@@ -1,0 +1,25 @@
+[package]
+name = "forge-capture"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Microphone capture: the device, the input plan, and the mono model-rate audio a host reads from it. Depends on no other forge crate."
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+tracing = { workspace = true }
+# The device. The stream is !Send, which is why it lives on a thread of its
+# own rather than in the value `open` hands back.
+cpal = { workspace = true }
+rubato = "0.16"
+
+[dev-dependencies]
+# The leaf-invariant guard reads cargo's own metadata.
+serde_json = { workspace = true }

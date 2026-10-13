@@ -45,7 +45,7 @@ pub fn engine_with_feeding_microphone(
             if shared.stopped() {
                 return;
             }
-            shared.push(chunk, 1, limit);
+            shared.push(chunk, limit);
             std::thread::sleep(pace);
         }
         // Held open, like a real microphone between takes: the host

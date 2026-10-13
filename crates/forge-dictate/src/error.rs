@@ -124,3 +124,21 @@ pub enum Error {
     #[error("bench: {message}")]
     Bench { message: String },
 }
+
+/// The capture crate's failures, in this crate's own vocabulary: a caller
+/// that spends a take against a device reads one error type either way, and
+/// the variants keep the wording their own callers match on.
+impl From<forge_capture::Error> for Error {
+    fn from(error: forge_capture::Error) -> Self {
+        match error {
+            forge_capture::Error::NoInputDevice => Self::NoInputDevice,
+            forge_capture::Error::DeviceNotFound { wanted, available } => {
+                Self::DeviceNotFound { wanted, available }
+            }
+            forge_capture::Error::UnsupportedInput { wanted, offered } => {
+                Self::UnsupportedInput { wanted, offered }
+            }
+            forge_capture::Error::Capture { message } => Self::Capture { message },
+        }
+    }
+}

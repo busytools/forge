@@ -841,6 +841,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "forge-capture"
+version = "1.1.14"
+dependencies = [
+ "cpal",
+ "rubato",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
 name = "forge-connectors"
 version = "1.1.14"
 dependencies = [
@@ -863,14 +874,13 @@ dependencies = [
 name = "forge-dictate"
 version = "1.1.14"
 dependencies = [
- "cpal",
  "dirs",
  "encoding_rs",
+ "forge-capture",
  "hex",
  "hound",
  "llama-cpp-2",
  "reqwest",
- "rubato",
  "serde",
  "serde_json",
  "sha2",

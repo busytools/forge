@@ -55,7 +55,9 @@ pub mod normalize;
 pub mod test_support;
 
 pub use audio::{AudioSource, SAMPLE_RATE, Samples};
-pub use capture::{Device, devices};
+// The device and its list are `forge-capture`'s types: this crate opens the
+// same device a client's shell does, so the shapes cross as re-exports rather
+// than as a second copy.
 pub use config::{Config, ConfigBuilder, ModelFacts, ModelSpec, spec_for_download};
 pub use engine::{
     Busy, Capture, CaptureMeter, Engine, FrameSink, Outcome, Stages, StreamCapture, Ticket,
@@ -63,15 +65,22 @@ pub use engine::{
 };
 pub use error::Error;
 pub use fetch::{Progress, prepare};
+pub use forge_capture::{Device, devices};
 pub use normalize::{NormalizeError, NormalizeOptions, Normalizer};
 pub use transcribe_cpp::CancelToken;
 
 #[cfg(test)]
 mod tests_leaf_invariant {
-    /// This crate is a leaf, and depending on a forge-* crate is the one
-    /// change that would quietly end that. Nothing catches it at compile
-    /// time, because such an edge closes no cycle and the workspace
-    /// builds fine.
+    /// This crate is a leaf: it may depend on another LEAF forge crate and
+    /// on nothing else of the workspace. The one edge it has is
+    /// `forge-capture`, which opens the microphone - the device half of a
+    /// take, shared with a client's own shell - and which is itself a leaf
+    /// with no forge-* dependencies at all.
+    ///
+    /// Depending on the workspace's core is the change this guards: a
+    /// host, a session or a view reaching into dictation would end the
+    /// standalone primitive, and nothing catches it at compile time,
+    /// because such an edge closes no cycle and the workspace builds fine.
     ///
     /// Asked of cargo's resolver rather than read out of the manifest,
     /// because a rename is exactly what a manifest hides and what the
@@ -81,7 +90,7 @@ mod tests_leaf_invariant {
     /// Checks direct dependencies only: a forge crate reached through a
     /// workspace crate not itself named `forge-*` is not caught.
     #[test]
-    fn depends_on_no_forge_crate() {
+    fn depends_on_no_forge_crate_but_a_leaf() {
         let output = std::process::Command::new(option_env!("CARGO").unwrap_or("cargo"))
             .args([
                 "metadata",
@@ -102,20 +111,33 @@ mod tests_leaf_invariant {
 
         let metadata: serde_json::Value =
             serde_json::from_slice(&output.stdout).expect("cargo metadata emits json");
-        let package = metadata["packages"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|p| p["name"] == "forge-dictate")
-            .expect("forge-dictate must appear in its own metadata");
+        let packages = metadata["packages"].as_array().into_iter().flatten();
+        let forge_deps = |named: &str| -> Vec<String> {
+            packages
+                .clone()
+                .find(|p| p["name"] == named)
+                .unwrap_or_else(|| panic!("{named} must appear in its own metadata"))
+                ["dependencies"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|dep| dep["name"].as_str())
+                .filter(|name| name.starts_with("forge-"))
+                .map(str::to_owned)
+                .collect()
+        };
 
-        let forge: Vec<&str> = package["dependencies"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|dep| dep["name"].as_str())
-            .filter(|name| name.starts_with("forge-"))
-            .collect();
-        assert!(forge.is_empty(), "forge-dictate must depend on no forge-* crate, found {forge:?}");
+        let mine = forge_deps("forge-dictate");
+        assert_eq!(
+            mine,
+            vec!["forge-capture".to_owned()],
+            "forge-dictate's only forge-* dependency is the capture leaf, found {mine:?}"
+        );
+        let theirs = forge_deps("forge-capture");
+        assert!(
+            theirs.is_empty(),
+            "the crate forge-dictate leans on must itself be a leaf, but forge-capture depends on \
+             {theirs:?}"
+        );
     }
 }
