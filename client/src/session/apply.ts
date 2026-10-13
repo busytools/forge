@@ -185,14 +185,6 @@ export const HANDLERS: Record<string, Apply> = {
     subagent_instances: list(payload['cards']).map(subagentCardFrom),
   }),
 
-  // The frame carries the flag's own value. A payload naming no bool is a
-  // frame this build cannot read, and it leaves the flag where a dispatch
-  // already put it rather than clearing it.
-  dispatches_changed: (held, payload) => {
-    const dispatched = payload['has_dispatches'];
-    return typeof dispatched === 'boolean' ? { ...held, has_dispatches: dispatched } : held;
-  },
-
   // The walk the seat's own loop keeps fresh, carried whole under the frame's
   // own name. A payload naming no index is a frame this build cannot read.
   file_index_changed: (held, payload) => {
@@ -436,11 +428,13 @@ export const IGNORED: readonly string[] = [
   // The core echoes the terminal's own `/dictate` overrides; this client
   // holds its axes itself, so the echo reaches nothing here.
   'dictate_overrides',
+  // Nothing on this client draws the flag, and the record no longer carries
+  // it: the update reaches nothing here.
+  'dispatches_changed',
   'fatal_error',
   'forge_account_identity',
   'gotify_notification_appended',
   'mcp_operation_error',
-  'oauth_credentials_snapshot',
   'peer_envelope_appended',
   'plugins_cli_action_failed',
   'plugins_cli_action_succeeded',
@@ -456,13 +450,10 @@ export const IGNORED: readonly string[] = [
   // belongs to `session/close.ts`, fed off the same stream.
   'releasing',
   'review_activity_notice',
-  'runtime_reload_completed',
-  'runtime_reload_failed',
   'service_status',
   'sessions_listed',
   'set_mode_failed',
   'set_model_failed',
-  'slash_command_error',
   /**
    * **The conversation this record carries is not the one the page draws.**
    * The page's is `chat/conversation.ts`'s, fed by the live stream, so a line
@@ -473,7 +464,6 @@ export const IGNORED: readonly string[] = [
    */
   'notice',
   'slack_message_appended',
-  'status_snapshot',
   // The project's task set, its schedules and its connector subscriptions:
   // all three sections are read off the home's project row, and this record
   // has no field for any of them.

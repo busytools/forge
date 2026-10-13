@@ -329,7 +329,6 @@ pub(crate) async fn spawn_session(
     }
 
     let config_dir = bridge.config_dir();
-    let display_name = bridge.display_name();
     let worker_listing = bridge.worker_listing();
     let extra_mcp_servers = bridge.extra_mcp_servers();
     let sdk_server_names: Vec<String> =
@@ -379,12 +378,11 @@ pub(crate) async fn spawn_session(
     let cwd_owned = cwd.to_owned();
 
     // Install the client into the bridge BEFORE emitting Connected.
-    // The TUI's Connected handler immediately fires command-channel
-    // requests (status snapshot, oauth credentials, context usage, mcp
-    // snapshot) which the dispatcher routes through `bridge.dispatch`.
-    // Dispatch reads `bridge.client()` - which must already be Some,
-    // otherwise the dispatch returns an error and the request is
-    // dropped (chip stays empty / snapshot never lands).
+    // A view's seat read fires command-channel requests (context usage,
+    // mcp snapshot) which the dispatcher routes through
+    // `bridge.dispatch`. Dispatch reads `bridge.client()` - which must
+    // already be Some, otherwise the dispatch returns an error and the
+    // request is dropped (the snapshot never lands).
     bridge.set_client(client.clone());
 
     // Emit Connected BEFORE spawning the reader subtask so the App
@@ -399,7 +397,6 @@ pub(crate) async fn spawn_session(
         launch_settings,
         id.resumed(),
         &config_dir,
-        display_name.as_deref(),
         worker_listing.as_ref(),
     )
     .await;
@@ -462,7 +459,6 @@ async fn emit_connected(
     launch_settings: &crate::client::SessionLaunchSettings,
     resume_id: Option<&str>,
     config_dir: &Path,
-    display_name: Option<&str>,
     worker_listing: Option<&crate::agent::WorkerListing>,
 ) {
     let server_info = client.get_server_info().cloned();
@@ -520,27 +516,6 @@ async fn emit_connected(
             session_id,
             "Connected event channel closed before emit; session stuck on Connecting"
         );
-    }
-
-    // The identity is the init frame's; there is no shell fallback.
-    let account = client.account_info_from_init();
-    if let Some(account) = account {
-        let forge_account =
-            display_name.map(|d| forge_primitives::ForgeAccountIdentity::new(d.to_owned()));
-        if event_tx
-            .send(AgentEvent::StatusSnapshot {
-                session_id: session_id.to_owned(),
-                account,
-                forge_account,
-            })
-            .is_err()
-        {
-            tracing::warn!(
-                target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                session_id,
-                "StatusSnapshot event channel closed before emit"
-            );
-        }
     }
 
     if event_tx
@@ -4274,66 +4249,5 @@ mod tests_reader_terminal {
         .expect("drain window completes");
 
         set_test_sdk_binary(None);
-    }
-}
-
-#[cfg(test)]
-#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-mod tests_connected_identity {
-    use super::emit_connected;
-    use crate::client::{AgentEvent, SessionLaunchSettings};
-    use forge_sdk::{Client, OptionsBuilder};
-    use std::path::Path;
-
-    /// forge-sdk's fixture variant whose init frame omits
-    /// `apiKeySource`, so `account_info_from_init` answers None.
-    fn no_api_key_mock_binary() -> String {
-        concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../forge-sdk/tests/fixtures/mock_claude_no_api_key.sh"
-        )
-        .to_owned()
-    }
-
-    /// The spawn-path half of the identity contract: when the init
-    /// frame carries no account, `emit_connected` sends no
-    /// `StatusSnapshot` at all - the identity is the init frame's, and
-    /// no shell probe keyed on the config dir may appear here to
-    /// describe whichever sibling owns it.
-    #[tokio::test]
-    async fn connected_without_init_account_emits_no_identity_snapshot() {
-        let opts = OptionsBuilder::new().binary(no_api_key_mock_binary()).build();
-        let (client, _client_events) = Client::spawn(opts).await.expect("mock client");
-        let (event_tx, mut observed) = tokio::sync::mpsc::unbounded_channel();
-
-        tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            emit_connected(
-                &event_tx,
-                &client,
-                "session-1",
-                "/tmp/forge-testing-stub",
-                &SessionLaunchSettings::default(),
-                None,
-                Path::new("/tmp/forge-testing-stub"),
-                None,
-                None,
-            ),
-        )
-        .await
-        .expect("emit_connected completes promptly");
-
-        let mut connected = 0;
-        while let Ok(event) = observed.try_recv() {
-            match event {
-                AgentEvent::StatusSnapshot { account, forge_account, .. } => panic!(
-                    "a session whose init frame omits the account must not emit an identity \
-                     snapshot (account={account:?}, forge={forge_account:?})",
-                ),
-                AgentEvent::Connected { .. } => connected += 1,
-                _ => {}
-            }
-        }
-        assert_eq!(connected, 1, "Connected itself must still arrive");
     }
 }

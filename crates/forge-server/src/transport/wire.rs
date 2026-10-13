@@ -432,13 +432,6 @@ pub struct SessionWire {
     pub pending_asks: Vec<PendingAskWire>,
     /// The newest turns, not the whole conversation. See [`SUBSCRIBE_TURNS`].
     pub conversation: ConversationWire,
-    /// Whether this seat's conversation holds a sub-agent dispatch at all.
-    ///
-    /// On the record rather than left to whoever draws: it is a fact about
-    /// the conversation, and `conversation` above carries a window of it, so
-    /// a reader scanning that window would report a seat that dispatched an
-    /// hour ago as one where nothing ever ran.
-    pub has_dispatches: bool,
     pub slash_commands: Vec<AvailableCommand>,
     pub subagents: Vec<AvailableAgent>,
     /// The session's sub-agent instances, as the core joined them: one card
@@ -1374,10 +1367,6 @@ async fn session(
     // record answering a window of cards over a window of messages is a
     // section that shrinks with the cap rather than with the conversation.
     let instances = surface.subagent_cards(slot);
-    // The dispatch flag is the workspace's, raised by the fold that can
-    // announce its raise: read here rather than recomputed, so the record and
-    // the `DispatchesChanged` frame cannot disagree about it.
-    let has_dispatches = surface.has_dispatches(slot);
     // The seat's scan, as the loop that owns it last answered it. Nothing is
     // read here: the tree is read for a seat somebody is showing, and this
     // answers what that read found - the tile's branch, count and PR are one
@@ -1431,7 +1420,6 @@ async fn session(
         pending_ask: asks.first().map(PendingAskWire::from),
         pending_asks: asks.iter().map(PendingAskWire::from).collect(),
         conversation: ConversationWire { turns, compaction_count },
-        has_dispatches,
         header: SessionHeaderWire {
             session_id: header.session_id.clone(),
             model: header.model.as_ref().and_then(|model| serde_json::to_value(model).ok()),
@@ -2317,45 +2305,6 @@ mod tests {
         );
     }
 
-    /// **The dispatch flag the record carries is the workspace's.** It was
-    /// computed here, over the held conversation, until the push landed: the
-    /// fold that raises it is the one that announces the raise, so the record
-    /// reads it through the view surface rather than keeping a second answer
-    /// that could disagree with the frame.
-    #[tokio::test]
-    async fn the_record_reads_the_dispatch_flag_from_the_workspace() {
-        let fleet =
-            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
-        fleet.start("TestOrg", "proj").expect("the project starts");
-        let state = TransportState {
-            surface: fleet.surface(),
-            work: Arc::new(WorkCache::new()),
-            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
-            live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
-            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
-        };
-
-        let before =
-            encode_subject(&state, &Subject::Session(fixture_seat())).await.expect("encode");
-        assert_eq!(
-            before["has_dispatches"], false,
-            "a seat whose fold raised nothing reads false: {before}",
-        );
-
-        fleet.seed_view_facts(
-            &fixture_seat(),
-            ViewFacts { has_dispatches: true, ..ViewFacts::default() },
-        );
-
-        let after =
-            encode_subject(&state, &Subject::Session(fixture_seat())).await.expect("encode");
-        assert_eq!(
-            after["has_dispatches"], true,
-            "and the flag the workspace holds is the one the record answers with: {after}",
-        );
-    }
-
     /// **The instance list the record carries is the workspace's**, not a
     /// fold the record takes over the conversation.
     ///
@@ -2405,7 +2354,6 @@ mod tests {
         fleet.seed_view_facts(
             &fixture_seat(),
             ViewFacts {
-                has_dispatches: true,
                 cards: vec![forge_primitives::runtime::SubagentCard {
                     name: "from the workspace".to_owned(),
                     dispatch_id: "tu-sub".to_owned(),

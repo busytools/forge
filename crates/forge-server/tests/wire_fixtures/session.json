@@ -229,7 +229,6 @@
     ],
     "compaction_count": 0
   },
-  "has_dispatches": false,
   "slash_commands": [],
   "subagents": [],
   "subagent_instances": [

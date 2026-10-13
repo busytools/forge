@@ -27,7 +27,6 @@
 use std::path::PathBuf;
 
 use forge_agent::client::SessionLaunchSettings;
-use forge_primitives::cloud::oauth_credentials::OauthCredentials;
 use forge_primitives::cloud::service_status::ServiceSeverity;
 use forge_primitives::error::AppError;
 use forge_primitives::permission::PermissionMode;
@@ -39,8 +38,7 @@ use forge_primitives::question::{QuestionOutcome, QuestionRequest};
 use forge_primitives::review::{ReviewStatus, ReviewThread};
 use forge_primitives::runtime::{AvailableModel, CurrentModel, ModeState, TerminalReason};
 use forge_primitives::{
-    AccountInfo, ForgeAccountIdentity, ImageAttachment, McpOperationError, McpServerStatus,
-    Message, SessionId, SessionListEntry,
+    ImageAttachment, McpOperationError, McpServerStatus, Message, SessionId, SessionListEntry,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
@@ -1441,10 +1439,6 @@ pub enum SessionUpdate {
         method_name: String,
         method_description: String,
     },
-    SlashCommandError {
-        key: SessionSlot,
-        message: String,
-    },
     /// One line the core has for a view about `key`, which nothing else
     /// carries.
     ///
@@ -1463,16 +1457,9 @@ pub enum SessionUpdate {
         severity: NoticeSeverity,
         text: String,
     },
-    RuntimeReloadCompleted {
-        key: SessionSlot,
-    },
-    RuntimeReloadFailed {
-        key: SessionSlot,
-        message: String,
-    },
     /// The CLI refused (or failed) a `set_permission_mode` control
     /// request for `key`. `message` carries the underlying error text;
-    /// the TUI rolls the optimistic mode chip back and surfaces it.
+    /// the view rolls the optimistic mode chip back and surfaces it.
     SetModeFailed {
         key: SessionSlot,
         mode: PermissionMode,
@@ -1561,11 +1548,6 @@ pub enum SessionUpdate {
         agent_id: Option<String>,
         agent_type: Option<String>,
     },
-    StatusSnapshot {
-        key: SessionSlot,
-        account: AccountInfo,
-        forge_account: Option<ForgeAccountIdentity>,
-    },
     ForgeAccountIdentity {
         key: SessionSlot,
         display_name: String,
@@ -1585,10 +1567,6 @@ pub enum SessionUpdate {
     DictateDevicePin {
         key: SessionSlot,
         pick: Option<crate::dictate::DictateDeviceChoice>,
-    },
-    OauthCredentialsSnapshot {
-        key: SessionSlot,
-        credentials: Option<OauthCredentials>,
     },
     ContextUsageSnapshot {
         key: SessionSlot,
@@ -2127,7 +2105,6 @@ impl SessionUpdate {
             | Self::ConnectionFailed { key, .. }
             | Self::Releasing { key }
             | Self::AuthRequired { key, .. }
-            | Self::SlashCommandError { key, .. }
             | Self::Notice { key, .. }
             | Self::SetModeFailed { key, .. }
             | Self::SetModelFailed { key, .. }
@@ -2158,12 +2135,8 @@ impl SessionUpdate {
             | Self::BrowserHandOffResolved { key, .. }
             | Self::DocumentHandOffPending { key, .. }
             | Self::DocumentHandOffResolved { key, .. }
-            | Self::RuntimeReloadCompleted { key }
-            | Self::RuntimeReloadFailed { key, .. }
             | Self::ChatAppended { key, .. }
             | Self::HookObservation { key, .. }
-            | Self::StatusSnapshot { key, .. }
-            | Self::OauthCredentialsSnapshot { key, .. }
             | Self::ContextUsageSnapshot { key, .. }
             | Self::McpSnapshot { key, .. }
             | Self::WorkChanged { key, .. }
@@ -2236,17 +2209,8 @@ impl std::fmt::Debug for SessionUpdate {
             Self::AuthRequired { key, .. } => {
                 f.debug_struct("AuthRequired").field("key", key).finish_non_exhaustive()
             }
-            Self::SlashCommandError { key, .. } => {
-                f.debug_struct("SlashCommandError").field("key", key).finish_non_exhaustive()
-            }
             Self::Notice { key, .. } => {
                 f.debug_struct("Notice").field("key", key).finish_non_exhaustive()
-            }
-            Self::RuntimeReloadCompleted { key } => {
-                f.debug_struct("RuntimeReloadCompleted").field("key", key).finish()
-            }
-            Self::RuntimeReloadFailed { key, .. } => {
-                f.debug_struct("RuntimeReloadFailed").field("key", key).finish_non_exhaustive()
             }
             Self::SetModeFailed { key, .. } => {
                 f.debug_struct("SetModeFailed").field("key", key).finish_non_exhaustive()
@@ -2288,9 +2252,6 @@ impl std::fmt::Debug for SessionUpdate {
             Self::HookObservation { key, .. } => {
                 f.debug_struct("HookObservation").field("key", key).finish_non_exhaustive()
             }
-            Self::StatusSnapshot { key, .. } => {
-                f.debug_struct("StatusSnapshot").field("key", key).finish_non_exhaustive()
-            }
             Self::ForgeAccountIdentity { key, .. } => {
                 f.debug_struct("ForgeAccountIdentity").field("key", key).finish_non_exhaustive()
             }
@@ -2299,9 +2260,6 @@ impl std::fmt::Debug for SessionUpdate {
             }
             Self::DictateDevicePin { key, .. } => {
                 f.debug_struct("DictateDevicePin").field("key", key).finish_non_exhaustive()
-            }
-            Self::OauthCredentialsSnapshot { key, .. } => {
-                f.debug_struct("OauthCredentialsSnapshot").field("key", key).finish_non_exhaustive()
             }
             Self::ContextUsageSnapshot { key, .. } => {
                 f.debug_struct("ContextUsageSnapshot").field("key", key).finish_non_exhaustive()

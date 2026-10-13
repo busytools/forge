@@ -420,14 +420,6 @@ describe('applyUpdate', () => {
       expect(agents.subagents).toEqual([{ name: 'reviewer' }]);
     });
 
-    it('carries the dispatch flag the frame names', () => {
-      const next = applyUpdate(empty(), {
-        dispatches_changed: { key: SLOT, has_dispatches: true },
-      });
-
-      expect(next.has_dispatches).toBe(true);
-    });
-
     it('carries the joined instances the frame names, ending stamp and all', () => {
       const next = applyUpdate(empty(), {
         subagent_cards_changed: {
@@ -1150,10 +1142,7 @@ const EVERY_VARIANT = [
   'connection_failed',
   'releasing',
   'auth_required',
-  'slash_command_error',
   'notice',
-  'runtime_reload_completed',
-  'runtime_reload_failed',
   'set_mode_failed',
   'set_model_failed',
   'permission_request',
@@ -1165,11 +1154,9 @@ const EVERY_VARIANT = [
   'turn_error',
   'chat_appended',
   'hook_observation',
-  'status_snapshot',
   'forge_account_identity',
   'dictate_overrides',
   'dictate_device_pin',
-  'oauth_credentials_snapshot',
   'context_usage_snapshot',
   'mcp_snapshot',
   'monitors_changed',
@@ -1281,9 +1268,9 @@ describe('the variant list', () => {
     // raise it in the same edit that adds a variant, as the plan says.
     expect(
       EVERY_VARIANT.length,
-      'the census no longer carries every variant the enum declares (79 of them): a truncated ' +
+      'the census no longer carries every variant the enum declares (74 of them): a truncated ' +
         'census leaves the assertions below checking only the names it still has',
-    ).toBe(79);
+    ).toBe(74);
   });
 
   it('classifies every variant the core can send', () => {

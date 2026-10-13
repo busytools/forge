@@ -660,12 +660,6 @@ impl SessionTask {
                     cancelled,
                 });
             }
-            AgentEvent::RuntimeReloadCompleted { .. } => {
-                self.emit(SessionUpdate::RuntimeReloadCompleted { key: self.key.clone() });
-            }
-            AgentEvent::RuntimeReloadFailed { message, .. } => {
-                self.emit(SessionUpdate::RuntimeReloadFailed { key: self.key.clone(), message });
-            }
             AgentEvent::SetModeFailed { mode, message, .. } => {
                 self.emit(SessionUpdate::SetModeFailed { key: self.key.clone(), mode, message });
             }
@@ -682,19 +676,6 @@ impl SessionTask {
             }
             AgentEvent::SessionsListed { sessions } => {
                 self.emit(SessionUpdate::SessionsListed { key: self.key.clone(), sessions });
-            }
-            AgentEvent::StatusSnapshot { account, forge_account, .. } => {
-                self.emit(SessionUpdate::StatusSnapshot {
-                    key: self.key.clone(),
-                    account,
-                    forge_account,
-                });
-            }
-            AgentEvent::OauthCredentialsSnapshot { credentials, .. } => {
-                self.emit(SessionUpdate::OauthCredentialsSnapshot {
-                    key: self.key.clone(),
-                    credentials,
-                });
             }
             AgentEvent::ContextUsage { percentage, max_tokens, .. } => {
                 self.emit(SessionUpdate::ContextUsageSnapshot {

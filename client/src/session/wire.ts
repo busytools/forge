@@ -313,16 +313,6 @@ export interface SessionRecord {
    */
   pending_asks: unknown[];
   conversation: Conversation;
-  /**
-   * Whether this seat's conversation holds a sub-agent dispatch at all.
-   *
-   * **Parsed, and nothing reads it.** The inspector's subagents section was
-   * its only reader and the section is gone - the dispatch rows and the
-   * strip's agents row read `subagent_instances` instead. The field stays on
-   * the wire: dropping it would be a protocol change, so the parse stays
-   * here until the wire itself moves.
-   */
-  has_dispatches: boolean;
   /** The working tree's branch and count, and whether git could read it. */
   work: WorkState;
   /** The tree behind the git row's depth, as the scan classified it. */
@@ -558,7 +548,6 @@ export function sessionFrom(data: unknown): SessionRecord {
       turns: list(record(held['conversation'])['turns']).map(turnFrom),
       compaction_count: number(record(held['conversation'])['compaction_count']) ?? 0,
     },
-    has_dispatches: held['has_dispatches'] === true,
     work: workFrom(held['work']),
     git: gitFrom(held['git']),
     pr: prFrom(held['pr']),

@@ -3894,13 +3894,6 @@ impl Workspace {
             .unwrap_or_default()
     }
 
-    /// Whether the conversation at `slot` dispatched a sub-agent, anywhere in
-    /// it. Raised by the session task's fold, which is what announces the
-    /// raise, so a record reading this and a viewer hearing it agree.
-    pub fn has_dispatches_for(&self, slot: &SessionSlot) -> bool {
-        self.domain_session_for(slot).is_some_and(|domain| domain.lock().has_dispatches)
-    }
-
     /// The sub-agent instances the session at `slot` has folded, as the list
     /// the session task pushes when it moves.
     ///
@@ -7738,55 +7731,17 @@ impl Workspace {
     // mutation state, and they need the workspace-side
     // `Arc<AgentHandle>` lookup rather than per-session task routing.
 
-    /// Request a fresh status snapshot for `key`. The bridge replies
-    /// asynchronously via [`SessionUpdate::StatusSnapshot`].
+    /// Request a fresh context-usage snapshot for `key`. The bridge
+    /// replies via [`SessionUpdate::ContextUsageSnapshot`].
     ///
     /// # Errors
     ///
     /// Returns [`DispatchError::UnknownSession`] when no agent is
     /// registered for `key` (e.g., the session was just closed) or
     /// when the bridge hasn't stamped a `session_id` yet.
-    pub fn refresh_status_snapshot(&self, key: &SessionSlot) -> Result<(), DispatchError> {
-        let (handle, sid) = self.handle_and_session_id(key)?;
-        handle.get_status_snapshot(sid).map_err(|_| DispatchError::SessionClosed(key.clone()))
-    }
-
-    /// Request a fresh OAuth credentials snapshot for `key`. The
-    /// bridge replies via [`SessionUpdate::OauthCredentialsSnapshot`].
-    ///
-    /// # Errors
-    ///
-    /// See [`Self::refresh_status_snapshot`].
-    pub fn refresh_oauth_credentials_snapshot(
-        &self,
-        key: &SessionSlot,
-    ) -> Result<(), DispatchError> {
-        let (handle, sid) = self.handle_and_session_id(key)?;
-        handle
-            .get_oauth_credentials_snapshot(sid)
-            .map_err(|_| DispatchError::SessionClosed(key.clone()))
-    }
-
-    /// Request a fresh context-usage snapshot for `key`. The bridge
-    /// replies via [`SessionUpdate::ContextUsageSnapshot`].
-    ///
-    /// # Errors
-    ///
-    /// See [`Self::refresh_status_snapshot`].
     pub fn refresh_context_usage(&self, key: &SessionSlot) -> Result<(), DispatchError> {
         let (handle, sid) = self.handle_and_session_id(key)?;
         handle.get_context_usage(sid).map_err(|_| DispatchError::SessionClosed(key.clone()))
-    }
-
-    /// Reload session plugins for `key`. The bridge replies via
-    /// [`SessionUpdate::RuntimeReloadCompleted`] / `RuntimeReloadFailed`.
-    ///
-    /// # Errors
-    ///
-    /// See [`Self::refresh_status_snapshot`].
-    pub fn reload_plugins(&self, key: &SessionSlot) -> Result<(), DispatchError> {
-        let (handle, sid) = self.handle_and_session_id(key)?;
-        handle.reload_plugins(sid).map_err(|_| DispatchError::SessionClosed(key.clone()))
     }
 
     /// Request a fresh MCP server snapshot for `key`. The bridge
@@ -7794,7 +7749,7 @@ impl Workspace {
     ///
     /// # Errors
     ///
-    /// See [`Self::refresh_status_snapshot`].
+    /// See [`Self::refresh_context_usage`].
     pub fn refresh_mcp_snapshot(&self, key: &SessionSlot) -> Result<(), DispatchError> {
         let (handle, sid) = self.handle_and_session_id(key)?;
         handle.get_mcp_snapshot(sid).map_err(|_| DispatchError::SessionClosed(key.clone()))
@@ -12166,35 +12121,11 @@ provider = "anthropic"
     }
 
     #[test]
-    fn refresh_status_snapshot_dispatches_get_status_snapshot() {
-        let (workspace, mut rx, key) = ws_with_stub_session();
-        workspace.refresh_status_snapshot(&key).expect("dispatch");
-        let cmd = rx.try_recv().expect("queued");
-        assert!(matches!(cmd, forge_primitives::AgentCommand::GetStatusSnapshot { .. }));
-    }
-
-    #[test]
     fn refresh_context_usage_dispatches_get_context_usage() {
         let (workspace, mut rx, key) = ws_with_stub_session();
         workspace.refresh_context_usage(&key).expect("dispatch");
         let cmd = rx.try_recv().expect("queued");
         assert!(matches!(cmd, forge_primitives::AgentCommand::GetContextUsage { .. }));
-    }
-
-    #[test]
-    fn refresh_oauth_credentials_dispatches() {
-        let (workspace, mut rx, key) = ws_with_stub_session();
-        workspace.refresh_oauth_credentials_snapshot(&key).expect("dispatch");
-        let cmd = rx.try_recv().expect("queued");
-        assert!(matches!(cmd, forge_primitives::AgentCommand::GetOauthCredentialsSnapshot { .. }));
-    }
-
-    #[test]
-    fn reload_plugins_dispatches() {
-        let (workspace, mut rx, key) = ws_with_stub_session();
-        workspace.reload_plugins(&key).expect("dispatch");
-        let cmd = rx.try_recv().expect("queued");
-        assert!(matches!(cmd, forge_primitives::AgentCommand::ReloadPlugins { .. }));
     }
 
     #[test]
@@ -12277,16 +12208,16 @@ provider = "anthropic"
     }
 
     #[test]
-    fn refresh_status_snapshot_unknown_session_errors() {
+    fn refresh_context_usage_unknown_session_errors() {
         let (workspace, _update_rx) = Workspace::testing_stub();
         let key = SessionSlot::from_str_for_test("never-registered");
-        let err = workspace.refresh_status_snapshot(&key).expect_err("unknown session");
+        let err = workspace.refresh_context_usage(&key).expect_err("unknown session");
         assert!(matches!(err, DispatchError::UnknownSession(_)));
     }
 
     /// `dispatch(Command::Cancel)` falls back to synchronous direct
     /// dispatch when no SessionTask is registered. This is the path
-    /// TUI unit tests rely on - `set_active_conn` installs a stub
+    /// a view's unit tests rely on - `set_active_conn` installs a stub
     /// handle but never spawns a task, and tests need to observe
     /// the primitive command on the rx.
     #[test]

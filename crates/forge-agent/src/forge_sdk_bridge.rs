@@ -727,47 +727,6 @@ impl ForgeSdkBridge {
         );
     }
 
-    pub(crate) fn get_status_snapshot(&self, session_id: String) -> anyhow::Result<()> {
-        let event_tx = self.inner.event_tx.clone();
-        let display_name = self.inner.display_name.clone();
-        self.dispatch("get_status_snapshot", move |client| async move {
-            // The identity is the init frame's; there is no shell
-            // fallback to consult.
-            let account = client.account_info_from_init().unwrap_or_default();
-            let forge_account = display_name.map(forge_primitives::ForgeAccountIdentity::new);
-            if event_tx
-                .send(AgentEvent::StatusSnapshot { session_id, account, forge_account })
-                .is_err()
-            {
-                tracing::warn!(
-                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                    "event channel closed; StatusSnapshot dropped",
-                );
-            }
-            Ok(())
-        })
-    }
-
-    pub(crate) fn get_oauth_credentials_snapshot(&self, session_id: String) -> anyhow::Result<()> {
-        let event_tx = self.inner.event_tx.clone();
-        let env = self.inner.env.clone();
-        self.dispatch("get_oauth_credentials_snapshot", move |_client| async move {
-            // The snapshot is the account's env token - an in-memory
-            // map read, no I/O.
-            let credentials = crate::cloud::oauth_credentials::session_oauth_credentials(&env);
-            if event_tx
-                .send(AgentEvent::OauthCredentialsSnapshot { session_id, credentials })
-                .is_err()
-            {
-                tracing::warn!(
-                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                    "event channel closed; OauthCredentialsSnapshot dropped",
-                );
-            }
-            Ok(())
-        })
-    }
-
     pub(crate) fn get_context_usage(&self, session_id: String) -> anyhow::Result<()> {
         if !self.inner.context_probes_in_flight.lock().insert(session_id.clone()) {
             tracing::debug!(
@@ -831,69 +790,6 @@ impl ForgeSdkBridge {
             }
             Ok(())
         })
-    }
-
-    pub(crate) fn reload_plugins(&self, session_id: String) -> anyhow::Result<()> {
-        let event_tx = self.inner.event_tx.clone();
-        let err_session_id = session_id.clone();
-        self.dispatch_with_failure(
-            "reload_plugins",
-            move |client| async move {
-                let outcome =
-                    tokio::time::timeout(Self::CONTROL_RESPONSE_TIMEOUT, client.reload_plugins())
-                        .await;
-                match outcome {
-                    Ok(Ok(_)) => {
-                        if event_tx.send(AgentEvent::RuntimeReloadCompleted { session_id }).is_err()
-                        {
-                            tracing::warn!(
-                                target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                                "event channel closed; RuntimeReloadCompleted dropped",
-                            );
-                        }
-                    }
-                    Ok(Err(e)) => {
-                        let msg = format!("reload_plugins failed: {e}");
-                        if event_tx
-                            .send(AgentEvent::RuntimeReloadFailed {
-                                session_id,
-                                message: msg.clone(),
-                            })
-                            .is_err()
-                        {
-                            tracing::warn!(
-                                target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                                error = %msg,
-                                "event channel closed; RuntimeReloadFailed dropped",
-                            );
-                        }
-                    }
-                    Err(_) => {
-                        let msg = "no response from the CLI".to_owned();
-                        if event_tx
-                            .send(AgentEvent::RuntimeReloadFailed {
-                                session_id,
-                                message: msg.clone(),
-                            })
-                            .is_err()
-                        {
-                            tracing::warn!(
-                                target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                                error = %msg,
-                                "event channel closed; RuntimeReloadFailed dropped",
-                            );
-                        }
-                    }
-                }
-                Ok(())
-            },
-            move |err| {
-                Some(AgentEvent::RuntimeReloadFailed {
-                    session_id: err_session_id,
-                    message: format!("reload_plugins never reached the CLI: {err}"),
-                })
-            },
-        )
     }
 
     pub(crate) fn get_mcp_snapshot(&self, session_id: String) -> anyhow::Result<()> {
@@ -1527,27 +1423,6 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn reload_plugins_without_client_emits_runtime_reload_failed() {
-        let bridge = test_bridge();
-        let mut events = bridge.take_events().expect("fresh bridge yields its events receiver");
-
-        bridge.reload_plugins("session-1".to_owned()).expect_err("no client, dispatch refused");
-
-        match tokio::time::timeout(std::time::Duration::from_secs(2), events.recv()).await {
-            Ok(Some(AgentEvent::RuntimeReloadFailed { session_id, message })) => {
-                assert_eq!(session_id, "session-1");
-                assert!(
-                    message.contains("reload_plugins never reached the CLI"),
-                    "the typed failure names the op and carries the early Err: {message}"
-                );
-            }
-            other => {
-                panic!("expected RuntimeReloadFailed from the client-less early Err, got {other:?}")
-            }
-        }
-    }
-
     #[test]
     fn set_mode_rejection_text_strips_the_control_failed_wrapper() {
         let err = forge_sdk::Error::message_parse("control failed: mode not permitted");
@@ -1568,17 +1443,6 @@ mod tests {
     fn sdk_mock_binary() -> String {
         concat!(env!("CARGO_MANIFEST_DIR"), "/../forge-sdk/tests/fixtures/mock_claude.sh")
             .to_owned()
-    }
-
-    /// Fixture variant whose init frame omits `apiKeySource`, so
-    /// `account_info_from_init` answers None and the snapshot lands
-    /// the default identity.
-    fn no_api_key_mock_binary() -> String {
-        concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../forge-sdk/tests/fixtures/mock_claude_no_api_key.sh"
-        )
-        .to_owned()
     }
 
     async fn bridge_with_mock_client() -> (ForgeSdkBridge, mpsc::UnboundedReceiver<AgentEvent>) {
@@ -1726,42 +1590,6 @@ mod tests {
             panic!("{what} arrives inside the deadline");
         };
         event
-    }
-
-    /// The identity contract at the surface the user sees: a session
-    /// whose init frame carries no account snapshots the default
-    /// identity. There is no shell probe to fall back to - a probe
-    /// keyed on the config dir would describe whichever sibling last
-    /// logged in interactively.
-    #[tokio::test]
-    async fn token_session_snapshots_the_default_identity() {
-        let mut env = HashMap::new();
-        env.insert("CLAUDE_CODE_OAUTH_TOKEN".to_owned(), "setup-token".to_owned());
-        let bridge = ForgeSdkBridge::new(
-            PathBuf::from(TESTING_STUB_CONFIG_DIR),
-            None,
-            Vec::new(),
-            env,
-            None,
-        );
-        let mut events = bridge.take_events().expect("fresh bridge yields its events receiver");
-        let opts = forge_sdk::OptionsBuilder::new().binary(no_api_key_mock_binary()).build();
-        let (client, _client_events) = forge_sdk::Client::spawn(opts).await.expect("mock client");
-        bridge.set_client(client);
-
-        bridge.get_status_snapshot("session-1".to_owned()).expect("dispatch");
-
-        match tokio::time::timeout(std::time::Duration::from_secs(5), events.recv()).await {
-            Ok(Some(AgentEvent::StatusSnapshot { account, forge_account, .. })) => {
-                assert_eq!(
-                    account,
-                    forge_primitives::AccountInfo::default(),
-                    "a token session's fallback identity is the default, never a shell-probe sibling",
-                );
-                assert!(forge_account.is_none(), "no forge account was bound");
-            }
-            other => panic!("expected a StatusSnapshot, got {other:?}"),
-        }
     }
 
     /// A failure inside the spawned dispatch future reaches the App as

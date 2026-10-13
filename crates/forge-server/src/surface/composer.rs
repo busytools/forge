@@ -1,4 +1,4 @@
-//! `slash_commands()`, `subagents()`, `has_dispatches()`, `subagent_cards()`,
+//! `slash_commands()`, `subagents()`, `subagent_cards()`,
 //! `forge_commands()`, `file_index()`, `respect_gitignore()`: what the
 //! composer's autocomplete triggers read, and the two sub-agent facts a
 //! record draws its section from.
@@ -71,22 +71,12 @@ impl ViewSurface {
         self.workspace.available_agents_for(slot)
     }
 
-    /// Whether the conversation at `slot` dispatched a sub-agent.
-    ///
-    /// A fact about the whole conversation rather than about a window of it,
-    /// and one the session task's fold raises and announces - so this answers
-    /// what that fold holds rather than scanning the messages again here.
-    pub fn has_dispatches(&self, slot: &SessionSlot) -> bool {
-        self.workspace.has_dispatches_for(slot)
-    }
-
     /// The sub-agent instances the session at `slot` has folded, as the list
     /// it pushes when the list moves.
     ///
-    /// The same fold as [`Self::has_dispatches`] and the same reason for
-    /// reading it here: a record that folded the conversation's messages
-    /// itself would answer with whatever window of them it holds, which is
-    /// not the conversation the cards describe.
+    /// A record that folded the conversation's messages itself would answer
+    /// with whatever window of them it holds, which is not the conversation
+    /// the cards describe.
     pub fn subagent_cards(
         &self,
         slot: &SessionSlot,

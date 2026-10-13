@@ -134,13 +134,6 @@ pub enum AgentEvent {
         session_id: String,
         error: types::McpOperationError,
     },
-    RuntimeReloadCompleted {
-        session_id: String,
-    },
-    RuntimeReloadFailed {
-        session_id: String,
-        message: String,
-    },
     /// The CLI refused (or failed) a `set_permission_mode` control
     /// request. `message` carries the underlying error text so the
     /// consumer can roll back the optimistic mode change and surface
@@ -160,15 +153,6 @@ pub enum AgentEvent {
     },
     SessionsListed {
         sessions: Vec<types::SessionListEntry>,
-    },
-    StatusSnapshot {
-        session_id: String,
-        account: forge_primitives::AccountInfo,
-        forge_account: Option<forge_primitives::ForgeAccountIdentity>,
-    },
-    OauthCredentialsSnapshot {
-        session_id: String,
-        credentials: Option<crate::cloud::oauth_credentials::OauthCredentials>,
     },
     ContextUsage {
         session_id: String,

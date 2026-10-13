@@ -93,12 +93,6 @@ pub enum AgentCommand {
     },
 
     // --- Snapshots requested by UI ---
-    GetStatusSnapshot {
-        session_id: SessionId,
-    },
-    GetOauthCredentialsSnapshot {
-        session_id: SessionId,
-    },
     GetContextUsage {
         session_id: SessionId,
     },
@@ -127,10 +121,5 @@ pub enum AgentCommand {
         session_id: SessionId,
         server_name: String,
         enabled: bool,
-    },
-
-    // --- Plugins / runtime ---
-    ReloadPlugins {
-        session_id: SessionId,
     },
 }

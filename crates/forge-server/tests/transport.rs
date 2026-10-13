@@ -1203,7 +1203,10 @@ async fn a_take_ending_reaches_its_connection_with_the_seat_unsubscribed() {
 
     // A control on the way past, because the exemption must be NARROW: news
     // about the seat that is not the take's is still the watch's to filter.
-    fleet.emit(SessionUpdate::RuntimeReloadCompleted { key: lead_seat() });
+    fleet.emit(SessionUpdate::ForgeAccountIdentity {
+        key: lead_seat(),
+        display_name: "the-lead".to_owned(),
+    });
 
     // The take ends while nothing here shows the seat - the cap, or a stop
     // from whichever view can reach the seat.
@@ -1226,7 +1229,7 @@ async fn a_take_ending_reaches_its_connection_with_the_seat_unsubscribed() {
         match next_server_within(&mut client, 5_000).await {
             Some(ServerMessage::Update { update }) => match *update {
                 SessionUpdate::DictateEnded { .. } => break,
-                SessionUpdate::RuntimeReloadCompleted { .. } => panic!(
+                SessionUpdate::ForgeAccountIdentity { .. } => panic!(
                     "a non-take update for an unwatched seat arrived: the exemption is too wide"
                 ),
                 _ => {}

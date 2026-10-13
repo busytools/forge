@@ -208,20 +208,8 @@ impl AgentHandle {
         self.send(AgentCommand::SetModel { session_id: session_id.into(), model })
     }
 
-    pub fn get_status_snapshot(&self, session_id: String) -> Result<(), AgentError> {
-        self.send(AgentCommand::GetStatusSnapshot { session_id: session_id.into() })
-    }
-
-    pub fn get_oauth_credentials_snapshot(&self, session_id: String) -> Result<(), AgentError> {
-        self.send(AgentCommand::GetOauthCredentialsSnapshot { session_id: session_id.into() })
-    }
-
     pub fn get_context_usage(&self, session_id: String) -> Result<(), AgentError> {
         self.send(AgentCommand::GetContextUsage { session_id: session_id.into() })
-    }
-
-    pub fn reload_plugins(&self, session_id: String) -> Result<(), AgentError> {
-        self.send(AgentCommand::ReloadPlugins { session_id: session_id.into() })
     }
 
     pub fn get_mcp_snapshot(&self, session_id: String) -> Result<(), AgentError> {
@@ -438,10 +426,6 @@ fn dispatch(cmd: AgentCommand, bridge: &ForgeSdkBridge) -> anyhow::Result<()> {
         }
         C::SetMode { session_id, mode } => bridge.set_mode(session_id.into_string(), mode),
         C::SetModel { session_id, model } => bridge.set_model(session_id.into_string(), model),
-        C::GetStatusSnapshot { session_id } => bridge.get_status_snapshot(session_id.into_string()),
-        C::GetOauthCredentialsSnapshot { session_id } => {
-            bridge.get_oauth_credentials_snapshot(session_id.into_string())
-        }
         C::GetContextUsage { session_id } => bridge.get_context_usage(session_id.into_string()),
         C::GetMcpSnapshot { session_id } => bridge.get_mcp_snapshot(session_id.into_string()),
         C::PermissionResponse { session_id, tool_call_id, outcome } => bridge.permission_response(
@@ -458,7 +442,6 @@ fn dispatch(cmd: AgentCommand, bridge: &ForgeSdkBridge) -> anyhow::Result<()> {
         C::ToggleMcpServer { session_id, server_name, enabled } => {
             bridge.toggle_mcp_server(session_id.into_string(), server_name, enabled)
         }
-        C::ReloadPlugins { session_id } => bridge.reload_plugins(session_id.into_string()),
     }
 }
 
