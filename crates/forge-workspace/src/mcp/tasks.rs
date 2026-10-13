@@ -251,15 +251,20 @@ impl Tool for Update {
          is left alone. `status` is the usual one (pending / in_progress / waiting / completed / \
          failed / canceled), and `owner` takes a session label (\"lead\" for the lead) or the \
          label of a worker. Any session in the project may move any of its tasks, so a lead can \
-         complete a worker's task and a worker can put a row it holds into waiting. An unknown \
-         id is an error, not a no-op. Returns the task as the write left it."
+         complete a worker's task and a worker can put a row it holds into waiting. A task is \
+         named by its full id or any unique prefix of one; a prefix matching more than one row is \
+         refused with the matching rows named. An unknown id is an error, not a no-op. Returns \
+         the task as the write left it."
     }
 
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "id": { "type": "string", "description": "The task id to change." },
+                "id": {
+                    "type": "string",
+                    "description": "The task id to change, or any unique prefix of one.",
+                },
                 "subject": { "type": "string", "description": "New row text." },
                 "active_form": {
                     "type": "string",
@@ -493,16 +498,20 @@ impl Tool for Delete {
     fn description(&self) -> &'static str {
         "Remove a task in YOUR project by id together with its children in the same call, so a \
          parent never leaves subtasks pointing at a task that is gone. Use this to clear work \
-         that is over; nothing is archived. An unknown id is an error, not a no-op. Returns the \
-         removed task and how many descendants went with it. Any session in the project may \
-         call this."
+         that is over; nothing is archived. The task is named by its full id or any unique \
+         prefix of one; a prefix matching more than one row is refused with the matching rows \
+         named. An unknown id is an error, not a no-op. Returns the removed task and how many \
+         descendants went with it. Any session in the project may call this."
     }
 
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "id": { "type": "string", "description": "The task id to remove." },
+                "id": {
+                    "type": "string",
+                    "description": "The task id to remove, or any unique prefix of one.",
+                },
             },
             "required": ["id"],
             "additionalProperties": false,
@@ -552,19 +561,25 @@ impl Tool for Claim {
     fn description(&self) -> &'static str {
         "Claim a task in YOUR project: one atomic write that makes you its owner and marks it \
          in progress, ticking the attempt. Pass `id` for a named row, or `epic` to pull the top \
-         ready row of that epic by rank - exactly one of the two. Refused when a live seat \
-         holds the row (named), when it is not pending, or when you already have a row in \
-         progress: one in progress per worker. Returns the claimed record."
+         ready row of that epic by rank - exactly one of the two. `id` and `epic` each take a \
+         full task id or any unique prefix of one; a prefix matching more than one row is \
+         refused with the matching rows named. Refused when a live seat holds the row (named), \
+         when it is not pending, or when you already have a row in progress: one in progress \
+         per worker. Returns the claimed record."
     }
 
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "id": { "type": "string", "description": "The task id to claim." },
+                "id": {
+                    "type": "string",
+                    "description": "The task id to claim, or any unique prefix of one.",
+                },
                 "epic": {
                     "type": "string",
-                    "description": "The epic whose top ready row to pull, by rank.",
+                    "description": "The epic whose top ready row to pull, by rank; a full id or \
+                                    any unique prefix of one.",
                 },
             },
             "additionalProperties": false,
@@ -616,16 +631,21 @@ impl Tool for Wait {
          (which routes to the user), dependency (another task: put its id in `on`), or resource \
          (an account, a CI run, a machine). Route a decision to the user only when the user \
          explicitly asked for a hold, or something is still genuinely ambiguous after the \
-         decision model, peer opinions and the team's own review. `detail` is the words. The \
-         row must be yours. Refused for a row you do not hold, or one that is not there. \
-         Returns the record in waiting."
+         decision model, peer opinions and the team's own review. `detail` is the words. The row \
+         and the `on` blocker are each named by a full id or any unique prefix of one; a prefix \
+         matching more than one row is refused with the matching rows named. The row must be \
+         yours. Refused for a row you do not hold, or one that is not there. Returns the record \
+         in waiting."
     }
 
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "id": { "type": "string", "description": "The task id to put into waiting." },
+                "id": {
+                    "type": "string",
+                    "description": "The task id to put into waiting, or any unique prefix of one.",
+                },
                 "kind": {
                     "type": "string",
                     "enum": ["decision", "dependency", "resource"],
@@ -643,7 +663,8 @@ impl Tool for Wait {
                 },
                 "on": {
                     "type": "string",
-                    "description": "For a dependency: the task id it waits on.",
+                    "description": "For a dependency: the task id it waits on, or any unique \
+                                    prefix of one.",
                 },
             },
             "required": ["id", "kind"],
@@ -1048,6 +1069,42 @@ mod tests {
             "unless the user asked for a stop",
         ] {
             assert!(detail.contains(clause), "the detail line owes {clause:?}: {detail}");
+        }
+    }
+
+    /// The description is the site a caller reads as it reaches for the
+    /// tool, and the failure this fixes is a caller sending the short form
+    /// it was told. Pinned per tool, so a later edit cannot drop the rule
+    /// from one of the four verbs that resolve an id.
+    #[test]
+    fn every_task_tool_description_states_the_id_prefix_rule() {
+        let facade = MockTasksFacade::new().into_arc();
+        let slot = lead_slot();
+        let claim = Claim { facade: facade.clone(), slot: slot.clone() };
+        let update = Update { facade: facade.clone(), slot: slot.clone() };
+        let wait = Wait { facade: facade.clone(), slot: slot.clone() };
+        let delete = Delete { facade: facade.clone(), slot: slot.clone() };
+        for (name, description, schema) in [
+            ("tasks__claim", claim.description(), claim.input_schema()),
+            ("tasks__update", update.description(), update.input_schema()),
+            ("tasks__wait", wait.description(), wait.input_schema()),
+            ("tasks__delete", delete.description(), delete.input_schema()),
+        ] {
+            assert!(
+                description.contains("unique prefix of one"),
+                "{name} does not say how a stated id resolves: {description}",
+            );
+            assert!(
+                description.contains("refused with the matching rows named"),
+                "{name} does not say what an ambiguous prefix answers: {description}",
+            );
+            let property = schema["properties"]["id"]["description"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{name} carries no id property description"));
+            assert!(
+                property.contains("unique prefix"),
+                "{name}'s id property does not carry the rule: {property}",
+            );
         }
     }
 

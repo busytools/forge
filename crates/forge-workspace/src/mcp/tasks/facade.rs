@@ -16,6 +16,7 @@ use forge_primitives::tasks::{
 
 use crate::SessionSlot;
 use crate::mcp::caller_context::caller_context;
+use crate::tasks::IdError;
 use crate::workspace::Workspace;
 
 /// Why a `tasks__*` call failed.
@@ -330,7 +331,7 @@ impl TasksFacade for ProdTasksFacade {
         ws.update_task(&cx.project_name, id, By::Seat(caller.clone()), |task| {
             patch.apply(task, &cx.project_org, &cx.project_name, estimate, at);
         })
-        .map_err(|refused| TasksError::Refused(format!("{refused:?}")))
+        .map_err(|refused| TasksError::Refused(refused.to_string()))
     }
 
     fn delete_task(
@@ -340,14 +341,18 @@ impl TasksFacade for ProdTasksFacade {
     ) -> Result<Option<RemovedTaskTree>, TasksError> {
         let ws = self.workspace.upgrade().ok_or(TasksError::UnknownCallerProject)?;
         let cx = caller_context(&ws, caller).ok_or(TasksError::UnknownCallerProject)?;
-        // The named task itself has to be there. The cascade also collects
-        // orphans pointing at the id, so "something was removed" would be
-        // true for an id that never existed.
-        if !ws.tasks_for_project(&cx.project_name).iter().any(|t| t.id == *id) {
-            return Ok(None);
-        }
-        let removed = ws.remove_task_tree(&cx.project_name, id);
-        let Some(task) = removed.iter().find(|t| t.id == *id).cloned() else {
+        // The stated id resolves before anything is removed: the cascade
+        // also collects orphans pointing at the id, so "something was
+        // removed" would be true for an id that never existed.
+        let id = match ws.resolve_task_id(&cx.project_name, id) {
+            Ok(id) => id,
+            Err(IdError::NotFound) => return Ok(None),
+            Err(error @ IdError::Ambiguous(_)) => {
+                return Err(TasksError::Refused(error.to_string()));
+            }
+        };
+        let removed = ws.remove_task_tree(&cx.project_name, &id);
+        let Some(task) = removed.iter().find(|t| t.id == id).cloned() else {
             return Ok(None);
         };
         Ok(Some(RemovedTaskTree { task, descendants_removed: removed.len() - 1 }))
@@ -761,6 +766,38 @@ mod prod_facade_tests {
             facade.list_tasks(&lead, None, None, None, None).len(),
             1,
             "only the sibling survives"
+        );
+    }
+
+    /// Delete resolves the stated id the way the other verbs do: a unique
+    /// prefix lands on its row, and a prefix two rows share refuses with
+    /// both named rather than removing nothing under a "no such row".
+    #[test]
+    fn delete_resolves_a_stated_id_by_exact_or_unique_prefix() {
+        let (ws, facade, lead, _worker) = fixture();
+        ws.seed_test_task(seeded_task("7ed0aaaa-0000-4000-8000-000000000001", "fix the rail"));
+        ws.seed_test_task(seeded_task("7ed0bbbb-0000-4000-8000-000000000002", "add tests"));
+
+        let said = match facade.delete_task(&lead, &TaskId::from("7ed0")) {
+            Err(TasksError::Refused(said)) => said,
+            other => panic!("a refusal naming the rows it matched, got {other:?}"),
+        };
+        assert!(
+            said.contains("7ed0aaaa-0000-4000-8000-000000000001")
+                && said.contains("7ed0bbbb-0000-4000-8000-000000000002"),
+            "the refusal names both rows it matched: {said}",
+        );
+
+        let removed = facade
+            .delete_task(&lead, &TaskId::from("7ed0bb"))
+            .expect("one row carries that prefix")
+            .expect("the row is there to remove");
+        assert_eq!(removed.task.id, TaskId::from("7ed0bbbb-0000-4000-8000-000000000002"));
+        assert_eq!(removed.task.subject, "add tests", "the prefix removed its own row");
+        assert_eq!(
+            facade.list_tasks(&lead, None, None, None, None).len(),
+            1,
+            "and left the other row alone",
         );
     }
 
