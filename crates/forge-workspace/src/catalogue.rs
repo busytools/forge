@@ -1291,8 +1291,7 @@ pub(crate) mod tests_catalogue_view {
 
     /// **The cache dir threads the workspace's own app-support base, never
     /// the machine's**: a test's fetch once cached into the real
-    /// app-support tree, creating the current `forge/` name early, which
-    /// disarmed the forge-tui migration and its boot refusal.
+    /// app-support tree.
     #[test]
     fn the_cache_dir_threads_the_workspaces_app_support_base() {
         let config_dir = tempfile::tempdir().expect("a config dir");

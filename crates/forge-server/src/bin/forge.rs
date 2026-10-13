@@ -51,20 +51,6 @@ fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // **Before logging resolves the app-support tree.** A pre-migration
-    // install still holds its store, lock and logs under the legacy name,
-    // and starting beside them would read as every cron, subscription and
-    // session id having vanished - so the boot refuses and names the
-    // script that moves the tree, rather than carrying a migration branch
-    // of its own.
-    if let Some(legacy) = forge_sdk::paths::legacy_app_support_left_behind() {
-        return Err(anyhow::anyhow!(
-            "forge: {} still holds this install's store, lock and logs; run \
-             scripts/migrate-app-support.sh to move them to the forge name first",
-            legacy.display()
-        ));
-    }
-
     let _logging = forge_server::logging::LoggingRuntime::init(&cli)?;
     // Raise the FD soft limit BEFORE any code that opens sockets /
     // files / pipes so the bump applies to every subsequent opener

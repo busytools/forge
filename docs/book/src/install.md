@@ -170,23 +170,6 @@ at `~/.zsh/completions/_forge` (override the directory with
 `FORGE_ZSH_COMPLETION_DIR`) and removes `~/.zcompdump*` so the next
 shell picks it up.
 
-**Coming from a pre-rename install, run this once before the first
-boot:**
-
-```bash
-just migrate-app-support
-```
-
-forge's machine-local state (the store with your crons, subscriptions
-and session ids, the single-instance lock, and the logs) used to live
-under an app-support directory named `forge-tui`. It is named `forge`
-now, and the binary carries no migration of its own: with only the old
-tree present it **refuses to boot** and names this script, because
-starting under the new name beside the old tree would read as every
-cron and subscription having vanished. The script moves the whole tree
-(printing what it moved), keeps a legacy tree untouched if a current
-one already exists, and is safe to re-run.
-
 `just release <version>` installs this binary too, and publishes the
 release. It bumps the workspace and the client's manifest to the same
 number, commits and tags them, then installs the server binary through
