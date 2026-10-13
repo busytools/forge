@@ -39,6 +39,7 @@ have pages here in the same way the TUI's do, current state only.
 - [Board](./ui/client/board.md)
 - [Review](./ui/client/review.md)
 - [Dictation models](./ui/client/dictate-models.md)
+- [Usage](./ui/client/usage.md)
 - [Extensions](./ui/client/extensions.md)
 - [A document](./ui/client/document.md)
 

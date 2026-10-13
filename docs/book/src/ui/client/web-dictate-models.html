@@ -81,13 +81,15 @@
     position: relative; top: -1px; }
   .brand .mark svg { display: block; width: 100%; height: 100%; }
   .brand .word { font-size: 22px; font-weight: 650; letter-spacing: -.02em; }
-  .models .title { display: flex; flex-direction: column; }
-  .models .title .t { font-size: var(--fs-title); font-weight: 650; letter-spacing: -.01em; color: var(--text); }
-  .models .title .s { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
-  .models .back { margin-left: auto; font-family: var(--mono); font-size: var(--fs-label);
-    color: var(--muted); text-decoration: none; border: 1px solid var(--line);
-    border-radius: 9px; padding: 6px 11px; }
-  .models .back:hover { border-color: var(--ctl); color: var(--text); }
+  header.top.pagetop .title { display: flex; flex-direction: column; }
+  header.top.pagetop .title .t { font-size: var(--fs-title); font-weight: 650;
+    letter-spacing: -.01em; color: var(--text); }
+  header.top.pagetop .title .s { font-family: var(--mono); font-size: var(--fs-label);
+    color: var(--dim); }
+  header.top.pagetop .back { margin-left: auto; font-family: var(--mono);
+    font-size: var(--fs-label); color: var(--muted); text-decoration: none;
+    border: 1px solid var(--line); border-radius: 9px; padding: 6px 11px; }
+  header.top.pagetop .back:hover { border-color: var(--ctl); color: var(--text); }
   /* The two one-line states the route draws before a read: the loading line,
      and the server's own words for a refused subscription. */
   .models .pending { color: var(--muted); font-size: var(--fs-base); margin-top: 12vh;
@@ -295,7 +297,7 @@
   <div class="tile">
     <div class="tcap">the ordinary case, with the feed proposing one model - the candidate already installed here, so its control is the activation</div>
     <main class="wrap models">
-      <header class="top">
+      <header class="top pagetop">
         <div class="brand">
           <span class="mark"><svg viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2.4"><rect x="3.2" y="3.2" width="17.6" height="17.6" rx="4"/><path d="M13.6 3.2V20.8"/></g><path fill="currentColor" d="M4.4 6.4a2 2 0 0 1 2-2h4v15.2h-4a2 2 0 0 1-2-2Z"/></svg></span>
           <span class="word">forge</span>
