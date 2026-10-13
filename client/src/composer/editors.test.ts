@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import { EDITORS, focusOf, type Editor, type Where } from './editors';
 
-/** Whether a name a box gave itself is one of the editors, which is what makes it routable. */
+/** Whether a name a box gave itself is one of the editors the census knows. */
 function isEditor(name: string): name is Editor {
   return (EDITORS as readonly string[]).includes(name);
 }
@@ -105,7 +105,7 @@ describe('the census of boxes that can take text', () => {
       const text = readFileSync(file, 'utf8');
 
       // A raw box names its editor inline, so the name can be read here - and a
-      // name outside the set is one `focusOf` can never return.
+      // name outside the set is a box the client cannot reason about.
       for (const found of text.matchAll(/<(textarea|input)\b[^>]*>/g)) {
         if (!found[0].includes('data-editor')) {
           offenders.push(`${where}: ${found[0]} names no editor`);

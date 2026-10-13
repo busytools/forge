@@ -5,10 +5,13 @@
  * Derived, never stored: nothing registers here, so nothing can go stale and
  * there is no mount order to get wrong.
  *
- * It is not yet the whole of the keyboard's routing. The composer and the dock
- * still move the caret in their own effects - the connect screen has none - and
- * the landing is the one caller this table has, so a surface added here does not
- * have its keyboard follow by itself.
+ * **The set is the boxes' own vocabulary; the table answers only for the boxes
+ * its one caller can name.** The composer's landing is that caller, so `focusOf`
+ * answers for the composer's box, the dock's and `nowhere` - the connect
+ * screen's, the palette's and the board's are in the set because boxes carry
+ * those names, and one of them arriving resolves to `nowhere` rather than being
+ * routed. The composer and the dock still move the caret in their own effects,
+ * so a surface added here does not have its keyboard follow by itself.
  *
  * Every box that can take text is one of these, and `editors.test.ts` sweeps the
  * tree for one that forgot to say so.
