@@ -14,7 +14,7 @@
  * CLI's own answer, which is what typing the name draws now.
  */
 
-/** One command forge handles itself: the name as it is typed, and what it does. */
+/** One command in the catalogue: the name as it is typed, and what it does. */
 export interface ForgeCommand {
   name: string;
   description: string;
