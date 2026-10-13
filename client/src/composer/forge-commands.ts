@@ -12,6 +12,8 @@
  * for the same name: forge handles those itself rather than forwarding them.
  */
 
+import type { Route } from '../routes';
+
 /** One command forge handles itself: the name as it is typed, and what it does. */
 export interface ForgeCommand {
   name: string;
@@ -37,4 +39,24 @@ export const FORGE_COMMANDS: ForgeCommand[] = [
 /** Whether forge handles `name` itself, so one command is not drawn twice. */
 export function isForgeCommand(name: string): boolean {
   return FORGE_COMMANDS.some((command) => command.name === name);
+}
+
+/**
+ * What a typed forge command does in THIS view, before anything is sent:
+ * the route it opens here, or the line it answers a wrong invocation with.
+ *
+ * The terminal's own submit path is the reference
+ * (`crates/forge-tui/src/app/slash/executors.rs`): a name that is a page
+ * there is a route here, and a name invoked with arguments it does not take
+ * is answered with its usage line rather than reaching the model as prose.
+ * A name this table does not answer - `/new`, `/model`, and the rest of the
+ * core's - returns `null` and crosses the wire as it always did.
+ */
+export type CommandMove = { kind: 'route'; route: Route } | { kind: 'line'; text: string };
+
+export function routeForCommand(text: string): CommandMove | null {
+  const [name = '', ...args] = text.trim().split(/\s+/);
+  if (name !== '/usage') return null;
+  if (args.length > 0) return { kind: 'line', text: 'Usage: /usage' };
+  return { kind: 'route', route: { name: 'usage' } };
 }

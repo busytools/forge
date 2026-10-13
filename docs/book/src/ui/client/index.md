@@ -21,6 +21,7 @@ place.
 | Dictation models | [dictate-models.md](./dictate-models.md) | `web-dictate-models.html` |
 | Extensions | [extensions.md](./extensions.md) | `web-extensions.html` |
 | A document | [document.md](./document.md) | `web-document.html` |
+| Usage | (page pending) | (drawing pending) |
 | The queue pile | (session page pending) | `web-queue.html` |
 
 The session page, the chat and the composer are built; their drawings are
@@ -29,6 +30,11 @@ sections and the client's plan owns four of them: the fifth is the
 composer's blocking states, and the sixth - the diff review overlay it
 named - landed as a route of its own, [review.md](./review.md), which draws
 the rounds, the diff its threads are anchored to, and the writing.
+
+The usage page (`/usage`) is built, and its page and drawing are still to
+land: it reads the report the terminal's overlay draws (`ui/usage.md`) -
+the same four windows, the two groupings and the notional caption, figure
+for figure - and the look is deferred, so the row here arrives with it.
 
 `web-queue.html` is the queued-prompt pile that draws above the composer:
 the variants it can be in, and the wire's own lifecycle it follows. It
