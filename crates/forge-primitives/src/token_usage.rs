@@ -1,4 +1,4 @@
-//! Token/cost accounting shapes for the `/usage` view.
+//! Token/cost accounting shapes for the `usage` subject.
 //!
 //! Distinct from [`crate::usage`] (Anthropic plan/subscription
 //! utilization): these describe per-model and per-project token counts
@@ -54,7 +54,7 @@ pub struct WindowUsage {
     pub total: UsageRow,
 }
 
-/// The four rolling windows the `/usage` overlay renders. `lifetime` is
+/// The four rolling windows the `/usage` overlay drew. `lifetime` is
 /// a static sum; the other three are recomputed relative to now.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct UsageReport {

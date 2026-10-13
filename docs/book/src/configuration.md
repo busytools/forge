@@ -692,7 +692,7 @@ subscriptions and the sweep watermarks beside them, the session
 identity per project and label - the lead's and every worker's, which is
 what brings a worker back after a restart - review
 threads, the
-per-account usage cache, cached model pricing, and the `/usage` view's
+per-account usage cache, cached model pricing, and the usage scan's
 per-file token summaries.
 
 Dictation keeps four things outside the database, all machine-local

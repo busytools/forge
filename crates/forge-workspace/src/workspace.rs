@@ -6600,7 +6600,7 @@ impl Workspace {
     }
 
     /// Scan the shared session-JSONL pool into a `UsageReport` for the
-    /// `/usage` overlay. Query-style (a direct method, not a Command):
+    /// `usage` subject. Query-style (a direct method, not a Command):
     /// reads the one real `projects` dir, refreshes the incremental
     /// per-file cache, and rolls the deduped summaries up into the four
     /// windows priced from the bundled table. Does blocking file IO, so
@@ -6744,8 +6744,8 @@ impl Workspace {
     }
 
     /// The cached pricing, or an empty table before the first fetch
-    /// lands (the first `/usage` open renders tokens with a blank cost
-    /// until then).
+    /// lands (a scan answered in the meantime reports tokens with a blank
+    /// cost).
     fn load_pricing(&self) -> forge_agent::env::token_usage::pricing::PricingTable {
         use forge_agent::env::token_usage::pricing::PricingTable;
         let json = self.load_cached_pricing().map(|cached| cached.json);
