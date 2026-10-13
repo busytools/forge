@@ -1400,6 +1400,45 @@ describe('the key', () => {
   });
 
   /**
+   * The press writes no line into the composer.
+   *
+   * Ved, in the #2159 look: "the layout of the composer shifts up and down
+   * ... the text comes in between". The open is the band's own state now - a
+   * colour that breathes, and a status line for a screen reader - so pressing
+   * the key adds no row and moves nothing.
+   */
+  it('opens the take on the band, with no line added to the composer', async () => {
+    mic.held.gated = true;
+    try {
+      const harness = open({ dictation: true });
+      harness.page.record = bound('right_cmd', 'auto');
+      flushSync();
+      expect(document.querySelector('.comp .box > .notice'), 'nothing is said yet').toBeNull();
+
+      key('ControlRight', 'keydown');
+      flushSync();
+      expect(
+        document.querySelector('.comp .surf')?.classList.contains('load'),
+        'the band says it is opening',
+      ).toBe(true);
+      expect(document.querySelector('.comp .sr')?.textContent, 'and a screen reader hears it').toBe(
+        'opening the microphone',
+      );
+      expect(document.querySelector('.comp .box > .notice'), 'and no line is added').toBeNull();
+
+      mic.held.release?.();
+      await opened();
+      expect(
+        document.querySelector('.comp .box > .notice'),
+        'and none once the open is over either',
+      ).toBeNull();
+    } finally {
+      mic.held.gated = false;
+      mic.held.release = null;
+    }
+  });
+
+  /**
    * The card's counts move, rather than freezing at their first draw.
    *
    * The card draws them from the ring's own signals, so frames pushed while

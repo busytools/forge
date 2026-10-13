@@ -142,9 +142,6 @@
    * the keyboard until there is a take for the row to draw.
    */
   type RowPhase = 'ready' | 'recording' | 'transcribing';
-
-  /** The line a press leaves while its capture is being opened. */
-  const OPENING = 'opening the microphone\u{2026}';
   /**
    * The counts of the take this page last finished, kept while the record
    * still shows it transcribing.
@@ -156,8 +153,13 @@
   let wireDone = $state<{ seat: string; frames: number; bytes: number; elapsedMs: number } | null>(
     null,
   );
-  /** Whether a start is waiting on the browser's permission round trip. */
-  let opening = false;
+  /**
+   * Whether a start is waiting on its capture's open.
+   *
+   * State rather than a plain flag: the band draws from it - the open is the
+   * band's own state, with no line added to the composer (#2159's look).
+   */
+  let opening = $state(false);
   /**
    * A release or a cancel that landed while the microphone was still
    * opening, applied the moment the take exists.
@@ -264,6 +266,12 @@
    */
   const ring = $derived.by(() => {
     if (composer.take !== null) return composer.take.phase === 'recording' ? 'rec' : 'tr';
+    // The capture being opened, before there is a take to record: the band
+    // says "working" without claiming to hear anything. On the desktop's
+    // native capture it is over in tens of milliseconds; in a browser it is
+    // the permission round trip and the audio graph's own start, which is
+    // long enough to watch.
+    if (opening) return 'load';
     return beat ? 'done' : null;
   });
 
@@ -821,11 +829,12 @@
     }
     const at = boxKey(untrack(() => slot));
     const target = boxes.of(at);
-    // **The open names itself while it runs.** A device takes time to start
-    // producing - the browser's pipeline, the device's own wake - and the
-    // press lands here before any of that; the line says so rather than
-    // letting the row claim a take that is not recording yet (#2159).
-    target.dictateLine = { tone: '', text: OPENING };
+    target.dictateLine = null;
+    // **The open does not name itself in a line.** A line that comes with the
+    // press moves the composer under the reader's hands (Ved, in the #2159
+    // look: "the layout of the composer shifts up and down"), so the open is
+    // the band's own state instead - and on the desktop's native capture it
+    // is over before a line could be read.
     // A gesture from an earlier attempt has nothing to stop.
     pending = null;
     opening = true;
@@ -1145,8 +1154,15 @@
     class:rec={ring === 'rec'}
     class:tr={ring === 'tr'}
     class:done={ring === 'done'}
+    class:load={ring === 'load'}
     class:err={blocker !== null && blocker.bad}
   >
+    <!-- The open, said on the band rather than in a line: a line that comes
+         with it moves the composer (Ved, in the #2159 look), and the band is
+         what carries the state anyway. One status per state, not per frame. -->
+    {#if ring === 'load'}
+      <span class="sr" role="status">opening the microphone</span>
+    {/if}
     <Pinned info={pinnedRow.of(seatKey)} {connection} {slot} />
     {#if blocker !== null}
       <div class="box">

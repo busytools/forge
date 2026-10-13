@@ -2119,6 +2119,21 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
 .surf.done { border-color: var(--ok); }
 .surf.err { border-color: var(--bad); }
 .surf:focus-within:not(.rec, .tr, .done, .err) { border-color: var(--accent); }
+/* The capture being opened. The band breathes rather than naming itself in a
+   line: a line that appears with the open moves the composer, and this state
+   is where the state belongs anyway (Ved, in the #2159 look). The pair of
+   colours is the rest border and the accent, so the resting band and the
+   working one are one family. */
+.surf.load { border-color: var(--ctl); animation: surf-open 1.2s ease-in-out infinite; }
+@keyframes surf-open {
+  0%, 100% { border-color: var(--ctl); }
+  50% { border-color: var(--accent); }
+}
+/* Colour and motion are both decoration here: the state is also announced in
+   words, and a reader who has asked for less motion gets the colour alone. */
+@media (prefers-reduced-motion: reduce) {
+  .surf.load { animation: none; border-color: var(--accent); }
+}
 .hint { font-size: var(--fs-base); padding-left: 4px; }
 .hint.login { color: var(--warn); }
 .hint.login .sub { color: var(--dim); display: block; font-size: var(--fs-data); }
@@ -2315,6 +2330,10 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
    reason. */
 .comp .notice { font-family: var(--mono); font-size: var(--fs-data);
   padding: 0; margin: 0; border-radius: 0; white-space: normal; }
+/* The band's own words, for a reader who is not looking at it: the open is
+   drawn as the band's colour and motion, and this is the state said plainly. */
+.comp .sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+  overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 .comp .notice.q { color: var(--dim); }
 .comp .notice.bad { color: var(--bad); }
 /* The drawing's warn row is its colour and nothing else. */
