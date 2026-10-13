@@ -14,7 +14,7 @@ import type { TaskStripRow } from '../session/view';
 /** How long a changed row stays lit: the reveal flash's own beat. */
 const LIT_MS = 6000;
 
-export class Tasks {
+class Tasks {
   #rows = $state<TaskStripRow[]>([]);
   #lit = new SvelteSet<string>();
   #timers = new SvelteMap<string, ReturnType<typeof setTimeout>>();

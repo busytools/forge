@@ -232,7 +232,7 @@ export interface Blocker {
 }
 
 /** The line the box's own key hints draw, where the mockup draws them. */
-export const SIGN_IN_FALLBACK = 'Run `claude auth login` in another terminal to authenticate';
+const SIGN_IN_FALLBACK = 'Run `claude auth login` in another terminal to authenticate';
 
 /** A blocked state draws no ring, and one that reports a failure draws none either. */
 const STOPPED: Pick<Blocker, 'bad' | 'waiting' | 'shimmer'> = {

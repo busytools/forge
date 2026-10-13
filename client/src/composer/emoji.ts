@@ -26,12 +26,12 @@ export interface Emoji {
 export const MIN_QUERY_CHARS = 2;
 
 /** Whether `char` can appear in a shortcode: GitHub's own set is `[a-z0-9_+-]`. */
-export function isShortcodeChar(char: string): boolean {
+function isShortcodeChar(char: string): boolean {
   return /^[a-z0-9_+-]$/.test(char);
 }
 
 /** Every shortcode forge knows, sorted by name. */
-export const TABLE: Emoji[] = [
+const TABLE: Emoji[] = [
   { name: '+1', glyph: '\u{1F44D}' },
   { name: '-1', glyph: '\u{1F44E}' },
   { name: '100', glyph: '\u{1F4AF}' },

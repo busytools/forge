@@ -167,7 +167,7 @@ function countsLine(entry: PluginComponents): string {
 }
 
 /** Whether the marketplace reports a version this install is not on. */
-export function isStale(entry: PluginComponents): boolean {
+function isStale(entry: PluginComponents): boolean {
   return (
     entry.installed &&
     entry.enabled &&

@@ -291,7 +291,7 @@ export interface ComparisonRow {
  * recommendation that hid the licence would be asking the reader to
  * discover it after the download.
  */
-export function verdictWord(verdict: UpdateVerdict): string {
+function verdictWord(verdict: UpdateVerdict): string {
   switch (verdict) {
     case 'recommended':
       return 'recommended';
@@ -677,7 +677,7 @@ export function benchTargets(
  * not offered as a role's model at all, because a guessed role is a model
  * running in the wrong slot.
  */
-export function recordKind(record: InstalledModel): Exclude<CatalogueKind, 'other'> | null {
+function recordKind(record: InstalledModel): Exclude<CatalogueKind, 'other'> | null {
   if (record.facts.runtime === 'llama.cpp') return 'normalizer';
   if (record.facts.runtime === 'transcribe.cpp') return 'asr';
   return null;
@@ -721,7 +721,7 @@ export interface SweepPlan {
 /** How many cleanup candidates a press takes. Downloads is the only pre-run
  * signal a normalizer has, so the depth is by popularity, and the verdict
  * says what it left out. */
-export const SWEEP_DEPTH = 3;
+const SWEEP_DEPTH = 3;
 
 /**
  * The runs one press makes: the transcribing side's own pick, the cleanup
@@ -1165,7 +1165,7 @@ export function recordingLength(recording: ReadAloudRecording): string {
  * two recordings of the passage are a minute apart at most and the row is
  * what tells one from the other.
  */
-export function recordingWhen(recording: ReadAloudRecording): string | null {
+function recordingWhen(recording: ReadAloudRecording): string | null {
   const at = new Date(recording.at);
   if (Number.isNaN(at.getTime())) return null;
   const two = (part: number) => String(part).padStart(2, '0');

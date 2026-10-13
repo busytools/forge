@@ -8,7 +8,7 @@
  */
 import type { SeatScheduleRow } from '../session/view';
 
-export class Schedules {
+class Schedules {
   #rows = $state<SeatScheduleRow[]>([]);
 
   /** Take the project's rows whole: what the home says is what a row reads. */

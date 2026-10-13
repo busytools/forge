@@ -1534,7 +1534,7 @@ export function mcpState(server: McpServer): string {
 }
 
 /** How many tools a server offers, counted so that one reads as one. */
-export function toolSummary(count: number): string {
+function toolSummary(count: number): string {
   if (count === 0) return 'no tools';
   return count === 1 ? '1 tool' : `${count} tools`;
 }

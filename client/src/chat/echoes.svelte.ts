@@ -52,7 +52,7 @@ export type Echo =
   | { state: 'failed'; words: string; why: string; id: string };
 
 /** A send the core's copy of has arrived leaves nothing behind, which is a delete rather than a fourth state. */
-export class Echoes {
+class Echoes {
   #held = new SvelteMap<string, Echo>();
 
   /** What this seat is waiting on, or `undefined` when it is waiting on nothing. */

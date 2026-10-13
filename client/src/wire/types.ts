@@ -80,8 +80,6 @@ export const THEME_NAMES = ['dark'] as const;
 
 export type ThemeName = (typeof THEME_NAMES)[number];
 
-export const DEFAULT_THEME: ThemeName = 'dark';
-
 /** The typeface sets `[client] font` accepts, from `forge_primitives::client::FONT_NAMES`. */
 export const FONT_NAMES = ['system'] as const;
 

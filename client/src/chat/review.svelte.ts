@@ -8,7 +8,7 @@
  */
 import type { ReviewStripRow } from '../session/view';
 
-export class Reviews {
+class Reviews {
   #rows = $state<ReviewStripRow[] | null>(null);
 
   /** Take the record's read whole: what the wire says is what the row shows. */

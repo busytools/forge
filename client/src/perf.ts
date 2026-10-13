@@ -34,7 +34,7 @@ const SCHEMA = 'forge-perf/v1';
  * replaced used, kept because the lattice it was chosen against - what a
  * person notices, what a 60 Hz display budgets - has not moved.
  */
-export const SLOW_FRAME_MS = 50;
+const SLOW_FRAME_MS = 50;
 
 /** How often a window's cadence is summarised, the same cadence the view this
  *  client replaced used. */

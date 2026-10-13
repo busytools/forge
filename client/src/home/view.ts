@@ -498,7 +498,7 @@ export function ageOf(row: Pick<FleetViewRow, 'lastActivity' | 'seats'>, now: nu
 }
 
 /** The band's own cards, each quiet until its own state says otherwise. */
-export function band(wire: HomeWire, address: string): BandCard[] {
+function band(wire: HomeWire, address: string): BandCard[] {
   const gateway = wire.accounts.gateway;
   const gatewayCard: BandCard = gateway.bind_error
     ? {

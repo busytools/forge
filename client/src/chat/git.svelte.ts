@@ -11,7 +11,7 @@ import type { GitStats, GitStrip } from '../session/view';
 const statsOf = (stats: GitStats | null): GitStats | null =>
   stats === null ? null : { ...stats, files: [...stats.files] };
 
-export class Git {
+class Git {
   #strip = $state<GitStrip | null>(null);
 
   /** Take the record's read whole: what the wire says is what the row shows. */

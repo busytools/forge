@@ -34,10 +34,6 @@ export function clear(): void {
   called.length = 0;
 }
 
-export function countOf(name: string): number {
-  return called.filter((call) => call.name === name).length;
-}
-
 /** The names called, with their call counts, in first-call order. */
 export function tally(): { name: string; calls: number }[] {
   const order: string[] = [];

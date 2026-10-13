@@ -268,7 +268,7 @@ const BROWSER_IMAGE_TAG = 1;
  * frame with the answer that declared the image, so two asks in flight at
  * once cannot be handed each other's picture.
  */
-export function imageFrame(id: number, bytes: Uint8Array): Uint8Array {
+function imageFrame(id: number, bytes: Uint8Array): Uint8Array {
   const frame = new Uint8Array(1 + 8 + bytes.length);
   frame[0] = BROWSER_IMAGE_TAG;
   new DataView(frame.buffer).setBigUint64(1, BigInt(id));

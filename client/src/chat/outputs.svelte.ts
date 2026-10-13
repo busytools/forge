@@ -25,7 +25,7 @@ interface Held {
 }
 
 /** One per client, as the seat records are: an answer outlives the row drawing it. */
-export class Outputs {
+class Outputs {
   #held = new SvelteMap<string, Held>();
 
   /** What the read for `callId` answered, or `undefined` while none has. */
