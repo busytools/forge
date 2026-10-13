@@ -223,20 +223,50 @@
   /**
    * What the ring is doing: one state rather than three that can overlap.
    *
-   * A live take owns the ring, and the landed beat reaches it only when no take
-   * does.
+   * **This page's own take first.** A record still showing the PREVIOUS take
+   * transcribing outlives it - it is the record's, not this page's - so on the
+   * next press it would paint the new take's first moment blue and then snap
+   * to orange, which is the glitch Ved named in the look ("the color changes,
+   * and then goes back to orange"). A take this page holds, or one it is
+   * opening, is what the band is about; another view's take is what the record
+   * has. The landed beat reaches it only when no take does.
    */
   const ring = $derived.by(() => {
-    if (composer.take !== null) return composer.take.phase === 'recording' ? 'rec' : 'tr';
     // The capture being opened, before there is a take to record: the band
     // says "working" without claiming to hear anything, and without writing a
     // line into the composer - a line that came with the press moved the
-    // composer under the reader's hands (Ved, in the #2159 look). On the
-    // desktop's native capture it is over in tens of milliseconds; in a
-    // browser it is the permission round trip and the audio graph's own
-    // start, which is long enough to watch.
-    if (dictate.opening) return 'load';
+    // composer under the reader's hands (Ved, in the #2159 look).
+    if (openingShown) return 'load';
+    if (dictate.take !== null) return 'rec';
+    if (composer.take !== null) return composer.take.phase === 'recording' ? 'rec' : 'tr';
     return beat ? 'done' : null;
+  });
+
+  /**
+   * Whether the open has lasted long enough to draw on the band.
+   *
+   * **The delay is the point.** An open that lands inside it is not a state,
+   * it is the press itself: the desktop's native capture is tens of
+   * milliseconds, so drawing its breath made the band flash between colours
+   * on every press - Ved, in the look: "the color changes, and then goes back
+   * to orange in a glitch like that", and "if we are running it on the Rust
+   * side ... I should not rightly be seeing any at all". A browser's open is
+   * the permission round trip and the audio graph's start, which outlasts it
+   * and is what the state is for.
+   */
+  const OPEN_DRAWN_MS = 180;
+  let openingShown = $state(false);
+  $effect(() => {
+    if (!dictate.opening) {
+      openingShown = false;
+      return;
+    }
+    const at = setTimeout(() => {
+      openingShown = true;
+    }, OPEN_DRAWN_MS);
+    return () => {
+      clearTimeout(at);
+    };
   });
 
   /**

@@ -1328,15 +1328,17 @@ describe('the key', () => {
 
       key('ControlRight', 'keydown');
       flushSync();
-      expect(drawn(), 'the press says what it is waiting on').toContain('opening the microphone');
       expect(
         document.querySelector('.tc'),
-        'and no row claims a take that does not exist yet',
+        'no row claims a take that does not exist yet',
+      ).toBeNull();
+      expect(
+        document.querySelector('.comp .box > .notice'),
+        'and the press writes no line into the composer',
       ).toBeNull();
 
       mic.held.release?.();
       await opened();
-      expect(drawn(), 'the open is over').not.toContain('opening the microphone');
       expect(drawn(), 'the capture is open, and nothing has arrived yet').toContain('ready');
       expect(document.querySelector('.tc'), 'the row is up once there is a take').not.toBeNull();
 
@@ -1408,9 +1410,10 @@ describe('the key', () => {
    * colour that breathes, and a status line for a screen reader - so pressing
    * the key adds no row and moves nothing.
    */
-  it('opens the take on the band, with no line added to the composer', async () => {
+  it('draws the open on the band only once it takes a moment', async () => {
     mic.held.gated = true;
     try {
+      vi.useFakeTimers();
       const harness = open({ dictation: true });
       harness.page.record = bound('right_cmd', 'auto');
       flushSync();
@@ -1420,7 +1423,16 @@ describe('the key', () => {
       flushSync();
       expect(
         document.querySelector('.comp .surf')?.classList.contains('load'),
-        'the band says it is opening',
+        'a press alone draws nothing: the desktop open is tens of milliseconds',
+      ).toBe(false);
+
+      // An open that outlasts the delay is a state worth drawing: a browser's
+      // is the permission round trip and the audio graph's start.
+      vi.advanceTimersByTime(500);
+      flushSync();
+      expect(
+        document.querySelector('.comp .surf')?.classList.contains('load'),
+        'an open that takes a moment says so on the band',
       ).toBe(true);
       expect(document.querySelector('.comp .sr')?.textContent, 'and a screen reader hears it').toBe(
         'opening the microphone',
@@ -1436,7 +1448,38 @@ describe('the key', () => {
     } finally {
       mic.held.gated = false;
       mic.held.release = null;
+      vi.useRealTimers();
     }
+  });
+
+  /**
+   * A record still transcribing is not what the band is about once this page
+   * holds a take of its own.
+   *
+   * The record keeps the last take through its transcription, so it can still
+   * be showing one while this page's next take is live - and the band must
+   * follow this page's own take rather than the one the record is finishing
+   * (Ved, in the look: "the color changes, and then goes back to orange").
+   */
+  it("keeps the band on this page's take while the record shows a transcribing one", async () => {
+    const harness = open({ dictation: true });
+    harness.page.record = bound('right_cmd', 'auto');
+    flushSync();
+
+    key('ControlRight', 'keydown');
+    await opened();
+
+    // The record now carries the previous take, still transcribing.
+    harness.page.record = bound(
+      'right_cmd',
+      'auto',
+      take({ phase: 'transcribing', progress: [1, 4] }),
+    );
+    flushSync();
+
+    const surf = () => document.querySelector('.comp .surf');
+    expect(surf()?.classList.contains('tr'), "the record's transcribing must not win").toBe(false);
+    expect(surf()?.classList.contains('rec'), "the band is this page's own take").toBe(true);
   });
 
   /**
