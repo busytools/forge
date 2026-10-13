@@ -42,11 +42,6 @@ describe('the URLs the server serves', () => {
     expect(parseRoute(hrefFor({ name: 'extensions' }))).toEqual({ name: 'extensions' });
   });
 
-  it('resolves the usage page and round-trips it', () => {
-    expect(parseRoute('/usage')).toEqual({ name: 'usage' });
-    expect(parseRoute(hrefFor({ name: 'usage' }))).toEqual({ name: 'usage' });
-  });
-
   it('resolves a seat review as a sub-path of the seat and round-trips it', () => {
     // The plausible regression is the bare four-segment path swallowing the
     // fifth: `/session/o/p/l/review` parsing as a label called `l` with a
@@ -119,9 +114,6 @@ describe("the tab's title", () => {
     );
     expect(titleFor({ name: 'extensions' }), 'and the extensions page names itself').toBe(
       'forge \u{b7} extensions',
-    );
-    expect(titleFor({ name: 'usage' }), 'the usage page names itself too').toBe(
-      'forge \u{b7} usage',
     );
     expect(
       titleFor({ name: 'session', slot: { org: 'Busytools', project: 'core-v1', label: 'lead' } }),

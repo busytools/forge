@@ -8,6 +8,10 @@
 //! `/launchpad`) went with it rather than being ported: a name advertised
 //! here and answered nowhere is worse than an absent one, because typing
 //! it reaches the model as prose. Their filed issues are the later menu.
+//!
+//! **`/usage` describes the CLI's own answer.** The name is a CLI builtin,
+//! and the client's page that answered it is gone, so the line must state
+//! what typing it draws rather than that page's report.
 
 /// One command forge handles itself: the name as it is typed, and what it
 /// does.
@@ -26,7 +30,7 @@ pub const FORGE_COMMANDS: &[ForgeCommand] = &[
     ForgeCommand { name: "/model", description: "Show / set session model" },
     ForgeCommand { name: "/new", description: "Start a fresh session" },
     ForgeCommand { name: "/resume", description: "Resume a session by ID" },
-    ForgeCommand { name: "/usage", description: "Token/cost usage by project or model" },
+    ForgeCommand { name: "/usage", description: "Show session cost and plan usage" },
 ];
 
 /// Whether forge handles `name` itself. A view rendering the CLI's own
