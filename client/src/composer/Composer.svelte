@@ -30,7 +30,7 @@
   } from './dictate-key';
   import { axesFor, deviceFor, rememberAxes, rememberDevice } from './dictation';
   import { focusOf, type Where } from './editors';
-import { Dictation } from './dictate.svelte';
+  import { Dictation } from './dictate.svelte';
   import { FORGE_COMMANDS } from './forge-commands';
   import {
     blocked,
@@ -768,9 +768,9 @@ import { Dictation } from './dictate.svelte';
 
   /**
    * What the bound key asks for, with the one thing that is this box's own:
-   * **the keyboard comes to the box before the take starts** (#1669): the
-   * shortcut is how a reader begins without the mouse, so the transcript
-   * lands where their keys already are.
+   * **the keyboard comes to the box before the take starts**: the shortcut is
+   * how a reader begins without the mouse, so the transcript lands where
+   * their keys already are.
    *
    * The guard is insurance rather than a live condition: while a prompt has
    * the slot the composer's field is morphed away, so there is no element to

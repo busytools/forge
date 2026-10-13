@@ -16,9 +16,8 @@
    * written back to it, which is what the take the page starts reads at its
    * press.
    */
-  import type { TakeLine } from '../composer/dictate.svelte';
-  import type { Dictation } from '../composer/dictate.svelte';
   import { boxKey } from '../composer/box.svelte';
+  import type { Dictation, TakeLine } from '../composer/dictate.svelte';
   import DictateControl from '../composer/DictateControl.svelte';
   import DictationPanel from '../composer/DictationPanel.svelte';
   import Field from '../composer/Field.svelte';
