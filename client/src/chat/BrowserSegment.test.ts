@@ -6,6 +6,7 @@ import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
 import {
   browserUsed,
+  canHost,
   closeProfile,
   deleteProfile,
   hideBrowser,
@@ -16,6 +17,7 @@ import {
 import BrowserSegment from './BrowserSegment.svelte';
 
 afterEach(() => {
+  vi.mocked(canHost).mockReturnValue(true);
   vi.mocked(showBrowser).mockClear();
   vi.mocked(hideBrowser).mockClear();
   vi.mocked(profileWindowed).mockClear();
@@ -35,7 +37,7 @@ vi.mock('../browser/host', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../browser/host')>();
   return {
     ...actual,
-    canHost: () => true,
+    canHost: vi.fn(() => true),
     listProfiles: vi.fn(() => Promise.resolve([])),
     closeProfile: vi.fn(() => Promise.resolve(undefined)),
     deleteProfile: vi.fn(() => Promise.resolve(undefined)),
@@ -83,14 +85,14 @@ function fakeConnection(hosting = false) {
   };
 }
 
-/** The segment, mounted with whatever role, capability and slot the test names. */
-function show(hosting = false, capable = true, slot: SessionSlot | null = null) {
+/** The segment, mounted with whatever role and slot the test names. */
+function show(hosting = false, slot: SessionSlot | null = null) {
   const harness = fakeConnection(hosting);
   const target = document.createElement('div');
   document.body.append(target);
   const app = mount(BrowserSegment, {
     target,
-    props: { connection: harness.connection, capable, slot },
+    props: { connection: harness.connection, slot },
   });
   flushSync();
   return { ...harness, target, stop: () => void unmount(app) };
@@ -162,7 +164,7 @@ describe('the browser segment', () => {
   it('waits on the count and the list until a read has answered', () => {
     // A read that has not answered: neither surface may claim a state.
     vi.mocked(listProfiles).mockImplementation(() => new Promise<never>(() => undefined));
-    const shown = show(false, true);
+    const shown = show(false);
     click(shown.target.querySelector('.bz-tog'));
 
     expect(
@@ -183,7 +185,7 @@ describe('the browser segment', () => {
   /** Ved, live round 2026-10-07: the row should say whether the browser has
    *  been actively used - a flat disc beside the glyph when it has. */
   it('marks the row once the browser has been used, and not before', async () => {
-    const resting = show(false, true);
+    const resting = show(false);
     await vi.waitFor(() => expect(browserUsed).toHaveBeenCalled());
     expect(
       resting.target.querySelector('.bz-tog .dot.idle'),
@@ -192,7 +194,7 @@ describe('the browser segment', () => {
     resting.stop();
 
     vi.mocked(browserUsed).mockResolvedValueOnce(true);
-    const used = show(false, true);
+    const used = show(false);
     await vi.waitFor(() => {
       expect(
         used.target.querySelector('.bz-tog .dot.idle'),
@@ -206,7 +208,7 @@ describe('the browser segment', () => {
   /** Ved, live round 2026-10-07: hovering the row must offer the way to SEE
    *  the browser - the real window, with no session answering anything. */
   it('raises the browser window from the shared row', () => {
-    const shown = show(false, true);
+    const shown = show(false);
     click(shown.target.querySelector('.bz-tog'));
 
     const door = list(shown.target)?.querySelector('.bz-show');
@@ -221,7 +223,7 @@ describe('the browser segment', () => {
    *  its back, and a re-read left on `lowered` alone kept the row saying
    *  "hide" over a window already down. Every bar word re-reads. */
   it("re-reads the shared row on the takeover bar's own words", async () => {
-    const shown = show(false, true);
+    const shown = show(false);
     await vi.waitFor(() => expect(profileWindowed).toHaveBeenCalledTimes(1));
     const before = vi.mocked(profileWindowed).mock.calls.length;
 
@@ -257,7 +259,7 @@ describe('the browser segment', () => {
 
   it("keeps the panel and says the shell's own reason when the window cannot open", async () => {
     vi.mocked(showBrowser).mockResolvedValueOnce('no browser to drive: install Brave');
-    const shown = show(false, true);
+    const shown = show(false);
     click(shown.target.querySelector('.bz-tog'));
     click(list(shown.target)?.querySelector('.bz-show'));
 
@@ -269,7 +271,7 @@ describe('the browser segment', () => {
   });
 
   it('says the read failed rather than claiming there are no profiles', async () => {
-    const shown = show(false, true);
+    const shown = show(false);
     await vi.waitFor(() => expect(listProfiles).toHaveBeenCalledTimes(1));
     vi.mocked(listProfiles).mockRejectedValueOnce('the profile list would not read');
 
@@ -289,7 +291,7 @@ describe('the browser segment', () => {
     vi.mocked(listProfiles).mockResolvedValue([
       { name: 'hunt', owner: 'Busytools/forge/lead', running: true, opened: true, windowed: false },
     ]);
-    const shown = show(false, true);
+    const shown = show(false);
     click(shown.target.querySelector('.bz-tog'));
     await vi.waitFor(() => expect(shownText(shown.target)).toContain('hunt'));
     // **One is singular.** The count arm has a `=== 1 ? '' : 's'` that
@@ -319,7 +321,7 @@ describe('the browser segment', () => {
     vi.mocked(listProfiles).mockResolvedValue([
       { name: 'hunt', owner: 'Busytools/forge/lead', running: true, opened: true, windowed: false },
     ]);
-    const shown = show(false, true);
+    const shown = show(false);
     click(shown.target.querySelector('.bz-tog'));
     await vi.waitFor(() => expect(shownText(shown.target)).toContain('hunt'));
 
@@ -361,7 +363,7 @@ describe('the browser segment', () => {
           gate.finish = resolve;
         }),
     );
-    const shown = show(false, true);
+    const shown = show(false);
     click(shown.target.querySelector('.bz-tog'));
     await vi.waitFor(() => expect(shownText(shown.target)).toContain('hunt'));
 
@@ -393,7 +395,7 @@ describe('the browser segment', () => {
     vi.mocked(listProfiles).mockResolvedValue([
       { name: 'hunt', owner: 'Busytools/forge/lead', running: true, opened: true, windowed: false },
     ]);
-    const shown = show(false, true);
+    const shown = show(false);
     click(shown.target.querySelector('.bz-tog'));
     await vi.waitFor(() => expect(shownText(shown.target)).toContain('hunt'));
 
@@ -434,7 +436,7 @@ describe('the browser segment', () => {
     vi.mocked(listProfiles).mockResolvedValue([
       { name: 'hunt', owner: 'Busytools/forge/lead', running: true, opened: true, windowed: false },
     ]);
-    const shown = show(false, true);
+    const shown = show(false);
     click(shown.target.querySelector('.bz-tog'));
     await vi.waitFor(() => expect(shownText(shown.target)).toContain('hunt'));
 
@@ -460,7 +462,7 @@ describe('the browser segment', () => {
     vi.mocked(listProfiles).mockResolvedValue([
       { name: 'hunt', owner: 'Busytools/forge/lead', running: true, opened: true, windowed: false },
     ]);
-    const shown = show(false, true);
+    const shown = show(false);
     click(shown.target.querySelector('.bz-tog'));
     await vi.waitFor(() => expect(shownText(shown.target)).toContain('hunt'));
 
@@ -483,7 +485,7 @@ describe('the browser segment', () => {
     vi.mocked(listProfiles).mockResolvedValue([
       { name: 'hunt', owner: 'Busytools/forge/lead', running: true, opened: true, windowed: false },
     ]);
-    const shown = show(false, true);
+    const shown = show(false);
     await vi.waitFor(() => expect(shownText(shown.target)).toContain('1 profile'));
 
     // A seat despawned in the core and the shell swept; the notice is the
@@ -503,7 +505,7 @@ describe('the browser segment', () => {
       { name: 'hunt', owner: 'Busytools/forge/lead', running: true, opened: true, windowed: false },
     ]);
     vi.mocked(deleteProfile).mockRejectedValueOnce('no profile named hunt on this client');
-    const shown = show(false, true);
+    const shown = show(false);
     click(shown.target.querySelector('.bz-tog'));
     await vi.waitFor(() => expect(shownText(shown.target)).toContain('hunt'));
 
@@ -534,7 +536,7 @@ describe('the browser segment', () => {
           gates[name] = resolve;
         }),
     );
-    const shown = show(false, true);
+    const shown = show(false);
     click(shown.target.querySelector('.bz-tog'));
     await vi.waitFor(() => expect(shownText(shown.target)).toContain('scout'));
 
@@ -593,7 +595,7 @@ describe('the browser segment', () => {
     vi.mocked(listProfiles).mockResolvedValue([
       { name: 'hunt', owner: '', running: false, opened: true, windowed: false },
     ]);
-    const shown = show(false, true, { org: 'Busytools', project: 'forge', label: 'lead' });
+    const shown = show(false, { org: 'Busytools', project: 'forge', label: 'lead' });
     click(shown.target.querySelector('.bz-tog'));
     await vi.waitFor(() => expect(shownText(shown.target)).toContain('hunt'));
 
@@ -615,7 +617,7 @@ describe('the browser segment', () => {
     vi.mocked(listProfiles).mockResolvedValue([
       { name: 'hunt', owner: 'Busytools/forge/lead', running: true, opened: true, windowed: false },
     ]);
-    const shown = show(false, true);
+    const shown = show(false);
     click(shown.target.querySelector('.bz-tog'));
     await vi.waitFor(() => expect(shownText(shown.target)).toContain('hunt'));
 
@@ -636,7 +638,7 @@ describe('the browser segment', () => {
     vi.mocked(listProfiles).mockResolvedValue([
       { name: 'hunt', owner: 'Busytools/forge/lead', running: true, opened: true, windowed: false },
     ]);
-    const shown = show(false, true);
+    const shown = show(false);
     click(shown.target.querySelector('.bz-tog'));
     await vi.waitFor(() => expect(shownText(shown.target)).toContain('hunt'));
 
@@ -662,7 +664,7 @@ describe('the browser segment', () => {
   });
 
   it('opens on hover and closes once the pointer leaves', async () => {
-    const shown = show(false, true);
+    const shown = show(false);
     expect(list(shown.target), 'closed at rest').toBeNull();
 
     toggle(shown.target).dispatchEvent(pointer('pointerenter', 'mouse'));
@@ -677,7 +679,7 @@ describe('the browser segment', () => {
   });
 
   it('reads a tap as open: the synthesised enter must not eat the click', () => {
-    const shown = show(false, true);
+    const shown = show(false);
     // A finger: pointerenter arrives with pointerType touch, then the click.
     toggle(shown.target).dispatchEvent(pointer('pointerenter', 'touch'));
     toggle(shown.target).click();
@@ -692,7 +694,7 @@ describe('the browser segment', () => {
     // first, then the compat mousedown, the focus it causes, and the click.
     // The focus a press puts there must not open the panel for the click to
     // shut - an open the reader never saw.
-    const shown = show(false, true);
+    const shown = show(false);
     window.dispatchEvent(pointer('pointerdown', 'touch'));
     window.dispatchEvent(pointer('pointerup', 'touch'));
     toggle(shown.target).dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
@@ -706,7 +708,7 @@ describe('the browser segment', () => {
   });
 
   it('keeps the panel while the pointer crosses into it', async () => {
-    const shown = show(false, true);
+    const shown = show(false);
     toggle(shown.target).dispatchEvent(pointer('pointerenter', 'mouse'));
     flushSync();
     toggle(shown.target).dispatchEvent(pointer('pointerleave', 'mouse'));
@@ -720,7 +722,7 @@ describe('the browser segment', () => {
   });
 
   it('opens on a keyboard focus', () => {
-    const shown = show(false, true);
+    const shown = show(false);
     toggle(shown.target).dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
     flushSync();
 
@@ -732,7 +734,7 @@ describe('the browser segment', () => {
     // A press on the already-focused toggle: no focusin consumes the press,
     // so the mouseup is what lets go - without it the next Tab would find
     // the door shut.
-    const shown = show(false, true);
+    const shown = show(false);
     toggle(shown.target).dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
     toggle(shown.target).dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
     flushSync();
@@ -744,7 +746,7 @@ describe('the browser segment', () => {
   });
 
   it('keeps the panel while focus crosses into it, and drops it when focus leaves', async () => {
-    const shown = show(false, true);
+    const shown = show(false);
     click(toggle(shown.target));
     const control = list(shown.target)?.querySelector<HTMLButtonElement>('.bz-override') ?? null;
     if (control === null) throw new Error('no control');
@@ -767,7 +769,7 @@ describe('the browser segment', () => {
   });
 
   it('collapses on the toggle, like every sibling row', () => {
-    const shown = show(false, true);
+    const shown = show(false);
     click(toggle(shown.target));
     expect(list(shown.target), 'opened').not.toBeNull();
 
@@ -777,7 +779,7 @@ describe('the browser segment', () => {
   });
 
   it('keeps the panel while a control inside it holds focus', async () => {
-    const shown = show(false, true);
+    const shown = show(false);
     toggle(shown.target).dispatchEvent(pointer('pointerenter', 'mouse'));
     flushSync();
     const control = list(shown.target)?.querySelector<HTMLButtonElement>('.bz-override') ?? null;
@@ -791,7 +793,7 @@ describe('the browser segment', () => {
   });
 
   it('leaves focus on the toggle when Escape closes', () => {
-    const shown = show(false, true);
+    const shown = show(false);
     toggle(shown.target).dispatchEvent(pointer('pointerenter', 'mouse'));
     flushSync();
     const control = list(shown.target)?.querySelector<HTMLButtonElement>('.bz-override') ?? null;
@@ -807,7 +809,7 @@ describe('the browser segment', () => {
   });
 
   it('offers the override only where a click can honestly serve it, and sends it', () => {
-    const shown = show(false, true);
+    const shown = show(false);
     click(shown.target.querySelector('.bz-tog'));
 
     const take = list(shown.target)?.querySelector('.bz-override');
@@ -818,7 +820,8 @@ describe('the browser segment', () => {
   });
 
   it('draws no override where this client cannot drive anything', () => {
-    const shown = show(false, false);
+    vi.mocked(canHost).mockReturnValue(false);
+    const shown = show(false);
     click(shown.target.querySelector('.bz-tog'));
 
     expect(shownText(shown.target)).toContain('browser not connected');
@@ -830,7 +833,7 @@ describe('the browser segment', () => {
   });
 
   it('flips on the role frame: holding it drops the override and says so', () => {
-    const shown = show(false, true);
+    const shown = show(false);
     click(shown.target.querySelector('.bz-tog'));
     expect(list(shown.target)?.querySelector('.bz-override')).not.toBeNull();
 
@@ -868,7 +871,7 @@ describe('the browser segment', () => {
     vi.mocked(listProfiles).mockResolvedValue([
       { name: 'mine', owner: 'Org/proj/me', running: true, opened: true, windowed: false },
     ]);
-    const shown = show(false, true, { org: 'Org', project: 'proj', label: 'me' });
+    const shown = show(false, { org: 'Org', project: 'proj', label: 'me' });
     await vi.waitFor(() => {
       expect(listProfiles, 'the read carries this seat').toHaveBeenCalledWith({
         org: 'Org',
@@ -913,7 +916,7 @@ describe('the browser segment', () => {
         windowed: false,
       },
     ]);
-    const shown = show(false, true);
+    const shown = show(false);
     click(shown.target.querySelector('.bz-tog'));
     await vi.waitFor(() => expect(shownText(shown.target)).toContain('forge-lead'));
 
@@ -954,7 +957,7 @@ describe('the browser segment', () => {
       { name: 'hunt', owner: 'Org/proj/me', running: true, opened: true, windowed: true },
     ]);
     vi.mocked(hideBrowser).mockResolvedValueOnce('no browser profile is open under hunt');
-    const shown = show(false, true, { org: 'Org', project: 'proj', label: 'me' });
+    const shown = show(false, { org: 'Org', project: 'proj', label: 'me' });
     click(shown.target.querySelector('.bz-tog'));
     await vi.waitFor(() => {
       expect(rowButton(shown.target, 'hunt')?.textContent, 'a window up reads hide').toContain(

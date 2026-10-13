@@ -31,7 +31,7 @@ export interface HostReply {
 }
 
 /** How a tool call reaches the shell, injectable so the mapping is testable. */
-export type Invoke = (command: 'browser_call', request: InvokeArgs) => Promise<unknown>;
+type Invoke = (command: 'browser_call', request: InvokeArgs) => Promise<unknown>;
 
 /**
  * Whether this page runs inside the shell that owns a browser host: the

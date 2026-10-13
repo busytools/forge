@@ -327,7 +327,6 @@
     remember: 'composer',
     pending: dockAsk !== null,
     composerPresent: dockAsk === null,
-    connectPresent: false,
     dockPresent: dockOpen,
   } satisfies Where);
 

@@ -48,7 +48,7 @@ export function awaitsReviewer(thread: ReviewThreadRecord): boolean {
 }
 
 /** The loop's state as the page header states it. */
-export interface LoopState {
+interface LoopState {
   waiting: number;
   open: number;
 }
@@ -61,7 +61,7 @@ export function loopState(threads: ReviewThreadRecord[]): LoopState {
 }
 
 /** One round's tally: its member threads, by state. */
-export interface RoundTally {
+interface RoundTally {
   total: number;
   open: number;
   addressed: number;
@@ -157,7 +157,7 @@ export function ageOf(at: string, now: number): string {
 
 /** One canvas placement: the line to draw the thread against, and the
  *  recorded line it moved from when it is not where it was written. */
-export interface Placed {
+interface Placed {
   line: number;
   movedFrom: number | null;
 }

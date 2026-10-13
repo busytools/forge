@@ -37,7 +37,7 @@ export interface ExtensionsPage {
 const NOTHING: ExtensionsPage = { read: null, refused: null };
 
 /** What watching the extensions needs of a socket. */
-export type ExtensionsConnection = Pick<
+type ExtensionsConnection = Pick<
   Connection,
   'subscribe' | 'unsubscribe' | 'onMessage' | 'onStatus' | 'refresh'
 >;

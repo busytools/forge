@@ -8,7 +8,6 @@
  * two ways.
  */
 
-import { duration } from './numbers';
 import type { TurnInfo } from './units';
 
 /**
@@ -61,13 +60,4 @@ export function runningMs(info: TurnInfo, now: number): number {
   const since = info.ended_at_utc === null ? 0 : now - Date.parse(info.ended_at_utc);
   const waited = Number.isFinite(since) && since > 0 ? since : 0;
   return (info.duration_ms ?? 0) + waited;
-}
-
-/**
- * The clock the row leads with: the span an unfinished turn's frames measure,
- * plus the wait since its last one, and a settled turn's own clock.
- */
-export function elapsed(info: TurnInfo, now: number): string {
-  if (!info.running) return duration(info.duration_ms);
-  return duration(runningMs(info, now));
 }

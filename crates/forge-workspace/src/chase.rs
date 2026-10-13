@@ -455,9 +455,14 @@ impl Workspace {
     }
 }
 
-/// The production delivery: a prompt into a live session, and nothing
-/// else. The seat is already known live by the ladder, so a failed
-/// dispatch here is a race, not a reason to spawn.
+/// The production delivery: a prompt into a live session, and the turn
+/// its words draw as.
+///
+/// **A chase carries no envelope of its own** - no delivery update draws
+/// it and the CLI echoes no stdin prompt back - so the row is forged here
+/// rather than left to `delivery_turn`, which has no arm for it. The seat
+/// is already known live by the ladder, so a failed dispatch here is a
+/// race, not a reason to spawn.
 struct PromptDeliver {
     workspace: Arc<Workspace>,
 }
@@ -465,12 +470,7 @@ struct PromptDeliver {
 impl Deliver for PromptDeliver {
     fn to_seat(&self, slot: &SessionSlot, text: &str) -> Delivery {
         let uuid = forge_sdk::request_id::next_prompt_id();
-        match self.workspace.dispatch_workspace_prompt_under(
-            slot,
-            text.to_owned(),
-            crate::protocol::PromptSource::Forge,
-            uuid,
-        ) {
+        match self.workspace.dispatch_forged_prompt_under(slot, text.to_owned(), uuid) {
             Ok(()) => Delivery::Delivered,
             Err(_) => Delivery::NoSession,
         }
@@ -483,6 +483,8 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::protocol::SessionUpdate;
+    use forge_primitives::Message;
     use forge_primitives::tasks::{
         By, Estimate, LinkKind, Task, TaskId, TaskLink, TaskStatus, TaskTransition, Waiting,
     };
@@ -816,5 +818,57 @@ mod tests {
         drop(seen);
         sweep(&ws, &deliver, &mut memory, 180);
         assert_eq!(deliver.seen.lock().len(), before, "neither rung repeats");
+    }
+
+    /// The delivery forges the chased words as the turn they reached the
+    /// model as.
+    ///
+    /// **A chase has no envelope of its own**: no delivery update draws it,
+    /// and the CLI echoes no stdin prompt back, so this frame is the only
+    /// carrier the words have in a live view. Without it the turn opens on
+    /// its first tool row, with nothing saying what started it.
+    #[test]
+    fn the_delivery_forges_the_chased_words_as_their_turn() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project(PROJECT, "/tmp/tp-chase");
+        let key = SessionSlot::lead("TestOrg", PROJECT);
+        ws.enable_test_dispatch_intercept();
+        let deliver = PromptDeliver { workspace: Arc::clone(&ws) };
+
+        let text = "task board: worker w-1 holds no row - feed it or despawn it.";
+        assert_eq!(deliver.to_seat(&key, text), Delivery::Delivered);
+
+        // The wired prompt and the forged frame are one thing by id: the
+        // lifecycle frames name only the id, and a row minted apart from the
+        // wire is one nothing can settle.
+        let wired = match ws.drain_test_dispatch_buffer().as_slice() {
+            [crate::protocol::Command::PromptUnder { uuid, text: wired, .. }] => {
+                assert_eq!(wired, text, "the model receives the chase's words");
+                uuid.clone()
+            }
+            other => panic!("the delivery wires one prompt; got {other:?}"),
+        };
+        let drawn: Vec<SessionUpdate> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        let frame = drawn.iter().find_map(|update| match update {
+            SessionUpdate::ChatAppended { msg, origin, .. } => Some((msg, origin)),
+            _ => None,
+        });
+        let Some((Message::User { message, uuid, .. }, origin)) = frame else {
+            panic!("the chase's delivery forges its words as the turn; got {drawn:?}")
+        };
+        assert_eq!(
+            uuid.as_deref(),
+            Some(wired.as_str()),
+            "the frame is stamped with the id the prompt runs under",
+        );
+        assert!(origin.is_none(), "no view drew these words, so the frame claims no origin");
+        assert!(
+            matches!(
+                message.content.first(),
+                Some(forge_primitives::ContentBlock::Text { text: said, .. }) if said == text
+            ),
+            "the frame carries the prose the model received: {message:?}",
+        );
     }
 }

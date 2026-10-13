@@ -17,7 +17,7 @@
 
 import { SvelteMap } from 'svelte/reactivity';
 
-export class CronNames {
+class CronNames {
   #byUuid = new SvelteMap<string, string>();
 
   /**

@@ -28,7 +28,7 @@ import type { Advisory, AgentType, FileEntry } from './wire';
  * popover's own height sets. The header states the number of matches, so a list
  * cut here never reads as the whole list.
  */
-export const CANDIDATES = 200;
+const CANDIDATES = 200;
 
 /** The two sources the `/` list draws from, which is also the order it offers them in. */
 const SOURCES = ['forge', 'cli'] as const;

@@ -604,11 +604,12 @@ only for the forged frame below.**
 **Not every frame on the stream is the CLI's, and for the forged kind the
 id is the tell.** A prompt handed to `claude` on stdin is not echoed back,
 so forge forges the user turn itself and sends it as a `chat_appended` like
-any other frame - a cron fire, a Gotify notification, a Slack message, a
-peer comm, and a reader's own send, which without it no viewer but the
-sender would ever see. **The folded frame is the other kind, and its id is
-the CLI's**: it is the last arrival's, because the one frame stands for the
-run the flush carried.
+any other frame: a delivery (a cron fire, a Gotify notification, a Slack
+message, a peer comm), forge's own machinery (a worker kick, an
+auto-continue, a board chase, a board notice), and a reader's own send,
+which without it no viewer but the sender would ever see. **The folded frame
+is the other kind, and its id is the CLI's**: it is the last arrival's,
+because the one frame stands for the run the flush carried.
 
 **A prompt frame carries an `origin`**, `ui` or `view`. It says who
 submitted the words, is stamped where the dispatch happened rather than
@@ -627,12 +628,13 @@ message agree on it, and a client reconciles the two by id. It is also what
 lets a view hold the forged row while the prompt waits in the pile: the
 `command_lifecycle` frames carry the same id.
 
-**The server's fold and the client's are two drawings of one conversation.**
-The server folds a conversation into the units a view draws (and into the
-transcript reads); the client's chat makes its own calls over the same
+**The server's fold and the client's are two readings of one conversation.**
+The server folds a conversation into where its turns sit and the task
+endings it holds, which is what its pages are cut on and what a carried
+ending rides; the client's chat makes its own calls over the same
 frames - its own unit fold, its own lifecycle carving, its own status
-aggregation. Both are rules about a drawing rather than facts about a
-session, and the client's answer is the one on screen.
+aggregation. The drawing is the client's, and the client's answer is the
+one on screen.
 
 ## What is not here
 

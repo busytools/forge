@@ -27,7 +27,7 @@ export const CODEC_PCM_I16 = 0;
 export const RING_FRAMES = 1500;
 
 /** The window the socket's pace is read over. */
-export const RATE_WINDOW_MS = 1000;
+const RATE_WINDOW_MS = 1000;
 
 /** How many level readings the ring keeps for a view to draw. */
 export const LEVEL_CELLS = 120;

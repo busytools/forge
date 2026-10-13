@@ -34,7 +34,7 @@ const SCHEMA = 'forge-perf/v1';
  * replaced used, kept because the lattice it was chosen against - what a
  * person notices, what a 60 Hz display budgets - has not moved.
  */
-export const SLOW_FRAME_MS = 50;
+const SLOW_FRAME_MS = 50;
 
 /** How often a window's cadence is summarised, the same cadence the view this
  *  client replaced used. */
@@ -70,7 +70,7 @@ export interface PerfRecord {
   max_ms?: number;
 }
 
-export interface PerfProbe {
+interface PerfProbe {
   start(): void;
   stop(): void;
   /** The page the probe is looking at; nulls for a route with no seat. */
@@ -78,7 +78,7 @@ export interface PerfProbe {
 }
 
 /** The clock and sources, injectable so a test can produce a known frame. */
-export interface ProbeOptions {
+interface ProbeOptions {
   slowFrameMs?: number;
   summaryIntervalMs?: number;
   now?: () => number;

@@ -707,10 +707,7 @@ catalogue under `<app-support>/dictate-catalogue/`, which is what lets
 the models page read the feed when the network is gone.
 
 `<app-support>` is `~/Library/Application Support/forge` on macOS
-and `$XDG_DATA_HOME/forge` on Linux. An install that predates the name
-keeps its state under `forge-tui` until `just migrate-app-support` moves
-it; a boot that finds only the old tree refuses and names the script
-rather than starting empty beside it.
+and `$XDG_DATA_HOME/forge` on Linux.
 
 The single-instance lock lives under the same base, at
 `<app-support>/locks/<hash>.lock`, where the hash is derived from the

@@ -70,8 +70,7 @@ pub struct ProcessEntry {
     pub name: String,
     /// Full cmdline joined with spaces (e.g.
     /// `"cargo nextest run --no-fail-fast"`). Used for the row's
-    /// detail line and for fuzzy match against
-    /// `ToolCallInfo.raw_input.command`.
+    /// detail line and for fuzzy match against `ToolCall.raw_input.command`.
     pub command: String,
     /// Resident memory in bytes. Rendered abbreviated (`234M`,
     /// `1.2G`) on the row's metadata line.

@@ -53,7 +53,7 @@ import type {
 } from './wire';
 
 /** The facts the header states, and the class the mode's chip carries. */
-export interface Facts {
+interface Facts {
   /** The occupant's id, or `null` when there is no occupant to name. */
   sessionId: string | null;
   model: string;
@@ -155,7 +155,7 @@ export interface PaletteRow {
   mark?: string;
 }
 
-export interface PaletteSection {
+interface PaletteSection {
   title: string;
   rows: PaletteRow[];
 }
@@ -283,7 +283,7 @@ export function paletteRows(wire: HomeWire, slot: SessionSlot): PaletteSection[]
 }
 
 /** The projects chip's state: the seats that want a person, fleet-wide. */
-export interface ChipState {
+interface ChipState {
   /** `one` goes straight to that seat; everything else goes to the home. */
   state: 'one' | 'many' | 'failed' | 'none';
   count: number;
@@ -951,7 +951,7 @@ export function projectOf(home: HomeWire, slot: SessionSlot): ProjectWire | null
 }
 
 /** One usage window as its bar draws it. */
-export interface AccountWindow {
+interface AccountWindow {
   label: string;
   /** Clamped to 0..100 for the bar, which is what the view this client replaced drew too. */
   percent: number;
@@ -965,7 +965,7 @@ export interface AccountWindow {
 }
 
 /** The account this seat's project binds to, and what the poller knows of it. */
-export interface AccountView {
+interface AccountView {
   name: string;
   /** The class the health dot carries: `ok` / `wait` / `bad`. */
   tone: string;
@@ -1037,7 +1037,7 @@ export function accountChip(home: HomeWire, slot: SessionSlot): AccountView | nu
 }
 
 /** One figure on the rail's footer: what it is called and what it reads. */
-export interface FooterFigure {
+interface FooterFigure {
   label: string;
   value: string;
   /**
@@ -1048,7 +1048,7 @@ export interface FooterFigure {
 }
 
 /** The rail's footer: the account, what it is costing, and the two versions. */
-export interface RailFooter {
+interface RailFooter {
   /** The account this project binds to, or `null` when none would serve it. */
   account: { name: string; tone: string } | null;
   /** The figures a spend-billed account reports; empty for a window-billed one. */
@@ -1534,7 +1534,7 @@ export function mcpState(server: McpServer): string {
 }
 
 /** How many tools a server offers, counted so that one reads as one. */
-export function toolSummary(count: number): string {
+function toolSummary(count: number): string {
   if (count === 0) return 'no tools';
   return count === 1 ? '1 tool' : `${count} tools`;
 }

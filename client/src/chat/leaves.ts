@@ -225,7 +225,7 @@ function wrappedRows(text: string): number {
 const DIFF_COLUMNS = 76;
 
 /** Whether a call's body is a source file the page colours. */
-export function readsSource(name: string): boolean {
+function readsSource(name: string): boolean {
   return name === 'Read';
 }
 
@@ -344,7 +344,7 @@ export function bodyOf(content: unknown, failed = false): CallBody[] {
  * empty card, which is what an unread shape would otherwise leave open on
  * screen.
  */
-export function diffsOf(name: string, input: unknown): CallBody[] {
+function diffsOf(name: string, input: unknown): CallBody[] {
   if (!isEdit(name)) return [];
   const path = field(input, 'file_path') ?? field(input, 'notebook_path');
   if (path === null) return [];
@@ -375,7 +375,7 @@ export function diffsOf(name: string, input: unknown): CallBody[] {
  * transcript row written before it did) leaves the input's own two sides to
  * draw, which is what `diffsOf` is for.
  */
-export function hunksOf(record: unknown): CallBody[] {
+function hunksOf(record: unknown): CallBody[] {
   const patch = (record as { structuredPatch?: unknown } | null)?.structuredPatch;
   if (!Array.isArray(patch)) return [];
   const out: CallBody[] = [];
@@ -540,7 +540,7 @@ function hunk(old: string, added: string): CallBody[] {
  * about which file it is. The view this client replaced put the whole of it on
  * the row (`Edit /Users/.../home.css`), which is the reference this follows.
  */
-export function titleOf(name: string, input: unknown): string {
+function titleOf(name: string, input: unknown): string {
   // A decision's row IS the question it asked: the tool word reads as plumbing
   // a reader scans past, and the question is the one thing they scan for
   // (Ved, 2026-10-12). A call that named nothing keeps the word, which is the

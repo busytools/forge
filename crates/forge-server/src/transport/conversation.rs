@@ -86,10 +86,9 @@ pub struct Conversation {
     messages: Vec<Message>,
     /// The fold's boundaries and task endings, which a page is cut on.
     ///
-    /// **Its units are dropped**, because the transport draws nothing: a
-    /// client folds the frames a page hands it, and the units exist for a
-    /// view. Holding them would be the largest part of this struct's memory
-    /// for something nothing here reads.
+    /// **Nothing but those is held**, because the transport draws nothing: a
+    /// client folds the frames a page hands it, so the boundaries are what a
+    /// page here is cut on and the endings are what its turns carry.
     rendered: Rendered,
     compaction_count: u32,
     /// The messages the cap has dropped off the front, ever.
@@ -106,9 +105,8 @@ pub struct Conversation {
     /// **Memoized rather than made incremental**, because making it
     /// incremental means deciding where a turn begins from the appended
     /// message alone - a second turn-boundary rule, which is the drift
-    /// `turn_ranges`' own doc exists to prevent. One rule in one place is
-    /// worth 18 ms, and it runs when the messages changed rather than once
-    /// per request.
+    /// `turn_ranges`' own doc exists to prevent. One rule in one place, and
+    /// it runs when the messages changed rather than once per request.
     ///
     /// **And it never runs under this lock.** The socket folds the core's
     /// stream in ONE task for every seat, so a fold holding a seat's lock
@@ -156,7 +154,7 @@ impl Conversation {
         let dropped = carried.saturating_add(drop_past_cap(&mut messages));
         Self {
             messages: as_blocks(messages),
-            rendered: Rendered { units: Vec::new(), turns: Vec::new(), endings: HashMap::new() },
+            rendered: Rendered { turns: Vec::new(), endings: HashMap::new() },
             compaction_count,
             dropped,
             dirty: true,
@@ -443,10 +441,7 @@ impl Held {
         let Some(taken) = Folding::begin(self) else {
             return;
         };
-        let mut rendered = crate::transcript::render(taken.messages());
-        // The units are a view's, and the transport draws nothing: a page
-        // hands the frames on and the client folds them.
-        rendered.units.clear();
+        let rendered = crate::transcript::render(taken.messages());
         taken.finish(rendered);
     }
 }
@@ -508,7 +503,7 @@ impl Drop for Folding<'_> {
             messages,
             // No boundaries: the fold did not reach its end, so the next one
             // rebuilds them rather than this leaving half of one behind.
-            Rendered { units: Vec::new(), turns: Vec::new(), endings: HashMap::new() },
+            Rendered { turns: Vec::new(), endings: HashMap::new() },
             false,
         );
     }

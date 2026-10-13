@@ -21,7 +21,7 @@ import type { ReviewThreadRecord } from '../session/wire';
 import type { ThreadPayload } from '../review/write';
 
 /** One line of the document, numbered from one. */
-export interface DocLine {
+interface DocLine {
   number: number;
   text: string;
 }

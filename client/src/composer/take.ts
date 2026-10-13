@@ -70,7 +70,7 @@ export type TakeConnection = Pick<
   'dispatch' | 'frame' | 'onMessage' | 'onStatus' | 'status'
 >;
 
-export interface TakeWiring {
+interface TakeWiring {
   connection: TakeConnection;
   seat: SessionSlot;
   options: DictateAxes;

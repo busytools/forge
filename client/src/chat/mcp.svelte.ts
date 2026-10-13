@@ -7,7 +7,7 @@
  */
 import type { McpRow } from '../session/view';
 
-export class Mcp {
+class Mcp {
   #rows = $state<McpRow[]>([]);
 
   /** Take the record's rows whole: what the wire says is what a row reads. */

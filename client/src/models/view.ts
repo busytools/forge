@@ -115,7 +115,7 @@ function markForState(state: DictateModelState): string {
 }
 
 /** The check line: the feed's freshness, and what it proposes. */
-export interface CheckLine {
+interface CheckLine {
   mark: string;
   title: string;
   when: string | null;
@@ -193,7 +193,7 @@ export interface FactPart {
 }
 
 /** The face of one catalogue row, as the candidate list draws it. */
-export interface CandidateFacts {
+interface CandidateFacts {
   /** The quant a machine would run, the speed, the error and the licence. */
   spec: FactPart[];
   /** What it transcribes, and whether a take can stream through it. */
@@ -267,7 +267,7 @@ export function updateFacts(update: ModelUpdate, row: CatalogueRow): FactPart[] 
  * table draws: the speed against the model in use, the error the same way,
  * the licence, and what the rule makes of it.
  */
-export interface ComparisonRow {
+interface ComparisonRow {
   /** The feed's own row, for the controls that act on it. */
   source: CatalogueRow;
   variant: string;
@@ -291,7 +291,7 @@ export interface ComparisonRow {
  * recommendation that hid the licence would be asking the reader to
  * discover it after the download.
  */
-export function verdictWord(verdict: UpdateVerdict): string {
+function verdictWord(verdict: UpdateVerdict): string {
   switch (verdict) {
     case 'recommended':
       return 'recommended';
@@ -390,7 +390,7 @@ export function activeSource(from: ActiveFrom): string {
  * normalizer's candidate activates the cleanup role, a speech row's
  * transcribing.
  */
-export type RowAction =
+type RowAction =
   | { do: 'install'; label: string }
   | { do: 'activate'; label: string; file: string; role: ModelRole }
   | { do: 'off'; label: string }
@@ -440,7 +440,7 @@ export function resultHeadline(result: BenchResult): FactPart[] {
 }
 
 /** One operation line: the download's or the activation's, drawn where the page's state is. */
-export interface OpLine {
+interface OpLine {
   mark: string;
   title: string;
   detail: string | null;
@@ -523,7 +523,7 @@ export function activateLine(activate: ActivateState): OpLine | null {
 }
 
 /** One of the feed's families, and how many entries it holds. */
-export interface Family {
+interface Family {
   name: string;
   count: number;
 }
@@ -565,7 +565,7 @@ export function fastest(rows: CatalogueRow[], take: number): CatalogueRow[] {
 }
 
 /** An in-use row's two fact lines. */
-export interface InUseFacts {
+interface InUseFacts {
   pinned: FactPart[];
   measured: FactPart[];
 }
@@ -595,7 +595,7 @@ export function tierWord(tier: BenchTier): string {
 }
 
 /** One row of the bench list: the target, and what the page knows about it. */
-export interface BenchRow {
+interface BenchRow {
   target: BenchTarget;
   /** The variant the feed calls it, where one is known - the join a
    * recommendation matches on. */
@@ -677,7 +677,7 @@ export function benchTargets(
  * not offered as a role's model at all, because a guessed role is a model
  * running in the wrong slot.
  */
-export function recordKind(record: InstalledModel): Exclude<CatalogueKind, 'other'> | null {
+function recordKind(record: InstalledModel): Exclude<CatalogueKind, 'other'> | null {
   if (record.facts.runtime === 'llama.cpp') return 'normalizer';
   if (record.facts.runtime === 'transcribe.cpp') return 'asr';
   return null;
@@ -721,7 +721,7 @@ export interface SweepPlan {
 /** How many cleanup candidates a press takes. Downloads is the only pre-run
  * signal a normalizer has, so the depth is by popularity, and the verdict
  * says what it left out. */
-export const SWEEP_DEPTH = 3;
+const SWEEP_DEPTH = 3;
 
 /**
  * The runs one press makes: the transcribing side's own pick, the cleanup
@@ -921,7 +921,7 @@ export function sweepCost(wire: DictateModelsWire, variant: string): number | nu
 }
 
 /** One role's models, as the dictation panel offers them. */
-export interface RoleModels {
+interface RoleModels {
   /** The model the role runs now, when it runs one. */
   current: InUseModel | null;
   /** Whether `forge.toml` sets the role, which no runtime press can move. */
@@ -973,7 +973,7 @@ export function roleModels(
 
 /** One cleanup candidate as its row draws: the feed's row, this machine's
  * record of it, and what the bench has measured on it. */
-export interface CleanupCandidate {
+interface CleanupCandidate {
   row: CatalogueRow;
   installed: InstalledModel | null;
   results: BenchResult[];
@@ -1165,7 +1165,7 @@ export function recordingLength(recording: ReadAloudRecording): string {
  * two recordings of the passage are a minute apart at most and the row is
  * what tells one from the other.
  */
-export function recordingWhen(recording: ReadAloudRecording): string | null {
+function recordingWhen(recording: ReadAloudRecording): string | null {
   const at = new Date(recording.at);
   if (Number.isNaN(at.getTime())) return null;
   const two = (part: number) => String(part).padStart(2, '0');

@@ -8,7 +8,7 @@
  */
 import type { SeatConnectorRow } from '../session/view';
 
-export class Connectors {
+class Connectors {
   #rows = $state<SeatConnectorRow[]>([]);
 
   /** Take the seat's rows whole: what the home says is what a row reads. */

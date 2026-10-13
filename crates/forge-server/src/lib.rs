@@ -1,11 +1,10 @@
 //! The server: what a client reads of the core, and no view of its own.
 //!
 //! Holds the view surface - the reads a client makes and the commands it
-//! sends -, the peer envelope parsing and the outbound peer calls, the
-//! tool family table, forge's own slash commands, the transcript fold that
-//! turns a conversation's wire messages into the units a view draws, the
-//! policy that folds a run of blocks, a Monitor's watched-command tail, and
-//! the socket that carries all of it to whatever is drawing.
+//! sends -, the peer envelope parsing, forge's own slash commands, the
+//! transcript fold that says where a conversation's turns sit and the task
+//! endings it carries, a Monitor's watched-command tail, and the socket
+//! that carries all of it to whatever is drawing.
 //!
 //! Nothing here draws. What a glyph, a colour or a weight is belongs to the
 //! client, and the test is whether removing a thing changes what the data
@@ -21,15 +20,11 @@ pub mod composer;
 pub mod delivery;
 pub mod envelope;
 pub mod error;
-pub mod family;
 pub mod file_index;
 #[cfg(test)]
 mod fixtures;
-pub mod grouping;
 pub mod live;
 pub mod logging;
-pub mod model;
-pub mod peer_outbound;
 pub mod startup;
 pub mod subagents;
 pub mod surface;

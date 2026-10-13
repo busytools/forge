@@ -24,7 +24,7 @@ export type DocAnswer =
   | { kind: 'refused'; why: string }
   | { kind: 'silent' };
 
-export interface FakeDoc {
+interface FakeDoc {
   connection: DocumentConnection;
   /** Every read asked for, in order. */
   reads: { slot: SessionSlot; path: string; reviewable: boolean }[];
