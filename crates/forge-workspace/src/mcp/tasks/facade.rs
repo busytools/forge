@@ -326,7 +326,13 @@ impl TasksFacade for ProdTasksFacade {
         let Some(cx) = caller_context(&ws, caller) else { return Vec::new() };
         let rows =
             ws.board_rows(&cx.project_name, SystemTime::now(), crate::board::DEFAULT_STALE_SECS);
-        narrow_rows(rows, owner, parent, status, ready)
+        // The filter names a row the same way an id does. An id naming
+        // nothing, or several, keeps the literal comparison - the empty
+        // answer a filter gives a name that is not there.
+        let parent = parent.map(|stated| {
+            ws.resolve_task_id(&cx.project_name, stated).unwrap_or_else(|_| stated.clone())
+        });
+        narrow_rows(rows, owner, parent.as_ref(), status, ready)
     }
 
     fn update_task(
@@ -878,6 +884,21 @@ mod prod_facade_tests {
                 && said.contains("7ed0bbbb-0000-4000-8000-000000000002"),
             "the refusal names both rows it matched: {said}",
         );
+    }
+
+    /// The list's parent filter names a row the same way a write does, so
+    /// narrowing by the short form a caller holds finds the children.
+    #[test]
+    fn list_narrows_by_a_stated_parent_prefix() {
+        let (ws, facade, lead, _worker) = fixture();
+        let epic = "7ed0aaaa-0000-4000-8000-000000000001";
+        ws.seed_test_task(seeded_task(epic, "the epic"));
+        facade.create_task(&lead, draft("child", None, Some(epic))).expect("child");
+        facade.create_task(&lead, draft("sibling", None, None)).expect("sibling");
+
+        let kids = facade.list_tasks(&lead, None, Some(&TaskId::from("7ed0aaaa")), None, None);
+        assert_eq!(kids.len(), 1, "the prefix names the parent row: {kids:?}");
+        assert_eq!(kids[0].task.subject, "child");
     }
 
     /// An estimate that is not a duration is refused with its own words,
