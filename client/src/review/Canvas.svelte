@@ -14,6 +14,7 @@
    * row, which is what makes them span the table in both modes.
    */
   import { DiffView, DiffModeEnum } from '@git-diff-view/svelte';
+  import { mount, unmount } from 'svelte';
   import type { ComponentProps } from 'svelte';
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import { VList, type VListHandle } from 'virtua/svelte';
@@ -37,8 +38,9 @@
     synthesizeFileDiff,
     treeRows,
   } from './diff';
-  import { ageOf, authorName, canvasLine, statusName, threadsInScope, turnRound } from './view';
+  import { canvasLine, statusName, threadsInScope } from './view';
   import { captureContext, type ComposedComment } from './write';
+  import ThreadTurn from './ThreadTurn.svelte';
 
   type DiffFile = NonNullable<ComponentProps<typeof DiffView>['diffFile']>;
 
@@ -387,7 +389,9 @@
         kept.add(entry.key);
       }
       for (const [key, row] of existing) {
-        if (!kept.has(key)) row.remove();
+        if (kept.has(key)) continue;
+        releaseRow(row);
+        row.remove();
       }
     };
     for (const [path, el] of Object.entries(canvases)) {
@@ -440,21 +444,31 @@
     return node;
   }
 
+  /**
+   * The Svelte roots a built row owns, so a row the reconciler drops lets
+   * them go with it. Keyed by the element the root was mounted into.
+   */
+  const roots = new WeakMap<Element, () => void>();
+
+  /** One turn, drawn by the piece both halves of the page draw. */
   function turnBlock(turn: ReviewThreadRecord['comments'][number], index: number): HTMLElement {
-    const block = document.createElement('div');
-    block.className = turn.author.kind === 'user' ? 'rv-turn you' : 'rv-turn';
-    const who = document.createElement('div');
-    who.className = 'rv-who';
-    who.append(span('rv-nm', authorName(turn.author)));
-    const round = turnRound(reviews, turn);
-    if (round !== null) who.append(span('rv-at', `R${round}`));
-    else if (index > 0) who.append(span('rv-at', ageOf(turn.at, now)));
-    block.append(who);
-    const text = document.createElement('p');
-    text.className = 'rv-tx';
-    text.textContent = turn.text;
-    block.append(text);
-    return block;
+    const host = document.createElement('div');
+    const held = mount(ThreadTurn, {
+      target: host,
+      props: { turn, rounds: reviews, index, now },
+    });
+    roots.set(host, () => void unmount(held));
+    return host;
+  }
+
+  /** Let go of every root a row's subtree owns, before the row is dropped. */
+  function releaseRow(row: Element): void {
+    for (const el of row.querySelectorAll('*')) {
+      const letGo = roots.get(el);
+      if (letGo === undefined) continue;
+      letGo();
+      roots.delete(el);
+    }
   }
 
   function threadCard(thread: ReviewThreadRecord, movedFrom: number | null): HTMLElement {

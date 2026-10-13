@@ -80,9 +80,15 @@ file the list has not drawn yet.
 
 The state chip, then the anchored path and line, then the turns: the
 reviewer's read as `you` behind an accent rule, an agent's by its label
-behind a plain one, and the reviewer's own turns carrying the round that
-sealed them. An agent's turn carries no round, because only reviewer turns
-file into rounds.
+behind a plain one. A turn carries one meta chip beside its name: the round
+that sealed it, which only a reviewer's turn has, or else its age from the
+second turn on, because the thread's opening turn has nothing to be later
+than. Both halves of the page draw the same turn through the same piece, so
+a chip is a chip wherever the turn is read.
+
+A turn's words render as markdown, through the chat's own renderer: a reply
+carrying backticks, `#[async_trait]` or a fenced block reads here the way it
+reads in the conversation, and lines typed into a comment stay lines.
 
 The four states are the server's own: `open`, answered by nobody yet;
 `addressed`, the agent has answered and the ball is with the reader;
