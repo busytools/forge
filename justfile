@@ -1036,6 +1036,10 @@ install:
 remove-cert:
     ./scripts/remove-cert.sh
 
+# Move the app-support tree from its legacy `forge-tui` name to `forge` (idempotent, one-shot).
+migrate-app-support:
+    ./scripts/migrate-app-support.sh
+
 # The maintainer's own act, start to finish: it pushes and publishes as well
 # as builds. Requires cargo-edit (`cargo install cargo-edit`) for
 # `cargo set-version`. Gates on check-release and check-feature-configs
