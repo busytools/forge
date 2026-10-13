@@ -125,7 +125,7 @@ export async function attempt(
 }
 
 /** Where the screen is after one submit, and where it goes if it took. */
-export interface Submit {
+interface Submit {
   busy: boolean;
   failure: Extract<Attempt, { ok: false }> | null;
   connected: Extract<Attempt, { ok: true }> | null;

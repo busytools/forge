@@ -70,7 +70,7 @@ export const MARK_NAMES = [
   'stencil_f',
 ] as const;
 
-export type MarkName = (typeof MARK_NAMES)[number];
+type MarkName = (typeof MARK_NAMES)[number];
 
 /** The mark drawn when no name is set. */
 export const DEFAULT_MARK: MarkName = 'panes';
@@ -78,14 +78,8 @@ export const DEFAULT_MARK: MarkName = 'panes';
 /** The palettes `[client] theme` accepts, from `forge_primitives::client::THEME_NAMES`. */
 export const THEME_NAMES = ['dark'] as const;
 
-export type ThemeName = (typeof THEME_NAMES)[number];
-
-export const DEFAULT_THEME: ThemeName = 'dark';
-
 /** The typeface sets `[client] font` accepts, from `forge_primitives::client::FONT_NAMES`. */
 export const FONT_NAMES = ['system'] as const;
-
-export type FontName = (typeof FONT_NAMES)[number];
 
 /** The port the server binds when `[server] port` is absent. */
 export const DEFAULT_SERVER_PORT = 8790;

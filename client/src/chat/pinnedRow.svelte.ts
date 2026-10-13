@@ -20,7 +20,7 @@ import { SvelteMap } from 'svelte/reactivity';
 
 import type { TurnInfo } from './units';
 
-export class PinnedRow {
+class PinnedRow {
   #held = new SvelteMap<string, TurnInfo>();
 
   /** The row this seat pins, or `null` when it pins nothing. */

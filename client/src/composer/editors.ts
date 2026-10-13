@@ -5,10 +5,13 @@
  * Derived, never stored: nothing registers here, so nothing can go stale and
  * there is no mount order to get wrong.
  *
- * It is not yet the whole of the keyboard's routing. The composer and the dock
- * still move the caret in their own effects - the connect screen has none - and
- * the landing is the one caller this table has, so a surface added here does not
- * have its keyboard follow by itself.
+ * **The set is the boxes' own vocabulary; the table answers only for the boxes
+ * its one caller can name.** The composer's landing is that caller, so `focusOf`
+ * answers for the composer's box, the dock's and `nowhere` - the connect
+ * screen's, the palette's and the board's are in the set because boxes carry
+ * those names, and one of them arriving resolves to `nowhere` rather than being
+ * routed. The composer and the dock still move the caret in their own effects,
+ * so a surface added here does not have its keyboard follow by itself.
  *
  * Every box that can take text is one of these, and `editors.test.ts` sweeps the
  * tree for one that forgot to say so.
@@ -31,17 +34,8 @@ export type Where = {
   remember: Editor;
   /** Whether a prompt is waiting for an answer. */
   pending: boolean;
-  /** Whether each route's box is on screen at all. */
+  /** Whether the composer's box is on screen at all. */
   composerPresent?: boolean;
-  connectPresent?: boolean;
-  /**
-   * The board takeover's own boxes - the send-back words, the answer, the
-   * create line. A page of its own, like connect: it holds the keyboard
-   * while it is up, and its boxes are not routed anywhere else.
-   */
-  boardPresent?: boolean;
-  /** The palette's search box, which is on screen only while it is open. */
-  palettePresent?: boolean;
   /**
    * Whether the dock's own box - the prompt's free-text row - is open.
    *
@@ -65,15 +59,14 @@ export function focusOf(where: Where): Editor {
   switch (named) {
     case 'dock':
       return 'dock';
-    case 'connect':
-      return where.connectPresent === false ? fallback(where) : 'connect';
-    case 'board':
-      return where.boardPresent === false ? fallback(where) : 'board';
     case 'composer':
       return where.composerPresent === false ? 'nowhere' : 'composer';
-    case 'palette':
-      return where.palettePresent === false ? fallback(where) : 'palette';
     case 'nowhere':
+    case 'connect':
+    case 'board':
+    case 'palette':
+      // The composer is this table's one caller and never names these: they are
+      // boxes that exist, not boxes this table routes to.
       return 'nowhere';
     default: {
       // A new Editor with no case here fails the build, which is what the

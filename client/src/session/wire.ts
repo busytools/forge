@@ -196,13 +196,13 @@ export interface ComposerState {
  * outcome this build cannot name is kept as it arrived rather than folded into
  * a failure it is not.
  */
-export type ReadWire<T> =
+type ReadWire<T> =
   | { outcome: 'read'; value: T }
   | { outcome: 'failed'; value: string }
   | { outcome: 'unknown'; value: unknown };
 
 /** Which side of the diff a thread is anchored to. */
-export type ReviewSideRecord = 'old' | 'new' | { unknown: string };
+type ReviewSideRecord = 'old' | 'new' | { unknown: string };
 
 /** A thread's lifecycle state. */
 export type ReviewStatusRecord =
@@ -236,7 +236,7 @@ export interface ReviewTurnRecord {
 }
 
 /** Why an anchor could not be placed, in the resolver's own words. */
-export type ReviewOutdatedReasonRecord = 'gone' | { ambiguous: { matches: number } };
+type ReviewOutdatedReasonRecord = 'gone' | { ambiguous: { matches: number } };
 
 /**
  * Where a thread's anchor sits in the content the record ships: the server
@@ -334,7 +334,7 @@ export type FileStatusWire =
   'modified' | 'added' | 'deleted' | 'renamed' | 'copied' | 'typechange' | 'unmerged' | 'untracked';
 
 /** One changed file's mark and counts. */
-export interface GitFileRecord {
+interface GitFileRecord {
   path: string;
   added: number;
   removed: number;
@@ -346,7 +346,7 @@ export interface GitFileRecord {
  * commit's stats: the full counts, and the busiest files up to the scan's
  * own cap - the count above the list tells the truth either way.
  */
-export interface GitStatsRecord {
+interface GitStatsRecord {
   files: GitFileRecord[];
   totalFiles: number;
   totalAdded: number;
@@ -775,7 +775,7 @@ function composerFrom(value: unknown): ComposerState {
 }
 
 /** How one of an instance's calls ended, as the wire spells it. */
-export type SubagentCallStatus = 'pending' | 'in_progress' | 'completed' | 'failed' | 'killed';
+type SubagentCallStatus = 'pending' | 'in_progress' | 'completed' | 'failed' | 'killed';
 
 const SUBAGENT_CALL_STATUSES: SubagentCallStatus[] = [
   'pending',

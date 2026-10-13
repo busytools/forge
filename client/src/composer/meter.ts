@@ -9,7 +9,7 @@
 import { METER_CELLS } from '../wire/limits';
 
 /** One cell of the meter: a past reading, as tall and as loud as it was. */
-export interface Cell {
+interface Cell {
   /** Percent of the meter's height, floor to ceiling. */
   height: number;
   /** The tone class the sheet colours it by, empty for the quietest step. */
@@ -26,7 +26,7 @@ const HOT = 0.7;
 const MID = 0.4;
 
 /** The top of the meter's scale in dBFS, which a reading is measured against. */
-export const METER_CEILING_DB = 0;
+const METER_CEILING_DB = 0;
 
 /** The floor a take with none of its own is measured against, as the server's fold falls back. */
 export const FALLBACK_FLOOR_DB = -50;

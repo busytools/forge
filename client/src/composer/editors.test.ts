@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import { EDITORS, focusOf, type Editor, type Where } from './editors';
 
-/** Whether a name a box gave itself is one of the editors, which is what makes it routable. */
+/** Whether a name a box gave itself is one of the editors the census knows. */
 function isEditor(name: string): name is Editor {
   return (EDITORS as readonly string[]).includes(name);
 }
@@ -40,28 +40,6 @@ describe('which editor holds the keyboard', () => {
   it('gives it back to what held it when the queue drains', () => {
     const where: Where = { editor: 'dock', remember: 'composer', pending: false };
     expect(focusOf(where), 'the queue draining returns it where it was').toBe('composer');
-  });
-
-  it('lands on a surface that exists when the remembered one is gone', () => {
-    const where: Where = {
-      editor: 'dock',
-      remember: 'connect',
-      pending: false,
-      connectPresent: false,
-    };
-    expect(focusOf(where), 'a remembered surface that is gone falls back to the composer').toBe(
-      'composer',
-    );
-  });
-
-  it('gives it to the connect field when only that is up', () => {
-    const where: Where = {
-      editor: 'connect',
-      remember: 'connect',
-      pending: false,
-      connectPresent: true,
-    };
-    expect(focusOf(where), 'the connect route owns the keyboard on its own screen').toBe('connect');
   });
 
   it('does not name the dock when the prompt has no box of its own open', () => {
@@ -127,7 +105,7 @@ describe('the census of boxes that can take text', () => {
       const text = readFileSync(file, 'utf8');
 
       // A raw box names its editor inline, so the name can be read here - and a
-      // name outside the set is one `focusOf` can never return.
+      // name outside the set is a box the client cannot reason about.
       for (const found of text.matchAll(/<(textarea|input)\b[^>]*>/g)) {
         if (!found[0].includes('data-editor')) {
           offenders.push(`${where}: ${found[0]} names no editor`);

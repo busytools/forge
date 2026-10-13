@@ -10,7 +10,6 @@
  * what the markup wants is `view.ts`.
  */
 
-import type { SessionSlot } from '../wire/types';
 import { bindFrom, modeFrom, type Bind, type Mode } from './dictate-key';
 import { FALLBACK_FLOOR_DB } from './meter';
 
@@ -78,7 +77,7 @@ export interface PermissionRequest {
 }
 
 /** One option a question offers. */
-export interface QuestionOption {
+interface QuestionOption {
   optionId: string;
   label: string;
   /** What choosing it means, which the row draws dim under the label. */
@@ -424,6 +423,3 @@ export const NO_COMPOSER: ComposerState = {
   bind: 'right_cmd',
   mode: 'auto',
 };
-
-/** The slot a command is addressed to, which every command the composer sends carries. */
-export type { SessionSlot };

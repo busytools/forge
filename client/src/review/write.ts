@@ -142,7 +142,7 @@ export interface ComposedComment {
   lineText: string;
 }
 
-export interface NewComment extends ComposedComment {
+interface NewComment extends ComposedComment {
   baseRef: string;
   /** The scope the comment was written in: a commit's sha, or null for the
    *  branch's own all-changes scope. */

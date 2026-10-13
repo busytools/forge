@@ -216,7 +216,7 @@ export function pendingAsk(record: ComposerRecord): Ask | null {
  * started cannot tell whether a session is coming up or never will, and a
  * compaction is the more specific truth about a turn the reader sent.
  */
-export interface Blocker {
+interface Blocker {
   line: string;
   /** What to do about it, when there is something to do. */
   sub: string | null;
@@ -232,7 +232,7 @@ export interface Blocker {
 }
 
 /** The line the box's own key hints draw, where the mockup draws them. */
-export const SIGN_IN_FALLBACK = 'Run `claude auth login` in another terminal to authenticate';
+const SIGN_IN_FALLBACK = 'Run `claude auth login` in another terminal to authenticate';
 
 /** A blocked state draws no ring, and one that reports a failure draws none either. */
 const STOPPED: Pick<Blocker, 'bad' | 'waiting' | 'shimmer'> = {

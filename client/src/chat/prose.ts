@@ -97,7 +97,7 @@ export function renderInlineProse(text: string): string {
 }
 
 /** One top-level block of `text`, rendered on its own. */
-export interface ProseBlock {
+interface ProseBlock {
   /** 1-based first source line the block came from. */
   line: number;
   /** 1-based last source line, inclusive. */

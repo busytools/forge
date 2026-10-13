@@ -37,7 +37,7 @@ const NOTHING: ModelsRead = { wire: null, refused: null };
  * the subscribe. The composer's panel watches from its own seat, which is
  * why the contract is stated here rather than taking the whole connection.
  */
-export type ModelsConnection = Pick<
+type ModelsConnection = Pick<
   Connection,
   'subscribe' | 'unsubscribe' | 'onMessage' | 'onStatus' | 'refresh'
 >;

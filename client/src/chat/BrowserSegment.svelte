@@ -40,15 +40,16 @@
   let {
     connection,
     slot = null,
-    capable = canHost(),
   }: {
     connection: Pick<
       Connection,
       'browserRole' | 'onBrowserRole' | 'takeBrowserRole' | 'onProfilesChanged'
     >;
     slot?: SessionSlot | null;
-    capable?: boolean;
   } = $props();
+
+  /** Whether this page runs in a shell that owns a browser host. */
+  const capable = canHost();
 
   let open = $state(false);
   /**

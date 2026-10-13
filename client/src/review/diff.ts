@@ -31,7 +31,7 @@ export function lineCounts(file: DiffFileRecord): { plus: number; minus: number 
  *  nullable rather than a discriminated union because the template reads
  *  them through the lint's type resolution, which does not narrow a union
  *  across an if. */
-export interface TreeRow {
+interface TreeRow {
   depth: number;
   kind: 'dir' | 'file';
   name: string;
@@ -140,7 +140,7 @@ export function findLine(
 }
 
 /** One line row's own side and line, or nothing for a row with neither. */
-export interface RowSide {
+interface RowSide {
   side: 'old' | 'new';
   line: number;
 }

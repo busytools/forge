@@ -255,7 +255,7 @@ export function watchRemovals(
 }
 
 /** The seat a `releasing` update takes down, or `null` for anything else. */
-export function releasedSeat(message: ServerMessage): SessionSlot | null {
+function releasedSeat(message: ServerMessage): SessionSlot | null {
   if (message.kind !== 'update') return null;
   const update = message.update;
   if (typeof update === 'string') return null;

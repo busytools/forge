@@ -47,7 +47,7 @@ export function openCapture(device: string | null): Promise<MicSource> {
 }
 
 /** What registering the push-to-talk key needs of one surface. */
-export interface PushToTalk {
+interface PushToTalk {
   /** The take the key begins and ends, read where it is used: a surface's
    *  driver arrives as a prop, and a value taken once would be the one the
    *  page first drew with. */
@@ -121,7 +121,7 @@ export interface TakeLine {
   text: string;
 }
 
-export interface DictationWiring {
+interface DictationWiring {
   /** The socket a take rides, read at the press as the surface reads it. */
   connection: () => TakeConnection;
   /** The seat showing, which is the one a take is addressed to. */

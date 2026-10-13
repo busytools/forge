@@ -106,7 +106,7 @@ export interface ProjectRows {
   started: boolean;
 }
 
-export interface Header {
+interface Header {
   liveAgents: number;
   /**
    * Every project's tasks added up, which is the fleet's total: the snapshot
@@ -122,7 +122,7 @@ export interface Header {
   version: string;
 }
 
-export interface HomeView {
+interface HomeView {
   header: Header;
   band: BandCard[];
   /**
@@ -135,7 +135,7 @@ export interface HomeView {
 }
 
 /** One fleet row, as the home draws it. */
-export interface FleetViewRow {
+interface FleetViewRow {
   org: string;
   name: string;
   /** Where the board control opens: the project's own board. */
@@ -498,7 +498,7 @@ export function ageOf(row: Pick<FleetViewRow, 'lastActivity' | 'seats'>, now: nu
 }
 
 /** The band's own cards, each quiet until its own state says otherwise. */
-export function band(wire: HomeWire, address: string): BandCard[] {
+function band(wire: HomeWire, address: string): BandCard[] {
   const gateway = wire.accounts.gateway;
   const gatewayCard: BandCard = gateway.bind_error
     ? {

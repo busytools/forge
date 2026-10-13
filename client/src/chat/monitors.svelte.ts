@@ -7,7 +7,7 @@
  */
 import type { MonitorStripRow } from '../session/view';
 
-export class Monitors {
+class Monitors {
   #rows = $state<MonitorStripRow[]>([]);
 
   /** Take the record's rows whole: what the wire says is what a row reads. */

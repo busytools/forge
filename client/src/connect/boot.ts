@@ -12,7 +12,7 @@ import type { Route } from '../routes';
 import { attempt, connectTo, type Attempt } from './attempt';
 
 /** Where the app lands, and what it carries there. */
-export interface Launch {
+interface Launch {
   /**
    * The route the app moves to, or `null` to stay on the one it was addressed
    * at.

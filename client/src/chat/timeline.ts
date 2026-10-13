@@ -19,14 +19,14 @@ import { taskStatus } from './families';
 import { blocksOf, leafOf, type Block, type TaskFact, type ToolLeaf } from './leaves';
 
 /** One line of the instance's own work. */
-export type SubLine =
+type SubLine =
   | { kind: 'call'; leaf: ToolLeaf }
   | { kind: 'prose'; text: string }
   | { kind: 'thought'; text: string }
   | { kind: 'hook'; text: string };
 
 /** Everything the row's expansion reads off a dispatch's frames. */
-export interface DispatchFrames {
+interface DispatchFrames {
   /** The brief the dispatch carried, which is the prompt it was given. */
   brief: string | null;
   /** The model the dispatch named, when it named one. */

@@ -15,7 +15,7 @@
 
 /** One builder call: which builder, and the rows a record it was given
  * carried. */
-export interface Call {
+interface Call {
   name: string;
   /**
    * The frames a conversation-carrying argument held, or `null` for one that is
@@ -32,10 +32,6 @@ const called: Call[] = [];
 
 export function clear(): void {
   called.length = 0;
-}
-
-export function countOf(name: string): number {
-  return called.filter((call) => call.name === name).length;
 }
 
 /** The names called, with their call counts, in first-call order. */
