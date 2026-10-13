@@ -530,6 +530,10 @@ pub struct Workspace {
     /// runs in the background off the boot path; the Projects pane and
     /// the session lookups read the catalog it fills.
     catalog_loaded: Arc<std::sync::atomic::AtomicBool>,
+    /// How [`Workspace::refresh_pricing`] fetches the litellm table. The
+    /// real fetch in production; a test constructor scripts it so the
+    /// refill is drivable without the network.
+    pricing_fetcher: PricingFetcher,
     /// Idempotence guard for [`Workspace::start_catalog_scan`].
     catalog_scan_started: std::sync::atomic::AtomicBool,
     /// The installed and npm-published `claude` CLI versions, merged from
@@ -814,6 +818,40 @@ type ServiceStatusProber = Box<dyn Fn() -> ServiceStatusProbe + Send + Sync>;
 /// The real probe: the public statuspage summary.
 fn real_service_status_prober() -> ServiceStatusProber {
     Box::new(|| Box::pin(forge_agent::cloud::service_status::fetch_service_status()))
+}
+
+/// One pricing fetch, boxed so `refresh_pricing` is not generic over the
+/// future's type.
+pub type PricingFetch = std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send>>;
+
+/// How the pricing refill gets its table. `Workspace::new` passes the real
+/// litellm fetch; a test constructor passes a script, so the refill's
+/// fetch-to-rescan path is drivable without the network.
+pub type PricingFetcher = std::sync::Arc<dyn Fn() -> PricingFetch + Send + Sync>;
+
+/// The real fetch: the litellm pricing file.
+fn real_pricing_fetcher() -> PricingFetcher {
+    std::sync::Arc::new(|| Box::pin(forge_agent::env::token_usage::pricing::fetch_litellm()))
+}
+
+/// The fetch a test workspace gets: nothing to fetch, so a kicked refill
+/// has nothing to reach - the same no-network promise `new_for_test`
+/// already makes for its boot probes.
+#[cfg(any(test, feature = "testing"))]
+fn inert_pricing_fetcher() -> PricingFetcher {
+    std::sync::Arc::new(|| Box::pin(async { None }))
+}
+
+/// The fetch a constructor that names none gets.
+#[cfg(any(test, feature = "testing"))]
+fn default_pricing_fetcher() -> PricingFetcher {
+    inert_pricing_fetcher()
+}
+
+/// The fetch a constructor that names none gets.
+#[cfg(not(any(test, feature = "testing")))]
+fn default_pricing_fetcher() -> PricingFetcher {
+    real_pricing_fetcher()
 }
 
 /// Kick off the statuspage probe on the tokio runtime: one fetch, then the
@@ -1177,6 +1215,7 @@ impl Workspace {
             true,
             Some(real_cli_version_prober()),
             Some(real_service_status_prober()),
+            Some(real_pricing_fetcher()),
         )
     }
 
@@ -1190,7 +1229,18 @@ impl Workspace {
     /// boot probe starts either: a test workspace reaches no network.
     #[cfg(any(test, feature = "testing"))]
     pub fn new_for_test(config_dir: PathBuf) -> Result<Self, WorkspaceError> {
-        Self::new_for_test_impl(config_dir, None)
+        Self::new_for_test_impl(config_dir, None, None)
+    }
+
+    /// [`Workspace::new_for_test`] with the pricing refill driven by
+    /// `fetcher` rather than by the inert default, so the refill's
+    /// fetch-to-rescan path is exercisable without the network.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn new_for_test_with_pricing_fetcher(
+        config_dir: PathBuf,
+        fetcher: PricingFetcher,
+    ) -> Result<Self, WorkspaceError> {
+        Self::new_for_test_impl(config_dir, None, Some(fetcher))
     }
 
     /// [`Workspace::new_for_test`] with `prober` driving the claude version
@@ -1201,17 +1251,24 @@ impl Workspace {
         config_dir: PathBuf,
         prober: CliVersionProber,
     ) -> Result<Self, WorkspaceError> {
-        Self::new_for_test_impl(config_dir, Some(prober))
+        Self::new_for_test_impl(config_dir, Some(prober), None)
     }
 
     #[cfg(any(test, feature = "testing"))]
     fn new_for_test_impl(
         config_dir: PathBuf,
         cli_version_prober: Option<CliVersionProber>,
+        pricing_fetcher: Option<PricingFetcher>,
     ) -> Result<Self, WorkspaceError> {
         let app_support = config_dir.join("app-support");
-        let workspace =
-            Self::new_impl(config_dir, Some(app_support), false, cli_version_prober, None)?;
+        let workspace = Self::new_impl(
+            config_dir,
+            Some(app_support),
+            false,
+            cli_version_prober,
+            None,
+            pricing_fetcher,
+        )?;
         // Tests never start the listener; the boot gate reads open so
         // spawn paths are exercisable, and the I2 test flips it back to
         // closed explicitly when it needs the refusal.
@@ -1286,6 +1343,7 @@ impl Workspace {
         catalog_scan: bool,
         cli_version_prober: Option<CliVersionProber>,
         service_status_prober: Option<ServiceStatusProber>,
+        pricing_fetcher: Option<PricingFetcher>,
     ) -> Result<Self, WorkspaceError> {
         let config = load_from_dir(&config_dir)?;
 
@@ -1617,6 +1675,7 @@ impl Workspace {
             systemone,
             catalog,
             pool: Mutex::new(HashMap::new()),
+            pricing_fetcher: pricing_fetcher.unwrap_or_else(default_pricing_fetcher),
             #[cfg(any(test, feature = "testing"))]
             test_spawn_handle: Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]
@@ -6653,7 +6712,7 @@ impl Workspace {
         if fresh {
             return false;
         }
-        let Some(json) = forge_agent::env::token_usage::pricing::fetch_litellm().await else {
+        let Some(json) = (self.pricing_fetcher)().await else {
             return false;
         };
         let workspace = Arc::clone(self);

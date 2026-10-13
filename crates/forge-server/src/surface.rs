@@ -713,6 +713,22 @@ models_dir = \"/tmp/forge-dictate-models\"
         (Arc::new(workspace), dir)
     }
 
+    /// The fixture with the pricing refill driven by `fetcher`: the cache
+    /// starts empty, so a scan answers unpriced and kicks the fetch, and
+    /// the test owns what the fetch answers and when.
+    pub(crate) fn workspace_with_pricing_fetcher(
+        fetcher: forge_workspace::PricingFetcher,
+    ) -> (Arc<Workspace>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let forge = dir.path().join("forge");
+        std::fs::create_dir_all(&forge).expect("forge/");
+        std::fs::write(forge.join("forge.toml"), CONFIG).expect("write forge.toml");
+        let workspace =
+            Workspace::new_for_test_with_pricing_fetcher(dir.path().to_owned(), fetcher)
+                .expect("workspace");
+        (Arc::new(workspace), dir)
+    }
+
     /// The same fixture with a pricing snapshot already cached: the row is
     /// written into the store before the workspace opens it, the way the
     /// boot load expects to find it, so a scan prices from it with nothing

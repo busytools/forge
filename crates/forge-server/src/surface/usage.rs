@@ -168,6 +168,91 @@ mod tests {
         );
     }
 
+    /// A litellm-shaped table for the one model the record names:
+    /// 1e-6 dollars per token makes the record's tokens carry a
+    /// nonzero cost.
+    const PRICING: &str = r#"{
+        "claude-opus-5": {
+            "input_cost_per_token": 0.000001,
+            "output_cost_per_token": 0.000001,
+            "cache_read_input_token_cost": 0.000001,
+            "cache_creation_input_token_cost": 0.000001
+        }
+    }"#;
+
+    /// **The refill, driven for real**: a cold scan answers unpriced and
+    /// kicks the fetch; the fetch is held open so the guard can be shown to
+    /// admit exactly one more kick while it is out; its landing re-scans;
+    /// and the replacement is observable because the next ask lands inside
+    /// the held window - it cannot have re-scanned itself, so priced
+    /// figures there can only be the report the refill left.
+    #[tokio::test]
+    async fn a_refill_lands_a_priced_report_for_the_next_ask() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        // One permit, released by the test: the fetch parks on it until the
+        // guard has been probed.
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let counter = Arc::clone(&calls);
+        let held = Arc::clone(&gate);
+        let fetcher: forge_workspace::PricingFetcher = Arc::new(move || {
+            counter.fetch_add(1, Ordering::AcqRel);
+            let held = Arc::clone(&held);
+            Box::pin(async move {
+                let Ok(_permit) = held.acquire().await else {
+                    return None;
+                };
+                Some(PRICING.to_owned())
+            })
+        });
+
+        let (workspace, dir) = crate::surface::testing::workspace_with_pricing_fetcher(fetcher);
+        let pool = dir.path().join("projects").join("-tmp-proj");
+        std::fs::create_dir_all(&pool).expect("the pool's project dir");
+        std::fs::write(pool.join("a-session.jsonl"), A_RECORD).expect("write the record");
+        let surface = surface(workspace);
+
+        let first = surface.usage().await.expect("the first scan answers");
+        assert!(!first.pricing_available, "precondition: the cache is cold");
+
+        // The kicked fetch starts and parks on the gate.
+        for _ in 0..200 {
+            if calls.load(Ordering::Acquire) > 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert_eq!(calls.load(Ordering::Acquire), 1, "the scan's own kick did not fetch");
+
+        // Two more kicks while the fetch is out: the guard admits neither.
+        surface.refill_pricing();
+        surface.refill_pricing();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(calls.load(Ordering::Acquire), 1, "the stampede guard admitted a second fetch");
+
+        // The fetch lands; its re-scan replaces the held report.
+        gate.add_permits(1);
+        let mut priced = false;
+        for _ in 0..200 {
+            // Each ask inside the held window answers the report the refill
+            // left - a priced answer IS the replacement.
+            if surface.usage().await.expect("the poll answers").pricing_available {
+                priced = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(priced, "the refill's landing never reached the cache");
+        let report = surface.usage().await.expect("the last ask answers");
+        assert!(
+            report.lifetime.total.cost_usd > 0.0,
+            "and the replaced report prices the record: {}",
+            report.lifetime.total.cost_usd,
+        );
+        assert_eq!(calls.load(Ordering::Acquire), 1, "the landed refill refetched");
+    }
+
     /// **A cached price table prices the scan**, which is the half of the
     /// pricing story that is testable offline: the fetch itself crosses the
     /// network and is the terminal's behaviour re-homed (`refill_pricing`),
@@ -175,17 +260,6 @@ mod tests {
     /// finds nothing to fetch and never leaves the machine.
     #[tokio::test]
     async fn a_cached_price_table_prices_the_report() {
-        // A litellm-shaped table for the one model the record names:
-        // 1e-6 dollars per token makes the record's tokens carry a
-        // nonzero cost.
-        const PRICING: &str = r#"{
-            "claude-opus-5": {
-                "input_cost_per_token": 0.000001,
-                "output_cost_per_token": 0.000001,
-                "cache_read_input_token_cost": 0.000001,
-                "cache_creation_input_token_cost": 0.000001
-            }
-        }"#;
         let (workspace, dir) = crate::surface::testing::workspace_with_pricing(PRICING);
         let pool = dir.path().join("projects").join("-tmp-proj");
         std::fs::create_dir_all(&pool).expect("the pool's project dir");
