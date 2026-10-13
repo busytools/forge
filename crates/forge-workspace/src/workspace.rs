@@ -10495,7 +10495,9 @@ provider = "anthropic"
 
     /// A seat with a live domain session whose dispatch is captured rather
     /// than routed, plus the workspace's update stream. The caller folds the
-    /// failure it wants - the arming under test - and steps the sweep.
+    /// failure it wants - the arming under test - then calls
+    /// [`Workspace::fire_auto_continue`], the way the session task does the
+    /// moment that failure lands.
     fn nudge_seat(
         dir: &tempfile::TempDir,
         label: &str,
