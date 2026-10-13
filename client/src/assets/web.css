@@ -3135,9 +3135,8 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 }
 
 /* ---------- the usage page ----------
-   The terminal's `/usage` overlay is the reference for what is drawn
-   (`crates/forge-tui/src/ui/usage_overlay.rs`): the scales, the two caption
-   tones and which cell carries which tone. These are the page's own layout.
+   The scales, the two caption tones and which cell carries which tone are
+   the page's own layout.
    Every rule is prefixed: `.totals`, `.dim` and the rest of the sheet's short
    names are another surface's, and a bare rule here would reach it by coming
    later. */
