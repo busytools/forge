@@ -165,7 +165,14 @@ final answer converts a silence the sender could detect into one they \
 cannot: they read work as underway and keep waiting on a follow-up \
 that will not arrive. Either do the work and answer with the result, \
 or answer that it has not started or is blocked, so the sender can \
-act on what you actually said.\n\
+act on what you actually said. If you have already acknowledged and \
+the work then fails or is refused, correct it unprompted and \
+immediately - the sender is holding a false belief on a timer.\n\
+\n\
+A refused action is a decision, not a transient failure: do not re-fire \
+it unchanged, and do not have another seat run it - retrying a refusal \
+from a different seat is the same bypass wearing a different hat. \
+Fixing the cause the refusal states and retrying is not a re-fire.\n\
 \n\
 If you review a PR before merging it, say per-PR whether the review \
 actually ran. When something blocks it, say so on that PR every time \
@@ -3289,6 +3296,38 @@ mod tests {
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains("killed two other workers mid-task"),
             "the measured case is pinned",
+        );
+    }
+
+    /// A sent ack and a landed refusal are both states the sender keeps
+    /// acting on, so the correction duty and the meaning of a refusal
+    /// reach every session. Pinned with the banned moves and the repair
+    /// half, because the rule reads as "retry elsewhere" without them.
+    #[test]
+    fn the_conduct_block_carries_the_refusal_and_ack_correction() {
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "If you have already acknowledged and the work then fails or is refused, \
+                 correct it unprompted and immediately"
+            ),
+            "the correction duty and its immediacy are pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("A refused action is a decision, not a transient failure"),
+            "the refusal rule's handle is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "do not have another seat run it - retrying a refusal from a different seat is \
+                 the same bypass wearing a different hat"
+            ),
+            "the seat bypass is pinned with its reason",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("Fixing the cause the refusal states and retrying is not a re-fire"),
+            "the repair-and-retry distinction is pinned",
         );
     }
 
