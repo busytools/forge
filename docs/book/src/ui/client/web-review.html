@@ -162,6 +162,13 @@
   .rv-txarea { display: block; width: 100%; background: var(--s1); color: var(--text);
     border: 1px solid var(--ctl); border-radius: 7px; font-family: var(--ui);
     font-size: var(--fs-base); padding: 6px 8px; min-height: 46px; }
+  /* The comment box's dictation control: the composer's own mic, at the far
+     end of the acts, and the line a take it could not start leaves. */
+  .ic { width: 15px; height: 15px; flex: 0 0 15px; display: block; }
+  .mic { flex: none; width: 24px; height: 24px; margin-left: auto;
+    display: grid; place-items: center; color: var(--dim); }
+  .dictateline { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+    padding-top: 6px; }
 
   /* ---------- the conversation half ---------- */
   .round { border: 1px solid var(--line); border-radius: var(--r); background: var(--s1);
@@ -224,6 +231,11 @@
 </style>
 </head>
 <body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="10" height="12" x="7" y="3" rx="5"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></symbol>
+</svg>
+
 <main class="wrap">
   <header class="top">
     <a class="back" href="#">&#8249; lead</a>
@@ -374,6 +386,7 @@
                     <div class="rv-acts">
                       <span class="rv-a on">comment</span>
                       <span class="rv-a">cancel</span>
+                      <span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span>
                     </div>
                   </article>
                 </div>

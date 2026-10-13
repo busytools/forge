@@ -3280,6 +3280,16 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
   color: var(--text); border: 1px solid var(--line); border-radius: 7px;
   font-family: var(--ui); font-size: var(--fs-base); padding: 6px 8px; resize: vertical; }
 .review .rv-txarea:focus { outline: none; border-color: var(--ctl); }
+/* The comment box holds a take's settings panel, so it is the card the panel
+   hangs off - the composer's own arrangement, over a box of this page's. */
+.review .rv-thread.comment { position: relative; }
+/* The mic sits where the composer's does: at the far end of the controls. */
+.review .rv-acts .mic { margin-left: auto; }
+/* What became of a take the box could not start, in the composer's own tones. */
+.review .rv-dictateline { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+  padding-top: 6px; }
+.review .rv-dictateline.bad { color: var(--bad); }
+.review .rv-dictateline.warn { color: var(--warn); }
 .review .rv-cc { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
   border: 1px solid var(--line); border-radius: 99px; padding: 0 8px; }
 

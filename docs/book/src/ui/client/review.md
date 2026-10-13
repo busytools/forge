@@ -176,6 +176,19 @@ Every write re-reads the record when it lands, because nothing pushes a
 review change: the drawn round, the drawn thread and the header are always
 the store's own answer rather than the page's guess at what the write did.
 
+**The comment box dictates.** It wears the composer's own mic control - a
+press starts a take, a hold opens what dictation is set to - over the take
+the page owns, so a take begun here is addressed to the seat this review
+belongs to and the server sees an ordinary take on that seat. The words land
+at the end of the box that is open when the take settles; a notice about a
+take this page never watched (a page that attached or reloaded on the
+previous take's words) is not placed at all, and a take that could not start
+says so in the box it was pressed in, for as long as that box is the one
+open - the line belongs to the attempt, not to the next line the reader
+opens. The box honours the push-to-talk key while it is open - the same
+press and release the composer's box reads - and the reply boxes in the two
+halves take typing alone.
+
 **The write's outcome is read.** The two commands that answer through a
 reply carry the server's own answer back - the store's yes, or the word a
 refusal came as - and a dead socket throws before anything goes; either way
