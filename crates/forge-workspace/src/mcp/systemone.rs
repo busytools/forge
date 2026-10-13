@@ -229,7 +229,9 @@ impl Tool for AskChoice {
          right. Boundaries: one question per call; the model sees only `state` and the options \
          you list, nothing else reaches it; probabilities are estimates, not guarantees; the \
          model can favour whichever option is listed first, so when an answer matters, re-ask \
-         with the options reordered and check that it holds."
+         with the options reordered and check that it holds. When you run that reorder control, \
+         say so in your text - the two asks draw as two cards, and the second one reads as a \
+         duplicate otherwise."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -405,6 +407,27 @@ mod tests {
                 "a routing call with several plausible owners and no evidence separating them"
             ),
             "the routing moment's evidence test is pinned: {}",
+            choice.description()
+        );
+    }
+
+    /// The choice text asks for the reorder control and tells the model to
+    /// name it in the text. The two sentences ship as a pair: without the
+    /// naming note the second card for a re-asked question draws as a bare
+    /// duplicate, so a trim that drops either half fails here.
+    #[test]
+    fn the_choice_description_names_its_reorder_control() {
+        let choice = AskChoice { facade: MockSystemOneFacade::new().into_arc() };
+        assert!(
+            choice
+                .description()
+                .contains("re-ask with the options reordered and check that it holds"),
+            "the reorder-control cue is pinned: {}",
+            choice.description()
+        );
+        assert!(
+            choice.description().contains("say so in your text"),
+            "the note that names the reorder control is pinned: {}",
             choice.description()
         );
     }
