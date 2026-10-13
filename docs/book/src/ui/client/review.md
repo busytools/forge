@@ -153,8 +153,9 @@ belongs to and the server sees an ordinary take on that seat. The words land
 at the end of the box that is open when the take settles; a notice about a
 take this page never watched (a page that attached or reloaded on the
 previous take's words) is not placed at all, and a take that could not start
-says so in the box it was pressed in. The reply boxes in the two halves take
-typing alone.
+says so in the box it was pressed in. The box honours the push-to-talk key
+while it is open - the same press and release the composer's box reads -
+and the reply boxes in the two halves take typing alone.
 
 **The write's outcome is read.** The two commands that answer through a
 reply reject on a refusal, and a dead socket throws before anything goes;

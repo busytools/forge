@@ -21,7 +21,16 @@
   import DictateControl from '../composer/DictateControl.svelte';
   import DictationPanel from '../composer/DictationPanel.svelte';
   import Field from '../composer/Field.svelte';
-  import type { Bind, Mode } from '../composer/dictate-key';
+  import {
+    boundCode,
+    down,
+    isBareModifier,
+    markChorded,
+    up,
+    type Bind,
+    type Held,
+    type Mode,
+  } from '../composer/dictate-key';
   import { axesFor, deviceFor, rememberAxes, rememberDevice } from '../composer/dictation';
   import type { ComposerConnection } from '../composer/view';
   import { DEFAULT_AXES, type DictateAxes } from '../session/wire';
@@ -83,6 +92,53 @@
     deviceEdit = next;
     rememberDevice(key, next);
   }
+
+  /** The bound key's press in flight, from its press to its release. */
+  let pressed: Held | null = null;
+  /** Whether this platform delivers Cmd, which is what a binding names. */
+  const mac = navigator.platform.toLowerCase().includes('mac');
+
+  /**
+   * The push-to-talk key, which the composer's box honours and this one
+   * does too - but only while this box is open, because the box is where a
+   * take's words land and a page with no box has nowhere to put them. The
+   * binding is a bare modifier, so it arrives wherever the focus is.
+   */
+  $effect(() => {
+    const onDown = (event: KeyboardEvent): void => {
+      // A held key repeats, and a repeat carries no instruction - without
+      // this a toggle take stops once per repeat.
+      if (event.repeat) return;
+      if (event.code !== boundCode(bind, mac)) {
+        // Any other KEY while the press is down makes it a chord, and the
+        // chord's release discards what the press began. A bare modifier is
+        // not a key: those go through unchorded.
+        if (!isBareModifier(event.key)) pressed = markChorded(pressed);
+        return;
+      }
+      const recording = dictate.take !== null || dictate.held;
+      const step = down(pressed, recording, Date.now(), mode);
+      pressed = step.held;
+      if (step.action === 'begin') {
+        // The shortcut is how a reader begins without the mouse, so the
+        // transcript lands where their keys already are.
+        field?.focus();
+      }
+      if (step.action !== null) dictate.act(step.action);
+    };
+    const onUp = (event: KeyboardEvent): void => {
+      if (event.code !== boundCode(bind, mac)) return;
+      const step = up(pressed, Date.now(), mode);
+      pressed = step.held;
+      if (step.action !== null) dictate.act(step.action);
+    };
+    window.addEventListener('keydown', onDown, true);
+    window.addEventListener('keyup', onUp);
+    return () => {
+      window.removeEventListener('keydown', onDown, true);
+      window.removeEventListener('keyup', onUp);
+    };
+  });
 
   /**
    * The key that belongs to this box: a live take consumes Esc wherever the

@@ -199,3 +199,44 @@ describe('the mic', () => {
     expect(document.activeElement, 'and the caret is back in the box').toBe(at.area());
   });
 });
+
+describe('the bound key', () => {
+  /**
+   * The push-to-talk key as this platform delivers it: the config binds the
+   * right Cmd, and the Control key is what stands in for it off macOS -
+   * which is the platform jsdom reports.
+   */
+  function bound(kind: 'keydown' | 'keyup'): void {
+    window.dispatchEvent(
+      new KeyboardEvent(kind, { code: 'ControlRight', key: 'Control', bubbles: true }),
+    );
+    flushSync();
+  }
+
+  it('begins a take on the box, and submits when the press was a hold', async () => {
+    vi.useFakeTimers();
+    const at = drawn();
+    bound('keydown');
+    // The microphone's open is a promise, not a timer: let it land before
+    // the release is read as this press's own.
+    await vi.advanceTimersByTimeAsync(1);
+    expect(at.shared.sent[0]?.command).toEqual({
+      dictate_stream: { key: SEAT, options: DEFAULT_AXES },
+    });
+
+    vi.advanceTimersByTime(400);
+    bound('keyup');
+    expect(at.shared.sent[1]?.command, 'a long press transcribes on the release').toEqual({
+      dictate_stop: { key: SEAT, submit: true },
+    });
+  });
+
+  it('brings the keyboard to the box before the take starts', async () => {
+    const at = drawn();
+    at.area().blur();
+    bound('keydown');
+    await vi.waitUntil(() => at.dictate.take !== null);
+
+    expect(document.activeElement, 'the transcript lands where the keys are').toBe(at.area());
+  });
+});
