@@ -406,7 +406,6 @@
     void box.spot;
     void replying;
     void busy;
-    void now;
     const observers: MutationObserver[] = [];
     const draw = (el: HTMLDivElement, path: string) => {
       // Rows come and go under Svelte's own section swap as well as under this
@@ -545,7 +544,16 @@
     const host = document.createElement('div');
     const held = mount(ThreadTurn, {
       target: host,
-      props: { turn, rounds: reviews, index, now },
+      // The clock stays live through the getter: a row the reconciler keeps
+      // is never rebuilt, so a value here would freeze its age chip.
+      props: {
+        turn,
+        rounds: reviews,
+        index,
+        get now() {
+          return now;
+        },
+      },
     });
     mounts.hold(host, () => void unmount(held));
     return host;
