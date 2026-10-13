@@ -409,7 +409,10 @@ describe('the tasks card', () => {
     ]);
   });
 
-  it('draws a list it cannot read past the clock line as raw', () => {
+  it('falls to the raw row for a body past the clock line that is not JSON', () => {
+    // The failing half is the BODY, not the clock line - the read steps over
+    // the line and the body does not parse. The helper's own null contract is
+    // pinned in result-json.test.ts, which the card layer cannot see.
     expect(
       forgeCardOf(
         'mcp__forge__tasks__list',
