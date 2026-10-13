@@ -8,7 +8,6 @@
 pub mod cli_version;
 pub mod documents;
 pub mod file_index;
-pub mod gh_issue;
 pub mod git_command;
 pub mod git_diff;
 pub mod lsp_path;

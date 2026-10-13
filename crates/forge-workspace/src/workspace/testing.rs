@@ -536,7 +536,6 @@ impl Workspace {
             model: None,
             env: std::collections::HashMap::new(),
             max_workers,
-            issues: true,
             permission_mode: forge_primitives::permission::PermissionMode::Auto,
         });
     }
