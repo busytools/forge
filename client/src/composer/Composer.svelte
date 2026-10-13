@@ -19,18 +19,9 @@
   import Dock from './Dock.svelte';
   import Field from './Field.svelte';
   import { LIST_ID, offer, rowId, type Sources } from './autocomplete';
-  import {
-    boundCode,
-    down,
-    isBareModifier,
-    markChorded,
-    up,
-    type Action,
-    type Held,
-  } from './dictate-key';
   import { axesFor, deviceFor, rememberAxes, rememberDevice } from './dictation';
   import { focusOf, type Where } from './editors';
-  import { Dictation } from './dictate.svelte';
+  import { bindPushToTalk, Dictation } from './dictate.svelte';
   import { FORGE_COMMANDS } from './forge-commands';
   import {
     blocked,
@@ -185,11 +176,6 @@
       wireDone = counts;
     },
   });
-
-  /** The bound key's press in flight, from its press to its release. */
-  let pressed: Held | null = null;
-  /** Whether this platform delivers Cmd, which is what a binding names. */
-  const mac = navigator.platform.toLowerCase().includes('mac');
 
   const composer = $derived(composerState(record));
   /** This seat's own key, which is what the pinned-row store is read under. */
@@ -767,81 +753,60 @@
   }
 
   /**
-   * What the bound key asks for, with the one thing that is this box's own:
-   * **the keyboard comes to the box before the take starts**: the shortcut is
-   * how a reader begins without the mouse, so the transcript lands where
-   * their keys already are.
+   * The push-to-talk key, shared with every other surface that takes typing:
+   * the same binding, the same press-and-release rule, and the same gate on
+   * the install offering dictation at all.
    *
-   * The guard is insurance rather than a live condition: while a prompt has
-   * the slot the composer's field is morphed away, so there is no element to
-   * focus and no observable difference to pin. It becomes load-bearing the
-   * day a morph keeps the field mounted under the dock.
+   * The one thing that is this box's own is where a begin puts the keyboard:
+   * **it comes to the box before the take starts**, because the shortcut is
+   * how a reader begins without the mouse and the transcript lands where
+   * their keys already are. The guard is insurance rather than a live
+   * condition: while a prompt has the slot the composer's field is morphed
+   * away, so there is no element to focus and no observable difference to
+   * pin. It becomes load-bearing the day a morph keeps the field mounted
+   * under the dock.
    */
-  function beginOr(action: Action): void {
-    if (action === 'begin' && focusOf(where) === 'composer') field?.focus();
-    dictate.act(action);
-  }
+  bindPushToTalk({
+    dictate,
+    offered: () => dictation,
+    bind: () => composer.bind,
+    mode: () => composer.mode,
+    onBegin: () => {
+      if (focusOf(where) === 'composer') field?.focus();
+    },
+  });
 
   /**
-   * The push-to-talk key, which is how a take begins and ends.
-   *
-   * Registered on the window rather than on the field: the binding is a bare
-   * modifier, so it arrives wherever the focus happens to be, and the view
-   * this client replaced registered its own handler globally for the same
-   * reason. What the key means is read when one arrives rather than here, so
-   * this registers once instead of re-registering on every frame the record
-   * moves.
+   * The Escape a live take consumes, and the panel's own: registered on the
+   * window rather than on the field, so it arrives wherever the focus is -
+   * the same rule the view this client replaced applied. It stays here rather
+   * than moving into the shared mic, because this page draws its dock in the
+   * control's place while a prompt holds the slot and the key must keep
+   * working then.
    */
   $effect(() => {
     if (!dictation) return;
     const onDown = (event: KeyboardEvent): void => {
-      // A held key repeats, and a repeat carries no instruction - the same rule
-      // the view this client replaced applied, and without it a toggle take
-      // stops once per repeat.
-      if (event.repeat) return;
-      if (event.key === 'Escape') {
-        // A live take consumes Esc, the same rule the view this client replaced
-        // applied: the surfaces under it never see the key, so one press is one
-        // command and the list a field would close stays where it is. A take
-        // still OPENING counts, for the same reason a reader cannot tell the
-        // two apart.
-        if (composer.take !== null || dictate.opening) {
-          event.preventDefault();
-          event.stopPropagation();
-          dictate.act('cancel');
-        } else if (dictate.panel) {
-          // The next Escape belongs to the panel, which is the surface that is
-          // open rather than a take that is not.
-          event.preventDefault();
-          event.stopPropagation();
-          dictate.panel = false;
-          field?.focus();
-        }
-        return;
+      if (event.key !== 'Escape') return;
+      // A live take consumes Esc: the surfaces under it never see the key, so
+      // one press is one command and the list a field would close stays where
+      // it is. A take still OPENING counts, for the same reason a reader
+      // cannot tell the two apart.
+      if (composer.take !== null || dictate.opening) {
+        event.preventDefault();
+        event.stopPropagation();
+        dictate.act('cancel');
+      } else if (dictate.panel) {
+        // The next Escape belongs to the panel, which is the surface that is
+        // open rather than a take that is not.
+        event.preventDefault();
+        event.stopPropagation();
+        dictate.panel = false;
+        field?.focus();
       }
-      if (event.code !== boundCode(composer.bind, mac)) {
-        // Any other KEY while the press is down makes it a chord, and the
-        // chord's release discards what the press began. A bare modifier is
-        // not a key: those go through unchorded.
-        if (!isBareModifier(event.key)) pressed = markChorded(pressed);
-        return;
-      }
-      const step = down(pressed, composer.take !== null, Date.now(), composer.mode);
-      pressed = step.held;
-      if (step.action !== null) beginOr(step.action);
-    };
-    const onUp = (event: KeyboardEvent): void => {
-      if (event.code !== boundCode(composer.bind, mac)) return;
-      const step = up(pressed, Date.now(), composer.mode);
-      pressed = step.held;
-      if (step.action !== null) beginOr(step.action);
     };
     window.addEventListener('keydown', onDown, true);
-    window.addEventListener('keyup', onUp);
-    return () => {
-      window.removeEventListener('keydown', onDown, true);
-      window.removeEventListener('keyup', onUp);
-    };
+    return () => window.removeEventListener('keydown', onDown, true);
   });
 
   /**

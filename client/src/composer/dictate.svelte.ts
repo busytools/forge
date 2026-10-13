@@ -17,9 +17,86 @@ import { untrack } from 'svelte';
 import type { DictateAxes } from '../session/wire';
 import type { SessionSlot } from '../wire/types';
 import { boxKey } from './box.svelte';
-import type { Action } from './dictate-key';
+import {
+  boundCode,
+  down,
+  isBareModifier,
+  markChorded,
+  up,
+  type Action,
+  type Bind,
+  type Held,
+  type Mode,
+} from './dictate-key';
 import { rememberDefaultDevice } from './dictation';
 import { busyLine, LocalTake, type TakeConnection } from './take';
+
+/** What registering the push-to-talk key needs of one surface. */
+export interface PushToTalk {
+  /** The take the key begins and ends. */
+  dictate: Dictation;
+  /** Whether this install offers dictation at all. */
+  offered: () => boolean;
+  /** The push-to-talk key `forge.toml` configured. */
+  bind: () => Bind;
+  /** How a press of it maps onto a take, from the same section. */
+  mode: () => Mode;
+  /**
+   * Where the keyboard goes when a press begins a take: the shortcut is how a
+   * reader begins without the mouse, so the transcript lands where their keys
+   * already are.
+   */
+  onBegin: () => void;
+}
+
+/**
+ * The push-to-talk key, as one surface registers it.
+ *
+ * **Shared, so every surface that takes typing reads the key the same way**:
+ * the configured binding, the mode's press-and-release rule, and the
+ * install's own gate - a surface whose mic is not offered must not start
+ * takes from the key either. Registered on the window, because the binding
+ * is a bare modifier and arrives wherever the focus is; removed when the
+ * surface goes.
+ */
+export function bindPushToTalk(wiring: PushToTalk): void {
+  /** Whether this platform delivers Cmd, which is what a binding names. */
+  const mac = navigator.platform.toLowerCase().includes('mac');
+  /** The key's press in flight, from its press to its release. */
+  let pressed: Held | null = null;
+
+  $effect(() => {
+    if (!wiring.offered()) return;
+    const onDown = (event: KeyboardEvent): void => {
+      // A held key repeats, and a repeat carries no instruction - without
+      // this a toggle take stops once per repeat.
+      if (event.repeat) return;
+      if (event.code !== boundCode(wiring.bind(), mac)) {
+        // Any other KEY while the press is down makes it a chord, and the
+        // chord's release discards what the press began. A bare modifier is
+        // not a key: those go through unchorded.
+        if (!isBareModifier(event.key)) pressed = markChorded(pressed);
+        return;
+      }
+      const step = down(pressed, wiring.dictate.held, Date.now(), wiring.mode());
+      pressed = step.held;
+      if (step.action === 'begin') wiring.onBegin();
+      if (step.action !== null) wiring.dictate.act(step.action);
+    };
+    const onUp = (event: KeyboardEvent): void => {
+      if (event.code !== boundCode(wiring.bind(), mac)) return;
+      const step = up(pressed, Date.now(), wiring.mode());
+      pressed = step.held;
+      if (step.action !== null) wiring.dictate.act(step.action);
+    };
+    window.addEventListener('keydown', onDown, true);
+    window.addEventListener('keyup', onUp);
+    return () => {
+      window.removeEventListener('keydown', onDown, true);
+      window.removeEventListener('keyup', onUp);
+    };
+  });
+}
 
 /** A line a surface draws about a take, in its own row. */
 export interface TakeLine {

@@ -14,7 +14,7 @@
    * row, which is what makes them span the table in both modes.
    */
   import { DiffView, DiffModeEnum } from '@git-diff-view/svelte';
-import { mount, unmount, type ComponentProps } from 'svelte';
+  import { mount, unmount, type ComponentProps } from 'svelte';
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import { VList, type VListHandle } from 'virtua/svelte';
   import { boxKey } from '../composer/box.svelte';
@@ -481,15 +481,6 @@ import { mount, unmount, type ComponentProps } from 'svelte';
         mounts.release(row);
         row.remove();
       }
-      // Whatever left the DOM took its mounted card with it: a row the
-      // viewer re-rendered away, a folded file, a scope that moved on. The
-      // component is still live until it is unmounted, and it outlives its
-      // row otherwise.
-      for (const [target, card] of cards) {
-        if (target.isConnected) continue;
-        cards.delete(target);
-        void unmount(card);
-      }
     };
     for (const [path, el] of Object.entries(canvases)) {
       if (el === undefined || el === null) continue;
@@ -673,17 +664,6 @@ import { mount, unmount, type ComponentProps } from 'svelte';
     return insertRow(at, side, mode, wrap);
   }
 
-  /**
-   * The comment box: a component mounted into the row, over the box state the
-   * page holds.
-   *
-   * Its own card is drawn by `CommentCard` - the words, the two acts and the
-   * mic - because a row built from `createElement` cannot wear the shared
-   * dictation control, and re-deriving one here is what the review's box and
-   * the composer's box are meant to share.
-   */
-  const cards = new SvelteMap<HTMLElement, ReturnType<typeof mount>>();
-
   function commentSpot(): ReviewSpot | null {
     return box.spot;
   }
@@ -718,27 +698,36 @@ import { mount, unmount, type ComponentProps } from 'svelte';
     });
   }
 
+  /**
+   * The comment box: a component mounted into the row, over the box state the
+   * page holds.
+   *
+   * Its own card is drawn by `CommentCard` - the words, the two acts and the
+   * mic - because a row built from `createElement` cannot wear the shared
+   * dictation control, and re-deriving one here is what the review's box and
+   * the composer's box are meant to share. The root is held by the mount it
+   * was put into, so the row leaving takes the card and its window listeners
+   * with it.
+   */
   function composerRow(at: HTMLTableRowElement, spot: ReviewSpot): HTMLTableRowElement {
     const wrap = document.createElement('div');
     wrap.className = 'rv-inline';
-    cards.set(
-      wrap,
-      mount(CommentCard, {
-        target: wrap,
-        props: {
-          spot,
-          box,
-          slot,
-          dictate,
-          dictation,
-          connection,
-          bind: composer.bind,
-          mode: composer.mode,
-          oncomment: fileComment,
-          oncancel: closeBox,
-        },
-      }),
-    );
+    const card = mount(CommentCard, {
+      target: wrap,
+      props: {
+        spot,
+        box,
+        slot,
+        dictate,
+        dictation,
+        connection,
+        bind: composer.bind,
+        mode: composer.mode,
+        oncomment: fileComment,
+        oncancel: closeBox,
+      },
+    });
+    mounts.hold(wrap, () => void unmount(card));
     return insertRow(at, spot.side, mode, wrap);
   }
 </script>

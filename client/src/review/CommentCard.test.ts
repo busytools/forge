@@ -52,7 +52,9 @@ interface Drawn {
 }
 
 /** The card over a live driver, as the canvas mounts one. */
-function drawn(over: { line?: { tone: string; text: string } | null; busy?: boolean } = {}): Drawn {
+function drawn(
+  over: { line?: { tone: string; text: string } | null; busy?: boolean; dictation?: boolean } = {},
+): Drawn {
   const shared: Wire = fakeWire();
   const commented: string[] = [];
   let cancelled = 0;
@@ -74,6 +76,7 @@ function drawn(over: { line?: { tone: string; text: string } | null; busy?: bool
       slot: SEAT,
       busy: over.busy ?? false,
       line: over.line ?? null,
+      dictation: over.dictation ?? true,
       oncomment: (text: string) => {
         commented.push(text);
       },
@@ -241,6 +244,16 @@ describe('the bound key', () => {
     expect(at.shared.sent[1]?.command, 'a long press transcribes on the release').toEqual({
       dictate_stop: { key: SEAT, submit: true },
     });
+  });
+
+  it('starts nothing on an install that cannot dictate', async () => {
+    // The mic is not drawn there, and the key must not be a second door to a
+    // take the install cannot run.
+    const at = drawn({ dictation: false });
+    bound('keydown');
+    await Promise.resolve();
+
+    expect(at.shared.sent, 'the key honours the install gate the mic does').toEqual([]);
   });
 
   it('brings the keyboard to the box before the take starts', async () => {
