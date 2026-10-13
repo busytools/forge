@@ -19,11 +19,5 @@
       >
       <td class="diff-line-content">one</td>
     </tr>
-    <tr class="diff-line">
-      <td class="diff-line-num"
-        ><span data-line-old-num="2">2</span><span data-line-new-num="2">2</span></td
-      >
-      <td class="diff-line-content">two</td>
-    </tr>
   </tbody>
 </table>
