@@ -484,6 +484,7 @@ describe('axe over the rendered pages', () => {
       props: {
         slot: { org: 'TestOrg', project: 'proj', label: 'lead' },
         connection: untouched(),
+        dictation: false,
       },
     }).body;
     expect(await idsOf(html)).toEqual([]);

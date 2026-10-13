@@ -182,8 +182,10 @@
   {#if connection !== null}
     <!-- The page subscribes the seat itself, as the models page subscribes its
          own subject: its states (a refused seat, the two halves failing apart,
-         nothing filed) belong to it and nothing outside it draws them. -->
-    <Review {connection} slot={route.slot} />
+         nothing filed) belong to it and nothing outside it draws them. Its
+         comment box carries the same dictation control the composer does, so
+         the install's own answer comes down with it. -->
+    <Review {connection} slot={route.slot} dictation={dictate} />
   {:else}
     <Connect {settings} initialAddress={address} launchFailure={failure} {notice} {onconnect} />
   {/if}

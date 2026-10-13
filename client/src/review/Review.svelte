@@ -1,6 +1,11 @@
 <script lang="ts">
   import { SvelteSet } from 'svelte/reactivity';
+  import { boxKey } from '../composer/box.svelte';
+  import { Dictation, type TakeLine } from '../composer/dictate.svelte';
+  import { axesFor, deviceFor } from '../composer/dictation';
   import { hrefForSlot } from '../routes';
+  import { DEFAULT_AXES } from '../session/wire';
+  import { composerFrom } from '../composer/wire';
   import { watchSession, type SessionRead } from '../session/live';
   import type { SessionRecord } from '../session/wire';
   import type { Connection } from '../socket';
@@ -48,14 +53,23 @@
    * as itself, because a read that answered something is not a read that
    * failed and a page that drew neither would be silent about it.
    */
-  let { connection, slot }: { connection: Connection | null; slot: SessionSlot } = $props();
+  let {
+    connection,
+    slot,
+    dictation,
+  }: {
+    /** The socket this page reads and writes through. Never null: the shell
+     *  mounts the page only with one open. */
+    connection: Connection;
+    slot: SessionSlot;
+    /** Whether this install can dictate at all, which gates every mic. */
+    dictation: boolean;
+  } = $props();
 
   let read = $state<SessionRead>({ wire: null, refused: null });
 
   $effect(() => {
-    const open = connection;
-    if (open === null) return;
-    return watchSession(open, slot, false).subscribe(($next) => {
+    return watchSession(connection, slot, false).subscribe(($next) => {
       read = $next;
     });
   });
@@ -101,6 +115,45 @@
   /** The conversation half's reply box, one thread at a time. */
   let answering = $state<string | null>(null);
   let answerText = $state('');
+
+  /**
+   * The line a take this page could not start left behind, drawn in the box
+   * the mic was pressed in.
+   */
+  let dictateLine = $state<TakeLine | null>(null);
+
+  /** What `forge.toml` set, which a take with no pick of its own records under. */
+  const defaults = $derived(connection.settings()?.dictate ?? DEFAULT_AXES);
+
+  /**
+   * The seat's composer as the composer itself narrows it: the take a landing
+   * is read off, the notice, and the key and mode the settings panel states.
+   */
+  const composer = $derived(composerFrom(record?.composer));
+
+  /**
+   * The take this page owns, the same one the composer wears: the microphone
+   * is the client's own, so a take started here is addressed to this seat and
+   * the server sees an ordinary take on it - the box's own mic and the words
+   * are the client's halves of the bargain, and only the client knows which
+   * box a landing belongs in.
+   */
+  const dictate = new Dictation({
+    connection: () => connection,
+    seat: () => slot,
+    shown: () => composer.take !== null,
+    options: () => axesFor(boxKey(slot), defaults),
+    device: () => deviceFor(boxKey(slot)),
+    onStart: () => {
+      dictateLine = null;
+    },
+    onLine: (line) => {
+      dictateLine = line;
+    },
+    onRefused: (line) => {
+      dictateLine = line;
+    },
+  });
 
   /**
    * Send one write and read its outcome.
@@ -583,6 +636,10 @@
           {threads}
           reviews={reviews.reviews.outcome === 'read' ? reviews.reviews.value : []}
           {busy}
+          {composer}
+          {dictation}
+          {dictate}
+          line={dictateLine}
           oncomment={commented}
           onreply={replied}
           onresolve={resolved}
