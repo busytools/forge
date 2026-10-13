@@ -427,6 +427,17 @@ describe('the tasks card', () => {
       { kind: 'empty', text: 'no tasks in flight - anything this project declares lands here' },
     ]);
   });
+
+  it('reads an empty board past the clock line the tool opens it with', () => {
+    // The empty result in its real wire shape: the clock line, then `[]` -
+    // the shortest body a read that assumes a pretty-printed array would lose.
+    const card = forgeCardOf('mcp__forge__tasks__list', {}, result('now 2026-01-02T03:04:05Z\n[]'));
+    expect(card?.title, 'the empty board still draws the card').toBe('tasks');
+    expect(card?.figure, 'no count for no rows').toBeNull();
+    expect(card?.pieces).toEqual([
+      { kind: 'empty', text: 'no tasks in flight - anything this project declares lands here' },
+    ]);
+  });
 });
 
 describe('the cron card', () => {
