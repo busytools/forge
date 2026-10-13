@@ -2848,6 +2848,60 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
     expect(words(chat).split('hold me').length - 1, 'one row, once').toBe(1);
   });
 
+  /**
+   * **A trigger the queue alone carried still draws.** A board chase is a
+   * prompt like any other - forge mints its id and the CLI queues it - but
+   * the CLI never echoes a stdin prompt back, so the queue's announcement is
+   * the only carrier its words have in a live view. A drain that dropped
+   * them when no frame had forged a row drew the next turn opening on its
+   * first tool row, with nothing saying what started it.
+   */
+  it('draws the trigger plainly when the queue carried the only copy', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    const chase = 'task board: worker mic-default-name holds no row - feed it or despawn it.';
+    const id = 'forge_prompt_98_46bd5f17';
+    server.update({ prompt_queued: { key: LEAD, uuid: id, source: 'forge', text: chase } });
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: id, state: 'queued' } });
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: id, state: 'started' } });
+
+    expect(words(chat), 'the drain draws the words the announcement carried').toContain(chase);
+    expect(words(chat).split(chase).length - 1, 'one row, once').toBe(1);
+
+    // The page's own copy of the same prompt is the same row by id: the read
+    // path and the live path are one obligation, so the row pairs rather
+    // than drawing a second time beside itself.
+    server.send(
+      page([turn('t1', 'first'), { key: null, messages: [forgedUnder(chase, id)] }], null),
+    );
+    expect(words(chat).split(chase).length - 1, 'the page pairs with it, once').toBe(1);
+  });
+
+  /**
+   * **The drain and the frame that forged the row race, and the row draws
+   * once.** The lifecycle frames and the dispatch's own frame reach a view
+   * over one stream, and the drain can land first - so the row the drain
+   * draws from the announcement's words is the same row the frame then
+   * carries, by the prompt's id, and it must not draw beside itself.
+   */
+  it('draws one row when the drain beats the frame that forged it', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    const chase = 'task board: worker mic-default-name holds no row - feed it or despawn it.';
+    const id = 'forge_prompt_98_46bd5f17';
+    server.update({ prompt_queued: { key: LEAD, uuid: id, source: 'forge', text: chase } });
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: id, state: 'started' } });
+    server.update({ chat_appended: { key: LEAD, msg: forgedUnder(chase, id) } });
+
+    expect(words(chat).split(chase).length - 1, 'one row, once').toBe(1);
+  });
+
   it('retracts a row the announcement follows, which is the real wire order', () => {
     // The dispatcher emits the user turn as it routes; the task's announcement
     // comes a beat behind, so the frame usually arrives first. The hold has to

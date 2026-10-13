@@ -60,13 +60,29 @@ pub fn start_core(config_dir: PathBuf, project: Option<&str>) -> anyhow::Result<
         return Err(anyhow::anyhow!("forge: {err}"));
     }
 
+    start_subsystems(&workspace);
+
+    Ok(workspace)
+}
+
+/// The subsystem wave the boot starts, in the order it has always started it.
+///
+/// A function of its own so a test can run the same list the binary runs: a
+/// `start_*` call the wave drops is invisible to any test that starts its
+/// subsystem directly.
+fn start_subsystems(workspace: &Arc<Workspace>) {
     // Kick off the per-account boot-time loading state machine (one task
     // per `[[accounts]]` entry) in the background. Each task drives its
     // account from `Loading` through to a terminal `Ready` or `Bailed`.
     // The redb store has already seeded the in-memory map at
-    // `Workspace::new`. The 60 s poller is its own task
-    // (`Workspace::start_usage_poller`), not part of this call.
+    // `Workspace::new`.
     workspace.start_account_loading_tasks();
+
+    // The 60 s usage poller, after the loading tasks: they probe each account
+    // once at boot and the poller skips its own immediate-fire tick, so this
+    // is what refreshes the account snapshots from then on. Without it they
+    // hold their boot values for the process's life.
+    workspace.start_usage_poller();
 
     // Bind the gateway's inference listener and open the boot gate for
     // it. Every spawned session's base URL names this port: a failed bind
@@ -125,8 +141,6 @@ pub fn start_core(config_dir: PathBuf, project: Option<&str>) -> anyhow::Result<
     // last run. Worker teardown only catches a branch already gone at
     // that moment, and a branch usually outlives its worker.
     workspace.start_review_branch_sweep();
-
-    Ok(workspace)
 }
 
 /// What [`serve_socket`] did.
@@ -281,8 +295,77 @@ pub fn start_boot_wave(workspace: Arc<Workspace>, project: Option<String>, force
 
 #[cfg(test)]
 mod tests {
-    use super::{BOOT_WAVE_WAIT, wait_for_accounts};
+    use super::{BOOT_WAVE_WAIT, start_subsystems, wait_for_accounts};
+    use std::sync::Arc;
     use std::time::Duration;
+
+    use forge_workspace::Workspace;
+
+    /// A bare boot fixture: one project whose account is base-url'd at a dead
+    /// local port (its boot probe fails in milliseconds rather than reaching
+    /// an endpoint), dictation off and a gateway port the OS just handed out,
+    /// so the wave's other steps no-op or park. The port is picked free and
+    /// then handed on - a busy box can take it in between, and the listener's
+    /// failed bind is logged rather than read here.
+    fn boot_fixture() -> (Arc<Workspace>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
+        let port = listener.local_addr().expect("the port the OS handed out").port();
+        drop(listener);
+        let forge = dir.path().join("forge");
+        std::fs::create_dir_all(&forge).expect("forge/");
+        std::fs::write(
+            forge.join("forge.toml"),
+            format!(
+                "\
+[[orgs]]
+name = \"TestOrg\"
+accounts = [\"Stub\"]
+
+[[orgs.projects]]
+name = \"forge\"
+path = \"/tmp\"
+
+[[accounts]]
+display_name = \"Stub\"
+token = \"t\"
+provider = \"openrouter\"
+base_url = \"http://127.0.0.1:9/api\"
+models = [\"claude-sonnet-5\"]
+
+[server]
+enabled = false
+
+[gateway]
+port = {port}
+",
+            ),
+        )
+        .expect("write forge.toml");
+        let workspace = Workspace::new_for_test(dir.path().to_owned()).expect("workspace");
+        (Arc::new(workspace), dir)
+    }
+
+    /// The wave starts the 60 s usage poller. Its first tick is a minute out
+    /// and its pass reaches the network, so the swap-once guard is what a
+    /// test can read - a wave without it leaves the account snapshots frozen
+    /// at their boot values and the session page's 5h/7d bars never move.
+    ///
+    /// The wave is driven directly here: `start_core` reaches the machine's
+    /// single-instance lock, so the one call from it into this function is the
+    /// boundary this test does not cover.
+    #[tokio::test]
+    async fn the_boot_wave_starts_the_usage_poller() {
+        let (workspace, _dir) = boot_fixture();
+        assert!(
+            !workspace.test_usage_poller_started(),
+            "the fixture starts with the poller unstarted, or this test proves nothing",
+        );
+
+        start_subsystems(&workspace);
+
+        assert!(workspace.test_usage_poller_started(), "the boot wave starts the usage poller");
+    }
 
     /// The hold gives up at its deadline rather than waiting for ever - the
     /// behaviour a listener that never binds would otherwise hang on. Pinned

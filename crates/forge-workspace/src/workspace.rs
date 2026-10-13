@@ -2885,18 +2885,6 @@ impl Workspace {
         }
     }
 
-    /// Spawn the 60 s background account-usage poller. Fetches
-    /// OAuth usage for every `[[accounts]]` entry via the per-
-    /// account config-dir's credentials file (no Agent spawn
-    /// required), writes each result into `AccountStateMap.by_key`.
-    /// A view's bottom panel and the gateway's account selection both
-    /// read from that cache.
-    ///
-    /// Call once at construction, AFTER `start_account_loading_tasks`
-    /// (which subsumed the old `spawn_initial_account_probe` in #246).
-    /// A `usage_poller_started` flag guards against duplicate
-    /// spawns - second and later calls return without spawning so a
-    /// caller's programming error can't multiply the poll rate.
     /// Enqueue a worker kick on the dispatcher channel (#259). The
     /// drainer task fires one `Command::Prompt` per
     /// `KICK_DISPATCH_INTERVAL`, so simultaneous boot-time kicks
@@ -3010,6 +2998,18 @@ impl Workspace {
         });
     }
 
+    /// Spawn the 60 s background account-usage poller. Fetches
+    /// OAuth usage for every `[[accounts]]` entry via the per-
+    /// account config-dir's credentials file (no Agent spawn
+    /// required), writes each result into `AccountStateMap.by_key`.
+    /// The session page draws its 5h/7d utilization from that cache,
+    /// and the gateway's account selection reads it too.
+    ///
+    /// Called once at boot, AFTER `start_account_loading_tasks`
+    /// (which subsumed the old `spawn_initial_account_probe` in #246).
+    /// A `usage_poller_started` flag guards against duplicate
+    /// spawns - second and later calls return without spawning so a
+    /// caller's programming error can't multiply the poll rate.
     pub fn start_usage_poller(self: &Arc<Self>) {
         if self.usage_poller_started.swap(true, std::sync::atomic::Ordering::AcqRel) {
             tracing::debug!(

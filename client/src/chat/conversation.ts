@@ -334,6 +334,19 @@ function uuidOf(message: unknown): string | null {
 }
 
 /**
+ * The plain user row a trigger draws as when no frame forged one: the words
+ * the queue announcement carried, under the prompt's own id - which is what
+ * pairs it with the page's later copy of the same message.
+ */
+function triggerRow(uuid: string, text: string): unknown {
+  return {
+    type: 'user',
+    uuid,
+    message: { role: 'user', content: [{ type: 'text', text }] },
+  };
+}
+
+/**
  * The frame in `messages` that is the same message as `message` under its other
  * carrier - the words it says - or `null` when none is left to pair with it.
  *
@@ -751,6 +764,14 @@ export class Chat {
    * says the CLI took the prompt.
    */
   private drained = new Map<string, unknown>();
+  /**
+   * The ids the drain drew plainly, whose own frame may still be on its way.
+   *
+   * The lifecycle frames and the dispatch's forged frame reach a view over
+   * one stream, so the drain can land before the frame that carries the same
+   * row - and that frame is then the row already drawn, not a second one.
+   */
+  private plainDrawn = new Set<string>();
   /**
    * Whether a drop was seen, and whether a snapshot ever landed.
    *
@@ -1661,6 +1682,7 @@ export class Chat {
     // included.
     this.waiting.clear();
     this.drained.clear();
+    this.plainDrawn.clear();
     this.turnRunning = false;
     // Frames the last occupant's run left waiting for a turn go with it: they
     // are its conversation, and the new one's rows are not where they belong.
@@ -1750,9 +1772,16 @@ export class Chat {
       // them the moment it starts. Only a user turn counts: a dispatch is the
       // one thing that forges a prompt id onto a frame.
       const id = uuidOf(message);
-      if (id !== null && (message as { type?: unknown }).type === 'user' && this.waiting.has(id)) {
-        this.drained.set(id, message);
-        return;
+      if (id !== null && (message as { type?: unknown }).type === 'user') {
+        if (this.waiting.has(id)) {
+          this.drained.set(id, message);
+          return;
+        }
+        // **The drain can beat the frame that forged this row** - the
+        // lifecycle frames and the forged frame are one stream - and the
+        // words already drew from the announcement, so this frame is the
+        // same row by id rather than a second one.
+        if (this.plainDrawn.delete(id)) return;
       }
       // Stepped BEFORE the row is written, so a row that opens or grows answers
       // from the new state rather than the one before the frame.
@@ -1777,6 +1806,7 @@ export class Chat {
       this.releaseHeld();
       this.waiting.clear();
       this.drained.clear();
+      this.plainDrawn.clear();
       return;
     }
     // The answer to the row's own ask, kept where the row reads it: by the
@@ -1799,6 +1829,7 @@ export class Chat {
     if (variant === 'connection_failed') {
       this.waiting.clear();
       this.drained.clear();
+      this.plainDrawn.clear();
       const failed = (update as { connection_failed?: { message?: unknown } }).connection_failed;
       const why = failed?.message;
       if (typeof why === 'string' && why !== '') {
@@ -2113,9 +2144,15 @@ export class Chat {
     if (!dropped && !drawn) return;
     this.waiting.delete(uuid);
     this.drained.delete(uuid);
-    if (held === undefined) return;
+    // **A trigger the queue alone carried draws from the announcement's own
+    // words**: a prompt can start a turn with no frame forging it a row - the
+    // CLI never echoes a stdin prompt, and forge's own chase dispatches one -
+    // so the announcement's words are the only copy this side holds.
+    const row = held ?? (entry === undefined ? undefined : triggerRow(uuid, entry.text));
+    if (row === undefined) return;
+    if (held === undefined) this.plainDrawn.add(uuid);
     const waited = entry === undefined ? 0 : Date.now() - entry.since;
-    this.append(dropped ? held : this.noted(held, waited));
+    this.append(dropped ? row : this.noted(row, waited));
   }
 
   /**
