@@ -772,9 +772,10 @@ impl BrowserHost {
         engine.show().await
     }
 
-    /// Take the window back down: the browser closes, and the next agent
-    /// call relaunches it headless over the same directory. **The hand-off is
-    /// not answered by this** - Done or Not now is.
+    /// Take the window back out of the person's sight: the browser keeps
+    /// running, with its tabs and its page, and the next call drives that
+    /// same browser. **The hand-off is not answered by this** - Done or Not
+    /// now is.
     #[cfg(desktop)]
     pub async fn hide(&self, profile: Option<&str>) -> Result<(), String> {
         let paths = self.paths.clone()?;
@@ -1072,8 +1073,8 @@ pub async fn browser_show(
     host.show(profile.as_deref(), seat.as_ref()).await.map(|_| ())
 }
 
-/// Take the hand-off's window back down; the next agent call relaunches that
-/// profile's browser headless over the same directory.
+/// Take the hand-off's window back out of sight; the browser keeps running
+/// over the same directory, and the next agent call drives it.
 #[tauri::command]
 pub async fn browser_hide(
     host: tauri::State<'_, Arc<BrowserHost>>,

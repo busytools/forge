@@ -357,8 +357,8 @@ vendor-browser-stack-android:
 # catches desktop-only code going dead there** - a `#[cfg(desktop)]` helper
 # whose only caller is gated compiles fine everywhere else this repo
 # builds, dies under `-D dead-code` here, and no other check or CI job
-# compiles this target (measured: the hint mask's failure-flush helpers
-# reached a review exactly that way). Cheap enough to gate: measured about
+# compiles this target (measured: a desktop-only helper whose sole caller
+# was gated reached a review exactly that way). Cheap enough to gate: measured about
 # a second warm and 14 s into a fresh target dir, so `just check` runs it
 # beside the other client steps. **CI runs no such step yet**: the vendoring
 # this build needs refuses non-macOS hosts, so an ubuntu job cannot pass it

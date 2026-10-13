@@ -161,9 +161,9 @@ async fn two_named_profiles_are_two_browsers_and_see_different_cookies() {
     }
 }
 
-/// **Show raises the NAMED profile's own browser, headed, on its own page** -
-/// the piece a CAPTCHA hand-off on a profile stands on. The shared browser
-/// stays headless throughout.
+/// **Show raises the NAMED profile's own browser window on its own page** -
+/// the piece a CAPTCHA hand-off on a profile stands on. The shared browser's
+/// window is untouched by it, whichever way that one stands.
 #[tokio::test]
 #[ignore = "raises a REAL window; run it deliberately - see the module doc"]
 async fn show_raises_the_named_profiles_own_browser_on_its_own_page_raises_a_window() {

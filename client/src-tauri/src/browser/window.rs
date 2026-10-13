@@ -8,10 +8,14 @@
 //! hiding it is this module's job, spoken over the browser's own devtools
 //! endpoint: the port file names the endpoint, and no launch flag can do it.
 //!
-//! The moves are the two the host needs and no more: [`minimize`] and
-//! [`move_to`] for out of sight (the mechanism the host settles on is picked
-//! by measurement in the live suite), [`bring_forward`] for a raise - the
-//! window back to normal, placed, and made the active one.
+//! The moves are the two the host needs and no more: [`move_to`] is the hide
+//! (a NORMAL window placed clear of every screen, its page staying awake),
+//! and [`bring_forward`] is the raise - the window back to normal, placed,
+//! and made the active one. [`minimize`] is kept as the counterfactual the
+//! design was measured against: it hides perfectly and freezes the page, so
+//! the driver's click dies behind it, and whoever is tempted to switch the
+//! hide to it should read the live test named in its own doc first - do NOT
+//! cut it as dead surface.
 
 use futures_util::{SinkExt as _, StreamExt as _};
 use serde_json::{Value, json};
@@ -114,6 +118,15 @@ impl Cdp {
     /// Attach to the first page the browser holds. A browser with no page -
     /// a launch that never opened one - is a refusal naming that, not a
     /// panic: there is no window to move without a page under it.
+    ///
+    /// **The first page is THE page, and that is an assumption worth
+    /// naming.** Every profile forge drives holds one tab - the window is
+    /// born on the page the last raise carried, and nothing here opens
+    /// another - so the first target is the one the session drove and the
+    /// raise brings the right window forward. A profile that ever grows a
+    /// second tab (a session calling `browser_tabs` with a new tab, say)
+    /// would need its tab chosen deliberately on the raise, which is filed
+    /// as its own piece rather than grown into the raise here.
     pub async fn page(&mut self) -> Result<Page, String> {
         let targets = self.call("Target.getTargets", json!({}), None).await?;
         let target = targets
@@ -166,6 +179,14 @@ pub async fn move_to(page: &Page, cdp: &mut Cdp, left: i64, top: i64) -> Result<
 }
 
 /// Put the window out of sight by minimizing it.
+///
+/// **Not the hide, and kept on purpose.** Measured 2026-10-12: a minimized
+/// window's page reads hidden and its animation frames stop, so the
+/// vendored driver's click times out against it (five seconds, `force`
+/// included) - and neither `--disable-backgrounding-occluded-windows` nor
+/// `Page.setWebLifecycleState('active')` revives the frames. This is the
+/// counterfactual the off-screen move was chosen over;
+/// `a_minimized_window_can_still_be_driven` in the live suite pins it.
 pub async fn minimize(page: &Page, cdp: &mut Cdp) -> Result<(), String> {
     let window = window(page, cdp).await?;
     cdp.call(

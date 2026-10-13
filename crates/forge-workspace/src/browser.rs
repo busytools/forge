@@ -20,9 +20,9 @@ const HOST_GONE: &str = "the browser-capable client went away before answering";
 /// **The longest one ask may wait on a host, derived from the layers under
 /// it**: the client's own typical bounds are a launch (`chromium`'s
 /// `LAUNCH_TIMEOUT`, 15 s), a driver handshake (`driver`'s `START_TIMEOUT`,
-/// 15 s), the driver's client-hint mask (15 s) and one tool call (`driver`'s
-/// `CALL_TIMEOUT`, 150 s), plus the failure flush that rides the call
-/// (5 s) - the segments the constant below sums. It is a wedge-breaker,
+/// 15 s) and one tool call (`driver`'s `CALL_TIMEOUT`, 150 s) - the segments
+/// the constant below sums, the hint mask and its failure flush having
+/// retired with the headless launch. It is a wedge-breaker,
 /// not a ceiling on every call:
 /// a second ask on one profile queues behind the first call's own lock (up
 /// to the 150 s call bound), and a call waiting on a relaunch can wait
@@ -30,12 +30,12 @@ const HOST_GONE: &str = "the browser-capable client went away before answering";
 /// answer. A late answer costs nothing: the ask keeps its entry registered,
 /// and the reply's send drops it (`.ok()`) once this waiter is gone.
 // The client's ACCEPT-ONWARD chain, segment by segment: accept + handshake +
-// one driver call + the failure flush that rides it. The desktop is
-// 15+15+15+150+5 (launch, handshake, hint mask, call, failure flush) = 200 s
-// - the flush bounded at 5 s of its own, not by the call's bound - and
+// one driver call. The desktop is 15+15+150 (launch, handshake, call) = 180 s
+// - the hint mask and the failure flush that rode it retired with the
+// headless launch - and
 // NEITHER this nor the phone's sum is a ceiling the bound contains: a cold,
 // contested desktop launch reaches about 37 s for its launch segment alone
-// (the version probe's 5 s, the launch lock's 15+2, and the port's 15), and
+// (the launch lock's 15+2, and the port's 15), and
 // an Android client's in-app driver boots, so its cold floor is wider - 40 s
 // accept (a node boot measured at 39 s on a loaded emulator) + 10 s
 // handshake + 150 s call = 200 s, with the tab pin and the viewport seed
@@ -594,9 +594,9 @@ mod tests {
     #[test]
     fn the_ask_bound_clears_the_client_layers_below_it() {
         assert!(
-            ASK_TIMEOUT >= Duration::from_secs(15 + 15 + 15 + 150 + 5),
-            "the ask's bound must clear the desktop client's launch, handshake, hint mask, call \
-             and failure-flush bounds: {ASK_TIMEOUT:?}",
+            ASK_TIMEOUT >= Duration::from_secs(15 + 15 + 150),
+            "the ask's bound must clear the desktop client's launch, handshake and call bounds: \
+             {ASK_TIMEOUT:?}",
         );
         assert!(
             ASK_TIMEOUT >= Duration::from_secs(40 + 10 + 150),

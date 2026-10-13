@@ -145,11 +145,13 @@ async function defaultInvoke(_command: 'browser_call', request: InvokeArgs): Pro
 }
 
 /**
- * Bring the browser up visibly, which is what a hand-off's Open asks for:
- * the person's own browser window over the profile the agents drive
- * (headless until then). **`profile` names which one**: `null` is the
- * shared profile, a name is that profile's own window over its own browser
- * - the CAPTCHA in the right session, not a lookalike in the wrong one.
+ * Bring the browser's window forward, which is what a hand-off's Open asks
+ * for: the person's own browser over the profile the agents drive, its
+ * window born hidden and moved out of every screen until this raises it.
+ * **`profile` names which one**: `null` is the shared profile, a name is
+ * that profile's own window over its own browser - the CAPTCHA in the right
+ * session, not a lookalike in the wrong one. The page a session prepared is
+ * the page that comes up: the raise moves a window and relaunches nothing.
  *
  * **Answers why it could not be raised, or `null` when it was.** The shell
  * carries the actionable sentence - a machine with no browser to drive is
@@ -173,10 +175,11 @@ export async function showBrowser(
 }
 
 /**
- * Take the hand-off's window back down: the browser closes, and the next
- * agent call relaunches it headless over the same profile. **The hand-off
- * itself is answered separately** - Done or Not now - and answering it
- * lowers the window, so the cycle opens and closes as one act.
+ * Take the hand-off's window back out of sight: the browser keeps running,
+ * with its tabs and its page, and the next agent call drives that same
+ * browser. **The hand-off itself is answered separately** - Done or Not now
+ * - and answering it lowers the window, so the cycle opens and closes as
+ * one act.
  *
  * **Answers why it could not come down, or `null` when it did** - the same
  * shape a raise answers with, so a strip button that said hide and then

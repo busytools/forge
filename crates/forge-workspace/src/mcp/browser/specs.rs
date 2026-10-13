@@ -541,8 +541,9 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
                         }
                     },
                     // Beyond upstream: the actionability gate is what a
-                    // headless click waits on, and a call that means "the
-                    // element is there, click it anyway" has no other form.
+                    // click waits on (its stability step on the page's
+                    // animation frames), and a call that means "the element
+                    // is there, click it anyway" has no other form.
                     "force": {
                         "description": "Click through the actionability gate with a real mouse event at the element's current position, instead of waiting for it to be visible, stable, enabled and uncovered.",
                         "type": "boolean"

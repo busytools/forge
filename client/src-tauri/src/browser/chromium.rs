@@ -948,13 +948,12 @@ mod tests {
 
     /// The launch asks the browser to choose its own port - handed a number,
     /// the browser writes no port file and nothing can find the launch again;
-    /// it carries the profile that keeps logins, opens a page (because a
-    /// browser with no tab makes the first navigation depend on the driver
-    /// inventing one), runs **headless** (nothing appears on the person's
-    /// screen until a hand-off's Open raises the window), and **never reaches
-    /// for the OS keychain**: that dialog is raised at whoever is at the
-    /// machine, once per ask, and a browser whose window nobody is looking at
-    /// has nobody to answer it.
+    /// it carries the profile that keeps logins, starts with **no window at
+    /// all** (nothing appears on the person's screen until the host creates
+    /// one, and a hand-off's Open is what brings it forward), and **never
+    /// reaches for the OS keychain**: that dialog is raised at whoever is at
+    /// the machine, once per ask, and a browser whose window nobody is
+    /// looking at has nobody to answer it.
     ///
     /// **And nothing appears at launch**: no `--headless` (the browser is the
     /// person's own, with its real UA and real client hints - the mask that
