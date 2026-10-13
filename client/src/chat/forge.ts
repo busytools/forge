@@ -12,7 +12,7 @@
 
 import { untilOf } from '../session/view';
 import { forgeFamilyOf, type ForgeFamily } from './families';
-import { firstText, obj, parsedText, str, trailingTexts } from './result-json';
+import { firstText, obj, parsedText, parsedTextPastClock, str, trailingTexts } from './result-json';
 import { isSlackId } from './text';
 
 /** One word on a forge row. The tone colours the word; the word carries it. */
@@ -469,7 +469,12 @@ export function forgeCardOf(
     if (firstText(result.content) === null || trailingTexts(result.content).length > 0) return null;
     return acknowledgementCard(verbOf(name), input);
   }
-  const answer = parsedText(result.content);
+  // The tasks list is the one verb that opens its result with a clock line,
+  // so it reads past it; every other result parses as the plain JSON it is.
+  const answer =
+    family === 'tasks' && verbOf(name) === 'list'
+      ? parsedTextPastClock(result.content)
+      : parsedText(result.content);
   const card =
     family === 'tasks'
       ? tasksCard(verbOf(name), input, answer)

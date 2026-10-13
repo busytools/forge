@@ -379,6 +379,46 @@ describe('the tasks card', () => {
     ]);
   });
 
+  it('reads the tasks list past the clock line the tool opens it with', () => {
+    // The real result text, as `tasks__list` writes it: the `now <rfc3339>`
+    // line the server pins first (crates/forge-workspace/src/mcp/tasks.rs),
+    // then the pretty-printed rows array.
+    const rows = [
+      { ...RECORD, worked: '3h', updated_ago: '12m', marks: ['in_review'] },
+      { ...RECORD, id: 't-2', subject: 'Sweep', status: 'pending', owner: null, estimate: null },
+    ];
+    const text = `now 2026-10-13T06:23:51.696933Z\n${JSON.stringify(rows, null, 2)}`;
+    const card = forgeCardOf('mcp__forge__tasks__list', {}, result(text));
+    expect(card?.title, 'the clock line does not cost the card').toBe('tasks');
+    expect(card?.figure).toBe('2 in flight');
+    expect(itemsOf(card)).toEqual([
+      {
+        id: 't-1',
+        state: { text: 'in progress', tone: 'info' },
+        text: RECORD.subject,
+        tag: null,
+        when: 'lead \u{b7} 2h',
+      },
+      {
+        id: 't-2',
+        state: { text: 'pending', tone: 'dim' },
+        text: 'Sweep',
+        tag: null,
+        when: 'unclaimed',
+      },
+    ]);
+  });
+
+  it('draws a list it cannot read past the clock line as raw', () => {
+    expect(
+      forgeCardOf(
+        'mcp__forge__tasks__list',
+        {},
+        result('now 2026-10-13T06:23:51.696933Z\nnot json at all'),
+      ),
+    ).toBeNull();
+  });
+
   it('draws a list of nothing as a row, not as an empty box', () => {
     const card = forgeCardOf('mcp__forge__tasks__list', {}, result('[]'));
     expect(card?.title).toBe('tasks');
