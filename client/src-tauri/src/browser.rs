@@ -628,9 +628,10 @@ impl BrowserHost {
             Ok(None) => {}
             Err(why) => {
                 // Not fatal to the call - the browser is driven either way -
-                // but the profile has no owner this run, so its browser is
-                // reaped by the next boot's sweep rather than by this
-                // client's exit.
+                // but the profile has no owner this run, and the sweep
+                // routes through this same claim: while the lock cannot be
+                // taken, neither this client's exit nor a later boot reaps
+                // the browser on it.
                 tauri_plugin_log::log::debug!(
                     "a browser profile could not be claimed by this client (event_name \
                      browser_client_lock_refused, profile {}): {why}",
