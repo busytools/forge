@@ -10,6 +10,7 @@ import {
   loopState,
   outdatedThreads,
   parkedReason,
+  roundHasWork,
   roundTally,
   roundsNewestFirst,
   statusName,
@@ -171,6 +172,31 @@ describe('a round and its members', () => {
       latestRound([r1], thread('gone', 'open', [{ author: 'you', review_id: 'r9' }])),
       'a turn naming a round the read does not carry names none',
     ).toBeNull();
+  });
+
+  it('tells a round with work in it from one that is only housekeeping', () => {
+    // The view this client replaced sealed by this predicate: a round whose
+    // authored threads are all resolved or outdated has nothing for the
+    // worker to act on, so the finish files it and nudges nobody.
+    const open = thread('o', 'open', [{ author: 'you', review_id: null }]);
+    const answered = thread('a', 'addressed', [{ author: 'you', review_id: null }]);
+    const done = thread('d', 'resolved', [{ author: 'you', review_id: null }]);
+    const drifted = thread('p', 'outdated', [{ author: 'you', review_id: null }]);
+    const odd = thread('u', { unknown: 'Pondered' }, [{ author: 'you', review_id: null }]);
+    const threads = [open, answered, done, drifted, odd];
+
+    expect(roundHasWork(threads, ['o']), 'an open comment is work').toBe(true);
+    expect(roundHasWork(threads, ['d', 'a']), 'and an addressed one in the mix').toBe(true);
+    expect(roundHasWork(threads, ['d']), 'a resolved comment alone is not').toBe(false);
+    expect(roundHasWork(threads, ['d', 'p']), 'nor resolved and outdated together').toBe(false);
+    expect(roundHasWork(threads, ['u']), 'a state this build cannot name counts as work').toBe(
+      true,
+    );
+    expect(
+      roundHasWork(threads, ['gone']),
+      'a thread the read does not carry cannot be shown settled',
+    ).toBe(true);
+    expect(roundHasWork(threads, []), 'nothing named is no work').toBe(false);
   });
 
   it('counts a state this build cannot name without folding it into a neighbour', () => {

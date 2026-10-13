@@ -13,6 +13,7 @@
     loopState,
     outdatedThreads,
     parkedReason,
+    roundHasWork,
     roundTally,
     roundsNewestFirst,
     statusName,
@@ -27,6 +28,7 @@
     upsertCommand,
     withReply,
     type ComposedComment,
+    type Sends,
     type SendOutcome,
   } from './write';
 
@@ -169,10 +171,22 @@
     await write(statusCommand(slot, branch, thread.id, 'Resolved'));
   }
 
+  /**
+   * The page's two ways to the socket, as the writes take them: the write
+   * whose outcome is drawn where the reader acted, and the raw dispatch a
+   * nudge rides - a nudge is best-effort, because the round or the flip it
+   * follows is filed either way.
+   */
+  const sends: Sends = {
+    write,
+    dispatch: (command) =>
+      connection === null ? null : connection.dispatch(command as never, slot),
+  };
+
   async function reopened(thread: { id: string }): Promise<void> {
     const full = threads.find((held) => held.id === thread.id);
     await reopenThread(
-      write,
+      sends,
       slot,
       branch,
       thread.id,
@@ -183,11 +197,12 @@
   async function finish(): Promise<void> {
     if (drafts.size === 0) return;
     const sealed = await finishRound(
-      write,
+      sends,
       slot,
       branch,
       [...drafts],
       summary.trim() === '' ? null : summary.trim(),
+      roundHasWork(threads, drafts),
     );
     // The words survive a refusal: the reader's round is still theirs to
     // send once whatever refused it is fixed.

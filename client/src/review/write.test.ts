@@ -11,6 +11,7 @@ import {
   submitCommand,
   upsertCommand,
   withReply,
+  type Sends,
   type SendOutcome,
 } from './write';
 
@@ -20,25 +21,35 @@ const SLOT = { org: 'Busytools', project: 'forge', label: 'lead' };
  *  the page a review is keyed to and never the lead's. */
 const WORKER = { org: 'Busytools', project: 'forge', label: 'review-nudge' };
 
-/** A page send: records every command, answers the `submit_review` with
- *  `body`, and answers `went` for every command when a case needs the write
- *  to fail (the shape the page's own `write` returns). */
-function recordingSend(
+/** The page's two ways to the socket, as a case arranges them: every command
+ *  is recorded, the `submit_review` answers `body`, `went: false` fails every
+ *  write, and `dead: true` makes the nudge's raw dispatch throw like a closed
+ *  socket. */
+function recordingSends(
   body: unknown = null,
-  went = true,
+  options: { went?: boolean; dead?: boolean } = {},
 ): {
   sent: unknown[];
-  send: (c: unknown) => Promise<SendOutcome>;
+  sends: Sends;
 } {
   const sent: unknown[] = [];
-  const send = (command: unknown): Promise<SendOutcome> => {
-    sent.push(command);
-    return Promise.resolve({
-      went,
-      body: 'submit_review' in (command as object) ? body : null,
-    });
+  return {
+    sent,
+    sends: {
+      write: (command: unknown): Promise<SendOutcome> => {
+        sent.push(command);
+        return Promise.resolve({
+          went: options.went ?? true,
+          body: 'submit_review' in (command as object) ? body : null,
+        });
+      },
+      dispatch: (command: unknown): unknown => {
+        sent.push(command);
+        if (options.dead === true) throw new Error('the socket is not open');
+        return null;
+      },
+    },
   };
-  return { sent, send };
 }
 
 describe('the anchor capture', () => {
@@ -201,9 +212,9 @@ describe('the finish', () => {
    * review is ready and reads it back, live and on a fresh read.
    */
   it('seals the round, then nudges the seat with the line the terminal sent', async () => {
-    const { sent, send } = recordingSend(LANDED);
+    const { sent, sends } = recordingSends(LANDED);
 
-    const sealed = await finishRound(send, WORKER, 'work/review-nudge', ['t1'], 'pass one');
+    const sealed = await finishRound(sends, WORKER, 'work/review-nudge', ['t1'], 'pass one', true);
 
     expect(sealed, 'the round sealed').toBe(true);
     expect(sent[0], 'the round is sealed first').toEqual(
@@ -219,21 +230,42 @@ describe('the finish', () => {
       'Review #4 ready - address it via the review MCP (`review__list`).',
     );
     expect(nudge?.prompt_under?.['source'], 'the bubble reads as the reader own words').toBe('you');
-    expect(nudge?.prompt_under?.['attachments']).toEqual([]);
+    expect(nudge?.prompt_under?.['attachments'], 'a nudge carries no images').toEqual([]);
     expect(typeof nudge?.prompt_under?.['uuid'], 'the prompt rides its own id').toBe('string');
   });
 
   /**
-   * A reply that carries no round - the store refused, or the dispatch was
-   * turned down - filed nothing to nudge anyone about, so the seat is left
-   * alone: a worker told to go read a review that does not exist is worse
-   * off than one told nothing.
+   * **A round with nothing left to act on is not worth a nudge.** The view
+   * this client replaced sealed by the same predicate: when every sealed
+   * thread is resolved or outdated, the finish files the round but tells the
+   * worker nothing - a worker called to read a round with no question in it
+   * spends a turn learning that.
    */
-  it('nudges nobody when the reply carried no round', async () => {
-    const { sent, send } = recordingSend(null);
+  it('files a round with no work in it without nudging the seat', async () => {
+    const { sent, sends } = recordingSends(LANDED);
 
-    await finishRound(send, WORKER, 'work/review-nudge', ['t1'], null);
+    const sealed = await finishRound(sends, WORKER, 'work/review-nudge', ['t1'], null, false);
 
+    expect(sealed, 'the round still sealed').toBe(true);
+    expect(sent, 'the seal went and the seat was left alone').toEqual([
+      submitCommand(WORKER, 'work/review-nudge', ['t1'], null),
+    ]);
+  });
+
+  /**
+   * A reply that carries no round - the store refused, or the dispatch was
+   * turned down - filed nothing, so the seat is left alone (a worker told to
+   * go read a review that does not exist is worse off than one told
+   * nothing), and the finish did not land: the page keeps the reader's words
+   * rather than clearing a round that was never filed, exactly as a write
+   * that never left does.
+   */
+  it('seals nothing and nudges nobody when the reply carried no round', async () => {
+    const { sent, sends } = recordingSends(null);
+
+    const sealed = await finishRound(sends, WORKER, 'work/review-nudge', ['t1'], null, true);
+
+    expect(sealed, 'a reply that carried no round sealed nothing, so the words stay').toBe(false);
     expect(sent, 'the submit went and nothing else').toEqual([
       submitCommand(WORKER, 'work/review-nudge', ['t1'], null),
     ]);
@@ -241,12 +273,29 @@ describe('the finish', () => {
 
   /** A submit that never left nudges nobody either: there is no review to read. */
   it('nudges nobody when the submit never left', async () => {
-    const { sent, send } = recordingSend(null, false);
+    const { sent, sends } = recordingSends(null, { went: false });
 
-    const sealed = await finishRound(send, WORKER, 'work/review-nudge', ['t1'], null);
+    const sealed = await finishRound(sends, WORKER, 'work/review-nudge', ['t1'], null, true);
 
     expect(sealed, 'a submit that never left sealed nothing').toBe(false);
     expect(sent, 'the submit is all that was dispatched').toHaveLength(1);
+  });
+
+  /**
+   * **A nudge that cannot leave is the worker's own line missing, never a
+   * lost review.** A socket that died between the seal's reply and the
+   * nudge's send throws at the nudge - and the finish still says it sealed,
+   * because it did: the round is filed, the drafts clear, and no refusal is
+   * drawn about a courtesy line that could not leave (the document viewer's
+   * nudge swallows the same failure for the same reason).
+   */
+  it('stays sealed when the nudge could not leave', async () => {
+    const { sent, sends } = recordingSends(LANDED, { dead: true });
+
+    const sealed = await finishRound(sends, WORKER, 'work/review-nudge', ['t1'], null, true);
+
+    expect(sealed, 'the round sealed; the nudge it lost is not the round').toBe(true);
+    expect(sent, 'the nudge was attempted after the seal').toHaveLength(2);
   });
 });
 
@@ -258,9 +307,9 @@ describe('the reopen', () => {
    * the thread is filed into, not its origin.
    */
   it('flips the thread open, then nudges the seat with the round the reopen is about', async () => {
-    const { sent, send: write } = recordingSend();
+    const { sent, sends } = recordingSends();
 
-    const went = await reopenThread(write, WORKER, 'work/review-nudge', 't1', 2);
+    const went = await reopenThread(sends, WORKER, 'work/review-nudge', 't1', 2);
 
     expect(went, 'the flip went').toBe(true);
     expect(sent[0], 'the flip is dispatched first').toEqual(
@@ -275,14 +324,14 @@ describe('the reopen', () => {
     expect(nudge?.prompt_under?.['text'], 'the words are the view this client replaced sent').toBe(
       'Reopened a comment in review #2 - take another look via the review MCP (`review__get`).',
     );
-    expect(nudge?.prompt_under?.['source']).toBe('you');
+    expect(nudge?.prompt_under?.['source'], 'the line reads as the reader own words').toBe('you');
   });
 
   /** A thread no round has filed reopens under the round-less line. */
   it('reopens with the round-less line when no round is filed', async () => {
-    const { sent, send: write } = recordingSend();
+    const { sent, sends } = recordingSends();
 
-    await reopenThread(write, WORKER, 'work/review-nudge', 't1', null);
+    await reopenThread(sends, WORKER, 'work/review-nudge', 't1', null);
 
     const nudge = sent[1] as { prompt_under?: Record<string, unknown> } | undefined;
     expect(nudge?.prompt_under?.['text'], 'the words are the view this client replaced sent').toBe(
@@ -292,11 +341,21 @@ describe('the reopen', () => {
 
   /** A flip that never left nudges nobody: the thread was not reopened. */
   it('nudges nobody when the flip never left', async () => {
-    const { sent, send: write } = recordingSend(null, false);
+    const { sent, sends } = recordingSends(null, { went: false });
 
-    const went = await reopenThread(write, WORKER, 'work/review-nudge', 't1', 1);
+    const went = await reopenThread(sends, WORKER, 'work/review-nudge', 't1', 1);
 
     expect(went, 'a flip that never left reopened nothing').toBe(false);
     expect(sent, 'the flip is all that was dispatched').toHaveLength(1);
+  });
+
+  /** The reopen's nudge is best-effort in the same way the finish's is. */
+  it('stays reopened when the nudge could not leave', async () => {
+    const { sent, sends } = recordingSends(null, { dead: true });
+
+    const went = await reopenThread(sends, WORKER, 'work/review-nudge', 't1', 1);
+
+    expect(went, 'the thread reopened; the nudge it lost is not the flip').toBe(true);
+    expect(sent, 'the nudge was attempted after the flip').toHaveLength(2);
   });
 });

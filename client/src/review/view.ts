@@ -121,6 +121,25 @@ export function latestRound(reviews: ReviewSetRecord[], thread: ReviewThreadReco
   return turnRound(reviews, turn);
 }
 
+/**
+ * Whether a round has anything in it to act on: at least one of the named
+ * threads is neither resolved nor outdated - the predicate the view this
+ * client replaced sealed by. A round of resolved comments is the reviewer's
+ * own housekeeping, and a worker sent to read it spends a turn learning
+ * there is nothing to do. A name the read does not carry cannot be shown
+ * settled, so it counts as work.
+ */
+export function roundHasWork(threads: ReviewThreadRecord[], ids: Iterable<string>): boolean {
+  const byId = new Map(threads.map((thread) => [thread.id, thread]));
+  for (const id of ids) {
+    const thread = byId.get(id);
+    if (thread === undefined) return true;
+    const name = statusName(thread.status);
+    if (name !== 'resolved' && name !== 'outdated') return true;
+  }
+  return false;
+}
+
 /** The rounds newest first, which is the order every surface lists them in. */
 export function roundsNewestFirst(reviews: ReviewSetRecord[]): ReviewSetRecord[] {
   return [...reviews].sort((a, b) => b.number - a.number);

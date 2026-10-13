@@ -260,6 +260,17 @@ export interface SendOutcome {
   body: unknown;
 }
 
+/** The page's two ways to the socket: the `write` whose outcome is drawn
+ *  where the reader acted, and the raw `dispatch` a nudge rides. The two are
+ *  different on purpose - a write's failure is the reader's to see, and a
+ *  nudge's is not. */
+export interface Sends {
+  write: (command: unknown) => Promise<SendOutcome>;
+  /** The connection's own dispatch: `null` for a fire-and-forget command,
+   *  and a throw when the socket is not open. */
+  dispatch: (command: unknown) => unknown;
+}
+
 /** The number a landed submit's reply carries, or `null` when the reply was
  *  a word rather than a round. */
 function filedNumber(body: unknown): number | null {
@@ -282,54 +293,76 @@ function nudge(slot: SessionSlot, text: string) {
   };
 }
 
+/** Send one nudge, best-effort: the round or the flip it follows is filed
+ *  either way, and a nudge that could not leave is the worker's own line
+ *  missing, never a lost review - the document viewer's nudge swallows the
+ *  same failure for the same reason. */
+function sendNudge(sends: Sends, slot: SessionSlot, text: string): void {
+  try {
+    void sends.dispatch(nudge(slot, text));
+  } catch {
+    // A closed socket has no seat left to tell; what it lost is one line.
+  }
+}
+
 /**
- * The finish: seal the drafted threads into a round through `send`, then
- * nudge the seat with the line the round's own number names.
+ * The finish: seal the drafted threads into a round through `sends.write`,
+ * then nudge the seat with the line the round's own number names.
  *
- * **A reply that carried no round nudges nobody.** The store refused the
- * submit or turned it down, so there is no review to read - and a worker
- * sent to read one that does not exist is worse off than one told nothing.
- * The submit going is what the round's clearing cares about; the nudge is
- * owed only to a review that landed.
+ * **Only a round worth reading is worth a nudge.** `hasWork` is the page's
+ * reading of the sealed threads - at least one not resolved or outdated - so
+ * a round of nothing but resolved comments files without spending the
+ * worker's turn on it; the view this client replaced sealed by the same
+ * predicate.
+ *
+ * **A reply that carried no round is a finish that did not land.** The store
+ * turned the submit down, so nothing was filed: no nudge goes out and
+ * `false` comes back, which is what keeps the reader's words. A refusal and
+ * a write that never left take the same answer.
  */
 export async function finishRound(
-  send: (command: unknown) => Promise<SendOutcome>,
+  sends: Sends,
   slot: SessionSlot,
   branch: string,
   threadIds: string[],
   summary: string | null,
+  hasWork: boolean,
 ): Promise<boolean> {
-  const sealed = await send(submitCommand(slot, branch, threadIds, summary));
+  const sealed = await sends.write(submitCommand(slot, branch, threadIds, summary));
   if (!sealed.went) return false;
   const number = filedNumber(sealed.body);
-  if (number === null) return true;
-  await send(
-    nudge(slot, `Review #${number} ready - address it via the review MCP (\`review__list\`).`),
-  );
+  if (number === null) return false;
+  if (hasWork) {
+    sendNudge(
+      sends,
+      slot,
+      `Review #${number} ready - address it via the review MCP (\`review__list\`).`,
+    );
+  }
   return true;
 }
 
 /**
- * The reopen: flip the thread back to open through `send`, then nudge the
- * seat with the round the reopen is about.
+ * The reopen: flip the thread back to open through `sends.write`, then nudge
+ * the seat with the round the reopen is about.
  *
  * The round is the thread's LATEST filed one, and a thread no round has
  * filed reopens under the round-less line; a flip that never left nudges
  * nobody, because the thread was not reopened.
  */
 export async function reopenThread(
-  send: (command: unknown) => Promise<SendOutcome>,
+  sends: Sends,
   slot: SessionSlot,
   branch: string,
   threadId: string,
   round: number | null,
 ): Promise<boolean> {
-  const flipped = await send(statusCommand(slot, branch, threadId, 'Open'));
+  const flipped = await sends.write(statusCommand(slot, branch, threadId, 'Open'));
   if (!flipped.went) return false;
   const line =
     round === null
       ? 'Reopened a review comment - take another look via the review MCP (`review__list`).'
       : `Reopened a comment in review #${round} - take another look via the review MCP (\`review__get\`).`;
-  await send(nudge(slot, line));
+  sendNudge(sends, slot, line);
   return true;
 }

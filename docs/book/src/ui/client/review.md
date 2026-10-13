@@ -134,9 +134,13 @@ never the comments, which are what the review MCP is for: `Review #N ready -
 address it via the review MCP (review__list)`, the round's own number in it,
 the words the view this client replaced sent on its own seal. The worker
 therefore hears a review is ready and reads it back, live and on a fresh
-read. A reply that carried no round - the store turned the submit down -
-nudges nobody: a worker sent to read a review that does not exist is worse
-off than one told nothing.
+read. **Only a round with work in it is worth the nudge**: a round whose
+sealed threads are all resolved or outdated files without one, the predicate
+the view this client replaced sealed by, and a reply that carried no round
+nudges nobody - a worker sent to read a review that does not exist is worse
+off than one told nothing. A nudge is best-effort besides: one that could
+not leave is the worker's own line missing, never a lost review, so its
+failure is drawn nowhere.
 
 **A reopen nudges the same seat the same way.** Flipping a thread back to
 open hands the work back to the worker, so the line names the round the
