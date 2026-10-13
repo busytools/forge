@@ -17,7 +17,7 @@ use crate::workspace::Workspace;
 
 /// What a hand-off answers when no client is attached to draw its ask.
 pub const NO_VIEWER_CLIENT: &str =
-    "no client is connected, so the document cannot open - the terminal draws no document viewer";
+    "no client is connected, so the document cannot open - no view is attached to draw it";
 
 /// One parked call, under its id: who handed it, the ask as the read
 /// surface carries it, and the sender the awaiting tool holds.

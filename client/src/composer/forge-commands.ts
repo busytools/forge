@@ -22,17 +22,11 @@ export interface ForgeCommand {
 
 export const FORGE_COMMANDS: ForgeCommand[] = [
   { name: '/compact', description: 'Compact session context' },
-  { name: '/dictate', description: 'Set how dictation is cleaned up, for this session' },
-  { name: '/diff', description: 'Review changes in a full-screen diff overlay' },
   { name: '/effort', description: 'Set thinking effort' },
-  { name: '/extensions', description: 'Open extensions' },
-  { name: '/gateway', description: "Inspect the gateway's orgs and accounts" },
-  { name: '/launchpad', description: 'Return to project picker' },
   { name: '/mode', description: 'Set session mode' },
   { name: '/model', description: 'Show / set session model' },
   { name: '/new', description: 'Start a fresh session' },
   { name: '/resume', description: 'Resume a session by ID' },
-  { name: '/spinner', description: 'Show / set the spinner style' },
   { name: '/usage', description: 'Token/cost usage by project or model' },
 ];
 
@@ -45,10 +39,10 @@ export function isForgeCommand(name: string): boolean {
  * What a typed forge command does in THIS view, before anything is sent:
  * the route it opens here, or the line it answers a wrong invocation with.
  *
- * The terminal's own submit path is the reference
- * (`crates/forge-tui/src/app/slash/executors.rs`): a name that is a page
- * there is a route here, and a name invoked with arguments it does not take
- * is answered with its usage line rather than reaching the model as prose.
+ * The view this client replaced had the same submit path: a name that was a
+ * page there is a route here, and a name invoked with arguments it does not
+ * take is answered with its usage line rather than reaching the model as
+ * prose.
  * A name this table does not answer - `/new`, `/model`, and the rest of the
  * core's - returns `null` and crosses the wire as it always did.
  */
