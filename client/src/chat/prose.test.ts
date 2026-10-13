@@ -11,7 +11,7 @@ const SHEET = readFileSync(new URL('../assets/web.css', import.meta.url), 'utf8'
  * Whether any rule the sheet writes for `unit` carries `said`.
  *
  * Scoped on `.prose` alone: prose draws in the work a turn did and in what the
- * reader typed, which the terminal folds as a document too.
+ * reader typed, which the view this client replaced folded as a document too.
  */
 function declares(unit: string, said: string): boolean {
   const rules = SHEET.matchAll(new RegExp(`\\.prose [^{}]*\\b${unit}\\b[^{}]*\\{([^}]*)\\}`, 'g'));
@@ -62,11 +62,10 @@ describe('the markdown a message carries, as the sheet draws it', () => {
   });
 
   it('keeps a prompt newline as a break, where the same text joins for prose', () => {
-    // The terminal's own split: its user path passes `preserve_newlines`,
-    // which routes through `force_markdown_line_breaks`, and its assistant
-    // path does not - so a prompt's newlines survive and an assistant's
-    // wrapped line joins back into one. A prompt is usually several lines, so
-    // this is the shape a person meets first.
+    // The split the view this client replaced kept: its user path preserved
+    // newlines and its assistant path did not - so a prompt's newlines survive
+    // and an assistant's wrapped line joins back into one. A prompt is usually
+    // several lines, so this is the shape a person meets first.
     const typed = 'first line\nsecond line';
 
     expect(renderProse(typed), 'assistant prose joins its soft break').not.toContain('<br>');
@@ -93,9 +92,10 @@ describe('the markdown a message carries, as the sheet draws it', () => {
   });
 
   it("gives each remaining unit a mark, on a token rather than the browser's", () => {
-    // The quote and the break are the sheet's marks rather than the terminal's,
-    // so this pins that each has one at all - unmarked, a quote reads as a
-    // paragraph and a link takes the browser's own blue.
+    // The quote and the break are the sheet's marks rather than ones carried
+    // over from the view this client replaced, so this pins that each has one
+    // at all - unmarked, a quote reads as a paragraph and a link takes the
+    // browser's own blue.
     const marks: Array<[string, string, string]> = [
       ['blockquote', 'border-left', 'a quote is marked by the rule this sheet insets with'],
       ['table', 'border-collapse: collapse', 'cells share one grid'],
@@ -163,14 +163,16 @@ describe('a code block in a message', () => {
     expect(html).toContain('<div class="code">');
     expect(html).toContain('<div class="lang">yaml</div>');
     // The delimiters never reach the panel. What this catches is a rule that
-    // slices the source range - the way the terminal's own splitter finds a
-    // fence - rather than taking the block's body off the token.
+    // slices the source range - the way the splitter in the view this client
+    // replaced found a fence - rather than taking the block's body off the
+    // token.
     expect(html).not.toContain('```');
   });
 
   it('draws no label row for a fence that carries no info string', () => {
-    // The terminal labels a panel whenever the fence carries one and draws no
-    // row when it does not, so a bare fence must not invent a word for it.
+    // The view this client replaced labelled a panel whenever the fence
+    // carried one and drew no row when it did not, so a bare fence must not
+    // invent a word for it.
     const html = renderProse('```\nplain text\n```');
 
     expect(html).toContain('<div class="code">');

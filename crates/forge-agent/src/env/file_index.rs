@@ -3,11 +3,11 @@
 //! and `notify::Watcher` events; produces typed snapshots and change
 //! batches without knowing anything about session routing.
 //!
-//! TUI consumers wrap these progress streams with their per-session
+//! View consumers wrap these progress streams with their per-session
 //! `SessionSlot` + generation routing; the env layer is route-blind.
 //!
 //! Pattern mirrors `env::git_diff` (env owns subprocess + parsing,
-//! workspace mediates, TUI consumes via channel).
+//! workspace mediates, a view consumes via channel).
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};

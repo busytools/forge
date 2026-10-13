@@ -101,9 +101,9 @@ describe('the home over a connection', () => {
    * this subscribe is usually the first the app makes (/models gets there
    * first on a deep link; a seat page waits on the home's own snapshot), so
    * declaring it here is what a page away from any seat has. It is a
-   * safeguard rather than the ask's own cure - a machine running forge has
-   * its terminal attached as an answerer for as long as it runs - and the
-   * case it covers is a serve with no terminal anywhere.
+   * safeguard rather than the ask's own cure - another subscriber may be the
+   * one that answers - and the case it covers is a serve with no other
+   * answerer anywhere.
    */
   it('declares the connection answerable, usually on its first subscribe', () => {
     const forge = fakeConnection();

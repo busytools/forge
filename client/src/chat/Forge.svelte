@@ -30,8 +30,9 @@
          a Slack message, a review's prompt, a summary - so it renders as
          markdown, which is how a charter's headings and lists were written.
          `preserveLines`, because most of them are the reader's own words and
-         their line breaks are theirs: the terminal's own split for that path,
-         where a person's newlines survive and generated prose joins back. -->
+         their line breaks are theirs: the split the view this client replaced
+         kept for that path, where a person's newlines survive and generated
+         prose joins back. -->
     <div class="fam-quote"><Prose text={piece.text} preserveLines /></div>
   {:else if piece.kind === 'tag'}
     <div class="fam-tag">{piece.text}</div>

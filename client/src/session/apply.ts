@@ -2,9 +2,9 @@
  * What one `SessionUpdate` does to the record a page holds.
  *
  * The server sends the update and the client applies it, which is what the
- * terminal has always done - so a page follows a busy seat without asking for
- * the whole session again on every frame. A read is for a cold load, a
- * reconnect and a seat swap: every slice has a frame.
+ * view this client replaced always did - so a page follows a busy seat without
+ * asking for the whole session again on every frame. A read is for a cold
+ * load, a reconnect and a seat swap: every slice has a frame.
  *
  * **The record's shape is `crates/forge-server/src/transport/wire.rs`', and the
  * payload's is `crates/forge-workspace/src/protocol.rs`'s `SessionUpdate`. The
@@ -425,8 +425,9 @@ export const IGNORED: readonly string[] = [
   // The models page reads the catalogue through its own subject; a
   // session page has nothing of it to draw.
   'dictate_models_changed',
-  // The core echoes the terminal's own `/dictate` overrides; this client
-  // holds its axes itself, so the echo reaches nothing here.
+  // The core echoes the `/dictate` overrides of the view this client
+  // replaced; this client holds its axes itself, so the echo reaches nothing
+  // here.
   'dictate_overrides',
   // Nothing on this client draws the flag, and the record no longer carries
   // it: the update reaches nothing here.
@@ -737,8 +738,9 @@ export function inFlightOf(held: boolean, frame: unknown): boolean {
  * so a lookup that hits finds the id again and one that misses leaves the id
  * standing. The server has two ways to arrive at something else: it humanizes an
  * id no row carries, and its lookup accepts a row whose key is merely
- * COMPATIBLE, naming the model where no exact match names it. So the terminal
- * can draw "Opus 5" where this page draws "claude-opus-5".
+ * COMPATIBLE, naming the model where no exact match names it. So the view
+ * this client replaced could draw "Opus 5" where this page draws
+ * "claude-opus-5".
  * Closing that means porting `humanize_model_id` and the compatibility rule into
  * the client, which this declines on the grounds that the CLI's own spelling of
  * the model beats no name at all.

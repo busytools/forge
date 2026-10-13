@@ -2,15 +2,13 @@
 //! produce a [`GitDiffSnapshot`] describing the project's current
 //! changeset.
 //!
-//! Polled (not watched): the TUI reaches [`scan`] as
+//! Polled (not watched): the workspace reaches [`scan`] as
 //! `forge_workspace::env::git_diff::scan`, a wildcard re-export of this
-//! module through the workspace facade, and drives it from its
-//! `app::git_diff` ticker - a 1 s
-//! poke runs the "snapshot is `None` OR age ≥ 10 s → fetch" rule
-//! against the active session. The snapshot carries branch info
-//! alongside diff stats, so this module replaces both the previous
-//! file-watcher `GitContextWatcher` and the per-turn refresh hooks
-//! that fed it.
+//! module through the workspace facade, and runs it on the
+//! "snapshot is `None` OR age ≥ 10 s → fetch" rule while a seat is
+//! held. The snapshot carries branch info alongside diff stats, so this
+//! module replaces both the previous file-watcher `GitContextWatcher`
+//! and the per-turn refresh hooks that fed it.
 //!
 //! The snapshot exposes two independent diff layers so callers can
 //! render both simultaneously when both apply (worker on a topic
@@ -63,12 +61,8 @@ const STDOUT_SIZE_CAP: usize = 8 * 1024 * 1024;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Number of file rows surfaced in the rendered diff list. The
-/// renderer collapses the rest into a "+N more" line. With the
-/// box-drawing tree + single-child folding in `inspector_pane`,
-/// 7 file leaves typically render as ~9-11 rows including
-/// directory headers - matches the TASKS / PROCESSES section caps
-/// (5) and keeps the GIT section roughly the same height as its
-/// neighbours on tall trees.
+/// renderer collapses the rest into a "+N more" line; the count above
+/// the list tells the truth either way.
 const TOP_FILE_COUNT: usize = 7;
 
 /// Whether a git repository is reachable from a scan cwd, and whether
@@ -162,7 +156,7 @@ async fn rev_parse_gate(cwd: &Path) -> Result<String, RepoGate> {
 
 /// Minimum gap between background `git fetch` kicks for one repo. The
 /// scan piggybacks a fetch to keep `origin/<default>` fresh; this caps it
-/// so a burst of scans (session switches, the 1s ticker's 10s refresh)
+/// so a burst of scans (session switches, the walk's refresh cadence)
 /// fetches at most once per window.
 const FETCH_THROTTLE: Duration = Duration::from_secs(240);
 
@@ -180,8 +174,8 @@ const PR_REFETCH_INTERVAL: Duration = Duration::from_secs(300);
 const PUSHED_SHA_WALK_CAP: usize = 500;
 
 /// Per-repo last-fetch timestamps, keyed by the scan `cwd`. Module-level
-/// because [`scan`] is a free function with no owning state; the ticker
-/// scans one active session at a time, so keying by scan cwd gives
+/// because [`scan`] is a free function with no owning state; the walk
+/// runs per held seat, so keying by scan cwd gives
 /// stable per-repo throttling. Mirrors the `OnceLock<Mutex<HashMap>>`
 /// pattern in `cloud::oauth_credentials`.
 static LAST_FETCH: OnceLock<Mutex<HashMap<PathBuf, Instant>>> = OnceLock::new();

@@ -800,7 +800,7 @@ mod tests {
 
     /// A turn opening discards what the one before it accumulated.
     ///
-    /// `forge-web` calls `start` unguarded on every frame that reports a turn
+    /// A view calls `start` unguarded on every frame that reports a turn
     /// in flight and then reads the totals back, so a turn that opened without
     /// the clear would show the previous turn's figures as its own.
     #[test]

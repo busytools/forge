@@ -741,8 +741,8 @@ describe('whether the column follows the newest end', () => {
   });
 
   it("disarms on the reader's own key at any distance", async () => {
-    // The key is the terminal's own vocabulary: the ones that scroll the
-    // column up are the ones that may let the follow go.
+    // The keys are the vocabulary the view this client replaced used: the
+    // ones that scroll the column up are the ones that may let the follow go.
     const server = stub();
     await draw(server);
     readerAt(FOOT);
@@ -949,9 +949,10 @@ describe('whether the column follows the newest end', () => {
     // conversation is kept, and its follow flag was kept with it - so a seat
     // left scrolled up came back with `following: false`, the follow pass
     // returned early, and the reader landed wherever the old offset fell in
-    // the history. Every entry lands at the latest. The terminal deliberately
-    // does the other thing - its own per-session `auto_scroll` restores where
-    // the reader was - and that divergence is named in the PR.
+    // the history. Every entry lands at the latest. The view this client
+    // replaced deliberately did the other thing - its own per-session
+    // `auto_scroll` restored where the reader was - and that divergence is
+    // named in the PR.
     const seat = writable(LEAD);
     const server = stub();
     clear();

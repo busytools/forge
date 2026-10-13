@@ -22,8 +22,8 @@
 //! Saturation and probe failures are classification only - they feed
 //! the walk's preference order and the `/gateway` view's reasons.
 //!
-//! Rate-limited accounts are visible in the bottom-panel bars so the
-//! user can wait for the window to reset.
+//! Rate-limited accounts are visible in a view's bottom-panel bars so
+//! the user can wait for the window to reset.
 
 use forge_primitives::usage::{UsageSnapshot, UsageWindow};
 
@@ -34,7 +34,7 @@ use forge_primitives::account::LoadedAccount;
 pub struct AccountKey(pub String);
 
 /// Classification of the latest usage-poll attempt outcome for an
-/// account. Surfaced to the TUI's bottom panel so empty bars can
+/// account. Surfaced to a view's bottom panel so empty bars can
 /// distinguish "still warming the cache" from a real failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -120,11 +120,11 @@ pub struct AccountState {
     pub env: std::collections::HashMap<String, String>,
     /// Latest usage snapshot fetched by the workspace's background
     /// poller. `None` until the first successful fetch. Drives the
-    /// selection walk's order; also surfaced to the TUI's bottom panel
+    /// selection walk's order; also surfaced to a view's bottom panel
     /// via `Workspace::usage_for`.
     pub usage: Option<UsageSnapshot>,
     /// Latest poll-attempt outcome when the fetch failed. Cleared
-    /// (set to `None`) on the next successful fetch. The TUI reads
+    /// (set to `None`) on the next successful fetch. A view reads
     /// this via `Workspace::usage_error_for` to render a DIM hint
     /// (`rate-limited` / `expired` / …) next to a 5h/7d row whose
     /// bar can't fill because the underlying request didn't return

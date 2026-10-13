@@ -324,8 +324,8 @@ describe("a rail row's close chip", () => {
   /**
    * A sleeping seat is information, not a way in: it has no session to close
    * and nothing behind it to open, so the row carries neither a chip nor a
-   * link. The terminal draws these rows as labels for the same reason - its
-   * launchpad lists them with no hit target at all.
+   * link. The view this client replaced drew these rows as labels for the
+   * same reason - its launchpad listed them with no hit target at all.
    */
   it('draws a sleeping seat as information: no chip, no link', () => {
     const home: HomeWire = {

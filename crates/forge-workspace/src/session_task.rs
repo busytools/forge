@@ -386,7 +386,7 @@ impl SessionTask {
                     let caller = self.domain.lock().key.clone();
                     self.drain_review_activity_for(&caller);
                     // Session-scoped `/dictate` state dies with the
-                    // identity too: the TUI mints a blank bucket for
+                    // identity too: a view mints a blank bucket for
                     // the replaced session, so an override left here
                     // would style a session that no longer exists
                     // while the readout claims the crate defaults.
@@ -856,7 +856,7 @@ impl SessionTask {
     }
 
     /// How many lines of a call's own output a read answers with, matching
-    /// the terminal's Monitor tail: the row is about what the command is
+    /// a view's Monitor tail: the row is about what the command is
     /// doing, not a transcript of everything it printed.
     const CALL_OUTPUT_MAX_LINES: usize = 12;
 
@@ -1071,7 +1071,7 @@ impl SessionTask {
                         error = %err,
                         "agent command dispatch failed; bridge channel closed?"
                     );
-                    // Surface it - the TUI may already have committed
+                    // Surface it - a view may already have committed
                     // optimistic state (Thinking, a flipped chip) that
                     // unwinds only when the failure is visible.
                     self.emit(SessionUpdate::TurnError {
@@ -1639,15 +1639,13 @@ fn warn_no_session(key: &SessionSlot, command: &'static str) -> forge_agent::Age
 }
 
 /// The wire subtype of the retry frame, where the CLI names an
-/// authentication failure on the retry path. The TUI matches the same
+/// authentication failure on the retry path. A view matches the same
 /// literal.
 const API_RETRY_SUBTYPE: &str = "api_retry";
 
-/// How long a failed turn waits for a reader before its nudge goes out.
-/// The terminal's own continuation waits 5s before its first attempt; the
-/// same window here is what gives a reader time to open the seat first.
-/// One prompt, not a ladder: the terminal retries (5s / 20s / 60s), and
-/// this fire descends to the once-per-unopened-failure rule instead.
+/// How long a failed turn waits for a reader before its nudge goes out:
+/// long enough to give a reader time to open the seat first. One prompt,
+/// not a ladder: this fire descends to the once-per-unopened-failure rule.
 pub(crate) const AUTO_CONTINUE_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// What the failure is called in the nudge: the CLI's own errors when the
@@ -1670,7 +1668,7 @@ pub(crate) fn failure_reason(errors: Option<&[String]>, subtype: &str) -> String
 /// comparing the sets the fold was handed with the ones it left.
 ///
 /// The walk joins them on the death only: nothing else in this fold writes it
-/// (the seat's own loop and the terminal's scanner do), so the flag is the one
+/// (the seat's own loop does), so the flag is the one
 /// transition this fold makes - a snapshot that was held and is now gone.
 pub(crate) struct Moved {
     pub monitors: bool,
@@ -1736,9 +1734,8 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
         if *is_error && !cancelled {
             let at = std::time::SystemTime::now();
             domain.failed_turn_at = Some(at);
-            // A transient server error is the terminal's own dead-turn
-            // path, which continues it with its own prompt; arming here too
-            // would double-fire. Everything else is this nudge's to answer.
+            // A transient server error arms no nudge.
+            // Everything else is this nudge's to answer.
             let terminal_owns_it = matches!(
                 domain.last_api_retry,
                 Some((forge_primitives::ApiRetryError::ServerError, _))
@@ -1808,9 +1805,9 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
     } = event
     {
         // Content means the turn went on, so a retry it recovered past is not
-        // the classification of its failure. The terminal drops its own copy
-        // on the same content; left standing here, a stale server_error would
-        // exempt a later failure of a different kind from the nudge.
+        // the classification of its failure. Left standing, a stale
+        // server_error would exempt a later failure of a different kind from
+        // the nudge.
         domain.last_api_retry = None;
         for block in &message.content {
             let forge_primitives::ContentBlock::ToolUse { id, input, .. } = block else {
@@ -1910,8 +1907,8 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
     // over before any reconnect. Success only: a turn that died on the
     // missing credential ends with its own failed `Result`, and clearing
     // on that would undo the mark the frames above just set. The same
-    // two-line test exists in the TUI and on the view surface, and folding
-    // the three into one is its own piece.
+    // two-line test exists on the view surface, and folding the two into
+    // one is its own piece.
     if let AgentEvent::SdkMessage {
         msg: forge_primitives::Message::Result { is_error, subtype, .. },
         ..
@@ -1923,7 +1920,7 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
     }
     // Mirror runtime liveness from `session_state_changed` so the
     // workspace's in-flight guards see a turn authoritatively,
-    // independent of the TUI gate. Reuse the canonical decoder parser
+    // independent of a view's gate. Reuse the canonical decoder parser
     // rather than re-inlining it.
     if let AgentEvent::SdkMessage {
         msg: forge_primitives::Message::System { subtype, data, .. },
@@ -1985,7 +1982,7 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
         let drift = parsed.is_empty() && !commands.is_empty();
         if drift {
             // A view reading the surface alone would otherwise lose the
-            // signal the TUI's own copy of this guard logs.
+            // signal this guard logs.
             tracing::warn!(
                 target: "forge_workspace::session_task",
                 slot = %domain.key.display(),
@@ -2087,9 +2084,9 @@ fn clear_runtime_identity(domain: &mut DomainSession) {
     domain.monitors.clear();
 }
 
-/// The facts this event carries that a view other than the TUI reads
-/// through the view surface: the hook observation's mode and effort, the
-/// two bridge snapshots, the resolved model, and the monitor set.
+/// The facts this event carries that a view reads through the view
+/// surface: the hook observation's mode and effort, the two bridge
+/// snapshots, the resolved model, and the monitor set.
 ///
 /// One source, two readers: each fact is folded from the same event the
 /// `SessionUpdate` for it is built from, so the held copy cannot drift
@@ -2135,10 +2132,9 @@ fn hold_view_facts(domain: &mut DomainSession, event: &AgentEvent) {
         }
     }
     // The two events that end a run leave the session with no runtime
-    // identity: a login wait, and a connection that died. The TUI blanks
-    // its own copy on both, so the core blanks what a view reads
-    // through it - a mode or a model left standing describes a run that
-    // is gone.
+    // identity: a login wait, and a connection that died. The core blanks
+    // what a view reads through it - a mode or a model left standing
+    // describes a run that is gone.
     if matches!(event, AgentEvent::ConnectionFailed { .. } | AgentEvent::AuthRequired { .. }) {
         clear_runtime_identity(domain);
     }
@@ -2197,7 +2193,7 @@ fn reconcile_model_from_init(domain: &mut DomainSession, data: &serde_json::Valu
     // No requested id: the pin forge stamped described the model the
     // session connected on, and the CLI has just named a different one, so
     // the CLI's own answer is what names this model.
-    domain.current_model = Some(crate::session_lifecycle::resolve_current_model_from_inputs(
+    domain.current_model = Some(forge_agent::session_lifecycle::resolve_current_model_from_inputs(
         model_id,
         None,
         None,
@@ -2312,9 +2308,8 @@ fn fold_monitor(
                 settle_monitor(domain, task_id, Some(status), Some(output_file.clone()), None);
             }
             // The notification is the last frame a monitor sends, so it is
-            // where the set drains once nothing in it is running: the same
-            // rule the terminal applies, so a session that ran a monitor an
-            // hour ago draws no section in either view.
+            // where the set drains once nothing in it is running: a session
+            // that ran a monitor an hour ago draws no section in any view.
             drain_settled_monitors(domain);
         }
         _ => {}
@@ -2750,7 +2745,7 @@ mod tests {
     }
 
     /// A worker's mission lives in its conversation, so `/new` has to
-    /// re-deliver the charter the store holds for its slot. The TUI
+    /// re-deliver the charter the store holds for its slot. A view
     /// builds the launch settings for a `/new` and knows nothing of the
     /// charter, so without the re-delivery a worker that ran `/new`
     /// comes back as a session that is still its slot but no longer its
@@ -2824,7 +2819,7 @@ mod tests {
                 .map(str::to_owned)
         };
         let listener_base = format!("http://127.0.0.1:{}", workspace.gateway_port());
-        // A respawn's settings are built by the TUI, which knows nothing of
+        // A respawn's settings are built by a view, which knows nothing of
         // the spawn-time flags, so the tools forge has replaced have to be
         // re-denied here or the new occupant gets them back.
         let denied = |launch_settings: &serde_json::Value| -> String {
@@ -2920,7 +2915,7 @@ mod tests {
         );
     }
 
-    /// A respawn rebuilds the launch from TUI-built settings, so every denial
+    /// A respawn rebuilds the launch from view-built settings, so every denial
     /// a worker's own spawn wrote has to come back from the row that holds
     /// its flags. `AskUserQuestion` is the one the respawn stamp used to
     /// omit: a non-interactive worker that regained it would put a question
@@ -3345,9 +3340,8 @@ mod tests {
         );
     }
 
-    /// A failure the terminal's own dead-turn path leaves alone arms the
-    /// seat's nudge: the CLI's own error strings as the reason, and the
-    /// terminal's first backoff as the delay before it goes out.
+    /// A plain failure arms the seat's nudge: the CLI's own error strings
+    /// as the reason, and the delay before it goes out.
     #[test]
     fn a_plain_failure_arms_the_continuation_with_its_reason() {
         let (workspace, _rx) = crate::Workspace::testing_stub();
@@ -3394,9 +3388,8 @@ mod tests {
         assert!(domain.auto_continue.is_none(), "and nothing is armed to pick up");
     }
 
-    /// The terminal's own dead-turn path continues a transient server
-    /// error with its own prompt; arming one here too would double-fire on
-    /// the same failure. The rail still marks it.
+    /// A transient server error arms no continuation. The rail still marks
+    /// it.
     #[test]
     fn a_transient_server_error_arms_no_continuation() {
         let (workspace, _rx) = crate::Workspace::testing_stub();
@@ -3421,10 +3414,9 @@ mod tests {
     }
 
     /// A retry the turn RECOVERED past is not a classification of its
-    /// failure: the content that follows the retry is the turn going on. The
-    /// terminal drops its own copy there, and left standing here the stale
-    /// `server_error` would exempt a later failure of a different kind - the
-    /// seat would then get nothing from either path.
+    /// failure: the content that follows the retry is the turn going on.
+    /// Left standing, the stale `server_error` would exempt a later failure
+    /// of a different kind from the nudge.
     #[test]
     fn a_retry_the_turn_recovered_past_does_not_exempt_a_later_failure() {
         let (workspace, _rx) = crate::Workspace::testing_stub();
@@ -3678,7 +3670,7 @@ mod tests {
     /// A `ConnectionFailed` event is terminal for the task: the dead
     /// spawn's pool entry and command sender are released so the next
     /// retry (projects-pane click, cron fire) re-spawns instead of
-    /// dispatching into the dead handle, the TUI still receives the
+    /// dispatching into the dead handle, a view still receives the
     /// user-visible `SessionUpdate::ConnectionFailed`, and
     /// `translate_event` signals the run loop to exit so `Drop`'s
     /// expiry backstop fires.
@@ -5765,7 +5757,7 @@ provider = "anthropic"
     }
 
     /// The count has coverage at both ends - the scan produces it, the
-    /// TUI seeds from it - and this is the layer in between. Both emitted
+    /// client reads it - and this is the layer in between. Both emitted
     /// arms are checked because a task that has connected before emits
     /// `SessionReplaced` instead of `Connected`, and forcing the field to
     /// zero on either one is invisible to every other test here.
@@ -5904,7 +5896,7 @@ provider = "anthropic"
 
     /// A re-spawn that replaces the session seeds `connected_once =
     /// true`, so the new task's first Connected emits `SessionReplaced`
-    /// (not a fresh Connected) carrying the resumed history. The TUI
+    /// (not a fresh Connected) carrying the resumed history. A view's
     /// reducer resets the chat then re-seeds it from that history, so
     /// the same conversation stays visible across the replacement.
     #[tokio::test]
@@ -5984,7 +5976,7 @@ provider = "anthropic"
     }
 
     /// The replaced identity's `/dictate` override axes die with it:
-    /// the TUI mints a blank bucket for the new session, so an axis
+    /// a view mints a blank bucket for the new session, so an axis
     /// left on the domain would style a session that no longer exists.
     /// The device pick is workspace state shared by every session, so
     /// the replacement must leave it - and echo nothing.
@@ -6058,9 +6050,8 @@ provider = "anthropic"
     ///
     /// The `TurnError` envelope's text is a fallback rather than the
     /// signal: its producers are forge's own failed prompt write and
-    /// failed cancel, so no CLI output reaches it, and the classifier it
-    /// reads is the presentation-time one the TUI warns can fire on
-    /// ordinary error words.
+    /// failed cancel, so no CLI output reaches it, and a classifier over
+    /// its text can fire on ordinary error words.
     #[test]
     fn a_login_wait_comes_from_the_typed_signals() {
         let held = |event: &AgentEvent| {
@@ -6262,7 +6253,7 @@ provider = "anthropic"
     /// A `Connected` in the same seat is a NEW OCCUPANT, and it has
     /// advertised nothing yet: the CLI sends `system/init` at the head of
     /// a turn only, so the last one's catalogues would stand until the new
-    /// occupant's first message. The TUI clears both on the same event,
+    /// occupant's first message. The core clears both on the same event,
     /// and after a login swap the stale list came from another account's
     /// config dir - another session's data, not a late one.
     ///
@@ -6358,8 +6349,8 @@ provider = "anthropic"
         assert_eq!(domain.available_agents.len(), 1, "and the catalogue with it");
     }
 
-    /// The agent catalogue is read once per turn, which is the rule the
-    /// TUI's own walker applies: a re-fire inside the same turn is the
+    /// The agent catalogue is read once per turn, the rule this fold
+    /// applies: a re-fire inside the same turn is the
     /// same list, and the turn boundary is what re-arms the read.
     #[test]
     fn the_agent_catalogue_is_read_once_per_turn() {
@@ -6382,8 +6373,8 @@ provider = "anthropic"
         );
     }
 
-    /// The hook observation carries three facts a view renders and the
-    /// TUI alone holds today: the permission mode, the effort level and
+    /// The hook observation carries three facts a view renders: the
+    /// permission mode, the effort level and
     /// the tool_use -> agent-type attribution. All three land on the
     /// session so a view reads them instead of folding the same event
     /// again.
@@ -6512,7 +6503,7 @@ provider = "anthropic"
 
     /// The CLI names the model each turn runs under at the head of the
     /// turn, and that frame is how a mid-session switch reaches a reader:
-    /// after `/model` the terminal's own row moves, and a read that only
+    /// after `/model` a view's row moves, and a read that only
     /// listened at connect would go on naming the model the session left.
     #[test]
     fn the_model_follows_a_later_turns_init_frame() {
@@ -6666,7 +6657,7 @@ provider = "anthropic"
     }
 
     /// A Monitor tool call is live work, and the core holds it so a view
-    /// that is not the TUI can draw it.
+    /// can draw it.
     #[test]
     fn a_monitor_tool_call_enters_the_held_set() {
         let mut domain = empty_domain();
@@ -6794,9 +6785,9 @@ provider = "anthropic"
         );
     }
 
-    /// The monitor set drains once every entry is terminal, which is what
-    /// the terminal does: a session that ran a monitor an hour ago shows
-    /// no section, not a section with nothing to say.
+    /// The monitor set drains once every entry is terminal: a session that
+    /// ran a monitor an hour ago shows no section, not a section with
+    /// nothing to say.
     #[test]
     fn the_monitor_set_drains_once_every_entry_is_terminal() {
         let mut domain = empty_domain();
@@ -6822,7 +6813,7 @@ provider = "anthropic"
 
     /// A notification whose status forge cannot name is still a
     /// notification, and it is the last frame a monitor sends: the
-    /// terminal drains on every one of them, so a status the CLI adds
+    /// set drains on every one of them, so a status the CLI adds
     /// later must not leave the core's set standing forever.
     #[test]
     fn an_unnameable_task_status_still_drains_the_set() {
@@ -7576,9 +7567,9 @@ provider = "anthropic"
         );
     }
 
-    /// A task whose card forge never saw keeps its row and has no command -
-    /// the terminal's own rule, where a rostered task with no recorded card
-    /// still draws from its roster entry.
+    /// A task whose card forge never saw keeps its row and has no command:
+    /// a rostered task with no recorded card still draws from its roster
+    /// entry.
     #[test]
     fn a_task_with_no_card_still_carries_its_registry_row() {
         let (workspace, _rx) = crate::Workspace::testing_stub();

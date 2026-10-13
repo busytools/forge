@@ -1,7 +1,7 @@
 //! Canonical `PermissionMode` enum, used by:
 //!  - `forge_sdk::Options` builder for `--permission-mode` CLI argv.
 //!  - `forge_agent::state` for runtime mode tracking.
-//!  - `forge_tui` for permission-mode UI / settings.
+//!  - a view's permission-mode chip and settings.
 
 use serde::{Deserialize, Serialize};
 
@@ -79,7 +79,7 @@ impl PermissionMode {
         })
     }
 
-    /// Human-readable display name (used by forge-tui's mode chip
+    /// Human-readable display name (used by a view's mode chip
     /// + settings UI).
     pub fn display_name(self) -> &'static str {
         match self {

@@ -9,11 +9,11 @@
  *
  * **The ordering is this file's, not the server's.** Which match a typeahead
  * offers first is ordering-for-display, so it lives with the view that draws it:
- * the emoji ranking comes from `crates/forge-tui/src/app/emoji.rs`, and the file
- * ranking from `crates/forge-workspace/src/file_index.rs`. The trigger rules are
- * the terminal's own, ported rather than reinvented - a slash command is the
- * whole draft while it is typed, and the `:` counts only at the start of the
- * text or after whitespace.
+ * the emoji ranking is the same table this client keeps in `emoji.ts`, and the
+ * file ranking from `crates/forge-workspace/src/file_index.rs`. The trigger
+ * rules are ported from the view this client replaced rather than reinvented -
+ * a slash command is the whole draft while it is typed, and the `:` counts only
+ * at the start of the text or after whitespace.
  */
 
 import { MIN_QUERY_CHARS, matches as emojiMatches, shortcodeQuery } from './emoji';
@@ -365,8 +365,8 @@ export function mark(text: string, query: string): { before: string; hit: string
 
 /**
  * The offset that keeps a marked row inside its window and moves it no further:
- * the terminal's own rule, whose picker windows the list around the mark
- * (`DialogState::clamp` in `crates/forge-tui`).
+ * the same rule the view this client replaced applied, windowing the list
+ * around the mark.
  *
  * `row` is where the row sits in the window: the rectangle's own edges less the
  * window's top.

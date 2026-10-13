@@ -102,7 +102,7 @@ pub const PROTOCOL_VERSION: u32 = 8;
 ///
 /// The conversations are here rather than on the surface because they are
 /// the TRANSPORT's: they exist so this socket stops reading a whole
-/// transcript per client per request, and the terminal reading the same seat
+/// transcript per client per request, and a view reading the same seat
 /// through the surface keeps its own copy in its own session state.
 pub struct TransportState {
     pub surface: Arc<ViewSurface>,
@@ -239,7 +239,7 @@ fn context_ask(update: &SessionUpdate) -> Option<(&SessionSlot, Ask)> {
 /// Ask the core for a fresh context reading on a seat a page is holding.
 ///
 /// A turn finishing is when a reading stops being true: the transcript grew by
-/// the turn, and the number the seat holds was taken before it. The terminal
+/// the turn, and the number the seat holds was taken before it. A view
 /// refreshes on the same frame, for the seat it is addressing, and a client
 /// reading a seat is that same act - the answer lands as a
 /// [`SessionUpdate::ContextUsageSnapshot`] on the stream that page is already
@@ -247,7 +247,7 @@ fn context_ask(update: &SessionUpdate) -> Option<(&SessionSlot, Ask)> {
 ///
 /// Only a seat a page holds, because the reading exists for the reader and the
 /// probe costs the CLI a walk over its whole transcript. Bounded by [`probe`],
-/// the same limits the terminal applies to its own ask - except for the
+/// the same limits a view applies to its own ask - except for the
 /// post-compaction ask, which may not be refused by the reading it exists to
 /// replace.
 ///

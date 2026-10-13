@@ -98,9 +98,9 @@ impl ViewSurface {
     /// One working tree's files, walked on demand. `root` is the session's
     /// own scan cwd, which a git worker's worktree overrides.
     ///
-    /// **The parked web view's path.** A page that holds no seat - forge-web
-    /// serves from the process and subscribes to nothing, so no seat's loop
-    /// runs for it - has no store to read, and walks where it stands.
+    /// **A page's own walk.** A page that holds no seat - nothing subscribes
+    /// on its behalf, so no seat's loop runs for it - has no store to read,
+    /// and walks where it stands.
     pub fn walk_file_index(&self, root: &std::path::Path) -> FileIndex {
         FileIndex::scan(root, self.respect_gitignore())
     }

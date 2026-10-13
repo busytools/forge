@@ -263,12 +263,12 @@ export function blocksOf(content: unknown): Block[] {
  *
  * **The tag is addressed to the model, not to a reader**: it is how a failed
  * tool's message crosses the wire, and drawn raw it is a wall under the diff.
- * Read off only where the call failed - the terminal's own gate (Failed |
- * Killed): a completed result that merely quotes the tags (a Read of the
- * source that emits them) draws verbatim, and unwrapping it would rewrite what
- * the tool actually said. The extraction matches the terminal's
- * `extract_tool_use_error_message` - the tag search is ASCII-lowercased the
- * way its own scanner is, because JS `toLowerCase()` is length-changing on
+ * Read off only where the call failed - the gate the view this client replaced
+ * used (Failed | Killed): a completed result that merely quotes the tags (a
+ * Read of the source that emits them) draws verbatim, and unwrapping it would
+ * rewrite what the tool actually said. The extraction matches the one in the
+ * view this client replaced - the tag search is ASCII-lowercased the way its
+ * own scanner was, because JS `toLowerCase()` is length-changing on
  * some non-ASCII letters and the index arithmetic would then slice the
  * original at shifted offsets (`trim()`'s whitespace sets diverge on U+0085
  * and U+FEFF, which no real payload carries). The first line is the message;
@@ -419,9 +419,9 @@ function hunkLines(raw: unknown, oldStart: number, newStart: number): HunkLine[]
     // the wire's own meta text - `\ No newline at end of file` is the one the
     // captures carry, 46 of them across 30 hunks - and keeps every character:
     // peeling any other line's first column would strip a leading tab. The
-    // terminal's diff draws the same distinction, and the counters below
-    // advance only for a real line, so the text after a marker keeps its
-    // numbers too.
+    // diff in the view this client replaced drew the same distinction, and the
+    // counters below advance only for a real line, so the text after a marker
+    // keeps its numbers too.
     const marked = mark === ' ' || mark === '+' || mark === '-';
     out.push({
       kind,
@@ -437,7 +437,7 @@ function hunkLines(raw: unknown, oldStart: number, newStart: number): HunkLine[]
   return out;
 }
 
-/** Where a hunk sits: `@@ -30,7 +30,9 @@`, which is the shape the terminal prints too. */
+/** Where a hunk sits: `@@ -30,7 +30,9 @@`, the same shape every diff prints. */
 function headerOf(hunk: {
   oldStart?: unknown;
   oldLines?: unknown;
@@ -537,9 +537,8 @@ function hunk(old: string, added: string): CallBody[] {
  * **The path as the wire gave it rather than cut against the working tree.** A
  * mutation's row draws the same file twice - its title, and the header of the
  * diff under it - so shortening one of them is the row disagreeing with itself
- * about which file it is. The terminal puts the whole of it on the row (its
- * `create_tool_call` builds `Edit /Users/.../home.css`), which is the reference
- * this follows.
+ * about which file it is. The view this client replaced put the whole of it on
+ * the row (`Edit /Users/.../home.css`), which is the reference this follows.
  */
 export function titleOf(name: string, input: unknown): string {
   // A decision's row IS the question it asked: the tool word reads as plumbing
@@ -581,8 +580,8 @@ export function titleOf(name: string, input: unknown): string {
  *
  * `abandoned` is the turn's verdict on a call it never answered: a turn that
  * failed is a turn whose open calls never get a result, and they draw as
- * failed rather than as still running - which is what the terminal does with
- * them on the same frame.
+ * failed rather than as still running - which is what the view this client
+ * replaced did with them on the same frame.
  */
 export function leafOf(
   id: string,
@@ -595,10 +594,10 @@ export function leafOf(
 ): ToolLeaf {
   const body = mutationBody(name, input, record);
   // A backgrounded call is held open by its TASK fact and nothing else: the
-  // terminal clears its background roster before a resume's sweep, so a task
-  // with no live frames behind it fails like every other open call, and an
-  // input-keyed exemption would leave exactly the #1836 spinner standing for
-  // a backgrounded call killed mid-launch.
+  // view this client replaced cleared its background roster before a resume's
+  // sweep, so a task with no live frames behind it fails like every other open
+  // call, and an input-keyed exemption would leave exactly the #1836 spinner
+  // standing for a backgrounded call killed mid-launch.
   const settled =
     task !== undefined && (task.backgrounded || task.status !== 'in_progress')
       ? task.status
@@ -665,11 +664,11 @@ function imageOf(result: Block | undefined): { mime: string; data: string } | nu
  *
  * The result's own text repeats the diff's path and carries the CLI's note on
  * the file state, which is an instruction to the model rather than anything a
- * reader acts on; the terminal draws the diff and returns there for both `Edit`
- * and `Write` (`build_tool_result_fields`). A failed mutation is the other way
- * round: its text is the reason nothing changed - "String to replace not found
- * in file", "File has not been read yet" - and the terminal keeps it (its guard
- * is `if !is_error`), so a row that dropped it would say the edit failed and
+ * reader acts on; the view this client replaced drew the diff and returned
+ * there for both `Edit` and `Write`. A failed mutation is the other way round:
+ * its text is the reason nothing changed - "String to replace not found in
+ * file", "File has not been read yet" - and that view kept it (its guard was
+ * `if !is_error`), so a row that dropped it would say the edit failed and
  * never say why. Where there is no diff the text is all there is, and either
  * way the call still settles on its result.
  */

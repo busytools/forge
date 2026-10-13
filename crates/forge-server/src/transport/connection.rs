@@ -442,9 +442,9 @@ async fn run_connection(
                 if forwards(&update, watched, me) {
                     // **A fatal goes out now, not on the batch's clock.** The
                     // exit it announces is already on its way - `workspace.
-                    // shutdown` follows `run_tui`'s return - and a frame still
-                    // waiting out its window when the process drops dies with
-                    // it. Everything else can wait the interval.
+                    // shutdown` follows the run loop's return - and a frame
+                    // still waiting out its window when the process drops dies
+                    // with it. Everything else can wait the interval.
                     let fatal = matches!(update, SessionUpdate::FatalError { .. });
                     held.push(Instant::now(), update);
                     if fatal {
@@ -1288,8 +1288,8 @@ fn mint_connection_id() -> u64 {
 /// Whether this connection is one of an update's readers.
 ///
 /// Every `Dictate*` update about a take belongs to the connection that
-/// started it, so a connection hears its own take and no other's - and the
-/// terminal's in-process take, whose updates carry no connection at all,
+/// started it, so a connection hears its own take and no other's - and an
+/// in-process take, whose updates carry no connection at all,
 /// is nobody's on the socket. Every other update keeps the watch rule
 /// alone.
 fn ours_to_hear(update: &SessionUpdate, me: u64) -> bool {
@@ -2099,7 +2099,7 @@ mod tests {
     }
 
     /// A connection hears its own take's updates and no other's: another
-    /// connection's take is dropped, and so is the terminal's own - which
+    /// connection's take is dropped, and so is an in-process take's - which
     /// carries no connection at all - because neither is this connection's
     /// to draw.
     #[test]

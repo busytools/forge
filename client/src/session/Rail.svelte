@@ -66,8 +66,8 @@
 
   /**
    * Close one row's seat. The command the row sends and where the reader
-   * lands are `session/close.ts`'s, which knows the terminal's own two
-   * gestures apart.
+   * lands are `session/close.ts`'s, which knows the two gestures of the view
+   * this client replaced apart.
    */
   function close(slot: SessionSlot): void {
     closeSeat(connection, home, slot, current, now);
@@ -144,10 +144,10 @@
             >
             <CloseChip name={worker.slot.label} onclose={() => close(worker.slot)} />
           </div>
-          <!-- The failure draws under the row that failed, dim as the
-               terminal's sub-row draws it: the row's own failed dot carries
-               the colour, and on the project's line the diagnostic would
-               read as the lead's. -->
+          <!-- The failure draws under the row that failed, dim the way the
+               view this client replaced drew its sub-row: the row's own
+               failed dot carries the colour, and on the project's line the
+               diagnostic would read as the lead's. -->
           {#if failed !== null}
             <div class="why">{failed}</div>
           {/if}

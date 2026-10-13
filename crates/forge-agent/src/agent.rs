@@ -29,8 +29,8 @@ pub struct AgentHandle {
     /// are needed.
     pub commands: mpsc::UnboundedSender<AgentCommand>,
     /// Bridge's raw `AgentEvent` receiver. Single-take via
-    /// [`AgentHandle::take_events`] - forge-tui's translator consumes
-    /// this and converts to its `ClientEvent` shape.
+    /// [`AgentHandle::take_events`] - the workspace's session task
+    /// consumes this and translates it into `SessionUpdate`s.
     agent_events: Mutex<Option<mpsc::UnboundedReceiver<crate::client::AgentEvent>>>,
     /// Bridge handle used for direct-return accessors (config_dir,
     /// settings_documents, …) plus internal command dispatch.
@@ -337,8 +337,8 @@ impl Agent {
     /// bridge as typed fields. `config_dir` is consulted by every
     /// in-process accessor (oauth, settings, catalog scans) and
     /// exported to the spawned `claude` subprocess as
-    /// `CLAUDE_CONFIG_DIR`. `display_name`, when set, is surfaced
-    /// via [`crate::client::AgentEvent::StatusSnapshot`] so the TUI
+    /// `CLAUDE_CONFIG_DIR`. `display_name`, when set, is read back
+    /// through the handle's `display_name()` so a view
     /// renders which forge-account the bridge is bound to. `env`
     /// carries the session's resolved forge.toml env - `[env]`, then
     /// `[accounts.env]`, then the spawning project's `[[orgs.projects]]`

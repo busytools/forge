@@ -1408,10 +1408,9 @@ mod tests {
     }
 
     /// The draft leaving the registry is the one moment every view has to
-    /// hear about: the terminal's queued dock and the web client's parked
-    /// record each keep a copy of their own, and no other update clears
-    /// them. The ending rides it, because a view that did not answer has
-    /// nothing else to say what happened.
+    /// hear about: each view keeps its own copy of the draft, and no
+    /// other update clears it. The ending rides it, because a view that
+    /// did not answer has nothing else to say what happened.
     #[test]
     fn a_resolved_draft_stands_the_views_down() {
         let (ws, _dir, mut rx) = workspace_with_one_slack_workspace("acme");
@@ -1454,7 +1453,7 @@ mod tests {
         );
     }
 
-    /// Through `Workspace::dispatch`, the route the TUI dock answer
+    /// Through `Workspace::dispatch`, the route a view's dock answer
     /// takes - the direct `resolve_slack_draft` tests above never
     /// exercise routing.
     #[tokio::test]

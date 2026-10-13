@@ -717,9 +717,9 @@ describe('the cells the reshape made drawable', () => {
   });
 
   /**
-   * A failed turn is the row saying "look at this", and the terminal draws
-   * it over both the spinner and the unseen diamond. A row reading the
-   * lifecycle alone would draw the seat as idle and say nothing.
+   * A failed turn is the row saying "look at this", and the view this client
+   * replaced drew it over both the spinner and the unseen diamond. A row
+   * reading the lifecycle alone would draw the seat as idle and say nothing.
    */
   it('marks a seat whose newest turn failed, over every other promotion', () => {
     const at = { secs_since_epoch: 1_800_000_000, nanos_since_epoch: 0 };

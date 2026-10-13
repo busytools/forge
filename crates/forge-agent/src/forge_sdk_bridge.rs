@@ -10,7 +10,7 @@
 //! [`ForgeSdkBridge::take_events`].
 //!
 //! ```text
-//!     TUI                     ForgeSdkBridge                  forge_sdk::Client
+//!     view                    ForgeSdkBridge                  forge_sdk::Client
 //!      | trait method            |                                    |
 //!      |------------------------>|  client.method().await             |
 //!      |                         |----------------------------------->|
@@ -61,7 +61,7 @@ const TESTING_STUB_CONFIG_DIR: &str = "/tmp/forge-testing-stub";
 /// Pending permission responses keyed by `tool_use_id`. The
 /// `can_use_tool` callback parks a oneshot here when the CLI asks;
 /// dispatch drains it when the matching `permission_response` arrives
-/// from the App.
+/// from a view.
 pub(crate) type PendingResponses =
     Arc<Mutex<HashMap<String, oneshot::Sender<forge_primitives::PermissionDecision>>>>;
 
@@ -85,7 +85,7 @@ pub(crate) struct BridgeInner {
     /// Set after first `new_session` / `resume_session`; cleared on
     /// session replace or shutdown.
     client: Mutex<Option<Client>>,
-    /// Bridge → App event emission channel. Cloned freely into the
+    /// Bridge → consumer event emission channel. Cloned freely into the
     /// reader subtask + `can_use_tool` callback closures.
     event_tx: mpsc::UnboundedSender<AgentEvent>,
     /// Single-take receiver handed out via [`ForgeSdkBridge::take_events`].
@@ -108,8 +108,8 @@ pub(crate) struct BridgeInner {
     /// Forge-internal account display name from `forge.toml`'s
     /// `[[accounts]]`, set by the workspace picker. `None` when
     /// `Agent::spawn` is called directly (tests, smoke). When
-    /// present, surfaced via [`AgentEvent::StatusSnapshot`] so the
-    /// TUI can render which forge-account the bridge is bound to.
+    /// present, read back through the handle's `display_name()` so a
+    /// view can render which forge-account the bridge is bound to.
     display_name: Option<String>,
     /// Where this seat's resume listing is read, set by the workspace from
     /// the slot the session serves; `None` for a lead, whose listing is
@@ -164,8 +164,8 @@ impl ForgeSdkBridge {
     /// typed fields. `config_dir` is consulted by every in-process
     /// accessor (oauth, settings, catalog scans) and exported to
     /// the spawned `claude` subprocess as `CLAUDE_CONFIG_DIR`.
-    /// `display_name`, when present, is surfaced via
-    /// [`AgentEvent::StatusSnapshot`]. The internal event channel
+    /// `display_name`, when present, is read back through the
+    /// handle's `display_name()`. The internal event channel
     /// is created here; consumers grab the receiver once via
     /// [`ForgeSdkBridge::take_events`].
     pub(crate) fn new(
@@ -253,7 +253,7 @@ impl ForgeSdkBridge {
         self.inner.client.lock().take()
     }
 
-    /// Send an `AgentEvent::McpOperationError` to the App; log a
+    /// Send an `AgentEvent::McpOperationError` to the consumer; log a
     /// `BRIDGE_LIFECYCLE` warn if the channel is closed (terminal
     /// event for a user-visible MCP failure - silent-drop on
     /// teardown race would lose the only path to surface).
@@ -301,11 +301,11 @@ impl ForgeSdkBridge {
     }
 
     /// Spawn a fire-and-forget client call. A failure inside the
-    /// spawned future - or the client-less early Err - is emitted to
-    /// the App as the caller's typed event (a `None` maps to
-    /// log-only) - the TUI rolled back nothing otherwise: the
-    /// spinner, the optimistic chip, the waiting awaiter all unwind
-    /// only if this event arrives.
+    /// spawned future - or the client-less early Err - is emitted as
+    /// the caller's typed event (a `None` maps to log-only) - a view
+    /// rolls back nothing otherwise: the spinner, the optimistic
+    /// chip, the waiting awaiter all unwind only if this event
+    /// arrives.
     fn dispatch_with_failure<F, Fut, T>(
         &self,
         label: &'static str,
@@ -320,7 +320,7 @@ impl ForgeSdkBridge {
         let Some(client) = self.client() else {
             let err = anyhow::anyhow!("forge-sdk bridge: {label} called before active session");
             // The caller warn-logs this Err and drops it; the typed
-            // event is what unwinds the TUI's optimistic state.
+            // event is what unwinds a view's optimistic state.
             if let Some(event) = on_failure(&err)
                 && self.inner.event_tx.send(event).is_err()
             {
@@ -394,8 +394,8 @@ impl ForgeSdkBridge {
         images: Vec<forge_primitives::ImageAttachment>,
         uuid: String,
     ) -> anyhow::Result<()> {
-        // No `check_session_id` here - the TUI commits to
-        // `AppStatus::Thinking` BEFORE this call, and a silent
+        // No `check_session_id` here - a view commits to its
+        // thinking state BEFORE this call, and a silent
         // stale-session drop (returning Ok with no event) would
         // leave the user's spinner running forever with no
         // recovery path. If the prompt does land in the wrong
@@ -745,10 +745,9 @@ impl ForgeSdkBridge {
             // and post-compaction; a wedged CLI must cost one
             // timed-out probe, not a parked task per refresh with the
             // Ctx bar frozen. Accept-and-document: the expiry stays
-            // log-only (no typed event), so the TUI's in-flight flag
-            // never clears and later refreshes coalesce behind the
-            // dead probe - the bar wedges rather than flashing an
-            // error.
+            // log-only (no typed event), so the in-flight flag never
+            // clears and later refreshes coalesce behind the dead
+            // probe - the bar wedges rather than flashing an error.
             let usage = match tokio::time::timeout(
                 Self::CONTROL_RESPONSE_TIMEOUT,
                 client.get_context_usage(),
@@ -1343,7 +1342,7 @@ mod tests {
     /// The client-None window (clear_client, then set_client only
     /// after init completes) still routes commands with the old
     /// session id, so the caller's typed event is the only thing that
-    /// unwinds the TUI's optimistic state - a silent Err return loses
+    /// unwinds a view's optimistic state - a silent Err return loses
     /// the prompt entirely.
     #[tokio::test]
     async fn dispatch_without_client_emits_the_typed_event() {
@@ -1592,9 +1591,10 @@ mod tests {
         event
     }
 
-    /// A failure inside the spawned dispatch future reaches the App as
-    /// the caller's typed event - the spinner/optimistic state unwinds
-    /// only when this arrives, so log-only failure is a regression.
+    /// A failure inside the spawned dispatch future reaches the consumer
+    /// as the caller's typed event - the spinner/optimistic state
+    /// unwinds only when this arrives, so log-only failure is a
+    /// regression.
     #[tokio::test]
     async fn dispatch_failure_emits_the_typed_event() {
         let (bridge, mut events) = bridge_with_mock_client().await;

@@ -2,7 +2,7 @@
 //!
 //! Type-only - branch resolution + diff scanning live in
 //! `forge_agent::env::git_diff`. `GitBranch` is the wire shape
-//! re-used by both the agent-side snapshot and the TUI-side render.
+//! re-used by both the agent-side snapshot and a view's render.
 
 use serde::{Deserialize, Serialize};
 
@@ -24,7 +24,7 @@ pub enum GitBranch {
 /// How git classified one file's change.
 ///
 /// Lives here rather than in the scanner because it crosses: the
-/// snapshot the terminal reads and the view a client draws carry the
+/// snapshot a view reads and the row it draws carry the
 /// same glyph, and one shape for both is what keeps them agreeing.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

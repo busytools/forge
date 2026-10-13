@@ -26,8 +26,8 @@ impl ViewSurface {
     ///
     /// A scan also kicks the pricing refill (`refill_pricing`): the answer
     /// that goes out carries costs from whatever table was cached, the
-    /// terminal's own first-open behaviour, and the priced report lands in
-    /// the cache for the next ask.
+    /// first-open behaviour a view has, and the priced report lands in the
+    /// cache for the next ask.
     pub async fn usage(self: &Arc<Self>) -> anyhow::Result<UsageReport> {
         if let Some(report) = self.held_usage() {
             return Ok(report);
@@ -47,8 +47,8 @@ impl ViewSurface {
     /// **The fetch must not be waited on.** It crosses the network and can
     /// take seconds - up to the litellm timeout - and a subject's ask is
     /// answered inside its connection's own loop, where a wait on one ask
-    /// stalls every other message on that socket. This is the terminal's
-    /// move instead (scan now, re-price when the fetch lands), with the
+    /// stalls every other message on that socket. This is a view's move
+    /// instead (scan now, re-price when the fetch lands), with the
     /// re-scan replacing the held report so the re-ask finds it.
     ///
     /// `Workspace::refresh_pricing` answers `false` for a cache that is
@@ -255,7 +255,7 @@ mod tests {
 
     /// **A cached price table prices the scan**, which is the half of the
     /// pricing story that is testable offline: the fetch itself crosses the
-    /// network and is the terminal's behaviour re-homed (`refill_pricing`),
+    /// network and is a view's behaviour re-homed (`refill_pricing`),
     /// verified live. The table is seeded fresh, so the background refill
     /// finds nothing to fetch and never leaves the machine.
     #[tokio::test]

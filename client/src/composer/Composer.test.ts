@@ -371,7 +371,7 @@ describe('the box', () => {
 
   /**
    * **A command this view answers itself never crosses the wire.** `/usage`
-   * opens the usage page - the terminal's own submit path opens its overlay
+   * opens the usage page - the view this client replaced opened its overlay
    * on the same name - so the name reaches the model only if this
    * interception is missing.
    */
@@ -395,9 +395,9 @@ describe('the box', () => {
   });
 
   /**
-   * **The name takes no arguments, and the terminal answers that with its
-   * usage line** rather than opening. The line draws in the box's own notice
-   * row, and the text still never reaches the model.
+   * **The name takes no arguments, and the view this client replaced answered
+   * that with its usage line** rather than opening. The line draws in the
+   * box's own notice row, and the text still never reaches the model.
    */
   it('answers /usage with an argument with its usage line, sending nothing', () => {
     const harness = open();
@@ -1824,10 +1824,10 @@ describe('the key', () => {
   });
 
   /**
-   * A stray modifier is not a chord. The terminal consumes any other bare
-   * modifier without marking the hold chorded, because a modifier is not text
-   * and not a shortcut - and the client marking one would DISCARD the take its
-   * press began, losing the reader's words to a key they brushed.
+   * A stray modifier is not a chord. Any other bare modifier is consumed
+   * without marking the hold chorded, because a modifier is not text and not a
+   * shortcut - and the client marking one would DISCARD the take its press
+   * began, losing the reader's words to a key they brushed.
    */
   it('leaves a stray modifier alone rather than chording the take', async () => {
     vi.useFakeTimers();
@@ -1858,9 +1858,10 @@ describe('the key', () => {
   });
 
   /**
-   * A live take consumes Escape, which is the terminal's rule and why the
-   * client's surfaces cannot both have it: the list under the field closes on
-   * an Escape nobody else took, and the dock's own Escape is the take's.
+   * A live take consumes Escape, the same rule the view this client replaced
+   * applied and why the client's surfaces cannot both have it: the list under
+   * the field closes on an Escape nobody else took, and the dock's own Escape
+   * is the take's.
    */
   it('gives Escape to a live take rather than to the list underneath it', () => {
     const harness = open({ dictation: true });
@@ -1889,9 +1890,10 @@ describe('the key', () => {
   });
 
   /**
-   * A held key repeats, and the terminal treats every repeat as carrying no
-   * instruction. Without the same here a toggle take stops once per repeat:
-   * one stopping press and two repeats gave three stops for one keypress.
+   * A held key repeats, and the view this client replaced treated every repeat
+   * as carrying no instruction. Without the same here a toggle take stops once
+   * per repeat: one stopping press and two repeats gave three stops for one
+   * keypress.
    */
   it('ignores a key repeat rather than stopping once per repeat', () => {
     const harness = open({ dictation: true });
@@ -2029,9 +2031,9 @@ describe('a sent message', () => {
  * between seats, and the composer stays mounted across the move: so everything
  * the reader's own doing leaves behind - their words, the landing they have
  * taken, what a send is still waiting on - is kept per seat and swapped when
- * the seat is. `forge-tui` holds the same state the same way, on `UiSession`
- * rather than on `App`, which is what makes a draft come back with its seat
- * and stops one seat's words reaching another's box.
+ * the seat is. A view holds the same state the same way, on its own session
+ * record rather than on the app, which is what makes a draft come back with
+ * its seat and stops one seat's words reaching another's box.
  */
 describe('the seat the box belongs to', () => {
   it('keeps the draft for its own seat, and shows none of it on another', () => {
@@ -2471,11 +2473,11 @@ describe('the frame', () => {
    * does not, because it rides the box's right corner rather than the column.
    *
    * Measured in a browser before this: the notice's and the (then) dictation
-   * row's TEXT sat 25.00px right of the field's, at 1600 and at 430 - the
-   * terminal's gutter, carried through the drawing rather than chosen, and
-   * 13px more than the issue that found it believed. A sheet assertion cannot
-   * see that offset; what it can do is keep the inset from coming back, which
-   * is the change someone would plausibly make.
+   * row's TEXT sat 25.00px right of the field's, at 1600 and at 430 - a gutter
+   * inherited from the view this client replaced rather than chosen, and 13px
+   * more than the issue that found it believed. A sheet assertion cannot see
+   * that offset; what it can do is keep the inset from coming back, which is
+   * the change someone would plausibly make.
    *
    * **What it reads: the base rules only.** A `padding-left` added inside a
    * media block passes this, because the guard resolves the first rule each
@@ -2898,9 +2900,10 @@ describe('the dock', () => {
   });
 
   it('stands down once its answer is on its way, and says so', () => {
-    // The terminal pops its prompt at submit; this dock stands instead, with
-    // the mark the reader's own words carry while they are out - so a second
-    // Enter is not read as a second answer to a prompt already answered.
+    // The view this client replaced popped its prompt at submit; this dock
+    // stands instead, with the mark the reader's own words carry while they are
+    // out - so a second Enter is not read as a second answer to a prompt
+    // already answered.
     const harness = open({
       record: record({ pending_asks: [questionAsk('tu-q', { multi_select: false })] }),
     });
@@ -4646,7 +4649,7 @@ describe('the dock', () => {
   });
 
   /** **An answer from another view lowers the window here.** The local Done
-   *  takes its own window down; a Done from the terminal never touches this
+   *  takes its own window down; a Done from another view never touches this
    *  shell, and without this the browser stays headed for the next agent call
    *  to attach to while the answer says the person finished. */
   it('draws the document hand-off with its path and both verbs', () => {
@@ -4690,7 +4693,7 @@ describe('the dock', () => {
   });
 
   /** **An answer from another view lowers the window here.** The local Done
-   *  takes its own window down; a Done from the terminal never touches this
+   *  takes its own window down; a Done from another view never touches this
    *  shell, and without this the browser stays headed for the next agent call
    *  to attach to while the answer says the person finished. */
   it('lowers the window when another view answers the hand-off', () => {
@@ -5534,16 +5537,16 @@ describe('two clients on one seat', () => {
 /**
  * The dictation panel, which the mic opens.
  *
- * The form is the mockup's rather than the terminal's: each axis is a short
- * exclusive set, so each is a row of chips. `dictation.test.ts` pins what the
- * axes and the hint ARE; this pins what the panel DOES with them.
+ * The form follows the mockup rather than the view this client replaced: each
+ * axis is a short exclusive set, so each is a row of chips. `dictation.test.ts`
+ * pins what the axes and the hint ARE; this pins what the panel DOES with them.
  */
 describe('the dictation panel', () => {
   /**
    * The axes and the input are the CLIENT's since capture moved here, so these
    * cases drive them through the storage a reload would read and through the
    * browser's own input list - never through the record, which carries the
-   * terminal's set and nothing this page obeys.
+   * core's set and nothing this page obeys.
    */
   const SEAT = subjectKey({ session: SLOT });
 

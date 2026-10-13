@@ -218,9 +218,9 @@ fn redact_hook_body_recursive(v: &mut Value) {
 }
 
 /// Per-entry fields of a command inventory entry. `argumentHint` is only
-/// stubbed when already present and non-empty: the TUI collapses an empty
-/// hint to `None`, so inventing one would record a wire fact that never
-/// happened.
+/// stubbed when already present and non-empty: the parser collapses an
+/// empty hint to `None`, so inventing one would record a wire fact that
+/// never happened.
 const COMMAND_ENTRY_KEYS: &[&str] = &["description", "argumentHint"];
 
 /// Stub the command / skill inventory the CLI reports for whatever is
@@ -231,7 +231,7 @@ const COMMAND_ENTRY_KEYS: &[&str] = &["description", "argumentHint"];
 /// Both halves go, not just the descriptions. A description is local
 /// prose; a name is a local project's name, and this repo's own captures
 /// carried a work project in both. Nothing in forge matches on a specific
-/// command name - the TUI's parser takes any non-empty string and its
+/// command name - the parser takes any non-empty string and the
 /// lookup compares against what the user typed - so a placeholder keeps
 /// every wire fact the fixture records.
 ///

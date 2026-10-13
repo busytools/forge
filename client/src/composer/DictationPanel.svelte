@@ -2,11 +2,12 @@
   /**
    * The dictation panel: what a take is set to, in the web's own form.
    *
-   * Not a port of the terminal's `/dictate` overlay - the same data, drawn as a
-   * panel. Each axis is a short exclusive set, so each is a row of chips rather
-   * than a list of rows: the whole panel reads at a glance, every option is one
-   * click, and nothing is hidden behind a submenu. The in-force chip is filled
-   * AND outlined as well as coloured, so the state is not carried by hue alone.
+   * Not a port of the `/dictate` overlay in the view this client replaced - the
+   * same data, drawn as a panel. Each axis is a short exclusive set, so each is
+   * a row of chips rather than a list of rows: the whole panel reads at a
+   * glance, every option is one click, and nothing is hidden behind a submenu.
+   * The in-force chip is filled AND outlined as well as coloured, so the state
+   * is not carried by hue alone.
    *
    * The axes and the input are the CLIENT's since capture moved here: they are
    * held by the page that owns them (per seat, remembered on this machine),

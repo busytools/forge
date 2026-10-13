@@ -1,5 +1,5 @@
 /**
- * The terminal's own command-matching rule, ported from
+ * The command-matching rule the view this client replaced used, ported from
  * `forge-agent/src/env/processes.rs`.
  *
  * A registry row adopts a scanned process by its command, and the raw
@@ -9,8 +9,8 @@
  * matches byte-for-byte, and an empty needle would adopt the first process it
  * meets. The ported rule normalizes both sides' whitespace, unwraps the
  * wrapper to the user command, un-escapes single quotes, and refuses an empty
- * needle outright - the same answers the terminal gives, pinned on both sides
- * by the cases below and their Rust originals.
+ * needle outright - the same answers the view this client replaced gave,
+ * pinned on both sides by the cases below and their Rust originals.
  */
 
 /** Every run of whitespace collapsed to one space, ends trimmed. Private,

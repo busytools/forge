@@ -47,12 +47,10 @@ export interface Connection {
    *
    * **It is a safeguard rather than the thing that keeps an ask alive.** The
    * core cancels an ask at birth only when no subscriber anywhere can answer
-   * it - and a machine running forge has its own terminal attached as an
-   * answerer for as long as it runs, so a client that says nothing is a guest
-   * beside something that can. The one install this covers is a serve with no
-   * terminal at all. A page that cannot prompt - a probe, a headless observer
-   * - must not declare the role: the core parks on whoever did, and nothing
-   * there would ever answer.
+   * it, so a client that says nothing does not itself keep an ask alive. The
+   * one install this covers is a serve with no answerer attached. A page that
+   * cannot prompt - a probe, a headless observer - must not declare the role:
+   * the core parks on whoever did, and nothing there would ever answer.
    *
    * Counted rather than idempotent, because the server counts it too: two
    * subscribes to one subject are two subscriptions, and one unsubscribe must

@@ -5,7 +5,7 @@ A peer reference implementation in Rust of a client for Anthropic's
 exposes the agentic surface as typed Rust messages + commands. Wire
 contract with the CLI is the only hard external invariant; API shape
 is whatever serves [`forge-agent`](../forge-agent) (and through it,
-[`forge-tui`](../forge-tui)) best.
+the client) best.
 
 Not a Python-parity port. See the [`CLAUDE.md`](../../CLAUDE.md)
 workspace guide for the current direction.

@@ -27,8 +27,8 @@ fetch's own 20-second budget - and stops the moment a priced report lands or
 the count is spent. A fetch that failed stops there rather than looping:
 `pricing pending or failed` is a terminal caption.
 
-The terminal's `/usage` overlay is the reference for every rule below; the
-page ports its vocabulary whole.
+The rules below are the page's own: they were the overlay's vocabulary
+once, and this page is where that reading lives now.
 
 ## What it draws
 
@@ -39,9 +39,9 @@ page ports its vocabulary whole.
 | The controls | the grouping pick (by project, by model), the window pick (today, week, month, lifetime), and refresh | the route's own state; `Connection::refresh('usage')` |
 | The table | one row per project or model for the chosen window - input, cache write, cache read, output, their token sum, and the cost - with the `TOTAL` pinned as the table's own footer | `by_project` / `by_model` and `total` of the chosen window |
 
-## What the figures mean, in the terminal's own words
+## What the figures mean
 
-**The scales are the overlay's.** Tokens draw in B, M or K at one decimal,
+**The scales.** Tokens draw in B, M or K at one decimal,
 truncated rather than rounded up, so a figure never reads larger than it is;
 anything under a thousand draws as it is.
 
@@ -54,7 +54,7 @@ the headline figure is the caption stated as a mark.
 
 **The cache share is over the whole denominator.** The split's percentage is
 cache-read against all five fields summed - input, both cache-write fields,
-cache-read, output - floored to a whole percent, which is the overlay's own
+cache-read, output - floored to a whole percent, which is this page's own
 arithmetic. Zero lifetime tokens have no share and draw none.
 
 **The GPT flag rides the MODEL grouping only.** A row whose label starts
@@ -65,8 +65,8 @@ merely reads GPT-shaped is not a model and is never flagged, and the TOTAL
 row never is.
 
 **The pooled labels draw quiet.** `scratch` (where `/tmp`'s sessions fold)
-and `<synthetic>` name places rather than projects, and the terminal dims
-them; the page does the same.
+and `<synthetic>` name places rather than projects, and the page dims
+them.
 
 **The rows arrive sorted, and the total is pinned.** The server's scan sorts
 each grouping by cost descending with the label as the tiebreak; the page
@@ -93,11 +93,11 @@ whatever the table reads, which is the overlay's shape.
 
 `/usage` opens the page, from the home band's card, from the address, and
 from the seat: **a typed `/usage` is answered in the view before it reaches
-the wire** - the terminal's own submit path opens its overlay on the same
-name - and works from the composer and from the command palette's row
+the wire** - the name opens the page without a round trip - and works from
+the composer and from the command palette's row
 alike. A name given arguments takes no arguments, so `/usage today` answers
 `Usage: /usage` in the composer's own notice row rather than opening or
-reaching the model; the terminal answers it the same way.
+reaching the model.
 
 ## The pieces it takes from the pages beside it
 

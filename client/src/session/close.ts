@@ -1,17 +1,17 @@
 /**
  * Closing a seat from the rail, and where the reader lands after it.
  *
- * The terminal's own two gestures: a worker's row closes that worker
- * through `close_worker`, a project's row closes its lead through
+ * The two gestures of the view this client replaced: a worker's row closed
+ * that worker through `close_worker`, a project's row closed its lead through
  * `close_session` (which the core cascades to the project's live workers).
  * The worker's command is not interchangeable with the lead's - on a
  * worker's slot the lead's command only releases the session and leaves
  * the row reading Running - so which one a row sends is the row's own.
  *
- * And the terminal's other half: a seat REMOVED under the reader - by a
+ * And the other half that view had: a seat REMOVED under the reader - by a
  * cascade, by another view's despawn - is not somewhere to leave them, so
  * [`watchRemovals`] lands them the way its `WorkerStatusChanged` handler
- * does.
+ * did.
  */
 
 import { SvelteSet } from 'svelte/reactivity';
@@ -33,10 +33,10 @@ function keyOf(slot: SessionSlot): string {
 /**
  * The seats this client has closed, until the roster catches up.
  *
- * The terminal knows a closed seat is gone because it dropped the bucket
- * itself, in the same breath as the click; a client's roster is a read
- * that lands later, so for a moment a closed lead still reads as live and
- * the cascade's removals would land the reader back on it.
+ * The view this client replaced knew a closed seat was gone because it
+ * dropped the bucket itself, in the same breath as the click; a client's
+ * roster is a read that lands later, so for a moment a closed lead still
+ * reads as live and the cascade's removals would land the reader back on it.
  *
  * **Reactive, because the rail draws the mark**: a row whose seat is closing
  * says so until the roster lands, so the set is read during render and has
@@ -49,9 +49,9 @@ const closedHere = new SvelteSet<string>();
  * up.
  *
  * The set above covers a close made here, where the click is what starts it.
- * A close made from another view - the terminal, a second client - has no
- * click here, and arrives as the core's own `Releasing` frame (#1930); it is
- * the same presentation, so it is the same mark, retiring the same way.
+ * A close made from another view - a second client - has no click here, and
+ * arrives as the core's own `Releasing` frame (#1930); it is the same
+ * presentation, so it is the same mark, retiring the same way.
  */
 const releasedHere = new SvelteSet<string>();
 
@@ -150,8 +150,8 @@ function liveSlots(home: HomeWire, slot: SessionSlot, now: number): SessionSlot[
 
 /**
  * The next live row after `closed`: forward to the end, then the rows
- * before it in reverse - the walk the terminal makes - and the home when
- * no row is left.
+ * before it in reverse - the walk the view this client replaced made - and
+ * the home when no row is left.
  */
 function walk(home: HomeWire, closed: SessionSlot, now: number): Route {
   const key = keyOf(closed);
@@ -188,9 +188,9 @@ export function closeLanding(home: HomeWire, slot: SessionSlot, now: number): Ro
  * lead when that still has a session behind it, else the walk's next live
  * row, else the home.
  *
- * The lead is the terminal's own first answer for a removed worker, and
- * the walk is why it runs second - a cascade removes a lead and its
- * workers together, so the lead is often the seat that just went.
+ * The lead is the first answer the view this client replaced gave for a
+ * removed worker, and the walk is why it runs second - a cascade removes a
+ * lead and its workers together, so the lead is often the seat that just went.
  */
 export function removedLanding(
   home: HomeWire,
@@ -241,8 +241,8 @@ function asSlot(value: unknown): SessionSlot | null {
  * A close made here already lands the reader (`closeSeat`); this is the
  * other door - a lead's cascade releasing the workers under it, a despawn
  * from another view, anything that takes the seat the page is showing with
- * no click here. The caller decides what to do with each removal; the
- * terminal's own answer is [`removedLanding`].
+ * no click here. The caller decides what to do with each removal; what the
+ * view this client replaced did is [`removedLanding`].
  */
 export function watchRemovals(
   connection: Connection,

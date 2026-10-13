@@ -349,10 +349,10 @@ describe('the sheet carries the settling pulse and the waking sweep', () => {
 
 describe("a worker's failure", () => {
   /**
-   * **The diagnostic draws under the worker's own row**, the way the terminal
-   * draws it: a worker's spawn error aggregated onto the project's line put it
-   * under the lead's row, which read as the lead having failed while the
-   * worker's own row said nothing.
+   * **The diagnostic draws under the worker's own row**, the way the view this
+   * client replaced drew it: a worker's spawn error aggregated onto the
+   * project's line put it under the lead's row, which read as the lead having
+   * failed while the worker's own row said nothing.
    */
   it("draws the reason under the worker's row, not the project's", () => {
     const template = homeWire.agents[0];

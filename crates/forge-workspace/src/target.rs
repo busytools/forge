@@ -1,14 +1,14 @@
 //! Identifiers + the `SessionTarget` enum used to address sessions.
 
 // `SessionSlot` lives in forge-primitives so the same routing key
-// flows through the TUI → workspace → agent layers without each crate
+// flows through the view → workspace → agent layers without each crate
 // growing its own near-identical newtype. Re-exported here so call
 // sites continue to import via `forge_workspace::SessionSlot`.
 pub use forge_primitives::SessionSlot;
 
 // `ProjectKey` lives in forge-primitives for the same reason
 // `SessionSlot` does: it addresses a project across the workspace and
-// the TUI, both of which key their own maps on it. Re-exported here so
+// a view, both of which key their own maps on it. Re-exported here so
 // call sites continue to import via `forge_workspace::ProjectKey`.
 pub use forge_primitives::ProjectKey;
 

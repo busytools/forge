@@ -162,8 +162,8 @@ export function threadsInScope(
  *
  * The fresh landing wins over the store's status, because that status was
  * written by whichever view last resolved and cannot say where the code
- * stands now; a resolved thread parks nowhere, which is the terminal's own
- * reopen rule read from the other side.
+ * stands now; a resolved thread parks nowhere, the same reopen rule the view
+ * this client replaced had, read from the other side.
  */
 export function outdatedThreads(threads: ReviewThreadRecord[]): ReviewThreadRecord[] {
   return threads.filter(

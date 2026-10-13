@@ -234,12 +234,12 @@ export function iconOf(row: KindRow): string {
 /**
  * A task frame's own status word, as the call it belongs to is drawn.
  *
- * The same four words the terminal maps to the same statuses: the wire says
- * `running` where the row says in progress, and `stopped` is its word for a
- * graceful cancel, which draws as the kill it is.
+ * The same four words the view it replaced mapped to the same statuses: the
+ * wire says `running` where the row says in progress, and `stopped` is its
+ * word for a graceful cancel, which draws as the kill it is.
  *
- * **And one place it deliberately differs from the terminal.** An unrecognised
- * word is `null` here rather than the terminal's `Pending`, so the caller
+ * **And one place it deliberately differs from that view.** An unrecognised
+ * word is `null` here rather than that view's `Pending`, so the caller
  * keeps the status the call already had: a task whose update the page cannot
  * read is a task it does not know has ended, and drawing it as pending again
  * would walk a finished call back down.

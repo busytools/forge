@@ -1,7 +1,6 @@
-//! Available-agents catalogue parser. Used by App-side
-//! `events::sdk_message::apply_available_agents_from_init` to fold a
-//! `system/init.agents` payload into the `AvailableAgentsUpdate`
-//! event.
+//! Available-agents catalogue parser. Used by the session task's fold
+//! to turn a `system/init.agents` payload into the
+//! `AvailableAgentsUpdate` the server carries.
 
 use serde_json::Value;
 

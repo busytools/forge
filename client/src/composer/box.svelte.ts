@@ -9,10 +9,10 @@
  * belongs to the seat the reader left: words already sent come back on the
  * next visit, and a draft one seat was typed on shows on another.
  *
- * The terminal holds the same state the same way, on `UiSession` rather than
- * on `App`: each session owns its own input editor, its parked draft and its
- * post-take notice, so switching the active session swaps the editor and
- * nothing crosses between them.
+ * A view holds the same state the same way, on its own session record rather
+ * than on the app: each session owns its own input editor, its parked draft
+ * and its post-take notice, so switching the active session swaps the editor
+ * and nothing crosses between them.
  */
 
 import { SvelteMap } from 'svelte/reactivity';

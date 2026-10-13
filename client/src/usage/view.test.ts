@@ -91,8 +91,8 @@ describe('the usage figures', () => {
     expect(parts.cacheWrite, 'both cache-write fields are one column').toBe('12.0M');
     expect(parts.cacheRead).toBe('228.0M');
     expect(parts.output).toBe('900.0K');
-    // 228 / 242.7M total (all five fields) = 93.9 -> the terminal's integer
-    // division floors it.
+    // 228 / 242.7M total (all five fields) = 93.9 -> integer division floors
+    // it.
     expect(parts.cacheReadShare).toBe('93%');
   });
 
@@ -147,8 +147,8 @@ describe('the usage figures', () => {
   });
 
   /** `scratch` and `<synthetic>` name where tokens pooled rather than what
-   * produced them, and the terminal draws both quiet - the TOTAL row names
-   * everything and is never one of them. */
+   * produced them, and both are drawn quiet - the TOTAL row names everything
+   * and is never one of them. */
   it('marks the pooled labels quiet', () => {
     const pooled = report({
       lifetime: {

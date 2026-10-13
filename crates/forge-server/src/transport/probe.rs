@@ -1,8 +1,8 @@
 //! The socket's own bound on asking the core for a fresh context reading, the
-//! same two numbers the terminal bounds its ask with: a probe is answered
-//! inline over the CLI's whole transcript, so it is worth asking for only when
-//! the reading it would replace is old enough and the transcript small enough
-//! to pay for it.
+//! same two numbers a view bounds its ask with: a probe is answered inline
+//! over the CLI's whole transcript, so it is worth asking for only when the
+//! reading it would replace is old enough and the transcript small enough to
+//! pay for it.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -12,12 +12,12 @@ use forge_primitives::SessionSlot;
 use crate::surface::inspector::ContextUsage;
 
 /// How long a seat's reading stands before the socket asks for another, the
-/// terminal's `CONTEXT_USAGE_MIN_SEND_INTERVAL`.
+/// same bound a view puts on its own ask.
 const MIN_INTERVAL: Duration = Duration::from_secs(60);
 
-/// Used tokens at or above which the socket does not ask at all, the
-/// terminal's `CONTEXT_USAGE_TOKEN_GATE`: only a `[1m]`-class window reaches
-/// this size, where the CLI's walk over the transcript can exceed the hook
+/// Used tokens at or above which the socket does not ask at all, the same
+/// gate a view puts on its own ask: only a `[1m]`-class window reaches this
+/// size, where the CLI's walk over the transcript can exceed the hook
 /// timeout.
 const TOKEN_GATE: u64 = 500_000;
 

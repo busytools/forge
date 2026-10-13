@@ -47,9 +47,10 @@ function endOfSequence(text: string, at: number): number {
   // Strictly, only OSC ends at a bell; the other four end at a string
   // terminator alone (ECMA-48, and xterm agrees). So a bell inside a DCS
   // payload cuts it there and its tail prints as text - narrow, and the same
-  // simplification the terminal's own copy carries, which is the property
-  // worth more here than the four bytes: two strippers that disagree about
-  // what to strip are two pages that draw the same conversation differently.
+  // simplification the view this client replaced carried, which is the
+  // property worth more here than the four bytes: two strippers that disagree
+  // about what to strip are two pages that draw the same conversation
+  // differently.
   if (next === 0x5d || next === 0x50 || next === 0x58 || next === 0x5e || next === 0x5f) {
     for (let scan = at + 2; scan < text.length; scan += 1) {
       const code = text.charCodeAt(scan);
@@ -95,8 +96,9 @@ function endOfSequence(text: string, at: number): number {
  * nothing but uppercase or digits after it, with no length floor and no
  * letter restriction. It is a heuristic and the server says so - an all-caps
  * channel name matches it and loses its `#` - but a client that tightened it
- * for looks would drop the author clause on a `B…` bot id where the terminal
- * drops it, which is one more rule that is not the rule it ports.
+ * for looks would drop the author clause on a `B…` bot id where the view this
+ * client replaced dropped it, which is one more rule that is not the rule it
+ * ports.
  *
  * Shared by the two places that must not dress an id as a name: the author
  * clause of a Slack envelope, and a channel marker.

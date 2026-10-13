@@ -62,9 +62,9 @@
      * The mic on the words row: this surface's own door to a take.
      *
      * A divergence from the composer's "the mic is the door, not the trigger",
-     * and the reason is rule 22's touch door: the terminal's push-to-talk key
-     * does not exist on a phone, so a row that could only SHOW a take would
-     * leave a finger no way to dictate an answer at all.
+     * and the reason is rule 22's touch door: the push-to-talk key does not
+     * exist on a phone, so a row that could only SHOW a take would leave a
+     * finger no way to dictate an answer at all.
      */
     onmic?: () => void;
     /**
@@ -101,10 +101,11 @@
      * Whether this is the prompt the reader has answered and the core has not
      * taken yet.
      *
-     * **The dock stands where the terminal pops it**, and the mark says so:
-     * the pick is drawn at once and everything else on the dock stands down,
-     * so a second Enter is not read as a second answer to a prompt the reader
-     * has already answered. A refusal brings it back live, with the reason.
+     * **The dock stands where the view this client replaced popped its
+     * prompt**, and the mark says so: the pick is drawn at once and everything
+     * else on the dock stands down, so a second Enter is not read as a second
+     * answer to a prompt the reader has already answered. A refusal brings it
+     * back live, with the reason.
      */
     answered?: boolean;
   } = $props();
@@ -440,8 +441,8 @@
         tool_id: toolId,
         // Every answer from here carries something - a row, a set, or words -
         // because the empty case above is not an answer. A question has no
-        // reject in this dock: the terminal's Escape does that, and Escape
-        // here belongs to a take and then to a permission.
+        // reject in this dock: the view this client replaced rejected with
+        // Escape, and Escape here belongs to a take and then to a permission.
         outcome: { outcome: 'answered', selected_option_ids: ids, annotation },
       },
     });
@@ -451,9 +452,9 @@
    * Answer with the prompt's own way out.
    *
    * A question refuses with an outcome of its own rather than a row, which is
-   * the shape the core offers and the one the terminal sends - a question whose
-   * options are all wrong has no row to say so with, and an empty `answered`
-   * would pick nothing on the reader's behalf.
+   * the shape the core offers and the one the view this client replaced sent -
+   * a question whose options are all wrong has no row to say so with, and an
+   * empty `answered` would pick nothing on the reader's behalf.
    */
   function reject(): void {
     // Same door as `submit`: a prompt already answered takes no refusal.
@@ -720,7 +721,8 @@
     }
     if (event.key === 'Escape' && take !== null) {
       // A live take owns the first Escape: it is abandoned and the dock stands,
-      // which is the terminal's own rule for the same slot.
+      // which is the same rule the view this client replaced applied to the
+      // same slot.
       event.preventDefault();
       onabandon();
       return;
@@ -745,17 +747,17 @@
         return;
       }
       if (event.key === 'Escape') {
-        // A question's way out from here is the reject, which is the terminal's
-        // own: its notes box cancels the prompt. The words typed so far go with
-        // it, because the prompt does.
+        // A question's way out from here is the reject, the same behaviour the
+        // view this client replaced had: its notes box cancelled the prompt.
+        // The words typed so far go with it, because the prompt does.
         if (question) {
           event.preventDefault();
           reject();
           return;
         }
         // A permission steps back out of the field instead, so the words typed
-        // so far stay in the state - a divergence from the terminal, which
-        // cancels from its notes box for this kind too.
+        // so far stay in the state - a divergence from the view this client
+        // replaced, which cancelled from its notes box for this kind too.
         event.preventDefault();
         if (rows.length > 0) move(-1);
         else root?.focus();

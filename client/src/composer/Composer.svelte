@@ -380,9 +380,9 @@
       if (held.answered === id) return;
       held.ended = handOffEndingLine(payload['ending']);
       // **A window another view's answer leaves raised comes down here.** The
-      // local Done lowers its own window; an answer from the TUI (or another
-      // page) never touches this shell, and the next agent call would attach
-      // to a browser left headed. Hide is idempotent when nothing is raised.
+      // local Done lowers its own window; an answer from another view never
+      // touches this shell, and the next agent call would attach to a browser
+      // left headed. Hide is idempotent when nothing is raised.
       void hideBrowser(held.shownHandOffProfile);
     });
   });
@@ -637,7 +637,8 @@
   });
 
   /**
-   * Stop the turn this seat is running, which the terminal binds to Escape.
+   * Stop the turn this seat is running, which the view this client replaced
+   * bound to Escape.
    *
    * Fire-and-forget like a send: the turn ending is what says the stop landed,
    * and it arrives as the header's own state going quiet rather than as a
@@ -656,14 +657,16 @@
 
   /** Send the draft, and remember the command when the draft was one. */
   function send(): void {
-    // Trimmed at the ends like the terminal's own submit: picking a row off the
-    // list leaves a trailing space for the next word, and an answer that goes
-    // out as `/compact ` is one nothing asked for.
+    // Trimmed at the ends as the view this client replaced trimmed its own
+    // submit: picking a row off the list leaves a trailing space for the next
+    // word, and an answer that goes out as `/compact ` is one nothing asked
+    // for.
     const text = box.draft.trim();
     if (text === '') return;
     // A command this view answers itself never crosses the wire: the page it
     // opens is this view's overlay, and a name given arguments it does not
-    // take is answered with its usage line, the way the terminal answers it.
+    // take is answered with its usage line, the way the view this client
+    // replaced answered it.
     const move = routeForCommand(text);
     if (move !== null) {
       if (move.kind === 'route') goTo(move.route);
@@ -841,7 +844,7 @@
     }
   }
 
-  /** What the bound key asks for, which is the terminal's own three. */
+  /** What the bound key asks for, the same three the view this client replaced had. */
   function act(action: Action): void {
     if (action === 'begin') {
       // **The keyboard comes to the box before the take starts** (#1669): the
@@ -882,22 +885,25 @@
    * The push-to-talk key, which is how a take begins and ends.
    *
    * Registered on the window rather than on the field: the binding is a bare
-   * modifier, so it arrives wherever the focus happens to be, and the
-   * terminal's own handler is global for the same reason. What the key means
-   * is read when one arrives rather than here, so this registers once instead
-   * of re-registering on every frame the record moves.
+   * modifier, so it arrives wherever the focus happens to be, and the view
+   * this client replaced registered its own handler globally for the same
+   * reason. What the key means is read when one arrives rather than here, so
+   * this registers once instead of re-registering on every frame the record
+   * moves.
    */
   $effect(() => {
     if (!dictation) return;
     const onDown = (event: KeyboardEvent): void => {
-      // A held key repeats, and a repeat carries no instruction - which is the
-      // terminal's own rule, and without it a toggle take stops once per repeat.
+      // A held key repeats, and a repeat carries no instruction - the same rule
+      // the view this client replaced applied, and without it a toggle take
+      // stops once per repeat.
       if (event.repeat) return;
       if (event.key === 'Escape') {
-        // A live take consumes Esc, which is the terminal's rule: the surfaces
-        // under it never see the key, so one press is one command and the list
-        // a field would close stays where it is. A take still OPENING counts,
-        // for the same reason a reader cannot tell the two apart.
+        // A live take consumes Esc, the same rule the view this client replaced
+        // applied: the surfaces under it never see the key, so one press is one
+        // command and the list a field would close stays where it is. A take
+        // still OPENING counts, for the same reason a reader cannot tell the
+        // two apart.
         if (composer.take !== null || opening) {
           event.preventDefault();
           event.stopPropagation();
@@ -915,7 +921,7 @@
       if (event.code !== boundCode(composer.bind, mac)) {
         // Any other KEY while the press is down makes it a chord, and the
         // chord's release discards what the press began. A bare modifier is
-        // not a key: the terminal lets those through unchorded.
+        // not a key: those go through unchorded.
         if (!isBareModifier(event.key)) pressed = markChorded(pressed);
         return;
       }

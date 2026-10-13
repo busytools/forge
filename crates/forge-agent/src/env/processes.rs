@@ -22,12 +22,10 @@
 //! to an empty snapshot: shell-process names (`cmd.exe` /
 //! `powershell.exe`) need a recogniser nobody has asked for yet.
 //!
-//! The snapshot is consumed by `forge-workspace::scan_processes`
-//! (thin mediator) and the TUI's per-active-session ticker in
-//! `forge-tui::app::process_scanner`. The Inspector's
-//! `collect_active_processes` walker (path A+) overlays wire-
-//! tracked task descriptions on top of matching OS processes via
-//! cmdline lookup, then renders the merged view.
+//! The snapshot is consumed by `forge-workspace`'s seat walk (thin
+//! mediator), which passes the session's live background commands
+//! through so the scan can adopt matching OS processes by cmdline
+//! lookup (a backgrounded `local_bash` sits outside claude's tree).
 
 use std::time::{Duration, SystemTime};
 
@@ -36,10 +34,9 @@ use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 
 /// How old a snapshot may be before another walk replaces it.
 ///
-/// One constant for every walker. The terminal walks the seat it is showing,
-/// and the core walks every seat a client is holding, so a cadence held
-/// separately by each would let the walkers add up to a busier machine than
-/// either intended.
+/// One constant for every walker: the workspace's loop walks every seat a
+/// view is holding, so a cadence held separately by each would let the
+/// walkers add up to a busier machine than either intended.
 pub const SCAN_STALENESS: Duration = Duration::from_secs(1);
 
 /// Snapshot of `claude`'s descendant processes at one point in time.
@@ -51,16 +48,15 @@ pub struct ProcessSnapshot {
     /// memory descending - most resource-hungry processes first so
     /// a top-N display surfaces the interesting ones.
     pub processes: Vec<ProcessEntry>,
-    /// When the scan ran. The TUI compares against this to decide
-    /// whether to spawn a fresh poll on each ticker pass.
+    /// When the scan ran. The walk compares against this to decide
+    /// whether to take a fresh scan.
     pub scanned_at: SystemTime,
 }
 
 /// One descendant process the scanner found alive. Field shape is
-/// driven by what the Inspector's `collect_active_processes` row
-/// builder needs (PID + cmdline + memory for the metadata line) +
-/// the cmdline-matching needed for wire-tracked overlay
-/// (`process_cmdline_matches_tool_input`).
+/// driven by what a view's process row builder needs (PID + cmdline +
+/// memory for the metadata line) + the cmdline-matching needed for
+/// wire-tracked overlay (`process_cmdline_matches_tool_input`).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ProcessEntry {
     /// OS process identifier.
@@ -264,7 +260,7 @@ fn normalize_ws(s: &str) -> String {
 
 /// True when `process_cmd` plausibly matches the shell command
 /// captured in a wire-tracked tool's `raw_input.command`. Used by
-/// the Inspector's row builder (path A+) to overlay wire-tracked
+/// a view's process row builder (path A+) to overlay wire-tracked
 /// task descriptions onto OS-detected processes when both refer to
 /// the same work.
 ///

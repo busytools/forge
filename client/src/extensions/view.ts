@@ -63,7 +63,7 @@ export interface PluginRow {
   detail: string;
   /**
    * The registry scope the install sits in (`user`, `project`, `local`).
-   * What an Update names: the terminal sends the entry's own scope, and a
+   * What an Update names: the entry's own scope is sent, and a
    * hardcoded `user` would make every other scope unfixable from here.
    */
   scope: string;
@@ -223,9 +223,8 @@ export function pluginRows(wire: ExtensionsRead): PluginRow[] {
  *
  * The scope lives on the registry entries, not the component scan, so the
  * two halves are joined by id. A plugin installed in more than one scope
- * has two entries and the first is the one a row acts on - the terminal's
- * own rows are one per entry for the same reason, and its overlay picks by
- * the row.
+ * has two entries and the first is the one a row acts on - the rows here
+ * are one per entry for the same reason, and a pick goes by the row.
  */
 function scopesById(wire: ExtensionsRead): Map<string, string> {
   const scopes = new Map<string, string>();
@@ -364,7 +363,7 @@ export function kindRows(wire: ExtensionsRead, kind: ComponentKind): KindRow[] {
   if (snapshot === null) return [];
   // Keyed by plugin AND server: one plugin may declare several servers, and
   // a check keyed by the plugin alone would hand the first one's result to
-  // every row under it. The terminal keys by both.
+  // every row under it. The key here is both.
   const lspChecks = new Map(
     wire.lsp.map((check) => [`${check.plugin}\u0000${check.server}`, check]),
   );

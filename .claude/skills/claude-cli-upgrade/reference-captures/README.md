@@ -10,7 +10,7 @@ These are redacted, not raw. A capture from `claude --print` carries whatever th
 
 Each file is a JSONL stream - one JSON object per line - straight from `claude --print --output-format stream-json --verbose`. The interesting frames are:
 
-- `{"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "X", "input": {...}}]}}` - the model invoking a tool. The `input` field is the wire shape forge-tui needs to handle.
+- `{"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "X", "input": {...}}]}}` - the model invoking a tool. The `input` field is the wire shape a renderer needs to handle.
 - `{"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "...", "content": "..."}]}}` - the CLI's tool result. Forge-tui renders this back into the chat / inspector.
 - `{"type": "system", "subtype": "<name>", ...}` - system events. Notable new one in 2.1.156: `thinking_tokens` (carries `estimated_tokens` + `estimated_tokens_delta`).
 
@@ -51,14 +51,14 @@ with open(sys.argv[1]) as f:
 | `monitor.jsonl` | Monitor | Single Monitor call after a ToolSearch - a short bounded command (`persistent: false`, 10s timeout). Shows the started ack, the watch's events arriving as `result` frames with `origin: {kind: "task-notification"}`, and the closing `task_notification` |
 | `agent_worktree_posttooluse.jsonl` | PostToolUse hook (Agent tool) | Hook-envelope capture, CLI 2.1.220, not stream-json: one line per PostToolUse input for an isolation:"worktree" Agent call. Keep case carries flat top-level `worktreePath`/`worktreeBranch`; async launch (`async_launched`) names no worktree. Envelope fields marked `<...-not-held>` were not captured verbatim |
 
-Captures from the existing live-test scenarios in `crates/forge-test-harness/baselines/sdk/<PINNED_CLI_VERSION>/` cover the rest of the wire surface (Bash, Read, Write, Edit, AskUserQuestion, Task subagent, MCP, hooks, permissions, workers, worktree, compact, control flows). Use those as reference for tools that already have forge-tui rendering.
+Captures from the existing live-test scenarios in `crates/forge-test-harness/baselines/sdk/<PINNED_CLI_VERSION>/` cover the rest of the wire surface (Bash, Read, Write, Edit, AskUserQuestion, Task subagent, MCP, hooks, permissions, workers, worktree, compact, control flows). Use those as reference for tools that already have a family row.
 
 ## Integration checklist for forge UI work
 
 For each new tool family above, before writing renderer code:
 
-1. Inspect the capture file's `tool_use.input` shape - that's the data forge-tui receives.
-2. Inspect the corresponding `tool_result.content` shape - that's what the CLI returns and forge-tui can render or summarize.
+1. Inspect the capture file's `tool_use.input` shape - that's the data a renderer receives.
+2. Inspect the corresponding `tool_result.content` shape - that's what the CLI returns and a renderer can draw or summarize.
 3. Decide: render as a regular tool-call card in chat (default), suppress from chat and route to a dedicated surface (like TodoWrite → Inspector TASKS), or both.
 4. Add the tool name to `crates/forge-tui/src/ui/theme.rs` glyph table.
 5. If the tool needs special routing, extend the gate in `crates/forge-tui/src/app/events/tool_calls.rs` and add a reducer in `crates/forge-tui/src/app/`.

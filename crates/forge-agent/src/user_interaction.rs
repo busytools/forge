@@ -39,7 +39,7 @@ pub struct AskUserQuestionOption {
 
 #[derive(Debug)]
 pub struct AskUserQuestionPrompt {
-    /// Trimmed text; what the TUI displays.
+    /// Trimmed text; what a view displays.
     pub question: String,
     /// The untrimmed wire text. The CLI looks answers and annotations
     /// up by this exact string, so this is the only valid answers-map
@@ -125,7 +125,7 @@ pub fn parse_ask_user_question_prompts(input: &Value) -> Vec<AskUserQuestionProm
 }
 
 /// Mirrors `askUserQuestionOptions(prompt)` - synthesises wire
-/// `option_id` slugs as `question_<index>` so the TUI can map back
+/// `option_id` slugs as `question_<index>` so a view can map back
 /// to the upstream label list when responding.
 fn ask_user_question_wire_options(prompt: &AskUserQuestionPrompt) -> Vec<TuiQuestionOption> {
     prompt

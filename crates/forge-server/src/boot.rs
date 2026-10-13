@@ -1,9 +1,9 @@
-//! The boot both binaries run: the config dir, the workspace, the subsystem
+//! The boot the server runs: the config dir, the workspace, the subsystem
 //! wave, the socket, and the boot spawn.
 //!
-//! Moved here from the terminal's `main.rs` so the core comes up under one
-//! function for a view and for no view alike, and so deleting the terminal
-//! cannot take the boot with it.
+//! Moved here from the view's `main.rs` so the core comes up under one
+//! function for a view and for no view alike, and so no view's removal can
+//! take the boot with it.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -32,12 +32,12 @@ pub fn resolve_config_dir() -> anyhow::Result<PathBuf> {
 }
 
 /// Build the workspace and start the whole subsystem wave, in the order the
-/// terminal has always started it.
+/// boot has always started it.
 ///
 /// `project` is the CLI's positional, validated here because a mistyped
 /// name has to fail the boot the same way for every caller; what each
-/// caller then DOES with it differs (the terminal opens that project's
-/// chat, the headless server starts its sessions).
+/// caller then DOES with it differs (the headless server starts that
+/// project's sessions).
 ///
 /// Not `async`: every step is a spawn or a store write, and the await on
 /// anything that actually does I/O belongs to `serve_socket`. Nothing here
@@ -64,8 +64,8 @@ pub fn start_core(config_dir: PathBuf, project: Option<&str>) -> anyhow::Result<
     // per `[[accounts]]` entry) in the background. Each task drives its
     // account from `Loading` through to a terminal `Ready` or `Bailed`.
     // The redb store has already seeded the in-memory map at
-    // `Workspace::new`. The 60 s poller starts after, run by the
-    // terminal's connect path.
+    // `Workspace::new`. The 60 s poller is its own task
+    // (`Workspace::start_usage_poller`), not part of this call.
     workspace.start_account_loading_tasks();
 
     // Bind the gateway's inference listener and open the boot gate for
@@ -135,10 +135,9 @@ pub fn start_core(config_dir: PathBuf, project: Option<&str>) -> anyhow::Result<
 
 /// What [`serve_socket`] did.
 ///
-/// Its own type rather than an `Option` so each caller decides what an
-/// unbound socket means to it: the terminal has a view either way and boots
-/// on, while a headless server with no view serves nothing and treats the
-/// failure as fatal.
+/// Its own type rather than an `Option` so the caller decides what an
+/// unbound socket means to it: a headless server with no view serves
+/// nothing and treats the failure as fatal.
 pub enum SocketServing {
     /// `[server] enabled = false`: nothing serves, by configuration.
     Disabled,
@@ -208,9 +207,9 @@ pub async fn serve_socket(workspace: &Arc<Workspace>) -> anyhow::Result<SocketSe
 /// How long the boot wave holds for the accounts and the listener before it
 /// fires anyway.
 ///
-/// The terminal holds for as long as the reader is on its preflight screen,
-/// which is a signal a headless process does not have. A listener that never
-/// binds - a port someone else holds is the case - would otherwise make
+/// A view can hold for as long as the reader is on its preflight screen - a
+/// signal a headless process does not have. A listener that never binds - a
+/// port someone else holds is the case - would otherwise make
 /// `all_accounts_loaded` false forever and turn the wave into a spawn that
 /// never fires, silently.
 const BOOT_WAVE_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
@@ -230,14 +229,13 @@ async fn wait_for_accounts(workspace: &Arc<Workspace>, timeout: std::time::Durat
 }
 
 /// The boot spawn, for a process with no view: hold until the accounts
-/// settle, then dispatch the wave the terminal's connect path dispatches -
+/// settle, then dispatch the wave a view's connect path dispatches -
 /// the named project's lead, or every `auto_start` project, in forge.toml
 /// order.
 ///
 /// Settling is terminal rather than `Ready` - a bailed account releases
 /// the spawn, because the walk skips it and the pollers keep re-probing
-/// it, so holding would wait on nothing. The terminal's own gate reads the
-/// same predicate (`accounts().all_loaded`).
+/// it, so holding would wait on nothing.
 ///
 /// **The hold is bounded** (`BOOT_WAVE_WAIT`). On expiry the wave goes
 /// out regardless and a WARN names what was not ready: a refused spawn
@@ -260,8 +258,7 @@ pub fn start_boot_wave(workspace: Arc<Workspace>, project: Option<String>, force
             );
         }
         // Boot wave only: --new makes the boot leads start fresh instead
-        // of resuming (and cascades to their workers), the terminal's own
-        // rule.
+        // of resuming (and cascades to their workers).
         let launch_settings =
             forge_workspace::SessionLaunchSettings { force_new, ..Default::default() };
         let targets: Vec<String> = match project {

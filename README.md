@@ -1,7 +1,8 @@
 # forge
 
-A Rust workspace that drives Anthropic's `claude` CLI: a multi-session
-terminal UI, plus an SDK that speaks the CLI's stream-json wire
+A Rust workspace that drives Anthropic's `claude` CLI: a server that
+runs multi-session orchestration, the clients that draw it, plus an SDK
+that speaks the CLI's stream-json wire
 protocol over stdio.
 
 forge never calls the Anthropic API directly. It spawns `claude` and
@@ -32,8 +33,6 @@ forge-sdk         ->  primitives
 forge-agent       ->  primitives + sdk + gateway
 forge-workspace   ->  primitives + agent + sdk + dictate + gateway + connectors
 forge-server      ->  primitives + workspace
-forge-web         ->  primitives + server (parked: nothing depends on it yet)
-forge-tui         ->  primitives + workspace + server
 forge-test-harness->  primitives + sdk
 ```
 
@@ -46,14 +45,13 @@ forge-test-harness->  primitives + sdk
 | [`forge-connectors`](crates/forge-connectors) | One module per inbound connector: the stream client, REST lookups and matching for one external integration (Gotify and Slack today). Depends on forge-primitives only. |
 | [`forge-sdk`](crates/forge-sdk) | The `claude` subprocess. Stream-json codec, transport, control dispatch, in-process MCP host, options builder. |
 | [`forge-agent`](crates/forge-agent) | Drives one SDK client behind a channel-based `Agent` and `AgentHandle`. User-data reads, cloud calls, environment probes, event translation, tooling. |
-| [`forge-workspace`](crates/forge-workspace) | Multi-session orchestrator and the TUI's single point of contact. Owns `forge.toml`, per-session actors, the machine-local state store, the in-process MCP server forge exposes to every spawned session, and the output-tail reader a call's own read answers from. |
-| [`forge-server`](crates/forge-server) | The server: what a client reads of the core, and no view of its own. The read surface a client uses, the session records as a view sees them, the peer envelope parsing in both directions, the tool family table, forge's own slash commands, the policy that folds a run of blocks, the transcript fold that turns a conversation's messages into the units a view draws, the sub-agent instance list the session task's own fold keeps and pushes, and the `ReadCallOutput` verb (with the workspace's tail reader re-exported for views). Then the socket that carries all of it. Sits between the workspace and whatever draws. The name is this crate; forge's in-process MCP server is unrelated and is named as the `forge` MCP server. |
-| [`forge-web`](crates/forge-web) | The web view, parked: the socket took the port its pages were served on, so nothing serves them until a client lands. axum plus server-rendered markup, reading the core through the view surface in `forge-server` and never naming `forge-workspace`. Nothing depends on it; the client is built against the socket, and this crate is deleted then. |
-| [`forge-tui`](crates/forge-tui) | The view layer, and the `forge` binary. Rendering, input handling, per-session presentation state. No direct `forge-agent` dependency. |
+| [`forge-workspace`](crates/forge-workspace) | Multi-session orchestrator and the server's single point of contact. Owns `forge.toml`, per-session actors, the machine-local state store, the in-process MCP server forge exposes to every spawned session, and the output-tail reader a call's own read answers from. |
+| [`forge-server`](crates/forge-server) | The server: what a client reads of the core, and no view of its own. The read surface a client uses, the session records as a view sees them, the peer envelope parsing in both directions, the tool family table, forge's own slash commands, the policy that folds a run of blocks, the transcript fold that turns a conversation's messages into the units a view draws, the sub-agent instance list the session task's own fold keeps and pushes, the `ReadCallOutput` verb (with the workspace's tail reader re-exported for views), the boot path the `forge` binary runs, and the socket that carries all of it. Sits between the workspace and whatever draws. The name is this crate; forge's in-process MCP server is unrelated and is named as the `forge` MCP server. This crate ships the `forge` binary. |
 | [`forge-test-harness`](crates/forge-test-harness) | Wire-conformance harness: replay-based offline tests plus opt-in live capture. |
 
-The `UI surfaces` part of [the book](https://busytools.github.io/forge/)
-is the visual map of every surface the TUI can currently render.
+The client lives in `client/` - a Svelte page inside a Rust shell - and
+the `The client` part of [the book](https://busytools.github.io/forge/)
+is the visual map of every surface it can draw.
 
 ## Getting started
 

@@ -1,10 +1,10 @@
 /**
- * The page's icon set, taken verbatim from `crates/forge-web/src/icons.rs`.
+ * The page's icon set.
  *
  * Lucide, MIT, is the web-native set, so no character-cell glyph from the
- * TUI's table survives here. The sprite is inlined once per page and every
- * icon is a `<use>` reference to it, which is what lets a page's own rule
- * colour an icon by the row it sits in.
+ * view this client replaced survives here. The sprite is inlined once per page
+ * and every icon is a `<use>` reference to it, which is what lets a page's own
+ * rule colour an icon by the row it sits in.
  */
 
 import sprite from '../assets/sprite.svg?raw';

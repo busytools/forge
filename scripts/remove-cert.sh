@@ -17,6 +17,10 @@
 
 set -euo pipefail
 
+# **`forge-tui` here is a historical on-disk identity, not a live path.**
+# The CA was installed under that name and the key material still sits
+# there on a machine that ran the old installer; the app-support tree
+# moved to `forge`, and this default deliberately did not follow it.
 FORGE_CA_DIR="${FORGE_CA_DIR:-$HOME/Library/Application Support/forge-tui/ca}"
 # `security find-certificate -c <name>` matches the CN field only, not
 # the O. The old CA carried CN="forge wire-classification rewriter",

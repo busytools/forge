@@ -1,7 +1,6 @@
 //! Mode-state helpers - supported-mode list filtering + `ModeState`
-//! builder. Used by App-side `events::sdk_message` (when
-//! `System(init)` arrives + on `/mode` slash submit) and by the
-//! worker (to assemble the Connected event payload at spawn time).
+//! builder. Used by the worker to assemble the Connected event payload
+//! at spawn time.
 
 use std::collections::HashSet;
 

@@ -6,10 +6,10 @@
  * server's, folded from the core's own `Live` alongside the roster, so it
  * arrives in the row already decided - including the unseen marks. The only
  * states this client makes for itself are `stateOf`'s four promotions: the
- * cases where the state read from the wire alone would disagree with the
- * terminal, silently, the first time one of them turned. So an update the
- * home is sent is answered with a fresh read rather than with arithmetic, and
- * an update it is not sent is never seen.
+ * cases where the state read from the wire alone would disagree with the view
+ * this client replaced, silently, the first time one of them turned. So an
+ * update the home is sent is answered with a fresh read rather than with
+ * arithmetic, and an update it is not sent is never seen.
  */
 
 import { writable, type Readable, type Writable } from 'svelte/store';
@@ -113,13 +113,12 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
     // session page would not hold it while the reader sits on the home.
     //
     // **`answering` is a safeguard here, not a cure.** The core cancels an ask
-    // at birth when NO subscriber can answer it anywhere, and on this machine
-    // that cannot happen: forge's own terminal is attached as an answerer for
-    // as long as it runs. A client that says nothing is still a guest beside
-    // that. What makes an unshown seat wear its glyph is the ask itself, read
-    // in the client's own `stateOf`; this declaration is for the install with
-    // no terminal at all, where nobody else could answer and an ask raised
-    // while this page is away would be cancelled unseen.
+    // at birth when NO subscriber can answer it anywhere, and a client that
+    // says nothing is a guest while another subscriber can answer. What makes
+    // an unshown seat wear its glyph is the ask itself, read in the client's
+    // own `stateOf`; this declaration is for the install with no other
+    // answerer, where an ask raised while this page is away would be cancelled
+    // unseen.
     held = connection.subscribe('home', { answering: true, browser: canHost() });
     reading = false;
     stopMessages = connection.onMessage((message) => {

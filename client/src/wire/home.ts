@@ -346,7 +346,7 @@ export interface HomeWire {
   forge_version: string;
   forge_version_short: string;
   service_status: unknown;
-  /** The words of the core's last fatal, which the terminal prints on exit. */
+  /** The words of the core's last fatal, which the view this client replaced printed on exit. */
   fatal_error: string | null;
 }
 

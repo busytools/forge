@@ -79,7 +79,7 @@ pub enum PeerInboundKind {
 
 impl PeerInboundKind {
     /// The `sender_org` field threaded through every variant - drives
-    /// same-project envelope grouping in the TUI's chat iteration.
+    /// same-project envelope grouping in a view's chat iteration.
     /// Variants that carry an explicit org return it; the
     /// worker-spawn-failure notice has no org of its own (it's
     /// lead-local, with no sending project) so it returns an empty

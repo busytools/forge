@@ -1,10 +1,9 @@
 /**
  * The push-to-talk key, as a page reads it.
  *
- * Ported from `crates/forge-tui/src/app/dictate_key.rs`, which is the rule this
- * follows: the terminal is the reference implementation until it is deleted, so
- * the vocabulary, the tap window and every press/release decision below are the
- * terminal's rather than a second reading of the same words.
+ * Ported from the view this client replaced: the vocabulary, the tap window and
+ * every press/release decision below are that view's rather than a second
+ * reading of the same words.
  *
  * Pure: the composer owns the window listener and the dispatch, and this owns
  * what a press means.
@@ -16,7 +15,7 @@ export type Bind = 'right_cmd' | 'left_cmd' | 'off';
 /** How a press and its release map onto starting and stopping a take. */
 export type Mode = 'auto' | 'toggle' | 'hold';
 
-/** What one press asks for, which is the terminal's own three. */
+/** What one press asks for, the same three the view this client replaced had. */
 export type Action = 'begin' | 'finish' | 'cancel';
 
 /**
@@ -65,7 +64,8 @@ export function modeFrom(value: unknown): Mode {
  *
  * The browser names the modifier's own side, which is what lets a right-only
  * binding exist at all. Off macOS there is no Cmd key, so the cmd equivalent is
- * the right Control key - the substitution the terminal's own handler makes.
+ * the right Control key - the same substitution the view this client replaced
+ * made.
  */
 export function boundCode(bind: Bind, mac: boolean): string | null {
   if (bind === 'off') return null;
@@ -108,9 +108,9 @@ export function markChorded(held: Held | null): Held | null {
 /**
  * Whether an event is a bare modifier rather than a key.
  *
- * The terminal consumes every bare modifier without chording the hold, because
- * a modifier is not text and not a shortcut - and a chord here would discard
- * the take its press began, losing the reader's words to a key they brushed.
+ * Every bare modifier is consumed without chording the hold, because a
+ * modifier is not text and not a shortcut - and a chord here would discard the
+ * take its press began, losing the reader's words to a key they brushed.
  */
 export function isBareModifier(key: string): boolean {
   return (

@@ -1,7 +1,7 @@
 //! The settings a session is spawned with.
 //!
 //! Read from the three Claude Code documents rather than kept as state, so a
-//! session started from a client spawns with what the terminal would have
+//! session started from a client spawns with what the CLI itself would have
 //! launched. A spawn that skipped this carries no language and no model, and
 //! the CLI's own defaults for permissions, effort and output style.
 

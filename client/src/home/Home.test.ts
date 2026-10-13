@@ -55,7 +55,7 @@ describe('the home page as it draws', () => {
   });
   /**
    * The core's last fatal draws above everything (#1638): the words are the
-   * terminal's own, carried on the home wire.
+   * server's own, carried on the home wire.
    */
   it("draws the core's fatal above the header, and nothing when there is none", () => {
     const stopped = draw({

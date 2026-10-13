@@ -79,7 +79,7 @@ rather than a fix.
 horizontal bars and curly quotes are rejected across the source, docs
 and config file types; `scripts/check_no_unicode_punctuation.py`
 carries the current list. Use a spaced hyphen, a comma, or two
-sentences. Ellipsis is allowed, because the TUI needs it as a
+sentences. Ellipsis is allowed, because a view uses it as a
 truncation glyph.
 When a banned codepoint is genuinely required, write the escape form
 (`"\u{2014}"`) rather than the literal character. Run
@@ -104,9 +104,9 @@ and a clean replay. See
 [the wire contract page](https://busytools.github.io/forge/wire-contract.html)
 for the details.
 
-**UI changes update the book's `docs/book/src/ui/` pages in the same
-pull request.** Those pages are the visual record of every surface
-`forge-tui` can render, and they are scoped to current state, so they
+**UI changes update the book's `docs/book/src/ui/client/` pages in the
+same pull request.** Those pages are the visual record of every surface
+the client can render, and they are scoped to current state, so they
 must never describe something the code does not ship.
 
 **A change that makes a page under `docs/book/` false updates it in the
@@ -152,10 +152,10 @@ inbound connector clients and matching go in `forge-connectors`,
 anything speaking stream-json goes in `forge-sdk`, environment and I/O
 go in `forge-agent`, multi-session orchestration goes in
 `forge-workspace`, a session record as a view sees it goes in
-`forge-server`, a view that is not the TUI goes in a crate of its own
-built against that socket, and only what the user sees goes in
-`forge-tui`. The
-architecture page also carries the view surface - the verbs a second
-view would read the core through. All thirty are built in
-`forge-server`, and a read only the TUI makes is still a plain
+`forge-server`, and anything a person sees goes in the client under
+`client/`. A further view is a crate of its own, built against that
+socket. The
+architecture page also carries the view surface - the verbs a view
+reads the core through. All of them are built in
+`forge-server`, and a read only one view makes is still a plain
 `forge-workspace` method.

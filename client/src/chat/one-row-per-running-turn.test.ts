@@ -297,9 +297,9 @@ describe('one row per running turn', () => {
   it('carries a prompt arriving mid-turn into the running row', () => {
     // What the reader does mid-turn: they type while the turn is still
     // running. The CLI fuses that prompt into the turn it interrupted rather
-    // than opening one, and the terminal draws it that way - the running row
-    // keeps its clock and the words draw inside it. A row of its own here puts
-    // two rows of one turn on the page, both counting.
+    // than opening one, and the view this client replaced drew it that way -
+    // the running row keeps its clock and the words draw inside it. A row of
+    // its own here puts two rows of one turn on the page, both counting.
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
     chat.start();

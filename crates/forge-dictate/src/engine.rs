@@ -2248,8 +2248,8 @@ mod tests_engine {
         assert!(matches!(ticket.recv(), Err(Error::ModelLoad { .. })));
     }
 
-    /// A stream take touches no device, so it must not claim one: the
-    /// terminal can record at the same time, and dropping the stream take
+    /// A stream take touches no device, so it must not claim one: a
+    /// device take can record at the same time, and dropping the stream take
     /// must never release a claim it never took.
     #[test]
     fn a_stream_take_never_claims_or_releases_the_device() {

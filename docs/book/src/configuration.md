@@ -273,38 +273,16 @@ line. These tables hold tokens.
 
 ## Notifications
 
-There is no `[ui]` section. The spinner a terminal draws and how often
-it repaints are the terminal's own, with no key, no stored override and
-nothing persisted across a restart. A `forge.toml` still carrying the
+Notifications are the client's own: a windowed client raises them
+through its host (a system banner, a dock badge, whatever the platform
+does), and there is no `forge.toml` key for any of it. The server
+raises nothing itself - it has no window to put a banner on.
+
+There is no `[ui]` section either: the spinner and repaint keys the
+terminal drew with retired with the terminal crate, and no key replaced
+them. A `forge.toml` still carrying the
 section loads and warns rather than failing, so the keys can be deleted
 at leisure; see the ghost list under "Unknown keys".
-
-Forge writes an OSC 777 desktop-notification escape every time it
-raises a notification, and asks nothing about the terminal first. A
-terminal that ignores the escape is harmless, so nothing is planned
-around the answer. Notifications are raised only while forge reads the
-terminal window as unfocused, and that focus signal is relayed and can
-lag the actual frontmost state.
-
-The escape carries the session as its title field and the event as its
-body, so the banner's bold line names the session instead of the app: a
-lead's is the project alone, a worker's is the project with the worker's
-label in brackets after it. The line under it is the terminal's own
-window title, which forge sets separately as the tab title.
-
-What crosses is decided by whatever sits between forge and the
-terminal, and no setting changes it. Ghostty with no multiplexer
-renders the banner, and so does Ghostty through shpool: shpool does
-not carry `TERM_PROGRAM` into the pane but forwards the escape
-(measured 2026-09-13, with both the `ST` and `BEL` terminators). Under
-zellij and GNU screen an escape emitted inside does not reach the
-outer pty, measured 2026-08-29 against OSC 9 with the 777 form
-unmeasured there, so the banner is not expected to appear. tmux
-re-emits only the forms its terminfo carries - OSC 8 and the OSC 9;4
-progress bar - so an OSC 777 notification is not forwarded, and tmux
-substitutes `TERM_PROGRAM` and `TERM` with its own values besides.
-When the banner does arrive it shows while Ghostty is not the
-frontmost app, and is downgraded to a dock bounce when it is.
 
 ## `[dictate]`
 
@@ -317,7 +295,7 @@ Optional. Absent means dictation is off, which is also what an explicit
 | `models_dir`          | string  | platform cache dir | Where the model files live. `~` is expanded.                                                                                                                                                                                                    |
 | `transcribe_model`    | string  | none               | The model the transcribing role runs, by the runtime's own variant name. Set, it wins over every runtime pick and refuses an activation for that role; absent leaves the role to the last pick made on this machine, else the compiled default. |
 | `cleanup_model`       | string  | none               | The same for the cleanup role. Inert while `normalizer = false`.                                                                                                                                                                                |
-| `device`              | string  | system default     | Input the TERMINAL records from, by device id rather than name. A client that captures its own audio picks on its own machine and never reads this.                                                                                             |
+| `device`              | string  | system default     | Input forge's own machine records from, by device id rather than name. A client that captures its own audio picks on its own machine and never reads this.                                                                                             |
 | `language`            | string  | autodetect         | Spoken language hint.                                                                                                                                                                                                                           |
 | `normalizer`          | boolean | `true`             | Rewrite recognition output into clean text. Off halves the download and skips a pass per utterance.                                                                                                                                             |
 | `max_capture_minutes` | integer | `30`               | Upper bound on one recording. A capture reserves memory eagerly, about 110 MiB at the default.                                                                                                                                                  |
@@ -332,8 +310,9 @@ mistyped `models_dir` would otherwise fetch three gigabytes to the
 wrong volume with nothing said about it.
 
 The models live where forge runs; the microphone is wherever the reader
-is. The terminal records from forge's own machine, which is what `device`
-names, and a client that captures - the web client today - records from
+is. A server-side capture records from forge's own machine, which is what
+`device`
+names, and a client that captures records from
 its own and streams the audio to forge, where the same pipeline recognises
 it. `styling`, `structure` and `context` are defaults rather than state:
 they reach every client in the greeting, and a client that captures holds
@@ -495,7 +474,7 @@ On by default, so a restart leaves it serving.
 
 | Key       | Type       | Default     | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | --------- | ---------- | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `enabled` | boolean    | `true`      | Whether the server starts with forge. `false` is the opt-out, and the TUI is identical either way.                                                                                                                                                                                                                                                                                                                                        |
+| `enabled` | boolean    | `true`      | Whether the server starts with forge. `false` is the opt-out, and the boot is identical either way - the socket simply does not bind.                                                                                                                                                                                                                                                                                                                                        |
 | `port`    | integer    | `8790`      | The port the server binds on `bind`, and a client is pointed at it by hand. `0` fails the load outright (`ServerPortInvalid`), and so does the gateway's own port (`ServerPortTakenByGateway`) - two listeners cannot share one. Neither check runs while the socket is disabled: a stale port on a section that never binds cannot stop the boot.                                                                                        |
 | `bind`    | IP address | `127.0.0.1` | The interface the server listens on. Loopback by default: reaching it from another machine means naming that machine's interface here, usually the WireGuard address. **forge is reached over loopback or a private network and is never exposed publicly.** That is the whole reason the socket carries no authentication - the private network is what the access control stands on, not a proxy to be added in front of a public bind. |
 
@@ -505,8 +484,8 @@ and the messages. The socket carries the whole view surface: the home and
 every session, a snapshot of each on subscribe and every update after it,
 with a client's commands going back the other way. **No page is served
 from here.** A client is its own program and draws everything itself; the
-socket hands it data. A bind that fails is logged and does not stop
-forge; the TUI is not downstream of the socket.
+socket hands it data. A bind that fails is fatal on the headless binary:
+with no view of its own it would serve nothing.
 
 ## `[client]`
 
@@ -528,9 +507,8 @@ The ceiling on one document a session hands the reader through the
 | -------------- | ------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `max_size_mib` | integer | `10`    | The largest document the viewer opens, in MiB, between `1` and `190`. A read over it is refused naming the size, before any bytes are read. `0` fails the load: a ceiling of nothing would refuse every document, which reads as a bug rather than a choice. A value past `190` fails the load too: a document crosses the socket base64-encoded and the desktop client's frame cap is 256 MiB, so a larger ceiling would read and raise and then die at the client. |
 
-A row's motion is not configurable. Each view animates its own: the
-TUI's spinner styles name glyph cycles, which is a terminal idiom a
-client has none of, and the marks move by state - the working mark turns
+A row's motion is not configurable. The client animates its own: the
+marks move by state - the working mark turns
 in 900ms and the starting one in 1500ms, and that difference is how a
 reader tells them apart.
 
@@ -544,8 +522,7 @@ port checks, none of them run while the socket is disabled.
 `mark`, `theme` and `font` are a client's settings rather than the
 server's, and the socket carries them to a client on connect, so a client
 never reads `forge.toml` for itself and the file stays the one source of
-truth. Nothing in forge draws them: the terminal has its own palette and
-the socket serves no page.
+truth. The server draws none of them: the socket serves no page.
 
 ## Unknown keys
 
@@ -731,8 +708,11 @@ unchanged models skip re-hashing them, and the last fetched model
 catalogue under `<app-support>/dictate-catalogue/`, which is what lets
 the models page read the feed when the network is gone.
 
-`<app-support>` is `~/Library/Application Support/forge-tui` on macOS
-and `$XDG_DATA_HOME/forge-tui` on Linux.
+`<app-support>` is `~/Library/Application Support/forge` on macOS
+and `$XDG_DATA_HOME/forge` on Linux. An install that predates the name
+keeps its state under `forge-tui` until `just migrate-app-support` moves
+it; a boot that finds only the old tree refuses and names the script
+rather than starting empty beside it.
 
 The single-instance lock lives under the same base, at
 `<app-support>/locks/<hash>.lock`, where the hash is derived from the

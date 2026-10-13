@@ -356,7 +356,7 @@ pub(crate) struct ProdSlackFacade {
 }
 
 /// How a held draft ended. `Expired` is its own outcome, not a flavour of
-/// rejection: the session is told the draft timed out, and the TUI
+/// rejection: the session is told the draft timed out, and a view
 /// retires the dock prompt it can no longer answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum GateDecision {

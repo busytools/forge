@@ -1,7 +1,7 @@
 //! The retired `settings` table, kept only to drop it.
 //!
-//! Its one row was the `/spinner` override, which went when the spinner moved
-//! to the terminal - nothing reads or writes the table now, so there is
+//! Its one row was the `/spinner` override, retired when the spinner left the
+//! core - nothing reads or writes the table now, so there is
 //! nothing to drain before [`drop_table`] removes it.
 //!
 //! The same shape as [`crate::store::model_catalog`], whose test pins the

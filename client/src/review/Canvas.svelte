@@ -258,9 +258,9 @@
    *
    * **One door per cell in split, one per row in unified, each keyed by the
    * side it comments on**: an added or context line is the new side, a
-   * removed line the old - the terminal's own rule for the same click, and
-   * what keeps a unified context line (whose one gutter carries both
-   * numbers) from writing every comment old-side.
+   * removed line the old - the same rule the view this client replaced
+   * applied to the same click, and what keeps a unified context line (whose
+   * one gutter carries both numbers) from writing every comment old-side.
    *
    * Injected here because the viewer redraws its own rows; the button
    * carries a `data-for` key so a redraw leaves the one already there alone.

@@ -1,9 +1,8 @@
 //! What a composer's text means at forge's own boundary.
 //!
 //! One rule, in one place: text that names a forge command is forge's, not
-//! the `claude` CLI's. The terminal has always decided this in its own submit
-//! path; a client reaches the same commands only because the decision is made
-//! where both of them dispatch, since some of these names the CLI does not
+//! the `claude` CLI's. A view reaches these commands because the decision is
+//! made where the view dispatches, since some of these names the CLI does not
 //! have at all and `/new` it answers as a different command.
 
 /// A forge command a composer can invoke, whatever view it was typed at.
@@ -65,8 +64,8 @@ const USAGE: &[(&str, &str)] = &[
 ///
 /// `/mcp` is the fourth and the one the measurement did not have to establish:
 /// the CLI advertises it, so the catalogue covers it for a client, and it is
-/// here because the terminal forwards it as a retired forge name rather than
-/// asking the core. A name in both sets is forwarded either way.
+/// here because it is a retired forge name that is forwarded rather than
+/// answered by the core. A name in both sets is forwarded either way.
 pub const FORWARDED: [&str; 4] = ["/help", "/mcp", "/plugins", "/quit"];
 
 /// Every name forge answers, which a view reads to decide to forward rather

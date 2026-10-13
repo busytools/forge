@@ -4,11 +4,11 @@
  *
  * **The anchor is captured here because the lines are here.** The page
  * draws the bounded content, so the line's text - and its neighbours - are
- * in hand at the moment a comment is written, exactly as the terminal's
- * overlay captures from its own scan. The hash is the crate's FNV-1a over
- * whitespace-collapsed UTF-8, and a thread written with a different hash
- * would never place in the terminal: the vectors in the test beside this
- * file are pinned in forge-agent's resolver tests too, so changing either
+ * in hand at the moment a comment is written, exactly as the view this
+ * client replaced captured from its own scan. The hash is the crate's FNV-1a
+ * over whitespace-collapsed UTF-8, and a thread written with a different
+ * hash would never place: the vectors in the test beside this file are
+ * pinned in forge-agent's resolver tests too, so changing either
  * implementation alone fails the other's test.
  *
  * The hash crosses as decimal digits rather than a JSON number: JS numbers
@@ -164,7 +164,7 @@ function authorPayload(author: ReviewThreadRecord['comments'][number]['author'])
 
 /** The store fills what the writer leaves empty - `at`, `created_at`, the
  *  updated stamp - so an empty string is the honest value here, exactly as
- *  the terminal's overlay sends. */
+ *  the view this client replaced sent. */
 export function newThread(comment: NewComment): ThreadPayload {
   return {
     id: crypto.randomUUID(),

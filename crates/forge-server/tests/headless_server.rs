@@ -172,7 +172,7 @@ async fn walk(script: &str, url: &str) -> Vec<Value> {
 }
 
 /// The boot stands alone: the binary binds the socket, greets a client and
-/// answers the home read - with no terminal anywhere in the process - and
+/// answers the home read - with no view anywhere in the process - and
 /// the stop a system sends releases what the boot took.
 #[tokio::test]
 async fn headless_boot_serves_the_home_and_stops_clean() {

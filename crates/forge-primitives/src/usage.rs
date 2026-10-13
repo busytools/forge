@@ -112,7 +112,7 @@ pub struct ExtraUsage {
 
 /// Snapshot of the user's Anthropic plan utilization at a point in time.
 /// Composed by the forge-gateway backends and rendered by
-/// forge-tui's usage view.
+/// a view.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UsageSnapshot {
     pub source: UsageSourceKind,

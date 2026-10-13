@@ -6,7 +6,7 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
-description = "Drives a forge-sdk Client; runs callback runtime; manages session lifecycle. The brain between forge-sdk and forge-tui."
+description = "Drives a forge-sdk Client; runs callback runtime; manages session lifecycle. The brain between forge-sdk and the workspace."
 publish = false
 
 [lints]

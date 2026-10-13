@@ -1,6 +1,6 @@
 //! Session-launcher + reader-pump helpers for the bridge layer.
 //!
-//! Builds `forge_sdk::Options` from the TUI's launch settings (with
+//! Builds `forge_sdk::Options` from the view's launch settings (with
 //! the `can_use_tool` callback wired in), spawns the `Client`, emits a
 //! synthetic `Connected`, and pumps the event stream from
 //! `forge_sdk::Client::spawn` into `AgentEvent::SdkMessage`. The
@@ -356,7 +356,7 @@ pub(crate) async fn spawn_session(
     // is named after it. Only an unassigned spawn falls back to
     // `Client::session_id()`, which is empty until `system/init` lands
     // on the wire (per `Client::spawn` docs, after both the initialize
-    // control_response AND a user message); the App-side handler adopts
+    // control_response AND a user message); the consumer adopts
     // the first non-empty session id seen there.
     let session_id = match id.supplied() {
         Some(id) => id.to_owned(),
@@ -385,10 +385,10 @@ pub(crate) async fn spawn_session(
     // request is dropped (the snapshot never lands).
     bridge.set_client(client.clone());
 
-    // Emit Connected BEFORE spawning the reader subtask so the App
+    // Emit Connected BEFORE spawning the reader subtask so the consumer
     // sees Connected first on its mpsc - otherwise the reader can
-    // race and push an SdkMessage before Connected, leaving
-    // `app.session_id` = None when the SdkMessage arrives.
+    // race and push an SdkMessage before Connected, leaving the
+    // consumer's session id unset when the SdkMessage arrives.
     emit_connected(
         bridge.event_tx(),
         &client,
@@ -593,8 +593,8 @@ async fn list_recent_sessions(
 /// RateLimitEvent) inherit the client's LIVE id, falling back to the
 /// spawn-time id only while the live one is still empty (before
 /// `system/init` binds the real UUID). Without the live preference a
-/// mid-session fatal Error on a fresh session gets stamped "" and the
-/// TUI drops it as an unknown session.
+/// mid-session fatal Error on a fresh session gets stamped "" and a
+/// view drops it as an unknown session.
 fn frame_session_id(
     msg_session_id: Option<&str>,
     live_session_id: &str,
@@ -2257,9 +2257,9 @@ mod tests {
     }
 
     /// The wire between the two ends that were already pinned: the scan
-    /// counts and the TUI seeds, but nothing checked that
-    /// `load_history_messages` carries the number across unchanged. An
-    /// off-by-one here ships green against both of those.
+    /// counts and the seed a view draws from them, but nothing checked
+    /// that `load_history_messages` carries the number across unchanged.
+    /// An off-by-one here ships green against both of those.
     ///
     /// **And the boundary frames ride with it, typed.** A page a resumed seat
     /// serves draws its boundaries the way a live one does, which needs the

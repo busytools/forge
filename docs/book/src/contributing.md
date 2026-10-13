@@ -78,8 +78,7 @@ surface page.
 ## Where does my code go?
 
 The [architecture page](./architecture.md) has the placement guide.
-Bias toward the deeper crate when unsure; the usual mistake is putting
-too much in `forge-tui`.
+Bias toward the deeper crate when unsure.
 
 ## Commits and pull requests
 

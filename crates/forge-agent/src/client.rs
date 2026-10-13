@@ -106,7 +106,7 @@ pub enum AgentEvent {
         kind: SpawnFailureKind,
     },
     /// A user-facing turn never reached the CLI (or was never
-    /// acknowledged): the TUI committed to `Thinking` before the
+    /// acknowledged): a view committed to `Thinking` before the
     /// dispatch, so without this event the spinner never tears down.
     TurnError {
         session_id: String,
@@ -169,7 +169,7 @@ pub enum AgentEvent {
         error: Option<String>,
     },
     /// Raw `forge_primitives::Message` envelope from the underlying
-    /// SDK Client, forwarded to the consumer (e.g. forge-tui's App)
+    /// SDK Client, forwarded to the consumer (e.g. a view's app)
     /// for per-variant dispatch and state mutation.
     SdkMessage {
         session_id: String,

@@ -15,8 +15,8 @@
 //! - [`client`] - `AgentEvent` enum + supporting types.
 //! - [`cloud`] - network-side state: oauth + cli usage fetchers.
 //! - [`userdata`] - disk-side state: settings, sessions catalog, memory, plugins.
-//! - [`commands`] / [`session_lifecycle`] - bridge helpers reused by
-//!   forge-tui via re-exports.
+//! - [`commands`] / [`session_lifecycle`] - bridge helpers consumed by
+//!   the worker and the workspace.
 //! - `forge_sdk_worker` (crate-private) / `replay` / [`tooling`] /
 //!   [`user_interaction`] - internal implementation modules consumed by
 //!   `agent`'s dispatcher and translator paths.

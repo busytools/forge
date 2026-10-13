@@ -89,9 +89,9 @@ describe('which editor holds the keyboard', () => {
 /**
  * The census, by route rather than by type.
  *
- * A sweep rather than a list, because the terminal's own census is why: its
- * canonical-type grep missed a third of its surfaces, the two hand-rolled ones
- * being plain strings in another subsystem.
+ * A sweep rather than a list, because the view this client replaced is why:
+ * its canonical-type grep missed a third of its surfaces, the two hand-rolled
+ * ones being plain strings in another subsystem.
  *
  * It pins the attribute's mention rather than its rendering - a box that wrote
  * `data-editor={undefined}` still reads as found here - so the docking tests are

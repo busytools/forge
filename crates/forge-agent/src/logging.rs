@@ -1,6 +1,6 @@
 //! Tracing target constants used by the agent's bridge code. Strings
-//! stay consistent with `forge_tui::logging::targets` so the TUI's
-//! `tracing-subscriber` env-filter picks up agent-side logs.
+//! stay consistent with the server's `logging::targets` so the
+//! subscriber's env-filter picks up agent-side logs.
 
 pub mod targets {
     pub const APP_INPUT: &str = "app.input";

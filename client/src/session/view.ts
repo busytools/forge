@@ -1,7 +1,7 @@
 /**
  * The session page's reads gathered into the shape its markup wants - the
- * client half of the gather `crates/forge-web/src/session.rs` does across its
- * own render functions.
+ * client half of the gather the view this client replaced performed across
+ * its render functions.
  *
  * Pure, so a test can build a session by hand. Nothing here recomputes a state
  * the server already decided: a row's lifecycle, a monitor's status and a
@@ -351,7 +351,7 @@ export interface GitStrip {
   gate: string | null;
 }
 
-/** A file's mark: the letter the terminal's rail draws, and its tone. */
+/** A file's mark: the letter the view this client replaced drew on its rail, and its tone. */
 export function markOf(status: FileStatusWire): { letter: string; klass: string } {
   switch (status) {
     case 'added':
@@ -471,8 +471,9 @@ export interface ComposerProps {
  */
 export function railMark(state: RowState): string {
   if (state.kind === 'unseen') return 'unseen';
-  // A failed turn draws the failure mark, the terminal's own answer: its
-  // cross replaces the state glyph until the seat is opened.
+  // A failed turn draws the failure mark, the same answer the view this
+  // client replaced gave: its cross replaces the state glyph until the seat
+  // is opened.
   if (state.kind === 'failed-turn') return 'failed';
   if (state.kind === 'never-started') return 'off';
   switch (state.lifecycle) {
@@ -652,8 +653,9 @@ export function headerFacts(header: SessionHeader): Facts {
  *
  * **The count is the conversation's, not the header's**: a boundary is a
  * `compact_boundary` row in the transcript, so it rides `conversation` on the
- * record. `null` at zero is the terminal's rule - a `0 compactions` on every
- * fresh session is noise on a row that already carries five facts.
+ * record. `null` at zero is the rule the view this client replaced kept - a
+ * `0 compactions` on every fresh session is noise on a row that already
+ * carries five facts.
  */
 export function compactionFigure(count: number): string | null {
   if (count === 0) return null;
@@ -734,10 +736,10 @@ export function rankOf(
  * The line a failed row draws under itself: the core's recorded reason, or the
  * fallback for a failure it left no text for.
  *
- * The fallback word follows the terminal's split: a failed row it holds no
- * text for reads "spawn failed" there (its sub-row exists only on a failed
- * worker), while a seat waiting on sign-in draws no sub-row at all and keeps
- * the client's own words.
+ * The fallback word follows the split in the view this client replaced: a
+ * failed row it held no text for read "spawn failed" there (its sub-row
+ * existed only on a failed worker), while a seat waiting on sign-in draws no
+ * sub-row at all and keeps the client's own words.
  */
 export function failedLine(row: Row): string | null {
   // A failed turn states itself: the row carries no reason text for it -
@@ -889,8 +891,9 @@ export function gitStrip(record: SessionRecord, slot: SessionSlot): GitStrip | n
     .join(' \u{b7} ');
   const clean = uncommitted === null && view.ahead === null && record.pr === null;
   // The default arrives as its remote-tracking ref (`origin/main`); compare
-  // the plain name, the way the terminal's own row does, so a checked-out
-  // `main` in a clone is recognised as the default rather than as work.
+  // the plain name, the way the view this client replaced did on its own row,
+  // so a checked-out `main` in a clone is recognised as the default rather
+  // than as work.
   const base = view.defaultBranch?.replace(/^origin\//, '') ?? null;
   const onDefault = gate === null && branch !== null && base !== null && branch === base;
   // The default branch with nothing on it has no state a row could state:
@@ -950,7 +953,7 @@ export function projectOf(home: HomeWire, slot: SessionSlot): ProjectWire | null
 /** One usage window as its bar draws it. */
 export interface AccountWindow {
   label: string;
-  /** Clamped to 0..100 for the bar, which is what the terminal draws too. */
+  /** Clamped to 0..100 for the bar, which is what the view this client replaced drew too. */
   percent: number;
   /**
    * The figure the row states, which is the UNCLAMPED one: an account past its
@@ -1073,8 +1076,8 @@ export interface RailFooter {
  * What a figure nobody has reported reads.
  *
  * `$-` rather than `$0.00`, because a zero is a reading and forge has none -
- * the terminal's own placeholder, and the reason a cold account does not read
- * as one that has spent nothing.
+ * the placeholder the view this client replaced used, and the reason a cold
+ * account does not read as one that has spent nothing.
  */
 const UNPROBED = '$-';
 
@@ -1082,16 +1085,16 @@ const UNPROBED = '$-';
  * The rail's footer: the account serving this seat's project, what it is
  * costing, and the two builds behind the page.
  *
- * **The figures branch on the account's billing kind, which is the terminal's
- * own rule**: a spend-billed key gets its periods, balance and cap, and a
- * window-billed one gets its 5h and 7d windows in the same block. Drawn from
- * one snapshot either way, so the footer states what the poller reported
- * rather than a shape the account cannot fill.
+ * **The figures branch on the account's billing kind, which is the rule the
+ * view this client replaced kept**: a spend-billed key gets its periods,
+ * balance and cap, and a window-billed one gets its 5h and 7d windows in the
+ * same block. Drawn from one snapshot either way, so the footer states what
+ * the poller reported rather than a shape the account cannot fill.
  *
  * The account is read from the project's chip rather than from the seat's own
  * binding, which the client has no read for: the chip is the roster's answer
- * to which account serves this project, and the terminal names the seat's
- * bound account instead.
+ * to which account serves this project, and the view this client replaced
+ * named the seat's bound account instead.
  */
 export function railFooter(
   home: HomeWire,
@@ -1119,9 +1122,10 @@ export function railFooter(
     return { account: head, figures: [], windows: account.windows, versions };
   }
   const spend = account.spend;
-  // Three states for the cap, as the terminal draws them: a cap to fill, a key
-  // with none, and a snapshot that has not landed. The two placeholders are
-  // dim, because a word saying there is no denominator is not a figure.
+  // Three states for the cap, as the view this client replaced drew them: a
+  // cap to fill, a key with none, and a snapshot that has not landed. The two
+  // placeholders are dim, because a word saying there is no denominator is not
+  // a figure.
   const cap = account.cap ?? (spend === null ? '\u{2014}' : 'not set');
   return {
     account: head,
@@ -1151,18 +1155,18 @@ function money(amount: unknown): string {
  * reads them rather than the order the store returns them.
  */
 export function taskRows(tasks: Task[], slot: SessionSlot): TaskStripRow[] {
-  // The seat's own slice, scoped the way the terminal scopes its TASKS
-  // section: a lead takes the top-level rows - its campaign board - and a
-  // worker only the rows it owns. The whole set stays the home's read.
+  // The seat's own slice, scoped the way the view this client replaced scoped
+  // its TASKS section: a lead takes the top-level rows - its campaign board -
+  // and a worker only the rows it owns. The whole set stays the home's read.
   const mine =
     slot.label === 'lead'
       ? tasks.filter((task) => task.parent === null)
       : tasks.filter((task) => task.owner?.label === slot.label);
-  // The terminal's own order (`status_rank` in the TUI's task state): a
-  // running row, then a wait, then the queue, then what is done. Every status
-  // is named rather than defaulted, so a row cannot fall to the end because
-  // its state is one this map forgot - which is what `blocked` became when the
-  // vocabulary moved to `waiting`.
+  // The order the view this client replaced kept: a running row, then a wait,
+  // then the queue, then what is done. Every status is named rather than
+  // defaulted, so a row cannot fall to the end because its state is one this
+  // map forgot - which is what `blocked` became when the vocabulary moved to
+  // `waiting`.
   const rank: Record<TaskStatus, number> = {
     in_progress: 0,
     waiting: 1,
@@ -1175,8 +1179,9 @@ export function taskRows(tasks: Task[], slot: SessionSlot): TaskStripRow[] {
   return ordered.map((task) => ({
     id: task.id,
     status: task.status,
-    // A running row leads with its active form, the terminal's own rule: an
-    // empty one falls back to the subject rather than drawing bare.
+    // A running row leads with its active form, the rule the view this client
+    // replaced kept: an empty one falls back to the subject rather than
+    // drawing bare.
     display:
       task.status === 'in_progress' && task.active_form !== null && task.active_form !== ''
         ? task.active_form
@@ -1515,8 +1520,9 @@ export function mcpState(server: McpServer): string {
     case 'connected':
       return server.tools === undefined ? 'connected' : toolSummary(server.tools.length);
     case 'failed':
-      // The reason is the row's own line beneath, not this cell: the terminal
-      // draws it once, and a cell carrying it again would say it twice.
+      // The reason is the row's own line beneath, not this cell: the view this
+      // client replaced drew it once, and a cell carrying it again would say
+      // it twice.
       return 'failed';
     case 'needs-auth':
       return 'needs sign-in';
@@ -1598,7 +1604,8 @@ export function monitorRows(monitors: MonitorRecord[], now: number): MonitorStri
     running: monitor.status === 'running',
     // Only `completed` is a success: the wire folds failed, killed and
     // stopped into `stopped`, so anything else must not wear the green
-    // check - the terminal's own row draws them red for the same reason.
+    // check - the same row in the view this client replaced drew them red for
+    // the same reason.
     completed: monitor.status === 'completed',
     name: monitor.description,
     label: monitorLabel(monitor, now),

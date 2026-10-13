@@ -42,8 +42,8 @@ describe('the resets-at clock', () => {
   });
 
   it('reads a bare now for a timestamp the clock cannot use', () => {
-    // The terminal's guard on the same input: a negative or non-finite
-    // epoch must not throw on the way to a countdown.
+    // The guard the view this client replaced kept on the same input: a
+    // negative or non-finite epoch must not throw on the way to a countdown.
     expect(formatResetsAt(-1)).toBe('now');
     expect(formatResetsAt(Number.NaN)).toBe('now');
     expect(formatResetsAt(Number.POSITIVE_INFINITY)).toBe('now');
@@ -133,8 +133,8 @@ describe('the summary, branch for branch with the terminal', () => {
   });
 
   it('offers overage only when the wire carries a status', () => {
-    // The terminal's `overage_status.is_some()`: an explicit null is not a
-    // carried value, so no allowance is offered for it.
+    // The view this client replaced tested `overage_status.is_some()`: an
+    // explicit null is not a carried value, so no allowance is offered for it.
     const summary = formatRateLimitSummary({
       status: 'allowed_warning',
       overageStatus: null,

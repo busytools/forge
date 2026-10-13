@@ -113,7 +113,7 @@ describe('the frame probe', () => {
 
     const summaries = h.records.flat().filter((record) => record.kind === 'summary');
     // The window covers the frames up to the one that crossed the interval,
-    // the terminal's own count-then-check rule.
+    // the same count-then-check rule the view this client replaced applied.
     expect(summaries).toHaveLength(1);
     expect(summaries[0]?.frames).toBe(3);
     expect(summaries[0]?.slow).toBe(1);

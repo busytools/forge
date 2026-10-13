@@ -12,9 +12,9 @@
  * seats must not meet another seat's pending send, and a send that fails must
  * still be there when they come back.
  *
- * The terminal is the reference and it has the same shape: it draws the
- * reader's words at submit rather than waiting for the core's own copy of
- * them, and it holds that per session.
+ * The view this client replaced has the same shape: it drew the reader's
+ * words at submit rather than waiting for the core's own copy of them, and it
+ * held that per session.
  */
 
 import { SvelteMap } from 'svelte/reactivity';

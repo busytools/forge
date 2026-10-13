@@ -2,11 +2,11 @@
  * The usage page's derivations: everything it draws, computed from the report
  * and nothing else.
  *
- * The terminal's `/usage` overlay is the reference for every rule here - the
- * unit scales, the dash for a cost with no price behind it, the share
- * computed over the whole token sum, the GPT flag being about a MODEL row and
- * never a project - so the page reads as the overlay read, which is the one
- * thing that has drawn this report before.
+ * The `/usage` overlay in the view this client replaced is the reference for
+ * every rule here - the unit scales, the dash for a cost with no price behind
+ * it, the share computed over the whole token sum, the GPT flag being about a
+ * MODEL row and never a project - so the page reads as the overlay read, which
+ * is the one thing that had drawn this report before.
  *
  * Pure, so a test can build a report by hand.
  */
@@ -34,8 +34,9 @@ export function rowTokens(row: UsageRow): number {
 }
 
 /**
- * A token count in the unit it reads best in, the terminal's scales and
- * truncation (one decimal, never rounded up).
+ * A token count in the unit it reads best in, on the same scales and
+ * truncation the view this client replaced used (one decimal, never rounded
+ * up).
  */
 export function formatTokens(n: number): string {
   const B = 1_000_000_000;
@@ -122,7 +123,7 @@ export function quickTotals(report: UsageReport): QuickTotal[] {
   }));
 }
 
-/** The terminal's own reading of the model names it calls approximate. */
+/** The same reading of the model names the view this client replaced called approximate. */
 export function isGpt(label: string): boolean {
   return label.startsWith('gpt') || label.includes('codex');
 }
@@ -138,7 +139,7 @@ export interface TableRow {
   cost: string;
   /** A model row whose price is an approximation; never a project or TOTAL. */
   approx: boolean;
-  /** A pooled label rather than a real one - the terminal draws these quiet. */
+  /** A pooled label rather than a real one - these are drawn quiet. */
   quiet: boolean;
 }
 

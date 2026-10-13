@@ -4,8 +4,8 @@
 //!
 //! Not a view's shapes, and the name says so: the request and its options
 //! are what the dispatcher reads to build the decision on submit, so the
-//! terminal's dock and a client's dock are two renderings of one set
-//! rather than two copies of it. Distinct from the wire-side decision
+//! dock a view draws is a rendering of one set rather than a copy of it.
+//! Distinct from the wire-side decision
 //! types in [`crate::permissions`], which talk to the SDK's
 //! `can_use_tool` callback.
 
@@ -26,7 +26,7 @@ pub enum PermissionAction {
     /// `PermissionDecision::allow().with_updated_permissions(updates)`.
     AllowWithUpdates { updates: Vec<PermissionUpdate> },
     /// Marker - the actual edited input value lives on
-    /// `PromptState.edited_input` (TUI-side). Dispatcher sends
+    /// the view's own prompt state. Dispatcher sends
     /// `PermissionDecision::allow_with_input(edited_value)`.
     AllowWithInput,
     /// `PermissionDecision::deny(reason)` where reason is the user's

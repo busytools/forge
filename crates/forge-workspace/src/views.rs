@@ -50,7 +50,7 @@ pub struct ProjectView {
 
 #[cfg(feature = "test-helpers")]
 impl ProjectView {
-    /// Test-only constructor for cross-crate fixtures (forge-tui's
+    /// Test-only constructor for cross-crate fixtures (a view's
     /// Projects pane snapshot tests). Behind the `test-helpers`
     /// Cargo feature to keep test-only construction out of the
     /// production API.
@@ -103,7 +103,7 @@ impl ProjectView {
 }
 
 /// One account row for the account snapshots: a project-allowed
-/// account plus its live rate-limit state, snapshotted so the TUI
+/// account plus its live rate-limit state, snapshotted so a view
 /// renders without locking `AccountStateMap`. Produced by
 /// [`crate::Workspace::project_accounts_snapshot`] in allow-list order.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]

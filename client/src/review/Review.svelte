@@ -38,7 +38,8 @@
    * **The page writes.** A comment is captured where it is written (the
    * anchor's hash and context, off the lines this page draws), filed when the
    * round is sealed, and a reply or a resolve goes out as it is made - all
-   * through the same command surface the terminal's overlay writes with.
+   * through the same command surface the view this client replaced wrote
+   * with.
    *
    * **Its states are drawn here rather than left to a neighbour.** The read
    * arrives as one of: nothing yet (loading), a seat the server refused (the

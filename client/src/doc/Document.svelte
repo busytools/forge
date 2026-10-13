@@ -217,10 +217,10 @@
       const filed = answer as { id?: unknown; number?: unknown };
       reviewId = typeof filed.id === 'string' ? filed.id : null;
       number = typeof filed.number === 'number' ? filed.number : null;
-      // **The nudge the terminal's own drop sends**, so the chat shows the
-      // review to the reader AND reaches the agent - one line, not the
-      // comments - with the document's scope named, which is how the agent
-      // reads it back.
+      // **The nudge the view this client replaced sent on its own drop**, so
+      // the chat shows the review to the reader AND reaches the agent - one
+      // line, not the comments - with the document's scope named, which is
+      // how the agent reads it back.
       if (number !== null) {
         try {
           void connection.dispatch(

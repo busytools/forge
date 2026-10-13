@@ -2,9 +2,9 @@
 //! against.
 //!
 //! **The walk is `forge_agent::env::file_index`'s and the shape is here**
-//! because three views read it: the terminal's mention list, the web view's
-//! composer and the seat's own loop, which walks it and pushes the whole
-//! index as `FileIndexChanged`. The walk itself stays where it was, with the
+//! because the readers are not one: a view's mention list and the seat's
+//! own loop, which walks it and pushes the whole index as
+//! `FileIndexChanged`. The walk itself stays where it was, with the
 //! rest of the environment's I/O.
 
 use std::collections::BTreeMap;
@@ -20,9 +20,8 @@ pub struct FileIndex {
 
 /// Whether a walk honours gitignore, from the CLI's per-user preferences
 /// document: its `respectGitignore` key, absent or not a boolean reading
-/// as `true`, which is the CLI's own default and what the terminal's `@`
-/// list does. Every view reads the key here, so none can drift on how
-/// it is read.
+/// as `true`, which is the CLI's own default. Every view reads the key
+/// here, so none can drift on how it is read.
 pub fn respect_gitignore(preferences: Option<&serde_json::Value>) -> bool {
     preferences
         .and_then(|document| document.get("respectGitignore"))

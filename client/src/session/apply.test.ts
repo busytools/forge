@@ -36,7 +36,10 @@ function roundOf(ask: unknown): string {
   return `${String(call['tool_call_id'])}:${String(request['question_index'])}`;
 }
 
-/** The frame the TUI's own tests build, which is what the CLI prints on a result. */
+/**
+ * The frame built in the tests of the view this client replaced, which is what
+ * the CLI prints on a result.
+ */
 function result(isError = false): Record<string, unknown> {
   return {
     type: 'result',
@@ -962,14 +965,15 @@ describe('applyUpdate', () => {
   /**
    * The override set a `/dictate` edit leaves behind. The core echoes the whole
    * set on an update of its own after every set and reset - so it is folded,
-   * the way the terminal's own arm folds it, rather than left to a read.
+   * the way the view this client replaced folded it, rather than left to a
+   * read.
    */
   describe('the dictate override echo', () => {
     it("leaves the record alone: the axes are this client's own now", () => {
-      // The core still echoes `dictate_overrides` for the terminal's own
-      // `/dictate` overlay, and this client holds its axes itself - so the
-      // echo is an update with nothing here to write it to, and the record
-      // stands rather than gaining a field nothing reads.
+      // The core still echoes `dictate_overrides` for the `/dictate` overlay
+      // of the view this client replaced, and this client holds its axes
+      // itself - so the echo is an update with nothing here to write it to,
+      // and the record stands rather than gaining a field nothing reads.
       const held = empty();
       const next = applyUpdate(held, {
         dictate_overrides: {

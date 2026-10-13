@@ -90,7 +90,7 @@ fn blocked_tools_for(kind: crate::mcp::SessionKind, interactive: bool) -> String
 /// `interactive` decides the question denial, and each caller answers it
 /// from the only place it can. A worker's spawn hands it the flag it was
 /// given; a respawn reads the worker's stored row, which is where the flag
-/// outlives the launch settings the TUI rebuilds. The one spawn path in
+/// outlives the launch settings a view rebuilds. The one spawn path in
 /// `get_agent_handle_at_key` passes `true` because it cannot know: a
 /// worker's [`build_worker_extra_args`] has already written that name into
 /// the same entry, and the merge leaves it there.
@@ -359,12 +359,12 @@ pub(crate) fn handle_deliver_peer_prompt(
     if let Some(target_key) = target_running_key {
         // Fire the typed peer-envelope echo BEFORE the LLM-side
         // dispatch so the user-turn block renders in the right
-        // order regardless of which event the TUI reducer drains
+        // order regardless of which event a view reducer drains
         // first. The CLI doesn't echo stdin-injected prompts back
         // on stream-json output (only tool_result-bearing user
-        // envelopes come back), so the TUI gets no inbound user-turn
+        // envelopes come back), so a view gets no inbound user-turn
         // signal from the SDK side - `PeerEnvelopeAppended` is how
-        // the TUI knows to render the peer block.
+        // a view knows to render the peer block.
         let uuid = forge_sdk::request_id::next_prompt_id();
         push_peer_user_turn_into_chat(workspace, &target_key, &wrapped, &uuid);
         let text = wrapped.to_prose();
@@ -483,7 +483,7 @@ pub(crate) fn deliver_cron_prompt(
 
     if let Some(target_key) = live_cron_slot(workspace, &view, team_role) {
         // Echo the cron block BEFORE the LLM-side dispatch so it renders in
-        // order regardless of which event the TUI reducer drains first. The id
+        // order regardless of which event a view reducer drains first. The id
         // is minted here so the block's row and the dispatched prompt's
         // lifecycle frames are one thing by id.
         let text = missed_cron_text(&cron.prompt, missed);
@@ -711,7 +711,7 @@ pub(crate) fn deliver_gotify_message(
             .is_some_and(|d| d.lock().session_id.is_some());
         if connected {
             // Echo the notification block BEFORE the LLM-side dispatch so
-            // it renders in order regardless of which event the TUI reducer
+            // it renders in order regardless of which event a view reducer
             // drains first (mirrors handle_deliver_peer_prompt).
             let uuid = forge_sdk::request_id::next_prompt_id();
             push_gotify_notification_into_chat(workspace, &worker_key, &notification, &uuid);
@@ -795,7 +795,7 @@ pub(crate) fn deliver_gotify_message(
 /// its thread - because the only way an agent can answer in place is to feed
 /// those back to `slack__post` or `slack__edit`.
 /// `forge_server::envelope::detect_inbound` parses this shape into a Slack
-/// envelope and the TUI renders that as a block (`forge_tui::ui::peer_block`),
+/// envelope and a view renders that as a block,
 /// so the bracketed header, its member count and the one-line-per-member body
 /// are a contract with the parser.
 pub(crate) fn slack_bundle_to_prose(messages: &[SlackMessage]) -> String {
@@ -1006,13 +1006,13 @@ fn team_worker_key(workspace: &Arc<Workspace>, project: &str, label: &str) -> Op
     workspace.list_live_workers(&view.key).into_iter().find(|w| w.label == label).map(|w| w.slot)
 }
 
-/// Emit a typed `PeerEnvelopeAppended` so the target session's TUI
-/// chat buffer shows the inbound peer user-turn. The TUI reducer
+/// Emit a typed `PeerEnvelopeAppended` so the target session's
+/// chat buffer shows the inbound peer user-turn. A view's reducer
 /// builds the chat-side echo directly from the `WrappedPrompt`'s
 /// typed fields - workspace no longer forges an SDK `Message::User`
 /// frame (audit I11).
 ///
-/// Note: this only affects the TUI's visible chat echo. The
+/// Note: this only affects the visible chat echo. The
 /// recipient's `claude` subprocess still receives the prose via a
 /// separate `Command::Prompt` dispatch - the CLI's input channel
 /// is text-shaped and stays that way.
@@ -1029,7 +1029,7 @@ pub(crate) fn push_peer_user_turn_into_chat(
     });
 }
 
-/// Emit a typed `GotifyNotificationAppended` so the target session's TUI
+/// Emit a typed `GotifyNotificationAppended` so the target session's
 /// chat buffer shows the inbound notification block. Mirrors
 /// [`push_peer_user_turn_into_chat`] - the target's `claude` subprocess
 /// still receives the prose via a separate `Command::Prompt` dispatch;
@@ -1047,7 +1047,7 @@ pub(crate) fn push_gotify_notification_into_chat(
     });
 }
 
-/// Emit a typed `CronPromptAppended` so the target session's TUI chat
+/// Emit a typed `CronPromptAppended` so the target session's chat
 /// buffer shows a cron block for the fired prompt. Mirrors
 /// [`push_gotify_notification_into_chat`] - the target's `claude`
 /// subprocess still receives the raw prompt via a separate
@@ -1069,7 +1069,7 @@ pub(crate) fn push_cron_prompt_into_chat(
     });
 }
 
-/// Emit a typed `SlackMessageAppended` so the target session's TUI chat buffer
+/// Emit a typed `SlackMessageAppended` so the target session's chat buffer
 /// shows the inbound Slack block. Mirrors
 /// [`push_gotify_notification_into_chat`] - the target's `claude` subprocess
 /// still receives the prose via a separate `Command::Prompt` dispatch; this
@@ -1175,7 +1175,7 @@ pub(crate) fn handle_spawn_session(
 /// Startup spawn. Resolves the default project (or the named one
 /// passed on argv) and spawns its lead under the id it will run under.
 /// Failure before the first Connected emits `SessionUpdate::FatalError`
-/// so TUI exits cleanly.
+/// so the app exits cleanly.
 pub(crate) fn handle_start_default(
     workspace: &Arc<Workspace>,
     project_name: Option<String>,
@@ -1755,7 +1755,7 @@ pub(crate) fn handle_spawn_worker(
     }
 }
 
-/// Shared worker teardown used by both `handle_close_worker` (the TUI
+/// Shared worker teardown used by both `handle_close_worker` (a view's
 /// X-button) and `handle_despawn_worker` (the `agents__despawn` MCP
 /// tool): remove the latest-spawned worker matching `label` from
 /// `live_workers[project_key]` and release its session (terminates the
@@ -1802,8 +1802,8 @@ fn teardown_worker(
     Some(entry)
 }
 
-/// Announce a torn-down worker to the TUI, carrying what became of its
-/// worktree for the close toast to state.
+/// Announce a torn-down worker to the views, carrying what became of its
+/// worktree.
 fn emit_worker_removed(
     workspace: &Arc<Workspace>,
     project_key: &ProjectKey,
@@ -1818,7 +1818,7 @@ fn emit_worker_removed(
     });
 }
 
-/// Handle a `Command::CloseWorker` (the TUI per-row X-button): tear
+/// Handle a `Command::CloseWorker` (a view's per-row X-button): tear
 /// the worker down via [`teardown_worker`]. Does NOT touch the git
 /// worktree - that's the `agents__despawn` path's job; the X-button's
 /// behavior is intentionally unchanged.
@@ -2407,7 +2407,7 @@ fn reap_worker_branch(repo: &std::path::Path, label: &str) -> Option<String> {
 /// project. Latest-spawned-wins on duplicate labels. The typed
 /// PeerEnvelopeAppended echo follows the same pattern as
 /// `handle_deliver_peer_prompt` - workers reuse the peer envelope
-/// verbatim so the TUI's chat render is identical between the two
+/// verbatim so a view's chat render is identical between the two
 /// paths.
 ///
 /// Unlike `handle_deliver_peer_prompt`, this handler never buffers +
@@ -2510,7 +2510,7 @@ pub(crate) fn handle_deliver_worker_prompt(
 
     // Fire the typed peer-envelope echo BEFORE the LLM-side dispatch
     // so the user-turn block renders in the right order regardless
-    // of which event the TUI reducer drains first. Compute the prose
+    // of which event a view reducer drains first. Compute the prose
     // body BEFORE the move into PeerEnvelopeAppended so we consume
     // `wrapped` exactly once (the push_peer_user_turn_into_chat helper
     // takes `&WrappedPrompt` and clones internally).
@@ -2537,7 +2537,7 @@ pub(crate) fn handle_deliver_worker_prompt(
 /// the lead's `SessionSlot` (resolved at Tool dispatch from the
 /// worker's `spawned_by_session_id`). Same wire shape as
 /// `DeliverWorkerPrompt` - PeerEnvelopeAppended echo + Command::Prompt
-/// dispatch - so the lead's TUI renders the message identically to
+/// dispatch - so a view renders the lead's message identically to
 /// a sibling-worker delivery.
 ///
 /// Drops with a warn log when the target lead session is no longer
@@ -2754,7 +2754,7 @@ provider = "anthropic"
     /// `handle_spawn_project` for an unknown project name must not
     /// panic, must not emit a `SessionUpdate::Spawning`, and must
     /// log a warning. Important for the user-input boundary - a
-    /// click on a stale row shouldn't crash forge-tui.
+    /// click on a stale row shouldn't crash forge.
     #[tokio::test]
     async fn spawn_project_unknown_project_emits_no_update() {
         let dir = tempdir().expect("tempdir");
@@ -2777,7 +2777,7 @@ provider = "anthropic"
 
     /// `handle_spawn_project` for a known project must emit a
     /// `SessionUpdate::Spawning` under the id the lead will run under,
-    /// so the TUI can show a Waking placeholder before the agent reaches
+    /// so a view can show a Waking placeholder before the agent reaches
     /// Connected and the bucket it draws is the one that connects.
     #[tokio::test]
     async fn spawn_project_known_project_announces_the_id_it_will_run_under() {
@@ -5176,7 +5176,7 @@ provider = "anthropic"
     }
 
     /// `handle_close_worker` for an unknown label logs but does not
-    /// panic and emits no events. Defensive branch when the TUI's
+    /// panic and emits no events. Defensive branch when a view's
     /// click races a lead-cascade or a concurrent close.
     #[tokio::test]
     async fn close_worker_unknown_label_is_noop() {

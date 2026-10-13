@@ -13,15 +13,14 @@ It lives at `/models`, which is its own address rather than a session's: the
 models belong to the forge, not to a seat, and the subject carries no slot.
 The header's way back is the home.
 
-This page is a client-only surface: the terminal draws no catalogue. The
+The catalogue has no other view: this page is the one that draws it. The
 read and the actions are the server's (`Subject::DictateModels`,
 `Command::DictateCatalogueCheck`, `Command::DictateInstall`,
 `Command::DictateActivate`, `Command::DictateDeactivate`,
 `Command::DictateUninstall`, `Command::DictateBench`,
 `Command::DictateBenchStop`, `Command::DictateBenchDelete`,
 `Command::DictateReadAloudStart`, `Command::DictateReadAloudStop` and
-`Command::DictateReadAloudDelete`), and this page is the first view of
-either.
+`Command::DictateReadAloudDelete`), and this page is the view of either.
 
 ## What it draws
 

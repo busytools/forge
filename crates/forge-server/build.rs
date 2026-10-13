@@ -1,11 +1,12 @@
 //! Stamp the build with the current git commit + branch.
 //!
-//! Emitted unconditionally - every binary surfaces its short SHA so a
-//! screenshot is enough to identify the running commit. Short form
-//! (Projects pane bottom row, launchpad version line) is
-//! `0.15.1+<sha>`; full form (welcome banner, status panel) is
+//! Emitted unconditionally - the binary surfaces its short SHA so a
+//! screenshot is enough to identify the running commit. Short form is
+//! `0.15.1+<sha>`; full form is
 //! `0.15.1 · <sha>` on `main` and `0.15.1 · <sha> (<branch>)` off
-//! `main`. Detached HEAD elides the branch parenthetical.
+//! `main`. Detached HEAD elides the branch parenthetical. The client
+//! draws both forms - the greeting and its header - and the boot log
+//! carries the full one.
 //!
 //! Tolerant of missing `.git` (e.g. `cargo install` from crates.io)
 //! and any other git failure - emits empty suffixes in that case.
@@ -23,7 +24,7 @@ fn main() {
     // `git commit` / `checkout` / `reset` / etc., and cargo's
     // rerun-if-changed on a directory walks the tree.
     //
-    // Without this, building forge-tui after `git commit` on a
+    // Without this, building forge-server after `git commit` on a
     // feature branch keeps re-using the previous build's
     // FORGE_BUILD_SUFFIX_SHORT - the embedded version stamp goes
     // stale and the binary reports an older commit hash than it

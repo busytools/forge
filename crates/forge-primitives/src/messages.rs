@@ -2790,10 +2790,11 @@ mod tests_message_extras {
     /// The guard hard rule 9 buys by typing this subtype: a rename of
     /// either modelled field drops the frame into the generic bucket,
     /// which `EXPECTED_GENERIC_SYSTEM_SUBTYPES` does not list, so the
-    /// next live capture fails instead of the TUI quietly losing the
-    /// trigger. `preTokens` is the plausible drift - the TUI already
-    /// carries an alias for that spelling - and the frame carries every
-    /// other field, so that rename is the only thing that can drop it.
+    /// next live capture fails instead of a view quietly losing the
+    /// trigger. `preTokens` is the plausible drift - the transcript
+    /// scan already carries an alias for that spelling - and the frame
+    /// carries every other field, so that rename is the only thing that
+    /// can drop it.
     #[test]
     fn a_renamed_pre_tokens_falls_to_the_generic_bucket() {
         let msg: Message = serde_json::from_value(json!({

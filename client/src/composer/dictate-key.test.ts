@@ -1,7 +1,7 @@
 /**
- * The push-to-talk key's own machine, mirroring the terminal's
- * (`crates/forge-tui/src/app/dictate_key.rs`): what a press asks for, what a
- * release asks for, and what a press that turned out to be a chord asks for.
+ * The push-to-talk key's own machine, mirroring the view this client replaced:
+ * what a press asks for, what a release asks for, and what a press that turned
+ * out to be a chord asks for.
  *
  * Pure, so the timing and the modes are pinned here rather than through a
  * mounted component - the wiring that reads keys off the window and dispatches
@@ -50,7 +50,7 @@ describe('the binding and the mode', () => {
     expect(boundCode('right_cmd', true)).toBe('MetaRight');
     expect(boundCode('left_cmd', true)).toBe('MetaLeft');
     // Off macOS there is no Cmd key, so the cmd equivalent is the right
-    // Control key - the same substitution the terminal's own handler makes.
+    // Control key - the same substitution the view this client replaced made.
     expect(boundCode('right_cmd', false)).toBe('ControlRight');
     expect(boundCode('left_cmd', false)).toBe('ControlLeft');
     expect(boundCode('off', true)).toBeNull();

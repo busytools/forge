@@ -816,8 +816,9 @@ describe('the conversation the chat draws', () => {
   /**
    * The review activity notice is the same line one origin over (#1776): a
    * worker's review turn ended, the core batched the tally into the
-   * reviewer's session, and no transcript row holds it - the terminal draws
-   * it as an info line and this store is the page's only place to draw one.
+   * reviewer's session, and no transcript row holds it - the view this client
+   * replaced drew it as an info line and this store is the page's only place
+   * to draw one.
    */
   it('draws the review activity notice as a line of its own', () => {
     const server = fakeConnection();
@@ -851,8 +852,8 @@ describe('the conversation the chat draws', () => {
 
   /**
    * A connection failure draws its own line, not only the roster row's reason
-   * (#1638): the terminal's answer, the raw why, or the rate-limit explainer
-   * when the accounts are exhausted.
+   * (#1638): the answer of the view this client replaced, the raw why, or the
+   * rate-limit explainer when the accounts are exhausted.
    */
   it('draws a connection failure, and the rate-limit explainer for one', () => {
     const server = fakeConnection();
@@ -911,7 +912,7 @@ describe('the conversation the chat draws', () => {
   /**
    * The service status the core watches for the whole install arrives keyless,
    * so it rides every seat's stream and each open conversation draws it as the
-   * terminal pushes it (#1638) - once per report.
+   * view this client replaced pushed it (#1638) - once per report.
    */
   it('draws a service-status report, once per report', () => {
     const server = fakeConnection();
@@ -950,7 +951,8 @@ describe('the conversation the chat draws', () => {
 
   /**
    * The core's fatal arrives keyless before the process goes (#1638): every
-   * open conversation draws the line, in the terminal's own words.
+   * open conversation draws the line, in the words of the view this client
+   * replaced.
    */
   it("draws the core's fatal once", () => {
     const server = fakeConnection();
@@ -976,9 +978,9 @@ describe('the conversation the chat draws', () => {
   });
 
   /**
-   * The plan-limit next steps ride the turn's own failure (#1638): the
-   * terminal's words and steps, with the core's own message where the
-   * terminal's summary rides - it is not drawn a line above when a
+   * The plan-limit next steps ride the turn's own failure (#1638): the words
+   * and steps of the view this client replaced, with the core's own message
+   * where that view's summary rode - it is not drawn a line above when a
    * dispatch-side refusal never reached the CLI.
    */
   it('adds the next steps to a plan-limited turn, with the core own words', () => {
@@ -1000,7 +1002,8 @@ describe('the conversation the chat draws', () => {
     expect(drawn(), 'and the steps are drawn').toContain('Next steps');
     expect(drawn(), 'at the error the terminal draws them').toContain('"severity":"error"');
 
-    // The same incident twice is one line, not two: the terminal upserts.
+    // The same incident twice is one line, not two: the view this client
+    // replaced upserted.
     const before = drawn();
     server.update({ turn_error: notice });
     expect(drawn(), 'a repeated incident keeps one line').toBe(before);

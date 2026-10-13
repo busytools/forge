@@ -113,10 +113,10 @@
   }
 
   /**
-   * The walk, as the terminal taught it: up enters at the newest and goes
-   * older until the first queued prompt, down comes back, and one more down
-   * past the newest lands in the box - focus included, so the next Enter is
-   * the next send.
+   * The walk, as the view this client replaced taught it: up enters at the
+   * newest and goes older until the first queued prompt, down comes back, and
+   * one more down past the newest lands in the box - focus included, so the
+   * next Enter is the next send.
    */
   function move(direction: 'up' | 'down'): void {
     const was = active;

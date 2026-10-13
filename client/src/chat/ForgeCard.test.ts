@@ -187,10 +187,10 @@ describe('the forge card body', () => {
    * **A quote keeps the line breaks it was written with.**
    *
    * Most of them are the reader's own words - a draft, a review prompt - and
-   * the terminal's own split is that a person's newlines survive where
-   * generated prose joins back. Without it a two-line Slack draft draws as one
-   * flowing paragraph, which is a second visible change from the markdown fix
-   * and not the one it was for.
+   * the split the view this client replaced kept is that a person's newlines
+   * survive where generated prose joins back. Without it a two-line Slack
+   * draft draws as one flowing paragraph, which is a second visible change
+   * from the markdown fix and not the one it was for.
    */
   it('keeps a quote\u{27}s own line breaks, which are the reader\u{27}s', () => {
     const drawn = draw({

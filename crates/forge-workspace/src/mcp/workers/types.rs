@@ -108,7 +108,7 @@ pub struct WorkerEntry {
     pub spawned_by: SessionSlot,
     pub needs_tag: bool,
     /// Cached at spawn time: was the project's path a git repo?
-    /// Drives the TUI Inspector pane's WORKTREE section render and
+    /// Drives the Inspector pane's WORKTREE section render and
     /// the "in worktree" status-string suffix. `true` means the
     /// worker was spawned with `--worktree=<label>` and is operating
     /// in claude's auto-created `<project>/.claude/worktrees/<label>/`;

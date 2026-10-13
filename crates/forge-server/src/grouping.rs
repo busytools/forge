@@ -239,8 +239,8 @@ pub(crate) fn wire_row(sdk_tool_name: &str) -> (KindRow, String) {
     }
     let family = tool_family(sdk_tool_name);
     if is_edit_tool(sdk_tool_name) {
-        // The word the fold's own model draws. The TUI never asks for this
-        // row: it breaks a run on a mutation instead of folding one.
+        // The word the fold's own model draws. A view that breaks a run on
+        // a mutation instead of folding one never asks for this row.
         return (KindRow::Family(family), "edit".to_owned());
     }
     (KindRow::Family(family), family.kind_label().to_owned())
@@ -605,9 +605,9 @@ pub enum RenderUnit {
         aggregate_status: crate::model::agent::ToolCallStatus,
     },
     /// A run of consecutive peer/worker MCP message blocks (outbound
-    /// and inbound) within one message. `group_leader_id` keys the
-    /// collapse level in the `messaging_group_collapse_levels` map on
-    /// `UiSession`.
+    /// and inbound) within one message. `group_leader_id` names the
+    /// group's leader, which is what a view keys the group's collapse
+    /// level by.
     MessagingGroup {
         segment: MessagingGroupSegment,
         group_leader_id: GroupId,

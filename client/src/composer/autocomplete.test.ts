@@ -50,10 +50,11 @@ const sources = (): Sources => ({
 /**
  * Four triggers, one popover shape.
  *
- * The trigger rules are the terminal's, ported: a slash command is the WHOLE
- * draft while it is being typed, which is what keeps a slash inside a sentence
- * a path rather than a command, and the `:` counts only at the start of the
- * text or after whitespace, so a URL never opens a picker.
+ * The trigger rules are ported from the view this client replaced: a slash
+ * command is the WHOLE draft while it is being typed, which is what keeps a
+ * slash inside a sentence a path rather than a command, and the `:` counts
+ * only at the start of the text or after whitespace, so a URL never opens a
+ * picker.
  */
 describe('which list a draft opens', () => {
   it('opens on the trigger it ends in, and on nothing that only looks like one', () => {
@@ -100,11 +101,11 @@ describe('which list a draft opens', () => {
 
 /**
  * The two sources the `/` list draws from, which is the one list with more
- * than one. The terminal separates them with a group heading and orders
- * forge's first; a query that matches both keeps forge's in front wherever the
- * two matched equally well, and the heading goes with the filter - a header
- * over a list that has collapsed to one source reads as a list that lost the
- * other.
+ * than one. The view this client replaced separated them with a group heading
+ * and ordered forge's first; a query that matches both keeps forge's in front
+ * wherever the two matched equally well, and the heading goes with the filter -
+ * a header over a list that has collapsed to one source reads as a list that
+ * lost the other.
  */
 describe("forge's commands and the CLI's", () => {
   it("leads with forge's own wherever two rows matched equally well", () => {
@@ -131,10 +132,11 @@ describe("forge's commands and the CLI's", () => {
 });
 
 /**
- * The offset a mark move leaves behind, which is the terminal's own clamp: the
- * picker windows its list around the mark, so the mark is never off screen.
- * The numbers are the ones the page measured at 800x620, where a key walked the
- * mark 217px past the bottom of a 248px window and the window never moved.
+ * The offset a mark move leaves behind, the same clamp the view this client
+ * replaced applied: the picker windows its list around the mark, so the mark is
+ * never off screen. The numbers are the ones the page measured at 800x620,
+ * where a key walked the mark 217px past the bottom of a 248px window and the
+ * window never moved.
  */
 describe('the window a mark moves in', () => {
   it('brings a row past an edge back onto it, and leaves one inside alone', () => {

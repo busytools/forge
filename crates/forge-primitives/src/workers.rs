@@ -42,7 +42,7 @@ pub enum WorkerLiveness {
 }
 
 /// Snapshot of one worker. Carried by `agents__list` and threaded
-/// through `SessionUpdate::WorkerStatusChanged` for TUI rendering.
+/// through `SessionUpdate::WorkerStatusChanged` for a view to render.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkerStatus {
     pub label: String,

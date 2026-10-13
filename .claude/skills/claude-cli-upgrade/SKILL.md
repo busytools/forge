@@ -3,7 +3,7 @@
 This skill verifies forge stays compatible with the `claude` CLI after an upstream version bump. It catches two failure classes:
 
 1. **Decoder drift** - the new CLI emits stream-json shapes (tool names, event subtypes, fields) that forge-sdk doesn't yet decode, producing `DecodedLine::Unknown` or decode errors. Sessions render incorrectly or break silently.
-2. **Tool surface drift** - the new CLI adds or removes tool primitives (e.g. `TodoWrite` → `TaskCreate/Update/List/Get` in 2.1.156) that forge-tui's inspector / chat renderers special-case. User-visible features silently regress.
+2. **Tool surface drift** - the new CLI adds or removes tool primitives (e.g. `TodoWrite` → `TaskCreate/Update/List/Get` in 2.1.156) that the tool family table (`crates/forge-server/src/family.rs`) and the client's chat renderers special-case. User-visible features silently regress.
 
 The goal state: harness's `PINNED_CLI_VERSION` bumped to the new version, all sdk replay scenarios pass against fresh baselines, and any drift is either decoded or explicitly accepted with rationale.
 
@@ -37,7 +37,7 @@ If installed > pinned: continue with the workflow below. Report the delta so the
 
 ## Phase 1: Tool surface diff (agent runs)
 
-Probe the new CLI's init event for the representative models forge supports. Compare tool sets to spot adds/removes that forge-tui needs to handle.
+Probe the new CLI's init event for the representative models forge supports. Compare tool sets to spot adds/removes the tool family table and the client's renderers need to handle.
 
 ```bash
 mkdir -p /tmp/forge-cli-upgrade-check
@@ -84,9 +84,9 @@ print(f"Common across models: {sorted(common)}")
 PYEOF
 ```
 
-Compare the output against the previously-known tool set (search `crates/forge-tui/src/app/events/tool_calls.rs` for the gate string-match on tool names). Flag:
+Compare the output against the previously-known tool set (search `crates/forge-server/src/family.rs` for the matches on tool names). Flag:
 
-- **New tool names** forge-tui doesn't special-case yet. Inspector / chat suppression may need extension. File an issue per cluster.
+- **New tool names** the family table has no row for yet. A generic row draws them plainly until one lands; file an issue per cluster.
 - **Removed tool names** the renderer still special-cases. Dead code; mark for cleanup.
 - **Same tool names but different `tool_input` shape** - only visible by capturing a real session and diffing. Phase 4 covers it.
 
@@ -275,7 +275,7 @@ that section with no code change. Expect both to diff and read both.
 `reference-captures/` holds raw `claude --print` probes of individual tool
 families, captured by hand and not regenerated since CLI 2.1.156 (one
 hook-envelope file in the directory is newer, at 2.1.220). They are a
-design aid for forge-tui surfaces, not wire-conformance baselines, and
+design aid for the client's surfaces, not wire-conformance baselines, and
 this upgrade does NOT regenerate them. Hand-nudged probes are a different kind of work from
 a version bump and should not ride along with one. Regenerate them in a
 PR of their own when a tool family's shape actually needs re-checking.
@@ -357,7 +357,7 @@ If all scenarios pass: the decoder is up to date with the new CLI's wire surface
 
 ## Phase 6: Renderer / inspector adjustments (if Phase 1 flagged adds)
 
-If Phase 1 surfaced new tool names forge-tui doesn't handle, file a tracking issue per cluster - unless `REPLACED_CLI_TOOLS` (`crates/forge-workspace/src/spawn.rs`) names it, which means forge blocks it on purpose and there is no renderer to catch up. The PR for those changes can land separately from the version bump PR if it's substantial, but the upgrade is incomplete until the renderer catches up. Pin the issue in the upgrade PR's description so future readers see the linkage.
+If Phase 1 surfaced new tool names the family table has no row for, file a tracking issue per cluster - unless `REPLACED_CLI_TOOLS` (`crates/forge-workspace/src/spawn.rs`) names it, which means forge blocks it on purpose and there is no row to catch up. The PR for those changes can land separately from the version bump PR if it's substantial, but the upgrade is incomplete until the row catches up. Pin the issue in the upgrade PR's description so future readers see the linkage.
 
 ## Phase 7: Land the upgrade
 
@@ -400,7 +400,7 @@ If installed > pinned: run the workflow above. If equal: nothing to do.
 - Baselines: `crates/forge-test-harness/baselines/sdk/<version>/*.jsonl`.
 - Replay test: `crates/forge-test-harness/tests/sdk_replay.rs`.
 - Capture scenarios: `crates/forge-test-harness/tests/sdk_scenarios_*.rs`.
-- Tool-name gate (forge-tui): `crates/forge-tui/src/app/events/tool_calls.rs` (search for the string-match against tool names).
+- Tool-name gate: `crates/forge-server/src/family.rs` (search for the matches against tool names).
 - Decoder: `crates/forge-sdk/src/transport/codec.rs`.
 
 ## Wire-conformance cheatsheet (outside an upgrade)

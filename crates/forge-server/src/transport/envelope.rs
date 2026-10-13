@@ -130,8 +130,8 @@ pub enum ClientMessage {
         ///
         /// **What it guards is an install with no answerer anywhere.** Every
         /// update is delivered to every subscriber regardless of role; the
-        /// role decides only what the core may PARK on. A forge running
-        /// beside its own terminal always has an answerer attached, so a
+        /// role decides only what the core may PARK on. A forge with an
+        /// answering client attached already has an answerer, so a
         /// second client that says nothing is a guest beside one that can.
         /// Where nobody can answer, an ask is cancelled at birth rather than
         /// held for a reply that could not come. Declaring this means that
@@ -181,9 +181,8 @@ pub enum ClientMessage {
     /// One commit's own diff, for the review canvas' commit scopes.
     ///
     /// Asked on demand rather than carried on the record: a branch can
-    /// hold dozens of commits, and every reader of a record - the terminal
-    /// included - would pay their content on every read for a scope only
-    /// one page draws.
+    /// hold dozens of commits, and every reader of a record would pay
+    /// their content on every read for a scope only one page draws.
     CommitDiff {
         session: SessionSlot,
         sha: String,
@@ -236,7 +235,7 @@ pub enum ClientMessage {
 pub enum ServerMessage {
     Greeting {
         version: u32,
-        /// The build that sent this, in the two forms the terminal's own
+        /// The build that sent this, in the two forms a view's own
         /// header draws. The greeting is the only thing a client is
         /// guaranteed to have before it reads or refuses anything, so a skew
         /// can name both halves from here and nowhere else.

@@ -6,8 +6,8 @@ use forge_workspace::{AccountLoadingRow, GatewayOrgView, UsageFetchStatus};
 
 use super::ViewSurface;
 
-/// The account pool's state: what the launchpad, preflight and the
-/// gateway view render.
+/// The account pool's state: what the client's home, its startup gate and
+/// the gateway view render.
 pub struct AccountsView {
     /// One row per configured account, in `forge.toml` declaration
     /// order, carrying its loading state and last probe failure.
