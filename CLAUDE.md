@@ -538,9 +538,9 @@ inspected.
     peer copies stayed.
 
     **Passing the test is not sufficient: contributor-facing text stays
-    in this file.** `perf.rs` runs enabled on a hot path, which
-    `scripts/install.sh` turns on rather than Cargo, and the unicode
-    gate passes both halves but only ever runs in this repo. Out for
+    in this file.** `scripts/install.sh`'s build recipe (`--locked`, the
+    provenance marker) and the unicode gate both pass both halves but
+    exist only in this repo. Out for
     failing the test itself: approval-scope tables, timezone
     presentation, prose punctuation preferences, PR-body voice, commit
     conventions, release workflow. Shipped text also never names a
@@ -774,7 +774,7 @@ inspected.
 
     **A new log site names an `event_name` and says which of the two it
     is.** A demoted level is not a silenced one: the default filter
-    directives in `crates/forge-tui/src/logging.rs` are where a record
+    directives in `crates/forge-server/src/logging.rs` are where a record
     that no longer claims a problem stays readable.
 
 21. **The web view is ONE theme built from reusable components.** Ved,
