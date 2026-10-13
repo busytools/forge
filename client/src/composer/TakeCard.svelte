@@ -5,10 +5,16 @@
   let {
     take,
     wire,
+    phase,
     oncancel,
     spread = false,
   }: {
-    take: Take;
+    /**
+     * The record's take, once the server has one. `null` while the row is
+     * still opening a microphone: the row is on screen from the press, and
+     * the record catches up.
+     */
+    take: Take | null;
     /**
      * The take's wire side, when this page owns the capture: frames produced,
      * bytes the socket has taken, the pace, and this side's own levels and
@@ -22,6 +28,14 @@
       dbfs: number[];
       elapsedMs: number;
     } | null;
+    /**
+     * What the take is doing, which the row states rather than implies:
+     * `ready` while the capture is open and has produced nothing yet,
+     * `recording` from the first real sample, and `transcribing` after the
+     * release. The capture's own open is the composer's notice line, which
+     * comes before the row exists.
+     */
+    phase: 'ready' | 'recording' | 'transcribing';
     oncancel: () => void;
     /**
      * Whether the card spans a line - the composer's take line, the dock's
@@ -63,9 +77,9 @@
       : `${(bytes / 1_048_576).toFixed(1)} MB`;
   }
 
-  const transcribing = $derived(take.phase === 'transcribing');
-  const done = $derived(take.progress.done);
-  const total = $derived(take.progress.total);
+  const transcribing = $derived(phase === 'transcribing');
+  const done = $derived(take?.progress.done ?? 0);
+  const total = $derived(take?.progress.total ?? null);
 
   /**
    * Every reading this side produced, read together.
@@ -100,7 +114,9 @@
    * is the only source there is.
    */
   const levels = $derived(
-    live === null ? take.levels : live.dbfs.map((peakDb) => fractionOf(peakDb, take.floorDb)),
+    live !== null
+      ? live.dbfs.map((peakDb) => fractionOf(peakDb, take?.floorDb ?? -50))
+      : (take?.levels ?? []),
   );
   const cells = $derived(meterWindow(levels, CARD_CELLS));
 
@@ -137,7 +153,19 @@
    * How long the take has run, as a reader reads it - this side's own clock
    * for a take it started, the record's for one it did not.
    */
-  const elapsed = $derived(live === null ? take.elapsedMs : live.elapsedMs);
+  const elapsed = $derived(live !== null ? live.elapsedMs : (take?.elapsedMs ?? 0));
+
+  /**
+   * What a screen reader hears from the card: the phase, which changes once
+   * per state rather than once per frame.
+   */
+  const status = $derived(
+    phase === 'transcribing'
+      ? 'transcribing the take'
+      : phase === 'ready'
+        ? 'the microphone is ready'
+        : 'dictating',
+  );
   const clock = $derived(
     `${Math.floor(elapsed / 60_000)}:${String(Math.floor((elapsed % 60_000) / 1000)).padStart(2, '0')}`,
   );
@@ -170,6 +198,10 @@
       <span class="bar" aria-hidden="true"><i style={`width:${String(filled)}%`}></i></span>
       <span class="count">{done} of {total}</span>
     {/if}
+  {:else if phase === 'ready'}
+    <!-- The capture is open and nothing has come through it yet: the row
+         says so rather than drawing a graph of silence. -->
+    <span class="count">ready</span>
   {:else}
     {#if spread}
       <svg
@@ -210,5 +242,5 @@
   <!-- One status per phase, not per frame: the counts above move fifty times a
        second and are silent on purpose, so this is the only thing a screen
        reader hears from the card. -->
-  <span class="sr" role="status">{transcribing ? 'transcribing the take' : 'dictating'}</span>
+  <span class="sr" role="status">{status}</span>
 </div>

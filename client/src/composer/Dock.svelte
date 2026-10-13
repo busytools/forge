@@ -843,7 +843,9 @@
         <span class="n" aria-hidden="true">{rows.length + 1}</span>
       {/if}
       {#if take !== null}
-        <TakeCard {take} {wire} oncancel={onabandon} spread />
+        <!-- A take the dock watches is one the record already has: its own
+             phase is all there is to say about it here. -->
+        <TakeCard {take} phase={take.phase} {wire} oncancel={onabandon} spread />
       {:else}
         <Field
           editor="dock"

@@ -80,6 +80,8 @@ pub enum ClientEvent {
     /// The seat sweep deleted at least one profile, so a strip that is open
     /// re-reads its rows.
     Profiles,
+    /// One frame of the desktop's own capture, for the page to stream.
+    Mic(Vec<u8>),
 }
 
 /// One subject the page watches: its own subject, how many page readers hold
@@ -302,6 +304,15 @@ impl Bridge {
             socket.more(conversation.clone(), before, turns);
         }
         true
+    }
+
+    /// One frame of the desktop's own capture, on its way to the page.
+    ///
+    /// The frames go the other way from [`Bridge::frame`]: the microphone in
+    /// this half produces them, and the page streams them down the take's
+    /// socket - one take path for both capture legs.
+    pub fn mic_frame(&self, bytes: Vec<u8>) {
+        self.emit(ClientEvent::Mic(bytes));
     }
 
     /// One dictation frame. False means the socket is not open, and the take

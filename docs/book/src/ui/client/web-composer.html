@@ -611,6 +611,44 @@ graph, ready tally, frames, bytes, pace &#8212; and the dot and the way out are 
       runs, and the draft it held comes back when the take ends.</p>
     </div>
     <div class="col">
+      <div class="lab">opening &middot; the press, before the row exists</div>
+      <div class="comp">
+        <div class="surf">
+          <div class="box">
+            <div class="notice">opening the microphone&#8230;</div>
+            <div class="line">
+              <span class="txt">a draft the reader was typing</span>
+              <span class="ctls"><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="note" style="margin:8px 0 0">A press opens a device, and a device takes time to
+      start producing - the browser's pipeline, the device's own wake. The line says what it is
+      waiting on, and the field keeps the keyboard: the row is the take's only once there is a
+      take to draw, which is what #1669 asks of the start.</p>
+    </div>
+    <div class="col">
+      <div class="lab">ready &middot; the capture is open, nothing through it yet</div>
+      <div class="comp">
+        <div class="surf rec">
+          <div class="box">
+            <div class="line takeline">
+              <span class="tc"><span class="dot"></span><span class="clock">0:00</span>
+                <span class="count">ready</span>
+                <span class="x">&#10005;</span></span>
+              <span class="ctls"><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span>
+              <span class="stop"><svg class="ic"><use href="#i-stop"/></svg></span></span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="note" style="margin:8px 0 0">Recording begins at the first frame that carries a
+      real sample, not at the open: a capture's first frames can be digital silence while the
+      device settles, and a row that called that recording is the report this draws against.
+      Silence draws no graph and no counts, so the row never shows audio it does not have.</p>
+    </div>
+    <div class="col">
       <div class="lab">transcribing</div>
       <div class="comp">
         <div class="surf tr">

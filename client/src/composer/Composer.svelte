@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isTauri } from '@tauri-apps/api/core';
   import { untrack } from 'svelte';
 
   import { echoes } from '../chat/echoes.svelte';
@@ -35,7 +36,9 @@
     rememberDevice,
   } from './dictation';
   import { focusOf, type Where } from './editors';
-  import { busyLine, LocalTake } from './take';
+  import { Microphone } from './mic';
+  import { openShellMic } from './mic-shell';
+  import { busyLine, LocalTake, type MicSource } from './take';
   import { FORGE_COMMANDS } from './forge-commands';
   import {
     blocked,
@@ -134,6 +137,15 @@
    */
   let take = $state<LocalTake | null>(null);
   /**
+   * What the take's row can say it is doing, across both capture legs. The
+   * capture's own open is the notice line, not a row state: the field keeps
+   * the keyboard until there is a take for the row to draw.
+   */
+  type RowPhase = 'ready' | 'recording' | 'transcribing';
+
+  /** The line a press leaves while its capture is being opened. */
+  const OPENING = 'opening the microphone\u{2026}';
+  /**
    * The counts of the take this page last finished, kept while the record
    * still shows it transcribing.
    *
@@ -156,6 +168,16 @@
    * until the next press stops it.
    */
   let pending: Action | null = null;
+
+  /**
+   * How this client opens a microphone.
+   *
+   * The desktop's shell captures natively and hands the frames back, so a
+   * press captures from the press; in a browser it is the webview's own
+   * stream, cold start and all.
+   */
+  const captureSource = (device: string | null): Promise<MicSource> =>
+    isTauri() ? openShellMic(device) : Microphone.open(device);
 
   /**
    * The axes and input this seat dictates with, which this client holds.
@@ -214,6 +236,24 @@
       dbfs: [],
       elapsedMs: wireDone.elapsedMs,
     };
+  });
+
+  /**
+   * What the row says the take is doing, or `null` when there is no row.
+   *
+   * `ready` is a capture that is open and has produced nothing yet - a device
+   * waking, a graph starting - and `recording` begins at the first frame
+   * carrying a real sample, which is the moment the take is actually keeping
+   * a voice. The open itself is the line above: it names what it is waiting
+   * on without taking the field the reader's keyboard is in (#1669).
+   */
+  const rowPhase = $derived.by((): RowPhase | null => {
+    if (composer.take?.phase === 'transcribing') return 'transcribing';
+    const live = take;
+    if (live !== null && boxKey(live.seat) === boxKey(slot)) {
+      return live.wire.flowing ? 'recording' : 'ready';
+    }
+    return composer.take !== null ? 'recording' : null;
   });
 
   /**
@@ -775,7 +815,11 @@
     }
     const at = boxKey(untrack(() => slot));
     const target = boxes.of(at);
-    target.dictateLine = null;
+    // **The open names itself while it runs.** A device takes time to start
+    // producing - the browser's pipeline, the device's own wake - and the
+    // press lands here before any of that; the line says so rather than
+    // letting the row claim a take that is not recording yet (#2159).
+    target.dictateLine = { tone: '', text: OPENING };
     // A gesture from an earlier attempt has nothing to stop.
     pending = null;
     opening = true;
@@ -792,6 +836,9 @@
         // storage here would miss an edit made since the page drew.
         options: untrack(() => seatAxes),
         device: picked,
+        // The desktop opens the device in its own shell, natively; a browser
+        // opens the webview's stream. Everything after the open is one path.
+        capture: captureSource,
         onLine: (text) => {
           target.dictateLine = { tone: 'bad', text };
         },
@@ -822,6 +869,9 @@
         rememberDefaultDevice(started.resolved);
       }
       take = started;
+      // The row is the take's now, and it says `ready` until the capture
+      // produces something; the open's own line has nothing left to say.
+      target.dictateLine = null;
       if (pending !== null) {
         const held = pending;
         pending = null;
@@ -1190,13 +1240,19 @@
         {#if list !== null}
           <Autocomplete offer={list} marked={box.marked} onpick={pick} />
         {/if}
-        <div class="line" class:takeline={composer.take !== null}>
-          {#if composer.take !== null}
+        <div class="line" class:takeline={rowPhase !== null}>
+          {#if rowPhase !== null}
             <!-- **The take takes the draft's own line.** The row the words
                  would be typed into is the row they arrive on, so nothing is
                  added and nothing moves when a take starts or ends; the
                  controls ride it, and the surface's ring carries the state. -->
-            <TakeCard take={composer.take} {wire} oncancel={() => act('cancel')} spread />
+            <TakeCard
+              take={composer.take}
+              {wire}
+              phase={rowPhase}
+              oncancel={() => act('cancel')}
+              spread
+            />
             {@render ctls()}
           {:else}
             <!-- The list belongs to the field rather than being a surface the reader

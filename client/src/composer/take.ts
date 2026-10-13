@@ -19,15 +19,46 @@ import type { DictateAxes } from '../session/wire';
 import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
 import { FrameRing } from './capture.svelte';
-import { Microphone } from './mic';
 
 /** How long a release waits for a connection that is not up yet. */
 export const RELEASE_WAIT_MS = 5_000;
+
+/**
+ * How long the capture stays open past the release.
+ *
+ * The browser's own input pipeline holds audio that is already captured but
+ * not yet handed to the page - measured at 42-53 ms of it at the release,
+ * on the fake-mic rig - and it only arrives while the graph is still
+ * running. This window is that with room for a slower pipeline; what lands
+ * in it is room tone unless the reader is still speaking.
+ */
+export const DRAIN_MS = 150;
+
+/**
+ * How long the drain waits for the worklet's held samples after asking.
+ *
+ * A bound rather than an expected length: the ask crosses to the audio
+ * thread and its answer comes back as a message, a few milliseconds.
+ */
+export const FLUSH_SETTLE_MS = 50;
 
 /** What a take needs of a microphone, so a test can stand one in. */
 export interface MicSource {
   onFrame: ((bytes: Uint8Array) => void) | null;
   flush(): Uint8Array | null;
+  /** Ask the source to hand over what it is still holding. */
+  flushWorklet(): void;
+  /**
+   * Close the capture, letting the audio already in flight land first.
+   *
+   * A source that can do this itself says so: the desktop's native capture
+   * lives in the shell's own half, which knows its pipeline and hands over
+   * its last frames before it releases the device. A browser's microphone
+   * has no such call - the take drains it with its own windows instead -
+   * so this is absent there and resolves once the last frame has been
+   * handed to `onFrame` where it is present.
+   */
+  drain?(): Promise<void>;
   stop(): void;
   /** The input the stream opened, when the source reports one. */
   resolved?: { id: string; label: string };
@@ -45,6 +76,11 @@ export interface TakeWiring {
   options: DictateAxes;
   /** The picked input, or `null` for the system default. */
   device: string | null;
+  /**
+   * How this leg opens its microphone: the browser's own stream, or the
+   * shell's native capture. Everything after the open is one path.
+   */
+  capture: (device: string | null) => Promise<MicSource>;
   /** A line for the notice row: a failure the server never saw. */
   onLine: (line: string) => void;
   /** The take is over on this side, whatever the server last said. */
@@ -73,6 +109,12 @@ export class LocalTake {
     readonly rate: number;
     readonly dbfs: number[];
     readonly elapsedMs: number;
+    /**
+     * Whether the capture is producing real samples yet. A take opens its
+     * microphone before it can record anything with it, and the row says
+     * `ready` rather than `recording` until this is true.
+     */
+    readonly flowing: boolean;
   };
 
   private started = false;
@@ -86,6 +128,9 @@ export class LocalTake {
   private micStopped = false;
   private pendingStop: boolean | null = null;
   private waiting: ReturnType<typeof setTimeout> | null = null;
+  /** A release is draining the pipeline before it closes the take. */
+  private draining = false;
+  private drain: ReturnType<typeof setTimeout> | null = null;
   private readonly ring: FrameRing;
   private readonly unlisten: () => void;
   private readonly unlistenMessages: () => void;
@@ -94,7 +139,7 @@ export class LocalTake {
     private readonly mic: MicSource,
     private readonly connection: TakeConnection,
     private readonly options: DictateAxes,
-    private readonly wiring: Omit<TakeWiring, 'connection' | 'options' | 'device'>,
+    private readonly wiring: Omit<TakeWiring, 'connection' | 'options' | 'device' | 'capture'>,
   ) {
     this.seat = wiring.seat;
     this.resolved = mic.resolved ?? null;
@@ -117,6 +162,9 @@ export class LocalTake {
       get elapsedMs(): number {
         return began.at === null ? 0 : Date.now() - began.at;
       },
+      get flowing(): boolean {
+        return ring.flowing;
+      },
     };
     mic.onFrame = (bytes) => this.ring.push(bytes);
     this.unlisten = connection.onStatus((status) => this.statusMoved(status));
@@ -129,9 +177,9 @@ export class LocalTake {
 
   /** Open the microphone and begin a take, or report why it could not. */
   static async begin(wiring: TakeWiring): Promise<LocalTake | null> {
-    let mic: Microphone;
+    let mic: MicSource;
     try {
-      mic = await Microphone.open(wiring.device);
+      mic = await wiring.capture(wiring.device);
     } catch (why) {
       wiring.onLine(microphoneLine(why));
       return null;
@@ -152,6 +200,12 @@ export class LocalTake {
    */
   stop(submit: boolean): void {
     if (this.ended) return;
+    // A release of a take the server knows: the pipeline drains first, so
+    // the audio it is still holding lands before the take is closed.
+    if (submit && this.started) {
+      this.drainThenStop();
+      return;
+    }
     // The tail only when this take is being kept: an abandon throws its
     // audio away, and the last 20 ms is audio like the rest.
     const tail = this.mic.flush();
@@ -176,12 +230,51 @@ export class LocalTake {
     }, RELEASE_WAIT_MS);
   }
 
+  /**
+   * Hold the capture open for the drain, then close the take.
+   *
+   * The browser holds audio of its own when the key comes up - captured but
+   * not yet handed over, measured at 42-53 ms of it on the fake-mic rig -
+   * and it only arrives while the graph is still running. The stop goes out
+   * after it, because the server finalises the take the moment the stop
+   * lands: a frame that follows it has no take to land in.
+   */
+  private drainThenStop(): void {
+    if (this.draining) return;
+    this.draining = true;
+    // A source that closes itself owns its own tail: the desktop's native
+    // capture drains its pipeline in the shell's half and hands over its
+    // last frames, which this side could not reach at all.
+    if (this.mic.drain !== undefined) {
+      void this.mic.drain().then(() => this.finish());
+      return;
+    }
+    this.drain = setTimeout(() => {
+      // The worklet holds the newest samples of all, and nothing on this
+      // side can reach them once the graph is stopped.
+      this.mic.flushWorklet();
+      this.drain = setTimeout(() => this.finish(), FLUSH_SETTLE_MS);
+    }, DRAIN_MS);
+  }
+
+  /** Close a submitted take: its last partial frame, the microphone, the stop. */
+  private finish(): void {
+    if (this.ended) return;
+    const tail = this.mic.flush();
+    if (tail !== null) this.ring.push(tail);
+    this.stopMic();
+    this.sendStop(true);
+    this.release();
+  }
+
   /** The take is over: by the server's word, or by a drop. Idempotent. */
   release(): void {
     if (this.ended) return;
     this.ended = true;
     if (this.waiting !== null) clearTimeout(this.waiting);
+    if (this.drain !== null) clearTimeout(this.drain);
     this.waiting = null;
+    this.drain = null;
     this.stopMic();
     this.unlisten();
     this.unlistenMessages();

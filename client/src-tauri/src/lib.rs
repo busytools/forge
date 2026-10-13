@@ -32,6 +32,7 @@ use tauri::Manager as _;
 pub mod asks;
 pub mod bridge;
 pub mod browser;
+pub mod mic;
 pub mod perf;
 pub mod records;
 pub mod socket;
@@ -61,6 +62,7 @@ mod commands {
                     ClientEvent::Role { hosting } => app.emit("client://role", hosting),
                     ClientEvent::Asks { inflight } => app.emit("client://asks", inflight),
                     ClientEvent::Profiles => app.emit("client://profiles", ()),
+                    ClientEvent::Mic(bytes) => app.emit("client://mic", bytes),
                 };
             }
         });
@@ -76,6 +78,7 @@ mod commands {
         let (events, rx) = tokio::sync::mpsc::unbounded_channel();
         let bridge = Bridge::new(host, events);
         app.manage(Arc::clone(&bridge));
+        app.manage(Arc::new(crate::mic::Mic::default()));
         pump(app.clone(), rx);
     }
 
@@ -138,6 +141,66 @@ mod commands {
     #[tauri::command]
     pub fn client_frame(bridge: tauri::State<'_, Arc<Bridge>>, bytes: Vec<u8>) -> bool {
         bridge.frame(bytes)
+    }
+
+    /// Open this machine's microphone for a take.
+    ///
+    /// The device open blocks on hardware, so it runs off the main thread;
+    /// it is the caller's own answer, unlike the frames, which arrive as
+    /// `client://mic` events while the take runs.
+    #[tauri::command]
+    pub async fn client_mic_start(
+        bridge: tauri::State<'_, Arc<Bridge>>,
+        mic: tauri::State<'_, Arc<crate::mic::Mic>>,
+        device: Option<String>,
+    ) -> Result<(), String> {
+        let bridge = Arc::clone(bridge.inner());
+        let mic = Arc::clone(mic.inner());
+        tauri::async_runtime::spawn_blocking(move || mic.start(&bridge, device))
+            .await
+            .map_err(|error| error.to_string())?
+    }
+
+    /// Let the capture go: the audio still in flight lands, the last partial
+    /// frame goes to the page, and the device is released.
+    ///
+    /// The caller sends its stop after this answers - the server finalises
+    /// the take on that stop, so a frame that follows it would have no take
+    /// to land in.
+    #[tauri::command]
+    pub async fn client_mic_drain(
+        bridge: tauri::State<'_, Arc<Bridge>>,
+        mic: tauri::State<'_, Arc<crate::mic::Mic>>,
+    ) -> Result<(), String> {
+        let bridge = Arc::clone(bridge.inner());
+        let mic = Arc::clone(mic.inner());
+        mic.drain(&bridge).await;
+        Ok(())
+    }
+
+    /// Let the capture go at once: an abandoned take throws its audio away,
+    /// so nothing waits for the pipeline to land.
+    #[tauri::command]
+    pub fn client_mic_stop(mic: tauri::State<'_, Arc<crate::mic::Mic>>) {
+        mic.stop();
+    }
+
+    /// The inputs this machine can record from, for the panel's pick: the
+    /// ids are the ones the capture resolves, which the browser's own
+    /// device list does not know.
+    #[tauri::command]
+    pub async fn client_mic_devices() -> Result<Vec<Value>, String> {
+        tauri::async_runtime::spawn_blocking(|| {
+            forge_capture::devices()
+                .map(|all| {
+                    all.into_iter()
+                        .map(|held| serde_json::json!({ "id": held.id, "label": held.name }))
+                        .collect::<Vec<Value>>()
+                })
+                .map_err(|error| error.to_string())
+        })
+        .await
+        .map_err(|error| error.to_string())?
     }
 
     #[tauri::command]
@@ -227,6 +290,10 @@ pub fn run() {
             commands::client_more,
             commands::client_dispatch,
             commands::client_frame,
+            commands::client_mic_start,
+            commands::client_mic_drain,
+            commands::client_mic_stop,
+            commands::client_mic_devices,
             commands::client_devices,
             commands::client_read_document,
             commands::client_commit_diff,
@@ -270,6 +337,10 @@ pub fn run() {
             commands::client_more,
             commands::client_dispatch,
             commands::client_frame,
+            commands::client_mic_start,
+            commands::client_mic_drain,
+            commands::client_mic_stop,
+            commands::client_mic_devices,
             commands::client_devices,
             commands::client_read_document,
             commands::client_commit_diff,
