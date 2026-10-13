@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/forge-sdk", "crates/forge-primitives", "crates/forge-dictate", "crates/forge-system-one", "crates/forge-gateway", "crates/forge-connectors", "crates/forge-agent", "crates/forge-workspace", "crates/forge-server", "crates/forge-web", "crates/forge-tui", "crates/forge-test-harness"]
+members = ["crates/forge-sdk", "crates/forge-primitives", "crates/forge-dictate", "crates/forge-system-one", "crates/forge-gateway", "crates/forge-connectors", "crates/forge-agent", "crates/forge-workspace", "crates/forge-server", "crates/forge-test-harness"]
 
 [workspace.package]
 version = "1.1.12"
@@ -17,14 +17,10 @@ tokio = { version = "1.42", features = ["rt-multi-thread", "process", "io-util",
 hyper = { version = "1.9", default-features = false, features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
-# The web view's server and markup. axum rides the hyper 1.x line pinned
-# above, so the lock gains no second copy. Features are named rather than
-# defaulted: the defaults pull form, json and query support the view has
-# no use for.
+# The socket's server. axum rides the hyper 1.x line pinned above, so the
+# lock gains no second copy. Features are named rather than defaulted: the
+# defaults pull form, json and query support the socket has no use for.
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
-# `axum` enables `IntoResponse` for `Markup`; the view renders every page
-# through it.
-maud = { version = "0.27", features = ["axum"] }
 bytes = "1"
 futures-util = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 serde = { version = "1", features = ["derive", "rc"] }
@@ -51,44 +47,14 @@ tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 toml = "1.1"
 dirs = "7"
-# Pinned exactly, not caret. ratatui-core 0.1.2 moved a blocking cursor
-# read into `Terminal::clear`, which a caret range let an unlocked
-# `cargo install` pick up and ship a crash with. This pin freezes the
-# facade only: the crash lives in `ratatui-core`, and the pin below is
-# what holds that. The startup provenance warning is what generalises,
-# so do not read either as the safety net.
-ratatui = { version = "=0.30.0", features = ["unstable-rendered-line-info"] }
-# Pinned exactly for the same reason as `ratatui` above, and for the
-# same one it cannot reach: `ratatui` requires `ratatui-core` by caret,
-# so pinning the facade alone leaves the dependency the crash lives in
-# free to float. Declared directly here so cargo unifies on this
-# version - which holds only while `ratatui`'s own requirement stays
-# semver-compatible with `=0.1.0`. A facade bump to `^0.2` would let
-# cargo keep both versions, and this edge would quietly stop
-# constraining what `ratatui` actually links.
-ratatui-core = "=0.1.2"
-crossterm = "0.29"
-image = { version = "0.25", default-features = false, features = ["png"] }
 hound = "3.5"
 
 # Tier A primitives lifted from claude-code-rust
-ansi-to-tui = "8"
 ignore = "0.4"
 notify = "8"
-pulldown-cmark = "0.13"
-similar = "3"
-syntect = { version = "5", default-features = false, features = ["default-fancy"] }
-# Pinned exactly, not caret: it renders what a chat block draws (tables,
-# alerts, math), so a bump changes the TUI's output and goes in its own
-# change rather than riding a sweep.
-tui-markdown = "=0.3.9"
-tui-textarea = { package = "tui-textarea-2", version = "0.10" }
-unicode-segmentation = "1.12"
-unicode-width = "0.2"
 base64 = "0.23"
 sysinfo = { version = "0.38", default-features = false, features = ["system"] }
 futures = "0.3.31"
-arboard = { version = "3.6.1", features = ["image-data"] }
 which = "8.0.2"
 rlimit = "0.11"
 # Default features carry openmp, which has no system library to link
@@ -130,15 +96,9 @@ forge-dictate = { path = "crates/forge-dictate", version = "=1.1.12" }
 forge-system-one = { path = "crates/forge-system-one", version = "=1.1.12" }
 forge-workspace = { path = "crates/forge-workspace", version = "=1.1.12" }
 forge-server = { path = "crates/forge-server", version = "=1.1.12" }
-# forge-web is still a member and still builds, but nothing depends on it
-# until a client lands, so it has no alias here.
 
 # Dev-only
-pretty_assertions = "1"
 tempfile = "3"
-# Snapshot testing for the replay-driven render-test harness (#280).
-# `.snap` files committed to git; updates via `cargo insta review`.
-insta = "1"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -179,7 +139,7 @@ struct_excessive_bools = "allow"    # Many UI state structs are flag bags by nat
 assert_is_empty = "allow"           # Its rewrite, `assert_eq!(v, [] as [T; 0])`, is
                                     # worse than the form it replaces. Only the failure
                                     # message is at stake; the assertion still panics.
-# CLI surface (forge-tui binary) legitimately prints to stdout/stderr.
+# CLI surface (the forge binary) legitimately prints to stdout/stderr.
 print_stdout = "allow"
 print_stderr = "allow"
 

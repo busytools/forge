@@ -1,9 +1,0 @@
----
-source: crates/forge-tui/src/app/replay.rs
-expression: snapshot
----
-  ✓ ⬚ Read crates/forge-tui/src/0.rs
-  ✓ ⬚ Read crates/forge-tui/src/1.rs
-  ✓ ⬚ Read crates/forge-tui/src/2.rs
-  ✓ ⬚ Read crates/forge-tui/src/3.rs
-  ✓ ⬚ Read crates/forge-tui/src/4.rs

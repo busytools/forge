@@ -101,7 +101,7 @@ jobs:
           key: release
       - run: cargo check --release --workspace --all-targets --all-features
 
-  # The two forge-tui configurations nothing else builds: the one
+  # The two server configurations nothing else builds: the one
   # `scripts/install.sh` produces (release, the test-only features off)
   # and `testing` on its own. The job above covers neither - with every
   # feature on, it never exercises which configuration enables what: the
@@ -121,8 +121,8 @@ jobs:
         with:
           shared-key: cargo-${{ runner.os }}
           key: feature-configs
-      - run: cargo check --locked --release -p forge-tui --bin forge
-      - run: cargo check --locked -p forge-tui --features testing
+      - run: cargo check --locked --release -p forge-server --bin forge
+      - run: cargo check --locked -p forge-server --features testing
 
   docs:
     name: cargo doc
