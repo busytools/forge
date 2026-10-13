@@ -164,9 +164,11 @@ pub async fn window(page: &Page, cdp: &mut Cdp) -> Result<Window, String> {
     Ok(Window { id, bounds: answer.get("bounds").cloned().unwrap_or(Value::Null) })
 }
 
-/// Put the window out of sight by moving it: a NORMAL window placed clear of
-/// every screen, so the page stays a visible page (frames and input live) and
-/// only the person's eye is spared.
+/// Put the window out of sight by moving it: a NORMAL window asked clear of
+/// every screen - of which the window server keeps about 40x40 points in a
+/// corner, the residual the design accepts (measured and asserted live) -
+/// so the page stays a visible page (frames and input live) and only the
+/// person's eye is spared.
 pub async fn move_to(page: &Page, cdp: &mut Cdp, left: i64, top: i64) -> Result<(), String> {
     let window = window(page, cdp).await?;
     cdp.call(

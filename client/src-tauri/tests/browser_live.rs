@@ -766,7 +766,11 @@ async fn where_the_move_actually_lands() {
         // assumed. `(10, -10000)` is the one ask the clamp refuses outright,
         // leaving the window fully in view.
         if (left, top) == (10, -10000) {
-            assert_eq!(area, whole, "a sideways-and-up ask keeps the whole window in view");
+            assert!(
+                whole > 0 && area == whole,
+                "a sideways-and-up ask keeps the whole window in view: {}",
+                landed.bounds,
+            );
         } else {
             assert!(
                 area > 0 && area < whole / 10,
@@ -880,7 +884,13 @@ async fn a_minimized_window_can_still_be_driven() {
     // is why nothing can route around the freeze.
     let forced = driver.call("browser_click", json!({ "target": "button", "force": true })).await;
     eprintln!("forced click while minimized: {forced:?}");
-    assert!(forced.is_err(), "even a forced click dies behind the freeze: {forced:?}");
+    let Err(why) = &forced else {
+        panic!("even a forced click must die behind the freeze: {forced:?}");
+    };
+    assert!(
+        why.contains("Timeout") && why.contains("stable"),
+        "and die in the same stability wait - the freeze is not routed around: {why}",
+    );
 
     // The other hide, with the page awake: the SAME click works, and lands.
     win::bring_forward(&page, &mut cdp, 40, 60).await.expect("back to normal");

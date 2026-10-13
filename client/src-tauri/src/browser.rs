@@ -229,7 +229,8 @@ impl BrowserHost {
     ///
     /// **Every call resolves the browser first**, so the endpoint it hands the
     /// profile is the one the browser answers on NOW. On the desktop a browser
-    /// that died (or was relaunched for a window) moves that endpoint, and the
+    /// that died moves that endpoint - a close, the person's own X, the
+    /// engine taking the window down - and the
     /// profile rebuilds its driver rather than talking to a port nobody
     /// listens on. The phone's browser cannot move: its WebView is the app's
     /// own, so a claimed renderer death keeps the app alive but leaves later

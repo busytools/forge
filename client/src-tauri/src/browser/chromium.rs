@@ -273,8 +273,10 @@ pub async fn probe(port: u16) -> bool {
 }
 
 /// The first page target's URL on `port`, from the browser's own HTTP
-/// endpoint: the page the sessions were driving, which Open carries across
-/// its relaunch. `None` when nothing answers, or when no tab is open - a
+/// endpoint: the page the sessions were driving, which a raise writes into
+/// its marker so a later launch - after the window went, the engine taking
+/// it down with the X - opens on the page the person was looking at.
+/// `None` when nothing answers, or when no tab is open - a
 /// window whose last tab was closed is a browser with nothing to carry.
 pub async fn page_url(port: u16) -> Option<String> {
     let url = format!("http://127.0.0.1:{port}/json/list");

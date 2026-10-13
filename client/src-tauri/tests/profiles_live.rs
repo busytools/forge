@@ -202,7 +202,7 @@ async fn show_raises_the_named_profiles_own_browser_on_its_own_page_raises_a_win
         .unwrap_or_default();
     assert!(
         args.contains("--keep-alive-for-test"),
-        "the raise relaunched the profile's browser headed: {args}",
+        "the profile's browser is the headed one, launched as every launch is: {args}",
     );
 
     let port = std::fs::read_to_string(paths.profiles.join("hunt/DevToolsActivePort"))
