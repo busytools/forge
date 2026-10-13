@@ -14,6 +14,7 @@
    * row, which is what makes them span the table in both modes.
    */
   import { DiffView, DiffModeEnum } from '@git-diff-view/svelte';
+  import { mount, unmount } from 'svelte';
   import type { ComponentProps } from 'svelte';
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import { VList, type VListHandle } from 'virtua/svelte';
@@ -37,8 +38,10 @@
     synthesizeFileDiff,
     treeRows,
   } from './diff';
-  import { ageOf, authorName, canvasLine, statusName, threadsInScope, turnRound } from './view';
+  import { canvasLine, statusName, threadsInScope } from './view';
   import { captureContext, type ComposedComment } from './write';
+  import { Mounts } from './mounts';
+  import ThreadTurn from './ThreadTurn.svelte';
 
   type DiffFile = NonNullable<ComponentProps<typeof DiffView>['diffFile']>;
 
@@ -323,6 +326,9 @@
     void now;
     const observers: MutationObserver[] = [];
     const draw = (el: HTMLDivElement, path: string) => {
+      // Rows come and go under Svelte's own section swap as well as under this
+      // pass, so every pass starts by letting go of the ones already gone.
+      mounts.sweep();
       injectDoors(el, path);
       armClicks(el, path);
       const want: {
@@ -387,7 +393,9 @@
         kept.add(entry.key);
       }
       for (const [key, row] of existing) {
-        if (!kept.has(key)) row.remove();
+        if (kept.has(key)) continue;
+        mounts.release(row);
+        row.remove();
       }
     };
     for (const [path, el] of Object.entries(canvases)) {
@@ -401,6 +409,11 @@
       for (const observer of observers) observer.disconnect();
     };
   });
+
+  // The canvas going away - the other tab, the page - takes its rows' roots
+  // with it: an effect of its own, because the pass above cleans up between
+  // every pair of runs and must leave the rows it is keeping alone.
+  $effect(() => () => mounts.releaseAll());
 
   /**
    * A click anywhere on a line row opens the composer there, the way the
@@ -440,21 +453,19 @@
     return node;
   }
 
+  /** The roots the rows built here own, released where a row is dropped and
+   *  swept where one leaves without the reconciler seeing it. */
+  const mounts = new Mounts();
+
+  /** One turn, drawn by the piece both halves of the page draw. */
   function turnBlock(turn: ReviewThreadRecord['comments'][number], index: number): HTMLElement {
-    const block = document.createElement('div');
-    block.className = turn.author.kind === 'user' ? 'rv-turn you' : 'rv-turn';
-    const who = document.createElement('div');
-    who.className = 'rv-who';
-    who.append(span('rv-nm', authorName(turn.author)));
-    const round = turnRound(reviews, turn);
-    if (round !== null) who.append(span('rv-at', `R${round}`));
-    else if (index > 0) who.append(span('rv-at', ageOf(turn.at, now)));
-    block.append(who);
-    const text = document.createElement('p');
-    text.className = 'rv-tx';
-    text.textContent = turn.text;
-    block.append(text);
-    return block;
+    const host = document.createElement('div');
+    const held = mount(ThreadTurn, {
+      target: host,
+      props: { turn, rounds: reviews, index, now },
+    });
+    mounts.hold(host, () => void unmount(held));
+    return host;
   }
 
   function threadCard(thread: ReviewThreadRecord, movedFrom: number | null): HTMLElement {

@@ -3264,6 +3264,24 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .review .rv-cc { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
   border: 1px solid var(--line); border-radius: 99px; padding: 0 8px; }
 
+/* One turn of a thread, drawn by both halves of the page - the conversation's
+   template and the canvas's mounted rows - so these are the page's names
+   rather than a component's. */
+.review .rv-turn { border-left: 1px solid var(--line); padding: 2px 0 2px 10px; margin: 7px 0; }
+.review .rv-turn.you { border-left-color: var(--accent); }
+.review .rv-who { display: flex; align-items: baseline; gap: 8px; font-family: var(--mono);
+  font-size: var(--fs-label); color: var(--dim); }
+.review .rv-turn.you .rv-who { color: var(--muted); }
+/* The chip's own box is what separates it: a tag as bare text welds to the
+   word before it whichever container it sits in, and the next chip added to
+   the row would weld too. */
+.review .rv-at { border: 1px solid var(--line); border-radius: 99px; padding: 0 8px; }
+/* The words, through the chat's renderer: the sheet's prose rules carry the
+   marks, and this carries the turn's measure and tone. */
+.review .rv-turn .prose { margin: 1px 0 0; font-size: var(--fs-base); color: var(--muted);
+  max-width: 72ch; }
+.review .rv-turn.you .prose { color: var(--text); }
+
 /* A resolved thread collapses to one line in the canvas. */
 .review .rv-marker { display: flex; align-items: center; gap: 9px; margin: 0;
   padding: 5px 10px; border: 1px solid var(--line); border-radius: 8px;

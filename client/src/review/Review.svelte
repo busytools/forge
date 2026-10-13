@@ -6,9 +6,9 @@
   import type { Connection } from '../socket';
   import type { SessionSlot } from '../wire/types';
   import Canvas from './Canvas.svelte';
+  import ThreadTurn from './ThreadTurn.svelte';
   import {
     ageOf,
-    authorName,
     latestRound,
     loopState,
     outdatedThreads,
@@ -18,7 +18,6 @@
     roundsNewestFirst,
     statusName,
     threadsInRound,
-    turnRound,
   } from './view';
   import {
     finishRound,
@@ -454,10 +453,7 @@
                   <pre>{thread.anchor.context.join('\n')}</pre>
                 </div>
                 {#each thread.comments as turn, i (i)}
-                  <div class="rv-turn" class:you={turn.author.kind === 'user'}>
-                    <div class="who">{authorName(turn.author)}</div>
-                    <p class="words">{turn.text}</p>
-                  </div>
+                  <ThreadTurn {turn} {rounds} {now} index={i} />
                 {/each}
               </article>
             {/each}
@@ -498,14 +494,7 @@
                     <span class="where">{thread.anchor.path} &#183; line {thread.anchor.line}</span>
                   </div>
                   {#each thread.comments as turn, i (i)}
-                    {@const sealedInto = turnRound(rounds, turn)}
-                    <div class="rv-turn" class:you={turn.author.kind === 'user'}>
-                      <div class="who">
-                        {authorName(turn.author)}
-                        {#if sealedInto !== null}<span class="tag">R{sealedInto}</span>{/if}
-                      </div>
-                      <p class="words">{turn.text}</p>
-                    </div>
+                    <ThreadTurn {turn} {rounds} {now} index={i} />
                   {/each}
                   <div class="acts">
                     <button
@@ -1134,35 +1123,6 @@
     overflow-wrap: anywhere;
   }
 
-  .rv-turn {
-    border-left: 1px solid var(--line);
-    padding: 2px 0 2px 10px;
-    margin: 7px 0;
-  }
-  .rv-turn.you {
-    border-left-color: var(--accent);
-  }
-  .who {
-    display: flex;
-    gap: 8px;
-    font-family: var(--mono);
-    font-size: var(--fs-label);
-    color: var(--dim);
-  }
-  .rv-turn.you .who {
-    color: var(--muted);
-  }
-  .tag {
-    color: var(--dim);
-  }
-  .words {
-    margin: 1px 0 0;
-    font-size: var(--fs-base);
-    color: var(--muted);
-    overflow-wrap: anywhere;
-    max-width: 72ch;
-  }
-  .rv-turn.you .words {
-    color: var(--text);
-  }
+  /* The turn's own rules live in the sheet (`ThreadTurn.svelte` draws the
+     turn for both halves of the page, so its classes are the page's). */
 </style>
