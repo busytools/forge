@@ -11,6 +11,13 @@ use tauri_plugin_updater::UpdaterExt;
 #[cfg(desktop)]
 const UPDATE_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// How long the exit reap is given before the quit goes on without it. The
+/// normal reap is a kill by port per profile, well inside this; a close
+/// waiting out a launch in flight is cut here rather than hanging the quit,
+/// and the next boot's sweep reaps whatever the bound left.
+#[cfg(desktop)]
+const EXIT_REAP_BOUND: Duration = Duration::from_secs(10);
+
 /// The stages that finish an install, named by the platform that needs them.
 /// The client's line draws its words per stage, so this is a fact rather than
 /// copy: the desktop restarts into the swapped bundle, the phone's install is
@@ -364,7 +371,9 @@ pub fn run() {
         if let tauri::RunEvent::Exit = _event
             && let Some(host) = _handle.try_state::<std::sync::Arc<browser::BrowserHost>>()
         {
-            tauri::async_runtime::block_on(host.reap_owned());
+            tauri::async_runtime::block_on(async {
+                let _ = tokio::time::timeout(EXIT_REAP_BOUND, host.reap_owned()).await;
+            });
         }
     });
 }
