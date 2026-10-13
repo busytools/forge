@@ -23,7 +23,12 @@ impl ViewSurface {
     /// A scan that panicked is an error rather than an empty report - an
     /// all-zero report reads as a pool with no usage in it, which is a
     /// different answer from "the scan did not run".
-    pub async fn usage(&self) -> anyhow::Result<UsageReport> {
+    ///
+    /// A scan also kicks the pricing refill (`refill_pricing`): the answer
+    /// that goes out carries costs from whatever table was cached, the
+    /// terminal's own first-open behaviour, and the priced report lands in
+    /// the cache for the next ask.
+    pub async fn usage(self: &Arc<Self>) -> anyhow::Result<UsageReport> {
         if let Some(report) = self.held_usage() {
             return Ok(report);
         }
@@ -32,7 +37,45 @@ impl ViewSurface {
             .await
             .map_err(|error| anyhow::anyhow!("the usage scan did not finish: {error}"))?;
         self.remember_usage(&report);
+        self.refill_pricing();
         Ok(report)
+    }
+
+    /// Refresh the pricing table in the background, and re-scan once it
+    /// lands, so the next ask answers priced figures.
+    ///
+    /// **The fetch must not be waited on.** It crosses the network and can
+    /// take seconds - up to the litellm timeout - and a subject's ask is
+    /// answered inside its connection's own loop, where a wait on one ask
+    /// stalls every other message on that socket. This is the terminal's
+    /// move instead (scan now, re-price when the fetch lands), with the
+    /// re-scan replacing the held report so the re-ask finds it.
+    ///
+    /// `Workspace::refresh_pricing` answers `false` for a cache that is
+    /// still fresh, so a kick costs a redb read when there is nothing to
+    /// fetch - and the once-a-day fetch happens on the first scan after the
+    /// window lapsed, whatever view asked.
+    fn refill_pricing(self: &Arc<Self>) {
+        if self.pricing_refill.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            return;
+        }
+        let surface = Arc::clone(self);
+        tokio::spawn(async move {
+            if surface.workspace.refresh_pricing().await {
+                let workspace = Arc::clone(&surface.workspace);
+                match tokio::task::spawn_blocking(move || workspace.scan_usage()).await {
+                    Ok(report) => surface.remember_usage(&report),
+                    Err(error) => {
+                        tracing::warn!(
+                            target: "forge_server::surface::usage",
+                            %error,
+                            "the re-scan after a pricing fetch did not finish; the next ask re-scans",
+                        );
+                    }
+                }
+            }
+            surface.pricing_refill.store(false, std::sync::atomic::Ordering::Release);
+        });
     }
 
     /// The last scan, while it is inside [`USAGE_WINDOW`].
@@ -70,6 +113,10 @@ mod tests {
         (workspace, dir)
     }
 
+    fn surface(workspace: Arc<forge_workspace::Workspace>) -> Arc<ViewSurface> {
+        Arc::new(ViewSurface::new(workspace))
+    }
+
     /// Catches a read that answers an empty report rather than the pool's:
     /// the counts are the record's own, so a verb that skipped the scan
     /// answers zeroes.
@@ -77,7 +124,7 @@ mod tests {
     async fn usage_scans_the_pool_the_transcripts_sit_in() {
         let (workspace, _dir) = pool_with_one_record();
 
-        let report = ViewSurface::new(workspace).usage().await.expect("the scan answers");
+        let report = surface(workspace).usage().await.expect("the scan answers");
 
         assert_eq!(
             report.lifetime.total.input, 7,
@@ -102,7 +149,7 @@ mod tests {
     #[tokio::test]
     async fn a_second_ask_inside_the_window_is_served_from_the_cache() {
         let (workspace, dir) = pool_with_one_record();
-        let surface = ViewSurface::new(workspace);
+        let surface = surface(workspace);
 
         let first = surface.usage().await.expect("the first scan answers");
         assert_eq!(first.lifetime.total.input, 7, "precondition: the pool's record is counted");
@@ -118,6 +165,39 @@ mod tests {
             second.lifetime.total.input, 7,
             "a ask inside the window answers what the first scan took, so the pool is walked \
              once per window rather than once per ask",
+        );
+    }
+
+    /// **A cached price table prices the scan**, which is the half of the
+    /// pricing story that is testable offline: the fetch itself crosses the
+    /// network and is the terminal's behaviour re-homed (`refill_pricing`),
+    /// verified live. The table is seeded fresh, so the background refill
+    /// finds nothing to fetch and never leaves the machine.
+    #[tokio::test]
+    async fn a_cached_price_table_prices_the_report() {
+        // A litellm-shaped table for the one model the record names:
+        // 1e-6 dollars per token makes the record's tokens carry a
+        // nonzero cost.
+        const PRICING: &str = r#"{
+            "claude-opus-5": {
+                "input_cost_per_token": 0.000001,
+                "output_cost_per_token": 0.000001,
+                "cache_read_input_token_cost": 0.000001,
+                "cache_creation_input_token_cost": 0.000001
+            }
+        }"#;
+        let (workspace, dir) = crate::surface::testing::workspace_with_pricing(PRICING);
+        let pool = dir.path().join("projects").join("-tmp-proj");
+        std::fs::create_dir_all(&pool).expect("the pool's project dir");
+        std::fs::write(pool.join("a-session.jsonl"), A_RECORD).expect("write the record");
+
+        let report = surface(workspace).usage().await.expect("the scan answers");
+
+        assert!(report.pricing_available, "a stored table makes the report priced");
+        assert!(
+            report.lifetime.total.cost_usd > 0.0,
+            "and the record's tokens carry a cost, not a zero: {}",
+            report.lifetime.total.cost_usd,
         );
     }
 }

@@ -51,6 +51,10 @@ pub struct ViewSurface {
     /// second cache type: one report, one window.
     usage_cache:
         std::sync::Mutex<Option<(std::time::Instant, forge_primitives::token_usage::UsageReport)>>,
+    /// Whether a pricing refresh is already out. The fetch crosses the
+    /// network, so the ask that finds one running is not a reason for a
+    /// second.
+    pricing_refill: std::sync::atomic::AtomicBool,
 }
 
 /// The update the core emits, re-exported: it is the workspace-to-view
@@ -67,7 +71,11 @@ pub fn is_success_result(is_error: bool, subtype: &str) -> bool {
 
 impl ViewSurface {
     pub fn new(workspace: Arc<Workspace>) -> Self {
-        Self { workspace, usage_cache: std::sync::Mutex::new(None) }
+        Self {
+            workspace,
+            usage_cache: std::sync::Mutex::new(None),
+            pricing_refill: std::sync::atomic::AtomicBool::new(false),
+        }
     }
 
     /// Every seat that exists, for a browser-capable connection's profile
@@ -702,6 +710,33 @@ models_dir = \"/tmp/forge-dictate-models\"
         workspace.install_db_for_test(
             forge_workspace::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
+        (Arc::new(workspace), dir)
+    }
+
+    /// The same fixture with a pricing snapshot already cached: the row is
+    /// written into the store before the workspace opens it, the way the
+    /// boot load expects to find it, so a scan prices from it with nothing
+    /// left to fetch.
+    pub(crate) fn workspace_with_pricing(json: &str) -> (Arc<Workspace>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let forge = dir.path().join("forge");
+        std::fs::create_dir_all(&forge).expect("forge/");
+        std::fs::write(forge.join("forge.toml"), CONFIG).expect("write forge.toml");
+        let app_support = dir.path().join("app-support");
+        std::fs::create_dir_all(&app_support).expect("app-support/");
+        {
+            let db =
+                forge_workspace::store::Db::open(&app_support.join("db.redb")).expect("open db");
+            forge_workspace::store::pricing::store(
+                &db,
+                &forge_workspace::store::pricing::CachedPricing {
+                    fetched_at: std::time::SystemTime::now(),
+                    json: json.to_owned(),
+                },
+            )
+            .expect("seed the pricing cache");
+        }
+        let workspace = Workspace::new_for_test(dir.path().to_owned()).expect("workspace");
         (Arc::new(workspace), dir)
     }
 
