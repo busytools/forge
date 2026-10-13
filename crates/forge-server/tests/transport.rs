@@ -83,6 +83,29 @@ async fn connected() -> Client {
     connect(&url).await
 }
 
+/// [`connect`], with no message cap of its own.
+///
+/// The rig for the one test about a frame the CLIENT's cap answers for: a
+/// refusal from tungstenite's defaults (64MiB a message, 16MiB a frame) is
+/// the test's own ceiling, not anything forge decided, and it would fail a
+/// test whose point is what the SERVER emitted.
+async fn connect_unbounded(url: &str) -> Client {
+    let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
+        .max_message_size(None)
+        .max_frame_size(None);
+    let (mut socket, _) = tokio_tungstenite::connect_async_with_config(url, Some(config), false)
+        .await
+        .expect("the socket opens");
+    let msg = socket.next().await.expect("a greeting").expect("no error");
+    let text = msg.to_text().expect("text").to_owned();
+    let greeting: ServerMessage = serde_json::from_str(&text).expect("the greeting decodes");
+    assert!(
+        matches!(greeting, ServerMessage::Greeting { .. }),
+        "the first thing the server says is its greeting, not {text}",
+    );
+    socket
+}
+
 /// Subscribes to `subject` over and over until `want` holds of the snapshot,
 /// or the attempts run out.
 ///
@@ -5458,6 +5481,206 @@ async fn an_image_one_byte_past_the_cap_is_refused_and_the_connection_survives()
     let parts = vec![forge_primitives::browser::BrowserPart::Text { text: "closed".to_owned() }];
     send(&mut socket, ClientMessage::BrowserAnswer { id, parts: parts.clone(), error: None }).await;
     assert_eq!(settled(next, "the close").await, Ok(parts), "the connection survived the refusal");
+}
+
+/// The frame carrying the next update satisfying `wants`, with the frames that
+/// are not it passed over for the reason [`snapshot_answering`] gives.
+///
+/// Handed back as TEXT rather than as the typed update: the size of the frame
+/// is half of what this is for, and a decode on the way to the assertion
+/// would hide it.
+async fn frame_until(
+    socket: &mut Client,
+    what: &str,
+    mut wants: impl FnMut(&SessionUpdate) -> bool,
+) -> String {
+    for _ in 0..16 {
+        let text = next_text_within(socket, 5_000)
+            .await
+            .unwrap_or_else(|| panic!("waited for {what}, and the server said nothing"));
+        let Ok(ServerMessage::Update { update }) = serde_json::from_str::<ServerMessage>(&text)
+        else {
+            continue;
+        };
+        if wants(&update) {
+            return text;
+        }
+    }
+    panic!("waited for {what}, and heard 16 frames without it");
+}
+
+/// The messages a giant seat's resume hands over: `messages` rows, every one
+/// carrying `body` bytes, the shape a transcript read's whole history has.
+fn a_giant_history(messages: usize, body: usize) -> Vec<forge_primitives::Message> {
+    let text = "x".repeat(body);
+    (0..messages)
+        .map(|at| {
+            serde_json::from_value::<forge_primitives::Message>(serde_json::json!({
+                "type": "user",
+                "uuid": format!("u{at}"),
+                "message": {"role": "user", "content": text},
+                "session_id": "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
+            }))
+            .expect("a user frame")
+        })
+        .collect()
+}
+
+/// The seat's session facts, as every history-carrying update carries them.
+fn a_current_model() -> forge_primitives::runtime::CurrentModel {
+    forge_primitives::runtime::CurrentModel {
+        requested_id: None,
+        resolved_id: "claude-opus-5".to_owned(),
+        display_name_short: "Opus".to_owned(),
+        display_name_long: "Opus 5".to_owned(),
+        catalog_id: None,
+        supports_effort: false,
+        supported_effort_levels: Vec::new(),
+        supports_auto_mode: None,
+        supports_adaptive_thinking: None,
+        is_authoritative: false,
+    }
+}
+
+/// **A giant seat's resume crosses the socket bounded, and the connection
+/// survives it** (#2150).
+///
+/// The live incident: a live seat whose transcript was 2.5GiB resumed, and
+/// its whole history rode ONE `Connected` update through the socket - 2.46GiB
+/// in a single frame, refused at the client's 256MiB cap, which cost the
+/// connection and left the server having built and serialized all of it. The
+/// conversation is kept in a window and read in pages, so the bypass was
+/// this path: the update carried the raw read. A client answers these three
+/// variants with a READ (the subscribe snapshot's page and `more` above it),
+/// so what crosses is the seat's session facts - a frame with no transcript
+/// in it cannot grow with the transcript, whatever the seat weighs.
+///
+/// The history here is four megabytes, not two gigabytes: the property is
+/// that the frame does NOT scale with it, and a bound asserted at a size a
+/// cap-sized frame would blow is the same property the live seat broke.
+#[tokio::test]
+async fn a_giant_seats_history_crosses_bounded_and_the_connection_survives() {
+    let (url, fleet) = a_server().await;
+    let mut socket = connect_unbounded(&url).await;
+    let seat = lead_seat();
+
+    // The read a client makes at launch: the seat's own subscribe.
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+    let (subject, ..) = snapshot_answering(&mut socket).await;
+    assert_eq!(subject, Subject::Session(seat.clone()), "precondition: the client shows the seat");
+
+    // The resume's handover, as `emit_connected` builds it: the transcript
+    // read whole, past both the window's cap and its slack.
+    let giant = a_giant_history(
+        forge_workspace::conversation_window::CONVERSATION_CAP
+            + forge_workspace::conversation_window::CONVERSATION_SLACK
+            + 1,
+        4 * 1024,
+    );
+    let session_id = SessionId::new("5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45");
+
+    fleet.emit(SessionUpdate::Connected {
+        key: seat.clone(),
+        session_id: session_id.clone(),
+        cwd: "/tmp".to_owned(),
+        current_model: a_current_model(),
+        available_models: Vec::new(),
+        mode: None,
+        history: giant.clone(),
+        compaction_count: 0,
+    });
+    let frame = frame_until(
+        &mut socket,
+        "the seat's connect",
+        |update| matches!(update, SessionUpdate::Connected { key, .. } if key == &seat),
+    )
+    .await;
+    assert_transcript_free(&frame, "connect");
+
+    fleet.emit(SessionUpdate::SessionReplaced {
+        key: seat.clone(),
+        session_id: session_id.clone(),
+        cwd: "/tmp".to_owned(),
+        current_model: a_current_model(),
+        available_models: Vec::new(),
+        mode: None,
+        history: giant.clone(),
+        compaction_count: 0,
+    });
+    let frame = frame_until(
+        &mut socket,
+        "the seat's replacement",
+        |update| matches!(update, SessionUpdate::SessionReplaced { key, .. } if key == &seat),
+    )
+    .await;
+    assert_transcript_free(&frame, "replacement");
+
+    // A replay carries the task's own window rather than the read, and that
+    // window is still not a client's to receive: on the seat this was filed
+    // from it weighs 382MB, past the same cap.
+    fleet.emit(SessionUpdate::HistoryReplayed {
+        key: seat.clone(),
+        history: giant.clone(),
+        compaction_count: 0,
+    });
+    let frame = frame_until(
+        &mut socket,
+        "the replay",
+        |update| matches!(update, SessionUpdate::HistoryReplayed { key, .. } if key == &seat),
+    )
+    .await;
+    assert_transcript_free(&frame, "replay");
+
+    // And the connection is still there: another read is answered on it,
+    // which the client's own refusal of the frame took with it live.
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Home,
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+    let (subject, ..) = snapshot_answering(&mut socket).await;
+    assert_eq!(subject, Subject::Home, "the connection survived the giant seat's history");
+}
+
+/// The frame is the seat's session facts and no transcript, and small enough
+/// that no conversation's size can carry it past the client's socket cap.
+fn assert_transcript_free(frame: &str, what: &str) {
+    assert!(
+        frame.len() < 256 * 1024,
+        "the {what} crossed as {} bytes: a frame carrying the seat's transcript grows with the \
+         seat (2.46GiB on the one #2150 was filed from) and the client's socket refuses past \
+         its 256MiB cap",
+        frame.len(),
+    );
+    let Ok(ServerMessage::Update { update }) = serde_json::from_str::<ServerMessage>(frame) else {
+        panic!("the {what} crosses as an update");
+    };
+    let carried = match &*update {
+        SessionUpdate::Connected { history, .. }
+        | SessionUpdate::SessionReplaced { history, .. }
+        | SessionUpdate::HistoryReplayed { history, .. } => history.len(),
+        other => panic!("the {what} is a history-carrying update, and this is {other:?}"),
+    };
+    assert_eq!(
+        carried, 0,
+        "the {what} carries the seat's session facts and not its transcript: a client reads \
+         the conversation through its page and `more`, which is what it answers these variants \
+         with",
+    );
 }
 
 /// **A dictation refusal keeps its hands off the image waits.** The two

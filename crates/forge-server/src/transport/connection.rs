@@ -446,7 +446,7 @@ async fn run_connection(
                     // still waiting out its window when the process drops dies
                     // with it. Everything else can wait the interval.
                     let fatal = matches!(update, SessionUpdate::FatalError { .. });
-                    held.push(Instant::now(), update);
+                    held.push(Instant::now(), for_a_client(update));
                     if fatal {
                         batch::flush(socket, held.take()).await?;
                     }
@@ -732,7 +732,7 @@ async fn handle_client(
             let mut queued = Vec::new();
             for update in open_stream(state, updates, answering) {
                 if forwards(&update, watched, me) {
-                    queued.push(update);
+                    queued.push(for_a_client(update));
                 }
             }
             // **A seat is held BEFORE its snapshot is encoded.** The hold is
@@ -1329,6 +1329,34 @@ fn is_take_news(update: &SessionUpdate) -> bool {
 fn forwards(update: &SessionUpdate, watched: &[Subject], me: u64) -> bool {
     ours_to_hear(update, me)
         && (is_take_news(update) || watched.iter().any(|what| what.covers(update)))
+}
+
+/// The update as it crosses to a client.
+///
+/// **A seat's transcript never rides an update to a client.** The three
+/// variants that carry one are the session task's seed for the transport's
+/// own copy, and a client answers them with a READ - the subscribe snapshot's
+/// windowed `conversation` and `more` above it (the client's own `REPLACES`
+/// list says so, `client/src/session/apply.ts`) - rather than drawing what
+/// they carry. So the message list is emptied here, at the one place an
+/// update becomes something a client hears; what stays is the seat's session
+/// facts.
+///
+/// **The bound has to be the frame's, not the window's.** The window holds
+/// four thousand messages, and on the largest seat measured those weigh
+/// 382MB - past the 256MiB frame the client's socket carries
+/// (`MAX_FRAME_BYTES`, client/src-tauri/socket.rs), which is what a live
+/// 2.5GiB seat's resume did to a connection (#2150) when the whole read rode
+/// one `Connected`. A frame whose size does not depend on the conversation's
+/// size is the only one that holds whatever the seat weighs.
+fn for_a_client(mut update: SessionUpdate) -> SessionUpdate {
+    match &mut update {
+        SessionUpdate::Connected { history, .. }
+        | SessionUpdate::SessionReplaced { history, .. }
+        | SessionUpdate::HistoryReplayed { history, .. } => *history = Vec::new(),
+        _ => {}
+    }
+    update
 }
 
 /// Where one binary message went, decided without touching a take.

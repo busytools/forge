@@ -271,17 +271,22 @@ impl SessionTask {
                 history_updates,
                 compaction_count,
             } => {
-                let history = history_updates.unwrap_or_default();
-                // Kept before the update takes it, so a consumer that joins
-                // later can be handed what this task was handed.
-                //
-                // **The window of it rather than a clone of it.** A resume
-                // hands over the whole transcript, and what is kept here
-                // answers a replay - which its reader cuts to the same window
-                // anyway. Cloning the whole history to keep a window of it is
-                // a transcript-sized allocation per connect.
-                self.conversation =
-                    Some((crate::conversation_window::tail_of(&history), compaction_count));
+                let read = history_updates.unwrap_or_default();
+                // **The read becomes a window HERE, and the update carries
+                // it.** A resume hands over the whole transcript, and every
+                // consumer of it - the copy kept here for a replay, the
+                // transport's copy seeded from the update, every subscriber
+                // taking a clone of the update - cuts it to the same window
+                // anyway. So the read's own size (2.5GiB on the seat #2150
+                // was filed from) may not ride the update or be paid again
+                // per consumer: one cut, and the window is what is kept and
+                // what is handed over alike.
+                let window = crate::conversation_window::tail_of(&read);
+                // The read goes before the window's second copy is taken, so
+                // the peak is the window's rather than the transcript plus it.
+                drop(read);
+                let history = window.clone();
+                self.conversation = Some((window, compaction_count));
                 // The slot the task was spawned under, which the CLI's
                 // own id never moves: it names the occupant, this names
                 // the seat.
@@ -5585,6 +5590,82 @@ provider = "anthropic"
             held.capacity(),
         );
         assert_eq!(held.len(), history.len(), "and holds the frames the replay answered with");
+    }
+
+    /// **A resumed connect hands the WINDOW on, not the read.**
+    ///
+    /// `history_updates` is a resume's whole transcript - 51,274 rows and
+    /// 2.5GiB on the seat #2150 was filed from - and the connect used to pass
+    /// it on whole. The update is what the transport's copy is seeded from and
+    /// what every subscriber takes a clone of, so the read was paid again per
+    /// subscriber to hand over what each of them cuts to a window anyway. The
+    /// task keeps that window here for a replay; the update carries the same
+    /// one, on both routes a resumed identity takes in.
+    #[tokio::test]
+    async fn a_resumed_connect_hands_the_window_not_the_whole_read() {
+        let cap = crate::conversation_window::CONVERSATION_CAP;
+        let slack = crate::conversation_window::CONVERSATION_SLACK;
+        let read = cap + slack + 1;
+
+        // Both routes a connect takes: the first one, and the replacement a
+        // `/new` or a `/resume` takes on a task that has connected once.
+        for connected_once in [false, true] {
+            let (workspace, mut update_rx) = crate::Workspace::testing_stub();
+            let session_key = SessionSlot::from_str_for_test("handover-window-uuid");
+            let domain =
+                Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
+            let (handle, _agent_cmd_rx) = Agent::testing_stub();
+            let (_cmd_tx, command_rx) =
+                tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
+            let mut task = SessionTask {
+                key: session_key.clone(),
+                handle: Arc::new(handle),
+                command_rx,
+                domain,
+                update_tx: workspace.update_sender(),
+                connected_once,
+                workspace: Arc::downgrade(&workspace),
+                conversation: None,
+            };
+            let frame = |at: usize| {
+                serde_json::from_value::<forge_primitives::Message>(serde_json::json!({
+                    "type": "user",
+                    "message": {"role": "user", "content": format!("frame {at}")},
+                    "session_id": session_key.display(),
+                }))
+                .expect("a user frame")
+            };
+            let mut event = connected_event(&session_key.display(), "/tmp/handed-over");
+            if let AgentEvent::Connected { history_updates, .. } = &mut event {
+                *history_updates = Some((0..read).map(frame).collect());
+            }
+            task.translate_event(event);
+
+            let mut handed = None;
+            while let Ok(update) = update_rx.try_recv() {
+                match update {
+                    SessionUpdate::Connected { history, .. }
+                    | SessionUpdate::SessionReplaced { history, .. } => handed = Some(history),
+                    _ => {}
+                }
+            }
+            let handed = handed.expect("a connect crosses as Connected or SessionReplaced");
+            assert!(
+                (cap..=cap + slack).contains(&handed.len()),
+                "the update hands over the window the task keeps, not the read: {} messages of \
+                 the {read} the connect carried (connected_once: {connected_once})",
+                handed.len(),
+            );
+            assert!(
+                handed.last().is_some_and(|message| {
+                    matches!(message, forge_primitives::Message::User { message, .. }
+                        if message.content.iter().any(|block| matches!(block,
+                            forge_primitives::ContentBlock::Text { text, .. }
+                                if text == &format!("frame {}", read - 1))))
+                }),
+                "and it is the NEWEST window rather than the oldest: the transcript's own tail",
+            );
+        }
     }
 
     /// The on-open read of a call's own output: a view asks with the call's
