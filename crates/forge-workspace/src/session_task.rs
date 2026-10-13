@@ -188,9 +188,11 @@ impl SessionTask {
     /// exit path releases the session and disconnects the subprocess).
     fn translate_event(&mut self, event: AgentEvent) -> bool {
         // First, update DomainSession in-place.
+        let nudge_armed;
         {
             let mut guard = self.domain.lock();
             let moved = apply_event_to_domain(&mut guard, &event);
+            nudge_armed = moved.nudge;
             // The two sets that move whole are announced from the scope the
             // fold wrote in, so what goes out is what the core now holds -
             // and only when the fold moved it.
@@ -829,6 +831,13 @@ impl SessionTask {
                 });
             }
         }
+        // Last, so the failure's own frames are emitted before the words
+        // that answer them draw below them: the continuation goes out here
+        // rather than from a sweep, the seat's next turn starting while
+        // the failure is still the newest thing a reader has seen.
+        if nudge_armed && let Some(workspace) = self.workspace.upgrade() {
+            workspace.fire_auto_continue(&self.key);
+        }
         true
     }
 
@@ -872,6 +881,24 @@ impl SessionTask {
                 Command::PromptUnder { key, text, attachments, uuid, source: PromptSource::You }
             }
             Command::PromptUnder { key, text, attachments, uuid, source } => {
+                // The continuation speaks for the occupant that failed. A
+                // `/new` or `/resume` the queue drains ahead of it leaves a
+                // replacement under the words, which point at a history the
+                // replacement does not carry - so the prompt is dropped
+                // rather than handed to it.
+                if self.continuation_lost_its_occupant(&uuid) {
+                    // The seat's own work, not forge's health: the drop is
+                    // the intended outcome, so the record stays behind
+                    // RUST_LOG rather than claiming a problem.
+                    tracing::debug!(
+                        target: "forge_workspace::session_task",
+                        event_name = "auto_continue_dropped_occupant_replaced",
+                        slot = %self.key.display(),
+                        uuid = %uuid,
+                        "a continuation's occupant was replaced before it ran; the prompt is dropped",
+                    );
+                    return;
+                }
                 self.record_queued(&uuid, source, &text);
                 Command::PromptUnder { key, text, attachments, uuid, source }
             }
@@ -1083,6 +1110,22 @@ impl SessionTask {
                 }
             }
         }
+    }
+
+    /// Whether `uuid` is the continuation forge sent for this seat and the
+    /// occupant it was sent for is no longer the one here. Taken either way:
+    /// the prompt is running now, so the matching is spent.
+    fn continuation_lost_its_occupant(&self, uuid: &str) -> bool {
+        let mut guard = self.domain.lock();
+        let Some((sent, armed_for)) = guard.auto_continue_queued.as_ref() else {
+            return false;
+        };
+        if sent != uuid {
+            return false;
+        }
+        let armed_for = armed_for.clone();
+        guard.auto_continue_queued = None;
+        armed_for != guard.session_id
     }
 
     /// Snapshot the session id stamped on `DomainSession`, formatted
@@ -1643,11 +1686,6 @@ fn warn_no_session(key: &SessionSlot, command: &'static str) -> forge_agent::Age
 /// literal.
 const API_RETRY_SUBTYPE: &str = "api_retry";
 
-/// How long a failed turn waits for a reader before its nudge goes out:
-/// long enough to give a reader time to open the seat first. One prompt,
-/// not a ladder: this fire descends to the once-per-unopened-failure rule.
-pub(crate) const AUTO_CONTINUE_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
-
 /// What the failure is called in the nudge: the CLI's own errors when the
 /// result frame reported any, else its subtype, else a plain fallback.
 pub(crate) fn failure_reason(errors: Option<&[String]>, subtype: &str) -> String {
@@ -1678,6 +1716,9 @@ pub(crate) struct Moved {
     pub agents: bool,
     pub dispatches: bool,
     pub cards: bool,
+    /// A failed turn armed the continuation, which the caller fires the
+    /// moment this fold returns.
+    pub nudge: bool,
 }
 
 /// Apply an [`AgentEvent`] to a [`DomainSession`]. Pure mutation; no
@@ -1699,6 +1740,7 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
     let held_agents = domain.available_agents.clone();
     let held_dispatches = domain.has_dispatches;
     let held_cards = domain.cards_snapshot.clone();
+    let mut nudge = false;
     hold_view_facts(domain, event);
     if let AgentEvent::ConnectionFailed { .. } = event {
         // The subprocess is gone - drop the runtime/turn mirrors so the
@@ -1734,24 +1776,21 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
         if *is_error && !cancelled {
             let at = std::time::SystemTime::now();
             domain.failed_turn_at = Some(at);
-            // A transient server error arms no nudge.
-            // Everything else is this nudge's to answer.
-            let terminal_owns_it = matches!(
-                domain.last_api_retry,
-                Some((forge_primitives::ApiRetryError::ServerError, _))
-            );
-            if !terminal_owns_it && !domain.auto_continue_spent {
+            // Every non-cancelled failed turn is this nudge's to answer,
+            // whatever its class: the caller fires the continuation the
+            // moment this fold returns, so a seat nobody is watching
+            // resumes without the person having to type again (#2146).
+            if !domain.auto_continue_spent {
                 domain.auto_continue = Some(PendingAutoContinue {
-                    due_at: at + AUTO_CONTINUE_DELAY,
                     reason: failure_reason(errors.as_deref(), subtype),
                 });
+                nudge = true;
             }
         } else if !*is_error {
             // A turn that finished ends the episode: a later failure is a
             // new one and gets its own nudge.
             domain.auto_continue = None;
             domain.auto_continue_spent = false;
-            domain.last_api_retry = None;
         }
     }
     if let AgentEvent::SdkMessage { msg: forge_primitives::Message::Error { .. }, .. } = event {
@@ -1804,11 +1843,6 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
         ..
     } = event
     {
-        // Content means the turn went on, so a retry it recovered past is not
-        // the classification of its failure. Left standing, a stale
-        // server_error would exempt a later failure of a different kind from
-        // the nudge.
-        domain.last_api_retry = None;
         for block in &message.content {
             let forge_primitives::ContentBlock::ToolUse { id, input, .. } = block else {
                 continue;
@@ -1836,7 +1870,6 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
         // interrupt it was holding.
         domain.pending_cancel = false;
         domain.failed_turn_at = None;
-        domain.last_api_retry = None;
         domain.auto_continue = None;
         domain.auto_continue_spent = false;
         // A second Connected is a new occupant in the same slot, and the
@@ -1878,13 +1911,9 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
                 if let Some(update) = data
                     .as_object()
                     .and_then(forge_agent::translate::state_parsing::build_api_retry_update)
+                    && update.error == forge_primitives::ApiRetryError::AuthenticationFailed
                 {
-                    if update.error == forge_primitives::ApiRetryError::AuthenticationFailed {
-                        domain.awaiting_login = true;
-                    }
-                    // Kept for the failure fold below: the CLI's retries are
-                    // the only place the wire says what went wrong.
-                    domain.last_api_retry = Some((update.error, update.error_status));
+                    domain.awaiting_login = true;
                 }
             }
             _ => {}
@@ -2041,6 +2070,7 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
         // from the history it carries and the read on that event answers it.
         cards: domain.cards_snapshot != held_cards
             && matches!(event, AgentEvent::SdkMessage { .. }),
+        nudge,
     }
 }
 
@@ -3218,25 +3248,8 @@ mod tests {
         .expect("parse result message")
     }
 
-    /// An assistant frame: content the turn produced. The CLI sends one
-    /// after a retry it recovered past, which is what makes the retry's
-    /// classification stale.
-    fn assistant_message() -> forge_primitives::Message {
-        serde_json::from_value(serde_json::json!({
-            "type": "assistant",
-            "session_id": "worker",
-            "message": {
-                "id": "msg-1",
-                "role": "assistant",
-                "model": "claude-sonnet-5",
-                "content": [{"type": "text", "text": "carrying on"}],
-            },
-        }))
-        .expect("parse assistant message")
-    }
-
-    /// A wire `api_retry` frame, the only place the CLI says what went
-    /// wrong on a retried request.
+    /// A wire `api_retry` frame, where the CLI names a failure on the
+    /// retry path.
     fn api_retry_message(error: &str, status: Option<u16>) -> forge_primitives::Message {
         serde_json::from_value(serde_json::json!({
             "type": "system",
@@ -3340,32 +3353,26 @@ mod tests {
         );
     }
 
-    /// A plain failure arms the seat's nudge: the CLI's own error strings
-    /// as the reason, and the delay before it goes out.
+    /// A plain failure's reason is the CLI's own error strings, in the order
+    /// it reported them, carried into the words the model receives.
     #[test]
-    fn a_plain_failure_arms_the_continuation_with_its_reason() {
+    fn a_plain_failure_is_continued_with_the_cli_errors_as_its_reason() {
         let (workspace, _rx) = crate::Workspace::testing_stub();
         let key = SessionSlot::from_str_for_test("nudge-rail");
-        let (mut task, _update_rx) = review_task_for(&workspace, &key);
+        let (mut task, _update_rx, _to_agent) = nudge_task_for(&workspace, &key);
 
         task.translate_event(AgentEvent::SdkMessage {
             session_id: "nudge-rail".to_owned(),
             msg: result_message_with_errors(&["API Error: 400 ...", "request too large"]),
         });
 
-        let domain = task.domain.lock();
-        let pending = domain.auto_continue.clone().expect("a plain failure arms the nudge");
-        assert_eq!(
-            pending.reason, "API Error: 400 ...; request too large",
-            "the CLI's own errors are the reason, in the order it reported them",
+        let prompts = captured_prompts(&workspace);
+        assert_eq!(prompts.len(), 1, "the failure's continuation goes out: {prompts:?}");
+        assert!(
+            prompts[0].contains("API Error: 400 ...; request too large"),
+            "the CLI's own errors are the reason, in the order it reported them: {prompts:?}",
         );
-        let failed_at = domain.failed_turn_at.expect("the rail's mark is set with it");
-        assert!(pending.due_at > failed_at, "the nudge is not immediate - it waits for a reader");
-        assert_eq!(
-            pending.due_at,
-            failed_at + super::AUTO_CONTINUE_DELAY,
-            "and its wait is the delay, counted from the failure itself",
-        );
+        assert!(task.domain.lock().failed_turn_at.is_some(), "the rail's mark is set with it");
     }
 
     /// A turn the reader cancelled ends with the same failed `Result` a
@@ -3388,62 +3395,8 @@ mod tests {
         assert!(domain.auto_continue.is_none(), "and nothing is armed to pick up");
     }
 
-    /// A transient server error arms no continuation. The rail still marks
-    /// it.
-    #[test]
-    fn a_transient_server_error_arms_no_continuation() {
-        let (workspace, _rx) = crate::Workspace::testing_stub();
-        let key = SessionSlot::from_str_for_test("transient-rail");
-        let (mut task, _update_rx) = review_task_for(&workspace, &key);
-
-        task.translate_event(AgentEvent::SdkMessage {
-            session_id: "transient-rail".to_owned(),
-            msg: api_retry_message("server_error", Some(529)),
-        });
-        task.translate_event(AgentEvent::SdkMessage {
-            session_id: "transient-rail".to_owned(),
-            msg: result_message("error_during_execution", true),
-        });
-
-        let domain = task.domain.lock();
-        assert!(domain.failed_turn_at.is_some(), "the rail still marks the failure");
-        assert!(
-            domain.auto_continue.is_none(),
-            "the terminal continues this one; the core must not fire beside it",
-        );
-    }
-
-    /// A retry the turn RECOVERED past is not a classification of its
-    /// failure: the content that follows the retry is the turn going on.
-    /// Left standing, the stale `server_error` would exempt a later failure
-    /// of a different kind from the nudge.
-    #[test]
-    fn a_retry_the_turn_recovered_past_does_not_exempt_a_later_failure() {
-        let (workspace, _rx) = crate::Workspace::testing_stub();
-        let key = SessionSlot::from_str_for_test("recovered-rail");
-        let (mut task, _update_rx) = review_task_for(&workspace, &key);
-
-        task.translate_event(AgentEvent::SdkMessage {
-            session_id: "recovered-rail".to_owned(),
-            msg: api_retry_message("server_error", Some(529)),
-        });
-        task.translate_event(AgentEvent::SdkMessage {
-            session_id: "recovered-rail".to_owned(),
-            msg: assistant_message(),
-        });
-        task.translate_event(AgentEvent::SdkMessage {
-            session_id: "recovered-rail".to_owned(),
-            msg: result_message_with_errors(&["API Error: 400 ..."]),
-        });
-
-        let domain = task.domain.lock();
-        assert_eq!(domain.last_api_retry, None, "the recovered retry is not this failure");
-        assert!(domain.auto_continue.is_some(), "so a failure of another kind is nudged");
-    }
-
     /// A result the CLI sent no errors for is named by its subtype in the
-    /// nudge - the book's contract for the words - and an empty list names
-    /// nothing either.
+    /// continuation's words, and an empty list names nothing either.
     #[test]
     fn a_result_without_errors_is_named_by_its_subtype_in_the_nudge() {
         let (workspace, _rx) = crate::Workspace::testing_stub();
@@ -3489,17 +3442,14 @@ mod tests {
         assert_eq!(super::failure_reason(None, ""), "an error", "and so does an empty subtype");
     }
 
-    /// A turn that finished ends the episode: the spend is dropped and so
-    /// is the classification it was read against, so a later unrelated
-    /// failure is nudged on its own terms.
+    /// A turn that finished ends the episode: the spend is dropped, so a later
+    /// unrelated failure is continued on its own terms.
     #[test]
     fn a_completed_turn_clears_the_spend_for_the_next_failure() {
         let (workspace, _rx) = crate::Workspace::testing_stub();
         let key = SessionSlot::from_str_for_test("spent-rail");
         let (mut task, _update_rx) = review_task_for(&workspace, &key);
         task.domain.lock().auto_continue_spent = true;
-        task.domain.lock().last_api_retry =
-            Some((forge_primitives::ApiRetryError::InvalidRequest, Some(400)));
 
         task.translate_event(AgentEvent::SdkMessage {
             session_id: "spent-rail".to_owned(),
@@ -3508,7 +3458,208 @@ mod tests {
 
         let domain = task.domain.lock();
         assert!(!domain.auto_continue_spent, "a completed turn ends the episode");
-        assert!(domain.last_api_retry.is_none(), "and drops the classification it was read for");
+    }
+
+    /// A task whose domain IS the workspace's own for the slot - the
+    /// sharing production does - so the fold is what the workspace's fire
+    /// reads, and a captured dispatch is what the seat's prompt path
+    /// produced.
+    fn nudge_task_for(
+        workspace: &Arc<crate::Workspace>,
+        key: &SessionSlot,
+    ) -> (
+        SessionTask,
+        mpsc::UnboundedReceiver<SessionUpdate>,
+        mpsc::UnboundedReceiver<forge_primitives::AgentCommand>,
+    ) {
+        workspace.enable_test_dispatch_intercept();
+        let (handle, to_agent) = Agent::testing_stub();
+        let handle = Arc::new(handle);
+        let domain = workspace.register_domain_session(key.clone(), Some(Arc::clone(&handle)));
+        let (_cmd_tx, command_rx) = mpsc::unbounded_channel();
+        let update_tx = UpdateFanout::default();
+        let update_rx = update_tx.subscribe(SubscriberRole::Answering);
+        let task = SessionTask {
+            key: key.clone(),
+            handle,
+            command_rx,
+            domain,
+            update_tx,
+            connected_once: false,
+            workspace: Arc::downgrade(workspace),
+            conversation: None,
+        };
+        (task, update_rx, to_agent)
+    }
+
+    /// The prompts `workspace` captured, in order.
+    fn captured_prompts(workspace: &Arc<crate::Workspace>) -> Vec<String> {
+        workspace
+            .drain_test_dispatch_buffer()
+            .into_iter()
+            .filter_map(|cmd| match cmd {
+                crate::protocol::Command::PromptUnder { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The `PromptUnder` commands `workspace` captured, in order.
+    fn captured_prompt_commands(
+        workspace: &Arc<crate::Workspace>,
+    ) -> Vec<crate::protocol::Command> {
+        workspace
+            .drain_test_dispatch_buffer()
+            .into_iter()
+            .filter(|cmd| matches!(cmd, crate::protocol::Command::PromptUnder { .. }))
+            .collect()
+    }
+
+    /// Run a failed turn and then execute the continuation it dispatched,
+    /// with a replacement's `Connected` landing in between when `replace`.
+    /// The answer is whether the prompt reached the CLI.
+    fn continuation_reaches_the_cli(label: &str, replace: bool) -> bool {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test(label);
+        let (mut task, _update_rx, mut to_agent) = nudge_task_for(&workspace, &key);
+        task.domain.lock().session_id = Some(forge_primitives::SessionId::new("old-occupant"));
+
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: label.to_owned(),
+            msg: result_message("error_during_execution", true),
+        });
+        let captured = captured_prompt_commands(&workspace);
+        let [crate::protocol::Command::PromptUnder { text, uuid, .. }] = captured.as_slice() else {
+            panic!("the failure's continuation is dispatched: {captured:?}");
+        };
+        let (text, uuid) = (text.clone(), uuid.clone());
+
+        if replace {
+            // What a `/new` or `/resume` drained first leaves behind: a new
+            // occupant under the queued prompt.
+            task.translate_event(AgentEvent::Connected {
+                session_id: "new-occupant".to_owned(),
+                cwd: "/tmp/continuation-occupant".to_owned(),
+                current_model: forge_primitives::CurrentModel {
+                    resolved_id: "claude".to_owned(),
+                    display_name_short: "claude".to_owned(),
+                    display_name_long: "claude".to_owned(),
+                    requested_id: None,
+                    catalog_id: None,
+                    supports_effort: false,
+                    supported_effort_levels: Vec::new(),
+                    supports_auto_mode: None,
+                    supports_adaptive_thinking: None,
+                    is_authoritative: true,
+                },
+                available_models: Vec::new(),
+                mode: None,
+                history_updates: None,
+                compaction_count: 0,
+            });
+        }
+
+        task.execute_command(crate::protocol::Command::PromptUnder {
+            key: key.clone(),
+            text,
+            attachments: Vec::new(),
+            uuid,
+            source: crate::protocol::PromptSource::Forge,
+        });
+        to_agent.try_recv().is_ok()
+    }
+
+    /// The continuation speaks for the occupant that failed. A `/new` or
+    /// `/resume` the queue drains first leaves a replacement under it, and
+    /// the replacement carries none of the history the words point at - so
+    /// the prompt is dropped where it would have run, and still lands when
+    /// the occupant did not move.
+    #[test]
+    fn a_continuation_is_dropped_when_the_occupant_changed_under_it() {
+        assert!(
+            continuation_reaches_the_cli("kept-rail", false),
+            "control: with the occupant unchanged the continuation reaches the CLI",
+        );
+        assert!(
+            !continuation_reaches_the_cli("replaced-rail", true),
+            "the replacement is not handed words about a history it does not have",
+        );
+    }
+
+    /// Everything `updates` holds right now.
+    fn drain_updates(rx: &mut mpsc::UnboundedReceiver<SessionUpdate>) -> Vec<SessionUpdate> {
+        let mut seen = Vec::new();
+        while let Ok(update) = rx.try_recv() {
+            seen.push(update);
+        }
+        seen
+    }
+
+    /// A turn that dies on a retried 5xx is the nudge's like any other
+    /// failure: forge's continuation goes out the moment the result lands -
+    /// no delay, nothing left for a sweep - and it draws as the turn the
+    /// model received. The terminal's dead-turn path used to own this class
+    /// and no longer exists, so leaving it alone would leave the seat dead
+    /// until the person typed again (#2146).
+    #[test]
+    fn a_server_error_failure_is_nudged_at_once() {
+        let (workspace, mut updates) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("server-rail");
+        let (mut task, _update_rx, _to_agent) = nudge_task_for(&workspace, &key);
+
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "server-rail".to_owned(),
+            msg: api_retry_message("server_error", Some(529)),
+        });
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "server-rail".to_owned(),
+            msg: result_message("error_during_execution", true),
+        });
+
+        let prompts = captured_prompts(&workspace);
+        assert_eq!(
+            prompts.len(),
+            1,
+            "the failed result fires the continuation itself: {prompts:?}"
+        );
+        assert!(
+            prompts[0].contains("error_during_execution"),
+            "the prompt names the failure it answers: {prompts:?}",
+        );
+        let domain = task.domain.lock();
+        assert!(domain.auto_continue.is_none(), "the fire took the armed continuation");
+        assert!(domain.auto_continue_spent, "the episode is spent: one nudge per failure");
+
+        let drawn = drain_updates(&mut updates);
+        assert!(
+            drawn.iter().any(|update| matches!(
+                update,
+                SessionUpdate::ChatAppended { msg: forge_primitives::Message::User { .. }, .. }
+            )),
+            "the continuation's words draw in every view: {drawn:?}",
+        );
+    }
+
+    /// A rate-limited turn gets the continuation too: the gateway answers
+    /// an exhausted window by rotating the account, and whatever failure
+    /// still reaches forge is the nudge's to answer (#2146).
+    #[test]
+    fn a_rate_limited_failure_is_nudged_at_once() {
+        let (workspace, _updates) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("rate-limit-rail");
+        let (mut task, _update_rx, _to_agent) = nudge_task_for(&workspace, &key);
+
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "rate-limit-rail".to_owned(),
+            msg: api_retry_message("rate_limit", Some(429)),
+        });
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "rate-limit-rail".to_owned(),
+            msg: result_message("error_during_execution", true),
+        });
+
+        let prompts = captured_prompts(&workspace);
+        assert_eq!(prompts.len(), 1, "a 429 failure is nudged like any other: {prompts:?}");
     }
 
     /// The gateway edge: a rate_limit_event whose status is not
