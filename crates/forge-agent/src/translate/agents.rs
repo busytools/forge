@@ -1,6 +1,6 @@
 //! Available-agents catalogue parser. Used by the session task's fold
-//! to turn a `system/init.agents` payload into the
-//! `AvailableAgentsUpdate` the server carries.
+//! to turn a `system/init.agents` payload into the `AvailableAgent` list
+//! the server carries.
 
 use serde_json::Value;
 
