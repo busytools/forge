@@ -881,6 +881,20 @@ impl SessionTask {
                 Command::PromptUnder { key, text, attachments, uuid, source: PromptSource::You }
             }
             Command::PromptUnder { key, text, attachments, uuid, source } => {
+                // The continuation speaks for the occupant that failed. A
+                // `/new` or `/resume` the queue drains ahead of it leaves a
+                // replacement under the words, which point at a history the
+                // replacement does not carry - so the prompt is dropped
+                // rather than handed to it.
+                if self.continuation_lost_its_occupant(&uuid) {
+                    tracing::debug!(
+                        target: "forge_workspace::session_task",
+                        slot = %self.key.display(),
+                        uuid = %uuid,
+                        "a continuation's occupant was replaced before it ran; the prompt is dropped",
+                    );
+                    return;
+                }
                 self.record_queued(&uuid, source, &text);
                 Command::PromptUnder { key, text, attachments, uuid, source }
             }
@@ -1092,6 +1106,22 @@ impl SessionTask {
                 }
             }
         }
+    }
+
+    /// Whether `uuid` is the continuation forge sent for this seat and the
+    /// occupant it was sent for is no longer the one here. Taken either way:
+    /// the prompt is running now, so the matching is spent.
+    fn continuation_lost_its_occupant(&self, uuid: &str) -> bool {
+        let mut guard = self.domain.lock();
+        let Some((sent, armed_for)) = guard.auto_continue_queued.as_ref() else {
+            return false;
+        };
+        if sent != uuid {
+            return false;
+        }
+        let armed_for = armed_for.clone();
+        guard.auto_continue_queued = None;
+        armed_for != guard.session_id
     }
 
     /// Snapshot the session id stamped on `DomainSession`, formatted
@@ -3325,7 +3355,7 @@ mod tests {
     fn a_plain_failure_is_continued_with_the_cli_errors_as_its_reason() {
         let (workspace, _rx) = crate::Workspace::testing_stub();
         let key = SessionSlot::from_str_for_test("nudge-rail");
-        let (mut task, _update_rx) = nudge_task_for(&workspace, &key);
+        let (mut task, _update_rx, _to_agent) = nudge_task_for(&workspace, &key);
 
         task.translate_event(AgentEvent::SdkMessage {
             session_id: "nudge-rail".to_owned(),
@@ -3433,9 +3463,13 @@ mod tests {
     fn nudge_task_for(
         workspace: &Arc<crate::Workspace>,
         key: &SessionSlot,
-    ) -> (SessionTask, mpsc::UnboundedReceiver<SessionUpdate>) {
+    ) -> (
+        SessionTask,
+        mpsc::UnboundedReceiver<SessionUpdate>,
+        mpsc::UnboundedReceiver<forge_primitives::AgentCommand>,
+    ) {
         workspace.enable_test_dispatch_intercept();
-        let (handle, _cmds) = Agent::testing_stub();
+        let (handle, to_agent) = Agent::testing_stub();
         let handle = Arc::new(handle);
         let domain = workspace.register_domain_session(key.clone(), Some(Arc::clone(&handle)));
         let (_cmd_tx, command_rx) = mpsc::unbounded_channel();
@@ -3451,7 +3485,7 @@ mod tests {
             workspace: Arc::downgrade(workspace),
             conversation: None,
         };
-        (task, update_rx)
+        (task, update_rx, to_agent)
     }
 
     /// The prompts `workspace` captured, in order.
@@ -3464,6 +3498,88 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    /// The `PromptUnder` commands `workspace` captured, in order.
+    fn captured_prompt_commands(
+        workspace: &Arc<crate::Workspace>,
+    ) -> Vec<crate::protocol::Command> {
+        workspace
+            .drain_test_dispatch_buffer()
+            .into_iter()
+            .filter(|cmd| matches!(cmd, crate::protocol::Command::PromptUnder { .. }))
+            .collect()
+    }
+
+    /// Run a failed turn and then execute the continuation it dispatched,
+    /// with a replacement's `Connected` landing in between when `replace`.
+    /// The answer is whether the prompt reached the CLI.
+    fn continuation_reaches_the_cli(label: &str, replace: bool) -> bool {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test(label);
+        let (mut task, _update_rx, mut to_agent) = nudge_task_for(&workspace, &key);
+        task.domain.lock().session_id = Some(forge_primitives::SessionId::new("old-occupant"));
+
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: label.to_owned(),
+            msg: result_message("error_during_execution", true),
+        });
+        let captured = captured_prompt_commands(&workspace);
+        let [crate::protocol::Command::PromptUnder { text, uuid, .. }] = captured.as_slice() else {
+            panic!("the failure's continuation is dispatched: {captured:?}");
+        };
+        let (text, uuid) = (text.clone(), uuid.clone());
+
+        if replace {
+            // What a `/new` or `/resume` drained first leaves behind: a new
+            // occupant under the queued prompt.
+            task.translate_event(AgentEvent::Connected {
+                session_id: "new-occupant".to_owned(),
+                cwd: "/tmp/continuation-occupant".to_owned(),
+                current_model: forge_primitives::CurrentModel {
+                    resolved_id: "claude".to_owned(),
+                    display_name_short: "claude".to_owned(),
+                    display_name_long: "claude".to_owned(),
+                    requested_id: None,
+                    catalog_id: None,
+                    supports_effort: false,
+                    supported_effort_levels: Vec::new(),
+                    supports_auto_mode: None,
+                    supports_adaptive_thinking: None,
+                    is_authoritative: true,
+                },
+                available_models: Vec::new(),
+                mode: None,
+                history_updates: None,
+                compaction_count: 0,
+            });
+        }
+
+        task.execute_command(crate::protocol::Command::PromptUnder {
+            key: key.clone(),
+            text,
+            attachments: Vec::new(),
+            uuid,
+            source: crate::protocol::PromptSource::Forge,
+        });
+        to_agent.try_recv().is_ok()
+    }
+
+    /// The continuation speaks for the occupant that failed. A `/new` or
+    /// `/resume` the queue drains first leaves a replacement under it, and
+    /// the replacement carries none of the history the words point at - so
+    /// the prompt is dropped where it would have run, and still lands when
+    /// the occupant did not move.
+    #[test]
+    fn a_continuation_is_dropped_when_the_occupant_changed_under_it() {
+        assert!(
+            continuation_reaches_the_cli("kept-rail", false),
+            "control: with the occupant unchanged the continuation reaches the CLI",
+        );
+        assert!(
+            !continuation_reaches_the_cli("replaced-rail", true),
+            "the replacement is not handed words about a history it does not have",
+        );
     }
 
     /// Everything `updates` holds right now.
@@ -3485,7 +3601,7 @@ mod tests {
     fn a_server_error_failure_is_nudged_at_once() {
         let (workspace, mut updates) = crate::Workspace::testing_stub();
         let key = SessionSlot::from_str_for_test("server-rail");
-        let (mut task, _update_rx) = nudge_task_for(&workspace, &key);
+        let (mut task, _update_rx, _to_agent) = nudge_task_for(&workspace, &key);
 
         task.translate_event(AgentEvent::SdkMessage {
             session_id: "server-rail".to_owned(),
@@ -3527,7 +3643,7 @@ mod tests {
     fn a_rate_limited_failure_is_nudged_at_once() {
         let (workspace, _updates) = crate::Workspace::testing_stub();
         let key = SessionSlot::from_str_for_test("rate-limit-rail");
-        let (mut task, _update_rx) = nudge_task_for(&workspace, &key);
+        let (mut task, _update_rx, _to_agent) = nudge_task_for(&workspace, &key);
 
         task.translate_event(AgentEvent::SdkMessage {
             session_id: "rate-limit-rail".to_owned(),

@@ -4067,7 +4067,7 @@ impl Workspace {
         let Some(domain) = self.domain_session_for(key) else {
             return;
         };
-        let reason = {
+        let (reason, uuid) = {
             let mut guard = domain.lock();
             // Spent either way: the decision for this failure is made here,
             // so nothing can send the same nudge twice.
@@ -4075,10 +4075,16 @@ impl Workspace {
                 return;
             };
             guard.auto_continue_spent = true;
-            pending.reason
+            // The prompt is keyed to the occupant the failure belonged to -
+            // the same tick's fold cannot have moved it - so a replacement
+            // drained ahead of it is not handed words about a history it
+            // does not have; the check is where the queued prompt runs.
+            let uuid = forge_sdk::request_id::next_prompt_id();
+            guard.auto_continue_queued = Some((uuid.clone(), guard.session_id.clone()));
+            (pending.reason, uuid)
         };
         let text = auto_continue_prompt(&reason);
-        if let Err(error) = self.dispatch_forged_prompt(key, text) {
+        if let Err(error) = self.dispatch_forged_prompt_under(key, text, uuid) {
             tracing::warn!(
                 target: "forge_workspace::workspace",
                 event_name = "auto_continue_dispatch_failed",
@@ -4106,7 +4112,21 @@ impl Workspace {
         key: &SessionSlot,
         text: String,
     ) -> Result<(), DispatchError> {
-        let uuid = forge_sdk::request_id::next_prompt_id();
+        self.dispatch_forged_prompt_under(key, text, forge_sdk::request_id::next_prompt_id())
+    }
+
+    /// [`Self::dispatch_forged_prompt`] with the id supplied by the caller,
+    /// for a forged prompt an association has to outlive the dispatch: the
+    /// auto-continue records the id it sent under, so the prompt can be
+    /// matched where it runs. The frame and the prompt carry one id either
+    /// way - the row a view draws and the turn the model receives are one
+    /// thing by id.
+    pub fn dispatch_forged_prompt_under(
+        self: &Arc<Self>,
+        key: &SessionSlot,
+        text: String,
+        uuid: String,
+    ) -> Result<(), DispatchError> {
         let frame = Message::display_only_user(text.clone(), uuid.clone());
         let result = self.dispatch_workspace_prompt_under(
             key,

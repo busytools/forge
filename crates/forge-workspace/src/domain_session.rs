@@ -213,6 +213,13 @@ pub struct DomainSession {
     /// will be told, taken by the fire as soon as that failure is folded.
     /// Cleared by the fire, a new turn, a success, or the occupant changing.
     pub auto_continue: Option<PendingAutoContinue>,
+    /// The continuation forge has sent for that failure, until the prompt
+    /// runs: its id, and the occupant the failure belonged to. A `/new` or
+    /// `/resume` the queue drains first leaves a different occupant under
+    /// it, and the words describe a history the replacement does not carry.
+    /// Not cleared by `Connected` - the replacement is the case it exists
+    /// for.
+    pub auto_continue_queued: Option<(String, Option<forge_primitives::SessionId>)>,
     /// Whether a continuation has already gone out for the seat's current
     /// failure episode. Held until a turn completes or a view shows the
     /// seat, so a failure that persists is continued once rather than in a
@@ -511,6 +518,7 @@ impl DomainSession {
             pending_cancel: false,
             failed_turn_at: None,
             auto_continue: None,
+            auto_continue_queued: None,
             auto_continue_spent: false,
             background_work: false,
             background_tasks: Vec::new(),
