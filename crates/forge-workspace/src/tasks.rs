@@ -22,6 +22,8 @@ use crate::workspace::Workspace;
 pub(crate) enum ClaimError {
     /// No row carries the id (or the epic has nothing ready).
     NotFound,
+    /// The stated id matched more than one row, each named.
+    Ambiguous(Vec<IdCandidate>),
     /// The row is held by a live seat, named.
     OwnedByLiveSeat(String),
     /// The row is waiting on something, or nothing ready was there to take.
@@ -41,6 +43,8 @@ pub(crate) enum MoveError {
     NotOwner,
     /// No row carries the id.
     NotFound,
+    /// The stated id matched more than one row, each named.
+    Ambiguous(Vec<IdCandidate>),
     /// The user's verdict landed on a row that is not waiting on their
     /// look.
     NotWaitingVerification,
@@ -59,6 +63,7 @@ impl std::fmt::Display for ClaimError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NotFound => write!(f, "no such row"),
+            Self::Ambiguous(candidates) => write!(f, "{}", ambiguous_words(candidates)),
             Self::OwnedByLiveSeat(label) => write!(f, "{label} holds this row"),
             Self::NotReady => write!(f, "nothing ready to claim there"),
             Self::AlreadyWorking => write!(f, "you already have a row in progress"),
@@ -91,9 +96,95 @@ impl std::fmt::Display for MoveError {
             }
             Self::NotOwner => write!(f, "you do not own this row"),
             Self::NotFound => write!(f, "no such row"),
+            Self::Ambiguous(candidates) => write!(f, "{}", ambiguous_words(candidates)),
             Self::NotWaitingVerification => write!(f, "this row is not waiting on your look"),
             Self::NotWaitingQuestion => write!(f, "this row is not waiting on a question"),
         }
+    }
+}
+
+/// One row an ambiguous id could have named.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct IdCandidate {
+    pub id: TaskId,
+    pub subject: String,
+}
+
+/// Why a stated id did not land on exactly one row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum IdError {
+    /// No row carries the id, or any id it prefixes.
+    NotFound,
+    /// More than one row's id starts with it, each named.
+    Ambiguous(Vec<IdCandidate>),
+}
+
+/// The rows an ambiguous id matched, as one line: each row's id and what
+/// it is, so a caller picks one without going back to the board.
+fn ambiguous_words(candidates: &[IdCandidate]) -> String {
+    let named = candidates
+        .iter()
+        .map(|candidate| format!("{} ({})", candidate.id.as_str(), candidate.subject))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{} rows match: {named}; use a longer prefix", candidates.len())
+}
+
+impl std::fmt::Display for IdError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFound => write!(f, "no such row"),
+            Self::Ambiguous(candidates) => write!(f, "{}", ambiguous_words(candidates)),
+        }
+    }
+}
+
+impl From<IdError> for ClaimError {
+    fn from(error: IdError) -> Self {
+        match error {
+            IdError::NotFound => Self::NotFound,
+            IdError::Ambiguous(candidates) => Self::Ambiguous(candidates),
+        }
+    }
+}
+
+impl From<IdError> for MoveError {
+    fn from(error: IdError) -> Self {
+        match error {
+            IdError::NotFound => Self::NotFound,
+            IdError::Ambiguous(candidates) => Self::Ambiguous(candidates),
+        }
+    }
+}
+
+/// Resolve a caller-stated id against a project's live rows: an exact id,
+/// or a unique prefix of one, since a caller is often handed the short
+/// form a person writes.
+fn find_task_index(tasks: &[Task], project_name: &str, stated: &TaskId) -> Result<usize, IdError> {
+    let scoped = || tasks.iter().enumerate().filter(|(_, task)| task.project_name == project_name);
+    if let Some((index, _)) = scoped().find(|(_, task)| task.id == *stated) {
+        return Ok(index);
+    }
+    // The empty string prefixes every id and names no row.
+    if stated.as_str().is_empty() {
+        return Err(IdError::NotFound);
+    }
+    let matched: Vec<usize> = scoped()
+        .filter(|(_, task)| task.id.as_str().starts_with(stated.as_str()))
+        .map(|(index, _)| index)
+        .collect();
+    match matched.as_slice() {
+        [] => Err(IdError::NotFound),
+        [index] => Ok(*index),
+        several => Err(IdError::Ambiguous(
+            several
+                .iter()
+                .map(|index| IdCandidate {
+                    id: tasks[*index].id.clone(),
+                    subject: tasks[*index].subject.clone(),
+                })
+                .collect(),
+        )),
     }
 }
 
@@ -131,6 +222,19 @@ impl Workspace {
             );
         }
         result
+    }
+
+    /// Resolve a caller-stated id to the row it names: an exact id, or a
+    /// unique prefix of one. Backs the delete path, which resolves before
+    /// it removes so an id naming nothing still removes nothing.
+    pub(crate) fn resolve_task_id(
+        &self,
+        project_name: &str,
+        stated: &TaskId,
+    ) -> Result<TaskId, IdError> {
+        let tasks = self.tasks.lock();
+        let index = find_task_index(&tasks, project_name, stated)?;
+        Ok(tasks[index].id.clone())
     }
 
     /// Append a task and persist, recording its creation in the history.
@@ -179,10 +283,12 @@ impl Workspace {
     ) -> Result<Option<Task>, MoveError> {
         let at = SystemTime::now();
         let outcome = self.with_tasks_mut(|tasks| {
-            let Some(index) =
-                tasks.iter().position(|t| t.id == *id && t.project_name == project_name)
-            else {
-                return Ok(None);
+            let index = match find_task_index(tasks, project_name, id) {
+                Ok(index) => index,
+                // An id naming no row is the caller's own not-found answer;
+                // one naming several is a refusal that names them.
+                Err(IdError::NotFound) => return Ok(None),
+                Err(error) => return Err(error.into()),
             };
             let mut next = tasks[index].clone();
             let prior = next.status;
@@ -446,17 +552,15 @@ impl Workspace {
                 return Err(ClaimError::AlreadyWorking);
             }
             let index = match (by_id, in_epic) {
-                (Some(id), _) => tasks
-                    .iter()
-                    .position(|t| t.project_name == project_name && t.id == *id)
-                    .ok_or(ClaimError::NotFound)?,
+                (Some(id), _) => find_task_index(tasks, project_name, id)?,
                 (None, Some(epic)) => {
+                    let epic = tasks[find_task_index(tasks, project_name, epic)?].id.clone();
                     let mut ready: Vec<usize> = tasks
                         .iter()
                         .enumerate()
                         .filter(|(_, t)| {
                             t.project_name == project_name
-                                && t.parent.as_ref() == Some(epic)
+                                && t.parent.as_ref() == Some(&epic)
                                 && t.status == TaskStatus::Pending
                                 && t.waiting_on.is_none()
                                 && t.owner.is_none()
@@ -513,18 +617,23 @@ impl Workspace {
     ) -> Result<Task, MoveError> {
         let at = SystemTime::now();
         let outcome = self.with_tasks_mut(|tasks| {
-            let Some(index) =
-                tasks.iter().position(|t| t.id == *id && t.project_name == project_name)
-            else {
-                return Err(MoveError::NotFound);
-            };
+            let index = find_task_index(tasks, project_name, id)?;
             let owner = tasks[index].owner.as_ref().map(SessionSlot::label).map(str::to_owned);
             if owner.as_deref() != Some(slot.label()) {
                 return Err(MoveError::NotOwner);
             }
+            // The blocker resolves the same way, and after the ownership
+            // check: a caller waiting a row that is not its own hears
+            // that, not what its `on` says.
+            let on = match on {
+                Some(stated) => {
+                    Some(tasks[find_task_index(tasks, project_name, stated)?].id.clone())
+                }
+                None => None,
+            };
             let prior = tasks[index].status;
             tasks[index].waiting_on =
-                Some(Waiting { kind: Some(kind), detail, on: on.cloned(), verification: false });
+                Some(Waiting { kind: Some(kind), detail, on, verification: false });
             tasks[index].status = TaskStatus::Waiting;
             tasks[index].updated_at = at;
             Ok((tasks[index].clone(), prior))
@@ -803,6 +912,12 @@ mod tests {
 
     fn sample_task_with_parent(id: &str, parent: Option<&str>, project: &str) -> Task {
         Task { parent: parent.map(TaskId::from), ..sample_task(id, project) }
+    }
+
+    /// A row whose subject is its own words, so a refusal naming the rows
+    /// it matched reads in the assertion that names them too.
+    fn named_task(id: &str, subject: &str, project: &str) -> Task {
+        Task { subject: subject.to_owned(), ..sample_task(id, project) }
     }
 
     #[test]
@@ -1300,6 +1415,181 @@ mod tests {
             .claim_task("proj", &worker, None, Some(&TaskId::from("epic")))
             .expect("a ready row is there");
         assert_eq!(claimed.id, TaskId::from("early"), "the top ready row by rank");
+    }
+
+    /// A worker is handed a row by the short id a person writes, so an
+    /// id a caller states resolves to the row it names: exactly when the
+    /// id is complete, and by unique prefix otherwise. Two rows sharing
+    /// the prefix is a refusal that names them - not the "no such row"
+    /// that sends the caller back to the board to copy a uuid.
+    #[test]
+    fn a_claim_resolves_a_stated_id_by_exact_or_unique_prefix() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-claim-prefix");
+        ws.push_task(named_task("7ed0aaaa-0000-4000-8000-000000000001", "fix the rail", "proj"));
+        ws.push_task(named_task("7ed0bbbb-0000-4000-8000-000000000002", "add tests", "proj"));
+        ws.push_task(named_task("epic-7ed0aaaa-0000-4000-8000-000000000003", "the epic", "proj"));
+        ws.push_task(Task {
+            parent: Some(TaskId::from("epic-7ed0aaaa-0000-4000-8000-000000000003")),
+            ..named_task("child-1", "the child", "proj")
+        });
+        let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
+
+        let refused = ws
+            .claim_task("proj", &worker, Some(&TaskId::from("7ed0")), None)
+            .expect_err("two rows carry that prefix");
+        let said = refused.to_string();
+        assert!(said.contains("7ed0aaaa-0000-4000-8000-000000000001"), "one row is named: {said}");
+        assert!(said.contains("7ed0bbbb-0000-4000-8000-000000000002"), "and the other: {said}");
+
+        let unknown = ws
+            .claim_task("proj", &worker, Some(&TaskId::from("ffff")), None)
+            .expect_err("no row carries that prefix");
+        assert!(
+            unknown.to_string().contains("no such row"),
+            "an id naming no row answers as it always did: {unknown}",
+        );
+
+        let claimed = ws
+            .claim_task("proj", &worker, Some(&TaskId::from("7ed0bb")), None)
+            .expect("one row carries that prefix");
+        assert_eq!(
+            claimed.id,
+            TaskId::from("7ed0bbbb-0000-4000-8000-000000000002"),
+            "the prefix landed on its row",
+        );
+
+        let other = SessionSlot::worker("TestOrg", "proj", "w-2");
+        let by_epic = ws
+            .claim_task("proj", &other, None, Some(&TaskId::from("epic-7ed0")))
+            .expect("one row carries that prefix");
+        assert_eq!(
+            by_epic.id,
+            TaskId::from("child-1"),
+            "an epic is named the same way: the prefix pulled its ready child",
+        );
+    }
+
+    #[test]
+    fn an_update_resolves_a_stated_id_by_exact_or_unique_prefix() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-update-prefix");
+        // Child rows: completing a ROOT closes and archives, which is its
+        // own test.
+        ws.push_task(Task {
+            parent: Some(TaskId::from("epic")),
+            ..named_task("7ed0aaaa-0000-4000-8000-000000000001", "fix the rail", "proj")
+        });
+        ws.push_task(Task {
+            parent: Some(TaskId::from("epic")),
+            ..named_task("7ed0bbbb-0000-4000-8000-000000000002", "add tests", "proj")
+        });
+        let seat = By::Seat(SessionSlot::lead("TestOrg", "proj"));
+
+        let refused = ws
+            .update_task("proj", &TaskId::from("7ed0"), seat.clone(), |task| {
+                task.status = TaskStatus::Completed;
+            })
+            .expect_err("two rows carry that prefix");
+        let said = refused.to_string();
+        assert!(
+            said.contains("7ed0aaaa-0000-4000-8000-000000000001")
+                && said.contains("7ed0bbbb-0000-4000-8000-000000000002"),
+            "the refusal names both rows it matched: {said}",
+        );
+
+        let moved = ws
+            .update_task("proj", &TaskId::from("7ed0bb"), seat, |task| {
+                task.status = TaskStatus::Completed;
+            })
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(moved.id, TaskId::from("7ed0bbbb-0000-4000-8000-000000000002"));
+        assert_eq!(moved.status, TaskStatus::Completed, "the prefix moved its own row");
+    }
+
+    #[test]
+    fn a_wait_resolves_a_stated_id_by_exact_or_unique_prefix() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-wait-prefix");
+        ws.push_task(named_task("7ed0aaaa-0000-4000-8000-000000000001", "fix the rail", "proj"));
+        ws.push_task(named_task("7ed0bbbb-0000-4000-8000-000000000002", "add tests", "proj"));
+        let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
+        ws.claim_task("proj", &worker, Some(&TaskId::from("7ed0bb")), None)
+            .expect("claim by prefix");
+
+        // The blocker resolves the same way, and the full id is what
+        // lands in the wait - the release matches it exactly.
+        let waited = ws
+            .wait_task(
+                "proj",
+                &TaskId::from("7ed0bb"),
+                &worker,
+                WaitingKind::Dependency,
+                None,
+                Some(&TaskId::from("7ed0aa")),
+            )
+            .expect("the owner may wait its own row");
+        assert_eq!(waited.id, TaskId::from("7ed0bbbb-0000-4000-8000-000000000002"));
+        assert_eq!(
+            waited.waiting_on.as_ref().and_then(|wait| wait.on.clone()),
+            Some(TaskId::from("7ed0aaaa-0000-4000-8000-000000000001")),
+            "the blocker is stored as the row its prefix named",
+        );
+
+        let refused = ws
+            .wait_task("proj", &TaskId::from("7ed0"), &worker, WaitingKind::Decision, None, None)
+            .expect_err("two rows carry that prefix");
+        assert!(
+            refused.to_string().contains("7ed0bbbb-0000-4000-8000-000000000002"),
+            "the refusal names the rows it matched: {refused}",
+        );
+    }
+
+    /// The row's owner reads before its blocker does: a caller waiting a
+    /// row that is not its own hears that, whatever it puts in `on`.
+    #[test]
+    fn a_wait_checks_ownership_before_it_resolves_the_blocker() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-wait-owner-first");
+        ws.push_task(sample_task("t-1", "proj"));
+        let holder = SessionSlot::worker("TestOrg", "proj", "w-1");
+        ws.claim_task("proj", &holder, Some(&TaskId::from("t-1")), None).expect("claim");
+
+        let other = SessionSlot::worker("TestOrg", "proj", "w-2");
+        assert_eq!(
+            ws.wait_task(
+                "proj",
+                &TaskId::from("t-1"),
+                &other,
+                WaitingKind::Dependency,
+                None,
+                Some(&TaskId::from("ghost")),
+            ),
+            Err(MoveError::NotOwner),
+            "the refusal is about the row, not the blocker it named",
+        );
+    }
+
+    /// An exact id is a name, not a prefix of somebody else's: the row it
+    /// spells wins over the rows it merely starts.
+    #[test]
+    fn an_exact_id_wins_over_a_longer_id_it_prefixes() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-exact-wins");
+        ws.push_task(named_task("7ed0", "the exact row", "proj"));
+        ws.push_task(named_task("7ed0bbbb-0000-4000-8000-000000000002", "the longer row", "proj"));
+        let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
+
+        let claimed = ws
+            .claim_task("proj", &worker, Some(&TaskId::from("7ed0")), None)
+            .expect("the exact id names its row");
+        assert_eq!(claimed.id, TaskId::from("7ed0"), "the exact row, not the one it prefixes");
     }
 
     #[test]

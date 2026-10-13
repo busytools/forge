@@ -7434,4 +7434,49 @@ mod lead_charter_tests {
             "no fixed worker figure in the prose - the cap is the config's: {DEFAULT_LEAD_CHARTER}",
         );
     }
+
+    /// The guardrails say what a lead serializes; this rule says what a
+    /// lead must NOT - a read-only stage queued behind a write idles for
+    /// the whole write and reads as waiting rather than blocked. The
+    /// one-question test is pinned with its verdict, since the verdict is
+    /// what stops a cautious lead from holding a whole chain.
+    #[test]
+    fn lead_charter_carries_the_serialize_the_write_rule() {
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains("**Serialize the write, not the read.**"),
+            "the rule's handle is pinned: {DEFAULT_LEAD_CHARTER}",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains("ask which of its next stages touches shared state"),
+            "the test before a HOLD is pinned: {DEFAULT_LEAD_CHARTER}",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains(
+                "if I start this now, what does it touch? If nothing shared, it starts now, \
+                 whatever the merge order"
+            ),
+            "the test question and its verdict are pinned together: {DEFAULT_LEAD_CHARTER}",
+        );
+    }
+
+    /// The gate is independent review lenses, not the lead's own read of
+    /// the diff - pinned with the fresh-install guard, so the sentence can
+    /// never read as a mandate for tooling that is not there.
+    #[test]
+    fn lead_charter_carries_the_merge_gate_lens_rule() {
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains("The merge gate is not met by a solo diff-read"),
+            "the rule's handle is pinned: {DEFAULT_LEAD_CHARTER}",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER
+                .contains("independent review lenses where they exist are what satisfies it"),
+            "the lenses and their condition are pinned: {DEFAULT_LEAD_CHARTER}",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER
+                .contains("nothing here mandates tooling a fresh install does not have"),
+            "the fresh-install guard is pinned: {DEFAULT_LEAD_CHARTER}",
+        );
+    }
 }
