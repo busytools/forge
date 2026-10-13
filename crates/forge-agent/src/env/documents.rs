@@ -34,8 +34,11 @@ pub enum DocumentRefusal {
 
 /// Read one document out of `cwd`'s tree.
 ///
-/// `path` resolves against `cwd`; `reviewable` rides the read back, refused
-/// for a PDF because a PDF opens read-only always. The read is bounded by
+/// `path` resolves against `cwd`. The read answers whether the DOCUMENT is
+/// reviewable - a markdown or text kind is, and a PDF opens read-only - so a
+/// viewer's door does not depend on how the page was reached. The request's
+/// `reviewable` flag asks the hand-off's own question and is refused for a
+/// PDF, whose kind can never carry a review. The read is bounded by
 /// `ceiling_bytes`, and a refusal names its reason.
 pub fn read(
     cwd: &Path,
@@ -92,7 +95,14 @@ pub fn read(
         return Err(DocumentRefusal::NotUtf8 { path: path.to_owned() });
     }
     let content_hash = crate::env::git_diff::resolver::content_hash_bytes(&bytes);
-    Ok(DocumentRead { path: resolved, kind, bytes, reviewable, content_hash })
+    let can_review = reviewable_kind(&kind);
+    Ok(DocumentRead { path: resolved, kind, bytes, reviewable: can_review, content_hash })
+}
+
+/// Whether a kind can carry a review at all: markdown and text draw as
+/// comment targets, and a PDF or an unrecognised kind opens read-only.
+fn reviewable_kind(kind: &DocumentKind) -> bool {
+    matches!(kind, DocumentKind::Markdown | DocumentKind::Text)
 }
 
 /// The canonical target of `path` under `root`. A missing file has no
@@ -195,7 +205,7 @@ mod tests {
         assert_eq!(document.kind, DocumentKind::Markdown);
         assert_eq!(document.bytes, b"# hi\n");
         assert_eq!(document.path, root.join("docs/readme.md"), "the resolved absolute path");
-        assert!(!document.reviewable, "the flag the hand-off passed rides the read");
+        assert!(document.reviewable, "a markdown document is reviewable whoever opened it");
         assert_eq!(
             document.content_hash,
             crate::env::git_diff::resolver::content_hash_bytes(b"# hi\n"),
@@ -221,6 +231,29 @@ mod tests {
         assert_eq!(kind("notes.txt"), DocumentKind::Text);
         assert_eq!(kind("sketch.rs"), DocumentKind::Other("rs".to_owned()));
         assert_eq!(kind("LICENSE"), DocumentKind::Other(String::new()), "no extension, none kept");
+    }
+
+    /// **The read answers whether the DOCUMENT is reviewable, not what the
+    /// caller asked.** A markdown or text document a viewer opened cold -
+    /// the request flag false - is reviewable all the same, so the page
+    /// draws its review however the reader reached it; a PDF and an
+    /// unrecognised kind are not, whatever the caller asked for.
+    #[test]
+    fn the_read_answers_the_documents_own_reviewability_not_the_callers_flag() {
+        let dir = fixture();
+        write(dir.path(), "plan.md", b"# hi\n");
+        write(dir.path(), "notes.txt", b"x");
+        write(dir.path(), "paper.pdf", b"%PDF-1.4 fake");
+        write(dir.path(), "sketch.rs", b"fn main() {}");
+
+        for probe in ["plan.md", "notes.txt"] {
+            let cold = read(dir.path(), probe, false, CEILING).expect("reads");
+            assert!(cold.reviewable, "{probe}: reviewable however the reader got there");
+        }
+        for probe in ["paper.pdf", "sketch.rs"] {
+            let read_only = read(dir.path(), probe, false, CEILING).expect("reads");
+            assert!(!read_only.reviewable, "{probe}: read-only whatever the caller asked");
+        }
     }
 
     #[test]

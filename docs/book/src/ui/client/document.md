@@ -13,14 +13,16 @@ It lives at `/doc/{org}/{project}/{label}/{path...}`, with the document's
 resolved absolute path as the trailing segments: **the document IS the
 address**, so a hand-off and a deep link spell one. `reviewable` and the
 parked call's id ride the ask's Open into the route rather than the address
-itself - an address read back from the URL carries neither (the read decides
-`reviewable` again where it opens, and a deep-linked viewer has no parked
-call to release). The page draws no header: the tab names the file, and the
-document is the whole of what is on screen.
+itself - an address read back from the URL carries neither, and a
+deep-linked viewer has no parked call to release. Neither changes what the
+page draws: the read answers whether the DOCUMENT is reviewable, so a cold
+open draws the same door a hand-off's Open does, and the parked call is the
+only thing the hand-off adds. The page draws no header: the tab names the
+file, and the document is the whole of what is on screen.
 
-A document the agent flagged **reviewable** draws as its rendered blocks and
-can carry comments; everything else opens read-only, with no comment
-affordance anywhere.
+A readable markdown or text document draws as its rendered blocks and can
+carry comments, whoever opened it. A PDF and any other kind open read-only,
+with no comment affordance anywhere.
 
 ## What it draws
 
@@ -28,7 +30,7 @@ affordance anywhere.
 | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | The ask               | the dock's card: `document hand-off`, the resolved path, **Open** and **Not now**                                                                                                                                                                           | the `document_hand_off_pending` update (and the seat's `pending_asks` read, for a client that attached while the ask waited) |
 | The document          | markdown rendered by the chat's own renderer; plain text as text; a PDF in the surface's own viewer; any other kind named as itself                                                                                                                         | the `document_read` answer: `document_kind` and the bytes                                                                    |
-| A reviewable document | its top-level blocks, each one a comment target: hover (or focus) marks the block, a press opens the composer under it                                                                                                                                      | the answer's `threads` and the page's own drafts                                                                             |
+| A readable markdown or text document | its top-level blocks, each one a comment target: hover (or focus) marks the block, a press opens the composer under it                                                                                                                        | the answer's `threads` and the page's own drafts                                                                             |
 | Outdated comments     | written against an earlier version of this document: their captured lines kept, in their own section - nothing re-anchors them                                                                                                                              | each thread's anchor `content_hash` against the answer's                                                                     |
 | The done              | the one door, in every state: `done (n)` files the drafts as one round, pushes the review-ready line into the chat, releases the parked hand-off with what was filed, and returns to the session; a refusal draws the core's own words and keeps the drafts | `submit_review`'s reply, then `answer_document_hand_off`                                                                     |
 | The chat line         | `Review #N ready on the document - address it via the review MCP (review__list, with the scope doc:<path>)`, the core's own nudge                                                                                                                       | the page's own dispatch after the finish                                                                                     |
@@ -62,9 +64,9 @@ draw replacement characters as if they were the document.
 **A PDF opens read-only, and the reviewable flag on one is refused with the
 reason.** The refusal is the read's own and happens before any raise: the
 hand-off tool answers with the sentence and nothing asks the reader, and an
-address read back from the URL re-decides `reviewable` false, so the viewer
-never asks - the sentence reaches a reader as the tool's answer and as a raw
-read's error, never as a drawn line, because the kind is the path's
+address read back from the URL carries no hand-off, so the viewer never asks
+for one reviewable - the sentence reaches a reader as the tool's answer and
+as a raw read's error, never as a drawn line, because the kind is the path's
 extension and a `.pdf` path is refused at the hand-off itself. A
 PDF rides the platform's own viewer: WKWebView renders one natively (the
 desktop app; measured), every browser does (Chromium measured), and the
@@ -117,16 +119,16 @@ the refusal's words are what the page draws.
   ("a hand-off is waiting"), and the seat's activity mark is Attention
   while it waits, exactly like a permission or a question.
 - **Markdown**: rendered with the chat's renderer - raw HTML never reaches
-  the page - and the same `.prose` rules the conversation draws with, on
-  the sheet below.
+  the page - as its top-level blocks, on the sheet below.
 - **The sheet**: the document rests on the app like a page on a desk - one
   panel at a comfortable measure, a hairline over every section, the
   reading scale of the drawing beside this page. The space around it is the
   desk, and the PDF state is the one exception (the platform's viewer takes
   the window).
-- **A reviewable markdown or text document**: the rendered blocks instead,
-  every block a focusable comment target, with its comments placed under
-  their blocks and its drafts under theirs.
+- **A readable markdown or text document**: the rendered blocks, every block
+  a focusable comment target, with its comments placed under their blocks and
+  its drafts under theirs - a cold open included, which draws the same door a
+  hand-off's Open does.
 - **A comment being written**: the composer opens under the block, with its
   own comment and cancel pair; a written comment draws as `drafted` until
   the done files it.
@@ -136,7 +138,8 @@ the refusal's words are what the page draws.
 - **Done**: `done - review left (R{n})`, and the agent has it.
 - **Comments written against an earlier version**: their own section at the
   document's end, each with the captured lines it was written beside.
-- **Plain text**: a wrapping `pre`, decoded once; markup in it stays text.
+- **Plain text**: wrapping rows, decoded once and each one a comment target;
+  markup in it stays text.
 - **A PDF**: the platform's embed over a blob of the bytes, sized to the
   page. On the phone, pdf.js renders each page to a canvas at the column's
   width; a failure in that render draws its own line rather than an empty

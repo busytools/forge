@@ -78,22 +78,23 @@ describe('the document viewer', () => {
 
     expect(document.querySelector('.doc-said')?.textContent).toContain('not UTF-8');
     expect(document.querySelector('.prose')).toBeNull();
-    expect(document.querySelector('.doc-text')).toBeNull();
+    expect(document.querySelector('.doc-block'), 'and no body either').toBeNull();
   });
 
-  it('renders markdown as the chat renders prose', () => {
+  it('renders markdown as the chat renders prose, never as its own marks', () => {
     draw({ kind: 'landed', document_kind: 'markdown', bytes: enc('# hi\n\ntext') });
 
-    const prose = document.querySelector('.prose');
-    expect(prose?.querySelector('h1')?.textContent).toBe('hi');
-    expect(prose?.textContent).toContain('text');
+    const heading = document.querySelector('.doc-body h1');
+    expect(heading?.textContent, 'the heading is an element').toBe('hi');
+    expect(document.querySelector('.doc-body')?.textContent).toContain('text');
+    expect(text(), 'no raw mark reaches the page').not.toContain('# hi');
   });
 
   it('renders plain text as text, not as markup', () => {
     draw({ kind: 'landed', document_kind: 'text', bytes: enc('<b>not bold</b>\nline') });
 
-    const pre = document.querySelector('.doc-text');
-    expect(pre?.textContent).toBe('<b>not bold</b>\nline');
+    const rows = [...document.querySelectorAll('.doc-body .doc-raw')].map((row) => row.textContent);
+    expect(rows).toEqual(['<b>not bold</b>', 'line']);
     expect(document.querySelector('b'), 'no markup was parsed out of it').toBeNull();
   });
 
@@ -138,7 +139,92 @@ describe('the document viewer', () => {
 });
 
 /**
- * The comment affordance: a reviewable document draws as its own lines,
+ * **The door belongs to the document, not to how the page was reached.** A
+ * reader the app opens cold on its last address, keeps a link to, or
+ * reloads asks for the document with no hand-off behind it, and the read
+ * answers what the DOCUMENT is: a readable markdown or text document is
+ * reviewable, so the page draws its blocks and the comments it already
+ * carries exactly as a hand-off's Open does. The parked call is the only
+ * thing a hand-off adds, and the done is what answers it.
+ */
+describe('the cold open', () => {
+  /** A comment the document already carries, written against this content. */
+  const held = {
+    id: 'd-1',
+    anchor: {
+      path: PATH,
+      side: 'New',
+      line: 2,
+      content_hash: '42',
+      context: ['line two'],
+      base_ref: `doc:${PATH}`,
+    },
+    comments: [{ author: 'User', text: 'from an earlier read', at: 'x', review_id: null }],
+    status: 'Open',
+    created_at: 'x',
+    updated_at: 'x',
+    commit: null,
+  };
+
+  it("draws the door and the document's own comments with no hand-off behind it", () => {
+    const page = fakeDoc({
+      kind: 'landed',
+      document_kind: 'markdown',
+      bytes: enc('# hi\nline two\nline three'),
+      content_hash: '42',
+      threads: [held],
+    });
+    app = mount(Document, {
+      target: document.body,
+      props: { slot: SLOT, path: PATH, reviewable: false, connection: page.connection },
+    });
+    flushSync();
+
+    expect(page.reads, 'the cold open asks with the route it was handed').toEqual([
+      { slot: SLOT, path: PATH, reviewable: false },
+    ]);
+    expect(blockTarget('line two'), 'the comment target is here with no hand-off').toBeDefined();
+    expect(
+      document.querySelector('.doc-note')?.textContent,
+      'and the comment the document already carries is drawn',
+    ).toContain('from an earlier read');
+    expect(buttonByText('done'), 'with the one door every state carries').toBeDefined();
+  });
+
+  it('answers the parked call on the same door when a hand-off did raise it', async () => {
+    const page = fakeDoc({
+      kind: 'landed',
+      document_kind: 'markdown',
+      bytes: enc('# hi\nline two\nline three'),
+      content_hash: '42',
+      threads: [held],
+    });
+    app = mount(Document, {
+      target: document.body,
+      props: {
+        slot: SLOT,
+        path: PATH,
+        reviewable: true,
+        handoff: 'h-1',
+        connection: page.connection,
+      },
+    });
+    flushSync();
+
+    expect(blockTarget('line two'), 'the same door a cold open draws').toBeDefined();
+    buttonByText('done').click();
+    await vi.waitFor(() => {
+      expect(document.querySelector('.doc-left')).not.toBeNull();
+    });
+    const answered = (page.sent as Record<string, Record<string, unknown>>[]).find(
+      (command) => 'answer_document_hand_off' in command,
+    )?.['answer_document_hand_off'] as { id?: unknown } | undefined;
+    expect(answered?.id, 'and the parked call the hand-off added is answered').toBe('h-1');
+  });
+});
+
+/**
+ * The comment affordance: a readable document draws as its own lines,
  * each one a target; a comment anchors to the raw file's numbering and is
  * upserted the moment it is written; the finish files the drafts as one
  * review, through the same commands a code review rides.

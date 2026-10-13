@@ -115,6 +115,47 @@
         font-size: 15px;
         line-height: 1.72;
       }
+      /* a readable markdown or text document: every top-level block is a
+         comment target - the block under the pointer is marked and a press
+         opens the composer under it. The door belongs to the document, so a
+         cold open draws this exactly as a hand-off's Open does. */
+      .doc-blocks {
+        font-size: var(--fs-base);
+      }
+      .doc-block {
+        position: relative;
+        border-radius: 6px;
+        padding: 2px 10px;
+        margin: 0 -10px;
+        cursor: pointer;
+      }
+      .doc-block:hover,
+      .doc-block.target {
+        background: var(--s1);
+        box-shadow: inset 2px 0 0 var(--accent);
+      }
+      .doc-block > :first-child {
+        margin-top: 0;
+      }
+      .doc-block > :last-child {
+        margin-bottom: 0;
+      }
+      .doc-note {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: baseline;
+        margin: 4px 0 8px 2.2rem;
+        padding: 6px 10px;
+        background: var(--s1);
+        border-left: 2px solid var(--line);
+        border-radius: 0 var(--r) var(--r) 0;
+        font-size: var(--fs-base);
+      }
+      .doc-who {
+        color: var(--muted);
+        font-size: var(--fs-label);
+      }
       .pending {
         color: var(--muted);
         font-size: var(--fs-base);
@@ -401,66 +442,87 @@
   <body>
     <main class="wrap doc">
       <article class="doc-body">
-        <div class="prose">
-          <h1>Forge file hand-off &middot; the plan</h1>
-          <p>
-            The agent hands the reader a document, and it opens here: the
-            client's own viewer, on every surface the client runs. This drawing
-            is the ordinary state - a markdown document, rendered by the same
-            module and the same <code>Prose</code> component the chat draws its
-            prose with.
-          </p>
-          <h2>The ask, and the done</h2>
-          <ul>
-            <li>
-              The hand-off arrives as the dock's ask - <strong>Open</strong> or
-              <strong>Not now</strong> - and Open lands here, at the document's
-              resolved path.
-            </li>
-            <li>
-              The parked call waits: the reader's <strong>done</strong> files
-              their comments as one review and answers with what was filed, so
-              the agent hears what the reading produced.
-            </li>
-          </ul>
-          <blockquote>
+        <div class="doc-blocks">
+          <div class="doc-block">
+            <h1>Forge file hand-off &middot; the plan</h1>
+          </div>
+          <div class="doc-block">
             <p>
-              Not now answers the decline; the open answers nothing; the done
-              answers the review.
+              The agent hands the reader a document, and it opens here: the
+              client's own viewer, on every surface the client runs. This
+              drawing is the ordinary state - a markdown document, its
+              top-level blocks rendered by the same module the chat draws its
+              prose with, and every block a comment target whether the page was
+              handed over or opened cold.
             </p>
-          </blockquote>
-          <p>A fence takes the chat's own code panel:</p>
-          <div class="code">
-            <div class="head">toml</div>
-            <pre>
+          </div>
+          <div class="doc-block target">
+            <h2>The ask, and the done</h2>
+          </div>
+          <div class="doc-note">
+            <span class="doc-who">you</span>
+            <div class="prose"><p>name the two verbs here</p></div>
+          </div>
+          <div class="doc-block">
+            <ul>
+              <li>
+                The hand-off arrives as the dock's ask - <strong>Open</strong>
+                or <strong>Not now</strong> - and Open lands here, at the
+                document's resolved path.
+              </li>
+              <li>
+                The parked call waits: the reader's <strong>done</strong> files
+                their comments as one review and answers with what was filed,
+                so the agent hears what the reading produced.
+              </li>
+            </ul>
+          </div>
+          <div class="doc-block">
+            <blockquote>
+              <p>
+                Not now answers the decline; the open answers nothing; the done
+                answers the review.
+              </p>
+            </blockquote>
+          </div>
+          <div class="doc-block">
+            <p>A fence takes the chat's own code panel:</p>
+            <div class="code">
+              <div class="head">toml</div>
+              <pre>
 [documents]
 max_size_mib = 10</pre>
+            </div>
           </div>
-          <table>
-            <tr>
-              <th>surface</th>
-              <th>the PDF rides</th>
-            </tr>
-            <tr>
-              <td>desktop app</td>
-              <td>WKWebView's own viewer (measured)</td>
-            </tr>
-            <tr>
-              <td>a browser</td>
-              <td>its own viewer (Chromium measured)</td>
-            </tr>
-            <tr>
-              <td>the phone</td>
-              <td>pdf.js, in the page</td>
-            </tr>
-          </table>
+          <div class="doc-block">
+            <table>
+              <tr>
+                <th>surface</th>
+                <th>the PDF rides</th>
+              </tr>
+              <tr>
+                <td>desktop app</td>
+                <td>WKWebView's own viewer (measured)</td>
+              </tr>
+              <tr>
+                <td>a browser</td>
+                <td>its own viewer (Chromium measured)</td>
+              </tr>
+              <tr>
+                <td>the phone</td>
+                <td>pdf.js, in the page</td>
+              </tr>
+            </table>
+          </div>
           <hr />
-          <p>
-            The document sits on the app as a page on a desk: one panel at a
-            reading measure, a hairline over every section, and a plain-text
-            document wraps inside it - the sheet has no sideways scroller
-            anywhere.
-          </p>
+          <div class="doc-block">
+            <p>
+              The document sits on the app as a page on a desk: one panel at a
+              reading measure, a hairline over every section, and a plain-text
+              document wraps inside it - the sheet has no sideways scroller
+              anywhere.
+            </p>
+          </div>
         </div>
       </article>
 
@@ -498,9 +560,9 @@ max_size_mib = 10</pre>
         </div>
         <div class="state">
           <div class="cap">
-            a reviewable document: its rendered blocks, each one a comment
-            target - a comment under its block, a draft, the composer open under
-            the marked block, and the done
+            a comment being written: the composer opens under the block, a
+            written comment draws as drafted until the done files it, and the
+            marked block is the one the comment is anchored to
           </div>
           <div class="doc-blocks">
             <div class="doc-block">
