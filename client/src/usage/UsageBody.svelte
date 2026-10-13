@@ -41,7 +41,7 @@
 </script>
 
 <main class="wrap usage">
-  <header class="top">
+  <header class="top pagetop">
     <div class="brand">
       <Brand name={mark} />
       <span class="word">forge</span>
@@ -155,7 +155,7 @@
         <td class="cr">{table.total.cacheRead}</td>
         <td class="out">{table.total.output}</td>
         <td class="tk">{table.total.tokens}</td>
-        <td class="cost gt">{table.total.cost}</td>
+        <td class="cost">{table.total.cost}</td>
       </tr>
     </tfoot>
   </table>

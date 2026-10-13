@@ -172,6 +172,19 @@ header.top {
   position: relative; top: -1px; }
 .brand .mark svg { display: block; width: 100%; height: 100%; }
 .brand .word { font-size: 22px; font-weight: 650; letter-spacing: -.02em; }
+/* The title-and-back chrome of a page header, shared by the pages that wear
+   that shape (`pagetop`); the home's and the review's headers are shapes of
+   their own and stay unmarked. This block was two copies of itself before
+   the usage page arrived as a third. */
+header.top.pagetop .title { display: flex; flex-direction: column; }
+header.top.pagetop .title .t { font-size: var(--fs-title); font-weight: 650;
+  letter-spacing: -.01em; color: var(--text); }
+header.top.pagetop .title .s { font-family: var(--mono); font-size: var(--fs-label);
+  color: var(--dim); }
+header.top.pagetop .back { margin-left: auto; font-family: var(--mono);
+  font-size: var(--fs-label); color: var(--muted); text-decoration: none;
+  border: 1px solid var(--line); border-radius: 9px; padding: 6px 11px; }
+header.top.pagetop .back:hover { border-color: var(--ctl); color: var(--text); }
 .versions { font-family: var(--mono); font-size: 13.5px; color: var(--dim); }
 .versions b { color: var(--muted); font-weight: 500; }
 /* The installed version is context; an available update is something to
@@ -2892,14 +2905,8 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
    the header, the band card's gradient, the chip, the empty box and the four
    state shapes - are the shipped ones; these are the page's own layout. */
 
-.models .title { display: flex; flex-direction: column; }
-.models .title .t { font-size: var(--fs-title); font-weight: 650; letter-spacing: -.01em;
-  color: var(--text); }
-.models .title .s { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
-.models .back { margin-left: auto; font-family: var(--mono); font-size: var(--fs-label);
-  color: var(--muted); text-decoration: none; border: 1px solid var(--line);
-  border-radius: 9px; padding: 6px 11px; }
-.models .back:hover { border-color: var(--ctl); color: var(--text); }
+/* The page's title and back chrome is the shared `header.top.pagetop`
+   block's, up with `header.top` itself. */
 /* The one line a page with no read yet draws, and the one a refused
    subscription draws: the session page's own pending treatment. */
 .models .pending { color: var(--muted); font-size: var(--fs-base); margin-top: 12vh;
@@ -3205,10 +3212,9 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
   font-weight: 650; }
 
 @media (pointer: coarse) {
-  /* A button already takes the 44 from the shared rule; the pick chips and
-     the way back are the two it cannot reach here. */
-  .usage .pick, .usage .back { min-height: 44px; }
-  .usage .back { display: inline-flex; align-items: center; }
+  /* The pick chips are buttons and take the 44 from the shared rule; the way
+     back is the one it cannot reach here. */
+  .usage .back { min-height: 44px; display: inline-flex; align-items: center; }
 }
 
 @media (max-width: 700px) {
@@ -3502,14 +3508,8 @@ details[open] > summary .arw { opacity: 1; }
 .extensions .btn:disabled { opacity: .5; cursor: default; }
 
 /* the header's name block and the way back */
-.extensions .title { display: flex; flex-direction: column; }
-.extensions .title .t { font-size: var(--fs-title); font-weight: 650; letter-spacing: -.01em;
-  color: var(--text); }
-.extensions .title .s { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
-.extensions .back { margin-left: auto; font-family: var(--mono); font-size: var(--fs-label);
-  color: var(--muted); text-decoration: none; border: 1px solid var(--line);
-  border-radius: 9px; padding: 6px 11px; }
-.extensions .back:hover { border-color: var(--ctl); color: var(--text); }
+/* The page's title and back chrome is the shared `header.top.pagetop`
+   block's, up with `header.top` itself. */
 
 /* the refusal line: the core's own words, above the page */
 .extensions .ext-said { margin: 0 0 14px; padding: 9px 13px; border-radius: 10px;

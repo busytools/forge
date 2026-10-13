@@ -235,7 +235,7 @@
   }
 </script>
 
-<header class="top">
+<header class="top pagetop">
   <span class="brand"><Brand name={mark} /><span class="word">forge</span></span>
   <span class="title"
     ><span class="t">extensions</span><span class="s">everything this forge can run</span></span

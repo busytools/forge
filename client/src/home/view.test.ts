@@ -591,6 +591,7 @@ describe('a row over the fleet', () => {
       'server',
       'dictation',
       'accounts',
+      'usage',
     ]);
   });
 
@@ -943,8 +944,9 @@ describe('the band', () => {
       'server',
       'dictation',
       'accounts',
+      'usage',
     ]);
-    expect(cards.map((entry) => entry.href)).toEqual([null, '/connect', '/models', null]);
+    expect(cards.map((entry) => entry.href)).toEqual([null, '/connect', '/models', null, '/usage']);
   });
 
   it('reads dictation as off when the config turned it off', () => {
