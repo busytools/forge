@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 
 use forge_primitives::runtime::RuntimeSessionState;
-use forge_primitives::{ContentBlock, Message, StopReason};
+use forge_primitives::{ContentBlock, Message, StopReason, ToolCallStatus};
 // The row predicates the fold opens a turn by, which the conversation window
 // reads too: they live in the window's crate so the two share one copy.
 use forge_workspace::conversation_turns::{
@@ -18,7 +18,6 @@ use forge_workspace::conversation_turns::{
 };
 
 use crate::envelope::detect_inbound;
-use crate::model::ToolCallStatus;
 
 /// Where one turn sits in the conversation it was folded from, and what names
 /// it.
@@ -545,9 +544,9 @@ pub(crate) fn task_endings(messages: &[Message]) -> HashMap<String, TaskEnding> 
 
 #[cfg(test)]
 mod tests {
-    use forge_primitives::{AssistantEnvelope, ContentBlock, Message, UserEnvelope};
-
-    use crate::model::ToolCallStatus;
+    use forge_primitives::{
+        AssistantEnvelope, ContentBlock, Message, ToolCallStatus, UserEnvelope,
+    };
 
     use super::{Rendered, TaskEnding, render, task_ending};
 

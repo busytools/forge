@@ -25,7 +25,6 @@ pub mod file_index;
 mod fixtures;
 pub mod live;
 pub mod logging;
-pub mod model;
 pub mod startup;
 pub mod subagents;
 pub mod surface;
