@@ -618,18 +618,19 @@ impl Workspace {
         let at = SystemTime::now();
         let outcome = self.with_tasks_mut(|tasks| {
             let index = find_task_index(tasks, project_name, id)?;
-            // The blocker resolves the same way: stored as stated, a short
-            // id would name no row when the release matches it.
+            let owner = tasks[index].owner.as_ref().map(SessionSlot::label).map(str::to_owned);
+            if owner.as_deref() != Some(slot.label()) {
+                return Err(MoveError::NotOwner);
+            }
+            // The blocker resolves the same way, and after the ownership
+            // check: a caller waiting a row that is not its own hears
+            // that, not what its `on` says.
             let on = match on {
                 Some(stated) => {
                     Some(tasks[find_task_index(tasks, project_name, stated)?].id.clone())
                 }
                 None => None,
             };
-            let owner = tasks[index].owner.as_ref().map(SessionSlot::label).map(str::to_owned);
-            if owner.as_deref() != Some(slot.label()) {
-                return Err(MoveError::NotOwner);
-            }
             let prior = tasks[index].status;
             tasks[index].waiting_on =
                 Some(Waiting { kind: Some(kind), detail, on, verification: false });
@@ -1545,6 +1546,32 @@ mod tests {
         assert!(
             refused.to_string().contains("7ed0bbbb-0000-4000-8000-000000000002"),
             "the refusal names the rows it matched: {refused}",
+        );
+    }
+
+    /// The row's owner reads before its blocker does: a caller waiting a
+    /// row that is not its own hears that, whatever it puts in `on`.
+    #[test]
+    fn a_wait_checks_ownership_before_it_resolves_the_blocker() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-wait-owner-first");
+        ws.push_task(sample_task("t-1", "proj"));
+        let holder = SessionSlot::worker("TestOrg", "proj", "w-1");
+        ws.claim_task("proj", &holder, Some(&TaskId::from("t-1")), None).expect("claim");
+
+        let other = SessionSlot::worker("TestOrg", "proj", "w-2");
+        assert_eq!(
+            ws.wait_task(
+                "proj",
+                &TaskId::from("t-1"),
+                &other,
+                WaitingKind::Dependency,
+                None,
+                Some(&TaskId::from("ghost")),
+            ),
+            Err(MoveError::NotOwner),
+            "the refusal is about the row, not the blocker it named",
         );
     }
 
