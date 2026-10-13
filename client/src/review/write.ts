@@ -268,15 +268,13 @@ function filedNumber(body: unknown): number | null {
   return typeof number === 'number' ? number : null;
 }
 
-/** The nudge a sealed round sends the seat whose branch the review belongs
- *  to: a prompt in that seat's own chat, so the worker hears a review is
- *  ready and reads it through the review MCP. The line is the one the view
- *  this client replaced sent on its own seal. */
-function nudgeCommand(slot: SessionSlot, number: number) {
+/** A nudge as the socket carries it: a prompt into the seat's own chat, so
+ *  the worker reads the line the view this client replaced sent. */
+function nudge(slot: SessionSlot, text: string) {
   return {
     prompt_under: {
       key: slot,
-      text: `Review #${number} ready - address it via the review MCP (\`review__list\`).`,
+      text,
       attachments: [],
       uuid: mintPromptId(),
       source: 'you',
@@ -304,6 +302,34 @@ export async function finishRound(
   const sealed = await send(submitCommand(slot, branch, threadIds, summary));
   if (!sealed.went) return false;
   const number = filedNumber(sealed.body);
-  if (number !== null) await send(nudgeCommand(slot, number));
+  if (number === null) return true;
+  await send(
+    nudge(slot, `Review #${number} ready - address it via the review MCP (\`review__list\`).`),
+  );
+  return true;
+}
+
+/**
+ * The reopen: flip the thread back to open through `send`, then nudge the
+ * seat with the round the reopen is about.
+ *
+ * The round is the thread's LATEST filed one, and a thread no round has
+ * filed reopens under the round-less line; a flip that never left nudges
+ * nobody, because the thread was not reopened.
+ */
+export async function reopenThread(
+  send: (command: unknown) => Promise<SendOutcome>,
+  slot: SessionSlot,
+  branch: string,
+  threadId: string,
+  round: number | null,
+): Promise<boolean> {
+  const flipped = await send(statusCommand(slot, branch, threadId, 'Open'));
+  if (!flipped.went) return false;
+  const line =
+    round === null
+      ? 'Reopened a review comment - take another look via the review MCP (`review__list`).'
+      : `Reopened a comment in review #${round} - take another look via the review MCP (\`review__get\`).`;
+  await send(nudge(slot, line));
   return true;
 }

@@ -9,6 +9,7 @@
   import {
     ageOf,
     authorName,
+    latestRound,
     loopState,
     outdatedThreads,
     parkedReason,
@@ -21,6 +22,7 @@
   import {
     finishRound,
     newThread,
+    reopenThread,
     statusCommand,
     upsertCommand,
     withReply,
@@ -168,7 +170,14 @@
   }
 
   async function reopened(thread: { id: string }): Promise<void> {
-    await write(statusCommand(slot, branch, thread.id, 'Open'));
+    const full = threads.find((held) => held.id === thread.id);
+    await reopenThread(
+      write,
+      slot,
+      branch,
+      thread.id,
+      full === undefined ? null : latestRound(rounds, full),
+    );
   }
 
   async function finish(): Promise<void> {

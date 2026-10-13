@@ -6,6 +6,7 @@ import {
   captureContext,
   finishRound,
   newThread,
+  reopenThread,
   statusCommand,
   submitCommand,
   upsertCommand,
@@ -14,6 +15,31 @@ import {
 } from './write';
 
 const SLOT = { org: 'Busytools', project: 'forge', label: 'lead' };
+
+/** The seat whose review page is being written - the worker's own, which is
+ *  the page a review is keyed to and never the lead's. */
+const WORKER = { org: 'Busytools', project: 'forge', label: 'review-nudge' };
+
+/** A page send: records every command, answers the `submit_review` with
+ *  `body`, and answers `went` for every command when a case needs the write
+ *  to fail (the shape the page's own `write` returns). */
+function recordingSend(
+  body: unknown = null,
+  went = true,
+): {
+  sent: unknown[];
+  send: (c: unknown) => Promise<SendOutcome>;
+} {
+  const sent: unknown[] = [];
+  const send = (command: unknown): Promise<SendOutcome> => {
+    sent.push(command);
+    return Promise.resolve({
+      went,
+      body: 'submit_review' in (command as object) ? body : null,
+    });
+  };
+  return { sent, send };
+}
 
 describe('the anchor capture', () => {
   it("hashes the crate's vectors exactly", () => {
@@ -165,26 +191,6 @@ describe('the commands the page writes', () => {
 });
 
 describe('the finish', () => {
-  /** The seat whose review page is being finished - the worker's own, which
-   *  is the page the review is keyed to and never the lead's. */
-  const WORKER = { org: 'Busytools', project: 'forge', label: 'review-nudge' };
-
-  /** A page send: records every command, and answers the submit with `body`. */
-  function recordingSend(body: unknown): {
-    sent: unknown[];
-    send: (c: unknown) => Promise<SendOutcome>;
-  } {
-    const sent: unknown[] = [];
-    const send = (command: unknown): Promise<SendOutcome> => {
-      sent.push(command);
-      return Promise.resolve({
-        went: true,
-        body: 'submit_review' in (command as object) ? body : null,
-      });
-    };
-    return { sent, send };
-  }
-
   /** A landed submit's reply: the minted round, as the socket delivers it. */
   const LANDED = { id: 'r9', number: 4, summary: null, created_at: 'x' };
 
@@ -235,15 +241,62 @@ describe('the finish', () => {
 
   /** A submit that never left nudges nobody either: there is no review to read. */
   it('nudges nobody when the submit never left', async () => {
-    const sent: unknown[] = [];
-    const send = (command: unknown): Promise<SendOutcome> => {
-      sent.push(command);
-      return Promise.resolve({ went: false, body: null });
-    };
+    const { sent, send } = recordingSend(null, false);
 
     const sealed = await finishRound(send, WORKER, 'work/review-nudge', ['t1'], null);
 
     expect(sealed, 'a submit that never left sealed nothing').toBe(false);
     expect(sent, 'the submit is all that was dispatched').toHaveLength(1);
+  });
+});
+
+describe('the reopen', () => {
+  /**
+   * **The reopen is the other trigger the view this client replaced nudged
+   * on**: flipping a thread back to open tells the worker to look again, and
+   * the line names the round the reviewer is unhappy with - the latest one
+   * the thread is filed into, not its origin.
+   */
+  it('flips the thread open, then nudges the seat with the round the reopen is about', async () => {
+    const { sent, send: write } = recordingSend();
+
+    const went = await reopenThread(write, WORKER, 'work/review-nudge', 't1', 2);
+
+    expect(went, 'the flip went').toBe(true);
+    expect(sent[0], 'the flip is dispatched first').toEqual(
+      statusCommand(WORKER, 'work/review-nudge', 't1', 'Open'),
+    );
+    const nudge = sent[1] as { prompt_under?: Record<string, unknown> } | undefined;
+    expect(nudge?.prompt_under, 'the nudge was not dispatched').toBeDefined();
+    expect(
+      nudge?.prompt_under?.['key'],
+      'the nudge goes to the seat the review belongs to',
+    ).toEqual(WORKER);
+    expect(nudge?.prompt_under?.['text'], 'the words are the view this client replaced sent').toBe(
+      'Reopened a comment in review #2 - take another look via the review MCP (`review__get`).',
+    );
+    expect(nudge?.prompt_under?.['source']).toBe('you');
+  });
+
+  /** A thread no round has filed reopens under the round-less line. */
+  it('reopens with the round-less line when no round is filed', async () => {
+    const { sent, send: write } = recordingSend();
+
+    await reopenThread(write, WORKER, 'work/review-nudge', 't1', null);
+
+    const nudge = sent[1] as { prompt_under?: Record<string, unknown> } | undefined;
+    expect(nudge?.prompt_under?.['text'], 'the words are the view this client replaced sent').toBe(
+      'Reopened a review comment - take another look via the review MCP (`review__list`).',
+    );
+  });
+
+  /** A flip that never left nudges nobody: the thread was not reopened. */
+  it('nudges nobody when the flip never left', async () => {
+    const { sent, send: write } = recordingSend(null, false);
+
+    const went = await reopenThread(write, WORKER, 'work/review-nudge', 't1', 1);
+
+    expect(went, 'a flip that never left reopened nothing').toBe(false);
+    expect(sent, 'the flip is all that was dispatched').toHaveLength(1);
   });
 });

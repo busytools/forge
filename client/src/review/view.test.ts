@@ -6,6 +6,7 @@ import {
   authorName,
   awaitsReviewer,
   canvasLine,
+  latestRound,
   loopState,
   outdatedThreads,
   parkedReason,
@@ -143,6 +144,33 @@ describe('a round and its members', () => {
       roundsNewestFirst([r1, r2]).map((r) => r.number),
       'newest first',
     ).toEqual([2, 1]);
+  });
+
+  it('names the round a reopen is about: the thread latest filed turn', () => {
+    // The view this client replaced read it the same way - the most recent
+    // review the thread has a turn in, because that is the exchange the
+    // reviewer is unhappy with. The origin round would point the worker at
+    // an exchange nobody reopened.
+    const spanning = thread('s', 'resolved', [
+      { author: 'you', review_id: 'r1' },
+      { author: 'agent', review_id: null },
+      { author: 'you', review_id: 'r2' },
+    ]);
+    const answered = thread('a', 'open', [
+      { author: 'you', review_id: 'r1' },
+      { author: 'agent', review_id: null },
+    ]);
+    const drafted = thread('d', 'open', [{ author: 'you', review_id: null }]);
+    const r1 = round('r1', 1);
+    const r2 = round('r2', 2);
+
+    expect(latestRound([r1, r2], spanning), 'the newest round it was sealed into').toBe(2);
+    expect(latestRound([r1, r2], answered), 'an unfiled answer does not clear it').toBe(1);
+    expect(latestRound([r1, r2], drafted), 'nothing filed names no round').toBeNull();
+    expect(
+      latestRound([r1], thread('gone', 'open', [{ author: 'you', review_id: 'r9' }])),
+      'a turn naming a round the read does not carry names none',
+    ).toBeNull();
   });
 
   it('counts a state this build cannot name without folding it into a neighbour', () => {

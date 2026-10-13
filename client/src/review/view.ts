@@ -109,6 +109,18 @@ export function turnRound(
   return reviews.find((review) => review.id === turn.review_id)?.number ?? null;
 }
 
+/**
+ * The round a reopen is about: the most recent review the thread has a turn
+ * in - the exchange the reviewer is unhappy with, never the origin, which
+ * would hand the worker the wrong round. `null` while nothing is filed, or
+ * when the named round is not among the ones read.
+ */
+export function latestRound(reviews: ReviewSetRecord[], thread: ReviewThreadRecord): number | null {
+  const turn = thread.comments.findLast((comment) => comment.review_id !== null);
+  if (turn === undefined) return null;
+  return turnRound(reviews, turn);
+}
+
 /** The rounds newest first, which is the order every surface lists them in. */
 export function roundsNewestFirst(reviews: ReviewSetRecord[]): ReviewSetRecord[] {
   return [...reviews].sort((a, b) => b.number - a.number);
