@@ -57,6 +57,11 @@ fi
 
 if [ -d "$CURRENT" ]; then
     log_warn "both trees exist: keeping $CURRENT as the one in use"
+    if [ ! -f "$CURRENT/db.redb" ] && [ -f "$LEGACY/db.redb" ]; then
+        log_warn "$CURRENT holds no db.redb while the legacy tree does."
+        log_warn "Booting on $CURRENT now starts an EMPTY store beside the real one."
+        log_warn "If the legacy tree is the live state, move it into place by hand before booting."
+    fi
     log_info "the legacy tree is left for you to inspect and delete:"
     report "$LEGACY" "legacy"
     exit 0
