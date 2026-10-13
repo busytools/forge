@@ -56,8 +56,8 @@ accounts = [] list`.
 
 `fallback_accounts` is walked after the org's `accounts`: a fallback
 declaring the project's model outranks a saturated or bailed primary,
-and the primary is taken again once it heals. The names also render in
-the account pool's fallback pin. The list is validated at load
+and the primary is taken again once it heals. The names also carry as
+the fallback pin on the `accounts` subject. The list is validated at load
 exactly like `accounts`: a name matching no `[[accounts]]` entry fails
 the boot, naming the account and the valid names. An account may appear
 in both lists; it is then a primary only.
