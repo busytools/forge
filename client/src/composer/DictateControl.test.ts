@@ -149,7 +149,7 @@ describe('the hold', () => {
     expect(at.shared.sent).toEqual([]);
   });
 
-  it('re-anchors the swallow at the release, so a long hold is still not a press', () => {
+  it('re-anchors the swallow at the release, so a long hold is still not a press', async () => {
     vi.useFakeTimers();
     const at = drawn();
     const button = at.button();
@@ -157,10 +157,14 @@ describe('the hold', () => {
     vi.advanceTimersByTime(2000);
     button.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }));
     button.click();
+    // The press rides the microphone's open, which is a promise: a synchronous
+    // assertion here would read the take as never started whatever the swallow
+    // did, and the re-anchor's deletion would survive it.
+    for (let tick = 0; tick < 5; tick += 1) await Promise.resolve();
     flushSync();
 
     expect(at.dictate.panel).toBe(true);
-    expect(at.shared.sent).toEqual([]);
+    expect(at.shared.sent, 'a press the hold swallowed starts no take').toEqual([]);
   });
 
   it('opens the settings on Shift+Enter, the hold door for a keyboard', () => {

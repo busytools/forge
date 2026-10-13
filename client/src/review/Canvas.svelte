@@ -17,6 +17,7 @@
   import { mount, unmount, type ComponentProps } from 'svelte';
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import { VList, type VListHandle } from 'virtua/svelte';
+  import { boxKey } from '../composer/box.svelte';
   import type { Dictation, TakeLine } from '../composer/dictate.svelte';
   import { noticeLine, joined } from '../composer/view';
   import type { ComposerState } from '../composer/wire';
@@ -30,7 +31,7 @@
   import { diffLayerFrom } from '../session/wire';
   import type { SessionSlot } from '../wire/types';
   import CommentCard from './CommentCard.svelte';
-  import { landed, type ReviewSpot } from './dictate';
+  import { Landing, type ReviewSpot } from './dictate';
   import {
     anchorRow,
     doorSpot,
@@ -125,25 +126,25 @@
   $effect(() => {
     box.busy = busy;
   });
-  // The line a take left - this page's own, or the record's word about one -
-  // follows whatever the card is drawing.
+  /**
+   * This page's memory of the seat's takes: which one it watched, and what it
+   * has placed. A landing is placed once, and the memory is the seat's - the
+   * record in hand can be another seat's between two reads.
+   */
+  const landing = new Landing();
   $effect(() => {
-    box.line = line ?? noticeLine(composer.notice, sawTake);
-  });
-  /** Whether this page has seen the seat hold a take, which is what makes a
-   *  landing its own to place. */
-  let sawTake = false;
-  /** The words already placed, so one notice lands once. */
-  let placed: string | null = null;
-  $effect(() => {
-    if (composer.take !== null) sawTake = true;
-    const words = landed(composer.notice, sawTake, placed);
+    const words = landing.place(boxKey(slot), composer.take !== null, composer.notice);
     if (words === null) return;
-    placed = words;
-    // No box on screen has nowhere to put them: the reader closed it, or a
-    // reload landed on a notice it never watched (which `sawTake` refuses).
+    // No box on screen has nowhere to put them: the reader closed it, or the
+    // notice is one this page never watched (which the memory refuses).
     if (box.spot === null) return;
     box.draft = joined(box.draft, words);
+  });
+  // The line a take left - this page's own, or the record's word about one -
+  // under the box it was pressed in. Declared after the landing, whose memory
+  // is what says whether this page watched the take at all.
+  $effect(() => {
+    box.line = line ?? noticeLine(composer.notice, landing.watched);
   });
   /** The thread whose reply box is open, and its draft. */
   let replying = $state<string | null>(null);
@@ -158,7 +159,7 @@
   /** A scope change closes the composer, whose spot belonged to the old scope. */
   $effect(() => {
     void scopeCommit;
-    box.spot = null;
+    closeBox();
   });
 
   const scopeLayer = $derived(scopeCommit === null ? layer : (fetched.get(scopeCommit) ?? null));
@@ -359,12 +360,22 @@
   function openBox(spot: ReviewSpot): void {
     box.spot = spot;
     box.draft = '';
+    box.line = null;
   }
 
-  /** Close it, whatever the write's outcome was. */
+  /**
+   * Close it, whatever the write's outcome was.
+   *
+   * What the box was DRAWING goes with it: the settings panel it was holding
+   * open - nothing else on the page can close a panel with no box under it -
+   * and the line the take under it left, which belongs to the attempt rather
+   * than to the next line the reader opens.
+   */
   function closeBox(): void {
     box.spot = null;
     box.draft = '';
+    box.line = null;
+    dictate.panel = false;
   }
 
   /**

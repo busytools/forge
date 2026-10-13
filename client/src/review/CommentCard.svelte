@@ -99,6 +99,18 @@
   const mac = navigator.platform.toLowerCase().includes('mac');
 
   /**
+   * **The settings panel goes with the box that drew it.** The row is
+   * mounted, dropped and mounted again as the page draws (a folded file, a
+   * scope switch, the mode), and a panel left open behind it is a panel with
+   * no box under it - nothing on the page can close what no card draws.
+   */
+  $effect(() => {
+    return () => {
+      dictate.panel = false;
+    };
+  });
+
+  /**
    * The push-to-talk key, which the composer's box honours and this one
    * does too - but only while this box is open, because the box is where a
    * take's words land and a page with no box has nowhere to put them. The
@@ -175,6 +187,7 @@
     class="rv-txarea"
     rows={3}
     placeholder="Comment on this line..."
+    aria={{ label: 'your comment' }}
     bind:value={box.draft}
     field={(el: HTMLElement | null) => {
       field = el;

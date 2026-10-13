@@ -185,6 +185,18 @@ describe('the mic', () => {
     expect(event.defaultPrevented, 'the page under it never sees the key').toBe(true);
   });
 
+  it('closes the settings panel when the box it was opened in goes', async () => {
+    const at = drawn();
+    at.dictate.panel = true;
+    flushSync();
+    expect(document.querySelector('.pop'), 'precondition: the panel is open').not.toBeNull();
+
+    const page = app;
+    app = null;
+    await unmount(page as Record<string, unknown>);
+    expect(at.dictate.panel, 'no card draws it, and nothing can close it').toBe(false);
+  });
+
   it('closes the panel on Escape, putting the keyboard back in the box', () => {
     vi.useFakeTimers();
     const at = drawn();

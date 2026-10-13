@@ -39,6 +39,8 @@
       autocomplete?: 'none' | 'list' | 'both' | 'inline' | undefined;
       invalid?: boolean | undefined;
       describedBy?: string | undefined;
+      /** The box's own name, for a surface whose placeholder is not one. */
+      label?: string | undefined;
     };
     rows?: number;
     id?: string;
@@ -76,6 +78,7 @@
     {autocapitalize}
     autocomplete="off"
     spellcheck="false"
+    aria-label={aria.label}
     aria-autocomplete={aria.autocomplete}
     aria-controls={aria.controls}
     aria-activedescendant={aria.activeDescendant}
@@ -96,6 +99,7 @@
     {rows}
     autocomplete="off"
     spellcheck="false"
+    aria-label={aria.label}
     aria-autocomplete={aria.autocomplete}
     aria-controls={aria.controls}
     aria-activedescendant={aria.activeDescendant}
