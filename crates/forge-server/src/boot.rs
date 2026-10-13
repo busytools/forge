@@ -1,0 +1,237 @@
+//! The boot both binaries run: the config dir, the workspace, the subsystem
+//! wave, the socket, and the boot spawn.
+//!
+//! Moved here from the terminal's `main.rs` so the core comes up under one
+//! function for a view and for no view alike, and so deleting the terminal
+//! cannot take the boot with it.
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use forge_workspace::Workspace;
+
+/// Resolve the Claude config directory at the boot boundary: honour
+/// `$CLAUDE_CONFIG_DIR` (ignoring empty values), else fall back to
+/// `$HOME/.claude`. After this point, the resolved path is threaded as a
+/// typed `PathBuf` (via `Workspace::new`, which in turn binds each
+/// `Agent::spawn(config_dir)` to its account's path).
+///
+/// Per hard rule #14 - no cwd-derived fallbacks. When `$CLAUDE_CONFIG_DIR`
+/// is unset/empty AND `dirs::home_dir()` returns None, refuse to launch
+/// rather than substituting `./.claude`.
+pub fn resolve_config_dir() -> anyhow::Result<PathBuf> {
+    if let Ok(value) = std::env::var("CLAUDE_CONFIG_DIR") {
+        let trimmed = value.trim_end_matches('/');
+        if !trimmed.is_empty() {
+            return Ok(PathBuf::from(trimmed));
+        }
+    }
+    dirs::home_dir().map(|h| h.join(".claude")).ok_or_else(|| {
+        anyhow::anyhow!("$CLAUDE_CONFIG_DIR unset and could not resolve home directory")
+    })
+}
+
+/// Build the workspace and start the whole subsystem wave, in the order the
+/// terminal has always started it.
+///
+/// `project` is the CLI's positional, validated here because a mistyped
+/// name has to fail the boot the same way for every caller; what each
+/// caller then DOES with it differs (the terminal opens that project's
+/// chat, the headless server starts its sessions).
+///
+/// Not `async`: every step is a spawn or a store write, and the await on
+/// anything that actually does I/O belongs to `serve_socket`. Nothing here
+/// needs a `LocalSet` either - every task in this wave is a plain
+/// `tokio::spawn`, verified by the headless boot test exercising it
+/// without one.
+pub fn start_core(config_dir: PathBuf, project: Option<&str>) -> anyhow::Result<Arc<Workspace>> {
+    let workspace = match Workspace::new(config_dir) {
+        Ok(w) => Arc::new(w),
+        Err(err) => return Err(anyhow::anyhow!("forge: {err}")),
+    };
+
+    // Validate the CLI's positional `<PROJECT>` arg, if any, before any
+    // view or spawn wave. This turns `forge xyz` (where `xyz` isn't in
+    // forge.toml) into a clean stderr error + non-zero exit instead of a
+    // boot that fails deeper with a worse message.
+    if let Some(name) = project
+        && let Err(err) = workspace.validate_project_name(name)
+    {
+        return Err(anyhow::anyhow!("forge: {err}"));
+    }
+
+    // Kick off the per-account boot-time loading state machine (one task
+    // per `[[accounts]]` entry) in the background. Each task drives its
+    // account from `Loading` through to a terminal `Ready` or `Bailed`.
+    // The redb store has already seeded the in-memory map at
+    // `Workspace::new`. The 60 s poller starts after, run by the
+    // terminal's connect path.
+    workspace.start_account_loading_tasks();
+
+    // Bind the gateway's inference listener and open the boot gate for
+    // it. Every spawned session's base URL names this port: a failed bind
+    // holds the gate shut AND spawn attempts are refused at the spawn
+    // entries until forge restarts.
+    workspace.start_gateway_listener();
+
+    // Load the model catalogue's cache and refresh a stale feed in the
+    // background. No-op unless `[dictate] enabled` is set, and never on
+    // the boot path: the fetch is what the models page's freshness line
+    // reports on.
+    workspace.start_dictate_catalogue();
+
+    // Fetch, verify and load the dictation models, on the same screen the
+    // accounts appear on. No-op unless `[dictate] enabled` is set: a 3 GB
+    // download is opt-in.
+    workspace.start_dictate_preflight();
+
+    // Spawn the worker-kick drainer task (#259). Routes every
+    // `maybe_kick_worker_on_connected` enqueue through a single
+    // `KICK_DISPATCH_INTERVAL`-spaced dispatcher so multi-worker boots
+    // don't hit Anthropic's per-IP burst limit. Idempotent - the start
+    // helper no-ops a second call.
+    workspace.start_kick_dispatcher();
+
+    // Boot catch-up: one tick fires each overdue cron once, advancing
+    // past the missed slots (a cron missed while forge was down fires
+    // now, not once per skipped tick). Runs after Workspace::new so
+    // spawn-to-fire can spawn an asleep project's session.
+    workspace.fire_due_crons(std::time::SystemTime::now());
+
+    // Start the durable-cron scheduler: wakes every ~60s and fires
+    // crons as they come due, advancing/removing each.
+    workspace.start_cron_scheduler();
+
+    // Start the chase sweep: every ~30s the board's misses are derived
+    // and the crossings delivered - the pass that makes the task list
+    // drive instead of report.
+    workspace.start_chase_sweep();
+
+    // Start the auto-continue sweep: a failed turn nobody has looked at
+    // gets one prompt of forge's own once its delay has run out.
+    workspace.start_auto_continue_sweep();
+
+    // Start the Gotify subsystem when configured with at least one
+    // durable subscription loaded at boot; no-op otherwise.
+    workspace.start_gotify_subsystem();
+
+    // Prove each configured `[[slack]]` token with `auth.test`. A
+    // failure is logged and that workspace stays dormant; it never
+    // stops the boot. No-op with no `[[slack]]` entry.
+    workspace.start_slack_verification();
+
+    // Start one Slack pump per workspace with a durable subscription
+    // loaded at boot; no-op otherwise. The subscribe tool starts one
+    // for a workspace that gains its first.
+    workspace.start_slack_subsystem();
+
+    // Drop review state left behind by branches deleted since the
+    // last run. Worker teardown only catches a branch already gone at
+    // that moment, and a branch usually outlives its worker.
+    workspace.start_review_branch_sweep();
+
+    Ok(workspace)
+}
+
+/// Serve the socket on the address `[server]` names, spawning the serve
+/// task and returning its handle when one is serving.
+///
+/// A bind that fails still boots: this is not on the boot path, and the
+/// failure is logged here rather than returned so the caller's boot
+/// cannot die of it.
+pub async fn serve_socket(
+    workspace: &Arc<Workspace>,
+) -> anyhow::Result<Option<tokio::task::JoinHandle<()>>> {
+    let server = workspace.server_config();
+    if !server.enabled {
+        tracing::debug!(
+            target: crate::logging::targets::APP_LIFECYCLE,
+            event_name = "server_socket_disabled",
+            "[server] enabled = false; nothing is serving this run",
+        );
+        return Ok(None);
+    }
+    let addr = std::net::SocketAddr::new(server.bind, server.port);
+    // Built from the workspace so every piece the socket needs is
+    // derived where the workspace is in hand - the browser relay above
+    // all, which must be the one the sessions ask through.
+    let state = Arc::new(crate::transport::TransportState::for_workspace(
+        workspace,
+        workspace.client_config(),
+    ));
+    match tokio::net::TcpListener::bind(addr).await {
+        Ok(listener) => {
+            let bound = listener.local_addr().unwrap_or(addr);
+            tracing::info!(
+                target: crate::logging::targets::APP_LIFECYCLE,
+                event_name = "server_socket_listening",
+                %bound,
+                "the server's socket is listening",
+            );
+            let handle = tokio::spawn(async move {
+                if let Err(error) = crate::transport::serve(state, listener).await {
+                    tracing::error!(
+                        target: crate::logging::targets::APP_LIFECYCLE,
+                        event_name = "server_socket_failed",
+                        error = %error,
+                        "the socket stopped serving",
+                    );
+                }
+            });
+            Ok(Some(handle))
+        }
+        Err(error) => {
+            tracing::error!(
+                target: crate::logging::targets::APP_LIFECYCLE,
+                event_name = "server_socket_bind_failed",
+                error = %error,
+                "the socket is not serving",
+            );
+            Ok(None)
+        }
+    }
+}
+
+/// The boot spawn, for a process with no view: hold until the accounts
+/// settle, then dispatch the wave the terminal's connect path dispatches -
+/// the named project's lead, or every `auto_start` project, in forge.toml
+/// order.
+///
+/// Settling is terminal rather than `Ready` - a bailed account releases
+/// the spawn, because the walk skips it and the pollers keep re-probing
+/// it, so holding would wait on nothing. The terminal's own gate reads the
+/// same predicate (`accounts().all_loaded`).
+///
+/// Spawned rather than awaited: the boot must not block on accounts, and
+/// nothing downstream reads the result.
+pub fn start_boot_wave(workspace: Arc<Workspace>, project: Option<String>, force_new: bool) {
+    tokio::spawn(async move {
+        while !workspace.all_accounts_loaded() {
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
+        // Boot wave only: --new makes the boot leads start fresh instead
+        // of resuming (and cascades to their workers), the terminal's own
+        // rule.
+        let launch_settings =
+            forge_workspace::SessionLaunchSettings { force_new, ..Default::default() };
+        let targets: Vec<String> = match project {
+            Some(name) => vec![name],
+            None => crate::surface::ViewSurface::new(Arc::clone(&workspace)).roster().auto_start(),
+        };
+        for project_name in targets {
+            let cmd = forge_workspace::Command::SpawnProject {
+                project_name: project_name.clone(),
+                launch_settings: launch_settings.clone(),
+            };
+            if let Err(err) = workspace.dispatch(cmd) {
+                tracing::error!(
+                    target: crate::logging::targets::APP_LIFECYCLE,
+                    event_name = "boot_wave_dispatch_failed",
+                    error = %err,
+                    project = %project_name,
+                    "boot wave dispatch failed",
+                );
+            }
+        }
+    });
+}

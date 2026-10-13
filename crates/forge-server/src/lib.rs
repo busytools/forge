@@ -14,18 +14,23 @@
 //! The reducers that derive the TUI's session records are still in the
 //! TUI.
 
+pub mod boot;
+pub mod cli;
 pub mod commands;
 pub mod composer;
 pub mod delivery;
 pub mod envelope;
+pub mod error;
 pub mod family;
 pub mod file_index;
 #[cfg(test)]
 mod fixtures;
 pub mod grouping;
 pub mod live;
+pub mod logging;
 pub mod model;
 pub mod peer_outbound;
+pub mod startup;
 pub mod subagents;
 pub mod surface;
 #[cfg(test)]
