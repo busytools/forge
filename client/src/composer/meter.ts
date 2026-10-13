@@ -9,7 +9,7 @@
 import { METER_CELLS } from '../wire/limits';
 
 /** One cell of the meter: a past reading, as tall and as loud as it was. */
-export interface Cell {
+interface Cell {
   /** Percent of the meter's height, floor to ceiling. */
   height: number;
   /** The tone class the sheet colours it by, empty for the quietest step. */

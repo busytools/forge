@@ -38,7 +38,7 @@ import { slotOf } from '../protocol';
 import type { SessionSlot } from './types';
 
 /** What one update asks of the fleet region. */
-export type FleetNews =
+type FleetNews =
   | { kind: 'nothing' }
   | { kind: 'redraw' }
   | { kind: 'completed'; slot: SessionSlot }

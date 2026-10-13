@@ -22,7 +22,7 @@ import type { Connection } from '../socket';
 /** How long a keep waits for a connection that is not up yet. */
 export const KEEP_WAIT_MS = 5_000;
 
-export interface RecorderWiring {
+interface RecorderWiring {
   connection: Pick<Connection, 'dispatch' | 'frame' | 'onStatus' | 'status'>;
   /** A line for the card: a failure the server never saw. */
   onLine: (line: string) => void;

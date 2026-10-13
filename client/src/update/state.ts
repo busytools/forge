@@ -18,7 +18,7 @@ import { latestPublished } from './web';
  * keeps on the control: a permanent failure and a transient one draw the same
  * sentence, and the reason is what tells a reader which they have.
  */
-export type UpdateState =
+type UpdateState =
   | { stage: 'current' }
   | { stage: 'available'; version: string }
   | { stage: 'installing'; version: string }

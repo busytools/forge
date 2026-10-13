@@ -24,7 +24,7 @@ export type PaneId =
 export type ComponentKind = 'skills' | 'agents' | 'commands' | 'hooks' | 'lsp';
 
 /** One row inside an open plugin's fold, or in a kind's own pane. */
-export interface ComponentRow {
+interface ComponentRow {
   /** The component's own name (a hook row's is its plugin). */
   name: string;
   /** What rides the row: hook trigger events, or an LSP server's PATH check. */
@@ -32,7 +32,7 @@ export interface ComponentRow {
 }
 
 /** One group inside a fold: a kind, its count, and every row of it. */
-export interface ComponentGroup {
+interface ComponentGroup {
   kind: ComponentKind;
   label: string;
   count: number;
@@ -48,10 +48,10 @@ export interface ComponentGroup {
  * `restart required`, `disabled` - because a vocabulary of seven shapes
  * is decode-work, not information.
  */
-export type RowMark = 'update' | 'running' | 'failed' | null;
+type RowMark = 'update' | 'running' | 'failed' | null;
 
 /** One plugin as the Installed pane draws it. */
-export interface PluginRow {
+interface PluginRow {
   /** The full id `name@marketplace`, which is what a command names. */
   id: string;
   name: string;
@@ -81,7 +81,7 @@ export interface PluginRow {
 }
 
 /** What the updates band says. */
-export interface Band {
+interface Band {
   /** `stale` lists what can be updated; `running` a run in flight; `report` a finished one. */
   kind: 'stale' | 'running' | 'report';
   /** The headline, and the pairs or counts under it. */
@@ -90,7 +90,7 @@ export interface Band {
 }
 
 /** One marketplace as its pane draws it. */
-export interface MarketplaceRow {
+interface MarketplaceRow {
   name: string;
   /** `github` or `directory`, or an empty string when the scan reported none. */
   source: string;
@@ -314,7 +314,7 @@ export function band(wire: ExtensionsRead): Band | null {
 }
 
 /** The rail's counts: installed rows only, so the numbers describe what is here. */
-export interface RailCounts {
+interface RailCounts {
   installed: number;
   skills: number;
   agents: number;
@@ -341,7 +341,7 @@ export function railCounts(wire: ExtensionsRead): RailCounts {
 }
 
 /** One component row in a kind's own pane: the name, and the plugin it comes from. */
-export interface KindRow {
+interface KindRow {
   name: string;
   /** The plugin's display name. */
   source: string;
@@ -407,7 +407,7 @@ export function kindRows(wire: ExtensionsRead, kind: ComponentKind): KindRow[] {
 }
 
 /** One plugin that can be installed, as the marketplaces section draws it. */
-export interface AvailableRow {
+interface AvailableRow {
   id: string;
   name: string;
   marketplace: string;

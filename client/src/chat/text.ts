@@ -235,7 +235,7 @@ export function shortPath(path: string, cwd: string | null): string {
 }
 
 /** One hit of a search call: where it is, and the line the match sits in. */
-export interface SearchHit {
+interface SearchHit {
   path: string;
   line: string;
   /** The line's own text, which the row draws under its location. */

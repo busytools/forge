@@ -6,7 +6,7 @@
  * instrument - the compensation is a prop virtua reads once, at the moment the
  * row count changes, so what has to be observed is that pair.
  */
-export interface Handed {
+interface Handed {
   /** How many rows the list held when it was given this. */
   length: number;
   /** Whether it was told to hold its place from the end. */
@@ -21,7 +21,7 @@ export const records: Handed[] = [];
  * The follow is a decision about the reader's place rather than a prop, so the
  * only thing a test can hold it by is the calls the column makes.
  */
-export interface Pin {
+interface Pin {
   /** The offset the column asked for. */
   asked: number;
   /** Where the clamp left the reader, which is the foot when it asked for it. */
@@ -69,7 +69,7 @@ export function firstGrowth(): Handed | undefined {
 }
 
 /** What the stub can be told to do once it is mounted. */
-export interface ListHandle {
+interface ListHandle {
   /** Where the reader scrolled to, which is what drives the column. */
   scrolledTo(at: number, total: number, height: number): void;
   /** A clamp the browser made with nobody scrolling. */

@@ -15,7 +15,7 @@
  */
 
 /** One command in the catalogue: the name as it is typed, and what it does. */
-export interface ForgeCommand {
+interface ForgeCommand {
   name: string;
   description: string;
 }

@@ -22,7 +22,7 @@ export interface ForgeChip {
 }
 
 /** One entry of a card's body list. */
-export interface ForgeListItem {
+interface ForgeListItem {
   id: string | null;
   state: ForgeChip | null;
   text: string;
@@ -39,7 +39,7 @@ export interface ForgeListItem {
  * strings, and a numbered gutter this page worked out for itself would be a
  * line number nobody measured.
  */
-export interface ForgeComment {
+interface ForgeComment {
   /** `file:line`, the way the review tools name the spot. */
   where: string;
   /** The side of the diff it sits on, as the comment's own words. */

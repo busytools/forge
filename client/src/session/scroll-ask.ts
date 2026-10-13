@@ -9,7 +9,7 @@ import { writable } from 'svelte/store';
  * place is a real ask the second time, and a value compared by its `what`
  * alone would be dropped as unchanged.
  */
-export interface ScrollAsk {
+interface ScrollAsk {
   what: 'compaction' | 'dispatch';
   token: number;
   /** The call to reveal, for `what: 'dispatch'` - a dispatch or any tool

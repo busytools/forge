@@ -14,7 +14,7 @@
  */
 
 /** One shortcode and the glyph it lands. */
-export interface Emoji {
+interface Emoji {
   name: string;
   glyph: string;
 }

@@ -31,7 +31,7 @@ export type Lifecycle =
 export type PendingKind = 'question' | 'permission' | 'hand_off';
 
 /** `forge_gateway::LoadingState`, as the account pool reports it. */
-export type LoadingState = 'loading' | 'ready' | 'bailed';
+type LoadingState = 'loading' | 'ready' | 'bailed';
 
 /** `forge_server::work::Gate`: what git said about a row's tree. */
 export type Gate = 'in_repo' | 'not_a_repository' | 'gone' | 'scanner_failed';
@@ -291,13 +291,13 @@ export interface ProjectWire {
   chip: { account_name: string; state: string } | null;
 }
 
-export interface GatewayWire {
+interface GatewayWire {
   ready: boolean;
   port: number;
   bind_error: string | null;
 }
 
-export interface AccountLoadingRow {
+interface AccountLoadingRow {
   display_name: string;
   state: LoadingState;
   last_error: unknown;

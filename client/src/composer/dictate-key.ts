@@ -35,7 +35,7 @@ export interface Held {
 }
 
 /** What a key event asks for, and the press it leaves behind. */
-export interface Step {
+interface Step {
   held: Held | null;
   action: Action | null;
 }

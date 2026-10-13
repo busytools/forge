@@ -216,7 +216,7 @@ export function pendingAsk(record: ComposerRecord): Ask | null {
  * started cannot tell whether a session is coming up or never will, and a
  * compaction is the more specific truth about a turn the reader sent.
  */
-export interface Blocker {
+interface Blocker {
   line: string;
   /** What to do about it, when there is something to do. */
   sub: string | null;

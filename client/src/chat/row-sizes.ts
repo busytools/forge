@@ -32,7 +32,7 @@ export function heldReserve(size: number | undefined): string | undefined {
 }
 
 /** A column's own memory of what each of its rows measured. */
-export interface RowSizes {
+interface RowSizes {
   /** What `key`'s row last measured, or `undefined` for one never measured. */
   sizeOf(key: string | null | undefined): number | undefined;
   /** Record a row's height. A zero-size render is a layout in flight, not a fact. */

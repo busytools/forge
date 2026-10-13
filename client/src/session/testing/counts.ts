@@ -15,7 +15,7 @@
 
 /** One builder call: which builder, and the rows a record it was given
  * carried. */
-export interface Call {
+interface Call {
   name: string;
   /**
    * The frames a conversation-carrying argument held, or `null` for one that is

@@ -70,7 +70,7 @@ export interface PerfRecord {
   max_ms?: number;
 }
 
-export interface PerfProbe {
+interface PerfProbe {
   start(): void;
   stop(): void;
   /** The page the probe is looking at; nulls for a route with no seat. */
@@ -78,7 +78,7 @@ export interface PerfProbe {
 }
 
 /** The clock and sources, injectable so a test can produce a known frame. */
-export interface ProbeOptions {
+interface ProbeOptions {
   slowFrameMs?: number;
   summaryIntervalMs?: number;
   now?: () => number;

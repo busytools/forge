@@ -19,7 +19,7 @@ export async function checkForUpdate(): Promise<string | null> {
  * What finishes an install: the desktop restarts into the swapped bundle,
  * the phone's install is the system prompt it was handed to.
  */
-export type InstallStage = 'restart' | 'install';
+type InstallStage = 'restart' | 'install';
 
 /**
  * Download and install the found update, answering with the stage that

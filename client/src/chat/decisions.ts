@@ -101,7 +101,7 @@ export type DecisionAnswer =
     };
 
 /** One score level: the words its row draws, its probability, its value. */
-export interface Level {
+interface Level {
   name: string;
   value: number | null;
   /** The value whole, for the row's disclosure; null where it was a string. */
