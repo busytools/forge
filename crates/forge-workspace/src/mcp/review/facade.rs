@@ -515,7 +515,6 @@ mod resolve_scope_tests {
             model: None,
             env: std::collections::HashMap::new(),
             max_workers: None,
-            issues: true,
             permission_mode: forge_primitives::permission::PermissionMode::Auto,
         });
         let (ws, _rx) = Workspace::testing_stub_with_config(

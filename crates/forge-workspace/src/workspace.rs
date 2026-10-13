@@ -8251,7 +8251,6 @@ mod account_stamp_tests {
             model: None,
             env: HashMap::new(),
             max_workers: None,
-            issues: true,
             permission_mode,
         }
     }
