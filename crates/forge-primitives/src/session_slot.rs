@@ -1,5 +1,5 @@
 //! `SessionSlot` - the `(org, project, label)` triple that names a
-//! session, and the routing key the TUI <-> workspace boundary
+//! session, and the routing key the view <-> workspace boundary
 //! addresses one session task by.
 //!
 //! The triple names the slot; the session id names the occupant. A
@@ -8,7 +8,7 @@
 //! leave the slot alone.
 //!
 //! Lives in forge-primitives so the same routing key flows through
-//! every layer (TUI, workspace, agent) without each crate growing its
+//! every layer (view, workspace, agent) without each crate growing its
 //! own near-identical newtype.
 
 use crate::workers::LEAD_LABEL;
@@ -82,7 +82,7 @@ impl SessionSlot {
     }
 
     /// Test-only constructor for fixtures across crate boundaries
-    /// (forge-tui's integration tests), where a fixture wants a
+    /// (workspace, server and harness tests), where a fixture wants a
     /// distinct slot from one opaque name. Gated behind the
     /// `test-helpers` Cargo feature so production builds don't carry
     /// the helper.

@@ -29,8 +29,8 @@ pub struct AgentHandle {
     /// are needed.
     pub commands: mpsc::UnboundedSender<AgentCommand>,
     /// Bridge's raw `AgentEvent` receiver. Single-take via
-    /// [`AgentHandle::take_events`] - forge-tui's translator consumes
-    /// this and converts to its `ClientEvent` shape.
+    /// [`AgentHandle::take_events`] - the workspace's session task
+    /// consumes this and translates it into `SessionUpdate`s.
     agent_events: Mutex<Option<mpsc::UnboundedReceiver<crate::client::AgentEvent>>>,
     /// Bridge handle used for direct-return accessors (config_dir,
     /// settings_documents, …) plus internal command dispatch.
@@ -208,20 +208,8 @@ impl AgentHandle {
         self.send(AgentCommand::SetModel { session_id: session_id.into(), model })
     }
 
-    pub fn get_status_snapshot(&self, session_id: String) -> Result<(), AgentError> {
-        self.send(AgentCommand::GetStatusSnapshot { session_id: session_id.into() })
-    }
-
-    pub fn get_oauth_credentials_snapshot(&self, session_id: String) -> Result<(), AgentError> {
-        self.send(AgentCommand::GetOauthCredentialsSnapshot { session_id: session_id.into() })
-    }
-
     pub fn get_context_usage(&self, session_id: String) -> Result<(), AgentError> {
         self.send(AgentCommand::GetContextUsage { session_id: session_id.into() })
-    }
-
-    pub fn reload_plugins(&self, session_id: String) -> Result<(), AgentError> {
-        self.send(AgentCommand::ReloadPlugins { session_id: session_id.into() })
     }
 
     pub fn get_mcp_snapshot(&self, session_id: String) -> Result<(), AgentError> {
@@ -349,8 +337,8 @@ impl Agent {
     /// bridge as typed fields. `config_dir` is consulted by every
     /// in-process accessor (oauth, settings, catalog scans) and
     /// exported to the spawned `claude` subprocess as
-    /// `CLAUDE_CONFIG_DIR`. `display_name`, when set, is surfaced
-    /// via [`crate::client::AgentEvent::StatusSnapshot`] so the TUI
+    /// `CLAUDE_CONFIG_DIR`. `display_name`, when set, is read back
+    /// through the handle's `display_name()` so a view
     /// renders which forge-account the bridge is bound to. `env`
     /// carries the session's resolved forge.toml env - `[env]`, then
     /// `[accounts.env]`, then the spawning project's `[[orgs.projects]]`
@@ -438,10 +426,6 @@ fn dispatch(cmd: AgentCommand, bridge: &ForgeSdkBridge) -> anyhow::Result<()> {
         }
         C::SetMode { session_id, mode } => bridge.set_mode(session_id.into_string(), mode),
         C::SetModel { session_id, model } => bridge.set_model(session_id.into_string(), model),
-        C::GetStatusSnapshot { session_id } => bridge.get_status_snapshot(session_id.into_string()),
-        C::GetOauthCredentialsSnapshot { session_id } => {
-            bridge.get_oauth_credentials_snapshot(session_id.into_string())
-        }
         C::GetContextUsage { session_id } => bridge.get_context_usage(session_id.into_string()),
         C::GetMcpSnapshot { session_id } => bridge.get_mcp_snapshot(session_id.into_string()),
         C::PermissionResponse { session_id, tool_call_id, outcome } => bridge.permission_response(
@@ -458,7 +442,6 @@ fn dispatch(cmd: AgentCommand, bridge: &ForgeSdkBridge) -> anyhow::Result<()> {
         C::ToggleMcpServer { session_id, server_name, enabled } => {
             bridge.toggle_mcp_server(session_id.into_string(), server_name, enabled)
         }
-        C::ReloadPlugins { session_id } => bridge.reload_plugins(session_id.into_string()),
     }
 }
 

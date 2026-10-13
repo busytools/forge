@@ -173,7 +173,7 @@ declare leaves it unwatched: the plain frame is the one that opens a
 subscription.
 
 Neither capability declaration takes the pre-attach backlog: it goes to the
-first subscriber, and the view that draws the boot notice is the terminal. A
+first subscriber, which is whichever view attached first. A
 client reads what it missed from the subject's snapshot.
 
 **`unsubscribe {what}`** - nothing comes back, because the client asked to
@@ -244,7 +244,7 @@ that row starts at, and what either is made of is the server's business.
 a walk backwards ends.
 
 **`devices`** - the inputs FORGE's machine can record from, and the
-`[dictate] device` pin, for the terminal's own picker. **Asked on demand
+`[dictate] device` pin, for a server-side picker. **Asked on demand
 rather than subscribed**: the walk opens the microphone stack, and a
 subscription is re-read on every reconnect, so watching this would be a
 permission check per connection instead of one per picker. A client that
@@ -355,7 +355,7 @@ The connection that sends it feeds the audio as the binary frames above,
 so nothing is opened on the server; the take registers as the message is
 dispatched, so the frame that follows on the same ordered connection
 always finds it. `options` is the axes that client's panel was showing.
-The terminal's own `dictate_start` is unchanged: it records from forge's
+A server-side take records from forge's
 machine, and its axes are the session's stored overrides.
 
 **A take belongs to the connection that started it.** Every `dictate_*`
@@ -496,7 +496,6 @@ conversation, and what the composer is doing.
 | `slot`                        | The seat itself.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `header`                      | The occupant's session id - the one a copy control hands out, and `null` when there is no occupant to name (nothing started, nothing connected yet, or one dropped after a sign-in or a failed connection) - the resolved model and the catalogue a picker draws from, the effort level, the permission mode, context usage, asked for on the reads that encode a subject when the seat has none, again when a turn finishes on a seat a page holds, and again when a compaction settles, a page or not (the socket issues the ask whether or not an agent is behind the seat, so where there is none it is refused and nothing reaches the CLI; the answer lands as a `context_usage_snapshot` update only where there is one) and whether a turn is in flight.                                                                                                                           |
 | `conversation`                | The NEWEST turns, in order, with the compaction count - the same twenty `more` answers a page with, so a client that wants more asks for it the way it already does. Each turn carries `key` and `messages`, the frames the turn ran as. The live `update` stream carries those too, and differs in ways a client sees: a run of consecutive token appends inside one flush arrives there as ONE frame carrying the summed `estimated_tokens_delta`, and a frame the server forged carries no `uuid` where one the CLI sent does. A page differs the other way as well - it carries an ending for a backgrounded task's call as a frame of its own, which the stream never sends - so read these as the ones this row states rather than as the whole list.                                                                                                                                |
-| `has_dispatches`              | Whether the conversation holds a sub-agent dispatch at all, anywhere in it - not only in the window `conversation` carries - pushed as `dispatches_changed` when one is made. A view deciding whether to draw a sub-agents section reads this rather than scanning the window, which would report a seat that dispatched an hour ago as one where nothing ran.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `work`                        | The working tree as state: branch, how much changed, and whether git runs here.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `git`                         | The tree behind the row's depth, all three from the same scan: `default_branch` (which branch the tree is measured against), `worktree` (the uncommitted files, each with its path, added and removed counts and its `status` - `modified` / `added` / `deleted` / `renamed` / `copied` / `typechange` / `unmerged` / `untracked`), and `ahead` (the branch's `commit_count`, the chain itself - each commit a short `sha`, `subject`, its own `stats` and the instant it was committed in unix seconds - and the range's own `stats`). Every `stats` block carries the full totals and the busiest files up to the scan's cap of seven, each classified with the same statuses the uncommitted layer speaks; the chain is capped at the scan's walk. `null` layers are nothing to state - a clean tree, an unscanned one - and it moves with `work_changed` frames like the row above it. |
 | `pr`, `closes`                | The open pull request this seat's branch is on - its number and URL, and whether it is a `draft` - and the issues it closes, which is the `PR #N -> closes #M` line a view draws under its PR row. `null` and an empty list when there is none, or when the branch is not pushed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
@@ -613,10 +612,9 @@ run the flush carried.
 submitted the words, is stamped where the dispatch happened rather than
 sent by the client, and it is `null` on every frame the CLI sent and on
 every delivery turn - so a client that ignores it draws as it did before
-the field existed. `ui` means the forge process's own input handler
-submitted them and has already drawn them, which is what lets the terminal
-skip its own words while drawing everyone else's; nothing else reads it,
-because no other view's composer is optimistic.
+the field existed. `view` means a view dispatched them over the socket;
+`ui` marks the core's own dispatch entry and is what a view that draws
+its own words optimistically reads to skip them.
 
 **A forged turn carries the prompt's own `uuid`**, the id the prompt was
 dispatched under. The CLI stamps the prompt's id into the transcript it
@@ -627,13 +625,12 @@ message agree on it, and a client reconciles the two by id. It is also what
 lets a view hold the forged row while the prompt waits in the pile: the
 `command_lifecycle` frames carry the same id.
 
-**The server's fold is not what a terminal reads.** The terminal groups a
-message's blocks itself, in `forge-tui`'s `ui::message::grouping`, and the
-server's fold is drawn by `forge-web`, which is parked. So a view that draws
-a conversation makes those calls for itself: a monitor's call is the plain
-call row it is where the terminal carves out its lifecycle block, and a
-settled turn's status is aggregated. Both are rules about a drawing rather
-than facts about a session.
+**The server's fold and the client's are two drawings of one conversation.**
+The server folds a conversation into the units a view draws (and into the
+transcript reads); the client's chat makes its own calls over the same
+frames - its own unit fold, its own lifecycle carving, its own status
+aggregation. Both are rules about a drawing rather than facts about a
+session, and the client's answer is the one on screen.
 
 ## What is not here
 
@@ -669,11 +666,11 @@ than facts about a session.
   same list and only one of them is generated from the code.
 - **The CLI's own surfaces.** `slash_commands` carries the names the CLI
   advertises, `/config` among them. Some of those names open a dialog the
-  CLI draws in a terminal; the name crosses and the surface does not, so a
+  CLI itself draws; the name crosses and the surface does not, so a
   client that offers one is offering a command whose UI it cannot show.
 - **The dictation device catalog as carried state.** What a record carries
-  is the input a pick has already moved FORGE's process to, which is the
-  terminal's own capture. The list of devices to pick FROM is asked for on
+  is the input a pick has already moved FORGE's process to, which is a
+  server-side capture. The list of devices to pick FROM is asked for on
   demand, one request for one answer (`devices`), because enumerating them
   is a blocking walk that trips a microphone check - and a record is encoded
   per request and re-sent on every reconnect, so a field would be a
@@ -700,6 +697,6 @@ than facts about a session.
 
 ## Today
 
-The terminal starts the server and binds the socket, so a running forge
-serves one. The web view that used to serve pages on this port is parked,
-and the client under `client/` is what reads the socket now.
+The `forge` binary is the server: it boots the core and binds the
+socket, so a running forge serves one. The client under `client/` is
+what reads it.

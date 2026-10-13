@@ -324,7 +324,7 @@ describe("the tree row's interaction state machine", () => {
     expect(revealed(), 'the focus walks the reveal back').toBe('client/src/lib.rs');
   });
 
-  /** A rename wears the terminal's own R when a row draws it. */
+  /** A rename wears the same R the view this client replaced drew. */
   it('draws a renamed file with the R mark', () => {
     draw({
       label: 'feat/x',

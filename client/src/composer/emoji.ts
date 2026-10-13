@@ -6,13 +6,11 @@
  * trip; what the server sends for a seat is its slash commands and its
  * subagent types, which are facts about that session rather than this one.
  *
- * The set is the typeahead's own in the terminal
- * (`crates/forge-tui/src/app/emoji_set.rs`): a curated ~200 GitHub / Slack
- * shortcodes rather than the full Unicode list, sorted by name. The ORDER is
- * the typeahead's decision and lives here with it, ported from
- * `crates/forge-tui/src/app/emoji.rs` - a table hands back a set, and a
- * dropdown that ranked with its own order would offer the right emoji in the
- * wrong order.
+ * The set is the typeahead's own, kept from the view this client replaced: a
+ * curated ~200 GitHub / Slack shortcodes rather than the full Unicode list,
+ * sorted by name. The ORDER is the typeahead's decision and lives here with
+ * it, taken from that view - a table hands back a set, and a dropdown that
+ * ranked with its own order would offer the right emoji in the wrong order.
  */
 
 /** One shortcode and the glyph it lands. */

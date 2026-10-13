@@ -1,16 +1,14 @@
 //! Resume-history synthesizer: converts on-disk transcript JSONL into the
 //! `forge_primitives::Message` envelopes the live wire stream produces, so
-//! the TUI's raw walker (`handle_sdk_message`) can consume replay and live
-//! messages identically.
+//! consumers read replay and live messages identically.
 
 use serde_json::Value;
 
 use forge_primitives::{AssistantEnvelope, ContentBlock, Message, UserEnvelope};
 
 /// Synthesise on-disk transcript JSONL into the `forge_primitives::Message`
-/// envelopes the live wire stream produces. The TUI's raw walker
-/// (`handle_sdk_message`) consumes these identically to live messages,
-/// unifying replay + live code paths.
+/// envelopes the live wire stream produces. Consumers read these
+/// identically to live messages, unifying replay + live code paths.
 ///
 /// Replay-specific transforms applied here:
 /// - Image content blocks are replaced with a `[image]` text placeholder

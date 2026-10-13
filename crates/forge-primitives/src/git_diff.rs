@@ -2,7 +2,7 @@
 //!
 //! Type-only - the scanner that produces these lives in
 //! `forge_agent::env::git_diff::scan`. The four shapes cross every
-//! forge-* crate boundary (agent produces, workspace mediates, TUI
+//! forge-* crate boundary (agent produces, workspace mediates, a view
 //! renders), so they live in primitives per the crate placement guide.
 //! Sibling git types (`GitBranch`, `GitPrInfo`, `GitIssueRef`) live in
 //! [`crate::git`].

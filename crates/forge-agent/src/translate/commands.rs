@@ -1,5 +1,5 @@
 //! Available-commands catalogue parser, read by the workspace's
-//! session task and by the TUI's own message walker.
+//! session task.
 
 use serde_json::Value;
 

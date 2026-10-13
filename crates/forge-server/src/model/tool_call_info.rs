@@ -18,8 +18,7 @@ pub struct ToolCallInfo {
     /// Snapshot of terminal output, updated each frame while `InProgress`.
     pub terminal_output: Option<String>,
     /// Last 5 lines of the watched command's output for a `Monitor`
-    /// tool call, stamped from `MonitorEntry.output_tail` by
-    /// `App::replace_monitor_output_tail_by_task_id`. Empty for
+    /// tool call, stamped from `MonitorEntry.output_tail`. Empty for
     /// non-Monitor tool calls. The in-chat live block renders this
     /// (header + `$ command` + last-5 tail tree); bumping
     /// `layout_epoch` after writing this re-renders the cached chat
@@ -70,7 +69,7 @@ pub struct ToolCallInfo {
     pub last_measured_y_in_msg: usize,
     /// Q&A pairs captured when the user answers this AskUserQuestion
     /// tool's dock prompt. Empty until answered; populated at submit
-    /// time in `app::prompt`. When non-empty the tool unhides and
+    /// time. When non-empty the tool unhides and
     /// renders as the answered-card instead of staying chat-suppressed.
     pub answered_questions: Vec<AnsweredQuestion>,
 }

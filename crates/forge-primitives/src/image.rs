@@ -1,7 +1,5 @@
 //! Image-attachment wire-shape types + validation, shared between
-//! forge-agent and forge-tui. Encoding-from-clipboard helpers stay
-//! in forge-tui - they pull `arboard` + `image` crates only the UI
-//! cares about.
+//! forge-agent and a view.
 
 use serde::{Deserialize, Serialize};
 

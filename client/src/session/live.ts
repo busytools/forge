@@ -3,12 +3,12 @@
  * update it applies to it.
  *
  * **The update is the news, and it is already everything a page needs.** The
- * terminal applies each variant to the state it holds, which is why it keeps
- * up with a busy seat that this page used to fall behind: answering every
- * update with a read is a full encode on the server - the transcript re-folded
- * into turns, the process tree walked, the working tree scanned - so the page
- * ran further behind the busier the seat was. A read is for a cold load, a
- * reconnect and a seat swap: every slice has a frame.
+ * view this client replaced applied each variant to the state it held, which
+ * is why it kept up with a busy seat that this page used to fall behind:
+ * answering every update with a read is a full encode on the server - the
+ * transcript re-folded into turns, the process tree walked, the working tree
+ * scanned - so the page ran further behind the busier the seat was. A read is
+ * for a cold load, a reconnect and a seat swap: every slice has a frame.
  *
  * The subject is the SEAT, and the connection routes an update to it by the
  * slot the update carries, so a store's contents are this seat's and nothing
@@ -198,9 +198,9 @@ export function watchSession(
    * either way.** A client counted as answering with no surface to draw a
    * prompt on hangs the turn, because the core parks it on a reply that never
    * comes; a client that HAS the surface while subscribing as an observer
-   * leans on whoever else can answer - which on a machine running forge is the
-   * terminal beside it. So the caller states what it has: the page says yes
-   * exactly when its composer - the thing with the dock in it - is wired in.
+   * leans on whoever else can answer. So the caller states what it has: the
+   * page says yes exactly when its composer - the thing with the dock in it -
+   * is wired in.
    *
    * **The role belongs to the connection rather than to this seat**, so this
    * is a second statement of it rather than the first: the home's own
@@ -210,10 +210,9 @@ export function watchSession(
    *
    * **It is a safeguard rather than what keeps an ask alive.** Every update
    * reaches every subscriber whatever its role, and the role decides only
-   * what the core may park on: with the terminal attached as an answerer for
-   * as long as forge runs, an ask is never cancelled for want of one. What
-   * this covers is a serve with no terminal anywhere, where an ask raised
-   * while no page could draw it would be cancelled at birth.
+   * what the core may park on. What this covers is a serve with no answerer
+   * anywhere, where an ask raised while no page could draw it would be
+   * cancelled at birth.
    */
   answering: boolean,
 ): { subscribe: Readable<SessionRead>['subscribe']; hold: () => () => void } {

@@ -1,19 +1,18 @@
 //! The conversation fold: wire messages in, the units a view draws out.
 //!
-//! The TUI partitions one message's blocks at a time, and a run of tool
-//! calls spans messages - a call and its result are two of them - so this
-//! walks the whole conversation and folds it in one pass. The rules it
-//! folds by are not restated here: the row a call summarises under (the
-//! wire-level row policy in `grouping`), the status a run summarises under
-//! ([`crate::grouping::aggregate_call_status`]) and the peer parsers
-//! ([`crate::envelope`], [`crate::peer_outbound`]) are the ones the TUI
-//! already groups by.
+//! A run of tool calls spans messages - a call and its result are two of
+//! them - so this walks the whole conversation and folds it in one pass.
+//! The rules it folds by are not restated here: the row a call summarises
+//! under (the wire-level row policy in `grouping`), the status a run
+//! summarises under ([`crate::grouping::aggregate_call_status`]) and the
+//! peer parsers ([`crate::envelope`], [`crate::peer_outbound`]) are the
+//! ones a view already groups by.
 //!
-//! Where it differs from the TUI it is because the mockup draws something
+//! Where it differs from a view it is because the mockup draws something
 //! else: a mutation folds as an `edit` family instead of breaking the run,
 //! an envelope that is not agent traffic is a notice instead of a turn, a
 //! question the assistant asked is a card rather than a call, and a Monitor
-//! folds as a plain call row where the terminal carves its lifecycle block
+//! folds as a plain call row where a view carves its lifecycle block
 //! out of the run.
 
 use std::collections::HashMap;
@@ -64,13 +63,13 @@ pub enum ChatUnit {
     /// received.
     PeerCard(PeerCard),
     /// A run of two or more consecutive peer messages, drawn as one group
-    /// with a count. The threshold is the TUI's: a lone message is the card
+    /// with a count. The threshold is a view's: a lone message is the card
     /// it is, and two are a group.
     MessagingGroup { cards: Vec<PeerCard> },
     /// A line the conversation carries that nobody typed: an external
     /// delivery, a scheduled fire, or a failure the workspace reported.
     Notice(Notice),
-    /// What the turn's hooks did, drawn as the chip the terminal draws: the
+    /// What the turn's hooks did, drawn as the chip a view draws: the
     /// count, and one row per hook behind it. The wire sends none of these
     /// when no hook fired.
     Hooks {
@@ -83,12 +82,11 @@ pub enum ChatUnit {
     /// What a settled turn did, as the view's own row draws it: the turn's
     /// wall clock, its API time, and the tokens and cost the CLI reported.
     /// The web view's row is this, built from the result frame the fold
-    /// reads or derived from the turn's own rows; the terminal builds the
-    /// same record from the live stream, so the two draw one type rather
-    /// than a copy each. `ended_at_local` is the field they differ on: the
-    /// terminal stamps it off its own clock as the result arrives, while a
-    /// turn read from a transcript carries the instant the CLI wrote instead
-    /// and lets the view render it.
+    /// reads or derived from the turn's own rows, so the live and read
+    /// paths draw one type rather than a copy each. `ended_at_local` is the
+    /// field they differ on: the live path stamps it off its own clock as
+    /// the result arrives, while a turn read from a transcript carries the
+    /// instant the CLI wrote instead and lets the view render it.
     TurnReport {
         info: TurnInfo,
         /// What names the row, which is what a view keys its open state on:
@@ -276,7 +274,7 @@ pub fn render(messages: &[Message]) -> Rendered {
             continue;
         }
         // What the turn's hooks did. A frame reporting none of them draws
-        // nothing, which is the terminal's rule too.
+        // nothing, which is a view's rule too.
         if let Message::StopHookSummary { actions, hook_infos, uuid, .. } = message {
             if *actions > 0 {
                 // The calls before it end here, as they do at any other
@@ -410,7 +408,7 @@ pub fn render(messages: &[Message]) -> Rendered {
                     // same block as a prompt, and the scan hoists it into a
                     // user envelope without reading the mode - so a turn opened
                     // for it is a row nothing fills, which the page draws as a
-                    // blank line. The terminal never draws one: it filters the
+                    // blank line. A view never draws one: it filters the
                     // row rather than the turn.
                     if is_completion_notice(command_mode.as_deref(), prompt) {
                         continue;
@@ -525,7 +523,7 @@ struct TurnTrace {
     /// back for a tool call has not ended a turn.
     stopped: Option<StopReason>,
     /// Whether the turn wrote an assistant frame at all: a prompt nothing
-    /// answered draws no row, the way the terminal draws none.
+    /// answered draws no row, the way a view draws none.
     worked: bool,
 }
 
@@ -664,7 +662,7 @@ fn take_key(
 /// Add one call to the conversation: a peer card, a question's card, a
 /// run-breaker drawn on its own, or a member of the run being built.
 ///
-/// A Monitor is a member like any other call: the terminal draws its own
+/// A Monitor is a member like any other call: a view draws its own
 /// lifecycle block for one, and a row skipped here is a call the session
 /// made that draws as nothing, which rule 25 forbids.
 fn push_call(
@@ -697,8 +695,8 @@ fn push_call(
 /// error, so the result alone draws a task that then failed as completed; the
 /// notice says how it actually ended. What the harness said joins the row
 /// rather than replacing it, because the result's own text is what names the
-/// task's output file - the terminal's card replaces its body with the same
-/// sentence, and the page's row keeps both, which is the drawing this follows.
+/// task's output file - the page's row keeps both, which is the drawing this
+/// follows.
 fn with_ending(mut call: ToolLeaf, id: &str, endings: &HashMap<String, TaskEnding>) -> ToolLeaf {
     let Some(ending) = endings.get(id) else {
         return call;
@@ -850,8 +848,8 @@ fn absorb_typed(units: &mut [ChatUnit], text: &str) -> bool {
 /// Whether a queued block is the harness's background-completion notice
 /// rather than anything a person said.
 ///
-/// The mode is the field that says which of the three kinds arrived; the
-/// terminal reads the text's own prefix instead. Both are read here, because a
+/// The mode is the field that says which of the three kinds arrived, and
+/// the text's own prefix is the other signal. Both are read here, because a
 /// fold keyed on one of them drifts from the other the first time either moves.
 fn is_completion_notice(command_mode: Option<&str>, prompt: &serde_json::Value) -> bool {
     command_mode == Some("task-notification") || is_task_notice(&queued_command_text(prompt))
@@ -936,15 +934,13 @@ fn tag<'a>(text: &'a str, name: &str) -> Option<&'a str> {
 
 /// A task's own status word, as the frame carrying it draws the call.
 ///
-/// The same map the terminal applies to `task_updated.patch.status`: the wire
+/// The same map a view applies to `task_updated.patch.status`: the wire
 /// says `running` where the row says in progress, and `stopped` is its word
 /// for a graceful cancel, which draws as the kill it is.
 ///
-/// **An unrecognised word is `None`, where the terminal maps it to
-/// `Pending`.** The terminal applies that map to a frame arriving on a live
-/// call; here the word arrives after the call is finished, so an unreadable
-/// word means the task ended without saying how, and drawing the call as
-/// pending again would walk it back down.
+/// **An unrecognised word is `None`.** The word arrives here after the call
+/// is finished, so an unreadable word means the task ended without saying
+/// how, and drawing the call as pending again would walk it back down.
 fn task_status(word: &str) -> Option<ToolCallStatus> {
     match word {
         "running" => Some(ToolCallStatus::InProgress),
@@ -1048,7 +1044,7 @@ fn inbound_unit(text: &str) -> Option<ChatUnit> {
 }
 
 /// A Gotify delivery at or above this priority reads as a warning rather
-/// than as information. The same number is the TUI's cue for the same row,
+/// than as information. The same number is a view's cue for the same row,
 /// where it is private: a divergence here shows up as the two views giving
 /// one delivery different severities.
 const GOTIFY_ELEVATED_PRIORITY: u8 = 5;
@@ -1068,7 +1064,7 @@ fn outbound_card(name: &str, input: &serde_json::Value) -> Option<PeerCard> {
 /// One call as a transcript holds it: the wire's name and input, the title
 /// and content the shared call builder resolves, and what its result
 /// recorded. A call with no result yet reads as `Pending`, which is what the
-/// resume path hands the TUI for the same file.
+/// resume path hands a view for the same file.
 pub(crate) fn leaf(
     id: &str,
     name: &str,
@@ -1080,7 +1076,7 @@ pub(crate) fn leaf(
     let (status, content) = match recorded {
         Some(recorded) => {
             // The result's own shapes ride the shared builder rather than a
-            // second reader here: it is what the TUI draws the same rows
+            // second reader here: it is what a view draws the same rows
             // from, and two readers would drift. The builder resolves the
             // input's own body too - an edit's diff arrives in the input -
             // so its answer is the whole of what the row opens on.
@@ -1101,7 +1097,7 @@ pub(crate) fn leaf(
         row: family_row(name).0,
         label: tool_label(name),
         name: name.to_owned(),
-        // What the row names, resolved the way the terminal's own tree
+        // What the row names, resolved the way a view's own tree
         // resolves it: a search call's target is its pattern, a read's is
         // its path, and a call the builders have no target for keeps the
         // title the CLI gave it. The CLI's title is the tool's own name for
@@ -1379,8 +1375,8 @@ mod tests {
         }
     }
 
-    /// The hook chip is the page's own unit, and it obeys the rules the
-    /// terminal's chip does: it draws after the calls it followed, a frame
+    /// The hook chip is the page's own unit, and it obeys the rules a
+    /// view's chip does: it draws after the calls it followed, a frame
     /// reporting no hooks draws nothing, and a dispatched agent's hooks are
     /// not the session's.
     #[test]
@@ -1439,10 +1435,10 @@ mod tests {
         assert_eq!(families[1].calls.len(), 1, "and the search under its own");
     }
 
-    /// An edit folds into the run as a family of its own. The TUI breaks a
+    /// An edit folds into the run as a family of its own. A view breaks a
     /// run on a mutation because it draws the diff open on its own; the
     /// mockup draws an `edit` family inside the group with its leaves open,
-    /// so this fold cannot borrow the TUI's rule, and the row's word is
+    /// so this fold cannot borrow that rule, and the row's word is
     /// `edit` rather than the tool's own `Edit`.
     #[test]
     fn an_edit_folds_into_the_run_as_its_own_family() {
@@ -1494,7 +1490,7 @@ mod tests {
     /// tool draws: it has no family of its own, so it folds under the
     /// generic row, and it does not break the run it sat inside.
     ///
-    /// The terminal breaks the run at a monitor and stands its lifecycle
+    /// A view breaks the run at a monitor and stands its lifecycle
     /// block alone (`grouping`'s `is_run_breaker` reads it as a lifecycle
     /// block); the divergence is that block, not a row skipped here, which
     /// is what rule 25 forbids.
@@ -1530,8 +1526,8 @@ mod tests {
         );
     }
 
-    /// A monitor's call between two peer messages splits the pair: the
-    /// terminal's rule, so the two read as plain cards rather than one
+    /// A monitor's call between two peer messages splits the pair: a
+    /// view's rule, so the two read as plain cards rather than one
     /// messaging group, since the monitor stands in the run between them.
     #[test]
     fn a_monitor_between_two_peer_messages_splits_the_pair() {
@@ -1564,8 +1560,8 @@ mod tests {
         );
     }
 
-    /// A run of peer messages is ONE group with a count, which is how the
-    /// TUI folds it and what the mockup draws; a lone message stays the
+    /// A run of peer messages is ONE group with a count, which is how a
+    /// view folds it and what the mockup draws; a lone message stays the
     /// card it is. Folded as separate cards, a burst of peer traffic reads
     /// as a wall of frames with nothing saying they arrived together.
     #[test]
@@ -2280,7 +2276,7 @@ mod tests {
 
     /// A transcript's own messages, as the read hands them to the fold BEFORE
     /// a view's normalisation: `session_history` is the read the spawn and the
-    /// terminal perform, and the surface's rewrite of the carriers is one
+    /// surface perform, and the surface's rewrite of the carriers is one
     /// caller's step rather than part of the read itself.
     fn read_raw(rows: &[&str]) -> Vec<Message> {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -2433,20 +2429,16 @@ mod tests {
 
     /// How an ending's own word meets the status the call already had.
     ///
-    /// **Two deliberate divergences from the terminal, and both are read by
-    /// whoever next aligns forge with it.**
+    /// **Two deliberate rules, both worth reading before this map moves.**
     ///
-    /// An unrecognised word keeps the status the call had, where the terminal
-    /// maps every unknown to `Pending`. A task whose ending forge cannot read
+    /// An unrecognised word keeps the status the call had rather than
+    /// mapping the call to `Pending`: a task whose ending forge cannot read
     /// is one it does not know has ended, and pending is a claim that it did
     /// not stop.
     ///
-    /// And a recognised word stands even over a result that failed. The notice
+    /// And a recognised word stands even over a result that failed: the notice
     /// is the CLI's last word about the task, and the page's own fold reads it
-    /// the same way - the two folds are one vocabulary. The terminal keeps a
-    /// `Failed` or `Killed` call when a notification arrives, because it
-    /// applies one to a live card a real failure has already settled, and no
-    /// read of a transcript holds that state.
+    /// the same way - the two folds are one vocabulary.
     #[test]
     fn an_endings_word_meets_the_status_the_call_already_had() {
         let launch = assistant(vec![ContentBlock::ToolUse {
@@ -2473,11 +2465,11 @@ mod tests {
         }
     }
 
-    /// A sub-agent's frames are not the chat's. The terminal suppresses
-    /// them - `handle_assistant` drops a parented frame's text and thinking,
-    /// scoping its calls to the SUBAGENTS inspector - and the drawing says
-    /// the same in one line. The control rides in the same test: the same
-    /// three frames without a parent id ARE the conversation, so a fold
+    /// A sub-agent's frames are not the chat's. A view suppresses
+    /// them - dropping a parented frame's text and thinking and
+    /// scoping its calls to the SUBAGENTS inspector - and the drawing here
+    /// says the same in one line. The control rides in the same test: the
+    /// same three frames without a parent id ARE the conversation, so a fold
     /// that dropped them all could not pass this.
     #[test]
     fn a_sub_agents_frames_are_not_the_chat() {
@@ -2502,7 +2494,7 @@ mod tests {
             "and the same three frames are the conversation when the agent is the session's own",
         );
 
-        // An empty id names no dispatch, and the terminal reads the field
+        // An empty id names no dispatch, and a view reads the field
         // the same way: a frame carrying one is the session's own.
         let mut blank = assistant_text("the session's own line");
         if let Message::Assistant { parent_tool_use_id, .. } = &mut blank {
@@ -2565,7 +2557,7 @@ mod tests {
     }
 
     /// A call carries what its row opens on: the result's own content,
-    /// resolved by the same builder the TUI draws the same rows from. A leaf
+    /// resolved by the same builder a view draws the same rows from. A leaf
     /// with no body is a row that expands to nothing.
     #[test]
     fn a_leaf_carries_what_its_result_put_beside_it() {
@@ -2843,7 +2835,7 @@ mod tests {
 }
 
 /// One policy for the text a `queued_command` block carries: the fold
-/// above reads it, and so does the TUI's own message walker.
+/// above reads it, and so does a view's own message walker.
 #[cfg(test)]
 mod queued_command_tests {
     use super::queued_command_text;

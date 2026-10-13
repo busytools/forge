@@ -2,6 +2,12 @@
 //! ones the CLI advertises. View-side data with no session in it, so it
 //! lives here rather than in either view: the table is the same for every
 //! reader, and a second copy would drift.
+//!
+//! **Every name here is one the surviving stack answers.** The terminal's
+//! own handlers (`/diff`, `/spinner`, `/dictate`, `/gateway`,
+//! `/launchpad`) went with it rather than being ported: a name advertised
+//! here and answered nowhere is worse than an absent one, because typing
+//! it reaches the model as prose. Their filed issues are the later menu.
 
 /// One command forge handles itself: the name as it is typed, and what it
 /// does.
@@ -15,20 +21,11 @@ pub struct ForgeCommand {
 /// name, which is the order a dropdown draws them in.
 pub const FORGE_COMMANDS: &[ForgeCommand] = &[
     ForgeCommand { name: "/compact", description: "Compact session context" },
-    ForgeCommand {
-        name: "/dictate",
-        description: "Set how dictation is cleaned up, for this session",
-    },
-    ForgeCommand { name: "/diff", description: "Review changes in a full-screen diff overlay" },
     ForgeCommand { name: "/effort", description: "Set thinking effort" },
-    ForgeCommand { name: "/extensions", description: "Open extensions" },
-    ForgeCommand { name: "/gateway", description: "Inspect the gateway's orgs and accounts" },
-    ForgeCommand { name: "/launchpad", description: "Return to project picker" },
     ForgeCommand { name: "/mode", description: "Set session mode" },
     ForgeCommand { name: "/model", description: "Show / set session model" },
     ForgeCommand { name: "/new", description: "Start a fresh session" },
     ForgeCommand { name: "/resume", description: "Resume a session by ID" },
-    ForgeCommand { name: "/spinner", description: "Show / set the spinner style" },
     ForgeCommand { name: "/usage", description: "Token/cost usage by project or model" },
 ];
 

@@ -6,20 +6,9 @@ use std::path::{Path, PathBuf};
 use tracing_appender::non_blocking::WorkerGuard;
 
 pub mod targets {
-    pub const APP_AUTH: &str = "app.auth";
-    pub const APP_CACHE: &str = "app.cache";
-    pub const APP_CONFIG: &str = "app.config";
-    pub const APP_COMMAND: &str = "app.command";
     pub const APP_INPUT: &str = "app.input";
     pub const APP_LIFECYCLE: &str = "app.lifecycle";
-    pub const APP_NETWORK: &str = "app.network";
-    pub const APP_PASTE: &str = "app.paste";
     pub const APP_PERMISSION: &str = "app.permission";
-    pub const APP_NOTIFY: &str = "app.notify";
-    pub const APP_RENDER: &str = "app.render";
-    pub const APP_SESSION: &str = "app.session";
-    pub const APP_TOOL: &str = "app.tool";
-    pub const APP_UPDATE: &str = "app.update";
     pub const BRIDGE_LIFECYCLE: &str = "bridge.lifecycle";
     pub const BRIDGE_MCP: &str = "bridge.mcp";
     pub const BRIDGE_PERMISSION: &str = "bridge.permission";
@@ -27,7 +16,7 @@ pub mod targets {
     pub const BRIDGE_SDK: &str = "bridge.sdk";
 }
 
-const DEFAULT_LOG_DIR: &str = "forge-tui";
+const DEFAULT_LOG_DIR: &str = "forge";
 const DEFAULT_LOG_FILE_NAME: &str = "forge.log";
 pub(crate) const LOG_ROTATION_MAX_BYTES: u64 = 10 * 1024 * 1024;
 pub(crate) const LOG_ROTATION_MAX_FILES: usize = 5;
@@ -87,25 +76,15 @@ impl LoggingRuntime {
 
 /// Default tracing filter. `info` baseline keeps signal-to-noise
 /// sensible; the targets at `debug` are the ones we actually stare at
-/// when triaging UI/event drops (session lifecycle, command dispatch,
-/// input submission, bridge connect path). `app.tool` and
-/// `agent.env_git` are there for a second reason: they carry a
-/// session's own tool failures and a git probe missing
-/// `refs/remotes/origin/HEAD`, which are real and are not forge's
-/// problems. At `debug` they stay readable without raising a warning
+/// when triaging UI/event drops (input submission, the bridge connect
+/// path). `agent.env_git` is there for a second reason: a git probe
+/// missing `refs/remotes/origin/HEAD` is real and is not forge's
+/// problem. At `debug` it stays readable without raising a warning
 /// that says forge is unwell. `forge_workspace::output_tail` is there for
 /// the same reason: a line in a command's output file that cannot be
 /// decoded is the watched command's own output rather than a problem with
 /// forge. (`forge_server` too: its session reads are one session's own
 /// work.)
-/// `tui_markdown`
-/// is pinned to `error` because it emits per-frame WARN events for
-/// every HTML element and unknown-language code block it encounters
-/// during streaming markdown rendering (peaks at 50K+/sec on chats
-/// with HTML content). Dropping to `error` rejects the events at the
-/// tracing filter before serialisation. The architectural fix
-/// (HTML-strip in `preprocess_prose` at the call site) lands as
-/// a separate PR; this filter bump is defence-in-depth.
 ///
 /// `forge_dictate` and `forge_workspace::dictate` are there for the
 /// same reason again: a take that reaches its capture cap, a normalizer
@@ -118,9 +97,6 @@ impl LoggingRuntime {
 /// hyphenated target and its module path. What it reports is the model
 /// loading itself, not forge, so it is not forge's warning to raise.
 const DEFAULT_LOG_DIRECTIVES: &str = "info,\
-    app.session=debug,\
-    app.command=debug,\
-    app.tool=debug,\
     app.input=debug,\
     app.lifecycle=debug,\
     bridge.lifecycle=debug,\
@@ -131,13 +107,11 @@ const DEFAULT_LOG_DIRECTIVES: &str = "info,\
     forge_workspace::browser=debug,\
     forge_workspace::dictate=debug,\
     forge_dictate=debug,\
-    tui_markdown=error,\
     llama_cpp_2=error,\
     llama-cpp-2=error";
 
 fn build_filter_directives(cli: &Cli) -> String {
-    let mut directives = cli
-        .log_filter
+    cli.log_filter
         .clone()
         .or_else(|| {
             cli.diagnostics_preset
@@ -146,11 +120,7 @@ fn build_filter_directives(cli: &Cli) -> String {
                 .map(str::to_owned)
         })
         .or_else(|| std::env::var("RUST_LOG").ok())
-        .unwrap_or_else(|| DEFAULT_LOG_DIRECTIVES.to_owned());
-    if !directives.contains("tui_markdown=") {
-        directives.push_str(",tui_markdown=info");
-    }
-    directives
+        .unwrap_or_else(|| DEFAULT_LOG_DIRECTIVES.to_owned())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -402,25 +372,19 @@ mod tests {
         let resolved = resolve_log_path(&cli).expect("resolve succeeds").expect("path exists");
         assert_eq!(resolved.source.as_str(), "default");
         let path = resolved.path.to_string_lossy().replace('\\', "/");
-        assert!(path.ends_with("forge-tui/logs/forge.log"));
+        assert!(path.ends_with("forge/logs/forge.log"));
     }
 
     #[test]
     fn default_log_directives_target_the_drop_diagnosis_paths() {
-        // `sdk_message_dropped` and `turn_complete_dropped` warns
-        // live under `app.session`. `app.command` covers the
-        // dispatch path. `bridge.lifecycle` covers connect/spawn.
-        // Anything dropping out of these regresses the always-on
-        // debug coverage we ship for triage.
-        assert!(DEFAULT_LOG_DIRECTIVES.contains("app.session=debug"));
-        assert!(DEFAULT_LOG_DIRECTIVES.contains("app.command=debug"));
+        // `app.input` covers input submission; `bridge.lifecycle`
+        // covers connect/spawn. Anything dropping out of these
+        // regresses the always-on debug coverage we ship for triage.
         assert!(DEFAULT_LOG_DIRECTIVES.contains("app.input=debug"));
         assert!(DEFAULT_LOG_DIRECTIVES.contains("bridge.lifecycle=debug"));
-        // `app.tool` and `agent.env_git` are the two targets whose
-        // records were demoted out of WARN; dropping them from this set
-        // would silence a session's own tool failure and the git probe
-        // miss entirely, which is the state the levels moved away from.
-        assert!(DEFAULT_LOG_DIRECTIVES.contains("app.tool=debug"));
+        // `agent.env_git` is the target whose records were demoted out of
+        // WARN; dropping it from this set would silence the git probe miss
+        // entirely, which is the state the levels moved away from.
         assert!(DEFAULT_LOG_DIRECTIVES.contains("agent.env_git=debug"));
         // `forge_workspace::output_tail` carries the tail read's
         // unreadable-line record, demoted there for the same reason: a line
@@ -446,11 +410,10 @@ mod tests {
         // `app.lifecycle` because a config choice is not a problem, so
         // the target needs the directive or that record never lands.
         assert!(DEFAULT_LOG_DIRECTIVES.contains("app.lifecycle=debug"));
-        // tui_markdown emits per-frame WARN events for every HTML
-        // tag + unknown code-block language during streaming markdown
-        // rendering. Pinning to `error` rejects them at the filter
-        // before serialisation - 50K+/sec at peak otherwise.
-        assert!(DEFAULT_LOG_DIRECTIVES.contains("tui_markdown=error"));
+        // llama-cpp emits per-token INFO/WARN chatter while a model runs.
+        // Pinning to `error` rejects it at the filter before
+        // serialisation.
+        assert!(DEFAULT_LOG_DIRECTIVES.contains("llama_cpp_2=error"));
         // A directive the parser rejects takes the whole filter with it
         // and leaves forge logging nothing, so the default set is
         // checked by parsing it rather than by reading it.
@@ -556,7 +519,7 @@ mod tests {
     fn a_target_the_defaults_say_nothing_about_stays_out() {
         let absent = emitted_under_defaults(|| {
             tracing::debug!(
-                target: "forge_web::session",
+                target: "a_crate_forge_does_not_name::module",
                 event_name = "directive_check",
                 "a record",
             );
@@ -577,7 +540,6 @@ mod tests {
         let presets = [
             DiagnosticsPreset::Runtime,
             DiagnosticsPreset::Session,
-            DiagnosticsPreset::Render,
             DiagnosticsPreset::Bridge,
             DiagnosticsPreset::Full,
         ];
@@ -613,7 +575,7 @@ mod tests {
         let resolved = resolve_log_path(&cli).expect("resolve succeeds").expect("path exists");
         assert_eq!(resolved.source.as_str(), "default");
         let path = resolved.path.to_string_lossy().replace('\\', "/");
-        assert!(path.ends_with("forge-tui/logs/forge.log"));
+        assert!(path.ends_with("forge/logs/forge.log"));
     }
 
     #[test]

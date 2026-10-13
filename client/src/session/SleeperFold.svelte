@@ -15,9 +15,10 @@
    * mount - and never closes on its own.
    *
    * A sleeping row is information, not a way in: its seat has no session
-   * behind it, so opening it draws a refusal, and the terminal's own answer
-   * for these rows is a label with no hit target. So no link, and no close
-   * chip - there is nothing behind either of them to act on.
+   * behind it, so opening it draws a refusal, and the answer the view this
+   * client replaced gave for these rows was a label with no hit target. So no
+   * link, and no close chip - there is nothing behind either of them to act
+   * on.
    *
    * `closing` is the rail's own mark for a seat this client has just closed:
    * such a row lands here at once and keeps a settling dot while the core

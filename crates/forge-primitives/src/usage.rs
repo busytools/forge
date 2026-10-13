@@ -112,7 +112,7 @@ pub struct ExtraUsage {
 
 /// Snapshot of the user's Anthropic plan utilization at a point in time.
 /// Composed by the forge-gateway backends and rendered by
-/// forge-tui's usage view.
+/// a view.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UsageSnapshot {
     pub source: UsageSourceKind,
@@ -206,8 +206,7 @@ pub enum AccountBudget {
         /// windows, or `None` when all three are absent.
         seven_day_util: Option<f64>,
         /// When the account unlocks - `Some` only while it is at its
-        /// cap, so the gateway view shows a reset ETA on limited rows
-        /// only.
+        /// cap, so a capped account's row can show a reset ETA.
         resets_at: Option<std::time::SystemTime>,
     },
     /// Per-key spend in USD over the three periods the backend

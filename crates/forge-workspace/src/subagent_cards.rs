@@ -16,9 +16,7 @@ use std::collections::HashMap;
 use forge_primitives::runtime::{SubagentCall, SubagentCallStatus, SubagentCard};
 use forge_primitives::{ContentBlock, Message, TaskNotificationStatus};
 
-/// How many of an instance's calls its card draws. The terminal's own
-/// per-instance tail caps at the same four, and the drawing the card was
-/// transcribed from.
+/// How many of an instance's calls its card draws.
 pub const TAIL_CAP: usize = 4;
 
 /// Every instance `messages` holds, in dispatch order.
@@ -358,7 +356,7 @@ fn is_terminal_status(status: &str) -> bool {
 }
 
 /// Whether an ending's word is a failure. `killed` and `stopped` are in:
-/// a cancel is not a clean finish, and the terminal draws its cross for one.
+/// a cancel is not a clean finish.
 fn is_failure_status(status: &str) -> bool {
     matches!(status, "failed" | "killed" | "stopped" | "timed_out" | "error")
 }
@@ -884,7 +882,7 @@ mod tests {
     }
 
     /// A bad ending marks the card: the roster's own word decides, and a
-    /// kill counts as one - the terminal draws its cross for a kill.
+    /// kill counts as one.
     #[test]
     fn a_bad_ending_marks_the_card_failed() {
         let of = |word: &str| {
@@ -898,7 +896,7 @@ mod tests {
 
         assert!(of("failed").failed, "a failed word marks the card");
         assert!(of("killed").failed, "and so does a kill");
-        assert!(of("stopped").failed, "and a cancel, which the terminal draws as a kill");
+        assert!(of("stopped").failed, "and a cancel, which reads as a kill");
         assert!(!of("completed").failed, "a clean finish does not");
 
         let notified = subagent_cards(&[

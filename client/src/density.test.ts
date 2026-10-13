@@ -11,13 +11,13 @@ import { describe, expect, it } from 'vitest';
  * layout assertion too. So these read the declarations, the way
  * `contrast.test.ts` reads the tokens and `Session.test.ts` reads a rule body.
  *
- * **The numbers are the terminal's.** `scripts/density/measure.mjs` measures
- * the same fixture through the TUI's own render path and through a real
- * browser, and these are the client side of that comparison brought to the
- * terminal's: one blank row's worth between blocks, a row that is a line plus
- * a hairline rather than a line plus a third, and a leading nearer a terminal
- * cell than a book page. Each assertion names the number it is protecting so a
- * change to one is a deliberate edit here rather than a silent drift.
+ * **The numbers come from the view this client replaced**, measured through
+ * its render path and through a real browser against the same fixture before
+ * that view was deleted: one blank row's worth
+ * between blocks, a row that is a line plus a hairline rather than a line plus
+ * a third, and a leading nearer a character cell than a book page. Each
+ * assertion names the number it is protecting so a change to one is a
+ * deliberate edit here rather than a silent drift.
  */
 
 const SHEET = readFileSync(new URL('./assets/web.css', import.meta.url), 'utf8').replace(
@@ -95,10 +95,10 @@ describe("the conversation draws at the terminal's density", () => {
   });
 
   /**
-   * The leading, in the unit the comparison was taken in: the terminal draws
-   * one row per line, which is 1.231em of its text size. 1.5em is a book page;
-   * 1.35 is nearer a terminal's cell while staying off it, since a browser
-   * still has to fit a descender under a line of monospace.
+   * The leading, in the unit the comparison was taken in: the view this client
+   * replaced drew one row per line, which is 1.231em of its text size. 1.5em
+   * is a book page; 1.35 is nearer that view's cell while staying off it, since
+   * a browser still has to fit a descender under a line of monospace.
    */
   it('leads the conversation at 1.35', () => {
     expect(declared('.conv', 'line-height')).toBe('1.35');
@@ -108,7 +108,8 @@ describe("the conversation draws at the terminal's density", () => {
   /**
    * A code panel is a line plus a hairline of padding. It was a line plus a
    * third - 8px of padding top and bottom, which is 0.94em of air around one
-   * line of 14px code, and 1.89x what the terminal draws for the same fence.
+   * line of 14px code, and 1.89x what the view this client replaced drew for
+   * the same fence.
    */
   it('pads a code panel to less than a line', () => {
     expect(declared('.code pre', 'padding')).toBe('6px 10px');
@@ -117,18 +118,19 @@ describe("the conversation draws at the terminal's density", () => {
 
   /**
    * A table row is a line, near enough. 4px top and bottom took a row to
-   * 1.96em against the terminal's 1.25em, which is the airiness that made a
-   * six-row state table read as a page of its own.
+   * 1.96em against the 1.25em the view this client replaced drew, which is the
+   * airiness that made a six-row state table read as a page of its own.
    */
   it('pads a table row to a hairline', () => {
     expect(declared('.prose th', 'padding')).toBe('2px 12px 2px 0');
   });
 
   /**
-   * **One blank line between blocks**, which is the terminal's entire spacing
-   * policy: a streamed reply is cut at paragraph boundaries and each block
-   * carries one trailing break. Ten pixels was 0.59em against the terminal's
-   * 1.23em, and this is the half of the change that makes the message taller.
+   * **One blank line between blocks**, the whole of the spacing policy in the
+   * view this client replaced: a streamed reply is cut at paragraph boundaries
+   * and each block carries one trailing break. Ten pixels was 0.59em against
+   * that view's 1.23em, and this is the half of the change that makes the
+   * message taller.
    */
   it('separates two blocks by one line', () => {
     // Either spelling: a rule between siblings only owes a top, and one that

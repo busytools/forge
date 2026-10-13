@@ -1,9 +1,9 @@
 //! Open a URL in the user's system browser.
 //!
-//! The shell-out lives here (not in forge-tui, which holds no
+//! The shell-out lives here (not in a view, which holds no
 //! subprocess machinery) so any pane affordance can hand a URL to the
-//! OS opener and get a `Result` back. GitHub-only callers today: the
-//! Inspector pane's PR row.
+//! OS opener and get a `Result` back. GitHub-only callers today: a
+//! view's Inspector PR row.
 
 use std::time::Duration;
 

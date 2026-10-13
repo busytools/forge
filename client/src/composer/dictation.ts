@@ -2,10 +2,9 @@
  * The dictation panel's own reads: the axes, the value in force on each, the
  * key hint, and what a chip asks the core for.
  *
- * Ported in VOCABULARY from the terminal's `/dictate` overlay
- * (`crates/forge-tui/src/app/dictate_picker.rs`) and drawn as the mockup draws
- * it rather than as the terminal's rows: the axes and their exact values are
- * the reference's, the form is the web's own.
+ * Ported in VOCABULARY from the view this client replaced and drawn as the
+ * mockup draws it rather than as that view's rows: the axes and their exact
+ * values are the reference's, the form is the web's own.
  */
 
 import type { Mode } from './dictate-key';

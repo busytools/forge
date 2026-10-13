@@ -299,8 +299,8 @@ struct ProjectEntry {
     path: String,
     /// When `true`, the project's lead session spawns automatically
     /// at forge launch. Multiple projects can carry this; they all
-    /// spawn in the background, and from the launchpad none of them
-    /// is focused until the user picks one. Defaults to `false`.
+    /// spawn in the background, and none of them
+    /// is focused until a view picks one. Defaults to `false`.
     #[serde(default)]
     auto_start: bool,
     /// The project's model: fills the CLI's model slots at spawn
@@ -409,7 +409,7 @@ pub(crate) struct LoadedConfig {
     /// alphabetically-first project that carries `auto_start = true`,
     /// falling back to the alphabetically-first project overall
     /// when no project opts in. Used by the `forge` (no argv) fixture
-    /// / smoke paths; the production launchpad picker overrides.
+    /// / smoke paths; a production picker overrides it.
     pub default_index: usize,
     pub accounts: Vec<LoadedAccount>,
     /// `[dictate]` section knobs. Absent section means dictation is
@@ -673,8 +673,8 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         tracing::warn!(
             target: "forge_workspace::config",
             event_name = "ui_section_ignored",
-            "[ui] is no longer read; a spinner and its cadence are the terminal's \
-             own, so the section and its keys can be deleted",
+            "[ui] is no longer read; the spinner and its cadence retired with the \
+             terminal crate, so the section and its keys can be deleted",
         );
     }
 

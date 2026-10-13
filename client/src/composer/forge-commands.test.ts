@@ -5,8 +5,8 @@ import { routeForCommand } from './forge-commands';
 describe('what a typed forge command does in this view', () => {
   /**
    * `/usage` opens the usage page here rather than crossing the wire: the
-   * terminal's own submit path opens its overlay on the bare name
-   * (`app/slash/executors.rs`), and the words never reach the model.
+   * view this client replaced opened its overlay on the bare name, and the
+   * words never reach the model.
    */
   it('routes the bare name to the page', () => {
     expect(routeForCommand('/usage')).toEqual({ kind: 'route', route: { name: 'usage' } });
@@ -16,9 +16,9 @@ describe('what a typed forge command does in this view', () => {
     });
   });
 
-  /** The name takes no arguments, and the terminal answers that with its
-   * usage line rather than opening - so a wrong invocation is answered here
-   * too, and still never reaches the model. */
+  /** The name takes no arguments, and the view this client replaced answered
+   * that with its usage line rather than opening - so a wrong invocation is
+   * answered here too, and still never reaches the model. */
   it('answers a name given arguments with its usage line', () => {
     expect(routeForCommand('/usage today')).toEqual({ kind: 'line', text: 'Usage: /usage' });
   });

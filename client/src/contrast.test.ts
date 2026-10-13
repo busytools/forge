@@ -30,11 +30,12 @@ const MARK = 3;
  * The band the page's prose sits in, above WCAG's own floor for the pair.
  *
  * Both ends are this project's, because the standard has nothing to say about
- * text drawn too bright. The reference is the terminal, which draws body text
- * at 6.10:1 (Ghostty `GitHub Dark`: fg #8b949e on #101216) and nothing near
- * white. The page's ground is darker and its lower tiers are AA-floored, so it
- * cannot follow the terminal down that far: prose has to stay clearly above
- * `--muted` (7.01:1), which puts this tier between roughly 10 and 14.
+ * text drawn too bright. The reference is the view this client replaced, which
+ * drew body text at 6.10:1 (Ghostty `GitHub Dark`: fg #8b949e on #101216) and
+ * nothing near white. The page's ground is darker and its lower tiers are
+ * AA-floored, so it cannot follow that view down that far: prose has to stay
+ * clearly above `--muted` (7.01:1), which puts this tier between roughly 10
+ * and 14.
  *
  * Both ends are enforced rather than described: 14 is where a later "the chat
  * looks dim" cannot put `--text` back to, since it measured 17.51:1, and 10 is
@@ -79,8 +80,8 @@ const OPAQUE = /^#[0-9a-f]{6}$/i;
  * than measured, which is the whole of what keeps a `NaN` out: `NaN < floor`
  * is false, so anything reaching `contrast` unmeasured would read as fine.
  * Both halves are real - a token renamed in `theme.ts` leaves the table
- * stale, and a value `salvage.test.ts` accepts from `theme.rs` (`#abc`, an
- * eight-digit hex, `rgba(...)`) is not a `#rrggbb` pair.
+ * stale, and a value outside the `#rrggbb` spelling (`#abc`, an eight-digit
+ * hex, `rgba(...)`) is not a `#rrggbb` pair.
  */
 function outOfBand(pairs: readonly Pair[], palette: Readonly<Record<string, string>>): string[] {
   const outside: string[] = [];
@@ -250,8 +251,8 @@ describe('the palette', () => {
   /**
    * A value that is not `#rrggbb` reaches the arithmetic as a `NaN`, and
    * `NaN` compares false, so the pair passes vacuously rather than loudly.
-   * `salvage.test.ts` takes three- and eight-digit hex from `theme.rs`, so
-   * one can arrive here and be reported as fine.
+   * A palette may spell a hex as three or eight digits, so one can arrive
+   * here and be reported as fine.
    */
   it('finds a pair whose value it cannot measure', () => {
     expect(

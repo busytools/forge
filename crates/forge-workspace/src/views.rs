@@ -50,7 +50,7 @@ pub struct ProjectView {
 
 #[cfg(feature = "test-helpers")]
 impl ProjectView {
-    /// Test-only constructor for cross-crate fixtures (forge-tui's
+    /// Test-only constructor for cross-crate fixtures (a view's
     /// Projects pane snapshot tests). Behind the `test-helpers`
     /// Cargo feature to keep test-only construction out of the
     /// production API.
@@ -103,7 +103,7 @@ impl ProjectView {
 }
 
 /// One account row for the account snapshots: a project-allowed
-/// account plus its live rate-limit state, snapshotted so the TUI
+/// account plus its live rate-limit state, snapshotted so a view
 /// renders without locking `AccountStateMap`. Produced by
 /// [`crate::Workspace::project_accounts_snapshot`] in allow-list order.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -122,11 +122,11 @@ pub struct AccountRow {
     pub fallback: bool,
     /// The provider whose backend serves this account.
     pub provider: forge_primitives::account::Provider,
-    /// Boot-time loading state, as the launchpad gates on it.
+    /// Boot-time loading state, as the home band reads it.
     pub loading: forge_gateway::LoadingState,
 }
 
-/// One org's block in the read-only gateway view: its walk order and
+/// One org's block in the read-only accounts view: its walk order and
 /// the live state of every account it names.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GatewayOrgView {

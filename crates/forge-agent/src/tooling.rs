@@ -52,7 +52,7 @@ pub fn is_tool_result_block_type(block_type: &str) -> bool {
 }
 
 /// Mirrors `normalizeToolKind`. Maps tool name to the typed
-/// `ToolKind` consumed by the TUI's tool-card renderer.
+/// `ToolKind` consumed by a view's tool-card renderer.
 fn normalize_tool_kind(name: &str) -> forge_primitives::ToolKind {
     use forge_primitives::ToolKind;
     match name {

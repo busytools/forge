@@ -37,8 +37,9 @@ const NOTHING: UsageRead = { wire: null, refused: null };
  * background fetch.** The ask that scanned also kicked the pricing refill,
  * which re-scans with the fetched table and leaves the priced report in the
  * cache - but nothing pushes, so the fresh figures are only ever seen by
- * asking again. That is the terminal's own re-price (it draws a fresh scan
- * when one arrives) translated into the one move this subject offers.
+ * asking again. That is the same re-price the view this client replaced ran
+ * (it drew a fresh scan when one arrived) translated into the one move this
+ * subject offers.
  *
  * **One re-ask cannot cover the fetch's budget.** The litellm fetch carries
  * a 20s timeout, so a fetch landing at, say, 9s would leave the page on

@@ -260,7 +260,8 @@ export class LocalTake {
   }
 }
 
-/** What a microphone that would not open says, in the terminal's vocabulary. */
+/** What a microphone that would not open says, in the vocabulary kept from the
+ *  view this client replaced. */
 export function microphoneLine(why: unknown): string {
   const name = why instanceof DOMException ? why.name : '';
   switch (name) {
@@ -285,8 +286,8 @@ export const WENT_UNSENT = 'not connected \u{b7} dictation did not start';
 /**
  * A start refused because this client already records on another seat.
  *
- * The seat is named the way the terminal names it - the whole slot - so a
- * reader with two seats open knows which one holds the microphone.
+ * The seat is named the way the view this client replaced named it - the whole
+ * slot - so a reader with two seats open knows which one holds the microphone.
  */
 export function busyLine(seat: SessionSlot): string {
   const where = `${seat.org}/${seat.project}/${seat.label}`;

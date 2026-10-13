@@ -25,7 +25,10 @@
   /** Whether the row is open; a closed row carries its summary and nothing else. */
   let opened = $state(untrack(() => open));
 
-  /** The record with an unattributed usage block dropped, which is the rule the terminal applies. */
+  /**
+   * The record with an unattributed usage block dropped, which is the rule the
+   * view this client replaced applied.
+   */
   const held = $derived(attributed(info));
 
   /**
@@ -48,8 +51,8 @@
    *
    * `0s` is a measurement - a turn whose whole span was API time - and only a
    * record missing either end draws the dash. A check that demanded the span
-   * be the LARGER of the two would drop that zero, which the terminal's own
-   * `checked_sub` keeps.
+   * be the LARGER of the two would drop that zero, which the view this client
+   * replaced kept with `checked_sub`.
    */
   const local = $derived(
     held.duration_ms !== null && held.api_ms !== null && held.duration_ms >= held.api_ms

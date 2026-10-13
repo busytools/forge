@@ -14,7 +14,8 @@
    * a turn's work and a dispatch row draws its instance's thinking in its
    * expansion; a second copy here would be the same row kept in step by hand.
    * The body is markdown - the model writes its reasoning in headings, lists
-   * and code, and the terminal has no row for it at all - and the summary
+   * and code, and the view this client replaced had no row for it at all -
+   * and the summary
    * line is that markdown rendered inline, from the same renderer and the
    * same escaping as the body, so a row and its open read the marks alike.
    */

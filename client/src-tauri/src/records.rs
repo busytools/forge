@@ -311,10 +311,6 @@ fn seat_update(record: &mut Value, name: &str, payload: &Value) -> bool {
         "slash_commands_changed" => set(record, "slash_commands", array(payload.get("commands"))),
         "subagents_changed" => set(record, "subagents", array(payload.get("subagents"))),
         "subagent_cards_changed" => set(record, "subagent_instances", array(payload.get("cards"))),
-        "dispatches_changed" => match payload.get("has_dispatches") {
-            Some(Value::Bool(flag)) => set(record, "has_dispatches", *flag),
-            _ => false,
-        },
         "file_index_changed" => match payload.get("index") {
             Some(index) => set(record, "file_index", index.clone()),
             None => false,

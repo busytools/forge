@@ -109,8 +109,9 @@ describe('what a call body draws', () => {
     );
     expect(leaf.status, 'the call still settles on the result it drew').toBe('completed');
 
-    // The text is what a body has where there is no diff to draw: the terminal's
-    // own rule is the diff for a mutation, the result's words for everything else.
+    // The text is what a body has where there is no diff to draw: the rule the
+    // view this client replaced kept is the diff for a mutation, the result's
+    // words for everything else.
     // A Write is a file the CLI reports as created, with no patch at all: the
     // body falls back to the call's own content, which is the ADDED side and
     // nothing removed. Read the other way round the counts invert.
@@ -143,9 +144,9 @@ describe('what a call body draws', () => {
   it("keeps a failed mutation's own reason, which is the one thing the result has to say", () => {
     // A successful mutation's result text repeats the path and the CLI's note
     // to the model, which the row drops in favour of the diff. A FAILED one's
-    // text is the reason nothing changed, and the terminal draws it (`if
-    // !is_error` in `build_tool_result_fields`) - dropped here it is a row
-    // that says the edit failed and never says why.
+    // text is the reason nothing changed, and the view this client replaced
+    // drew it (its guard was `if !is_error`) - dropped here it is a row that
+    // says the edit failed and never says why.
     const failed = leafOf(
       't4',
       'Edit',
@@ -170,9 +171,9 @@ describe('what a call body draws', () => {
     // **The wrapper is addressed to the model, not to a reader.** It was drawn
     // raw under the diff (measured on Ved's 2026-10-03 screenshot), and the
     // fold is the one point every result's text enters - so it is read off
-    // once here, the same reading the terminal's `extract_tool_use_error_message`
-    // gives the same payload. The first line is the message; the rest is detail
-    // the note path would drop.
+    // once here, the same reading the view this client replaced gave the same
+    // payload. The first line is the message; the rest is detail the note path
+    // would drop.
     const wrapped =
       '<tool_use_error>String to replace not found in file.\n' +
       'String:   fn outcome(answer: Answer) {\n' +
@@ -218,8 +219,8 @@ describe('what a call body draws', () => {
     // real completed results on this machine carry both tags - Reads of forge
     // source, a diff, a grep for the string - and unwrapping those rewrites
     // what the tool actually said (a 23,305-character Read collapsing to a
-    // bogus hint). The terminal gates the same question on Failed|Killed; a
-    // completed run shows its output verbatim, tags and all.
+    // bogus hint). The view this client replaced gated the same question on
+    // Failed|Killed; a completed run shows its output verbatim, tags and all.
     const quoting = leafOf(
       't7',
       'Read',
@@ -266,11 +267,11 @@ describe('what a call body draws', () => {
   it('reads the tag without letting a non-ASCII letter shift it', () => {
     // **`toLowerCase()` is not a safe scan.** U+0130 lowercases to two code
     // units, so indices taken off a lowercased copy slice the original at
-    // shifted offsets - the terminal's scanner is ASCII-lowercasing for
-    // exactly this reason. Measured against the old form this payload reads
-    // `sg<` (the İ before the tag pulls every index one to the right and the
-    // close marker leaks into the words); the length-preserving scan reads
-    // `msg`, which is what the payload says.
+    // shifted offsets - the view this client replaced scanned with
+    // ASCII-lowercasing for exactly this reason. Measured against the old
+    // form this payload reads `sg<` (the İ before the tag pulls every index
+    // one to the right and the close marker leaks into the words); the
+    // length-preserving scan reads `msg`, which is what the payload says.
     const dotted = leafOf(
       't9',
       'Bash',

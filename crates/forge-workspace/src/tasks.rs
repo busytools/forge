@@ -704,7 +704,7 @@ impl Workspace {
 impl Workspace {
     /// Register a task directly, bypassing the MCP create path.
     /// Cross-crate test access to the otherwise `pub(crate)` task store
-    /// so forge-tui can exercise the Inspector's `refresh_tasks`
+    /// so a view can exercise the Inspector's `refresh_tasks`
     /// resolution against a seeded task.
     ///
     /// The store write without the announcement: a fixture seeds state, it

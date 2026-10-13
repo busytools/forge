@@ -188,20 +188,15 @@ const NOT_NEWS: readonly string[] = [
   // A call's own output, which the row that asked for it draws: the fleet
   // region has no row for it.
   'call_output',
-  'slash_command_error',
   'notice',
-  'runtime_reload_completed',
-  'runtime_reload_failed',
   'set_mode_failed',
   'set_model_failed',
   'mcp_operation_error',
   'turn_complete',
   'hook_observation',
-  'status_snapshot',
   'forge_account_identity',
   'dictate_overrides',
   'dictate_device_pin',
-  'oauth_credentials_snapshot',
   'context_usage_snapshot',
   'mcp_snapshot',
   // The seat's own working tree, its monitors, the CLI's background registry,
@@ -463,7 +458,7 @@ describe('what one update asks of the fleet', () => {
   /** Everything the fleet does not draw, which is most of the stream. */
   it('draws nothing of the variants no row shows', () => {
     expect(fleetNews({ hook_observation: { key: LEAD } })).toEqual({ kind: 'nothing' });
-    expect(fleetNews({ status_snapshot: { key: LEAD } })).toEqual({ kind: 'nothing' });
+    expect(fleetNews({ mcp_operation_error: { key: LEAD } })).toEqual({ kind: 'nothing' });
     expect(fleetNews({ dictate_level: { key: LEAD } })).toEqual({ kind: 'nothing' });
   });
 
@@ -529,11 +524,11 @@ describe('the variant census', () => {
     ).toBe(true);
     expect(
       names.length,
-      'this count and the enum disagree, and `SessionUpdate` held 79 variants when it was last ' +
+      'this count and the enum disagree, and `SessionUpdate` held 74 variants when it was last ' +
         'set. Raise or lower it in the same edit that adds or removes one - the census below names ' +
         'the bucket an added variant belongs in - and if you moved no variant, the parse read a ' +
         'different set of names than the enum holds',
-    ).toBe(79);
+    ).toBe(74);
     expect(news.size, 'the `fleet_news` arms were not read out of live.rs at all').toBeGreaterThan(
       5,
     );

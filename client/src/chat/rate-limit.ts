@@ -1,7 +1,6 @@
 /**
- * A rate-limit window's line, ported arm for arm from the terminal's
- * `app/events/rate_limit.rs` (`format_rate_limit_summary` and the notice key),
- * so both views word one window the same way.
+ * A rate-limit window's line, ported arm for arm from the view this client
+ * replaced, so the same window is worded the same way.
  *
  * The reads are the wire's own names: camelCase inside the frame's
  * `rate_limit_info` (`resetsAt`, `rateLimitType`, `isUsingOverage`), and
@@ -32,7 +31,7 @@ function flag(info: Info, key: string): boolean | null {
   return typeof held === 'boolean' ? held : null;
 }
 
-/** A consumed fraction as the terminal prints it: `{:.0}`, ties to even. */
+/** A consumed fraction as the view this client replaced printed it: `{:.0}`, ties to even. */
 function percent(utilization: number): number {
   const value = utilization * 100;
   const floor = Math.floor(value);
@@ -67,7 +66,8 @@ function formatRateLimitType(raw: string): string {
  * An epoch timestamp as a countdown and UTC wall-clock: "4h 23m at 14:30 UTC".
  *
  * A negative or non-finite value reads "now" rather than throwing, the guard
- * the terminal keeps on the same input (clock skew, a CLI bug).
+ * the view this client replaced kept on the same input (clock skew, a CLI
+ * bug).
  */
 export function formatResetsAt(epochSeconds: number): string {
   if (!Number.isFinite(epochSeconds) || epochSeconds < 0) return 'now';
@@ -111,7 +111,7 @@ function nearThresholdWithoutOverage(info: Info): boolean {
   );
 }
 
-/** The window's line, as the terminal words it. */
+/** The window's line, as the view this client replaced worded it. */
 export function formatRateLimitSummary(info: Info): string {
   if (
     line(info, 'status') === 'rejected' &&

@@ -158,8 +158,8 @@ impl ViewSurface {
     /// answers with [`SessionUpdate::ContextUsageSnapshot`](crate::SessionUpdate::ContextUsageSnapshot).
     ///
     /// The ask rather than the read, because the reading only exists once the
-    /// CLI has computed it: the terminal asks for the seat it is addressing,
-    /// and the socket asks for the seat a client reads, so both reach the one
+    /// CLI has computed it: a view asks for the seat it is addressing, and
+    /// the socket asks for the seat a client reads, so both reach the one
     /// probe rather than each holding a way to reach the CLI.
     ///
     /// # Errors
@@ -181,7 +181,7 @@ impl ViewSurface {
     /// The ask rather than the read, for the same reason as
     /// [`Self::refresh_context_usage`]: the snapshot only exists once the
     /// bridge has answered one, and the socket asks for the seat a client
-    /// reads the way the terminal asks for the seat it is addressing.
+    /// reads the way a view asks for the seat it is addressing.
     ///
     /// # Errors
     ///
@@ -223,7 +223,7 @@ impl ViewSurface {
     ///
     /// Empty when nothing is running, however many monitors have been and
     /// gone: the set drains once every entry in it is terminal, which is
-    /// the rule the terminal applies to its own copy.
+    /// the rule a view applies to its own copy.
     pub fn monitors(&self, slot: &SessionSlot) -> Vec<MonitorRecord> {
         self.workspace
             .domain_session_for(slot)

@@ -4,5 +4,4 @@
 //! `forge_agent::cloud::*`. These are the types that cross crate
 //! boundaries.
 
-pub mod oauth_credentials;
 pub mod service_status;

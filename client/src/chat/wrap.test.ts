@@ -27,10 +27,10 @@ import type { ToolLeaf } from './leaves';
  * bare panel and silently clip a real one. Every rule in the parsed sheet is
  * tried against the element with `matches`, wherever it is written.
  *
- * The terminal is the reference here (rule 24): it wraps a long code line
- * inside its panel, wraps a diff line and re-emits the indent on the
- * continuation row, and hard-splits a token with nowhere to break
- * (`wrap_long_token` in `crates/forge-tui/src/ui/wrap.rs`).
+ * The view this client replaced is the reference here (rule 24): it wrapped a
+ * long code line inside its panel, wrapped a diff line and re-emitted the
+ * indent on the continuation row, and hard-split a token with nowhere to
+ * break.
  */
 const sheet = readFileSync(new URL('../assets/web.css', import.meta.url), 'utf8');
 

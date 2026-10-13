@@ -56,7 +56,7 @@ the diff half is on screen, and a keypress in a text field is the field's.
 
 The commit list is the record's own; a commit's diff is fetched when its
 scope is first shown, and not carried on the record - a branch can hold
-dozens of commits, and every reader of a record, the terminal included,
+dozens of commits, and every reader of a record
 would pay their content on every read for a scope only this page draws. An
 ask the socket did not take is asked again, so a scope opened while the
 connection was down recovers rather than reading for ever.
@@ -103,7 +103,7 @@ the lane; in unified it takes the whole width, as the line itself does. The
 same rule runs the doors and the drawing: one door per side's number cell
 in split, one per row in unified (an added or context line is the new side,
 a removed line the old), and a click anywhere on a line opens the composer
-on that line's side - the terminal's own reading of the same gesture.
+on that line's side.
 
 The loop's `N replies to read` is derived rather than served: it counts the
 threads in `addressed` or `outdated` whose last turn is an agent's. An
@@ -120,8 +120,8 @@ also carries nothing this page could not read from the record itself.
 
 ## Writing
 
-The page writes through the same command surface the terminal's overlay
-writes with: a comment is an `upsert_review_thread` carrying the thread, a
+The page writes through the core's review commands: a comment is an
+`upsert_review_thread` carrying the thread, a
 reply the same command with the reviewer's turn appended, a resolve or
 reopen a `set_review_thread_status`, and `finish review` a `submit_review`
 sealing every thread this sitting has drafted or replied on. The summary
@@ -129,12 +129,12 @@ field is the round's own.
 
 **The anchor is captured where the lines are.** The comment is written on a
 line of the drawn diff, so the page takes that line's text, its neighbours
-within the hunk, and the crate's own hash of the line - the same capture the
-terminal's overlay takes from its own scan - and the thread carries it. The
+within the hunk, and the crate's own hash of the line - the capture the
+crate's resolver defines - and the thread carries it. The
 hash is FNV-1a over whitespace-collapsed UTF-8, and the vectors the client's
 implementation is pinned against live in the crate's resolver tests too: a
-hash the two disagree on would leave a thread written here unplaceable in
-the terminal.
+hash the two disagree on would leave a thread written here unplaceable when
+the core resolves it.
 
 The hash crosses as decimal digits rather than a JSON number. JS numbers are
 doubles, exact only to 2^53, and the hash is a full u64 - so the anchor's

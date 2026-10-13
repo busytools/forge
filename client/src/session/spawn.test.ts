@@ -118,8 +118,8 @@ function open(withLead: boolean, slot: SessionSlot = LEAD) {
 describe("starting a project's lead from its own page", () => {
   /**
    * The rail's click is a link to the seat, and a seat nothing is running
-   * behind used to draw "not running" and start nothing. The terminal's own
-   * click spawns the project; so does landing here.
+   * behind used to draw "not running" and start nothing. The same click in
+   * the view this client replaced spawned the project; so does landing here.
    */
   it('asks the core to start a lead nothing is running behind', () => {
     const { sent } = open(false);
@@ -154,7 +154,7 @@ describe("starting a project's lead from its own page", () => {
    * The ask is an effect, so it re-runs on every frame that touches the
    * roster - and the roster names the seat only once `Spawning` has landed.
    * Without the latch the page would ask again on each of those frames, which
-   * the terminal refuses a second click for.
+   * the view this client replaced refused a second click for.
    */
   it('asks once, however many frames pass before the seat lands', () => {
     const { sent, page } = open(false);

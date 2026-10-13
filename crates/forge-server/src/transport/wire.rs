@@ -8,9 +8,8 @@
 //!
 //! **The twins are complete.** A field is carried unless it is a Rust
 //! mechanism rather than data - a `oneshot`, an `Arc<Workspace>` - because
-//! the client is not today's pages: it is built against this wire and
-//! compared with the terminal, and a field missing here cannot be added
-//! later without a server change.
+//! the client is not today's pages: it is built against this wire, and a
+//! field missing here cannot be added later without a server change.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -87,7 +86,7 @@ pub struct HomeWire {
     pub fleet: Vec<forge_workspace::board::FleetRow>,
     /// The seats whose last turn finished while no client was showing them.
     ///
-    /// The terminal draws a mark per row from this, and it is the fact a
+    /// A view draws a mark per row from this, and it is the fact a
     /// viewer cannot reconstruct: a turn that ended before a client attached
     /// leaves nothing in the transcript to say it went unwatched, so a client
     /// reading only the records would draw every row as settled.
@@ -165,16 +164,16 @@ pub struct ProjectWire {
     ///
     /// This is the shared cache the transport holds, so several clients
     /// subscribing do not multiply git invocations: the cache is what makes
-    /// the per-row cost the terminal's rather than N times it.
+    /// the per-row cost one scan's rather than N times it.
     pub work: WorkState,
     /// The project's live rows, with what the board derives on each:
     /// worked time, ages, and the marks. Computed once, in the workspace's
     /// board module, and passed through - the client never re-derives a
-    /// mark the terminal would compute differently.
+    /// mark differently.
     pub rows: Vec<forge_workspace::board::BoardRow>,
     /// The schedules this project holds.
     ///
-    /// The terminal draws its SCHEDULES section from these, and nothing on
+    /// A view draws its SCHEDULES section from these, and nothing on
     /// this wire carried them: a client could create a cron and never see it
     /// again.
     pub crons: Vec<forge_primitives::CronEntry>,
@@ -191,7 +190,7 @@ pub struct ProjectWire {
     pub would_bind: bool,
     /// The account this project's row chips, and its state.
     ///
-    /// The terminal draws the chip from `Roster::chip_for`, which derives the
+    /// A view draws the chip from `Roster::chip_for`, which derives the
     /// state from the project's model and the account pool. `has_model` is not
     /// enough to derive it from, so a client could draw the row and not the
     /// chip it carries.
@@ -432,13 +431,6 @@ pub struct SessionWire {
     pub pending_asks: Vec<PendingAskWire>,
     /// The newest turns, not the whole conversation. See [`SUBSCRIBE_TURNS`].
     pub conversation: ConversationWire,
-    /// Whether this seat's conversation holds a sub-agent dispatch at all.
-    ///
-    /// On the record rather than left to whoever draws: it is a fact about
-    /// the conversation, and `conversation` above carries a window of it, so
-    /// a reader scanning that window would report a seat that dispatched an
-    /// hour ago as one where nothing ever ran.
-    pub has_dispatches: bool,
     pub slash_commands: Vec<AvailableCommand>,
     pub subagents: Vec<AvailableAgent>,
     /// The session's sub-agent instances, as the core joined them: one card
@@ -471,7 +463,7 @@ pub struct SessionWire {
     /// different reads - the branch and the count are the row's own, and this
     /// is the heavier scan - and a client draws the inspector's GIT section
     /// from both. Nothing carried them, so a client would draw the section
-    /// without the `PR #N -> closes #M` row the terminal leads it with.
+    /// without the `PR #N -> closes #M` row a view leads it with.
     pub pr: Option<forge_primitives::git::GitPrInfo>,
     pub closes: Vec<forge_primitives::git::GitIssueRef>,
     /// The changed files with their raw hunks, bounded and flagged: what a
@@ -480,8 +472,8 @@ pub struct SessionWire {
     ///
     /// Read beside `work` rather than pushed with it: the row above moves
     /// with the tree, while this is taken once per read that encodes a
-    /// record - a cold load, a reconnect, a seat swap - the way the
-    /// terminal's `/diff` scans once on open. Its caps and flags live in
+    /// record - a cold load, a reconnect, a seat swap - the way a view's
+    /// `/diff` scans once on open. Its caps and flags live in
     /// forge-agent's `git_diff::content`, which is where the read's shape
     /// is decided.
     pub diff: DiffContent,
@@ -612,7 +604,7 @@ pub struct ReviewsWire {
 ///
 /// **The landing is resolved here because only the server can resolve
 /// it.** A client draws the bounded content it is sent and has no working
-/// tree to re-scan; the terminal's own resolver is the one answer to
+/// tree to re-scan; the server's own resolver is the one answer to
 /// whether an anchor still lands, so the record carries that answer
 /// rather than a second implementation deriving one a language away.
 ///
@@ -654,8 +646,8 @@ pub enum OutdatedReasonWire {
 ///
 /// **Only a thread numbered against this diff's own base is placed.** A
 /// whole-diff anchor records the base it was written against, and a
-/// terminal overlay opened against another target writes line numbers that
-/// address unrelated code here (its own scope filter refuses exactly that:
+/// view's overlay opened against another target writes line numbers that
+/// address unrelated code here (the placement refuses exactly that:
 /// "line numbers against another base would anchor onto unrelated code"). A
 /// thread from another base answers `None` - no landing - which the page
 /// draws as itself rather than parking it on a guess.
@@ -683,7 +675,7 @@ fn reviewed_threads(
 
 /// One anchor placed against the bounded content the record carries. The
 /// line number is trusted: the branch-ahead layer is the numbering an
-/// all-changes comment was written in, the same trust the terminal's
+/// all-changes comment was written in, the same trust a view's
 /// overlay extends to its own home scope.
 fn resolution_wire(anchor: &ReviewAnchor, files: &[FileContent]) -> ThreadResolutionWire {
     match place_anchor_in_content(anchor, files, true) {
@@ -1149,7 +1141,7 @@ async fn extensions(state: &TransportState) -> ExtensionsWire {
 
 /// Ask the core for a context reading on `slot` when the seat reports none.
 ///
-/// The reading exists only once the CLI has computed it, and the terminal asks
+/// The reading exists only once the CLI has computed it, and a view asks
 /// for the seat it is addressing. A client subscribing to a seat is that same
 /// act, so the ask belongs on the read that encodes the subject: a seat only a
 /// client watches would otherwise report nothing for the life of its session,
@@ -1176,8 +1168,8 @@ fn request_context_usage_if_unreported(surface: &ViewSurface, slot: &SessionSlot
 
 /// Ask the core for an MCP snapshot on `slot` when the seat reports none.
 ///
-/// The snapshot exists only once the bridge has answered one, and only the
-/// terminal's connect, poll and `/mcp` paths ask for it. A client subscribing
+/// The snapshot exists only once the bridge has answered one, and only a
+/// view's connect, poll and `/mcp` paths ask for it. A client subscribing
 /// to a seat is that same act, so the ask belongs on the read that encodes the
 /// subject: a seat only a client watches would otherwise report `mcp: None`
 /// for the life of its session, and the strip's MCP row would never draw.
@@ -1307,7 +1299,7 @@ async fn home(state: &TransportState, surface: &ViewSurface) -> HomeWire {
         forge_version: crate::FORGE_VERSION.to_owned(),
         forge_version_short: crate::FORGE_VERSION_SHORT.to_owned(),
         service_status: surface.service_status().and_then(|issue| serde_json::to_value(issue).ok()),
-        // The words the terminal prints on exit, which is what a client draws:
+        // The words the server prints on exit, which is what a client draws:
         // the serde tag alone is for matching, and nothing matches on this.
         fatal_error: encode(
             surface.fatal_error().map(|error| Value::String(error.user_message().to_owned())),
@@ -1374,10 +1366,6 @@ async fn session(
     // record answering a window of cards over a window of messages is a
     // section that shrinks with the cap rather than with the conversation.
     let instances = surface.subagent_cards(slot);
-    // The dispatch flag is the workspace's, raised by the fold that can
-    // announce its raise: read here rather than recomputed, so the record and
-    // the `DispatchesChanged` frame cannot disagree about it.
-    let has_dispatches = surface.has_dispatches(slot);
     // The seat's scan, as the loop that owns it last answered it. Nothing is
     // read here: the tree is read for a seat somebody is showing, and this
     // answers what that read found - the tile's branch, count and PR are one
@@ -1431,7 +1419,6 @@ async fn session(
         pending_ask: asks.first().map(PendingAskWire::from),
         pending_asks: asks.iter().map(PendingAskWire::from).collect(),
         conversation: ConversationWire { turns, compaction_count },
-        has_dispatches,
         header: SessionHeaderWire {
             session_id: header.session_id.clone(),
             model: header.model.as_ref().and_then(|model| serde_json::to_value(model).ok()),
@@ -2207,7 +2194,7 @@ mod tests {
         );
     }
 
-    /// The home's fatal carries the words the terminal prints, not the serde
+    /// The home's fatal carries the words the server prints, not the serde
     /// tag: a view drawing the line words it from the field (#1638).
     #[tokio::test]
     async fn a_home_fatal_carries_the_terminals_words() {
@@ -2236,9 +2223,8 @@ mod tests {
     /// registry, which no read answered.
     ///
     /// Without it a client drew the OS walk and nothing else, so a
-    /// `setsid`-detached bash - the case the registry exists for - was a row
-    /// the terminal had and the client could not: not an empty field, a
-    /// missing row.
+    /// `setsid`-detached bash - the case the registry exists for - was a
+    /// missing row rather than an empty field.
     #[tokio::test]
     async fn a_session_snapshot_carries_the_background_registry() {
         let fleet =
@@ -2317,45 +2303,6 @@ mod tests {
         );
     }
 
-    /// **The dispatch flag the record carries is the workspace's.** It was
-    /// computed here, over the held conversation, until the push landed: the
-    /// fold that raises it is the one that announces the raise, so the record
-    /// reads it through the view surface rather than keeping a second answer
-    /// that could disagree with the frame.
-    #[tokio::test]
-    async fn the_record_reads_the_dispatch_flag_from_the_workspace() {
-        let fleet =
-            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
-        fleet.start("TestOrg", "proj").expect("the project starts");
-        let state = TransportState {
-            surface: fleet.surface(),
-            work: Arc::new(WorkCache::new()),
-            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
-            live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
-            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
-        };
-
-        let before =
-            encode_subject(&state, &Subject::Session(fixture_seat())).await.expect("encode");
-        assert_eq!(
-            before["has_dispatches"], false,
-            "a seat whose fold raised nothing reads false: {before}",
-        );
-
-        fleet.seed_view_facts(
-            &fixture_seat(),
-            ViewFacts { has_dispatches: true, ..ViewFacts::default() },
-        );
-
-        let after =
-            encode_subject(&state, &Subject::Session(fixture_seat())).await.expect("encode");
-        assert_eq!(
-            after["has_dispatches"], true,
-            "and the flag the workspace holds is the one the record answers with: {after}",
-        );
-    }
-
     /// **The instance list the record carries is the workspace's**, not a
     /// fold the record takes over the conversation.
     ///
@@ -2405,7 +2352,6 @@ mod tests {
         fleet.seed_view_facts(
             &fixture_seat(),
             ViewFacts {
-                has_dispatches: true,
                 cards: vec![forge_primitives::runtime::SubagentCard {
                     name: "from the workspace".to_owned(),
                     dispatch_id: "tu-sub".to_owned(),
@@ -2571,8 +2517,7 @@ mod tests {
     ///
     /// **A thread written against another base is refused the landing too**:
     /// its line numbers belong to a diff this record does not carry, and a
-    /// placement would be a guess (the terminal's own scope filter refuses
-    /// exactly that).
+    /// placement would be a guess (the placement refuses exactly that).
     #[tokio::test]
     async fn the_record_carries_each_threads_landing() {
         let fleet =
@@ -2771,7 +2716,7 @@ mod tests {
         );
     }
 
-    /// A scan as the terminal's inspector reads it: one branch, one worktree
+    /// A scan as a view's inspector reads it: one branch, one worktree
     /// layer, one chain ahead, one PR and one closing issue. Both depth
     /// layers are populated so the record-vs-constructor guard covers both
     /// axes - a derivation omitting either reddens.
@@ -2818,7 +2763,7 @@ mod tests {
     }
 
     /// The token/cost report, on the subject a usage view subscribes to.
-    /// Nothing carried it: the pool is scanned off-thread by the terminal,
+    /// Nothing carried it: the pool is scanned off-thread by the server,
     /// and a client had no way to ask for the same numbers.
     ///
     /// Its own fleet rather than `fixture_state`'s, whose transcript pool the
@@ -3155,7 +3100,7 @@ mode = \"toggle\"
         );
     }
 
-    /// The terminal draws a project's SCHEDULES section from a read the wire
+    /// A view draws a project's SCHEDULES section from a read the wire
     /// never carried, so a client could create a cron and never see it again.
     #[tokio::test]
     async fn a_projects_schedules_ride_its_row() {

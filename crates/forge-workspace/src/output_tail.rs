@@ -7,7 +7,7 @@
 //! so the tail is a file read. The readers are the session task - which
 //! resolves the path from its own conversation and answers a view's
 //! `ReadCallOutput` with the result - and the views that hold a path already
-//! (the terminal and the web pages tail a Monitor's file on their own tick).
+//! (a view tails a Monitor's file on its own tick).
 
 use std::collections::VecDeque;
 use std::fs::File;
@@ -28,8 +28,8 @@ pub const TAIL_WINDOW_BYTES: u64 = 64 * 1024;
 /// genuinely empty". The empty-file case returns `Some(vec![])`.
 ///
 /// The lines come back as the command wrote them, escape sequences and all.
-/// What a renderer has to drop to draw them is the renderer's business: a
-/// terminal and a page drop different bytes, so neither rule belongs on a
+/// What a renderer has to drop to draw them is the renderer's business:
+/// different renderers drop different bytes, so neither rule belongs on a
 /// read that only hands the text over.
 ///
 /// Only the final [`TAIL_WINDOW_BYTES`] are read: for a larger file the
@@ -172,7 +172,7 @@ mod tests {
         // with progress bars) emit ANSI colour codes + carriage returns for
         // in-place line updates + the occasional BEL/backspace. The read
         // hands them over as written: dropping them is the renderer's rule,
-        // and a terminal and a page drop different bytes.
+        // and different renderers drop different bytes.
         let raw = "\
 \x1b[32mline 1 green\x1b[0m\n\
 line 2 with \rcarriage return\n\

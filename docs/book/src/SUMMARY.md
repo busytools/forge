@@ -8,30 +8,11 @@
 - [The socket](./socket.md)
 - [API reference](./api-reference.md)
 
-# UI surfaces
-
-- [UI surfaces](./ui/index.md)
-- [Workspace](./ui/workspace.md)
-- [Projects pane](./ui/projects-pane.md)
-- [Inspector](./ui/inspector.md)
-- [Inspector processes](./ui/inspector-processes.md)
-- [Preflight](./ui/preflight.md)
-- [Launchpad](./ui/launchpad.md)
-- [Chat](./ui/chat.md)
-- [Agents](./ui/agents.md)
-- [Slack connector](./ui/slack.md)
-- [Input](./ui/input.md)
-- [Help and welcome](./ui/help.md)
-- [Extensions](./ui/extensions.md)
-- [Diff viewer](./ui/diff.md)
-- [Pickers and overlays](./ui/pickers.md)
-- [Usage](./ui/usage.md)
-- [Reference: errors, theme, glyphs](./ui/reference.md)
-
 # The client
 
-The Svelte app that connects to a running forge and draws it. Its surfaces
-have pages here in the same way the TUI's do, current state only.
+The Svelte app that connects to a running forge and draws it. These pages
+are the project's visual truth for what it renders - current state only,
+each with the drawing it is held against beside it.
 
 - [The client's surfaces](./ui/client/index.md)
 - [Connect](./ui/client/connect.md)

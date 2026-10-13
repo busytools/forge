@@ -870,7 +870,7 @@ client-preview:
 
     wait "$preview"
 
-# Compiles the two forge-tui configurations nothing else builds. The
+# Compiles the two server configurations nothing else builds. The
 # install one compiles what `scripts/install.sh` does - the `forge`
 # bin, release, the test-only features off, `--locked` - so production
 # code reaching a `#[cfg(feature = "test-helpers")]` constructor fails
@@ -883,8 +883,8 @@ client-preview:
 # so it never exercises which configuration enables what - the install
 # build leaving `test-helpers` off, or `testing` having to forward it.
 check-feature-configs:
-    RUSTFLAGS="-D warnings" cargo check --locked --release -p forge-tui --bin forge
-    RUSTFLAGS="-D warnings" cargo check --locked -p forge-tui --features testing
+    RUSTFLAGS="-D warnings" cargo check --locked --release -p forge-server --bin forge
+    RUSTFLAGS="-D warnings" cargo check --locked -p forge-server --features testing
 
 # Full pre-commit / pre-PR verification loop.
 #
@@ -1028,13 +1028,17 @@ ci-watch run_id="":
     line="[OK] run $run_id: success at $head_sha"
     record "$line"; echo "$line"
 
-# Build forge-tui from this checkout into ~/.cargo/bin/forge (release, then zsh completions).
+# Build the forge binary from this checkout into ~/.cargo/bin/forge (release, then zsh completions).
 install:
     ./scripts/install.sh
 
 # Untrust forge's retired proxy CA and delete its key material (idempotent, one-shot).
 remove-cert:
     ./scripts/remove-cert.sh
+
+# Move the app-support tree from its legacy `forge-tui` name to `forge` (idempotent, one-shot).
+migrate-app-support:
+    ./scripts/migrate-app-support.sh
 
 # The maintainer's own act, start to finish: it pushes and publishes as well
 # as builds. Requires cargo-edit (`cargo install cargo-edit`) for

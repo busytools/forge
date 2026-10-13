@@ -37,7 +37,7 @@ use super::{GitOutput, run_git};
 /// the `/diff` overlay's untracked surface is suppressed (no `U`
 /// rows render in the rail when the cap is exceeded).
 ///
-/// Public so the TUI rail renderer can surface the cap in the
+/// Public so a view can surface the cap in the
 /// "+N untracked suppressed (cap M)" notice - the number lives
 /// here as the source of truth.
 pub const MAX_UNTRACKED_FILES: usize = 4;

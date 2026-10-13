@@ -20,7 +20,7 @@ nothing to draw, and the client never falls back to bundled data.
 
 | Region | Shows | Read from |
 |---|---|---|
-| Stopped | the core's last fatal, above everything else: `forge stopped:` and the terminal's own words | `fatal_error` |
+| Stopped | the core's last fatal, above everything else: `forge stopped:` and the core's own words | `fatal_error` |
 | Header | the brand mark, `forge`, the forge build serving the socket, the socket protocol, the claude version, the CLI's update notice, this app's own update line (or, in a browser, the build and the latest published), and the fleet totals | `ClientSettings.mark` from the greeting; `forge_version_short`; `PROTOCOL_VERSION`; `cli_version`; the shell's update check, or the served `latest.json`; `agents` and `projects` counted |
 | Band | six cards: the gateway listener, the client's own address, dictation, the account pool, the usage, and the extensions | `accounts.gateway`, the connection the client made, `dictate.snapshot`, `accounts.loading`, the `extensions` subject; the usage card reads nothing - it is a door |
 | Fleet row | one per project: the strongest seat mark, the project, its branch and changed-file count, when it last moved (the newest write among its seats and the sessions its catalog remembers, `now`/`3h`/`2d`, or `never` for a project with neither a seat nor a session behind it), its seats, `live of cap slots · queue · on you`, the named misses, and the ways in - the row itself, each seat, and the board | `fleet` for the counts and the misses; `projects` for the tree; `agents` and `projects[].sessions` for the seats and the age |
@@ -34,7 +34,7 @@ is the refusal the row drew before the fleet. The whole row opens the
 project's lead in chat - the name's link stretches over the row's area,
 while a seat chip opens its own seat and `open board` opens the
 [board](./board.md). A project with no live seat is started by that same
-click, as a sleeping seat is from the terminal's rail.
+click, as a sleeping seat is from a session page's rail.
 
 **Four cards are ways in.** The dictation card opens the
 [models page](./dictate-models.md), where the pins, the catalogue check and
@@ -113,7 +113,7 @@ goes the moment the seat is opened.
 
 - **A fleet**, which is the ordinary case.
 - **A stopped forge**: the core's last fatal draws above everything, in the
-  terminal's own words. It reaches this page from the snapshot's recorded
+  core's own words. It reaches this page from the snapshot's recorded
   fatal, so the attach that sees it is one landing inside the wind-down
   window before the process goes; the live announcement is the fatal's own
   frame, drawn in the chat.
@@ -181,7 +181,8 @@ Two things the home subject carries and this page does not draw are the
 schedules a project holds and the account a row chips. Each is drawn
 elsewhere: the schedules on the session page's strip, whose schedules row
 keeps the seat's own set (a cron names the seat that created it), and the
-account on the launchpad's account walk. Neither is a gap in this page.
+account on the session page's rail footer, beside what it is costing.
+Neither is a gap in this page.
 
 ## The two widths
 

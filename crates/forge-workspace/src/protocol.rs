@@ -1,5 +1,5 @@
-//! Command + SessionUpdate channel envelopes between forge-tui and
-//! forge-workspace. TUI dispatches Commands; workspace per-session
+//! Command + SessionUpdate channel envelopes between a view and
+//! forge-workspace. A view dispatches Commands; workspace per-session
 //! tasks emit SessionUpdates back via a fan-in channel.
 //!
 //! ## Dual Command shape (deliberate)
@@ -9,7 +9,7 @@
 //! `session_id: String`. They overlap on variant names (Prompt,
 //! Cancel, SetMode, …) but serve different boundary layers:
 //!
-//! - **`forge_workspace::protocol::Command`** is the TUI ↔ workspace
+//! - **`forge_workspace::protocol::Command`** is the view ↔ workspace
 //!   envelope. SessionSlot routing, App-level variants
 //!   (SpawnProject / SpawnSession / StartDefault), the
 //!   workspace-internal Respond* + MCP cluster.
@@ -27,7 +27,6 @@
 use std::path::PathBuf;
 
 use forge_agent::client::SessionLaunchSettings;
-use forge_primitives::cloud::oauth_credentials::OauthCredentials;
 use forge_primitives::cloud::service_status::ServiceSeverity;
 use forge_primitives::error::AppError;
 use forge_primitives::permission::PermissionMode;
@@ -39,8 +38,7 @@ use forge_primitives::question::{QuestionOutcome, QuestionRequest};
 use forge_primitives::review::{ReviewStatus, ReviewThread};
 use forge_primitives::runtime::{AvailableModel, CurrentModel, ModeState, TerminalReason};
 use forge_primitives::{
-    AccountInfo, ForgeAccountIdentity, ImageAttachment, McpOperationError, McpServerStatus,
-    Message, SessionId, SessionListEntry,
+    ImageAttachment, McpOperationError, McpServerStatus, Message, SessionId, SessionListEntry,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
@@ -50,7 +48,7 @@ use crate::SessionSlot;
 use crate::mcp::peers::types::WrappedPrompt;
 
 // `TurnErrorClass` lives in forge-primitives so the classifier (in
-// forge-agent) and consumers (in forge-tui, via this protocol module)
+// forge-agent) and consumers (views, via this protocol module)
 // share one enum. Re-exported here so existing call sites keep
 // resolving via `forge_workspace::protocol::TurnErrorClass`.
 pub use forge_primitives::TurnErrorClass;
@@ -197,7 +195,7 @@ pub enum DespawnResult {
 
 /// Mutation kind for a `SessionUpdate::WorkerStatusChanged` event.
 /// `Added` and `StatusChanged` carry a fresh `WorkerStatus` snapshot;
-/// `Removed` carries the last-known snapshot for symmetry but the TUI
+/// `Removed` carries the last-known snapshot for symmetry but a view's
 /// reducer treats it as a delete.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -248,7 +246,7 @@ impl WorktreeDisposition {
     }
 }
 
-/// Command envelope: forge-tui -> forge-workspace.
+/// Command envelope: a view -> forge-workspace.
 ///
 /// Every variant carries a `SessionSlot` identifying the target
 /// session task. `Workspace::dispatch` fans the variant into the
@@ -480,8 +478,7 @@ pub enum Command {
     },
     // --- Plugins / marketplaces (app-level; the Extensions page) ---
     //
-    // The terminal runs these from its own view layer; these variants are
-    // the same work reachable through the command bus so a second view
+    // These variants carry the work through the command bus so a view
     // can act. Every one is app-level (`key()` returns `None`), serialized
     // one at a time, and reports through the `Plugins*` updates a view
     // already listens to.
@@ -538,7 +535,7 @@ pub enum Command {
     },
     /// App start. Workspace spawns the default project (or the
     /// project passed on CLI argv) and emits the spawning + connected
-    /// updates. TUI calls this once at startup. `is_fatal_on_failure`
+    /// updates. Dispatched once at startup. `is_fatal_on_failure`
     /// flags whether a pre-Connected failure should emit
     /// `SessionUpdate::FatalError` alongside the `ConnectionFailed`;
     /// startup is fatal (nothing to render), the sleeping-spawn flows
@@ -671,16 +668,16 @@ pub enum Command {
     },
     /// Close (terminate agent + remove from `live_workers`) the
     /// worker identified by `label` in `project_key`. Dispatched by
-    /// the TUI's per-row close click. If duplicates exist, the latest-
+    /// a view's per-row close click. If duplicates exist, the latest-
     /// spawned matching entry is removed.
     CloseWorker {
         project_key: crate::ProjectKey,
         label: String,
     },
-    /// Open a URL in the system browser. Dispatched by the TUI's
+    /// Open a URL in the system browser. Dispatched by a view's
     /// Inspector PR-row click. App-level command (`key()` returns
     /// `None`); the shell-out runs in `forge_agent::env::open_url`
-    /// off the render thread and a failure surfaces as a
+    /// and a failure surfaces as a
     /// `SessionUpdate::ServiceStatus` warning.
     OpenUrl {
         url: String,
@@ -689,7 +686,7 @@ pub enum Command {
     /// terminate its agent, drop it from `live_workers`, AND clean up
     /// its git worktree. Dispatched by the
     /// `agents__despawn` MCP tool (lead-only). Unlike `CloseWorker`
-    /// (the TUI X-button), this also removes the worker's git worktree:
+    /// (a view's X-button), this also removes the worker's git worktree:
     /// a clean worktree is removed; a dirty one (uncommitted/untracked
     /// or unpushed commits) blocks the despawn unless `force`. The
     /// outcome flows back via `respond`.
@@ -751,7 +748,7 @@ pub enum Command {
     /// frame a client sends next on the same ordered socket finds it.
     ///
     /// `options` are the axes that client's panel was showing; they
-    /// normalize this take, where the terminal's own take reads the
+    /// normalize this take, where an in-process take reads the
     /// session's stored overrides at its stop.
     DictateStream {
         key: SessionSlot,
@@ -759,7 +756,7 @@ pub enum Command {
         /// The connection that sent this, stamped by the transport that
         /// received it: the take belongs to that connection, so every
         /// update about it goes back there alone. `None` is this
-        /// process's own terminal.
+        /// process's own take.
         #[serde(skip)]
         initiator: Option<u64>,
     },
@@ -771,7 +768,7 @@ pub enum Command {
         submit: bool,
         /// The connection whose take this stop addresses, stamped like
         /// [`Command::DictateStream`]'s: only the connection a take
-        /// belongs to can stop it. `None` is the terminal's own.
+        /// belongs to can stop it. `None` is this process's own.
         #[serde(skip)]
         initiator: Option<u64>,
     },
@@ -802,8 +799,8 @@ pub enum Command {
         status: ReviewStatus,
     },
     /// Release the session `session_key` (cascade-aware: a project
-    /// lead's workers terminate first). Dispatched by the TUI's
-    /// per-row close click; the TUI removes its own bucket around the
+    /// lead's workers terminate first). Dispatched by a view's
+    /// per-row close click; a view removes its own bucket around the
     /// dispatch. App-level command (`key()` returns `None`); routed
     /// inline.
     CloseSession {
@@ -1200,7 +1197,7 @@ where
 }
 
 /// What one finished dictation take produced. Plain data rather than
-/// [`forge_dictate::Outcome`]: the TUI words the notices, so it gets
+/// [`forge_dictate::Outcome`]: a view words the notices, so it gets
 /// the observations and keeps the crate's error shapes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1336,7 +1333,7 @@ pub enum NoticeSeverity {
     Error,
 }
 
-/// Update envelope: forge-workspace -> forge-tui.
+/// Update envelope: forge-workspace -> a view.
 ///
 /// Permission/Question variants do NOT carry response oneshots -
 /// responses flow back via `Command::Respond*`. The workspace stores
@@ -1350,7 +1347,7 @@ pub enum NoticeSeverity {
 pub enum SessionUpdate {
     /// Workspace is spawning a session (in response to
     /// `Command::SpawnProject` / `Command::SpawnSession` /
-    /// `Command::StartDefault`). TUI creates a placeholder UiSession
+    /// `Command::StartDefault`). A view creates a placeholder
     /// under `key` and shows the "Waking {display_name}…" message. The
     /// matching `Connected` lands soon after, under the same key.
     Spawning {
@@ -1441,10 +1438,6 @@ pub enum SessionUpdate {
         method_name: String,
         method_description: String,
     },
-    SlashCommandError {
-        key: SessionSlot,
-        message: String,
-    },
     /// One line the core has for a view about `key`, which nothing else
     /// carries.
     ///
@@ -1463,30 +1456,23 @@ pub enum SessionUpdate {
         severity: NoticeSeverity,
         text: String,
     },
-    RuntimeReloadCompleted {
-        key: SessionSlot,
-    },
-    RuntimeReloadFailed {
-        key: SessionSlot,
-        message: String,
-    },
     /// The CLI refused (or failed) a `set_permission_mode` control
     /// request for `key`. `message` carries the underlying error text;
-    /// the TUI rolls the optimistic mode chip back and surfaces it.
+    /// the view rolls the optimistic mode chip back and surfaces it.
     SetModeFailed {
         key: SessionSlot,
         mode: PermissionMode,
         message: String,
     },
     /// The CLI refused (or failed) a `set_model` control request for
-    /// `key`. `message` carries the underlying error text; the TUI
+    /// `key`. `message` carries the underlying error text; the view
     /// rolls the optimistic model change back and surfaces it.
     SetModelFailed {
         key: SessionSlot,
         model: String,
         message: String,
     },
-    /// Permission prompt. No response_tx - TUI replies via
+    /// Permission prompt. No response_tx - a view replies via
     /// `Command::RespondPermission { tool_id, outcome }`.
     PermissionRequest {
         key: SessionSlot,
@@ -1503,8 +1489,8 @@ pub enum SessionUpdate {
     /// The interaction `tool_id` was answered, so every view holding the
     /// prompt can drop it. Answering leaves the pending set either way,
     /// and this is the only thing that says so on the stream: without it a
-    /// second view keeps drawing a prompt that is already settled. The TUI
-    /// never met that, because it is the only view.
+    /// second view keeps drawing a prompt that is already settled. A lone
+    /// view never meets that, because it is the only one.
     ///
     /// **A question names its round as well as its call.** A batch reuses
     /// one tool call id and advances `question_index`, and the next round's
@@ -1561,11 +1547,6 @@ pub enum SessionUpdate {
         agent_id: Option<String>,
         agent_type: Option<String>,
     },
-    StatusSnapshot {
-        key: SessionSlot,
-        account: AccountInfo,
-        forge_account: Option<ForgeAccountIdentity>,
-    },
     ForgeAccountIdentity {
         key: SessionSlot,
         display_name: String,
@@ -1573,7 +1554,7 @@ pub enum SessionUpdate {
     /// The full override set a session holds after a `/dictate` edit
     /// landed. Sent after every `SetDictateOverride` and
     /// `ResetDictateOverrides` so the dialog's markers and its reset
-    /// row read from this, not from a TUI-side copy.
+    /// row read from this, not from a view-side copy.
     DictateOverrides {
         key: SessionSlot,
         overrides: crate::dictate::DictateOverrides,
@@ -1585,10 +1566,6 @@ pub enum SessionUpdate {
     DictateDevicePin {
         key: SessionSlot,
         pick: Option<crate::dictate::DictateDeviceChoice>,
-    },
-    OauthCredentialsSnapshot {
-        key: SessionSlot,
-        credentials: Option<OauthCredentials>,
     },
     ContextUsageSnapshot {
         key: SessionSlot,
@@ -1604,9 +1581,8 @@ pub enum SessionUpdate {
     },
     /// The seat's process tree moved, as the whole walk the core holds.
     ///
-    /// **Pushed rather than read.** The walk is a `sysinfo` refresh and the
-    /// terminal runs it once a second for the seat a person is on; the core
-    /// now walks the same second for every seat a view is showing, and this
+    /// **Pushed rather than read.** The walk is a `sysinfo` refresh; the
+    /// core runs it once a second for every seat a view is showing, and this
     /// carries the answer to whoever is drawing it. Emitted only when the
     /// tree's own entries moved - a walk that found the same processes says
     /// nothing.
@@ -1756,15 +1732,14 @@ pub enum SessionUpdate {
         message: String,
     },
     /// The background catalog scan finished and `Workspace`'s project
-    /// catalog is populated. The launchpad and Projects pane read
-    /// `list_projects()` per frame, so nothing needs carrying: the
-    /// event exists to wake the render loop so session counts appear
-    /// when the scan lands rather than on the next unrelated frame.
+    /// catalog is populated. A view reads the roster itself, so nothing
+    /// needs carrying: the event exists to wake the render loop so
+    /// session counts appear when the scan lands rather than on the next
+    /// unrelated frame.
     CatalogLoaded,
     /// A claude version probe landed and moved what the views draw. The
-    /// snapshot itself is not carried, so this is only the wake-up: the web
-    /// view re-reads through the surface's `cli_version` verb, the TUI
-    /// through the workspace method it still reads directly.
+    /// snapshot itself is not carried, so this is only the wake-up: a view
+    /// re-reads through the surface's `cli_version` verb.
     CliVersionChanged,
     /// The account pool moved: an account's loading state, its cached usage
     /// snapshot, or the gateway listener's readiness.
@@ -1826,14 +1801,14 @@ pub enum SessionUpdate {
         /// verify, so the pane still reflects the real state.
         snapshot: Option<PluginsInventorySnapshot>,
     },
-    /// Workspace pushed a change to `live_workers[project_key]`. The
-    /// TUI reducer updates the projects pane's tree-children based on
-    /// `action`. `status` is the snapshot at the moment of the change
-    /// (relevant for Added and StatusChanged; ignored for Removed but
-    /// carried for symmetry). `worktree` is what has become of the
-    /// worker's worktree - the TUI's close-toast formatter reads it on
-    /// `Removed` events (after which the `WorkerEntry` is gone from
-    /// `live_workers`, so a lookup-by-label would fail).
+    /// Workspace pushed a change to `live_workers[project_key]`. A
+    /// view's reducer updates the projects pane's tree-children based
+    /// on `action`. `status` is the snapshot at the moment of the
+    /// change (relevant for Added and StatusChanged; ignored for
+    /// Removed but carried for symmetry). `worktree` is what has
+    /// become of the worker's worktree, read on `Removed` events
+    /// (after which the `WorkerEntry` is gone from `live_workers`, so a
+    /// lookup-by-label would fail).
     WorkerStatusChanged {
         project_key: crate::ProjectKey,
         action: WorkerStatusAction,
@@ -1841,9 +1816,9 @@ pub enum SessionUpdate {
         worktree: WorktreeDisposition,
     },
     /// A peer-coordination envelope arrived at `key`.
-    /// Carries the typed `WrappedPrompt` so the TUI reducer can build
+    /// Carries the typed `WrappedPrompt` so a view's reducer can build
     /// the chat-side echo from real fields instead of having the
-    /// workspace forge a `Message::User` carrying prose for the TUI to
+    /// workspace forge a `Message::User` carrying prose for a view to
     /// re-parse (audit I11). The recipient's LLM still receives the
     /// prose via a separate `Command::Prompt` dispatch - that's the
     /// CLI's input channel and stays text-shaped.
@@ -1856,7 +1831,7 @@ pub enum SessionUpdate {
         uuid: String,
     },
     /// A matched Gotify notification arrived at `key`.
-    /// Carries the typed `GotifyNotification` so the TUI reducer builds
+    /// Carries the typed `GotifyNotification` so a view's reducer builds
     /// the chat-side echo from real fields (mirrors PeerEnvelopeAppended).
     /// The session's LLM receives the same prose via a separate
     /// `Command::Prompt` - this update only drives the visible echo.
@@ -1868,7 +1843,7 @@ pub enum SessionUpdate {
         uuid: String,
     },
     /// A due cron fired into `key`. Carries the fired
-    /// prompt text so the TUI reducer builds the chat-side echo (mirrors
+    /// prompt text so a view's reducer builds the chat-side echo (mirrors
     /// GotifyNotificationAppended). The session's LLM receives the same
     /// text via a separate `Command::Prompt` - this update only drives
     /// the visible echo.
@@ -1888,7 +1863,7 @@ pub enum SessionUpdate {
     },
     /// A matched Slack message arrived at `key`. Carries the
     /// prose rather than the typed message: the prose builder is `pub(crate)`
-    /// to forge-workspace, so a typed message would force the TUI to rebuild
+    /// to forge-workspace, so a typed message would force a view to rebuild
     /// the very format it parses. The session's LLM receives the same prose
     /// via a separate `Command::Prompt` - this update only drives the visible
     /// echo (mirrors GotifyNotificationAppended).
@@ -1937,7 +1912,7 @@ pub enum SessionUpdate {
     },
     /// A workspace-originated prompt (cron fire, peer, gotify or slack
     /// delivery, kick) landed while the target session's turn was in
-    /// flight. The TUI counts it into the bucket's queued-send bridge
+    /// flight. A view counts it into the bucket's queued-send bridge
     /// so the spinner stays open across the gap; the prompt itself
     /// rides the usual `Command::Prompt` dispatch.
     PromptQueuedWhileBusy {
@@ -1977,7 +1952,7 @@ pub enum SessionUpdate {
         cancelled: bool,
     },
     /// A worker's review turn addressed review comments; `key` is the
-    /// session that authored the review (the submit origin). The TUI drops
+    /// session that authored the review (the submit origin). A view drops
     /// `message` as a system line into that session's chat so the reviewer
     /// sees the batched tally, and parks `waiting` - how many threads on
     /// `branch` now await a reviewer turn - as the persistent signal both
@@ -2004,8 +1979,8 @@ pub enum SessionUpdate {
     /// `initiator` names the connection the take belongs to, as its
     /// `dictate_stream` carried it: every `Dictate*` update about a take
     /// goes to that connection alone, so no other subscriber draws its
-    /// meter, its phases or its words. `None` is the terminal's own
-    /// in-process take.
+    /// meter, its phases or its words. `None` is this process's own
+    /// take.
     DictateStarted {
         key: SessionSlot,
         floor_db: f32,
@@ -2067,12 +2042,12 @@ pub enum SessionUpdate {
         outcome: DictateOutcome,
         generation: u64,
         /// The take's own - and for a refusal, the connection that was
-        /// refused, so only it learns why. `None` is the terminal's.
+        /// refused, so only it learns why. `None` is this process's own.
         #[serde(skip)]
         initiator: Option<u64>,
     },
-    /// The core's fatal: the app is going away. `message` is what the
-    /// terminal prints on exit - `AppError::user_message()` - so a view that
+    /// The core's fatal: the app is going away. `message` is what a
+    /// view draws on exit - `AppError::user_message()` - so a view that
     /// draws the line words it the same way without a second copy.
     FatalError {
         error: AppError,
@@ -2127,7 +2102,6 @@ impl SessionUpdate {
             | Self::ConnectionFailed { key, .. }
             | Self::Releasing { key }
             | Self::AuthRequired { key, .. }
-            | Self::SlashCommandError { key, .. }
             | Self::Notice { key, .. }
             | Self::SetModeFailed { key, .. }
             | Self::SetModelFailed { key, .. }
@@ -2158,12 +2132,8 @@ impl SessionUpdate {
             | Self::BrowserHandOffResolved { key, .. }
             | Self::DocumentHandOffPending { key, .. }
             | Self::DocumentHandOffResolved { key, .. }
-            | Self::RuntimeReloadCompleted { key }
-            | Self::RuntimeReloadFailed { key, .. }
             | Self::ChatAppended { key, .. }
             | Self::HookObservation { key, .. }
-            | Self::StatusSnapshot { key, .. }
-            | Self::OauthCredentialsSnapshot { key, .. }
             | Self::ContextUsageSnapshot { key, .. }
             | Self::McpSnapshot { key, .. }
             | Self::WorkChanged { key, .. }
@@ -2236,17 +2206,8 @@ impl std::fmt::Debug for SessionUpdate {
             Self::AuthRequired { key, .. } => {
                 f.debug_struct("AuthRequired").field("key", key).finish_non_exhaustive()
             }
-            Self::SlashCommandError { key, .. } => {
-                f.debug_struct("SlashCommandError").field("key", key).finish_non_exhaustive()
-            }
             Self::Notice { key, .. } => {
                 f.debug_struct("Notice").field("key", key).finish_non_exhaustive()
-            }
-            Self::RuntimeReloadCompleted { key } => {
-                f.debug_struct("RuntimeReloadCompleted").field("key", key).finish()
-            }
-            Self::RuntimeReloadFailed { key, .. } => {
-                f.debug_struct("RuntimeReloadFailed").field("key", key).finish_non_exhaustive()
             }
             Self::SetModeFailed { key, .. } => {
                 f.debug_struct("SetModeFailed").field("key", key).finish_non_exhaustive()
@@ -2288,9 +2249,6 @@ impl std::fmt::Debug for SessionUpdate {
             Self::HookObservation { key, .. } => {
                 f.debug_struct("HookObservation").field("key", key).finish_non_exhaustive()
             }
-            Self::StatusSnapshot { key, .. } => {
-                f.debug_struct("StatusSnapshot").field("key", key).finish_non_exhaustive()
-            }
             Self::ForgeAccountIdentity { key, .. } => {
                 f.debug_struct("ForgeAccountIdentity").field("key", key).finish_non_exhaustive()
             }
@@ -2299,9 +2257,6 @@ impl std::fmt::Debug for SessionUpdate {
             }
             Self::DictateDevicePin { key, .. } => {
                 f.debug_struct("DictateDevicePin").field("key", key).finish_non_exhaustive()
-            }
-            Self::OauthCredentialsSnapshot { key, .. } => {
-                f.debug_struct("OauthCredentialsSnapshot").field("key", key).finish_non_exhaustive()
             }
             Self::ContextUsageSnapshot { key, .. } => {
                 f.debug_struct("ContextUsageSnapshot").field("key", key).finish_non_exhaustive()
@@ -2530,8 +2485,7 @@ impl std::fmt::Debug for SessionUpdate {
 
 /// Errors from the dispatch boundary. `UnknownSession` and
 /// `SessionClosed` are returned by `Workspace::dispatch`;
-/// `NoActiveSession` by `App::dispatch_command`, which has no slot to
-/// name.
+/// `NoActiveSession` is for a caller with no slot to name.
 #[derive(Debug, thiserror::Error)]
 pub enum DispatchError {
     #[error("no active session")]

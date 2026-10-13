@@ -5,8 +5,7 @@
 //! is polled (1 Hz on a moving tree, 10 s when still) and its `prev` is
 //! the PR-lookup cache, while this read is taken for a seat's record on
 //! the reads that encode one - a cold load, a reconnect, a seat swap -
-//! and never polled. The `/diff` overlay's open-time scan is the same
-//! bargain on the terminal side.
+//! and never polled.
 //!
 //! One parser for both readers: the hunks and statuses are
 //! [`super::hunks`]' own, and only the caps below are this read's. A

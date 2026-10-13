@@ -30,8 +30,7 @@ const DEFAULT_MAX_CAPTURE_MINUTES: u64 = 30;
 
 /// The push-to-talk key. Right Cmd is the default; on Linux and
 /// Windows there is no Cmd key, so the cmd equivalent is the right
-/// Control key, mirroring how the Cmd shortcuts accept Ctrl off macOS
-/// (`is_cmd_shortcut`).
+/// Control key.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum DictateBind {
     #[default]
@@ -174,7 +173,7 @@ pub enum DictateDeviceChoice {
 /// else the `[dictate] device` pin, else the system default. The
 /// `None`/`Some` shape matches `forge_dictate::Config::device`, so the
 /// result passes straight through `Engine::try_capture_with`. Shared
-/// with the TUI, which resolves the same way to mark the device in
+/// with a view, which resolves the same way to mark the device in
 /// force.
 pub fn resolve_capture_device(
     pick: Option<&DictateDeviceChoice>,
@@ -522,8 +521,8 @@ impl DictateSnapshot {
     }
 }
 
-/// Preflight's own handle on the work: the snapshot the TUI renders, the
-/// flag Escape sets, and the active models the resolution landed.
+/// Preflight's own handle on the work: the snapshot a view renders, the
+/// cancellation flag, and the active models the resolution landed.
 pub(crate) struct DictateState {
     pub(crate) snapshot: Mutex<DictateSnapshot>,
     pub(crate) cancelled: AtomicBool,
@@ -830,13 +829,13 @@ pub(crate) struct LiveRecording {
     pub(crate) sink: Option<forge_dictate::FrameSink>,
     /// The connection this take belongs to, as its command carried it:
     /// every update about the take goes back there alone, and a stop or
-    /// a close from any other connection is not this take's. `None` is
-    /// the terminal's own.
+    /// a close from any other connection is not this take's. `None`
+    /// belongs to no connection.
     pub(crate) initiator: Option<u64>,
 }
 
 /// A submitted take still awaiting its transcript. The microphone is
-/// already released; the entry stays only so Esc can still abandon it.
+/// already released; the entry stays only so a stop can still abandon it.
 pub(crate) struct FinishingTake {
     pub(crate) key: SessionSlot,
     pub(crate) stop: tokio::sync::mpsc::Sender<bool>,
@@ -1147,7 +1146,7 @@ pub(crate) async fn run_stream_take(
 }
 
 /// What a take normalizes by: the session's `/dictate` overrides read at
-/// the stop, so the terminal's mid-take change lands on the take it was
+/// the stop, so a mid-take change lands on the take it was
 /// made during; or the values a client sent with its start, which are
 /// what that client's panel was showing when the key went down.
 enum TakeAxes {

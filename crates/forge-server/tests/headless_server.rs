@@ -82,7 +82,7 @@ port = {gateway_port}
 
 /// The server binary over one scratch tree.
 fn server_command(home: &std::path::Path, config: &std::path::Path) -> tokio::process::Command {
-    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_forge-server"));
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_forge"));
     command
         .env("HOME", home)
         // The data dir too: on a Linux runner with XDG_DATA_HOME exported,
@@ -172,7 +172,7 @@ async fn walk(script: &str, url: &str) -> Vec<Value> {
 }
 
 /// The boot stands alone: the binary binds the socket, greets a client and
-/// answers the home read - with no terminal anywhere in the process - and
+/// answers the home read - with no view anywhere in the process - and
 /// the stop a system sends releases what the boot took.
 #[tokio::test]
 async fn headless_boot_serves_the_home_and_stops_clean() {
@@ -260,7 +260,7 @@ async fn a_second_instance_is_refused_with_the_holders_pid() {
 /// it on the binary this crate now ships.
 #[tokio::test]
 async fn generate_completion_survives_on_the_server_binary() {
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_forge-server"))
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_forge"))
         .arg("--generate-completion")
         .arg("zsh")
         .output()

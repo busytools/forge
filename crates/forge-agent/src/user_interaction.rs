@@ -9,8 +9,7 @@
 use serde_json::{Map, Value};
 
 use forge_primitives::{
-    QuestionAnnotation, QuestionOption as TuiQuestionOption, QuestionPrompt, QuestionRequest,
-    ToolCall,
+    QuestionAnnotation, QuestionOption, QuestionPrompt, QuestionRequest, ToolCall,
 };
 
 pub const ASK_USER_QUESTION_TOOL_NAME: &str = "AskUserQuestion";
@@ -39,7 +38,7 @@ pub struct AskUserQuestionOption {
 
 #[derive(Debug)]
 pub struct AskUserQuestionPrompt {
-    /// Trimmed text; what the TUI displays.
+    /// Trimmed text; what a view displays.
     pub question: String,
     /// The untrimmed wire text. The CLI looks answers and annotations
     /// up by this exact string, so this is the only valid answers-map
@@ -125,14 +124,14 @@ pub fn parse_ask_user_question_prompts(input: &Value) -> Vec<AskUserQuestionProm
 }
 
 /// Mirrors `askUserQuestionOptions(prompt)` - synthesises wire
-/// `option_id` slugs as `question_<index>` so the TUI can map back
+/// `option_id` slugs as `question_<index>` so a view can map back
 /// to the upstream label list when responding.
-fn ask_user_question_wire_options(prompt: &AskUserQuestionPrompt) -> Vec<TuiQuestionOption> {
+fn ask_user_question_wire_options(prompt: &AskUserQuestionPrompt) -> Vec<QuestionOption> {
     prompt
         .options
         .iter()
         .enumerate()
-        .map(|(i, opt)| TuiQuestionOption {
+        .map(|(i, opt)| QuestionOption {
             option_id: format!("question_{i}"),
             label: opt.label.clone(),
             description: if opt.description.is_empty() {
@@ -184,7 +183,7 @@ pub fn build_question_request(
 /// line separator when no caller-supplied annotation preview is
 /// present.
 pub fn derive_annotation(
-    selected: &[TuiQuestionOption],
+    selected: &[QuestionOption],
     incoming: Option<&QuestionAnnotation>,
 ) -> Option<QuestionAnnotation> {
     let preview_raw = incoming.and_then(|a| a.preview.as_deref()).map_or("", str::trim);
@@ -360,13 +359,13 @@ mod tests {
     #[test]
     fn derive_annotation_joins_previews_when_caller_omitted() {
         let opts = vec![
-            TuiQuestionOption {
+            QuestionOption {
                 option_id: "question_0".to_owned(),
                 label: "A".to_owned(),
                 description: None,
                 preview: Some("a-preview".to_owned()),
             },
-            TuiQuestionOption {
+            QuestionOption {
                 option_id: "question_1".to_owned(),
                 label: "B".to_owned(),
                 description: None,
@@ -452,7 +451,7 @@ mod tests {
 
     #[test]
     fn derive_annotation_falls_through_when_nothing_to_say() {
-        let opts: Vec<TuiQuestionOption> = Vec::new();
+        let opts: Vec<QuestionOption> = Vec::new();
         assert!(derive_annotation(&opts, None).is_none());
     }
 

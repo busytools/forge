@@ -3,9 +3,9 @@
  * The dictation panel's own reads: the axes and their labels, the value in
  * force on each, the key hint, and what a chip asks the core for.
  *
- * Pure, so the panel's markup stays about drawing. The vocabulary is the
- * terminal's own (`crates/forge-tui/src/app/dictate_picker.rs`); the form is
- * the mockup's, which is chips rather than the terminal's rows.
+ * Pure, so the panel's markup stays about drawing. The vocabulary is kept
+ * from the view this client replaced; the form is the mockup's, which is
+ * chips rather than that view's rows.
  *
  * **Named with the suffix because the card's own suite is `TakeCard.test.ts`**,
  * and on a case-insensitive filesystem `dictation.test.ts` is that file - a

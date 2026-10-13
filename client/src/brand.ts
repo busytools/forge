@@ -1,6 +1,5 @@
 /**
- * The marks forge ships, by the name `[client] mark` takes - the client half of
- * `crates/forge-web/src/brand.rs`.
+ * The marks forge ships, by the name `[client] mark` takes.
  *
  * This is the mark the home draws beside the wordmark, not the lifecycle mark
  * a row carries: the two are unrelated and share only the word.

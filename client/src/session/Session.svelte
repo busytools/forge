@@ -188,11 +188,12 @@
   /**
    * The seams this page has already asked the core to start.
    *
-   * The terminal refuses a second click on a seat that is mid-spawn for the
-   * same reason: a second ask races the first, and the seat scrambles. Here
-   * the ask is an effect rather than a click handler, so it re-runs on every
-   * frame that touches the roster - and the roster names a seat only once
-   * `Spawning` has landed, so without this the ask would repeat until then.
+   * The view this client replaced refused a second click on a seat that is
+   * mid-spawn for the same reason: a second ask races the first, and the seat
+   * scrambles. Here the ask is an effect rather than a click handler, so it
+   * re-runs on every frame that touches the roster - and the roster names a
+   * seat only once `Spawning` has landed, so without this the ask would repeat
+   * until then.
    *
    * Nothing draws from it, so an ordinary `Set` would do - the reactive one
    * is what the sheet's lint takes for a mutable `Set`, and it costs nothing
@@ -201,8 +202,8 @@
   const asked = new SvelteSet<string>();
 
   /**
-   * Start a lead nothing is running behind, which is the terminal's own rail
-   * click (`switch_to_project_lead`). A seat the roster names as awake is up
+   * Start a lead nothing is running behind, which is the same rail click the
+   * view this client replaced made. A seat the roster names as awake is up
    * or on its way, and switching to it is what the route this page is on
    * already did.
    *
@@ -250,9 +251,9 @@
       asked.delete(key);
     }
   });
-  // Beside the context figure, which is the row the terminal draws it on: the
-  // count belongs to the conversation and not to the header, and the row is
-  // where a reader looks for it.
+  // Beside the context figure, which is the row the view this client replaced
+  // drew it on: the count belongs to the conversation and not to the header,
+  // and the row is where a reader looks for it.
   const compactions = $derived(
     record === null ? null : compactionFigure(record.conversation.compaction_count),
   );

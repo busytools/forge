@@ -28,13 +28,12 @@ const READER = new MarkdownIt({
 /**
  * The same renderer with soft breaks kept, for what the reader typed.
  *
- * The terminal's own split: its user path passes `preserve_newlines`, which
- * routes through `force_markdown_line_breaks`, and its assistant path does not
- * - so a prompt's newlines survive as breaks where a wrapped assistant line
- * joins back into one. A prompt is usually several lines, so this is the shape
- * a person meets first. It is a second instance rather than a flag on the
- * shared one, because turning it on there would change assistant prose, which
- * the terminal does not do.
+ * The split the view this client replaced kept: its user path preserved
+ * newlines and its assistant path did not - so a prompt's newlines survive as
+ * breaks where a wrapped assistant line joins back into one. A prompt is
+ * usually several lines, so this is the shape a person meets first. It is a
+ * second instance rather than a flag on the shared one, because turning it on
+ * there would change assistant prose, which that view did not do.
  */
 const PROMPT = new MarkdownIt({
   html: false,

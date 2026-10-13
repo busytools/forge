@@ -21,7 +21,7 @@
 //!    `assistant: text` response - which incorporates BOTH prompts
 //!    in its content (single merged turn).
 //!
-//! Implication for forge-tui: there is NO live wire signal that
+//! Implication for a view: there is NO live wire signal that
 //! claude has consumed a buffered prompt. The mid-turn dim → un-dim
 //! handshake must rely on the turn boundary (`SessionUpdate::
 //! TurnComplete`) as its only reliable trigger. The JSONL attachment

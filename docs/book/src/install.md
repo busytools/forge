@@ -143,7 +143,7 @@ deliberately not part of `just check`, because a second full compile is
 too slow for the inner loop; it catches the errors only a release build
 sees.
 
-`just check-feature-configs` compiles the two forge-tui configurations
+`just check-feature-configs` compiles the two server configurations
 nothing else builds: the one `just install` produces - release, the
 test-only features off - and `testing` on its own.
 `--all-features` cannot stand in for either, because it turns every
@@ -159,8 +159,8 @@ enables what: the install build leaving `test-helpers` off, or
 just install
 ```
 
-This builds `forge-tui` from the current working tree and installs the
-`forge` binary into cargo's install root, which is `~/.cargo/bin/forge`
+This builds `forge` from the current working tree and installs the
+binary into cargo's install root, which is `~/.cargo/bin/forge`
 unless you have overridden `CARGO_INSTALL_ROOT` or `CARGO_HOME`. It
 builds whatever branch is checked out; it does not clone, fetch or
 reset.
@@ -169,6 +169,23 @@ One side effect worth knowing about: it regenerates the zsh completion
 at `~/.zsh/completions/_forge` (override the directory with
 `FORGE_ZSH_COMPLETION_DIR`) and removes `~/.zcompdump*` so the next
 shell picks it up.
+
+**Coming from a pre-rename install, run this once before the first
+boot:**
+
+```bash
+just migrate-app-support
+```
+
+forge's machine-local state (the store with your crons, subscriptions
+and session ids, the single-instance lock, and the logs) used to live
+under an app-support directory named `forge-tui`. It is named `forge`
+now, and the binary carries no migration of its own: with only the old
+tree present it **refuses to boot** and names this script, because
+starting under the new name beside the old tree would read as every
+cron and subscription having vanished. The script moves the whole tree
+(printing what it moved), keeps a legacy tree untouched if a current
+one already exists, and is safe to re-run.
 
 `just release <version>` installs this binary too, and publishes the
 release. It bumps the workspace and the client's manifest to the same
@@ -207,5 +224,5 @@ Useful flags:
 |---|---|
 | `--new` | Start every boot session fresh instead of resuming. Only affects the startup wave. |
 | `--log-file <PATH>` | Write tracing diagnostics to a file. |
-| `--log-filter <FILTER>` | Tracing filter directives, for example `info,app.render=trace`. Overrides `--diagnostics-preset`, and falls back to `RUST_LOG` when omitted. |
-| `--diagnostics-preset <NAME>` | A named logging preset: `runtime`, `session`, `render`, `bridge` or `full`. Ignored when `--log-filter` is given. |
+| `--log-filter <FILTER>` | Tracing filter directives, for example `info,bridge.sdk=trace`. Overrides `--diagnostics-preset`, and falls back to `RUST_LOG` when omitted. |
+| `--diagnostics-preset <NAME>` | A named logging preset: `runtime`, `session`, `bridge` or `full`. Ignored when `--log-filter` is given. |

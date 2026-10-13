@@ -1,25 +1,26 @@
-//! `forge-workspace` - multi-session orchestrator and TUI-facing
+//! `forge-workspace` - multi-session orchestrator and view-facing
 //! facade.
 //!
 //! Pools [`forge_agent::Agent`] instances behind a single
 //! [`Workspace`] handle. One [`DomainSession`] per active session
 //! holds workspace-internal routing metadata (`AgentHandle` slot,
 //! claude-issued `session_id`, pending-interaction mailbox).
-//! Operational state TUI renders (lifecycle, cwd, turn state,
-//! account info) lives on the TUI's `UiSession`; workspace is a thin
-//! proxy that reacts to `Command`s in and emits `SessionUpdate`s out.
+//! Operational state a view renders (lifecycle, cwd, turn state,
+//! account info) stays on the view's side of the wire; workspace is a
+//! thin proxy that reacts to `Command`s in and emits `SessionUpdate`s
+//! out.
 //! A per-session actor pumps events from `AgentHandle::take_events()`,
 //! translates them into [`SessionUpdate`]s, and routes [`Command`]s
 //! back.
 //!
 //! ## Communication contract
 //!
-//! The TUI ↔ workspace contract is **one entry point in each
+//! The view ↔ workspace contract is **one entry point in each
 //! direction**:
 //!
-//! - **TUI → workspace:** [`Workspace::dispatch`] takes a
+//! - **view → workspace:** [`Workspace::dispatch`] takes a
 //!   [`protocol::Command`]. One enum, one entry point.
-//! - **workspace → TUI:** [`Workspace::subscribe`] returns a receiver
+//! - **workspace → view:** [`Workspace::subscribe`] returns a receiver
 //!   for [`protocol::SessionUpdate`]. Every caller gets a stream of its
 //!   own, so a second view attaches beside the first. A stream carries
 //!   what is emitted after it subscribes, and the first caller to
@@ -29,40 +30,26 @@
 //!   prompt, and [`Workspace::subscribe_mirror`] is that stream without
 //!   the pre-attach backlog, which is what a view takes.
 //!
-//! No callback hooks. No shared mutable state. TUI does not hold an
+//! No callback hooks. No shared mutable state. A view does not hold an
 //! `Arc<AgentHandle>`: every outbound call goes through
 //! `Workspace::dispatch(Command)`; query-style refreshes
-//! (`refresh_status_snapshot`, `refresh_oauth_credentials_snapshot`,
-//! `refresh_context_usage`, `reload_plugins`, `refresh_mcp_snapshot`)
+//! (`refresh_context_usage`, `refresh_mcp_snapshot`)
 //! and direct accessors (`settings_documents`,
 //! `project_memory_path`, `config_dir_for`) live as
 //! inherent methods on [`Workspace`]. The handle stays on the
 //! workspace's [`DomainSession`].
 //!
-//! ## The TUI's own event bus
-//!
-//! TUI-internal async work has a channel of its own rather than a
-//! second use of the one above. A few TUI-side modules
-//! (`forge_tui::app::extensions`, `slash::executors`,
-//! `service_status_check`, `input_submit`) emit their own
-//! `SessionUpdate`s onto it rather than dispatching a `Command` and
-//! waiting for a round-trip. They only mutate presentation-side state
-//! in TUI's `UiSession` buckets - workspace itself never reads those
-//! updates - and the TUI's event loop drains both feeds into the same
-//! reducer.
-//!
 //! ## Facade scope (intentionally thin)
 //!
-//! The MVVM boundary between forge-tui and forge-agent is enforced at
-//! the **dependency graph** level: `forge-tui/Cargo.toml` has no
-//! `forge-agent` line; everything routes through forge-workspace. The
+//! The MVVM boundary between a view and forge-agent is enforced at
+//! the **dependency graph** level: no view depends on `forge-agent`;
+//! everything routes through forge-workspace. The
 //! workspace exposes forge-agent's submodules verbatim via
-//! pass-through `pub use` (see `cloud`, `commands`, `env::git_diff`,
-//! `session_lifecycle`, `tooling`, `translate`, `userdata` below).
-//! Types like `forge_workspace::cloud::oauth_credentials::OauthCredentials`
-//! are *defined* in
-//! forge-agent - the workspace just exposes them under the workspace
-//! name so TUI can keep its dep graph clean.
+//! pass-through `pub use` (see the `env`, `tooling`, `translate`,
+//! `user_interaction` and `userdata` modules below). Types reached
+//! through them are *defined* in forge-agent - the workspace just
+//! exposes them under the workspace name so a view can keep its dep
+//! graph clean.
 
 mod account_cache;
 mod account_loader;
@@ -112,8 +99,8 @@ pub use dictate::{
     DictateRole, DictateSettings, DictateSnapshot,
 };
 pub use forge_gateway::{LoadingState, Unusable, UsageFetchStatus};
-// The normalizer's prompt axes reach the TUI only through this
-// re-export: forge-tui depends on no forge-dictate crate of its own.
+// The normalizer's prompt axes reach a view only through this
+// re-export: no view depends on a forge-dictate crate of its own.
 pub use dictate::resolve_capture_device;
 pub use domain_session::{ContextUsage, DomainSession, McpServers};
 pub use error::WorkspaceError;
@@ -124,10 +111,7 @@ pub use protocol::{
     TurnErrorClass,
 };
 pub use target::{ProjectKey, SessionSlot, SessionTarget};
-pub use views::{
-    AccountAuth, AccountBudget, AccountLoadingRow, AccountRow, GatewayOrgView, ProjectView,
-    SessionView,
-};
+pub use views::{AccountLoadingRow, GatewayOrgView, ProjectView};
 pub use workspace::{
     PendingInteractionKind, PricingFetch, PricingFetcher, SessionChipInfo, SessionChipState,
     Workspace,
@@ -135,7 +119,7 @@ pub use workspace::{
 
 // MCP (agents / peers / workers) public surface. The `mcp` module
 // itself is crate-private now; these flat re-exports expose only the
-// types production consumers (forge-tui) need to read off
+// types production consumers (views) need to read off
 // `SessionUpdate` payloads. The `testing`-feature block below adds the
 // extra surface the `forge-test-harness` integration tests need (MCP
 // server builders, mock facades, the caller-key resolver).
@@ -153,24 +137,13 @@ pub use forge_agent::has_a_transcript_row;
 pub use forge_agent::session_history;
 pub use forge_agent::transcript_rows;
 
-// Re-export forge-agent sub-surfaces consumed by `forge-tui` so the
-// TUI crate doesn't need a direct `forge-agent` dep. Each entry below
-// is the workspace-side facade for a forge-agent module forge-tui
-// reads from. Most types here are themselves re-exports from
-// `forge_primitives`; the modules also surface a handful of helper
-// functions / network fetchers that genuinely live in `forge-agent`.
-//
-// Production code in forge-tui consumes data via `SessionUpdate`
-// events; these re-exports back the small set of helpers + types the
-// TUI still calls directly (translate::*, tooling::*, commands::*,
-// session_lifecycle::*, cloud::*, env::git_diff::*, userdata::*).
-pub mod cloud {
-    pub use forge_agent::cloud::*;
-}
+// Re-export forge-agent sub-surfaces the server reads, kept as a
+// pass-through so its callers reach them through the workspace rather
+// than a direct `forge-agent` dep. Most types here are themselves
+// re-exports from `forge_primitives`; the modules also surface a
+// handful of helper functions / network fetchers that genuinely live
+// in `forge-agent`.
 pub use config::PluginSettings;
-pub mod commands {
-    pub use forge_agent::commands::*;
-}
 pub mod env {
     pub mod cli_version {
         pub use forge_agent::env::cli_version::*;
@@ -194,9 +167,6 @@ pub mod env {
         pub use forge_agent::env::timezone::*;
     }
 }
-pub mod session_lifecycle {
-    pub use forge_agent::session_lifecycle::*;
-}
 pub mod tooling {
     pub use forge_agent::tooling::*;
 }
@@ -204,9 +174,8 @@ pub mod translate {
     pub use forge_agent::translate::*;
 }
 /// Pass-through for the agent's typed tool-input parsers
-/// (`AskUserQuestion`, `Monitor`). The TUI's tool-call event handlers
-/// consume these directly when surfacing the chat one-liner + Inspector
-/// entry for those CLI surfaces.
+/// (`AskUserQuestion`, `Monitor`), which the server reads when folding
+/// a tool call into the block a view draws.
 pub mod user_interaction {
     pub use forge_agent::user_interaction::*;
 }
@@ -216,19 +185,6 @@ pub mod userdata {
 pub use forge_primitives::background::BackgroundTask;
 pub use forge_primitives::permission::PermissionMode;
 pub use forge_primitives::runtime::RuntimeSessionState;
-
-// Test-only re-exports. The smoke-test suite at
-// `crates/forge-tui/tests/forge_sdk_smoke.rs` needs `Agent::spawn`
-// and the `AgentEvent` enum to drive a real `claude` subprocess
-// end-to-end; production code uses `Workspace`'s facade and consumes
-// `SessionUpdate`s, never these raw types. Gating these symbols
-// behind the `testing` feature keeps the production build's surface
-// minimal - `cargo check --no-default-features -p forge-workspace`
-// won't carry `forge_workspace::Agent` or `forge_workspace::AgentEvent`.
-#[cfg(feature = "testing")]
-pub use forge_agent::Agent;
-#[cfg(feature = "testing")]
-pub use forge_agent::AgentEvent;
 
 // MCP test-harness re-exports. `forge-test-harness` integration tests
 // drive the workers MCP server directly against a mock facade; that

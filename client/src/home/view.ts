@@ -1,11 +1,11 @@
 /**
  * The home's reads gathered into the shape its markup wants - the client half
- * of the gather `crates/forge-web/src/home.rs` does in `view_of`.
+ * of the gather the view this client replaced performed.
  *
  * Pure, so a test can build a fleet by hand. Everything here comes from the
  * snapshot, and the only states this file makes for itself are `stateOf`'s
  * four promotions - the cases a state read from the wire alone would disagree
- * with the terminal about, silently, the first time one of them turned.
+ * with that view about, silently, the first time one of them turned.
  *
  * Every cell the server's own home draws is drawn from the snapshot. The
  * three things it used to leave empty - the task a seat holds, whether an
@@ -146,7 +146,8 @@ export interface FleetViewRow {
    * per-seat rows, kept - and the controls with targets of their own (each
    * seat, the board) ride above it. A project with no live seat still reads
    * its own slot: the session page there draws its start, and the row's
-   * click begins it, the way-in the terminal's rail gives a sleeping seat.
+   * click begins it, the way-in the rail of the view this client replaced
+   * gave a sleeping seat.
    */
   leadHref: string;
   /** The strongest seat state, drawn with the same `Mark` a seat row uses. */
@@ -281,14 +282,14 @@ function orgOf(wire: HomeWire, project: string): string {
  * turn that finished while this view was not showing the seat answers "what
  * changed while I was away", a failed turn the view has not been shown
  * since is the one state the reader has to act on, and an ASK is the state's
- * own name whether or not the CLI's lifecycle has caught up - the terminal
- * draws its triangle from the prompt queue rather than from a lifecycle it
- * has to trust. None is computed here - `has_background_work`, `unseen`,
- * `failed_turn` and `pending` all cross on the snapshot.
+ * own name whether or not the CLI's lifecycle has caught up - the view this
+ * client replaced drew its triangle from the prompt queue rather than from a
+ * lifecycle it had to trust. None is computed here - `has_background_work`,
+ * `unseen`, `failed_turn` and `pending` all cross on the snapshot.
  */
 export function stateOf(row: AgentRow, unseen: SessionSlot[]): RowState {
-  // The failure outranks every other promotion, and the terminal orders it
-  // over the spinner and the diamond both.
+  // The failure outranks every other promotion, and the view this client
+  // replaced ordered it over the spinner and the diamond both.
   if (row.failed_turn !== null) return { kind: 'failed-turn' };
   // **A question outranks work.** The seat is waiting on a person, which is
   // what needs-you means; the rank the rail groups by already reads it this
@@ -557,9 +558,10 @@ export function band(wire: HomeWire, address: string): BandCard[] {
   // `all_loaded` is the pool having settled AND the listener having bound, so
   // false is not the same as work in progress: with a bind error the card
   // would read "probing" for ever beside a gateway card already saying the
-  // address is in use. The terminal names the failure, and this takes its
-  // shape. No accounts declared is the third case, where `all_loaded` is
-  // vacuously true and a green `0 ready` would claim a pool that is not there.
+  // address is in use. The view this client replaced named the failure, and
+  // this takes its shape. No accounts declared is the third case, where
+  // `all_loaded` is vacuously true and a green `0 ready` would claim a pool
+  // that is not there.
   const accounts: BandCard =
     gateway.bind_error !== null
       ? { title: 'accounts', tone: 'bad', value, detail: gateway.bind_error, href: null }

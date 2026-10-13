@@ -557,9 +557,9 @@ describe('a seat removed under the reader', () => {
   /**
    * The other door onto a landing: the reader closed nothing, but the seat
    * they are on went - a lead's cascade releasing the workers under it, a
-   * despawn from another view. The terminal's answer is its
-   * `WorkerStatusChanged` handler, and this is the client's: without it the
-   * reader sits on a seat with nothing behind it.
+   * despawn from another view. The view this client replaced answered with
+   * its `WorkerStatusChanged` handler, and this is the client's: without it
+   * the reader sits on a seat with nothing behind it.
    */
   it('moves the reader off a seat the core removes under them', async () => {
     const forge = await stubForge({ mark: null, theme: null, font: null });

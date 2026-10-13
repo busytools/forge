@@ -612,7 +612,7 @@ async fn fetch_plugin_details_inner(
 ///
 /// `Send` so a runner can drive a batch from a task that moves across
 /// threads, which is how `forge-workspace` runs one on the socket's
-/// behalf; the terminal awaits its batches on a local task either way.
+/// behalf.
 pub type RunnerFut<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>>;
 /// The update seam's result: the resolved claude path plus the CLI's
 /// combined stdout+stderr.

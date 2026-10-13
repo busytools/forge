@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/install.sh - build forge-tui from the current checkout and
+# scripts/install.sh - build forge from the current checkout and
 # install the `forge` binary into cargo's default install root
 # (~/.cargo/bin/forge).
 #
@@ -54,8 +54,8 @@ require_cmd git
 # pointer, and every worker session runs in one.
 [ -e "$FORGE_REPO/.git" ] \
     || die "forge checkout missing .git at $FORGE_REPO - script must run from inside the forge repo"
-[ -d "$FORGE_REPO/crates/forge-tui" ] \
-    || die "forge-tui crate not found at $FORGE_REPO/crates/forge-tui"
+[ -d "$FORGE_REPO/crates/forge-server" ] \
+    || die "forge-server crate not found at $FORGE_REPO/crates/forge-server"
 
 CURRENT_BRANCH="$(git -C "$FORGE_REPO" rev-parse --abbrev-ref HEAD)"
 CURRENT_SHA="$(git -C "$FORGE_REPO" rev-parse --short HEAD)"
@@ -74,16 +74,16 @@ if [ -d "$LEGACY_FORGE_ROOT" ]; then
     rm -rf "$LEGACY_FORGE_ROOT"
 fi
 
-log_info "Building forge-tui ($BUILD_LABEL - this can take a few minutes)"
+log_info "Building forge ($BUILD_LABEL - this can take a few minutes)"
 CARGO_ARGS=(
-    --path "$FORGE_REPO/crates/forge-tui"
+    --path "$FORGE_REPO/crates/forge-server"
     --bin forge
     --locked
     --force
 )
 # cd into FORGE_REPO so rustup picks up its rust-toolchain.toml - without
 # this, cargo uses the global default toolchain which may be older than
-# what forge-tui requires.
+# what forge requires.
 (
     cd "$FORGE_REPO"
     # Marks the binary as built through this script. A hand-rolled

@@ -1,17 +1,15 @@
 //! Plugin and marketplace actions over the command bus.
 //!
-//! The terminal runs these from its own view layer
-//! (`crates/forge-tui/src/app/extensions.rs`): it calls the same
-//! `forge-agent` CLI functions this module calls, from inside the view that
-//! pressed the key. That works for one view and nowhere else, so the same
-//! work is reachable here through [`crate::Command`] and a second view can
-//! act (rule 24's case). The CLI calls, the batch runner and the disk scan
-//! are `forge-agent`'s; what lives here is the orchestration: resolving each
-//! action's working directory from `forge.toml` rather than the launch
-//! directory (hard rule 14), serializing actions one at a time, and
-//! reporting through the `Plugins*` updates a view already listens to.
+//! The work is reachable through [`crate::Command`] so that any view can
+//! act, rather than one view reaching for the `forge-agent` CLI functions
+//! this module calls from inside its own layer (rule 24's case). The CLI
+//! calls, the batch runner and the disk scan are `forge-agent`'s; what
+//! lives here is the orchestration: resolving each action's working
+//! directory from `forge.toml` rather than the launch directory (hard
+//! rule 14), serializing actions one at a time, and reporting through the
+//! `Plugins*` updates a view already listens to.
 //!
-//! One run at a time, like the terminal: `u` and `c` and an action all
+//! One run at a time: an update-all, a check and an action all
 //! serialize through [`Workspace::plugin_action_running`], and the latest
 //! run stays readable mid-flight so a view attaching during one draws it.
 
@@ -31,9 +29,7 @@ use crate::protocol::{DispatchError, SessionUpdate};
 use crate::workspace::Workspace;
 
 /// Upper bound on one CLI call inside a batch; a hung call fails its row
-/// instead of pinning the run forever. The terminal's own
-/// `UPDATE_CALL_TIMEOUT` is the same number, deliberately: a plugin that
-/// hangs is as slow for either view.
+/// instead of pinning the run forever.
 const PLUGIN_CALL_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// One future handed back by the plugin CLI seams.
@@ -323,8 +319,7 @@ impl Workspace {
     }
 
     /// One generic CLI action: gate, spawn, report. The outcome rides
-    /// [`SessionUpdate::PluginsCliActionSucceeded`] / `Failed` the way the
-    /// terminal's own action reports do.
+    /// [`SessionUpdate::PluginsCliActionSucceeded`] / `Failed`.
     fn start_plugin_cli_action(
         self: &Arc<Self>,
         cwd: String,
@@ -456,7 +451,7 @@ impl Workspace {
 
     /// Repair a drifted marketplace with the CLI's remove-and-re-add pair.
     /// The re-add source is the repo for a git marketplace and the clone
-    /// location for a directory one - the same pair the terminal builds.
+    /// location for a directory one.
     /// The registry lookup is a disk scan, so it runs inside the task.
     pub(crate) fn start_marketplace_repair(
         self: &Arc<Self>,

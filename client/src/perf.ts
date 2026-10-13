@@ -1,20 +1,20 @@
 /**
  * The client's own frame instrument.
  *
- * The terminal wrote a sidecar frame log (`crates/forge-tui/src/perf.rs`) and
- * that crate is on its way out, so the instrument moves to the layer that
- * actually stutters: the page. The page MEASURES - rAF cadence and the long
- * tasks the browser itself reports are page facts - and hands finished
- * records to the shell over `invoke`, which is where the file lives. That is
- * the client's own split (Ved, 2026-10-12): measuring stays in the page, and
- * only the write needs the OS side.
+ * The view this client replaced wrote a sidecar frame log, and with that view
+ * gone the instrument moves to the layer that actually stutters: the page. The
+ * page MEASURES - rAF cadence and the long tasks the browser itself reports
+ * are page facts - and hands finished records to the shell over `invoke`,
+ * which is where the file lives. That is the client's own split (Ved,
+ * 2026-10-12): measuring stays in the page, and only the write needs the OS
+ * side.
  *
- * **The terminal's slow-frame rule is kept.** Only a frame at or above
- * [`SLOW_FRAME_MS`] is written; one record per frame would drown a file
- * nobody reads until something is wrong. The periodic summary is what makes
- * a quiet log useful - it says the page was alive and how its cadence
- * behaved - and long tasks carry their own name, so a record says WHICH work
- * blocked, not merely that something did.
+ * **The slow-frame rule from the view this client replaced is kept.** Only a
+ * frame at or above [`SLOW_FRAME_MS`] is written; one record per frame would
+ * drown a file nobody reads until something is wrong. The periodic summary is
+ * what makes a quiet log useful - it says the page was alive and how its
+ * cadence behaved - and long tasks carry their own name, so a record says
+ * WHICH work blocked, not merely that something did.
  *
  * Nothing here may break the app: a missing shell (the web build) or a
  * refused invoke is silence, never an error thrown into a render path.
@@ -30,13 +30,14 @@ import { mintPromptId } from './wire/ids';
 const SCHEMA = 'forge-perf/v1';
 
 /**
- * A frame this long is written. The terminal's threshold, kept because the
- * lattice it was chosen against - what a person notices, what a 60 Hz
- * display budgets - has not moved.
+ * A frame this long is written. The same threshold the view this client
+ * replaced used, kept because the lattice it was chosen against - what a
+ * person notices, what a 60 Hz display budgets - has not moved.
  */
 export const SLOW_FRAME_MS = 50;
 
-/** How often a window's cadence is summarised, the terminal's cadence. */
+/** How often a window's cadence is summarised, the same cadence the view this
+ *  client replaced used. */
 const SUMMARY_INTERVAL_MS = 10_000;
 
 /** One line of the perf log, as the shell writes it. */
@@ -116,10 +117,11 @@ function sinkToShell(records: PerfRecord[]): void {
 /**
  * The probe itself, over injected sources.
  *
- * One frame of the terminal's own shape comes out of it: the frame counter
- * counts every frame, the slow ones are written, and a window that crossed
- * [`SUMMARY_INTERVAL_MS`] is summarised as the frame that crossed it lands
- * (so the summary counts that frame, the terminal's rule).
+ * One frame of the same shape the view this client replaced wrote comes out of
+ * it: the frame counter counts every frame, the slow ones are written, and a
+ * window that crossed [`SUMMARY_INTERVAL_MS`] is summarised as the frame that
+ * crossed it lands (so the summary counts that frame, the same rule that view
+ * applied).
  */
 export function perfProbe(options: ProbeOptions = {}): PerfProbe {
   const now = options.now ?? (() => performance.now());
@@ -232,9 +234,10 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
       cancelFrame = schedule(tick);
     },
     stop(): void {
-      // The open window still lands, the terminal's own rule at shutdown:
-      // a partial window is what the reader wants when the page is going
-      // away, and dropping it is a silence nobody can act on.
+      // The open window still lands, the same rule the view this client
+      // replaced applied at shutdown: a partial window is what the reader
+      // wants when the page is going away, and dropping it is a silence
+      // nobody can act on.
       flushWindow(now());
       cancelFrame?.();
       cancelObserver?.();

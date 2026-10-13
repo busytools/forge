@@ -104,12 +104,12 @@
   /**
    * The row the reader's own eye is on, held while they are away from the foot.
    *
-   * **Measured in rows rather than pixels** (the terminal's rule, and
-   * `anchor.ts` carries the reasoning): the layout moves under a reader who is
-   * not at the foot - a row measures taller once drawn, a stretch is corrected
-   * as frames land - and an offset that stays put reads as the page sliding
-   * under them (Ved, 2026-10-03). It goes the moment the follow is back on,
-   * because the foot is where that reader wants to be.
+   * **Measured in rows rather than pixels** (the rule the view this client
+   * replaced kept, and `anchor.ts` carries the reasoning): the layout moves
+   * under a reader who is not at the foot - a row measures taller once drawn,
+   * a stretch is corrected as frames land - and an offset that stays put reads
+   * as the page sliding under them (Ved, 2026-10-03). It goes the moment the
+   * follow is back on, because the foot is where that reader wants to be.
    */
   let anchor: Anchor | null = null;
   let working: Chat | null = null;
@@ -338,10 +338,11 @@
    * the first pin of a page can land before there is anything to scroll, and a
    * row that grows minutes later moves the foot again with nothing to re-pin.
    *
-   * The same event is the terminal's other re-arm: its clamp re-engages the
-   * follow whenever the content fits under the reader - a window made large
-   * enough, a page that shrank - and a reader parked at what is now the very
-   * end is at the end, whether or not anything scrolled to say so.
+   * The same event is the other re-arm the view this client replaced had: its
+   * clamp re-engaged the follow whenever the content fit under the reader - a
+   * window made large enough, a page that shrank - and a reader parked at what
+   * is now the very end is at the end, whether or not anything scrolled to say
+   * so.
    */
   /**
    * Record what a turn's row measures, so a row the send's pull-and-return
@@ -362,8 +363,9 @@
     // The reader's own input, and the only evidence of a hand the column has:
     // scroll events carry no source, so the gesture has to be heard separately
     // - and only the UP-capable kinds, because a gesture that cannot move the
-    // reader up cannot have moved them up (the terminal disarms from
-    // `scroll_up` alone). A touch arms whole: it carries no direction.
+    // reader up cannot have moved them up (the view this client replaced
+    // disarmed on an up-scroll alone). A touch arms whole: it carries no
+    // direction.
     const arm = () => {
       readerAt = performance.now();
     };
@@ -822,8 +824,8 @@
    * foot - and where the number counts a row not drawn yet, the reservation
    * check below holds the pass back rather than land on it.
    *
-   * The terminal pins the same way: while `auto_scroll` is on, every render
-   * sets its scroll target to its own max.
+   * The view this client replaced pinned the same way: while `auto_scroll`
+   * was on, every render set its scroll target to its own max.
    */
   function land(): number {
     if (viewport === null) return 0;
@@ -1084,8 +1086,8 @@
     }
     // **The very end, with no reading threshold.** A reader a few pixels short
     // of it is mid-line, and a tolerance here is a column that moves under them
-    // - the terminal's clamp re-engages its follow only at `scroll_offset >=
-    // max_scroll` for exactly this reason.
+    // - the clamp in the view this client replaced re-engaged its follow only
+    // at `scroll_offset >= max_scroll` for exactly this reason.
     //
     // Nothing is owed to arithmetic either: both sides are the element's own
     // numbers, and the clamp makes them meet at the foot - swept over whole

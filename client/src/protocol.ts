@@ -282,9 +282,9 @@ export type ClientMessage =
    * One commit's own diff, for a review page's commit scopes.
    *
    * On demand rather than carried on the record: a branch can hold dozens of
-   * commits, and every reader of a record - the terminal included - would
-   * pay their content on every read for a scope only one page draws. The
-   * answer is a `commit_diff` message or an `error` naming it.
+   * commits, and every reader of a record would pay their content on every
+   * read for a scope only one page draws. The answer is a `commit_diff`
+   * message or an `error` naming it.
    */
   | { kind: 'commit_diff'; session: SessionSlot; sha: string }
   /**

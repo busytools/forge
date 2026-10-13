@@ -34,7 +34,7 @@ pub fn raise_fd_limit() {
         Ok(pair) => pair,
         Err(err) => {
             tracing::warn!(
-                target: "forge_tui::startup",
+                target: "forge_server::startup",
                 error = %err,
                 "NOFILE getrlimit failed; leaving FD limit at inherited value",
             );
@@ -44,7 +44,7 @@ pub fn raise_fd_limit() {
     let new_soft = TARGET_NOFILE.min(hard);
     if new_soft <= soft {
         tracing::info!(
-            target: "forge_tui::startup",
+            target: "forge_server::startup",
             soft,
             hard,
             "RLIMIT_NOFILE already at or above target; no change",
@@ -54,7 +54,7 @@ pub fn raise_fd_limit() {
     match Resource::NOFILE.set(new_soft, hard) {
         Ok(()) => {
             tracing::info!(
-                target: "forge_tui::startup",
+                target: "forge_server::startup",
                 old_soft = soft,
                 new_soft,
                 hard,
@@ -63,7 +63,7 @@ pub fn raise_fd_limit() {
         }
         Err(err) => {
             tracing::warn!(
-                target: "forge_tui::startup",
+                target: "forge_server::startup",
                 error = %err,
                 soft,
                 hard,

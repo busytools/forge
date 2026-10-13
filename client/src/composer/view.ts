@@ -1,7 +1,6 @@
 /**
  * The composer's reads gathered into what its markup wants - the client half of
- * the gather `crates/forge-web/src/composer.rs` does across its own render
- * functions.
+ * the gather the view this client replaced did across its own render functions.
  *
  * Pure, so a test can build a composer by hand. Nothing here recomputes a state
  * the core already decided: the take, the notice, the compaction, the sign-in
@@ -201,7 +200,8 @@ export function composerState(record: ComposerRecord): ComposerState {
 /**
  * The prompt the dock draws: the front of the seat's queue, which is the
  * core's answer and never the client's. A parallel batch parks several at
- * once, and the front is the oldest - the terminal's own rule for its queue.
+ * once, and the front is the oldest - the same rule the view this client
+ * replaced applied to its queue.
  */
 export function pendingAsk(record: ComposerRecord): Ask | null {
   return askFrom(record.pending_asks[0]);
@@ -211,10 +211,10 @@ export function pendingAsk(record: ComposerRecord): Ask | null {
  * A state that replaces the box entirely: the seat is not taking input, and
  * this is why.
  *
- * The order is the one a reader has to be told, which is the terminal's own:
- * a seat that is failing is told that first, a seat nothing has started cannot
- * tell whether a session is coming up or never will, and a compaction is the
- * more specific truth about a turn the reader sent.
+ * The order is the one a reader has to be told, kept from the view this client
+ * replaced: a seat that is failing is told that first, a seat nothing has
+ * started cannot tell whether a session is coming up or never will, and a
+ * compaction is the more specific truth about a turn the reader sent.
  */
 export interface Blocker {
   line: string;
@@ -245,8 +245,9 @@ const STOPPED: Pick<Blocker, 'bad' | 'waiting' | 'shimmer'> = {
  * The reason the seat takes no input, or `null` when it does.
  *
  * `command` is the slash command the reader sent and the turn still working on
- * it, which is the terminal's own rule: a long command is a wait the reader
- * caused, and naming it is what tells them what they are waiting for.
+ * it, the same rule the view this client replaced applied: a long command is a
+ * wait the reader caused, and naming it is what tells them what they are
+ * waiting for.
  */
 export function blocked(
   seat: SeatRead,
@@ -310,11 +311,11 @@ export const TRUNCATED = 'this is what fitted · keep going from the end';
  * The line a notice draws, or `null` when it draws words instead.
  *
  * A take that landed draws its words in the box rather than a line about them,
- * which is the terminal's own rule: the words ARE the notice. One that landed
- * part of a capped take says so as well, because the reader has to know the
- * take was cut rather than that they stopped speaking - but a notice this
- * composer never saw a take for draws neither, since its row would be a note
- * about words that are not in the box.
+ * the same rule the view this client replaced applied: the words ARE the
+ * notice. One that landed part of a capped take says so as well, because the
+ * reader has to know the take was cut rather than that they stopped speaking -
+ * but a notice this composer never saw a take for draws neither, since its row
+ * would be a note about words that are not in the box.
  */
 export function noticeLine(
   notice: Notice | null,
@@ -389,9 +390,9 @@ function enumField(value: unknown, name: string): unknown {
  * A take's words at the end of the draft, which is where the reader was about
  * to type.
  *
- * Ported from `joined` in `crates/forge-web/src/composer.rs`, whitespace rule
- * included: words go straight onto a draft that already ends in space, so a
- * take after a newline does not open with one.
+ * Ported from the view this client replaced, whitespace rule included: words
+ * go straight onto a draft that already ends in space, so a take after a
+ * newline does not open with one.
  */
 export function joined(draft: string, words: string): string {
   if (draft === '' || /\s$/.test(draft)) return `${draft}${words}`;

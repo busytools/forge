@@ -1,8 +1,8 @@
 # The client's surfaces
 
 The Svelte app that connects to a running forge and draws it. Its
-surfaces have pages here in the same way the TUI's do: read first,
-sketched with the change, checked afterwards, current state only, and the
+surfaces have pages here: read first, sketched with the change, checked
+afterwards, current state only, and the
 page arrives in the same change that lands the surface rather than as a
 follow-up.
 
@@ -31,9 +31,9 @@ composer's blocking states, and the sixth - the diff review overlay it
 named - landed as a route of its own, [review.md](./review.md), which draws
 the rounds, the diff its threads are anchored to, and the writing.
 
-The usage page (`/usage`) reads the report the terminal's overlay draws
-(`ui/usage.md`) - the same four windows, the two groupings and the notional
-caption, figure for figure - and its page and drawing are above. Its door
+The usage page (`/usage`) reads the report the core scans - the four
+windows, the two groupings and the notional caption - and its page and
+drawing are above. Its door
 is a card in the home's system band, beside server, dictation and
 extensions.
 
@@ -45,7 +45,7 @@ spine, and its page lands with the session page's set.
 ## The spine
 
 **A vertical rule with its items hanging off it is the client's
-replacement for the terminal's indentation and connector tree.** Ved,
+replacement for indentation and connector trees.** Ved,
 2026-09-29: *"webconnect spine kind of represents what I was looking for
 from the TUI. I like the tree structure that I used in the TUI, and I've
 been looking for a replacement. I think spine fits very nicely."*

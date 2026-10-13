@@ -94,13 +94,14 @@ history is the record.
        loads its own ~3 GB of models.
 2. **The binary**
    - **Always build from the tree** (the worker's worktree) -
-     `nice -n 10 cargo build -p forge-tui --bin forge -p forge-server --bin forge-protocol-client`
+     `nice -n 10 cargo build -p forge-server --bin forge -p forge-server --bin forge-protocol-client`
      - warm-cache it is about a minute, and the branch's server is what runs,
-     which is the point. **Never the installed binary**: it predates the
-     `[server]` rename, and its parser denies unknown fields, so a
+     which is the point. **Never the installed binary**: its parser denies
+     unknown fields, so a
      recipe-shaped scratch config fails the parse (`unknown field 'server'`)
      and the process exits without binding anything.
-3. **Boot headless** - the TUI needs a pty, and `script(1)` is it (tmux is not
+3. **Boot headless** - the `forge` binary is a headless server, so no pty is
+   involved; `script(1)` keeps the launch shaped as it always was (tmux is not
    installed on this machine):
    - Write `$STACK/boot.sh`: `export HOME=$STACK/home`, `export
      CLAUDE_CONFIG_DIR=$STACK/config`, then `exec <forge binary> --log-file
@@ -118,7 +119,7 @@ history is the record.
      persistence (#1826 is the forge-side fix; until it lands, this is the
      skill's rule).
 4. **Verify the boot**: `lsof -nP -iTCP:8791 -sTCP:LISTEN` and `8788` both
-   hold the forge pid; `$STACK/home/Library/Application Support/forge-tui/`
+   hold the forge pid; `$STACK/home/Library/Application Support/forge/`
    carries a fresh `db.redb`; the log has no store-failure line; the first
    session connects ~3s in (the boot spawn is held until the account's usage
    probe settles - that is normal). **Confirm it is YOUR stack**: the build
@@ -219,9 +220,10 @@ history is the record.
    permission-allow entries and says so with the exact remedy
    (`hasTrustDialogAccepted` in `.claude.json`, or accept the dialog once).
    Sessions still run under `permission_mode = "auto"`.
-7. No pty, no session: the socket binds without one, but the boot spawn runs
-   in the TUI connect path. `script -q /dev/null <cmd> < /dev/null` is the
-   pty that works here.
+7. The boot spawn rides the server's own boot wave (the `<PROJECT>`
+   positional starts that project's sessions at boot), so no pty or view is
+   involved anywhere. `script -q /dev/null <cmd> < /dev/null` is kept in the
+   launch shape only for uniformity.
 8. Pass `--log-file` into the stack - otherwise the scratch forge appends to
    the shared app-support log beside the live one.
 9. The lock is `locks/<16-hex hash of the canonicalized config dir>.lock`,
@@ -239,7 +241,7 @@ history is the record.
     behind the stale turn - one run's whole timeline off by one). The clean
     reset is four steps, not one: kill by port; `find
     $STACK/config/projects/<slug> -depth -delete`; `rm -f` the redb under
-    `$STACK/home/Library/Application Support/forge-tui/`; restore the seed.
+    `$STACK/home/Library/Application Support/forge/`; restore the seed.
 12. **A text probe reads the agent's own prose** (measured 2026-10-12, twice
     in one run). `document.body.innerText.includes('<the card's words>')` can
     match the SESSION'S OWN CHAT - an agent narrating what it just exercised

@@ -273,9 +273,10 @@ describe('the reviewable document', () => {
     expect(document.querySelector('.doc-draft'), 'the drafts were filed').toBeNull();
   });
 
-  /** **The nudge the terminal's own drop sends.** The finish pushes the
-   *  review-ready line into the session, so the chat shows the review to
-   *  the reader and reaches the agent - with the document's scope named. */
+  /** **The nudge the view this client replaced sent on its own drop.** The
+   *  finish pushes the review-ready line into the session, so the chat shows
+   *  the review to the reader and reaches the agent - with the document's
+   *  scope named. */
   it('pushes the review-ready line into the session on done', async () => {
     const page = drawReviewable();
 

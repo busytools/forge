@@ -39,9 +39,9 @@ describe('the dictation meter', () => {
  * the way through a take's first seconds. A fixed window holds the pitch still
  * and moves only the heights.
  *
- * The head is drawn as floor cells rather than left empty, which is the
- * terminal's own answer to the same thing: `forge-tui`'s window is a vector of
- * `METER_WIDTH` zeros that fills as readings arrive.
+ * The head is drawn as floor cells rather than left empty, the same answer the
+ * view this client replaced gave: its window is a vector of `METER_WIDTH`
+ * zeros that fills as readings arrive.
  */
 describe("the meter's window", () => {
   it('draws the meter full whatever the take has reported, so bars do not resize', () => {

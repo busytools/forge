@@ -1,4 +1,4 @@
-//! `slash_commands()`, `subagents()`, `has_dispatches()`, `subagent_cards()`,
+//! `slash_commands()`, `subagents()`, `subagent_cards()`,
 //! `forge_commands()`, `file_index()`, `respect_gitignore()`: what the
 //! composer's autocomplete triggers read, and the two sub-agent facts a
 //! record draws its section from.
@@ -71,22 +71,12 @@ impl ViewSurface {
         self.workspace.available_agents_for(slot)
     }
 
-    /// Whether the conversation at `slot` dispatched a sub-agent.
-    ///
-    /// A fact about the whole conversation rather than about a window of it,
-    /// and one the session task's fold raises and announces - so this answers
-    /// what that fold holds rather than scanning the messages again here.
-    pub fn has_dispatches(&self, slot: &SessionSlot) -> bool {
-        self.workspace.has_dispatches_for(slot)
-    }
-
     /// The sub-agent instances the session at `slot` has folded, as the list
     /// it pushes when the list moves.
     ///
-    /// The same fold as [`Self::has_dispatches`] and the same reason for
-    /// reading it here: a record that folded the conversation's messages
-    /// itself would answer with whatever window of them it holds, which is
-    /// not the conversation the cards describe.
+    /// A record that folded the conversation's messages itself would answer
+    /// with whatever window of them it holds, which is not the conversation
+    /// the cards describe.
     pub fn subagent_cards(
         &self,
         slot: &SessionSlot,
@@ -108,9 +98,9 @@ impl ViewSurface {
     /// One working tree's files, walked on demand. `root` is the session's
     /// own scan cwd, which a git worker's worktree overrides.
     ///
-    /// **The parked web view's path.** A page that holds no seat - forge-web
-    /// serves from the process and subscribes to nothing, so no seat's loop
-    /// runs for it - has no store to read, and walks where it stands.
+    /// **A page's own walk.** A page that holds no seat - nothing subscribes
+    /// on its behalf, so no seat's loop runs for it - has no store to read,
+    /// and walks where it stands.
     pub fn walk_file_index(&self, root: &std::path::Path) -> FileIndex {
         FileIndex::scan(root, self.respect_gitignore())
     }

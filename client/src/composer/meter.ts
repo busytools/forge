@@ -59,8 +59,8 @@ export function meterCells(levels: number[]): Cell[] {
  * the bars share out the track between them: a window of three readings would
  * be three bars a third of the track wide and the next reading would resize
  * all of them. A fixed length holds the pitch still and lets the heights be
- * the only thing that moves. `forge-tui`'s own meter is the same shape, a
- * vector of `METER_WIDTH` zeros that fills as readings arrive.
+ * the only thing that moves. The view this client replaced drew the same
+ * shape, a vector of `METER_WIDTH` zeros that fills as readings arrive.
  */
 export function meterWindow(levels: number[], cells = METER_CELLS): Cell[] {
   const readings = levels.slice(-cells);

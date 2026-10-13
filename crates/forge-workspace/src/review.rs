@@ -6,7 +6,7 @@
 //! Everything here stays on `Workspace` as a second `impl` block, so
 //! every caller (the `Command` bus arms in [`crate::workspace`],
 //! `session_task`'s turn-end drain, the `mcp::review` facade,
-//! forge-tui's diff overlay) keeps its path. The `db`, `review_origin`
+//! a view's diff overlay) keeps its path. The `db`, `review_origin`
 //! and `review_activity` fields these methods own are `pub(crate)` for
 //! the same reason `pool` is: so this sibling module can reach them
 //! without a wrapper. Store IO lives in [`crate::store::review`]; the
@@ -1819,7 +1819,7 @@ mod tests {
         );
 
         // Hammer the two lock-ordering-sensitive paths from separate threads:
-        // the TUI submit path (`db` then `review_origin`) and the worker
+        // the view submit path (`db` then `review_origin`) and the worker
         // turn-end path (`review_origin` after `db`). A regression that
         // reintroduces the opposite order deadlocks; each thread counts its
         // own iterations so the guard below can tell that deadlock from a

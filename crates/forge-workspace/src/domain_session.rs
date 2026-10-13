@@ -12,8 +12,7 @@
 //! guards, and [`DomainSession::background_work`],
 //! [`DomainSession::available_commands`] and
 //! [`DomainSession::available_agents`] are held so a view arriving late
-//! reads them from the core. The last two are an intermediate state: the
-//! TUI folds its own copy until it is removed.
+//! reads them from the core.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -72,8 +71,8 @@ const SETTLED_STATES: [&str; 5] = ["started", "completed", "cancelled", "discard
 ///
 /// **Ordered because the read answers it, and the dock draws the front.** Two
 /// AskUserQuestion calls in one assistant message run in parallel with
-/// different tool ids, so a seat can hold several at once, and the terminal's
-/// own rule is first-parked-first-drawn. One Vec rather than a map and an
+/// different tool ids, so a seat can hold several at once, and the rule is
+/// first-parked-first-drawn. One Vec rather than a map and an
 /// order beside it: a seat holds a handful at most, and there is then no
 /// second structure to keep in step.
 #[derive(Default)]
@@ -156,9 +155,9 @@ pub struct DomainSession {
     /// dispatching `AgentHandle` calls that route by session id.
     pub session_id: Option<SessionId>,
     /// Agent connection handle bound to this session at spawn time.
-    /// `None` for pre-spawn / pre-Connect domains (forge-tui's
-    /// `connect::create_app` registers a placeholder handle-less
-    /// domain so the spawn handler can fill it in later).
+    /// `None` for pre-spawn / pre-Connect domains (the cron and gotify
+    /// delivery paths register a placeholder handle-less domain before
+    /// the spawn, which fills the handle in later).
     pub conn: Option<Arc<AgentHandle>>,
     /// Pending permission/question/elicitation oneshots indexed by the
     /// wire `tool_id` / `elicitation_id`, oldest first. `SessionTask` pops
@@ -179,10 +178,10 @@ pub struct DomainSession {
     pub spawn_wrote_row: bool,
     /// Latest runtime liveness mirrored from the session's
     /// `session_state_changed` wire messages. Operational turn state
-    /// otherwise lives on the TUI's `UiSession`; this one signal is
+    /// otherwise lives on the view's own session record; this one signal is
     /// duplicated here so the workspace's worker-liveness and
     /// prompt-interception guards can tell an in-flight turn from an
-    /// idle one (the TUI's own gate alone can race a just-delivered
+    /// idle one (a view's own gate alone can race a just-delivered
     /// peer / cron / gotify / slack prompt). `None` until the first
     /// state message.
     pub runtime_state: Option<RuntimeSessionState>,
@@ -213,9 +212,9 @@ pub struct DomainSession {
     pub failed_turn_at: Option<std::time::SystemTime>,
     /// What the CLI last said about a retried request on this seat's newest
     /// turn: the classification and its HTTP status. Read once, where the
-    /// turn's failed `Result` is folded, to tell a failure the terminal's
-    /// dead-turn path already continues from the ones this seat's nudge
-    /// exists for. Cleared where the turn it described ends.
+    /// turn's failed `Result` is folded, to tell a transient server error
+    /// from the failures this seat's nudge exists for. Cleared where the
+    /// turn it described ends.
     pub last_api_retry: Option<(forge_primitives::ApiRetryError, Option<u16>)>,
     /// The continuation pending for this seat's newest failed turn: what the
     /// model will be told and when the sweep may send it. Armed with the
@@ -303,12 +302,6 @@ pub struct DomainSession {
     /// `commands_changed`. Held here so a view that arrived after the
     /// turn started reads the list through the view surface, rather than
     /// waiting a whole turn for the next frame.
-    ///
-    /// This is an intermediate state of a migration, not a settled rule.
-    /// The TUI still folds its own copy from the same frames and calls
-    /// neither verb, so the same policy runs in both places until it is
-    /// removed; what is shared today is the parser, not the gate or the
-    /// drift guard around it.
     pub available_commands: Vec<AvailableCommand>,
     /// The subagents the CLI last advertised, from the same init frame's
     /// `agents`, on the same terms as [`Self::available_commands`].
@@ -316,10 +309,10 @@ pub struct DomainSession {
     /// Whether this turn's `system/init` has already been read for the
     /// agent catalogue. The first init of a turn carries it and a
     /// re-fire inside the same turn repeats it, so the read arms once per
-    /// turn - the rule the TUI's own walker applies.
+    /// turn - the rule this fold applies.
     pub agents_emitted_this_turn: bool,
-    /// Hook-observed permission mode, from the same observation the TUI
-    /// mirrors: higher fidelity than the `system/status` mode, because
+    /// Hook-observed permission mode: higher fidelity than the
+    /// `system/status` mode, because
     /// the CLI can change mode without re-emitting status.
     pub observed_permission_mode: Option<PermissionMode>,
     /// Hook-observed effort level, on the same terms as
@@ -583,7 +576,7 @@ impl DomainSession {
     /// Fold one frame's own claim about the turn into the liveness mirror.
     ///
     /// The model's output is the proof a turn is running and its Result is the
-    /// proof it ended - which is what the terminal derives from the same
+    /// proof it ended - which is what a view derives from the same
     /// frames. Nothing else is read: a `system` report, a task fact or a hook
     /// line says nothing about whether a turn is open, so it leaves the mirror
     /// where it stands.

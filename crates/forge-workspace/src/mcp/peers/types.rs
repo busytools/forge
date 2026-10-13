@@ -19,8 +19,7 @@
 //! prose header carrying the send's id and the sender's identity. The
 //! recipient's LLM reads this header as part of its prompt context;
 //! `forge_server::envelope::detect_inbound` matches the bracket prefix
-//! and the recipient's TUI renders the envelope as a styled peer block
-//! (`forge-tui::ui::peer_block`).
+//! and the recipient's view renders the envelope as a styled peer block.
 
 use std::path::PathBuf;
 use std::time::SystemTime;

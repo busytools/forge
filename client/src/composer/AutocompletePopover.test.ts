@@ -136,9 +136,9 @@ describe('what the popover draws', () => {
  * The list follows the mark, which the mouse never needed: a wheel scrolls the
  * window under it, and a mark nothing scrolled to walks off the edge it
  * crossed - by a key, and by a query that rebuilds the rows under a mark whose
- * own index never moved. The terminal's picker keeps the mark on screen by
- * windowing its list around it and re-clamping on every update, and this is
- * that rule on a scrolling element.
+ * own index never moved. The picker in the view this client replaced keeps the
+ * mark on screen by windowing its list around it and re-clamping on every
+ * update, and this is that rule on a scrolling element.
  */
 describe('the window a mark moves in', () => {
   it('follows the mark to the edge it crossed, and no further', () => {

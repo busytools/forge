@@ -131,12 +131,11 @@ pub struct WorkSnapshot {
     pub read_at: Instant,
 }
 
-/// How long a scan answers for: the terminal's own rule for the snapshot it
-/// draws (`tui/app/git_diff.rs`'s `SNAPSHOT_STALENESS`), so both views live
-/// with one freshness.
+/// How long a scan answers for: the staleness rule for the snapshot every
+/// view draws, so all views live with one freshness.
 pub const SNAPSHOT_STALENESS: Duration = Duration::from_secs(10);
 
-/// How often a held seat looks at its tree: the terminal's ticker interval.
+/// How often a held seat looks at its tree.
 ///
 /// The poke is a timestamp check, and [`should_scan`] is what decides whether
 /// a subprocess runs - so this is also the ceiling on how fast a tree under
@@ -363,11 +362,10 @@ impl Workspace {
     /// Walk `slot`'s process tree when the snapshot held is missing or older
     /// than [`SCAN_STALENESS`], and store what the walk found.
     ///
-    /// **The held seat's own loop is the walker** - the terminal walks the one
-    /// seat a person is on, and the socket's reads used to walk the seat a
-    /// client read. This is that role moved to the loop, so a seat nobody
-    /// holds is not walked at all and the walk costs what a held seat's tree
-    /// costs rather than a whole record per read.
+    /// **The held seat's own loop is the walker** - the socket's reads used
+    /// to walk the seat a client read. This is that role moved to the loop,
+    /// so a seat nobody holds is not walked at all and the walk costs what a
+    /// held seat's tree costs rather than a whole record per read.
     ///
     /// The session's live backgrounded `local_bash` commands ride along, from
     /// the registry the core holds: a backgrounded bash is `setsid`-detached
@@ -553,9 +551,9 @@ fn walk_moved(
 /// The commands a walk hands the OS scan: each running `local_bash` task's own
 /// command.
 ///
-/// A task whose card forge has not seen carries no command and is skipped -
-/// the terminal's own rule, where a rostered bash with no recorded command
-/// draws its registry row instead of being adopted by the walk.
+/// A task whose card forge has not seen carries no command and is skipped:
+/// a rostered bash with no recorded command draws its registry row instead
+/// of being adopted by the walk.
 fn local_bash_commands(tasks: &[crate::BackgroundTask]) -> Vec<String> {
     tasks
         .iter()
@@ -634,15 +632,13 @@ fn spawn_work_watch(
                 continue;
             }
             quiet = false;
-            // The walk, on its own rule: missing or older than the terminal's
-            // own second, which is this poke's interval. It runs before the
-            // tree's read and takes no part in that read's early exits.
+            // The walk, on its own rule: missing or older than
+            // `SCAN_STALENESS`, which is this poke's interval. It runs before
+            // the tree's read and takes no part in that read's early exits.
             workspace.walk_processes_if_stale(&slot, workspace.claude_pid(&slot)).await;
-            // **The compare runs whoever walked.** The terminal's scanner writes
-            // this same store, and while it is showing the seat the store is
-            // never stale - so a loop that read the store only when its own
-            // walk ran would leave every client's walk frozen for as long as
-            // the terminal held the seat.
+            // **The compare runs whoever walked.** The store can be written by
+            // a walk other than this loop's own, so it is read on every poke
+            // rather than only after this loop walked.
             if let Some(walk) = workspace.process_snapshot(&slot)
                 && walk_moved(walked.as_ref(), &walk)
             {
@@ -989,7 +985,7 @@ provider = "anthropic"
             },
             // The agent task CARRIES a command: the hold that records one is
             // not scoped to a card's tool, so the type is the thing that keeps
-            // it out of the walk (the terminal's own rule and test).
+            // it out of the walk.
             crate::BackgroundTask {
                 task_id: "t2".to_owned(),
                 task_type: "local_agent".to_owned(),
@@ -1013,9 +1009,9 @@ provider = "anthropic"
         );
     }
 
-    /// The walk's window, the terminal's own rule: nothing walked yet is
+    /// The walk's window: nothing walked yet is
     /// walked, one inside the window is the answer rather than a reason to
-    /// walk, and one past it is walked again and stored where both views
+    /// walk, and one past it is walked again and stored where views
     /// read it.
     #[tokio::test]
     async fn a_walk_happens_only_once_the_window_has_passed() {
@@ -1133,11 +1129,11 @@ provider = "anthropic"
         assert!(walk_moved(Some(&told), &walk_of(Vec::new())), "and so is the tree emptying");
     }
 
-    /// **A walk somebody else moved reaches the seat's viewers.** The terminal's
-    /// scanner writes this same store, and while it is showing the seat the
-    /// store is never stale by the loop's own rule - so a loop that read the
-    /// store only when its own walk ran would leave every client's walk frozen
-    /// for as long as the terminal held the seat.
+    /// **A walk somebody else moved reaches the seat's viewers.** Another
+    /// writer can put a walk in this same store, and while the store is
+    /// fresh the loop's own rule walks nothing - so a loop that read the
+    /// store only when its own walk ran would leave every client's section
+    /// frozen.
     #[tokio::test]
     async fn a_walk_another_writer_moved_is_announced() {
         let dir = a_repo();
@@ -1145,9 +1141,9 @@ provider = "anthropic"
         let seat = seat();
         workspace.hold_seat(&seat).await;
 
-        // The terminal's scanner, writing the store the loop holds a baseline
-        // of - and with the clock inside the window, so the loop's own rule
-        // walks nothing this poke.
+        // A walk another writer made, writing the store the loop holds a
+        // baseline of - and with the clock inside the window, so the loop's
+        // own rule walks nothing this poke.
         let moved_walk = walk_of(vec![entry_at(4242)]);
         workspace.store_process_snapshot(&seat, Some(moved_walk));
 

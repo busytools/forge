@@ -6,8 +6,9 @@
    * The question the assistant asked, with whatever the reader answered.
    *
    * **The marks are the sprite's, not a character cell's.** The card led its
-   * answers with a right arrow because a terminal had nothing else to draw
-   * with, and it reads as punctuation beside the icons on every other row.
+   * answers with a right arrow because the view this client replaced had
+   * nothing else to draw with, and it reads as punctuation beside the icons on
+   * every other row.
    */
   let { asked = [] }: { asked?: AnsweredQuestion[] } = $props();
 </script>

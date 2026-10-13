@@ -91,9 +91,8 @@ impl ViewSurface {
         self.workspace.dictate_models()
     }
 
-    /// The `[dictate] bind` key, as `forge.toml` declares it. The terminal
-    /// reads the same value for its own key handler; a client draws the
-    /// keyboard the record carries rather than hardcoding one.
+    /// The `[dictate] bind` key, as `forge.toml` declares it. A client
+    /// draws the keyboard the record carries rather than hardcoding one.
     pub fn dictate_bind(&self) -> forge_workspace::DictateBind {
         self.workspace.dictate_bind()
     }
@@ -106,8 +105,7 @@ impl ViewSurface {
     /// Every input forge can record from, and the configured pin.
     ///
     /// A blocking walk that opens the microphone stack, so a caller runs it
-    /// off its own thread: the socket answers an on-demand request with it,
-    /// and the terminal reaches it from a spawned task.
+    /// off its own thread: the socket answers an on-demand request with it.
     pub fn dictate_device_catalog(&self) -> Result<forge_workspace::DictateDeviceCatalog, String> {
         self.workspace.dictate_device_catalog()
     }

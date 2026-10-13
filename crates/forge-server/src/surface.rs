@@ -1,5 +1,5 @@
 //! The surface a view uses: named read verbs by subject, returning values
-//! that carry no terminal type, and one dispatch verb for what a view acts
+//! that carry no view type, and one dispatch verb for what a view acts
 //! with.
 //!
 //! [`ViewSurface::dispatch`] is a verb rather than an accessor, so a second
@@ -135,9 +135,9 @@ impl ViewSurface {
     /// itself an observer draws prompts that are already dead, and a turn
     /// fails rather than waiting for the person looking at it. Whoever
     /// subscribes here answers through `dispatch`, which is the same path
-    /// the TUI uses.
+    /// a view uses.
     ///
-    /// This was the mirror's role while the TUI was the only frontend and
+    /// This was the mirror's role while one view was the only frontend and
     /// the only thing that answered. A second view that renders makes that
     /// reason stop holding.
     ///
@@ -157,7 +157,7 @@ impl ViewSurface {
     /// **The caller this exists for is a process-wide fold.** It folds into
     /// state of its own and never replies, so the answering role would park
     /// a permission, question or Slack draft waiting on an answer nobody
-    /// sends. And it attaches at boot, before the terminal does, so taking
+    /// sends. And it attaches at boot, before any client does, so taking
     /// the backlog would take the boot notice from the view that renders
     /// prompts - the notice belongs to whichever subscription attaches
     /// first, and a fold is not the view that draws it.
@@ -167,14 +167,14 @@ impl ViewSurface {
         self.workspace.subscribe_mirror()
     }
 
-    /// The core's stream for a client attaching beside the terminal,
-    /// registered with the role that client declared.
+    /// The core's stream for a connecting client, registered with the
+    /// role that client declared.
     ///
     /// **Neither role takes the pre-attach backlog.** It goes to the first
-    /// subscriber, and the view that renders the boot notice is the terminal:
-    /// a client attaching beside it must not take that notice away, whether
-    /// or not the client can answer. A client reads what it missed from the
-    /// subject's snapshot instead.
+    /// subscriber - the view that renders the boot notice - so a client
+    /// attaching later must not take that notice away, whether or not the
+    /// client can answer. A client reads what it missed from the subject's
+    /// snapshot instead.
     ///
     /// The role decides one thing: whether the core may park a prompt on this
     /// connection's reply. `answering` is the client's own statement that it
@@ -190,8 +190,8 @@ impl ViewSurface {
         }
     }
 
-    /// The projects, their sessions, and the per-project lists the
-    /// Projects pane renders.
+    /// The projects, their sessions, and the per-project lists the home
+    /// page renders.
     pub fn roster(&self) -> Roster {
         Roster::collect(Arc::clone(&self.workspace))
     }
@@ -294,7 +294,7 @@ impl ViewSurface {
     /// A live seat's conversation is the one the session task seeds, so no
     /// request walks a file for it; a sleeping one has no task to ask and
     /// this read is what answers it (`transport::wire::seed_from_transcript`).
-    /// The terminal keeps its own copy in session state. The verb's other
+    /// A view keeps its own copy in session state. The verb's other
     /// callers are the surface's own tests and the measurement harness, which
     /// is what a surface test is for rather than a sign it is unused.
     pub fn conversation(&self, slot: &SessionSlot, cwd_raw: &Path) -> ConversationHistory {
@@ -442,7 +442,7 @@ mod tests {
     /// attaching through the mirror takes no backlog, so the notice held
     /// before anyone attached reaches the view that renders prompts instead
     /// of being swallowed by whichever subscription happened to attach
-    /// first - which at boot is the fold, not the terminal.
+    /// first - which at boot is the fold, not a view.
     ///
     /// The fold also does not answer, so putting it on the answering verb
     /// would park every prompt it draws waiting on a reply nobody sends.
@@ -534,7 +534,7 @@ mod tests {
         assert_eq!(read.messages.len(), 2, "the worker reads its worktree transcript");
     }
 
-    /// An empty `cwd_raw` is a state the launchpad produces, and the read
+    /// An empty `cwd_raw` is a state a project picker produces, and the read
     /// must not carry it on. The slot's own record places the read instead,
     /// so a caller that holds no path still gets the session's conversation.
     /// The fixture writes a real `forge.toml`: the project has to be one the

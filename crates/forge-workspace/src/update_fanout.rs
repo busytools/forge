@@ -11,7 +11,7 @@ use crate::protocol::SessionUpdate;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SubscriberRole {
     /// Renders the workspace's prompts - permission, question, Slack
-    /// draft - and answers them. The TUI's role, and the one
+    /// draft - and answers them. The answering view's role, and the one
     /// [`UpdateFanout::send_answering`] reports on.
     Answering,
     /// Reads the stream only. A prompt delivered to observers alone is

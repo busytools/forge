@@ -1,8 +1,8 @@
 //! The binary's own arguments, shared by every caller of [`crate::boot`].
 //!
-//! Moved whole from the terminal's crate: the terminal still parses the same
-//! CLI it always has, and the headless server binary parses the same one
-//! rather than a second, drifted copy.
+//! Parsed once by the `forge` binary: the boot, the logging runtime and
+//! the completion generator all read the same definition rather than a
+//! second, drifted copy.
 
 use clap::{Parser, ValueEnum};
 
@@ -10,7 +10,6 @@ use clap::{Parser, ValueEnum};
 pub enum DiagnosticsPreset {
     Runtime,
     Session,
-    Render,
     Bridge,
     Full,
 }
@@ -22,33 +21,34 @@ impl DiagnosticsPreset {
     /// `forge_server`, the tail read's home and dictation's two crates
     /// too, which is where the demoted ones live; the rest of the gap is
     /// #1911.
+    ///
+    /// The targets named are the ones the surviving binaries emit; the
+    /// old render/input/paste family retired with the terminal crate.
     pub fn filter_directives(&self) -> &'static str {
         match self {
             Self::Runtime => {
-                "info,bridge.lifecycle=debug,bridge.protocol=debug,app.session=debug,forge_server=debug,forge_workspace::output_tail=debug,app.tool=debug,app.command=debug,app.permission=debug,app.network=debug,app.update=debug,forge_workspace::dictate=debug,forge_dictate=debug"
+                "info,bridge.lifecycle=debug,bridge.protocol=debug,forge_server=debug,forge_workspace::output_tail=debug,app.permission=debug,forge_workspace::dictate=debug,forge_dictate=debug"
             }
             Self::Session => {
-                "info,bridge.lifecycle=debug,bridge.protocol=debug,app.session=debug,forge_server=debug,forge_workspace::output_tail=debug,app.permission=debug,app.command=debug,forge_workspace::dictate=debug,forge_dictate=debug"
+                "info,bridge.lifecycle=debug,forge_server=debug,forge_workspace::output_tail=debug,app.permission=debug,forge_workspace::dictate=debug,forge_dictate=debug"
             }
-            Self::Render => "info,app.render=trace,app.cache=debug,app.input=debug,app.paste=debug",
             Self::Bridge => {
                 "info,bridge.lifecycle=debug,bridge.protocol=debug,bridge.sdk=debug,bridge.permission=debug,bridge.mcp=debug"
             }
             Self::Full => {
-                "info,app.render=trace,bridge.lifecycle=debug,bridge.protocol=debug,bridge.sdk=debug,bridge.permission=debug,bridge.mcp=debug,app.session=debug,forge_server=debug,forge_workspace::output_tail=debug,app.tool=debug,app.command=debug,app.permission=debug,app.network=debug,app.update=debug,app.cache=debug,app.input=debug,app.paste=debug,app.config=debug,app.auth=debug,forge_workspace::dictate=debug,forge_dictate=debug"
+                "info,bridge.lifecycle=debug,bridge.protocol=debug,bridge.sdk=debug,bridge.permission=debug,bridge.mcp=debug,forge_server=debug,forge_workspace::output_tail=debug,app.permission=debug,app.input=debug,forge_workspace::dictate=debug,forge_dictate=debug"
             }
         }
     }
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "forge", about = "Native Rust terminal for Claude Code", version)]
+#[command(name = "forge", about = "The forge server for Claude Code", version)]
 pub struct Cli {
-    /// Project to open, matching an `[[orgs.projects]]` `name` in
-    /// forge.toml exactly. When omitted, forge opens the launchpad
-    /// picker rather than a project: every `auto_start = true` project
-    /// still spawns in the background, but none is focused until you
-    /// pick one.
+    /// Project to start, matching an `[[orgs.projects]]` `name` in
+    /// forge.toml exactly. When omitted, every `auto_start = true`
+    /// project still spawns in the background and none is singled out;
+    /// naming one starts it whether or not it is pinned.
     #[arg(value_name = "PROJECT")]
     pub project: Option<String>,
 
@@ -76,7 +76,7 @@ pub struct Cli {
     #[arg(long, value_name = "PATH")]
     pub log_file: Option<std::path::PathBuf>,
 
-    /// Tracing filter directives (example: `info,app.render=trace`).
+    /// Tracing filter directives (example: `info,bridge.sdk=trace`).
     /// Overrides `--diagnostics-preset` and falls back to `RUST_LOG` when omitted.
     #[arg(long, value_name = "FILTER")]
     pub log_filter: Option<String>,

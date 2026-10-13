@@ -699,23 +699,22 @@ impl crate::Workspace {
         forge_dictate::cleanup::CleanupSource::default()
     }
 
-    /// Where the fetched feed is cached: forge's machine-local state
-    /// directory, or a test's own.
+    /// Where the fetched feed is cached: the workspace's own app-support
+    /// base (re-resolving the machine dir here would let a test's fetch
+    /// write into the real tree), or a test's own override.
     fn catalogue_dir(&self) -> Option<PathBuf> {
         #[cfg(any(test, feature = "testing"))]
         if let Some(dir) = self.test_catalogue_dir.lock().clone() {
             return Some(dir);
         }
-        match forge_sdk::app_support_dir() {
-            Ok(dir) => Some(dir.join("dictate-catalogue")),
-            Err(error) => {
-                tracing::warn!(
-                    event_name = "dictate_catalogue_dir_unresolved",
-                    %error,
-                    "no app-support dir: the fetched catalogue is not cached"
-                );
-                None
-            }
+        if let Some(base) = &self.app_support {
+            Some(base.join("dictate-catalogue"))
+        } else {
+            tracing::warn!(
+                event_name = "dictate_catalogue_dir_unresolved",
+                "no app-support base was resolved at boot: the fetched catalogue is not cached"
+            );
+            None
         }
     }
 }
@@ -1290,18 +1289,30 @@ pub(crate) mod tests_catalogue_view {
         assert_eq!(view.rows.len(), 2, "the feed's rows still cross");
     }
 
-    /// With no test override the cache lives beside forge's other
-    /// machine-local state: a boot- or pid-scoped path would strand every
-    /// fetched feed on the next start.
+    /// **The cache dir threads the workspace's own app-support base, never
+    /// the machine's**: a test's fetch once cached into the real
+    /// app-support tree, creating the current `forge/` name early, which
+    /// disarmed the forge-tui migration and its boot refusal.
     #[test]
-    fn the_production_cache_dir_is_the_app_support_one() {
-        let (ws, _updates, _models) = enabled_stub();
+    fn the_cache_dir_threads_the_workspaces_app_support_base() {
+        let config_dir = tempfile::tempdir().expect("a config dir");
+        let models = tempfile::tempdir().expect("a models dir");
+        let mut config = crate::config::LoadedConfig::empty_for_test();
+        config.dictate.enabled = true;
+        config.dictate.models_dir = Some(models.path().to_string_lossy().into_owned());
+        let (ws, _updates) =
+            Workspace::testing_stub_with_config(config_dir.path().to_path_buf(), config)
+                .expect("the stub builds");
 
         assert_eq!(
             ws.catalogue_dir(),
+            Some(config_dir.path().join("app-support").join("dictate-catalogue")),
+            "the cache dir is derived from the workspace's injected app-support base"
+        );
+        assert_ne!(
+            ws.catalogue_dir(),
             forge_sdk::app_support_dir().ok().map(|dir| dir.join("dictate-catalogue")),
-            "the cache directory is derived from the app-support dir, not from anything the boot \
-             happens to know"
+            "and never from the machine's real app-support dir"
         );
     }
 

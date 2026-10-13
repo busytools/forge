@@ -148,12 +148,12 @@ describe('one turn, as the page draws it', () => {
   });
 
   it('draws what the reader typed as the document the terminal draws', () => {
-    // The terminal sends a user block through the same markdown path it sends
-    // an assistant's (`message.rs`'s `block_markdown_for`), so a heading someone
-    // types arrives as a heading and a fence as the page's own code panel. The
-    // issue names the shapes where the two readings diverge most - a fence, an
-    // inline span, and a fence that never closes, which in a prompt is normal
-    // rather than an error.
+    // The view this client replaced sent a user block through the same
+    // markdown path it sent an assistant's, so a heading someone types arrives
+    // as a heading and a fence as the page's own code panel. The issue names
+    // the shapes where the two readings diverge most - a fence, an inline
+    // span, and a fence that never closes, which in a prompt is normal rather
+    // than an error.
     const body = draw(prompt('Run this:\n\n```sh\njust check\n```\n\nand read `out`.'));
 
     expect(body, 'a fence in what the reader typed draws as the code panel').toContain(
@@ -164,9 +164,10 @@ describe('one turn, as the page draws it', () => {
   });
 
   it('keeps the newlines a reader typed, which assistant prose does not', () => {
-    // The terminal's split: a user block goes through the same path with
-    // `preserve_newlines`, an assistant block without it. A prompt is usually
-    // several lines, so this is the shape a person meets first.
+    // The split the view this client replaced kept: a user block goes through
+    // the same path with its newlines preserved, an assistant block without
+    // them. A prompt is usually several lines, so this is the shape a person
+    // meets first.
     const typed = draw(prompt('first line\nsecond line'));
     const answered = draw(said([{ type: 'text', text: 'first line\nsecond line' }]));
 
@@ -175,10 +176,10 @@ describe('one turn, as the page draws it', () => {
   });
 
   it('draws what the model thought as a collapsed row carrying its words joined', () => {
-    // The terminal does not render thinking text at all - its arm sets a status
-    // and traces a count - so this is the client beyond it rather than beside
-    // it, in the terminal's own collapsed vocabulary: the row carries the
-    // thought joined into one line, and the layout breaks it at the row's
+    // The view this client replaced rendered no thinking text at all - its arm
+    // set a status and traced a count - so this is the client beyond it rather
+    // than beside it, in that view's own collapsed vocabulary: the row carries
+    // the thought joined into one line, and the layout breaks it at the row's
     // width, where a reader expects the row to end.
     const body = draw(
       said([
@@ -495,8 +496,9 @@ describe('one turn, as the page draws it', () => {
     const body = seatRunning(said([use('c1', 'Bash', { command: 'just check' })]));
 
     // The GROUP opens - the mockup draws a run open - and the call inside it
-    // waits to be asked, which is the difference from the terminal: it expands
-    // everything at once and the page opens one call at a time.
+    // waits to be asked, which is the difference from the view this client
+    // replaced: it expanded everything at once and the page opens one call at
+    // a time.
     const leaf = body.slice(body.indexOf('<details class="leaf"'));
     expect(leaf, 'the call is on the page').not.toBe('');
     expect(leaf.slice(0, leaf.indexOf('>')), 'it waits to be asked').not.toContain('open');

@@ -188,7 +188,7 @@ header.top.pagetop .back:hover { border-color: var(--ctl); color: var(--text); }
 .versions { font-family: var(--mono); font-size: 13.5px; color: var(--dim); }
 .versions b { color: var(--muted); font-weight: 500; }
 /* The installed version is context; an available update is something to
-   act on, so it carries the amber the TUI uses for the same notice. */
+   act on, so it carries the warn amber. */
 .versions .upd { color: var(--warn); }
 /* The client's own notice is a control: it replaces the line's context with
    an action, so it lays no button chrome over the versions row. */
@@ -235,7 +235,7 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
 @media (pointer: coarse) { .band a.svc { min-height: 44px; } }
 
 /* The mock's upstream banner is not here: it hangs on a status probe the
-   TUI runs once, before a browser can attach, so on the web it could only
+   core runs once, before a browser can attach, so on the web it could only
    ever show a notice under a label it does not own. It comes back with a
    read over a stored probe result. */
 
@@ -2718,8 +2718,8 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 @container (max-width: 300px) { .sess .facts .f-ctx .tk { display: none; } }
 
 /* The palette carries no blue, so plan mode takes the accent: the chips
-   have to stay apart from each other more than they have to match the
-   TUI's own colours. */
+   have to stay apart from each other more than they have to match any
+   one palette. */
 .perm { color: var(--dim); }
 .perm.auto { color: var(--warn); }
 .perm.plan { color: var(--accent); }
@@ -3135,9 +3135,8 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 }
 
 /* ---------- the usage page ----------
-   The terminal's `/usage` overlay is the reference for what is drawn
-   (`crates/forge-tui/src/ui/usage_overlay.rs`): the scales, the two caption
-   tones and which cell carries which tone. These are the page's own layout.
+   The scales, the two caption tones and which cell carries which tone are
+   the page's own layout.
    Every rule is prefixed: `.totals`, `.dim` and the rest of the sheet's short
    names are another surface's, and a bare rule here would reach it by coming
    later. */

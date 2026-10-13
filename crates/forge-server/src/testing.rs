@@ -46,13 +46,9 @@ pub struct ViewFacts {
     /// would have left it.
     pub background_tasks: Vec<forge_workspace::BackgroundTask>,
     pub monitors: Vec<forge_primitives::MonitorRecord>,
-    /// Whether the conversation dispatched a sub-agent. Seeded by hand
-    /// because the fold that raises it runs in the session task, which a
-    /// fixture does not start.
-    pub has_dispatches: bool,
-    /// The instances that fold has folded, for the same reason: the list a
-    /// record reads is the one the session task pushes, and a fixture has no
-    /// task to push it.
+    /// The instances the session task's fold has folded. Seeded by hand
+    /// because the list a record reads is the one the session task pushes,
+    /// and a fixture has no task to push it.
     pub cards: Vec<forge_primitives::runtime::SubagentCard>,
 }
 
@@ -338,10 +334,6 @@ impl Fleet {
     /// on the way out: a fixture built on the converted shape would exercise
     /// something production never seeds from, so a defect in the seed's own
     /// conversion could not be seen here.
-    ///
-    /// The dispatch flag is NOT seeded here: it is the workspace's, raised by
-    /// the session task's fold, and a fixture that wants it says so through
-    /// [`ViewFacts::has_dispatches`].
     pub fn hold_conversation(
         &self,
         state: &TransportState,
@@ -582,7 +574,6 @@ impl Fleet {
         held.process_snapshot = facts.process_snapshot;
         held.background_tasks = facts.background_tasks;
         held.monitors = facts.monitors;
-        held.has_dispatches = facts.has_dispatches;
         held.cards_snapshot = facts.cards;
     }
 

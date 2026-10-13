@@ -1,6 +1,6 @@
 /**
  * The palettes and typefaces forge ships, by the names `[client] theme` and
- * `[client] font` take - the client half of `crates/forge-web/src/theme.rs`.
+ * `[client] font` take.
  *
  * The greeting carries the NAMES - `dark`, `system`, `klin` - and this file
  * holds the values they resolve to. So the client reads no config file: one
@@ -33,12 +33,11 @@ const SYSTEM_FONT = {
  * `web.css` declares none of these - only its own layout and type scale -
  * so the palette has exactly one home and this is it.
  *
- * The server's own `theme.rs` carries five more, `--syn-key`, `--syn-str`,
- * `--syn-fn`, `--add-bg` and `--del-bg`, and they are deliberately NOT here:
- * they colour code and a diff, which the server does not own. Colouring is
- * the client's, from a maintained highlighter module that brings its own
- * theme, and `web.css`'s `.k` / `.s` / `.f` / `.dif` rules go with it when
- * the chat's code rendering lands.
+ * Five more tokens - `--syn-key`, `--syn-str`, `--syn-fn`, `--add-bg` and
+ * `--del-bg` - are deliberately NOT here: they colour code and a diff, and
+ * colouring is the client's, from a maintained highlighter module that brings
+ * its own theme. `web.css`'s `.k` / `.s` / `.f` / `.dif` rules go with it
+ * when the chat's code rendering lands.
  */
 const DARK: Record<string, string> = {
   '--bg': '#04050a',
@@ -58,17 +57,17 @@ const DARK: Record<string, string> = {
   // the value the highlighter's github-dark theme names for code text rather
   // than one picked to taste. Its base rule needs a `.hljs` container the code
   // block never emits, so this token is still what a block's body text reads.
-  // The terminal draws the same text at 6.10:1 (Ghostty `GitHub Dark`), the
-  // page cannot follow it that far and stay above --muted, and this lands at
-  // 13.19:1, with both ends of its band held in contrast.test.ts.
+  // The view this client replaced drew the same text at 6.10:1 (Ghostty
+  // `GitHub Dark`); the page cannot follow it that far and stay above
+  // --muted, and this lands at 13.19:1, with both ends of its band held in
+  // contrast.test.ts.
   '--text': '#c9d1d9',
   '--muted': '#8f98a8',
   // The quietest of the three text tokens, and the darkest step that clears
   // AA on every ground the sheet puts text on: 5.26:1 on the page, 4.87:1 on
   // --s1 and 4.53:1 on --s2. It was #5d6675, which measured 3.51:1 while
   // carrying 12.5px labels in about fifty places, so the token failed the
-  // standard rather than the uses being wrong. Kept in step with
-  // `crates/forge-web/src/theme.rs` by `salvage.test.ts`.
+  // standard rather than the uses being wrong.
   '--dim': '#788294',
   '--accent': '#f47600',
   '--ok': '#82c76b',

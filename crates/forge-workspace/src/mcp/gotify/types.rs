@@ -5,9 +5,9 @@
 //! threads the typed fields through `Command::DeliverGotifyMessage` +
 //! `SessionUpdate::GotifyNotificationAppended`, and [`to_prose`] is the
 //! single source of the user-turn prose that both the session's LLM
-//! (via `Command::Prompt`) and the TUI chat echo (via
+//! (via `Command::Prompt`) and a view's chat echo (via
 //! `forge_server::envelope::detect_inbound`) consume. Workspace-
-//! internal - only forge-workspace builds it and forge-tui reads it
+//! internal - only forge-workspace builds it and a view reads it
 //! through the protocol enums, so it stays out of forge-primitives
 //! (logic-free wire types only).
 //!

@@ -22,8 +22,8 @@ const DRAWINGS = '../../docs/book/src/ui/client';
  * **The stylesheet is not pinned, because it is not the server's any more.**
  * It began as a byte-identical copy of `crates/forge-web/src/web.css`, and
  * that assertion also forbade correcting it - which is what a page's rules
- * need. `forge-web` goes when the client plan reaches its delete step, so the
- * copy's provenance is this comment rather than a test.
+ * need. `forge-web` has gone, so the copy's provenance is this comment
+ * rather than a test.
  */
 describe('the salvage copies', () => {
   /**
@@ -55,61 +55,6 @@ describe('the salvage copies', () => {
   });
 
   /**
-   * The palette has the same two-copies problem as the sheet and, until
-   * this, nothing pinned it. `theme.rs` names its values as constants and
-   * lists them by key; `theme.ts` holds them inline, so the two shapes are
-   * parsed apart and compared as maps.
-   *
-   * A value that drifts here is a token the server and the client disagree
-   * about, which shows up as one surface drawing a different colour rather
-   * than as a failure - the same two-copies problem the fixtures have, and
-   * the same reason they are pinned.
-   */
-  it('resolves the same palette the server does', () => {
-    // The key carries a digit (`--s1`), so the character class does too.
-    const KEY = /'?(--[a-z0-9-]+)'?/;
-
-    const rust = read('../../crates/forge-web/src/theme.rs');
-    const named = new Map(
-      [...rust.matchAll(/const ([A-Z0-9_]+): &str = "(#[0-9a-f]{3,8})";/g)].map((match) => [
-        match[1] as string,
-        match[2] as string,
-      ]),
-    );
-    const server = new Map(
-      [...rust.matchAll(/\("(--[a-z0-9-]+)", ([A-Z0-9_]+)\)/g)].map((match) => [
-        match[1] as string,
-        named.get(match[2] as string),
-      ]),
-    );
-    const client = new Map(
-      [...read('./theme.ts').matchAll(/'(--[a-z0-9-]+)': '(#[0-9a-f]{3,8})'/g)].map((match) => [
-        match[1] as string,
-        match[2] as string,
-      ]),
-    );
-
-    expect(server.size, 'theme.rs lists no tokens').toBeGreaterThan(15);
-
-    /**
-     * The client drops exactly the highlighter's five, because the server
-     * owns no code colouring: naming them here is what stops a SIXTH one
-     * disappearing from the client unnoticed, which is the drift this test
-     * exists for.
-     */
-    const dropped = new Set(['--syn-key', '--syn-str', '--syn-fn', '--add-bg', '--del-bg']);
-    expect(
-      [...server.keys()].filter((token) => !client.has(token)).sort(),
-      'the client carries a different set from the server',
-    ).toEqual([...dropped].sort());
-
-    for (const [token, value] of client) {
-      expect(value, `${token} differs between the two copies`).toBe(server.get(token));
-      expect(KEY.test(token), `${token} is not a token name`).toBe(true);
-    }
-  });
-
-  /**
    * **The drawings are copies too, and seven of them were behind.** Each page
    * under `docs/book/src/ui/client/` carries its own palette, so there is one
    * copy of it for every drawing; the pages a reader is sent to as the visual
@@ -119,14 +64,14 @@ describe('the salvage copies', () => {
    * pages drawn before it kept the old pair, while the two home variants were
    * drawn after the move and were behind from their first commit.
    *
-   * The comparison is against the SERVER's palette, the same source the copy
-   * above is pinned to, so a drawing cannot agree with a stale client. A
+   * The comparison is against the app's own `theme.ts`, so a drawing cannot
+   * agree with a stale palette. A
    * colour is compared by value rather than by spelling: `#ffb058` and
    * `rgb(255,176,88)` are one colour, and a test that read them apart would
    * fail on notation while the drawing drew the right thing.
    */
   it('draws the palette the app ships, on every drawing', () => {
-    const shipped = serverPalette();
+    const shipped = appPalette();
 
     let compared = 0;
     const drifts: string[] = [];
@@ -162,8 +107,12 @@ describe('the salvage copies', () => {
     // its other addition, `--fs-label`, is not a palette token, so it does
     // not move the count. The document viewer's drawing declares the
     // palette's sixteen and adds the same way; the usage page's drawing
-    // declares the palette's seventeen.
-    expect(compared, 'the sweep no longer reaches the same tokens').toBe(236);
+    // declares the palette's seventeen - 236 while the source was
+    // `forge-web`'s `theme.rs`, and 231 now that the app's own `theme.ts`
+    // is: the five the drawing carries and the client's map does not are
+    // the highlighter's (`--syn-*`, `--add-bg`, `--del-bg`), skipped here
+    // exactly as they were skipped from the other side before.
+    expect(compared, 'the sweep no longer reaches the same tokens').toBe(231);
   });
 
   /**
@@ -174,7 +123,10 @@ describe('the salvage copies', () => {
    * tokens were right by then.
    */
   it('prints the palette it states, on every legend row', () => {
-    const shipped = serverPalette();
+    const shipped = appPalette();
+    // A palette that failed to parse would make every comparison below skip,
+    // which is the green-means-nothing shape this control exists for.
+    expect(shipped.size, 'theme.ts lists no tokens').toBeGreaterThan(15);
 
     let rows = 0;
     const drifts: string[] = [];
@@ -273,33 +225,20 @@ function declaredIn(page: string): Map<string, string> {
 }
 
 /**
- * The palette the server owns, which is what a drawing has to agree with.
+ * The palette the app draws with, which is what a drawing has to agree with.
  *
- * **It reads the PARKED crate, and that is safe only transitively**: the test
- * above pins `theme.ts` to this file, so the two agree today. `forge-web` is
- * deleted when the client plan reaches its delete step, and that deletion has
- * to repoint this at `client/src/theme.ts` in the same change. It fails loudly
- * rather than silently if it does not - the file would not be there to read -
- * but the drawings would be unguarded until someone repoints it.
+ * **The client's own `theme.ts` is the source now.** The values used to be
+ * pinned against `forge-web`'s `theme.rs`, a second place the same palette
+ * lived; that crate is deleted, and the client's map is the only statement
+ * of the palette left, so the drawings are held to it directly.
  */
-function serverPalette(): Map<string, string> {
-  const rust = read('../../crates/forge-web/src/theme.rs');
-  const named = new Map(
-    // Any literal, not only a hex one: two of the tokens are `rgba(...)`, and a
-    // pattern that read only hex would skip them instead of comparing them.
-    [...rust.matchAll(/const ([A-Z0-9_]+): &str = "([^"]+)";/g)].map((match) => [
+function appPalette(): Map<string, string> {
+  return new Map(
+    [...read('./theme.ts').matchAll(/'(--[a-z0-9-]+)': '([^']+)'/g)].map((match) => [
       match[1] as string,
       match[2] as string,
     ]),
   );
-  const pairs: [string, string][] = [];
-  for (const match of rust.matchAll(/\("(--[a-z0-9-]+)", ([A-Z0-9_]+)\)/g)) {
-    const value = named.get(match[2] as string);
-    // A token whose constant the file does not declare is dropped rather than
-    // carried as an empty string, which would read as a drift in every page.
-    if (value !== undefined) pairs.push([match[1] as string, value]);
-  }
-  return new Map(pairs);
 }
 
 /** One row of a page's palette legend: the token, its swatch and its hex. */

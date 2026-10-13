@@ -69,7 +69,7 @@ surface page.
   flagged.
 - **New wire surface ships with a captured baseline.** See
   [the wire contract](./wire-contract.md).
-- **UI changes update the [UI surface pages](./ui/workspace.md) in the
+- **UI changes update the [UI surface pages](./ui/client/index.md) in the
   same pull request.**
 - **Changes that make a page here false update it in the same pull
   request.** This site deploys on every push to `main`, so a page left
@@ -78,8 +78,7 @@ surface page.
 ## Where does my code go?
 
 The [architecture page](./architecture.md) has the placement guide.
-Bias toward the deeper crate when unsure; the usual mistake is putting
-too much in `forge-tui`.
+Bias toward the deeper crate when unsure.
 
 ## Commits and pull requests
 

@@ -154,9 +154,9 @@ describe('where a close lands the reader', () => {
   });
 
   /**
-   * The walk is the terminal's: forward to the last row, then the rows
-   * before it in reverse - so closing the last row lands on the one above
-   * it rather than falling past everything.
+   * The walk is the one the view this client replaced made: forward to the
+   * last row, then the rows before it in reverse - so closing the last row
+   * lands on the one above it rather than falling past everything.
    */
   it('wraps: closing the last row lands on the row above it', () => {
     expect(closeLanding(home(W1, W2), W2, NOW)).toEqual({ name: 'session', slot: W1 });
@@ -282,8 +282,9 @@ describe('the walk is over seats with something behind them', () => {
   /**
    * A sleeping seat is a row the rail draws with nothing running behind it,
    * and landing on one draws a refusal - or, for a lead the roster no
-   * longer names, a page that starts the project. The terminal's own
-   * candidate walk can never hold such a row, so neither may this one.
+   * longer names, a page that starts the project. The candidate walk in the
+   * view this client replaced could never hold such a row, so neither may
+   * this one.
    */
   it('skips a sleeping row rather than hand the reader a seat with no session', () => {
     const held: HomeWire = { ...homeWire, agents: [agent(LEAD), agentIn(W1, 'Sleeping')] };

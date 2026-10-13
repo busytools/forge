@@ -4,7 +4,7 @@
 //!
 //! Everything here stays on `Workspace` as a second `impl` block, so
 //! every caller (the boot path in [`crate::workspace`], the
-//! `mcp::cron` facade, `spawn::deliver_cron_prompt`, forge-tui's boot)
+//! `mcp::cron` facade, `spawn::deliver_cron_prompt`, a view's boot)
 //! keeps its path. The `crons`, `cron_scheduler_started` and `update_tx`
 //! fields these methods own are `pub(crate)` for the same reason `db` is:
 //! so this sibling module can reach them without a wrapper. A fired cron
@@ -360,7 +360,7 @@ impl Workspace {
 impl Workspace {
     /// Register a durable cron directly, bypassing the MCP create path.
     /// Cross-crate test access to the otherwise `pub(crate)` cron store
-    /// so forge-tui can exercise the Inspector's `refresh_forge_crons`
+    /// so a view can exercise the Inspector's `refresh_forge_crons`
     /// resolution against a seeded cron.
     ///
     /// The store write without the announcement: a fixture seeds state, it

@@ -55,7 +55,7 @@ pub fn save(db: &Db, project: &str, branch: &str, threads: &[ReviewThread]) -> a
 /// Insert `thread`, replacing any existing thread with the same id in
 /// the branch's set; appends when the id is new. Stamps `updated_at` to
 /// now and fills `created_at` (preserved from the existing row on
-/// replace, set to now when the caller left it empty) so the TUI need
+/// replace, set to now when the caller left it empty) so a view need
 /// not carry a clock.
 pub fn upsert(
     db: &Db,
@@ -65,7 +65,7 @@ pub fn upsert(
 ) -> anyhow::Result<()> {
     let now = rfc3339_now();
     thread.updated_at.clone_from(&now);
-    // Stamp any comment the caller left unstamped (the TUI carries no
+    // Stamp any comment the caller left unstamped (a view carries no
     // clock), so a persisted comment's `at` is a real rfc3339 time.
     for comment in &mut thread.comments {
         if comment.at.is_empty() {

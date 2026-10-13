@@ -346,7 +346,7 @@ mod tests {
     /// The values the web client's own `anchorHash` is pinned against: the
     /// page computes this hash for the anchors it writes, and the two
     /// implementations must agree byte for byte or a thread written there
-    /// never places in the terminal. Whitespace collapsing and a non-ASCII
+    /// never resolves. Whitespace collapsing and a non-ASCII
     /// byte are both exercised, because the two are where a port drifts.
     ///
     /// **The last two vectors are the collapse's edges**, where JS's `\s`

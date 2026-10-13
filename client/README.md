@@ -358,8 +358,8 @@ sprite stops being dead weight.
 - `src/theme.ts` - the palettes and typeface stacks the names resolve to.
   The greeting carries the NAMES; the values live here, and there is no
   client-side reader of `forge.toml` by any path.
-- `src/assets/` - `web.css` and `sprite.svg`, taken from `crates/forge-web`
-  before that crate is deleted. The fonts live in `public/fonts/`.
+- `src/assets/` - `web.css` and `sprite.svg`, salvaged from the retired
+  web-view crate before its deletion. The fonts live in `public/fonts/`.
 
 `forge.toml` is the server's, and the client never reads it: `[client] mark`,
 `[client] theme` and `[client] font` arrive in the greeting. `ClientSettings`
@@ -372,8 +372,8 @@ row, and the home draws all four: `work` fills `.row .where`, `tasks`
 fills `.row .what` with its status chip and its artifact link, `would_bind`
 decides the refusal's second arm, and `forge_version_short` carries the
 header's version. The fixture's `projects[]` entries are
-`{project, work, tasks, crons, would_bind, chip}`; `crates/forge-web/src/home.rs`
-is still the port's source for the markup.
+`{project, work, tasks, crons, would_bind, chip}`; the retired web-view
+crate's `home.rs` was the port's source for the markup.
 
 **The unseen marks cross too**, as `unseen` - a list of slots. The server's
 `Live` owns that fact and a client cannot reconstruct it from the records,

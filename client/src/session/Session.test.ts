@@ -405,7 +405,8 @@ describe('the rail row as the sheet lays it out', () => {
   /**
    * The rail's other overflow risk: a spawn failure names a path with no break
    * in it, and the line keeps to the rail's width instead of laying a second
-   * scrollbar across it. The terminal truncates this sub-row the same way.
+   * scrollbar across it. The view this client replaced truncated this sub-row
+   * the same way.
    */
   it('truncates a reason line rather than letting it run', () => {
     const rule = body('.pj .why');
@@ -511,9 +512,9 @@ describe('the session id cell', () => {
   const cell = (id: string): string => render(SessionId, { props: { id } }).body;
 
   /**
-   * The terminal's own shape: eight characters on the row, the whole id on
-   * the control, because the short form is what a reader compares and the long
-   * one is what a person pastes into a resume.
+   * The shape the view this client replaced kept: eight characters on the row,
+   * the whole id on the control, because the short form is what a reader
+   * compares and the long one is what a person pastes into a resume.
    */
   it('draws the id short, with the whole one under it', () => {
     const body = cell('d4f70669-1f2a-4b3c-9d0e');
@@ -609,9 +610,9 @@ describe('the rail footer as the sheet lays it out', () => {
    * **The mark has to move something the state does not already occupy.** An
    * idle dot IS the accent, so a mark that recoloured only the dot would paint
    * nothing on the ordinary state of a shown seat - a seat's mark is cleared
-   * when a turn ends, so a seat at rest is idle. The terminal draws selection
-   * the same way: the glyph stays the session's state and the NAME takes the
-   * accent.
+   * when a turn ends, so a seat at rest is idle. The view this client replaced
+   * drew selection the same way: the glyph stayed the session's state and the
+   * NAME took the accent.
    */
   it('marks the row name, not only a dot the idle state already accents', () => {
     expect(

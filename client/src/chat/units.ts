@@ -8,14 +8,14 @@
  * moved. A client that restated them would draw the same turn two ways the
  * first time either changed.
  *
- * Eight places it deliberately differs from the terminal, and each is a
- * decision rather than an accident:
+ * Eight places it deliberately differs from the view it replaced, and each is
+ * a decision rather than an accident:
  *
  * - a mutation folds as an `edit` family inside the run instead of breaking
  *   it;
  * - peer traffic and calls share one list: a message does not close the calls
  *   above it, and no row ever moves - every row keeps its arrival place;
- * - a thinking block draws as a row of that list, where the terminal has no
+ * - a thinking block draws as a row of that list, where that view has no
  *   row for one at all - its arm only sets a running status and counts
  *   characters;
  * - a question the assistant asked is a card rather than a call;
@@ -23,13 +23,13 @@
  *   own turn, and the three external kinds that carry something to read - a
  *   cron fire, a Slack message, a Gotify push - join the list as rows of
  *   their own kind, the same shape every other row draws;
- * - a monitor's call joins the run as a plain call row, where the terminal
+ * - a monitor's call joins the run as a plain call row, where that view
  *   stands its lifecycle block alone and breaks the run at it - the shape is
  *   the divergence, and rule 25 leaves no row skipped;
- * - a compaction boundary is a row at the cut, where the terminal draws none:
- *   the count is the terminal's marker, the cut is unmarked there, and this
+ * - a compaction boundary is a row at the cut, where that view draws none:
+ *   the count is that view's marker, the cut is unmarked there, and this
  *   fold's `push` ends a run of calls at it;
- * - a hook's own lifecycle draws as one row per run, where the terminal's arm
+ * - a hook's own lifecycle draws as one row per run, where that view's arm
  *   for those three frames is a no-op. Its summary chip - the one other hook
  *   surface it has - is matched here rather than dropped, and no capture holds
  *   that chip and a run's own frames together.
@@ -482,8 +482,7 @@ function noteOf(frame: Frame): string | undefined {
  * blocks are what the reader typed and every other block draws as a `[type]`
  * placeholder so the row shows something rather than a blank.
  *
- * A port of `queued_command_text` in forge-server's transcript fold, which is
- * the same policy the terminal reads it through.
+ * A port of `queued_command_text` in forge-server's transcript fold.
  */
 function queuedText(prompt: unknown): string {
   if (typeof prompt === 'string') return prompt;
@@ -542,9 +541,9 @@ export function skillBody(text: string): { name: string; body: string } | null {
  *
  * The four heads are the CLI's own: the caveat announcing what follows, the
  * echo of a command, and a local command's output. They are the reader's
- * typing in the LAUNCH terminal arriving as plumbing, and the terminal's own
- * chat filters the same set - so this is a decided ignore rather than an
- * accidental drop. Ved's ruling, 2026-10-03, after the audit measured the
+ * typing in the LAUNCH terminal arriving as plumbing, and the view this
+ * client replaced filtered the same set - so this is a decided ignore rather
+ * than an accidental drop. Ved's ruling, 2026-10-03, after the audit measured the
  * family across every transcript: caveat 31, command echo 75, output 30, and
  * nothing else in the family.
  */
@@ -580,10 +579,11 @@ function taskNotificationOf(text: string): string | null {
 /**
  * Whether a frame is the CLI's nudge after a response with no visible output.
  *
- * The harness asks the MODEL to continue; nobody typed it and the terminal
- * draws the raw bracket, where the page draws its own line (#1858). Keyed on
- * the opening sentence alone: a reworded tail still recognizes, and a
- * reworded head falls through to the raw draw - the frame is never lost.
+ * The harness asks the MODEL to continue; nobody typed it and the view this
+ * client replaced drew the raw bracket, where the page draws its own line
+ * (#1858). Keyed on the opening sentence alone: a reworded tail still
+ * recognizes, and a reworded head falls through to the raw draw - the frame
+ * is never lost.
  */
 function noOutputNudge(text: string): boolean {
   return text.trim().startsWith('[Your previous response had no visible output.');
@@ -644,9 +644,10 @@ function isContinuation(text: string): boolean {
  * notice, which nobody typed and which draws the summary line its text
  * carrier draws (#1680) - and itself, without a summary.
  *
- * Both signals are read, because the terminal reads the text's own prefix
- * where the mode is the field that says which of the three kinds arrived: a
- * page keyed on one of them drifts from the other the first time either moves.
+ * Both signals are read, because the view this client replaced read the
+ * text's own prefix where the mode is the field that says which of the three
+ * kinds arrived: a page keyed on one of them drifts from the other the first
+ * time either moves.
  */
 function isCompletion(block: Block, words: string): boolean {
   return (
@@ -766,7 +767,7 @@ type Envelope =
  * **A port of `forge_server::envelope::detect_inbound`, and it matches the
  * PRODUCER's strings rather than anything a renderer printed.** The producers
  * are `peers/types.rs`'s `to_prose`, `spawn.rs`'s Slack bundle and
- * `delivery.rs`'s cron wrapper; a matcher written from the terminal's
+ * `delivery.rs`'s cron wrapper; a matcher written from a view's
  * rendered output fires on nothing, and the failure is silent - the envelope
  * draws as the reader's own turn, which is a thing that looks like content
  * rather than like a bug.
@@ -1061,8 +1062,9 @@ function seatRows(result: Block | undefined, self: Self | null): SeatRow[] {
 /**
  * A phrase-sized cut of `text`, for the one clause a seat row says it is for.
  *
- * The budget is the terminal's own collapsed-row one: a charter's first line
- * is a sentence, and a row that shows the whole of it stops reading as a row.
+ * The budget is the collapsed-row one the view this client replaced used: a
+ * charter's first line is a sentence, and a row that shows the whole of it
+ * stops reading as a row.
  */
 function phrase(text: string): string {
   const line = firstLine(text);
@@ -1285,15 +1287,15 @@ function noticeSeverity(value: unknown): NoticeSeverity {
 }
 
 /**
- * The rank a notice key sits at, the terminal's own `NoticeStage` order
- * (`Warning < Rejected < PlanLimitTurnError`): a later stage may rewrite the
- * line already drawn, a lower one may not.
+ * The rank a notice key sits at, the `NoticeStage` order the view this client
+ * replaced used (`Warning < Rejected < PlanLimitTurnError`): a later stage may
+ * rewrite the line already drawn, a lower one may not.
  */
 const NOTICE_STAGE = { warning: 0, rejected: 1 } as const;
 
 /**
- * The terminal's own words for a retry classification, so the two views name
- * the same failure the same way (`app/events/api_retry.rs`'s `error_label`).
+ * The words the view this client replaced used for a retry classification, so
+ * the same failure is named the same way.
  */
 function retryLabel(value: unknown): string {
   switch (value) {
@@ -1309,7 +1311,8 @@ function retryLabel(value: unknown): string {
   }
 }
 
-/** The delay as the terminal writes it: tenths of a second past 1s, else ms. */
+/** The delay as the view this client replaced wrote it: tenths of a second
+ * past 1s, else ms. */
 function retryDelay(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   const tenths = Math.floor((ms + 50) / 100);
@@ -1435,9 +1438,8 @@ function noticeFields(words: string): {
  * `ended` is the caller's OTHER half of that fact, and the default says
  * "unknown": a turn the core reports as settled is a history the CLI has
  * finished writing, so a call the frames never answered is the restart's
- * unterminated call and settles failed. The terminal's own resume does the
- * same (`finalize_turn_runtime_artifacts(Failed)`), where leaving it pending
- * spins the row forever.
+ * unterminated call and settles failed. The resume in the view this client
+ * replaced did the same, where leaving it pending spins the row forever.
  */
 export function fold(
   messages: readonly unknown[],
@@ -1472,10 +1474,9 @@ export function fold(
    * A call opened before it that never came back is an unterminated call -
    * the restart case: forge kills and respawns the CLI mid-turn, the replayed
    * history keeps the call's `tool_use` with no result, and the resumed turn
-   * never answers it. The terminal settles exactly these as failed on its
-   * resume (`finalize_turn_runtime_artifacts(Failed)`, "resumed a tool call
-   * whose result never arrived"), where a fold reading only failing frames
-   * leaves the row spinning forever.
+   * never answers it. The view this client replaced settled exactly these as
+   * failed on its resume ("resumed a tool call whose result never arrived"),
+   * where a fold reading only failing frames leaves the row spinning forever.
    */
   let resultAt: number | null = null;
   /** What the wire reported about each backgrounded call, by call. */
@@ -1521,9 +1522,9 @@ export function fold(
       } else if (frame.subtype === 'task_updated' || frame.subtype === 'task_notification') {
         // `task_updated` names only the task, so an update whose own
         // `task_started` was never seen cannot be placed and is dropped rather
-        // than guessed at - which is the call the terminal makes on the same
-        // frame, and for the same reason: the wrong call would be worse than
-        // none.
+        // than guessed at - which is the call the view this client replaced
+        // made on the same frame, and for the same reason: the wrong call
+        // would be worse than none.
         const owner = call ?? (task === null ? null : (owners.get(task) ?? null));
         if (owner === null) continue;
         const held: TaskFact = tasks.get(owner) ?? {
@@ -1619,8 +1620,8 @@ export function fold(
    * The CLI draws one assistant message as several frames, one per content
    * block, and every one of them repeats the whole call's usage block - so a
    * repeat overwrites rather than adds. Summing the frames instead counts a
-   * two-block message twice, which is the rule the terminal's `LiveTurn::record`
-   * exists to apply.
+   * two-block message twice, which is the rule the view this client replaced
+   * applied.
    */
   const usageByMessage = new Map<
     string,
@@ -1683,11 +1684,11 @@ export function fold(
    * Rewrite the line this key already drew, or open it.
    *
    * A run reports every step it takes and the row is the RUN, so a later frame
-   * replaces its own line - the shape the terminal's deduped turn notice
-   * draws, and why a storm is one row rather than fifty. **A lower stage
-   * never replaces a higher one**: the same guard `upsert_turn_notice` keeps,
-   * so a window that walks back from rejected to a warning holds the line it
-   * already drew.
+   * replaces its own line - the shape the view this client replaced drew for a
+   * deduped turn notice, and why a storm is one row rather than fifty. **A
+   * lower stage never replaces a higher one**: the same no-downgrade guard
+   * that view kept, so a window that walks back from rejected to a warning
+   * holds the line it already drew.
    */
   const upsertNotice = (key: string, stage: number, notice: Notice): void => {
     const held = noticeStages.get(key);
@@ -1786,12 +1787,12 @@ export function fold(
     // reading only boundaries leaves the row spinning forever. A call opened
     // after a boundary is one the CLI is still running.
     //
-    // **One stated divergence from the terminal** (rule 24): its normal
-    // turn-end sweep draws a still-open call COMPLETED, where this settles it
-    // failed. The two can only disagree when a turn ends CLEANLY with a
-    // foreground call unanswered - the interrupted shapes carry an error
-    // result, where both sides already say failed - and failed is the honest
-    // word for a call that never came back.
+    // **One stated divergence from the view this client replaced** (rule 24):
+    // its normal turn-end sweep drew a still-open call COMPLETED, where this
+    // settles it failed. The two can only disagree when a turn ends CLEANLY
+    // with a foreground call unanswered - the interrupted shapes carry an
+    // error result, where both sides already say failed - and failed is the
+    // honest word for a call that never came back.
     const abandoned =
       (failedAt !== null && at < failedAt) || (resultAt !== null && at < resultAt) || ended;
 
@@ -1816,8 +1817,8 @@ export function fold(
       }
       // The CLI's own retry report, after a call it refused. One row per run
       // - a later attempt rewrites this line rather than drawing beside it -
-      // and the words are the terminal's own, so a 429 storm reads as a line
-      // saying why rather than as a stall.
+      // and the words come from the view this client replaced, so a 429 storm
+      // reads as a line saying why rather than as a stall.
       if (frame.subtype === 'api_retry') {
         const attempt = typeof frame.attempt === 'number' ? frame.attempt : null;
         const cap = typeof frame.max_retries === 'number' ? frame.max_retries : null;
@@ -1908,12 +1909,12 @@ export function fold(
       continue;
     }
 
-    // A rate-limit window's state transition, as the terminal draws it: one
-    // notice per incident - the window's type and its reset bucket - so a
-    // later frame in the same window rewrites this line rather than stacking
-    // beside it, and a new window opens one of its own. Allowed and unknown
-    // statuses draw nothing, which is the terminal's own neutral rather than
-    // a drop (`app/events/rate_limit.rs` routes them to no notice).
+    // A rate-limit window's state transition, as the view this client
+    // replaced drew it: one notice per incident - the window's type and its
+    // reset bucket - so a later frame in the same window rewrites this line
+    // rather than stacking beside it, and a new window opens one of its own.
+    // Allowed and unknown statuses draw nothing, which is that view's own
+    // neutral rather than a drop.
     if (frame.type === 'rate_limit_event') {
       const info = obj(frame.rate_limit_info);
       const status = str(info, 'status');
@@ -1967,8 +1968,9 @@ export function fold(
         key: typeof frame.uuid === 'string' ? frame.uuid : `result-${at}`,
       });
       // The failure is a row of its own rather than a mark on the report: the
-      // terminal states it the same way, as a line under the turn it belongs
-      // to, and the report row is left saying only what the turn spent.
+      // view this client replaced stated it the same way, as a line under the
+      // turn it belongs to, and the report row is left saying only what the
+      // turn spent.
       const failure = turnFailure(frame);
       if (failure !== null) {
         units.push({ kind: 'notice', key: keyOf(at, frame, 'failure'), notice: failure });
@@ -1979,8 +1981,8 @@ export function fold(
 
     if (frame.type === 'error') {
       // The string is all the turn leaves: no result frame follows, so there
-      // is no report row to hang it on. The terminal surfaces the same string
-      // on the same frame, for the same reason.
+      // is no report row to hang it on. The view this client replaced surfaced
+      // the same string on the same frame, for the same reason.
       const said = str(frame, 'error');
       if (said !== null && said.trim() !== '') {
         push({
@@ -2006,8 +2008,8 @@ export function fold(
         if (frame.type === 'user') {
           const stripped = stripEscapes(block.text);
           // The local-command family draws nothing at all: it is the reader's
-          // typing in the launch terminal, and the terminal's own chat filters
-          // the same heads. A decided ignore, not a dropped frame.
+          // typing in the launch terminal, and the view this client replaced
+          // filtered the same heads. A decided ignore, not a dropped frame.
           if (isLocalCommand(stripped)) continue;
           // A background task's end arrives as a user frame nobody typed -
           // the CLI's `<task-notification>` envelope - and draws as its own
@@ -2164,8 +2166,8 @@ export function fold(
         continue;
       }
       if (block.type === 'thinking' && typeof block.thinking === 'string') {
-        // An empty one draws nothing, the way the terminal skips it: the row's
-        // whole point is the words it carries.
+        // An empty one draws nothing, the way the view this client replaced
+        // skipped it: the row's whole point is the words it carries.
         if (block.thinking.trim() !== '') {
           // Not `push`: a thought is commentary ON the work rather than a
           // separator between pieces of it, so nothing is flushed here. The
@@ -2183,9 +2185,9 @@ export function fold(
           // text envelope draws above (#1680): it wakes a turn on its own, so
           // a turn woken by one must not read as prompted by nothing. With no
           // summary it falls through and draws as itself, the same rule-25
-          // default the text carrier keeps. (The terminal drops the kind
-          // outright; the client's own standard governs - rule 24's freeze
-          // clause.)
+          // default the text carrier keeps. (The view this client replaced
+          // dropped the kind outright; the client's own standard governs -
+          // rule 24's freeze clause.)
           // Escapes stripped, and an empty summary read as absent: both the
           // text carrier's own parse (#1680's `taskNotificationOf`), so the
           // two carriers agree on what counts as a summary.

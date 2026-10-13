@@ -1,5 +1,5 @@
 //! Test-only constructors, seed helpers and dispatch interception for
-//! `Workspace`, so tests here and in `forge-tui` can drive a workspace
+//! `Workspace`, so tests here and cross-crate tests can drive a workspace
 //! without a real subprocess.
 
 use std::collections::{HashMap, HashSet};
@@ -137,11 +137,11 @@ impl Workspace {
 
     /// Construct a stub `AgentHandle` plus the matching
     /// `Receiver<forge_primitives::AgentCommand>` that drains every command
-    /// dispatched to it. Tests use this to wire `App.set_active_conn`
+    /// dispatched to it. Tests use this to wire a stub connection
     /// without spinning up a real subprocess; the bridge underneath is
     /// `forge_agent::Agent::testing_stub` - same shape as before, now
-    /// reachable from forge-tui via `forge_workspace::Workspace::*`
-    /// so the TUI crate no longer needs a direct `forge-agent` dep.
+    /// reachable from a view via `forge_workspace::Workspace::*`
+    /// so a view crate needs no direct `forge-agent` dep.
     ///
     /// The returned `Receiver` carries `forge_primitives::AgentCommand`
     /// because that's what the bridge's dispatcher accepts; this is
@@ -229,7 +229,7 @@ impl Workspace {
     /// `forge_primitives::AgentCommand` receiver so tests can assert on
     /// the commands the workspace routes through it (the same shape
     /// as `testing_stub_handle()`, but with the handle installed in
-    /// one step so TUI test code doesn't have to touch
+    /// one step so a view's test code doesn't have to touch
     /// `AgentHandle` directly).
     ///
     /// Auto-creates a `DomainSession` for `key` when none is
@@ -355,11 +355,15 @@ impl Workspace {
             std::sync::Arc::clone(&accounts),
             reqwest::Client::new(),
         ));
+        // `new_for_test`'s convention: the stub's whole app-support base
+        // sits under the test's own config dir.
+        let app_support = Some(config_dir.join("app-support"));
         let workspace = Self {
             config_dir,
             config,
             systemone,
             catalog: Arc::new(Mutex::new(HashMap::new())),
+            app_support,
             pool: Mutex::new(HashMap::new()),
             // A stub reaches no network either: the refill has nothing to
             // fetch.
@@ -474,7 +478,7 @@ impl Workspace {
 }
 
 /// Test-mode command interception. Feature-gated and `pub` for the same
-/// reason the seeds below are: forge-tui's tests reach for these to
+/// reason the seeds below are: a view's tests reach for these to
 /// assert what boot WOULD have spawned, without starting a subprocess.
 #[cfg(any(test, feature = "testing"))]
 impl Workspace {
@@ -814,7 +818,7 @@ impl Workspace {
 
     /// Persist a dynamic-worker row directly, bypassing `agents__spawn`.
     /// Cross-crate test access to the otherwise `pub(crate)` store write
-    /// so forge-tui can render launchpad worker rows against a seeded row.
+    /// so a view can render launchpad worker rows against a seeded row.
     #[cfg(any(test, feature = "testing"))]
     pub fn seed_test_worker_row(&self, project_key: &ProjectKey, label: &str) {
         let _ = self.record_worker_row(

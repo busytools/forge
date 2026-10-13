@@ -5,9 +5,10 @@
  * call is the unit a reader cares about here - something that was started
  * and is still running - and the registry names exactly those. The walk
  * supplies each row's figure: a registry row adopts a scanned process by
- * the terminal's own matching rule, PORTED into `cmdline.ts` rather than
- * approximated - whitespace-normalized, wrapper-unwrapped, quotes
- * un-escaped, an empty command matching nothing - and the figure counts
+ * the same matching rule the view this client replaced used, PORTED into
+ * `cmdline.ts` rather than approximated - whitespace-normalized,
+ * wrapper-unwrapped, quotes un-escaped, an empty command matching nothing -
+ * and the figure counts
  * that process AND its descendant family: a cargo over four rustc workers
  * reads as what they all hold together. A row the walk missed still draws,
  * without a figure. No other process ever appears: MCP servers and detached
@@ -95,8 +96,8 @@ export class Processes {
 
   /**
    * The registry rows this row owns: batch calls only. An agent kind is the
-   * agents row's, and a workflow is not batch work - the terminal's own
-   * filter, so the two rows can never list the same task.
+   * agents row's, and a workflow is not batch work - the filter the view this
+   * client replaced used, so the two rows can never list the same task.
    */
   #batches(): BackgroundTask[] {
     return this.#registry.filter((task) => task.task_type === 'local_bash');
@@ -132,7 +133,7 @@ export class Processes {
    * The row's figure is the whole family, not the matched process's own
    * RSS: a `cargo` at 400 MB over rustc workers at 1.4 GB reads as 400 MB on
    * its own line, which is the one number that explains nothing. The
-   * terminal's depth-0 rule, applied per row.
+   * depth-0 rule the view this client replaced kept, applied per row.
    */
   #subtreeBytes(pid: number): number {
     const walk = this.#walk?.processes ?? [];

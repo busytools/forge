@@ -314,7 +314,7 @@ impl GotifyHost for SubsystemHost {
 #[cfg(any(test, feature = "testing"))]
 impl Workspace {
     /// Register a Gotify subscription directly, bypassing the MCP
-    /// subscribe path. Cross-crate test access so forge-tui can exercise
+    /// subscribe path. Cross-crate test access so a view can exercise
     /// the Inspector's `refresh_gotify` resolution, mirroring
     /// [`Self::seed_test_cron`].
     ///

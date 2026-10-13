@@ -1,14 +1,10 @@
 //! The headless server: the whole core, no view.
 //!
 //! Boots the workspace and every subsystem, serves the socket, and parks
-//! until interrupted. It is the same boot the terminal runs (one call,
-//! `forge_server::boot`), so the two can only drift by editing the shared
-//! function.
+//! until interrupted - the boot itself is `forge_server::boot`, one call.
 //!
-//! Named `forge-server` until the terminal's own `forge` binary goes, when
-//! this takes the name (two bins cannot share one artifact name in a
-//! workspace build); `scripts/install.sh` keeps installing the terminal
-//! until then.
+//! The bin is named `forge`: the name the terminal's own binary held, and
+//! the name `scripts/install.sh` installs.
 
 use clap::{CommandFactory, Parser};
 use forge_server::cli::Cli;
@@ -55,6 +51,20 @@ fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // **Before logging resolves the app-support tree.** A pre-migration
+    // install still holds its store, lock and logs under the legacy name,
+    // and starting beside them would read as every cron, subscription and
+    // session id having vanished - so the boot refuses and names the
+    // script that moves the tree, rather than carrying a migration branch
+    // of its own.
+    if let Some(legacy) = forge_sdk::paths::legacy_app_support_left_behind() {
+        return Err(anyhow::anyhow!(
+            "forge: {} still holds this install's store, lock and logs; run \
+             scripts/migrate-app-support.sh to move them to the forge name first",
+            legacy.display()
+        ));
+    }
+
     let _logging = forge_server::logging::LoggingRuntime::init(&cli)?;
     // Raise the FD soft limit BEFORE any code that opens sockets /
     // files / pipes so the bump applies to every subsequent opener
@@ -82,8 +92,7 @@ fn run() -> anyhow::Result<()> {
         let workspace = forge_server::boot::start_core(config_dir, cli.project.as_deref())?;
         // A headless server with no view serves nothing if the socket could
         // not bind: a supervisor watching the process would see a healthy
-        // zombie. The failure is fatal here; the terminal boots on, since
-        // its view comes up either way.
+        // zombie, so the failure is fatal.
         if matches!(
             forge_server::boot::serve_socket(&workspace).await?,
             forge_server::boot::SocketServing::BindFailed
@@ -93,9 +102,8 @@ fn run() -> anyhow::Result<()> {
                  (see the server_socket_bind_failed record)"
             ));
         }
-        // The boot spawn the terminal releases once its accounts settle:
-        // here there is no screen to hold it back, so it goes out as a
-        // task.
+        // The boot spawn releases once its accounts settle: with no view to
+        // hold it back, it goes out as a task.
         forge_server::boot::start_boot_wave(Arc::clone(&workspace), cli.project.clone(), cli.new);
 
         // Park until interrupted; the subsystems own everything else.

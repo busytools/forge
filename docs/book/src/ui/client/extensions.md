@@ -15,10 +15,9 @@ carries no slot. The header's way back is the home.
 The read and the actions are the server's (`Subject::Extensions`,
 `Command::PluginInstall`, `Command::PluginUpdate`, `Command::PluginUpdateAll`,
 `Command::PluginCheckUpdates`, `Command::MarketplaceAdd`,
-`Command::MarketplaceRepair`). The terminal draws the same inventory from its
-own crate and drives the same CLI from its own view layer; this page is the
-client's, and the action verbs are what moved into the core so that a second
-view could reach what the terminal had been doing alone.
+`Command::MarketplaceRepair`). This page is the view of the inventory, and
+the action verbs live in the core so that any view reaches the same CLI
+rather than driving it from its own layer.
 
 ## What it draws
 

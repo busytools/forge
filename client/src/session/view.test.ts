@@ -186,10 +186,10 @@ describe('the header facts', () => {
  */
 describe('the compaction figure', () => {
   /**
-   * **Nothing at zero, which is the terminal's rule for the same reason**: the
-   * row already carries five facts, and a `0 compactions` on every fresh
-   * session is noise that says nothing a session without a boundary has not
-   * already said by being new.
+   * **Nothing at zero, which is the rule the view this client replaced kept
+   * for the same reason**: the row already carries five facts, and a
+   * `0 compactions` on every fresh session is noise that says nothing a
+   * session without a boundary has not already said by being new.
    */
   it('says nothing for a session that has never compacted', () => {
     expect(compactionFigure(0), 'a session with no boundary claimed a count').toBeNull();
@@ -309,12 +309,12 @@ describe('the rail', () => {
   });
 
   /**
-   * **An ask is the seat's mark, whatever the lifecycle says.** The terminal
-   * draws its triangle from the prompt queue itself rather than from a
-   * lifecycle it has to trust, and the rail read its mark from the lifecycle
-   * alone - so a seat whose question was up while the CLI still called it idle
-   * drew no glyph, and the reader could not tell which worker was asking
-   * (#1885).
+   * **An ask is the seat's mark, whatever the lifecycle says.** The view this
+   * client replaced drew its triangle from the prompt queue itself rather than
+   * from a lifecycle it had to trust, and the rail read its mark from the
+   * lifecycle alone - so a seat whose question was up while the CLI still
+   * called it idle drew no glyph, and the reader could not tell which worker
+   * was asking (#1885).
    */
   it('wears the ask mark on the seat that holds the question', () => {
     const mark = (asking: AgentRow): string | null => {
@@ -327,10 +327,9 @@ describe('the rail', () => {
     // **Whatever else the row is doing.** The rank the rail groups by files a
     // pending seat under needs-you from an idle, a running or a backgrounded
     // row, and the mark has to agree with it - a mark read from the lifecycle
-    // alone drew running or idle on a seat whose ask was up (#1885). The
-    // terminal pins the same property, in `projects_pane.rs`:
-    // `needs_attention_overrides_background_work_spinner` draws its triangle
-    // over background work, and its comment says "regardless of lifecycle".
+    // alone drew running or idle on a seat whose ask was up (#1885). The view
+    // this client replaced pinned the same property: its triangle drew over
+    // background work, "regardless of lifecycle".
     for (const lifecycle of ['Idle', 'Running'] as const) {
       for (const pending of ['question', 'permission'] as const) {
         for (const has_background_work of [false, true]) {
@@ -342,11 +341,9 @@ describe('the rail', () => {
       }
     }
 
-    // And a failure still outranks the ask, which is the terminal's own order:
-    // its cross is drawn over everything, ask included -
-    // `worker_row_with_failed_turn_renders_red_cross_over_triangle` and
-    // `attention_and_failed_turn_outrank_unseen_completion_on_the_row` pin
-    // that there.
+    // And a failure still outranks the ask, which is the order the view this
+    // client replaced kept: its cross was drawn over everything, ask
+    // included.
     expect(
       mark({
         ...lead(),
@@ -894,9 +891,10 @@ describe('the tasks the strip draws', () => {
 
   /**
    * A wait outranks the queue and the rows that are already done, which is the
-   * terminal's own order. The map named `blocked` for a release after the
-   * vocabulary moved to `waiting`, so a waiting row fell to the end by default
-   * - below a completed one - because its state was one the map had forgotten.
+   * order the view this client replaced kept. The map named `blocked` for a
+   * release after the vocabulary moved to `waiting`, so a waiting row fell to
+   * the end by default - below a completed one - because its state was one the
+   * map had forgotten.
    */
   it('reads a wait above the queue and what is done', () => {
     const base = {
@@ -1256,10 +1254,10 @@ describe('the rail footer', () => {
   });
 
   /**
-   * The terminal's own three states for a figure nobody has reported: `$-` for
-   * a key that has not been probed, `not set` for one with no cap to fill, and
-   * a dash when there is no snapshot at all. A `$0.00` is a reading, and forge
-   * has none.
+   * The three states the view this client replaced kept for a figure nobody
+   * has reported: `$-` for a key that has not been probed, `not set` for one
+   * with no cap to fill, and a dash when there is no snapshot at all. A
+   * `$0.00` is a reading, and forge has none.
    */
   it('keeps the five rows a snapshot has not filled, rather than dropping any', () => {
     const cold = railFooter(withPool({ source: 'OpenRouterKey' }), LEAD);
@@ -1423,9 +1421,10 @@ describe('the dictation overrides', () => {
   });
 
   it("does not read the session's overrides: the axes are this client's own", () => {
-    // The wire still carries them for the terminal's `/dictate` overlay, and
-    // this client captures its own audio - so the axes it dictates with are
-    // held here, per seat, and the session's set reaches nothing.
+    // The wire still carries them, from the `/dictate` overlay of the view
+    // this client replaced, and this client captures its own audio - so the
+    // axes it dictates with are held here, per seat, and the session's set
+    // reaches nothing.
     const held = sessionFrom(
       withOverrides({ styling: 'casual', structure: null, context: 'email' }),
     );

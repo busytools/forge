@@ -36,8 +36,8 @@ use crate::views::{AccountLoadingRow, ProjectView, SessionView};
 #[cfg(any(test, feature = "testing"))]
 pub(crate) mod testing;
 
-/// How often the background poller refreshes account usage. The
-/// TUI's bottom panel and the gateway's account selection both read
+/// How often the background poller refreshes account usage. A view's
+/// bottom panel and the gateway's account selection both read
 /// from the cache this poll populates. 60 s upper-bounds how stale
 /// the "which account has more headroom" decision can be while
 /// staying clear of the OAuth usage endpoint's 429 throttle under
@@ -279,6 +279,12 @@ pub struct Workspace {
     /// for it across `await` points; `Arc` so the scan task can swap
     /// its contents without holding an `Arc<Workspace>` cycle.
     catalog: Arc<Mutex<HashMap<ProjectKey, Vec<SDKSessionInfo>>>>,
+    /// forge's machine-local app-support base, resolved once at
+    /// construction: the single-instance lock, the durable store and the
+    /// dictation catalogue cache all sit under it. `None` means boot
+    /// resolution failed (already warned there); hard rule #14 forbids a
+    /// cwd fallback.
+    pub(crate) app_support: Option<PathBuf>,
     /// Live Agents keyed by the session slot. `parking_lot::Mutex` so the
     /// public methods can take `&self`. `pub(crate)` so sibling
     /// modules (`spawn::handle_deliver_worker_prompt_to_lead`,
@@ -332,8 +338,8 @@ pub struct Workspace {
     /// the connection that answers into it.
     pub(crate) browser: Arc<crate::browser::BrowserRelay>,
     /// How many client connections are attached, noted by the transport per
-    /// connection. A document hand-off reads it before claiming an open: the
-    /// terminal is not counted, because it draws no document viewer.
+    /// connection. A document hand-off reads it before claiming an open: only
+    /// a client that draws a document viewer is counted.
     pub(crate) attached_clients: std::sync::atomic::AtomicUsize,
     /// The parked document hand-offs, under their ids: each holds the
     /// awaiting tool's sender until the reader's answer releases it.
@@ -866,9 +872,9 @@ fn spawn_background_service_status_probe(
     if started.swap(true, std::sync::atomic::Ordering::AcqRel) {
         return;
     }
-    // The line the terminal's own module used to write. Without it a probe
-    // that stops running is invisible: the only other record is the warning
-    // for a missing runtime, which is a different failure.
+    // Without this line a probe that stops running is invisible: the only
+    // other record is the warning for a missing runtime, which is a
+    // different failure.
     tracing::info!(
         target: "forge_workspace::workspace",
         event_name = "service_status_probe_started",
@@ -1674,6 +1680,7 @@ impl Workspace {
             config,
             systemone,
             catalog,
+            app_support,
             pool: Mutex::new(HashMap::new()),
             pricing_fetcher: pricing_fetcher.unwrap_or_else(default_pricing_fetcher),
             #[cfg(any(test, feature = "testing"))]
@@ -1817,9 +1824,8 @@ impl Workspace {
         self.attached_clients.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// Whether any client connection is attached. The terminal is not a
-    /// client here: it draws no document viewer, and a hand-off's ask needs
-    /// one that does.
+    /// Whether any client connection is attached. Only a client that draws a
+    /// document viewer counts: a hand-off's ask needs one that does.
     pub(crate) fn client_attached(&self) -> bool {
         self.attached_clients.load(std::sync::atomic::Ordering::Relaxed) > 0
     }
@@ -1833,14 +1839,14 @@ impl Workspace {
     }
 
     /// The push-to-talk key from forge.toml `[dictate] bind`. Read by
-    /// the TUI's key handler per event; config is boot-frozen so the
+    /// a view's key handler per event; config is boot-frozen so the
     /// value never changes mid-run.
     pub fn dictate_bind(&self) -> crate::dictate::DictateBind {
         self.config.dictate.bind
     }
 
     /// How press/release maps onto starting and stopping a take, from
-    /// forge.toml `[dictate] mode`. Read by the TUI's key handler per
+    /// forge.toml `[dictate] mode`. Read by a view's key handler per
     /// event; config is boot-frozen so the value never changes mid-run.
     pub fn dictate_mode(&self) -> crate::dictate::DictateMode {
         self.config.dictate.mode
@@ -1987,8 +1993,8 @@ impl Workspace {
     }
 
     /// Validate that `name` matches a project in `forge.toml`. Used
-    /// by callers (e.g. forge-tui's main) to fail fast on an unknown
-    /// CLI positional arg before TUI setup, rather than surface the
+    /// by callers (e.g. the server's boot) to fail fast on an unknown
+    /// CLI positional arg before setup, rather than surface the
     /// same error later via [`Self::get_agent_handle`].
     pub fn validate_project_name(&self, name: &str) -> Result<(), WorkspaceError> {
         self.find_project_by_name(name).map(|_| ())
@@ -2228,8 +2234,8 @@ impl Workspace {
         // Hoist DomainSession creation to BEFORE Agent::spawn. A caller
         // may have registered one at `session_key` already (the cron
         // and gotify delivery paths register a worker's domain before
-        // its spawn); reuse it when present so the TUI's pre-spawn
-        // accessors keep their handle reference. Otherwise create
+        // its spawn); reuse it when present so the registrant keeps its
+        // handle reference. Otherwise create
         // fresh with conn = None and update post-Agent::spawn at line
         // ~470.
         let domain_arc = {
@@ -2237,8 +2243,8 @@ impl Workspace {
             // A DomainSession is often already registered at
             // `session_key` (the cron and gotify delivery paths register
             // a worker's domain before dispatching its spawn). Reuse it,
-            // so the TUI's pre-spawn accessors keep their handle
-            // reference; otherwise create fresh with conn = None and fill
+            // so whoever registered it keeps the handle reference it was
+            // given; otherwise create fresh with conn = None and fill
             // the handle in after `Agent::spawn`.
             if let Some(existing) = handles.get(&session_slot).cloned() {
                 existing
@@ -2432,10 +2438,9 @@ impl Workspace {
         if let Some(cmd_rx) = cmd_rx {
             // `domain_arc` was hoisted above the spawn. Stamp the live
             // `Arc<AgentHandle>` onto its `conn` slot
-            // now that the handle exists. The TUI's pre-spawn
-            // accessors (`connect::create_app`'s placeholder entry)
-            // keep reading from the same `Arc<Mutex<...>>` they were
-            // given before - no second `domain_session_for`
+            // now that the handle exists. Whoever holds the
+            // `Arc<Mutex<...>>` from before the spawn keeps reading
+            // from the same one - no second `domain_session_for`
             // round-trip after the spawn lands.
             domain_arc.lock().conn = Some(Arc::clone(&arc));
             let domain = Arc::clone(&domain_arc);
@@ -2509,7 +2514,7 @@ impl Workspace {
     /// clickable - clicking while an account is still resolving means
     /// the walk runs over a partial map, and spawning before the
     /// listener is bound stamps a base URL nothing answers. Public so
-    /// forge-tui can gate keyboard + mouse handlers on it without
+    /// a view can gate keyboard + mouse handlers on it without
     /// reaching into the crate-private account map.
     pub fn all_accounts_loaded(&self) -> bool {
         self.accounts.all_loaded() && self.gateway_ready.load(std::sync::atomic::Ordering::Acquire)
@@ -2556,10 +2561,9 @@ impl Workspace {
     }
 
     /// Snapshot of `(AccountKey display name, LoadingState)` pairs in
-    /// declaration order. Forge-tui's launchpad renders the per-
-    /// account loading glyph row from this; the order matches
-    /// `forge.toml`'s `[[accounts]]` declarations so the glyphs sit
-    /// next to the user's mental model of which-account-is-which.
+    /// declaration order, read by the accounts surface. The order
+    /// matches `forge.toml`'s `[[accounts]]` declarations so the rows
+    /// sit next to the user's mental model of which-account-is-which.
     pub fn account_loading_snapshot(&self) -> Vec<AccountLoadingRow> {
         self.accounts
             .account_names()
@@ -2703,8 +2707,8 @@ impl Workspace {
     }
 
     /// The inputs a `/dictate` device pick can offer, plus the configured
-    /// pin. Blocking (the cpal device walk), so the TUI calls it from a
-    /// spawned task, never the render thread, and the socket answers its
+    /// pin. Blocking (the cpal device walk), so a view calls it from a
+    /// spawned task, never its render thread, and the socket answers its
     /// `devices` request with it off the connection's task.
     ///
     /// # Errors
@@ -2887,14 +2891,14 @@ impl Workspace {
     /// OAuth usage for every `[[accounts]]` entry via the per-
     /// account config-dir's credentials file (no Agent spawn
     /// required), writes each result into `AccountStateMap.by_key`.
-    /// The TUI's bottom panel and the gateway's account selection both
+    /// A view's bottom panel and the gateway's account selection both
     /// read from that cache.
     ///
     /// Call once at construction, AFTER `start_account_loading_tasks`
     /// (which subsumed the old `spawn_initial_account_probe` in #246).
     /// A `usage_poller_started` flag guards against duplicate
     /// spawns - second and later calls return without spawning so a
-    /// forge-tui programming error can't multiply the poll rate.
+    /// caller's programming error can't multiply the poll rate.
     /// Enqueue a worker kick on the dispatcher channel (#259). The
     /// drainer task fires one `Command::Prompt` per
     /// `KICK_DISPATCH_INTERVAL`, so simultaneous boot-time kicks
@@ -2926,7 +2930,7 @@ impl Workspace {
     /// Call once at construction, AFTER `Workspace::new` returns and
     /// the result is Arc-wrapped (mirrors `start_account_loading_tasks`
     /// / `start_usage_poller` shape). Subsequent calls find the slot
-    /// empty and no-op, so a forge-tui programming error can't
+    /// empty and no-op, so a caller's programming error can't
     /// duplicate the drainer.
     ///
     /// The drainer holds an `Arc::downgrade(self)` so the task exits
@@ -2970,8 +2974,8 @@ impl Workspace {
     }
 
     /// Bind the gateway's inference listener and open the boot gate
-    /// once the port is ours. Called once at boot, from the TUI's
-    /// connect path. On success the launchpad's gate opens; on failure
+    /// once the port is ours. Called once at boot, from the server's
+    /// startup. On success the launchpad's gate opens; on failure
     /// the gate STAYS SHUT and every spawn attempt
     /// are refused at the spawn entries with the reason attached - the
     /// refusal is the protection, not the log line.
@@ -3229,7 +3233,7 @@ impl Workspace {
 
     /// Read the cached usage snapshot for an account by display
     /// name. `None` when the poller hasn't yet succeeded (cold
-    /// cache, no credentials, network blip). The TUI bottom panel
+    /// cache, no credentials, network blip). A view's bottom panel
     /// renders the 5h / 7d bars from this snapshot.
     pub fn usage_for(&self, display_name: &str) -> Option<forge_primitives::usage::UsageSnapshot> {
         self.accounts.usage(display_name)
@@ -3259,7 +3263,7 @@ impl Workspace {
     /// keeps the account env the original spawn laid down.
     ///
     /// The tools forge has replaced are denied unconditionally, because a
-    /// respawn's settings are built by the TUI and carry no spawn-time
+    /// respawn's settings are built by a view and carry no spawn-time
     /// flags - so `/new` and `/resume` are exactly where those denials
     /// would otherwise come back. A worker's own denials come back with
     /// them: the kind decides the worktree pins, and the row's own
@@ -3302,7 +3306,7 @@ impl Workspace {
 
     /// Read the last poll-attempt failure for an account, if any.
     /// `None` when the most recent poll succeeded (or no attempt
-    /// has been made yet). The TUI bottom panel renders a DIM hint
+    /// has been made yet). A view's bottom panel renders a DIM hint
     /// next to the `5h` / `7d` label when this is `Some` so the
     /// user can tell an empty bar from an upstream failure (the
     /// HTTP 429 case is especially common when multiple forge
@@ -3319,13 +3323,13 @@ impl Workspace {
     /// is the org's fallback list: unioned in (deduped) even when the
     /// pin does not name them, and flagged so a fallback-only row can
     /// carry its dim `fallback` suffix. Returns owned
-    /// [`crate::AccountRow`]s so the TUI holds a snapshot rather than
+    /// `crate::views::AccountRow`s so a view holds a snapshot rather than
     /// the `AccountStateMap` lock.
     pub fn project_accounts_snapshot(
         &self,
         allowed_accounts: &[String],
         fallback_accounts: &[String],
-    ) -> Vec<crate::AccountRow> {
+    ) -> Vec<crate::views::AccountRow> {
         // Resolve the allow-list to concrete account names, falling
         // back to every configured account when the project pins none.
         // Fallback names then join (deduped) - usually accounts the pin
@@ -3340,7 +3344,7 @@ impl Workspace {
                 names.push(name.clone());
             }
         }
-        let mut rows: Vec<crate::AccountRow> = names
+        let mut rows: Vec<crate::views::AccountRow> = names
             .into_iter()
             .filter_map(|name| {
                 let key = AccountKey(name.clone());
@@ -3352,7 +3356,7 @@ impl Workspace {
                 let fallback = fallback_accounts.contains(&name) && !in_pin;
                 let provider = self.accounts.provider(&key)?;
                 let budget = account_budget(&name, provider, self.accounts.usage(&name).as_ref());
-                Some(crate::AccountRow {
+                Some(crate::views::AccountRow {
                     display_name: name,
                     unusable,
                     budget,
@@ -3753,8 +3757,8 @@ impl Workspace {
     }
 
     /// Insert (or update) a session entry under the project that
-    /// owns `cwd`. Called by the forge-tui connect-flow after every
-    /// `Connected` migration so newly spawned sessions surface in the
+    /// owns `cwd`. Called after every `Connected` migration so newly
+    /// spawned sessions surface in the
     /// Projects-pane drilldown immediately, without forcing a full
     /// disk re-scan. The entry is placed at the head of the
     /// project's session list to match the most-recent-first ordering
@@ -3821,15 +3825,15 @@ impl Workspace {
     /// prompt no view can draw.
     ///
     /// Who takes the pre-attach backlog is positional, not role-aware:
-    /// an observer subscribing before the TUI is the first caller and
+    /// an observer subscribing before any view is the first caller and
     /// takes whatever the workspace emitted beforehand, the boot notice
-    /// included. The binary's `start_*` calls all run before the TUI
+    /// included. The binary's `start_*` calls all run before any view
     /// attaches, so this belongs after them rather than among them.
     ///
-    /// Nothing calls this yet. The TUI is the only frontend and it
-    /// answers, so the only observer in the tree is a test; this exists
-    /// so a consumer that reads without rendering a prompt can say so
-    /// instead of parking a turn by claiming a capability it lacks.
+    /// Nothing calls this yet; the only observer in the tree is a test.
+    /// This exists so a consumer that reads without rendering a prompt
+    /// can say so instead of parking a turn by claiming a capability it
+    /// lacks.
     pub fn subscribe_observer(&self) -> mpsc::UnboundedReceiver<SessionUpdate> {
         self.update_tx.subscribe(SubscriberRole::Observing)
     }
@@ -3848,9 +3852,9 @@ impl Workspace {
     /// Subscribe as an answerer, carrying only what is emitted from here on.
     ///
     /// The answering half of [`Self::subscribe_mirror`], for a client that
-    /// renders prompts and attaches beside a terminal: it can answer, and the
-    /// backlog still belongs to whoever was there first, because that is the
-    /// view drawing the boot notice.
+    /// renders prompts and attaches beside another view: it can answer, and
+    /// the backlog still belongs to whoever was there first, because that is
+    /// the view drawing the boot notice.
     pub fn subscribe_answerer(&self) -> mpsc::UnboundedReceiver<SessionUpdate> {
         self.update_tx.subscribe_without_backlog(SubscriberRole::Answering)
     }
@@ -3892,13 +3896,6 @@ impl Workspace {
         self.domain_session_for(slot)
             .map(|domain| domain.lock().available_agents.clone())
             .unwrap_or_default()
-    }
-
-    /// Whether the conversation at `slot` dispatched a sub-agent, anywhere in
-    /// it. Raised by the session task's fold, which is what announces the
-    /// raise, so a record reading this and a viewer hearing it agree.
-    pub fn has_dispatches_for(&self, slot: &SessionSlot) -> bool {
-        self.domain_session_for(slot).is_some_and(|domain| domain.lock().has_dispatches)
     }
 
     /// The sub-agent instances the session at `slot` has folded, as the list
@@ -3989,7 +3986,7 @@ impl Workspace {
     /// Dispatch a workspace-originated plain prompt (cron fire, peer,
     /// gotify or slack delivery, kick, notices), signalling
     /// `PromptQueuedWhileBusy` first when the target's turn is in
-    /// flight so the TUI bridges the spinner across the gap.
+    /// flight so a view bridges the spinner across the gap.
     ///
     /// **A delivery drawn in a view needs an update here, paired with an arm
     /// in `forge-server`'s `delivery_turn`.** This path emits no frame of its
@@ -4236,7 +4233,7 @@ impl Workspace {
     /// Apart from the origin it stamps on a prompt's frame, this is
     /// [`Self::dispatch`] exactly. The two entries exist so the origin comes
     /// from the code path rather than from the command: a client cannot claim
-    /// to be the terminal's own UI, which would have the terminal skip words
+    /// to be the UI's own entry, which would have a view skip words
     /// it never saw.
     ///
     /// # Errors
@@ -4288,10 +4285,10 @@ impl Workspace {
         };
         // A composer's text that names a forge command is FORGE'S, not the
         // CLI's. Decided here rather than in a view, because this is where
-        // both of them dispatch: the terminal and a client reach the same
-        // commands only by taking the same path, and some of these names the
-        // CLI answers differently or not at all - `/new` is its own `/clear`,
-        // which rotates a conversation forge never records.
+        // both entries dispatch: the UI's own entry and the socket's reach
+        // the same commands only by taking the same path, and some of these
+        // names the CLI answers differently or not at all - `/new` is its own
+        // `/clear`, which rotates a conversation forge never records.
         //
         // A forge command's answer comes back with the outcome rather than
         // being emitted where it is decided: it has to land after the echo
@@ -4382,17 +4379,17 @@ impl Workspace {
 
     /// Fill in the launch settings a caller did not build.
     ///
-    /// The terminal builds them from its own snapshot of the documents and
+    /// A caller with its own snapshot of the documents builds them and
     /// hands them over; a client has no config to read, so a spawn it asks
     /// for arrives with none, and a spawn that ran on those alone would carry
     /// no language, no model and the CLI's own defaults for permissions,
-    /// effort and output style - a session launched differently from the one
-    /// the same click starts in the terminal.
+    /// effort and output style - a session launched differently from one
+    /// started with the documents in hand.
     ///
     /// Read from the workspace's own config dir, which is what a session with
-    /// no account-scoped dir of its own runs under. The terminal builds its
-    /// own from the account it is bound to, so the two can differ where an
-    /// account names a dir of its own - and where they do, the caller that
+    /// no account-scoped dir of its own runs under. A caller bound to an
+    /// account builds its own from that account, so the two can differ where
+    /// an account names a dir of its own - and where they do, the caller that
     /// supplied settings keeps them.
     fn fill_launch_settings(&self, launch_settings: &mut SessionLaunchSettings, cwd: Option<&str>) {
         if launch_settings.settings.is_some() {
@@ -5081,7 +5078,7 @@ impl Workspace {
                 }
                 // User-action store writes routed through the command
                 // bus. Synchronous inline handlers - the writes are
-                // local redb operations, and the TUI has already
+                // local redb operations, and the view has already
                 // applied its optimistic state.
                 Command::SaveReviewThreads { project, branch, threads } => {
                     let span = tracing::info_span!(
@@ -5718,10 +5715,9 @@ impl Workspace {
 
     /// Set the `session_id` field on the workspace's `DomainSession`
     /// for `key`. No-op when no domain handle is registered for
-    /// `key`. Used by `App::set_session_id` to stamp the
-    /// claude-issued UUID once the first `Connected` event fires -
-    /// the workspace consults this when routing `AgentHandle` calls
-    /// that take a session_id.
+    /// `key`. Stamps the claude-issued UUID once the first
+    /// `Connected` event fires - the workspace consults this when
+    /// routing `AgentHandle` calls that take a session_id.
     pub fn set_session_id_in_domain(
         &self,
         key: &SessionSlot,
@@ -5743,10 +5739,10 @@ impl Workspace {
     /// and runs the SDK's graceful shutdown (signal reader task, drain,
     /// close the child). `Client` has no `Drop` of its own, so without
     /// that disconnect the child would survive the pool drain.
-    /// forge-tui releases its handle reference before calling shutdown,
-    /// so Workspace is the sole owner of every pool entry. Callers that
-    /// hold cloned handles across shutdown keep the AgentHandle's task
-    /// alive until they release them.
+    /// A well-behaved caller releases its handle reference before calling
+    /// shutdown, so Workspace is the sole owner of every pool entry.
+    /// Callers that hold cloned handles across shutdown keep the
+    /// AgentHandle's task alive until they release them.
     pub fn shutdown(&self) {
         // Release any live dictation before the pools go: a recording
         // task outliving its session's teardown would otherwise hold
@@ -5762,11 +5758,11 @@ impl Workspace {
 
     /// Release a single session's pool entry: drops the workspace's
     /// `Arc<AgentHandle>` for that key so the underlying `claude`
-    /// subprocess exits once the consumer (forge-tui's bucket) also
+    /// subprocess exits once the consumer (a view's bucket) also
     /// drops its reference.
     ///
     /// Cascade-aware lead release. Use this when closing a project's
-    /// lead session from the TUI: the lead-row `×` click, the launchpad's
+    /// lead session from a view: the lead-row `×` click, the launchpad's
     /// per-row close on a failed lead bucket, etc.
     ///
     /// When `session_key` is a project's lead - it appears in the
@@ -5950,7 +5946,7 @@ impl Workspace {
     }
 
     /// Snapshot the live workers for `project_key`. Returns an empty
-    /// Vec when no workers exist (rather than `None`) so the TUI tree-
+    /// Vec when no workers exist (rather than `None`) so a view's tree-
     /// child render can branch only on `is_empty`.
     pub fn list_live_workers(
         &self,
@@ -6061,11 +6057,11 @@ impl Workspace {
     /// `None` covers both "every relevant component is operational" and
     /// "the statuspage could not be reached", which is the fetch's own
     /// contract rather than something invented here - and a view that draws
-    /// nothing for it draws what the terminal always drew.
+    /// nothing for it is drawing the answer, not a gap.
     ///
     /// The core probes rather than the view because the answer is the same
     /// for every viewer and because it must outlive any one of them: a
-    /// client built after the terminal is gone would otherwise never see a
+    /// client that attaches later would otherwise never see a
     /// service status at all.
     pub fn service_status(&self) -> Option<ServiceIssue> {
         self.service_status.lock().clone()
@@ -6689,7 +6685,7 @@ impl Workspace {
 
     /// Refresh the LiteLLM pricing cache when it is absent or older than
     /// a day, re-fetching immediately on a missed day. Fire-and-forget
-    /// from the TUI: it fetches through the proxy-aware client and is a
+    /// from a view: it fetches through the proxy-aware client and is a
     /// no-op on any network failure, so the last-good cache is kept.
     /// Returns whether a new price table was stored (so a caller can
     /// re-price without a redundant scan when nothing changed).
@@ -6857,7 +6853,7 @@ impl Workspace {
     }
 
     /// Snapshot every live worker's session_key across every project.
-    /// Used by the TUI's `live_worker_keys` to exclude worker buckets
+    /// Used for worker-key routing that excludes worker buckets
     /// from project-row click routing without depending on
     /// `list_projects()` for enumeration.
     pub fn all_live_worker_session_keys(&self) -> Vec<SessionSlot> {
@@ -7271,7 +7267,7 @@ impl Workspace {
     ///
     /// Returns `true` when the caller IS a worker (so it knows the
     /// failure was consumed here - the existing `ConnectionFailed`
-    /// emission still fires for the TUI side). `false` for lead
+    /// emission still fires for the view side). `false` for lead
     /// sessions or any other non-worker, in which case the caller's
     /// existing behaviour proceeds unchanged.
     ///
@@ -7338,7 +7334,7 @@ impl Workspace {
             // Notice goes to the lead session that spawned this
             // worker. Use the workspace's update channel + a fresh
             // Command::Prompt so the lead's claude subprocess sees
-            // the envelope as a user turn and the TUI render path
+            // the envelope as a user turn and the view render path
             // picks up the bracketed prefix via forge_server::envelope::detect_inbound.
             let lead_slot = entry.spawned_by.clone();
             let pool_has_lead = self.pool.lock().contains_key(&lead_slot);
@@ -7732,61 +7728,23 @@ impl Workspace {
 
     // ---- Refresh helpers (workspace → agent) ----
     //
-    // These five methods are query-style: TUI says "re-emit state X
+    // These two methods are query-style: a view says "re-emit state X
     // for `key`" and the payload returns via `SessionUpdate`. They
     // bypass the [`Command`] envelope because they don't carry
     // mutation state, and they need the workspace-side
     // `Arc<AgentHandle>` lookup rather than per-session task routing.
-
-    /// Request a fresh status snapshot for `key`. The bridge replies
-    /// asynchronously via [`SessionUpdate::StatusSnapshot`].
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DispatchError::UnknownSession`] when no agent is
-    /// registered for `key` (e.g., the session was just closed) or
-    /// when the bridge hasn't stamped a `session_id` yet.
-    pub fn refresh_status_snapshot(&self, key: &SessionSlot) -> Result<(), DispatchError> {
-        let (handle, sid) = self.handle_and_session_id(key)?;
-        handle.get_status_snapshot(sid).map_err(|_| DispatchError::SessionClosed(key.clone()))
-    }
-
-    /// Request a fresh OAuth credentials snapshot for `key`. The
-    /// bridge replies via [`SessionUpdate::OauthCredentialsSnapshot`].
-    ///
-    /// # Errors
-    ///
-    /// See [`Self::refresh_status_snapshot`].
-    pub fn refresh_oauth_credentials_snapshot(
-        &self,
-        key: &SessionSlot,
-    ) -> Result<(), DispatchError> {
-        let (handle, sid) = self.handle_and_session_id(key)?;
-        handle
-            .get_oauth_credentials_snapshot(sid)
-            .map_err(|_| DispatchError::SessionClosed(key.clone()))
-    }
 
     /// Request a fresh context-usage snapshot for `key`. The bridge
     /// replies via [`SessionUpdate::ContextUsageSnapshot`].
     ///
     /// # Errors
     ///
-    /// See [`Self::refresh_status_snapshot`].
+    /// Returns [`DispatchError::UnknownSession`] when no agent is
+    /// registered for `key` (e.g., the session was just closed) or
+    /// when the bridge hasn't stamped a `session_id` yet.
     pub fn refresh_context_usage(&self, key: &SessionSlot) -> Result<(), DispatchError> {
         let (handle, sid) = self.handle_and_session_id(key)?;
         handle.get_context_usage(sid).map_err(|_| DispatchError::SessionClosed(key.clone()))
-    }
-
-    /// Reload session plugins for `key`. The bridge replies via
-    /// [`SessionUpdate::RuntimeReloadCompleted`] / `RuntimeReloadFailed`.
-    ///
-    /// # Errors
-    ///
-    /// See [`Self::refresh_status_snapshot`].
-    pub fn reload_plugins(&self, key: &SessionSlot) -> Result<(), DispatchError> {
-        let (handle, sid) = self.handle_and_session_id(key)?;
-        handle.reload_plugins(sid).map_err(|_| DispatchError::SessionClosed(key.clone()))
     }
 
     /// Request a fresh MCP server snapshot for `key`. The bridge
@@ -7794,7 +7752,7 @@ impl Workspace {
     ///
     /// # Errors
     ///
-    /// See [`Self::refresh_status_snapshot`].
+    /// See [`Self::refresh_context_usage`].
     pub fn refresh_mcp_snapshot(&self, key: &SessionSlot) -> Result<(), DispatchError> {
         let (handle, sid) = self.handle_and_session_id(key)?;
         handle.get_mcp_snapshot(sid).map_err(|_| DispatchError::SessionClosed(key.clone()))
@@ -7957,7 +7915,7 @@ fn account_budget(
 /// [`forge_gateway::UsageFetchStatus`] bucket. Separates HTTP 429 (the
 /// common multi-instance throttle case) from the auth-related
 /// failures (`Expired` / `NoCredentials` / `Unauthorized`) and
-/// transport failures (`Network`), so the TUI's bottom-panel hint
+/// transport failures (`Network`), so a view's bottom-panel hint
 /// can tell the user something specific rather than a generic
 /// "fetch error". `Unmappable` never reaches the classifiers - both
 /// callers handle a 200 that maps to nothing before classifying.
@@ -7994,8 +7952,8 @@ impl Workspace {
     /// that wire a stub handle up front.
     ///
     /// `DomainSession` carries workspace-internal routing metadata
-    /// (`conn` / `session_id` / `pending_interactions`). TUI's per-
-    /// session operational state lives on `UiSession`; the workspace
+    /// (`conn` / `session_id` / `pending_interactions`). A view's per-
+    /// session operational state lives on the view side; the workspace
     /// does not read or write those fields.
     ///
     /// Returns the inserted `Arc<Mutex<DomainSession>>` so callers
@@ -10406,8 +10364,8 @@ provider = "anthropic"
     async fn subscribe_hands_every_caller_its_own_stream() {
         let dir = make_workspace_dir();
         let workspace = Workspace::new_for_test(dir.path().to_owned()).expect("new");
-        let mut tui = workspace.subscribe();
-        let mut web = workspace.subscribe();
+        let mut first = workspace.subscribe();
+        let mut second = workspace.subscribe();
 
         assert!(
             workspace.update_tx().send(SessionUpdate::CatalogLoaded),
@@ -10415,11 +10373,11 @@ provider = "anthropic"
         );
 
         assert!(
-            matches!(tui.try_recv(), Ok(SessionUpdate::CatalogLoaded)),
+            matches!(first.try_recv(), Ok(SessionUpdate::CatalogLoaded)),
             "the first subscriber receives the update",
         );
         assert!(
-            matches!(web.try_recv(), Ok(SessionUpdate::CatalogLoaded)),
+            matches!(second.try_recv(), Ok(SessionUpdate::CatalogLoaded)),
             "the second subscriber receives the same update",
         );
     }
@@ -10811,10 +10769,10 @@ provider = "anthropic"
     }
 
     /// And the other half of that boundary: a classification that is NOT a
-    /// transient server error does not exempt the failure. The terminal
-    /// continues server errors only, so a billing or auth death is exactly
-    /// the one this nudge exists for - starving it here would leave the seat
-    /// sitting, the bug #1841 is about.
+    /// transient server error does not exempt the failure. A transient
+    /// server error already has a continuation of its own, so a billing or
+    /// auth death is exactly the one this nudge exists for - starving it
+    /// here would leave the seat sitting, the bug #1841 is about.
     #[test]
     fn a_classification_the_terminal_does_not_continue_still_nudges() {
         let dir = tempdir().expect("tempdir");
@@ -10831,9 +10789,9 @@ provider = "anthropic"
         );
     }
 
-    /// The no-double-fire boundary: a transient server error is the
-    /// terminal's own dead-turn path. The sweep must not nudge beside it,
-    /// and steps the clock all it likes.
+    /// The no-double-fire boundary: a transient server error already has a
+    /// continuation of its own. The sweep must not nudge beside it, and
+    /// steps the clock all it likes.
     #[test]
     fn a_transient_server_failure_is_left_to_the_terminal() {
         let dir = tempdir().expect("tempdir");
@@ -12166,35 +12124,11 @@ provider = "anthropic"
     }
 
     #[test]
-    fn refresh_status_snapshot_dispatches_get_status_snapshot() {
-        let (workspace, mut rx, key) = ws_with_stub_session();
-        workspace.refresh_status_snapshot(&key).expect("dispatch");
-        let cmd = rx.try_recv().expect("queued");
-        assert!(matches!(cmd, forge_primitives::AgentCommand::GetStatusSnapshot { .. }));
-    }
-
-    #[test]
     fn refresh_context_usage_dispatches_get_context_usage() {
         let (workspace, mut rx, key) = ws_with_stub_session();
         workspace.refresh_context_usage(&key).expect("dispatch");
         let cmd = rx.try_recv().expect("queued");
         assert!(matches!(cmd, forge_primitives::AgentCommand::GetContextUsage { .. }));
-    }
-
-    #[test]
-    fn refresh_oauth_credentials_dispatches() {
-        let (workspace, mut rx, key) = ws_with_stub_session();
-        workspace.refresh_oauth_credentials_snapshot(&key).expect("dispatch");
-        let cmd = rx.try_recv().expect("queued");
-        assert!(matches!(cmd, forge_primitives::AgentCommand::GetOauthCredentialsSnapshot { .. }));
-    }
-
-    #[test]
-    fn reload_plugins_dispatches() {
-        let (workspace, mut rx, key) = ws_with_stub_session();
-        workspace.reload_plugins(&key).expect("dispatch");
-        let cmd = rx.try_recv().expect("queued");
-        assert!(matches!(cmd, forge_primitives::AgentCommand::ReloadPlugins { .. }));
     }
 
     #[test]
@@ -12277,17 +12211,17 @@ provider = "anthropic"
     }
 
     #[test]
-    fn refresh_status_snapshot_unknown_session_errors() {
+    fn refresh_context_usage_unknown_session_errors() {
         let (workspace, _update_rx) = Workspace::testing_stub();
         let key = SessionSlot::from_str_for_test("never-registered");
-        let err = workspace.refresh_status_snapshot(&key).expect_err("unknown session");
+        let err = workspace.refresh_context_usage(&key).expect_err("unknown session");
         assert!(matches!(err, DispatchError::UnknownSession(_)));
     }
 
     /// `dispatch(Command::Cancel)` falls back to synchronous direct
     /// dispatch when no SessionTask is registered. This is the path
-    /// TUI unit tests rely on - `set_active_conn` installs a stub
-    /// handle but never spawns a task, and tests need to observe
+    /// a view's unit tests rely on - the stub-handle wiring installs a
+    /// stub handle but never spawns a task, and tests need to observe
     /// the primitive command on the rx.
     #[test]
     fn dispatch_falls_back_to_direct_when_no_session_task() {
@@ -12362,10 +12296,10 @@ provider = "anthropic"
 
     /// A prompt that only QUEUES behind a live turn does not clear the
     /// classification that describes it: the turn it belongs to has not
-    /// ended, and its own transient failure must still read as the
-    /// terminal's own. Clearing here would starve the nudge for a
-    /// `server_error` the terminal continues, which is the double-fire
-    /// boundary crossed the other way.
+    /// ended, and its own transient failure must still read as one the
+    /// dead-turn continuation answers. Clearing here would starve the nudge
+    /// for that `server_error`, which is the double-fire boundary crossed
+    /// the other way.
     #[test]
     fn a_queued_prompt_keeps_the_running_turns_classification() {
         let (workspace, _update_rx) = Workspace::testing_stub();
@@ -12564,12 +12498,12 @@ provider = "anthropic"
         assert_eq!(
             carried_mode(&new).as_deref(),
             Some("bypassPermissions"),
-            "/new must carry the pooled session's mode, not the TUI session default",
+            "/new must carry the pooled session's mode, not the session default",
         );
         assert_eq!(
             carried_mode(&resume).as_deref(),
             Some("bypassPermissions"),
-            "/resume must carry the pooled session's mode, not the TUI session default",
+            "/resume must carry the pooled session's mode, not the session default",
         );
         // The respawn also re-registers with the gateway: the fresh env
         // set rides the launch settings as overrides, so the respawned
@@ -12949,7 +12883,7 @@ provider = "anthropic"
     /// Any second wake of a live project reaches the fast path: a cron,
     /// a peer prompt, a gotify message, a slack delivery or the boot
     /// auto-start wave landing after one of them. It announces the same
-    /// key the live session already holds, so the TUI has one bucket
+    /// key the live session already holds, so a view has one bucket
     /// rather than a second one to retire.
     #[test]
     fn respawn_of_connected_project_announces_the_live_key() {
@@ -12986,7 +12920,7 @@ provider = "anthropic"
     }
 
     /// `classify_oauth_usage_error` must distinguish HTTP 429 from
-    /// auth-related failures so the TUI's bottom-panel hint reads
+    /// auth-related failures so a view's bottom-panel hint reads
     /// `rate-limited` (the common case under multiple forge
     /// instances) rather than collapsing every failure to a single
     /// generic bucket.
@@ -13564,7 +13498,7 @@ mod worker_activity_tests {
 
         // A parallel batch, in the order the requests parked: the read hands
         // both back with the permission prompt leading, because it parked
-        // first - the terminal's own queue rule.
+        // first - the view's own queue rule.
         let both = held("a-both", vec![permission(), question()]);
         let asks = ws.pending_asks(&both);
         assert_eq!(asks.len(), 2, "both asks of a parallel batch read back");
@@ -13592,11 +13526,10 @@ mod worker_activity_tests {
     }
 
     /// The statuspage answer is the same for every viewer, and it has to
-    /// outlive the view that used to fetch it: the terminal owned this
-    /// probe, so without moving it a client built after the terminal is
-    /// gone would never see a service status at all. The answer is held as
-    /// well as announced, so a view that attached after the one update that
-    /// carried it can still read it.
+    /// outlive any one of them: the probe lives in the core, so a client
+    /// that attaches later still sees a service status at all. The answer
+    /// is held as well as announced, so a view that attached after the one
+    /// update that carried it can still read it.
     #[tokio::test]
     async fn the_service_status_is_held_and_announced() {
         use forge_primitives::cloud::service_status::{ServiceIssue, ServiceSeverity};
@@ -13733,7 +13666,7 @@ mod worker_activity_tests {
     /// `session_state_changed` no longer arrives, so thinking and prose left
     /// it false for 41 seconds (measured on the seat, 2026-10-09) while the
     /// terminal showed the turn running. The model's own frames are the proof
-    /// the terminal reads; this is that reading on the wire's side.
+    /// a view reads; this is that reading on the wire's side.
     #[test]
     fn a_turn_opening_with_the_models_own_output_reads_in_flight() {
         let (ws, _rx) = Workspace::testing_stub();
@@ -17732,8 +17665,8 @@ provider = "anthropic"
     }
 
     /// **A hand-off claims an open only where something can draw it.** With
-    /// no client attached, the ask would cross the fan-out and reach the
-    /// terminal, which draws no document viewer - so the tool refuses with
+    /// no client attached, the ask would cross the fan-out and reach nothing
+    /// that draws a document viewer - so the tool refuses with
     /// the reason instead of parking on an ask nothing can draw. A client
     /// attaching (the transport notes each connection) is what makes the
     /// same hand-off land, and its leaving takes the claim back.
@@ -19289,9 +19222,9 @@ provider = "anthropic"
 #[cfg(test)]
 mod prompt_frame_origin_tests {
     //! A prompt's frame says where its words came from, and the answer is the
-    //! entry the caller took rather than a value off the wire. One view draws
-    //! on that answer - the terminal's own words are drawn at submit, another
-    //! view's are not - so a wrong origin is a reader shown their own line
+    //! entry the caller took rather than a value off the wire. Views draw on
+    //! that answer - the UI's own words are drawn at submit, a socket
+    //! client's are not - so a wrong origin is a reader shown their own line
     //! twice, or a send nobody draws at all.
     use super::*;
 
@@ -19313,7 +19246,7 @@ mod prompt_frame_origin_tests {
         (ws, rx, seat)
     }
 
-    /// The terminal's own entry, which is what `App::dispatch_command` takes.
+    /// The UI's own entry.
     #[test]
     fn the_uis_own_entry_marks_the_frame_as_the_uis() {
         let (ws, mut rx, seat) = a_fleet();
@@ -19430,8 +19363,8 @@ mod prompt_frame_origin_tests {
         );
     }
 
-    /// `/mode <id>` and `/model <id>` are the same commands the terminal
-    /// dispatched, so a view neither of them can run still changes both.
+    /// `/mode <id>` and `/model <id>` dispatch their own commands on either
+    /// entry, so a view neither of them can run still changes both.
     #[test]
     fn mode_and_model_prompts_dispatch_their_own_commands() {
         let (ws, _rx, seat) = a_fleet();
@@ -19658,8 +19591,8 @@ mod prompt_frame_origin_tests {
     /// a name the CLI resolves is the CLI's, an advertised name is the CLI's,
     /// and only a name nothing has is refused.
     ///
-    /// **A slash-led first word is refused whether or not words follow it**,
-    /// which is the terminal's own rule. The two readings cannot be told
+    /// **A slash-led first word is refused whether or not words follow it.**
+    /// The two readings cannot be told
     /// apart at the first token, and the permissive one reopens the hole the
     /// guard exists for: `/spinner now`, a typo with an argument, would reach
     /// the model as a question.
@@ -19755,7 +19688,7 @@ mod prompt_frame_origin_tests {
 
     /// A spawn a view could not complete is completed by the core: a client
     /// has no config to read, so what it sends carries none, and the settings
-    /// the launch reads are built from the same documents the terminal reads.
+    /// the launch reads are built from the settings documents instead.
     #[test]
     fn a_spawn_without_settings_gets_them_from_the_documents() {
         // A config dir of its own, so the line the spawn carries is read from
@@ -19785,7 +19718,7 @@ mod prompt_frame_origin_tests {
     }
 
     /// The mirror: a spawn that built its own settings keeps them, so the
-    /// terminal's snapshot is not silently replaced by the core's read.
+    /// caller's snapshot is not silently replaced by the core's read.
     #[test]
     fn a_spawn_that_supplied_settings_keeps_them() {
         let (ws, _rx, _seat) = a_fleet();

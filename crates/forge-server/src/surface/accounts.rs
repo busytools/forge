@@ -6,8 +6,8 @@ use forge_workspace::{AccountLoadingRow, GatewayOrgView, UsageFetchStatus};
 
 use super::ViewSurface;
 
-/// The account pool's state: what the launchpad, preflight and the
-/// gateway view render.
+/// The account pool's state: what the client's home and its startup gate
+/// render.
 pub struct AccountsView {
     /// One row per configured account, in `forge.toml` declaration
     /// order, carrying its loading state and last probe failure.
@@ -139,7 +139,7 @@ mod tests {
         assert_eq!(
             view.orgs.iter().map(|org| org.org.clone()).collect::<Vec<_>>(),
             workspace.gateway_view_snapshot().iter().map(|org| org.org.clone()).collect::<Vec<_>>(),
-            "the gateway view names every org in the same order",
+            "the accounts read names every org in the same order",
         );
 
         assert_eq!(

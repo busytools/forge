@@ -4,12 +4,11 @@
    * three rolling totals, the split, and the table, for a chosen window and
    * grouping.
    *
-   * The terminal's `/usage` overlay is the reference for every word and
-   * figure here (`crates/forge-tui/src/ui/usage_overlay.rs`, and the book's
-   * `ui/usage.md`): the unit scales, the dash where no price stood, the
-   * caption's two states, the shares. What is this side's own is the
-   * drawing: a grid instead of a fixed-width table, controls that are
-   * buttons rather than keys.
+   * The `/usage` overlay in the view this client replaced is the reference
+   * for every word and figure here (the book's `ui/client/usage.md`): the
+   * unit scales, the dash where no price stood, the caption's two states,
+   * the shares. What is this side's own is the drawing: a grid instead of a
+   * fixed-width table, controls that are buttons rather than keys.
    */
 
   import Brand from '../components/Brand.svelte';
@@ -30,7 +29,7 @@
     onrefresh,
   }: { wire: UsageReport; mark?: string | null; onrefresh: () => void } = $props();
 
-  // The terminal's own defaults: grouped by project, over the lifetime.
+  // The page's own defaults: grouped by project, over the lifetime.
   let period = $state<WindowKey>('lifetime');
   let group = $state<Grouping>('project');
 

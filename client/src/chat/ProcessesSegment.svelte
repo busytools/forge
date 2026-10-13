@@ -12,11 +12,11 @@
    *
    * **The registry names the rows; the walk supplies the figures.** A row is
    * a backgrounded call, led by the CLI's own description, and adopts the
-   * scanned process its command names for memory and pid - the terminal's
-   * join, ported, read from one store so the glance and the list cannot
-   * disagree. A call the walk missed still draws, without a figure, wearing
-   * its kind tag. Nothing else walks in: MCP servers, grandchildren and
-   * detached processes are not batch work.
+   * scanned process its command names for memory and pid - the join the view
+   * this client replaced made, ported, read from one store so the glance and
+   * the list cannot disagree. A call the walk missed still draws, without a
+   * figure, wearing its kind tag. Nothing else walks in: MCP servers,
+   * grandchildren and detached processes are not batch work.
    *
    * **Nothing here pops.** A row leaving the registry is the settlement - it
    * is kept to the turn's close and nothing flashes for it. What rides along

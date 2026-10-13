@@ -381,10 +381,10 @@ describe('the session page over a socket', () => {
 
   /**
    * **The count is the conversation's, so the header reads it off
-   * `conversation` and not off `header`** - and the terminal draws it on the
-   * row that carries the context figure, which is this one. A page that stops
-   * at the context figure leaves a reader no way to see a session has been
-   * compacted at all.
+   * `conversation` and not off `header`** - and the view this client replaced
+   * drew it on the row that carries the context figure, which is this one. A
+   * page that stops at the context figure leaves a reader no way to see a
+   * session has been compacted at all.
    */
   it('draws the compactions the conversation has taken, beside the context', async () => {
     await open({
@@ -1478,14 +1478,15 @@ describe('the record a page holds over an update stream', () => {
 
   /**
    * **A settings pick moves the record the moment the core echoes it.** The
-   * update carries the whole set and the seat folds it the way the terminal's
-   * own arm folds it, so the panel follows the pick instead of waiting for a
-   * read to carry the record past it.
+   * update carries the whole set and the seat folds it the way the view this
+   * client replaced folded it, so the panel follows the pick instead of
+   * waiting for a read to carry the record past it.
    */
   it("leaves an override echo alone: the axes are this client's own now", () => {
-    // The core echoes `dictate_overrides` for the terminal's overlay; this
-    // client holds its own axes, so the echo is an update with nothing here
-    // to write it to - and it must not cost a read either.
+    // The core echoes `dictate_overrides` for the `/dictate` overlay of the
+    // view this client replaced; this client holds its own axes, so the echo
+    // is an update with nothing here to write it to - and it must not cost a
+    // read either.
     const connection = drivable();
     const page = watch(connection);
     page.land(snapshotOf(LEAD));
@@ -1790,9 +1791,10 @@ describe('the record a page holds over an update stream', () => {
  * what it must not.
  *
  * **The client owns a seat's state, and a seat is not the page drawing it.**
- * The terminal has done this for forge's life - one subscribe, every seat's
- * record held, and moving between sessions changing what it draws and nothing
- * else - so these are the cases that hold the same property here.
+ * The view this client replaced did this for forge's life - one subscribe,
+ * every seat's record held, and moving between sessions changing what it
+ * draws and nothing else - so these are the cases that hold the same property
+ * here.
  */
 describe('the seat the client holds between visits', () => {
   /**

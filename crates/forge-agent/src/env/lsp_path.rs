@@ -2,7 +2,7 @@
 //!
 //! Lifted from the terminal's Extensions pane when the web view grew the
 //! same read (rule 24): the check is a fact about the machine, not a way of
-//! drawing it, so both views ask it here.
+//! drawing it, so views ask it here.
 
 /// Whether `server_binary` resolves on `path_var`: some directory on the
 /// path holds it as an executable file. `path_var` is injected so tests

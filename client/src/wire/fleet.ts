@@ -9,10 +9,10 @@
  *
  * **Nothing here decides what a row SAYS.** A row's state is the server's,
  * folded from the core's own `Live` and carried in the snapshot: a client
- * that recomputed it would disagree with the terminal the first time a turn
- * settled while nobody was watching, and it would disagree silently. This
- * answers one question only - is the fleet display now behind, and if so
- * about which seat.
+ * that recomputed it would disagree with the server's own fold the first
+ * time a turn settled while nobody was watching, and it would disagree
+ * silently. This answers one question only - is the fleet display now behind,
+ * and if so about which seat.
  *
  * **A second copy of a table the server keeps singular, and that is the
  * cost.** `envelope.rs` says a second copy "would both drift and hand a home

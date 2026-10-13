@@ -89,7 +89,7 @@ describe('the usage page as it draws', () => {
     expect(text).toContain('$11.40');
   });
 
-  /** The split, with the cache share the terminal computes. */
+  /** The split, with the cache share the page computes. */
   it('draws the lifetime split with the cache share', () => {
     const split = open().querySelector('.split')?.textContent ?? '';
 
@@ -105,8 +105,8 @@ describe('the usage page as it draws', () => {
   });
 
   /**
-   * The table opens on the terminal's own defaults - by project, over the
-   * lifetime - with the total pinned below the rows as a footer row.
+   * The table opens on its own defaults - by project, over the lifetime - with
+   * the total pinned below the rows as a footer row.
    */
   it('draws the project rows by default, with the total pinned', () => {
     const host = open();
@@ -275,8 +275,8 @@ describe('the usage route as it draws', () => {
 
   /**
    * **An empty pool is its own page.** A headline of zeros over an empty
-   * table reads as a report that failed, not one with nothing yet - and the
-   * terminal's own overlay has the same problem in the other direction.
+   * table reads as a report that failed, not one with nothing yet - the same
+   * problem the view this client replaced had in the other direction.
    */
   it('names an empty pool rather than drawing zeros', async () => {
     const forge = fakeConnection();

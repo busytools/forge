@@ -4,8 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>forge &middot; session</title>
-<!-- For the design artifact only: production vendors the woff2 into
-     forge-web/assets and picks it by name from [client] font. -->
+<!-- For the design artifact only: production serves the woff2 from
+     /fonts/ and picks it by name from [client] font. -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
@@ -341,7 +341,7 @@
   .sess .facts > .fact + .fact::before { content: '\00b7'; color: #2b3448; margin-right: 13px; }
   .sess .facts .v { color: var(--muted); }
   /* Every setting reads label-then-value, so the line is one kind of thing.
-     The mode is the TUI's permission badge, in the TUI's own colours. */
+     The mode reads as the permission badge, in the badge's colours. */
   .sess .facts .fk { color: var(--dim); font-size: var(--fs-data); }
   /* The model is the one fact whose length a name decides, so it is the one
      that gives: it ellipsises rather than pushing the row past its column, and
@@ -1288,8 +1288,8 @@
 <body>
 
 <!-- One sprite, referenced by every icon on the page. Lucide, MIT: the
-     web-native set, so no character-cell glyph from the TUI's table
-     survives here. Production vendors the same paths. -->
+     web-native set: no character-cell glyph survives here.
+     Production vendors the same paths. -->
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
   <symbol id="i-read" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h5"/></symbol>
   <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
@@ -2400,7 +2400,7 @@ branch main, nothing to commit</div>
         <div class="annot"><span class="dim">refused before leaving &#183; the dispatch never reached the socket, so no echo row exists: the line draws in the seat the click was made in, as a notice</span></div>
         <div class="notice warn"><span class="sev">Warning</span> Not sent - the connection is down.</div>
 
-        <div class="annot"><span class="dim">a service report &#183; keyless on the wire, so every open seat's chat draws it as the terminal pushes it, once per report</span></div>
+        <div class="annot"><span class="dim">a service report &#183; keyless on the wire, so every open seat's chat draws it as the core pushes it, once per report</span></div>
         <div class="notice warn"><span class="sev">Warning</span> Elevated error rates on the Anthropic API</div>
       </div>
 

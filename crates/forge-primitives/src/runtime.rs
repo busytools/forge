@@ -403,9 +403,9 @@ impl TerminalReason {
     }
 }
 
-/// Lifecycle state of a session. `forge-tui` stores one per bucket to
-/// render the Projects pane glyph; `forge-workspace` derives one per
-/// worker for `WorkerStatus::activity`. The two derivations are
+/// Lifecycle state of a session. `forge-workspace` derives one per
+/// session for the roster a view reads, and one per worker for
+/// `WorkerStatus::activity`. The two derivations are
 /// independent and need not agree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum SessionLifecycleState {
@@ -420,17 +420,15 @@ pub enum SessionLifecycleState {
     Idle,
     /// Subprocess is mid-turn or actively streaming.
     Running,
-    /// Cannot proceed without a human. Two independent producers:
-    /// `forge-tui` sets it when a session's connection failed on a
-    /// rate limit, and `forge-workspace` derives it for a session
-    /// holding a pending interaction (permission prompt,
+    /// Cannot proceed without a human - `forge-workspace` derives it
+    /// for a session holding a pending interaction (permission prompt,
     /// `AskUserQuestion`, elicitation).
     Attention,
     /// Bridge is waiting on `/login` to complete before the session
     /// can be spawned.
     AuthRequired,
     /// Setup (or running) hit a fatal error - `ConnectionFailed`
-    /// drove this. Bucket is dead but kept in `app.sessions` so the
+    /// drove this. Bucket is dead but kept in the roster so the
     /// user can see the error banner.
     Failed,
     /// User triggered `/logout`. The bridge is down; user can start
@@ -441,7 +439,7 @@ pub enum SessionLifecycleState {
 /// Per-session SDK turn state - model-resolution cache, mode
 /// capability state, MCP per-server cooldowns, and the auth/error
 /// flags that survive across messages. Held authoritatively by
-/// `forge-workspace`; `forge-tui` projects from there.
+/// `forge-workspace`; a view projects from there.
 #[derive(Debug, Default)]
 pub struct SessionTurnState {
     /// Live tool-call store keyed by `tool_use_id` for cross-message
@@ -485,7 +483,7 @@ pub struct SessionTurnState {
 ///
 /// A view keeps a monitor section while any of its monitors is running:
 /// once every one of them is terminal the set is dropped rather than left
-/// standing empty, in the terminal and in the core alike.
+/// standing empty.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MonitorStatus {
@@ -521,7 +519,7 @@ pub struct MonitorRecord {
     pub tool_use_id: String,
     /// Task id the CLI assigned, from `task_started` or a
     /// `task_*` lifecycle message. `None` until one arrives, which
-    /// is why the terminal transitions key on it rather than the
+    /// is why a view's transitions key on it rather than the
     /// tool_use id.
     pub task_id: Option<String>,
     /// `tool_input.description` - the headline label.

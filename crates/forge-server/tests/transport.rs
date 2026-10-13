@@ -481,7 +481,7 @@ fn a_prompt_for(org: &str, project: &str, label: &str) -> Command {
 
 /// A take belongs to the connection that started it: that connection hears
 /// its start and its meter, and every other subscriber to the same seat
-/// hears none of them - the terminal's own in-process take included, whose
+/// hears none of them - an in-process take included, whose
 /// updates carry no connection at all.
 #[tokio::test]
 async fn a_take_is_heard_by_its_own_connection_and_no_other() {
@@ -538,13 +538,13 @@ async fn a_take_is_heard_by_its_own_connection_and_no_other() {
     .await;
 
     // Then the two updates the OTHER connection must not hear either: the
-    // terminal's own take on the same seat, whose update carries no
+    // in-process take on the same seat, whose update carries no
     // connection, and the marker that closes the read below.
     fleet.emit(SessionUpdate::DictateLevel { key: lead_seat(), peak_db: -20.0, initiator: None });
     fleet.emit(SessionUpdate::TurnCancelled { key: lead_seat() });
 
     // The other connection's stream, read one message at a time up to the
-    // marker: neither the owner's take nor the terminal's may appear in
+    // marker: neither the owner's take nor the in-process one may appear in
     // it. The marker orders the read - everything above was emitted before
     // it, so a take update that was going to arrive would have.
     loop {
@@ -1203,7 +1203,10 @@ async fn a_take_ending_reaches_its_connection_with_the_seat_unsubscribed() {
 
     // A control on the way past, because the exemption must be NARROW: news
     // about the seat that is not the take's is still the watch's to filter.
-    fleet.emit(SessionUpdate::RuntimeReloadCompleted { key: lead_seat() });
+    fleet.emit(SessionUpdate::ForgeAccountIdentity {
+        key: lead_seat(),
+        display_name: "the-lead".to_owned(),
+    });
 
     // The take ends while nothing here shows the seat - the cap, or a stop
     // from whichever view can reach the seat.
@@ -1226,7 +1229,7 @@ async fn a_take_ending_reaches_its_connection_with_the_seat_unsubscribed() {
         match next_server_within(&mut client, 5_000).await {
             Some(ServerMessage::Update { update }) => match *update {
                 SessionUpdate::DictateEnded { .. } => break,
-                SessionUpdate::RuntimeReloadCompleted { .. } => panic!(
+                SessionUpdate::ForgeAccountIdentity { .. } => panic!(
                     "a non-take update for an unwatched seat arrived: the exemption is too wide"
                 ),
                 _ => {}
@@ -1579,7 +1582,7 @@ async fn a_page_on(url: &str, what: Subject) -> (Client, serde_json::Value) {
 /// header draws a bar rather than the dash an unasked seat carries for its
 /// whole life.
 ///
-/// The terminal asks for the seat it is addressing; a client subscribing to a
+/// A view asks for the seat it is addressing; a client subscribing to a
 /// seat is that same act, and the socket takes the ask on the read that encodes
 /// the subject.
 #[tokio::test]
@@ -1656,7 +1659,7 @@ async fn a_seat_that_already_reports_usage_is_not_asked_again() {
 }
 
 /// The MCP snapshot is the context reading's twin (#1844): it exists only once
-/// the bridge has answered one, the terminal's connect paths are what asked
+/// the bridge has answered one, a view's connect paths are what asked
 /// before, and a seat only a client watches would otherwise report `mcp: None`
 /// for the life of its session. The usage reading is seeded, so the ONLY ask
 /// this read can fire is the MCP one.
@@ -1838,8 +1841,8 @@ async fn a_turn_finishing_on_a_seat_no_page_holds_asks_for_nothing() {
 /// reading is the probe's own answer - so a seat past the gate refuses every
 /// ask, and with no way past the bound its number is frozen at the high value
 /// for the life of its occupant. A compaction is the one thing that lowers the
-/// transcript under a high reading, and the terminal's own post-compaction
-/// refresh is forced for exactly this: its gate reads the same stale number.
+/// transcript under a high reading, and the post-compaction refresh is forced
+/// for exactly this: the gate reads the same stale number.
 #[tokio::test]
 async fn a_compaction_settling_on_a_seat_a_page_holds_asks_past_the_bound() {
     let (url, fleet) = a_server().await;
@@ -2058,7 +2061,7 @@ async fn a_seat_with_no_agent_has_the_refused_ask_recorded() {
 /// undo: refreshing on the frame must not become one probe per frame.
 ///
 /// A turn is not the only thing that ends in a burst - a resumed session and a
-/// run of quick turns both produce several at once - and the terminal asks a
+/// run of quick turns both produce several at once - and the socket asks a
 /// seat at most once a minute. The seat here reports the reading the tests
 /// above seed, so the reads that opened its page are not what is being counted.
 #[tokio::test]
@@ -2836,7 +2839,7 @@ async fn a_more_that_cannot_be_answered_is_refused() {
 ///
 /// The walk opens the microphone stack, so the request is answered with the
 /// list - or, on a machine with no stack to enumerate, with an error naming
-/// `devices`, which is what the terminal renders in place of a list. Either
+/// `devices`, which is what a view renders in place of a list. Either
 /// way the request is ANSWERED: a client that heard nothing would draw a
 /// picker that never fills.
 #[tokio::test]
@@ -3656,9 +3659,9 @@ async fn a_dropped_socket_leaves_no_subscription_behind() {
 ///
 /// The CLI does not echo a prompt it was handed on stdin, so the wire carries
 /// nothing a view could draw and a page drawing only frames shows the
-/// assistant answering something nobody saw. The terminal forges that turn in
-/// its own process; this is the server's way out doing the same, so a client
-/// no longer has to.
+/// assistant answering something nobody saw. The server forges that turn
+/// before it reaches any client, so a client no longer has to do it in its
+/// own process.
 ///
 /// The role is `answering: false` on purpose: a client with no dock to reply
 /// from is still shown the turn, and the forge must not be what makes an
@@ -3778,9 +3781,9 @@ fn user_text(msg: &forge_primitives::Message) -> Option<String> {
 /// sender itself draws nothing of its own. The send is the one place the words
 /// are known, so the frame is forged from it.
 ///
-/// The sender is included on purpose. The terminal pushes the user's own
-/// bubble locally on every send for exactly this reason, so withholding the
-/// frame from the sender would be the client inventing a rule the terminal
+/// The sender is included on purpose. A view draws the user's own bubble
+/// from that same frame for exactly this reason, so withholding the
+/// frame from the sender would be the client inventing a rule the wire
 /// does not have.
 #[tokio::test]
 async fn a_prompt_a_client_sends_draws_for_every_client_on_that_seat() {
@@ -3966,9 +3969,9 @@ fn a_thinking_turn() -> Vec<(&'static str, serde_json::Value)> {
 /// with each run of token appends folded into the one frame it draws as.
 ///
 /// **The instrument is the socket, and the answer is the pair of counts.**
-/// The terminal draws its thinking bar - a running row carrying the spinner,
+/// A view draws its thinking bar - a running row carrying the spinner,
 /// the elapsed clock and `thinking N` - from the frames the CLI sends, and a
-/// client watching the same seat is owed the same turn: the terminal reads
+/// client watching the same seat is owed the same turn: the view reads
 /// every frame, and the connection folds a run of consecutive token appends
 /// into one frame carrying what they grew by. Both views draw a turn's
 /// estimate as the SUM of the deltas rather than the last running value,

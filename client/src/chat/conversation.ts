@@ -119,9 +119,9 @@ function runningOf(data: unknown): boolean {
 /**
  * Whether a connection failure reads as the accounts being rate limited.
  *
- * The terminal's own substring rule, matched arm for arm: the core surfaces
- * no typed variant for it, and a false positive costs a recoverable explainer
- * instead of the raw error.
+ * The substring rule from the view this client replaced, matched arm for arm:
+ * the core surfaces no typed variant for it, and a false positive costs a
+ * recoverable explainer instead of the raw error.
  */
 function rateLimitedFailure(message: string): boolean {
   const held = message.toLowerCase();
@@ -198,8 +198,8 @@ export interface Conversation {
   refused: string | null;
   /**
    * Whether the reader follows the newest end, which is the column's own
-   * state and not something a comparison can derive: the terminal's
-   * `auto_scroll`, with its transitions.
+   * state and not something a comparison can derive: the `auto_scroll` state
+   * the view this client replaced kept, with its transitions.
    */
   following: boolean;
   /**
@@ -1089,8 +1089,8 @@ export class Chat {
   /**
    * Where the reader is, which decides whether the newest turn is followed.
    *
-   * **The rule is the terminal's, and it is exact.** `ChatViewport`'s
-   * `auto_scroll` is re-engaged by its clamp only at `scroll_offset >=
+   * **The rule comes from the view this client replaced, and it is exact.**
+   * There, `auto_scroll` was re-engaged by the clamp only at `scroll_offset >=
    * max_scroll`, and disengaged by any scroll up - so a reader parked a few
    * pixels short of the end is reading, not following, and the column may not
    * move under them. A threshold here would pull them down mid-sentence.
@@ -1792,10 +1792,10 @@ export class Chat {
       return;
     }
     // The failure itself is drawn, not only the roster row's reason: the
-    // terminal answers one with a chat line - the rate-limit explainer when
-    // the accounts are exhausted, the raw why otherwise (#1638). The
-    // terminal's own input-lock tail is deliberately not ported: "Press
-    // Ctrl+Q" is that view's input model, and the page's box is its own.
+    // view this client replaced answered one with a chat line - the rate-limit
+    // explainer when the accounts are exhausted, the raw why otherwise
+    // (#1638). Its input-lock tail is deliberately not ported: "Press Ctrl+Q"
+    // is that view's input model, and the page's box is its own.
     if (variant === 'connection_failed') {
       this.waiting.clear();
       this.drained.clear();
@@ -1822,7 +1822,8 @@ export class Chat {
     }
     // The core's fatal, announced before the process goes (#1638): keyless,
     // so every open conversation draws it, and the words are the server's own
-    // - what the terminal prints on exit. A repeat is one row.
+    // - what the view this client replaced printed on exit. A repeat is one
+    // row.
     if (variant === 'fatal_error') {
       const fatal = (update as { fatal_error?: { message?: unknown } }).fatal_error;
       const said = fatal?.message;
@@ -1837,8 +1838,9 @@ export class Chat {
       return;
     }
     // The service status the core watches for the whole install (#1638). It is
-    // keyless on the wire, so every open conversation draws it as the terminal
-    // pushes it - one line per report, and a repeat is one row.
+    // keyless on the wire, so every open conversation draws it as the view
+    // this client replaced pushed it - one line per report, and a repeat is
+    // one row.
     if (variant === 'service_status') {
       const report = (update as { service_status?: { severity?: unknown; message?: unknown } })
         .service_status;
@@ -1873,14 +1875,15 @@ export class Chat {
       }
       this.refresh();
       // The plan-limit next steps ride the turn's own failure (#1638), where
-      // the core's class is known: the terminal's words and its numbered
-      // steps, reflowed onto the one line this page's notices draw, with the
-      // core's own message where the terminal's summary rides - it is not
-      // drawn a line above when the refusal never reached the CLI. Class-only
-      // deliberately: the terminal's fallback classifier is its own, and a
-      // hint the core did not classify stays off. The auth and input-lock
-      // hints stay unported: the auth line names a terminal command where the
-      // page has a sign-in state, and Ctrl+Q is that view's input model.
+      // the core's class is known: the words and numbered steps of the view
+      // this client replaced, reflowed onto the one line this page's notices
+      // draw, with the core's own message where that view's summary rode - it
+      // is not drawn a line above when the refusal never reached the CLI.
+      // Class-only deliberately: that view's fallback classifier is its own,
+      // and a hint the core did not classify stays off. The auth and
+      // input-lock hints stay unported: the auth line names a command that
+      // view had where the page has a sign-in state, and Ctrl+Q is that
+      // view's input model.
       const failed = (update as { turn_error?: { class?: unknown; message?: unknown } }).turn_error;
       if (variant === 'turn_error' && failed?.class === 'plan_limit') {
         const why =
@@ -1906,10 +1909,10 @@ export class Chat {
       return;
     }
     // A worker's review turn ended and the core batched the tally onto this
-    // session's line, which the terminal draws as an info line on the
-    // reviewer's own chat; the same line here, for the same reason - no
-    // transcript row holds it (#1776). The tally itself (which the terminal
-    // also parks for its badge) has no client surface to draw on.
+    // session's line, which the view this client replaced drew as an info line
+    // on the reviewer's own chat; the same line here, for the same reason - no
+    // transcript row holds it (#1776). The tally itself (which that view also
+    // parked for its badge) has no client surface to draw on.
     if (variant === 'review_activity_notice') {
       const notice = (update as { review_activity_notice?: { message?: unknown } })
         .review_activity_notice;
@@ -2139,11 +2142,11 @@ export class Chat {
    *
    * **What a person said joins a turn being written like anything else.** The
    * CLI fuses a mid-turn prompt into the turn it interrupted rather than
-   * opening one, and the terminal keeps its clock: a mid-turn submit there
-   * carries the live bar onto a fresh tail placeholder instead of restarting
-   * it. One turn stays one row here, with the words drawn inside it and the
-   * clock the row opened with; a row of its own leaves one turn as two rows,
-   * both counting - which is the whole of what the join decides.
+   * opening one, and the view this client replaced kept its clock: a mid-turn
+   * submit there carried the live bar onto a fresh tail placeholder instead of
+   * restarting it. One turn stays one row here, with the words drawn inside it
+   * and the clock the row opened with; a row of its own leaves one turn as two
+   * rows, both counting - which is the whole of what the join decides.
    *
    * **A frame the fold draws nothing out of never opens a row: it joins the
    * turn it arrived in, settled or not, and is held nowhere when there is
@@ -2160,8 +2163,8 @@ export class Chat {
    */
   /**
    * The same line twice in a row is one row: a repeated plan-limited turn
-   * reports the same incident, and the page keeps one line for it - the
-   * terminal's own upsert, at the grain this page draws.
+   * reports the same incident, and the page keeps one line for it - the same
+   * upsert the view this client replaced used, at the grain this page draws.
    */
   private appendOnce(message: unknown): void {
     const last = this.held.turns.at(-1)?.messages.at(-1);
@@ -2181,10 +2184,10 @@ export class Chat {
       const units = fold([message]);
       const draws = units.length > 0;
       // **A prompt brings the reader back to the end.** It is the one frame
-      // that is the reader's OWN words, and the terminal engages its follow on
-      // the prompt path for the same reason: they have just asked for
-      // something to arrive, so a column left where they had scrolled to would
-      // hide the very answer they are waiting on.
+      // that is the reader's OWN words, and the view this client replaced
+      // engaged its follow on the prompt path for the same reason: they have
+      // just asked for something to arrive, so a column left where they had
+      // scrolled to would hide the very answer they are waiting on.
       const follow = held.following || units.some((unit) => unit.kind === 'user');
       // **A skill's body belongs to the turn whose `Skill` call loaded it.**
       // The CLI injects the frame mid-turn, but it can arrive above a settled

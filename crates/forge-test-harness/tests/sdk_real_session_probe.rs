@@ -39,7 +39,7 @@ use forge_test_harness::sdk_wire::session_redact::redact_session_file;
 
 /// Walk a decoded `Message` for any `ContentBlock::Unknown` variants
 /// and surface them as `(type_str, snippet)` pairs. The snippet is a
-/// short JSON preview of the unknown block so a TUI consumer (or
+/// short JSON preview of the unknown block so a consumer (or
 /// human reading logs) can identify the shape without dumping the
 /// entire payload.
 fn unknown_content_blocks(msg: &Message) -> Vec<(String, String)> {
