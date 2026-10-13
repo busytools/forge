@@ -176,8 +176,7 @@ const PUSHED_SHA_WALK_CAP: usize = 500;
 /// Per-repo last-fetch timestamps, keyed by the scan `cwd`. Module-level
 /// because [`scan`] is a free function with no owning state; the walk
 /// runs per held seat, so keying by scan cwd gives
-/// stable per-repo throttling. Mirrors the `OnceLock<Mutex<HashMap>>`
-/// pattern in `cloud::oauth_credentials`.
+/// stable per-repo throttling.
 static LAST_FETCH: OnceLock<Mutex<HashMap<PathBuf, Instant>>> = OnceLock::new();
 
 /// Handles for the fetches kicked so far, so a test can settle an in-flight
