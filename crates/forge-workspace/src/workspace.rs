@@ -2561,10 +2561,9 @@ impl Workspace {
     }
 
     /// Snapshot of `(AccountKey display name, LoadingState)` pairs in
-    /// declaration order. A view's launchpad renders the per-
-    /// account loading glyph row from this; the order matches
-    /// `forge.toml`'s `[[accounts]]` declarations so the glyphs sit
-    /// next to the user's mental model of which-account-is-which.
+    /// declaration order, read by the accounts surface. The order
+    /// matches `forge.toml`'s `[[accounts]]` declarations so the rows
+    /// sit next to the user's mental model of which-account-is-which.
     pub fn account_loading_snapshot(&self) -> Vec<AccountLoadingRow> {
         self.accounts
             .account_names()
