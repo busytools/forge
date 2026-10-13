@@ -12,11 +12,10 @@
 //! no turn - so what they cost is a head the window cannot start on, never a
 //! cut inside a turn.
 //!
-//! A queued prompt opens a turn in the fold unless a question card takes it,
-//! which is the fold's own unit state and not visible from here. That miss is
-//! not only the prompt: the fold's turn opens there and resets the state the
-//! next turn opens under, so a frame the fold then draws as a head of its own -
-//! the continuation a compaction leaves - is left alone here too.
+//! A queued prompt opens a turn in the fold, and the scan answers none for it.
+//! That miss is not only the prompt: the fold's turn opens there and resets the
+//! state the next turn opens under, so a frame the fold then draws as a head of
+//! its own - the continuation a compaction leaves - is left alone here too.
 //!
 //! And a row opening with a bracket is read as an envelope, because every
 //! envelope this workspace writes opens with one and the parser that tells an

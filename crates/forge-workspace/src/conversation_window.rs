@@ -155,8 +155,7 @@ mod tests {
             .unwrap_or_default()
     }
 
-    /// A user row carrying a queued prompt, which the fold opens a turn at
-    /// unless a question card takes it.
+    /// A user row carrying a queued prompt, which the fold opens a turn at.
     fn a_queued(text: &str) -> Message {
         serde_json::from_value(serde_json::json!({
             "type": "user",
@@ -316,8 +315,8 @@ mod tests {
     fn a_frame_that_opens_no_turn_is_never_the_cut() {
         let mut messages = a_history_of(333, 3);
         // The run of deliveries the line lands in. Each draws as a notice -
-        // and a queued prompt, which the fold opens a turn for unless a
-        // question card takes it, is left alone too.
+        // and the queued prompt, which the fold opens a turn for and the scan
+        // leaves alone, is one too.
         messages
             .extend((0..4).map(|at| a_said(&format!("[Gotify - app 'x', priority 1]\n\n{at}"))));
         messages.push(

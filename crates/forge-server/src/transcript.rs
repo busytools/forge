@@ -833,8 +833,7 @@ mod tests {
     /// the whole thing the window's front is for.
     ///
     /// The other direction is pinned as the one place they are meant to differ:
-    /// a queued prompt opens a turn in the fold unless a question card takes it,
-    /// and the scan cannot see the card, so it leaves the prompt alone.
+    /// a queued prompt opens a turn in the fold, and the scan leaves it alone.
     #[test]
     fn the_windows_turn_scan_names_no_frame_the_fold_opens_no_turn_at() {
         let text = |text: &str| {
