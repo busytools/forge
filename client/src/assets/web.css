@@ -3703,7 +3703,10 @@ details[open] > summary .arw { opacity: 1; }
   border-left: 2px solid var(--line); border-radius: 0 var(--r) var(--r) 0;
   font-family: var(--ui); font-size: var(--fs-base); }
 .doc .doc-who { color: var(--muted); font-size: var(--fs-label); }
-.doc .doc-words { color: var(--text); overflow-wrap: anywhere; }
+/* The words are the chat's own prose - the renderer, the marks and the
+   author's lines are `Prose`'s rules; this carries the note's tone, the way
+   the review page's `.rv-turn .prose` carries its turn's. */
+.doc .doc-note .prose { color: var(--text); }
 .doc .doc-cc { color: var(--warn); font-size: var(--fs-label); font-family: var(--mono); }
 /* The composer, under the block it opened on. */
 .doc .doc-compose { margin: 4px 0 10px 2.2rem; display: flex; flex-direction: column;
