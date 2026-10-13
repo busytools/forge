@@ -4,7 +4,7 @@ import { get } from 'svelte/store';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { currentRoute } from '../routes';
-import { clearDrafts, docScope, draftsFor } from './comments';
+import { addDraft, clearDrafts, docScope, draftsFor } from './comments';
 import { fakeDoc, SLOT, type DocAnswer } from './testing';
 import Document from './Document.svelte';
 import { violationsOf } from '../testing/axe';
@@ -511,6 +511,88 @@ describe('the reviewable document', () => {
     const inline = document.querySelectorAll('.doc-note:not(.doc-quoted)');
     expect(inline).toHaveLength(1);
     expect(inline[0]?.textContent).toContain('from before');
+  });
+
+  /**
+   * **The comment words render as the chat does.** A comment is markdown
+   * wherever it is read: the review page's turns go through the chat's own
+   * `Prose` with the author's lines kept, and the viewer's notes read the
+   * same - a backtick or an emphasis in a comment arrives as the element,
+   * never as the character. Every note surface is checked: a comment placed
+   * under its block, a draft waiting for the done, and a comment written
+   * against another version.
+   */
+  it('renders comment words as the chat does, marks and lines alike', () => {
+    addDraft(docScope(PATH), {
+      id: 'dr-1',
+      line: 2,
+      text: 'a `code` span and **emphasis**\nkept on its own line',
+      context: ['line two'],
+    });
+    const before = {
+      id: 'd9',
+      anchor: {
+        path: PATH,
+        side: 'New',
+        line: 2,
+        content_hash: '41',
+        context: ['^ old line', 'old three'],
+        base_ref: `doc:${PATH}`,
+      },
+      comments: [
+        {
+          author: 'User',
+          text: 'a `code` span and **emphasis**\nkept on its own line',
+          at: 'x',
+          review_id: null,
+        },
+      ],
+      status: 'Open',
+      created_at: 'x',
+      updated_at: 'x',
+      commit: null,
+    };
+    drawReviewable({
+      kind: 'landed',
+      document_kind: 'markdown',
+      bytes: enc('# hi\nline two\nline three'),
+      reviewable: true,
+      content_hash: '42',
+      threads: [
+        before,
+        {
+          ...before,
+          id: 'd8',
+          anchor: { ...before.anchor, content_hash: '42' },
+          comments: [
+            {
+              author: 'User',
+              text: 'a `code` span and **emphasis**\nkept on its own line',
+              at: 'x',
+              review_id: null,
+            },
+          ],
+        },
+      ],
+    });
+
+    const surfaces: [string, string][] = [
+      ['a comment under its block', '.doc-note:not(.doc-quoted):not(.doc-draft)'],
+      ['a draft waiting for the done', '.doc-draft'],
+      ['a comment against another version', '.doc-quoted'],
+    ];
+    for (const [where, selector] of surfaces) {
+      const words = document.querySelector(`${selector} .prose`);
+      expect(words?.querySelector('code')?.textContent, `${where}: the code mark`).toBe('code');
+      expect(words?.querySelector('strong')?.textContent, `${where}: the emphasis`).toBe(
+        'emphasis',
+      );
+      expect(words?.querySelector('br'), `${where}: the author's newline is kept`).not.toBeNull();
+      expect(
+        words?.textContent ?? '',
+        `${where}: no mark reaches the page as a character`,
+      ).not.toContain('`');
+    }
   });
 
   /**
