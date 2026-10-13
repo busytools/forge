@@ -734,14 +734,6 @@ pub enum Command {
         team_role: Option<String>,
         notification: crate::mcp::gotify::types::GotifyNotification,
     },
-    /// Begin dictating into the composer at `key`. App-level command
-    /// carrying the origin key, like `DeliverPeerPrompt`: the
-    /// microphone is process-global, so the recording lifecycle lives
-    /// on `Workspace` rather than on one `SessionTask`, while the
-    /// events route back to the session that started it.
-    DictateStart {
-        key: SessionSlot,
-    },
     /// Begin a take the CLIENT captures: the connection that sent this
     /// feeds the audio as binary frames, so no device is opened here.
     /// Registered synchronously by the dispatch that receives it, so the
@@ -862,7 +854,6 @@ impl Command {
             Self::SpawnProject { .. }
             | Self::SpawnSession { .. }
             | Self::StartDefault { .. }
-            | Self::DictateStart { .. }
             | Self::DictateStream { .. }
             | Self::DictateStop { .. }
             | Self::DeliverPeerPrompt { .. }
@@ -1084,7 +1075,6 @@ impl std::fmt::Debug for Command {
                 .field("tier", tier)
                 .field("corpus", corpus)
                 .finish(),
-            Self::DictateStart { key } => f.debug_struct("DictateStart").field("key", key).finish(),
             Self::DictateStream { key, .. } => {
                 f.debug_struct("DictateStream").field("key", key).finish_non_exhaustive()
             }

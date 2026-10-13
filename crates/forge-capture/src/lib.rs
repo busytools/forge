@@ -3,10 +3,9 @@
 //!
 //! A leaf crate. It depends on no other forge crate and knows nothing about
 //! a host, a take or a wire: [`open`] hands a caller the device's audio and
-//! the decision about what a frame is stays with the caller. `forge-dictate`
-//! builds its device take on it, and a client's own shell reads frames
-//! straight off it, so both capture legs share one device open, one downmix
-//! and one resampler.
+//! the decision about what a frame is stays with the caller. A client's own
+//! shell reads frames straight off it; `forge-dictate` re-exports the device
+//! list.
 //!
 //! The stream is `!Send`, so it lives on a thread of its own from the moment
 //! the device opens; [`Capture`] is the handle that stops it.

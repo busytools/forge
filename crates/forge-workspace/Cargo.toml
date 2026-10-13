@@ -25,7 +25,7 @@ test-helpers = ["forge-primitives/test-helpers"]
 # `forge-gateway/testing` so their test-only constructors are visible
 # cross-crate.
 # Production builds never see this code.
-testing = ["forge-agent/testing", "forge-gateway/testing", "forge-dictate/test-helpers"]
+testing = ["forge-agent/testing", "forge-gateway/testing"]
 
 [dependencies]
 forge-primitives = { workspace = true }
@@ -70,9 +70,6 @@ forge-agent = { workspace = true, features = ["testing"] }
 # `forge_primitives::SessionSlot`. Mirroring the same hop the testing
 # feature does for forge-agent.
 forge-primitives = { workspace = true, features = ["test-helpers"] }
-# The dictate lifecycle tests build engines that must never open a real
-# input device; the feature exposes the synthetic-microphone constructor.
-forge-dictate = { workspace = true, features = ["test-helpers"] }
 # `test-util` enables `#[tokio::test(start_paused = true)]` +
 # `tokio::time::{advance, pause}`. Required by the kick-dispatcher
 # stagger tests (#259) - without paused-time control they'd race the

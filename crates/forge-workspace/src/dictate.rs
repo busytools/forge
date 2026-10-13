@@ -169,12 +169,9 @@ pub enum DictateDeviceChoice {
     Device(String),
 }
 
-/// The input a capture records from: the session pick when one is set,
-/// else the `[dictate] device` pin, else the system default. The
-/// `None`/`Some` shape matches `forge_dictate::Config::device`, so the
-/// result passes straight through `Engine::try_capture_with`. Shared
-/// with a view, which resolves the same way to mark the device in
-/// force.
+/// The input in force: the session pick when one is set, else the
+/// `[dictate] device` pin, else the system default. The `None`/`Some`
+/// shape matches `forge_dictate::Config::device`.
 pub fn resolve_capture_device(
     pick: Option<&DictateDeviceChoice>,
     configured: Option<&str>,
@@ -270,7 +267,7 @@ pub struct DictateSettings {
     #[serde(default = "enabled_by_default")]
     pub normalizer: bool,
     /// Upper bound on a single recording. A capture nobody stops ends
-    /// itself here rather than holding the microphone indefinitely.
+    /// itself here rather than holding the seat indefinitely.
     #[serde(default = "default_max_capture_minutes")]
     pub max_capture_minutes: u64,
     /// The push-to-talk key.
@@ -824,8 +821,8 @@ const PROGRESS_POLL: Duration = Duration::from_millis(150);
 /// carry it again.
 pub(crate) struct LiveRecording {
     pub(crate) stop: tokio::sync::mpsc::Sender<bool>,
-    /// `None` on a device take, whose audio comes from the server's own
-    /// microphone; `Some` on a take fed by frames the client sends.
+    /// `Some` on a take fed by frames the client sends; `None` on an
+    /// entry that marks a take live without a socket feeding it.
     pub(crate) sink: Option<forge_dictate::FrameSink>,
     /// The connection this take belongs to, as its command carried it:
     /// every update about the take goes back there alone, and a stop or
@@ -834,8 +831,8 @@ pub(crate) struct LiveRecording {
     pub(crate) initiator: Option<u64>,
 }
 
-/// A submitted take still awaiting its transcript. The microphone is
-/// already released; the entry stays only so a stop can still abandon it.
+/// A submitted take still awaiting its transcript. The recording is
+/// already stopped; the entry stays only so a stop can still abandon it.
 pub(crate) struct FinishingTake {
     pub(crate) key: SessionSlot,
     pub(crate) stop: tokio::sync::mpsc::Sender<bool>,
@@ -855,11 +852,10 @@ pub(crate) struct SetRecording {
     pub(crate) samples: Vec<f32>,
 }
 
-/// Dictation state across every session. A device take holds the one
-/// microphone, but takes fed by a client's own frames hold no device, so
-/// several seats can dictate at once; several takes can also be
-/// finishing, because a new recording never waits for the previous
-/// transcript.
+/// Dictation state across every session. Every take is fed by a client's
+/// own frames and holds no device, so several seats can dictate at once;
+/// several takes can also be finishing, because a new recording never
+/// waits for the previous transcript.
 pub(crate) struct DictateRuntime {
     pub(crate) recordings: HashMap<SessionSlot, LiveRecording>,
     pub(crate) finishing: Vec<FinishingTake>,
@@ -871,7 +867,7 @@ pub(crate) struct DictateRuntime {
     pub(crate) next_generation: u64,
     /// A stop that arrived before the start it answers had registered,
     /// stamped on arrival and carrying its initiator so only a start by
-    /// the same connection honours it. `begin_capture` honours it only
+    /// the same connection honours it. A registration honours it only
     /// while it is fresh - the race it exists for is scheduler-scale, so
     /// a park older than the window is a stop whose take already
     /// resolved (a refusal, a cap self-submit) and must not poison the
@@ -992,57 +988,6 @@ impl DictateRuntime {
     }
 }
 
-/// `Command::DictateStart`: take the microphone for the composer at
-/// `key` and start streaming level events.
-pub(crate) async fn handle_dictate_start(ws: &Arc<crate::Workspace>, key: SessionSlot) {
-    let updates = ws.update_sender();
-    let ws_for_capture = Arc::clone(ws);
-    let key_for_capture = key.clone();
-    let opened =
-        tokio::task::spawn_blocking(move || begin_capture(&ws_for_capture, &key_for_capture)).await;
-    match opened {
-        Ok(Ok((capture, floor_db, generation, stop_rx))) => {
-            let _ = updates.send(SessionUpdate::DictateStarted {
-                key: key.clone(),
-                floor_db,
-                generation,
-                initiator: None,
-            });
-            tokio::spawn(run_recording(
-                Arc::clone(ws),
-                key,
-                capture,
-                generation,
-                stop_rx,
-                updates,
-                TakeAxes::FromSession,
-                None,
-            ));
-        }
-        Ok(Err(message)) => {
-            // The start refused, so any park the press's release left
-            // behind answers a take that will never exist.
-            ws.dictate_runtime.lock().clear_stop_pending(&key, None);
-            let _ = updates.send(SessionUpdate::DictateEnded {
-                key,
-                outcome: DictateOutcome::Refused { message },
-                // Nothing started, so there is no generation to echo;
-                // zero matches nothing a bucket could hold.
-                generation: 0,
-                initiator: None,
-            });
-        }
-        Err(source) => {
-            tracing::warn!(
-                event_name = "dictate_start_task_unjoined",
-                slot = %key.display(),
-                %source,
-                "dictate start task failed to join"
-            );
-        }
-    }
-}
-
 /// A take the client will feed with frames, registered and ready to run:
 /// what the socket pushes into, what the runner finishes, and what the
 /// take normalizes by.
@@ -1062,8 +1007,7 @@ pub(crate) struct RegisteredTake {
 /// the runner is spawned: the socket's connection is one ordered stream,
 /// so the frame a client sends right after its start message must find
 /// the take already there. Nothing here opens a device, and that is what
-/// makes it possible - the device open is the only blocking step the
-/// other path has.
+/// makes the synchronous registration possible.
 pub(crate) fn register_stream_take(
     ws: &Arc<crate::Workspace>,
     key: &SessionSlot,
@@ -1106,7 +1050,8 @@ pub(crate) fn register_stream_take(
         LiveRecording { stop: stop_tx.clone(), sink: Some(stream.sink), initiator },
     );
     // A stop the scheduler ordered before this registration is honoured
-    // here, exactly as the device path honours it at its own registration.
+    // here: pre-load the abandon so the take ends the moment its runner
+    // starts reading the channel.
     if runtime.take_parked_stop(key, initiator, Instant::now()) {
         let _ = stop_tx.try_send(false);
     }
@@ -1124,8 +1069,7 @@ pub(crate) fn register_stream_take(
 }
 
 /// Own a stream-fed take from its registration to its delivered
-/// transcript - the recording lifecycle a device take runs, with the
-/// axes the client sent instead of the session's.
+/// transcript: the recording lifecycle, with the axes the client sent.
 pub(crate) async fn run_stream_take(
     ws: Arc<crate::Workspace>,
     key: SessionSlot,
@@ -1139,26 +1083,17 @@ pub(crate) async fn run_stream_take(
         take.generation,
         take.stop,
         updates,
-        TakeAxes::Fixed(take.options),
+        take.options,
         take.initiator,
     )
     .await;
 }
 
-/// What a take normalizes by: the session's `/dictate` overrides read at
-/// the stop, so a mid-take change lands on the take it was
-/// made during; or the values a client sent with its start, which are
-/// what that client's panel was showing when the key went down.
-enum TakeAxes {
-    FromSession,
-    Fixed(forge_dictate::NormalizeOptions),
-}
-
 /// `Command::DictateStop`: submit (`true`) or abandon the take that
 /// `key` started. A stop that arrives before its start has registered
-/// is parked in `stop_pending` for `begin_capture` to honour, rather
-/// than dropped: dropping it would orphan a take until the capture cap
-/// released the microphone. A stop whose take already resolved parks
+/// is parked in `stop_pending` for the registration to honour, rather
+/// than dropped: dropping it would orphan a take until the take's own
+/// cap ended it. A stop whose take already resolved parks
 /// too - the park cannot tell the two apart on arrival - but it is
 /// only honoured while fresh, and every take-resolution path clears
 /// it, so it never poisons the session's next attempt.
@@ -1183,84 +1118,6 @@ pub(crate) async fn handle_dictate_stop(
     }
 }
 
-/// The notice a refused take carries. The generic string answers only
-/// the genuine no-device case; a named pin that did not open says so,
-/// because "no input device is available" is factually wrong exactly
-/// when a pin names one.
-fn refused_message(error: &forge_dictate::Error) -> String {
-    match error {
-        forge_dictate::Error::NoInputDevice => {
-            "no input device is available · dictation did not start".to_owned()
-        }
-        other => {
-            format!("input device did not open · {other} · dictation did not start")
-        }
-    }
-}
-
-/// Take the microphone, refusing everything a host should say no to
-/// before the first sample. Blocking (the device open waits on the
-/// recorder thread), so it runs under `spawn_blocking`.
-// The tuple is one take's handoff; a named type would say it once.
-#[allow(clippy::type_complexity)]
-fn begin_capture(
-    ws: &Arc<crate::Workspace>,
-    key: &SessionSlot,
-) -> Result<(forge_dictate::Capture, f32, u64, tokio::sync::mpsc::Receiver<bool>), String> {
-    let (stop_tx, stop_rx) = tokio::sync::mpsc::channel(1);
-    let mut runtime = ws.dictate_runtime.lock();
-    if runtime.recordings.contains_key(key) {
-        return Err(format!("session {} is already dictating", key.display()));
-    }
-    let engine = ws
-        .dictate
-        .engine
-        .lock()
-        .clone()
-        .ok_or("dictation is not ready · enable [dictate] in forge.toml and restart")?;
-    // The picker's pick - shared by every session - wins over the
-    // configured pin; with neither, the system default records.
-    // Resolved before the open so a pin naming a gone device errors
-    // here rather than falling back.
-    let pick = ws.dictate_device_pick.lock().clone();
-    let wanted = crate::dictate::resolve_capture_device(pick.as_ref(), engine.device());
-    let capture = engine
-        .try_capture_with(key.display(), wanted.as_deref())
-        .map_err(|busy| format!("the microphone is in use by session {}", busy.holder))?;
-    // The session can close while the device open waits above. A
-    // capture handed to a session that no longer exists holds the
-    // microphone for nobody.
-    if !ws.session_is_live(key) {
-        drop(capture);
-        return Err("the session closed · dictation did not start".to_owned());
-    }
-    if let Some(error) = capture.open_error() {
-        tracing::warn!(
-            event_name = "dictate_device_open_refused",
-            slot = %key.display(),
-            ?error,
-            "dictation refused: the input device did not open"
-        );
-        let message = refused_message(error);
-        drop(capture);
-        return Err(message);
-    }
-    runtime
-        .recordings
-        .insert(key.clone(), LiveRecording { stop: stop_tx.clone(), sink: None, initiator: None });
-    // A stop the scheduler ordered before this registration is honoured
-    // here: pre-load the abandon so the take ends the moment the
-    // recording task starts reading its channel. A stale park - a stop
-    // whose take resolved without it - is consumed without honour.
-    if runtime.take_parked_stop(key, None, Instant::now()) {
-        let _ = stop_tx.try_send(false);
-    }
-    let floor_db = engine.silence_floor();
-    let generation = runtime.next_generation;
-    runtime.next_generation = runtime.next_generation.wrapping_add(1);
-    Ok((capture, floor_db, generation, stop_rx))
-}
-
 /// Own one take from first sample to delivered transcript: stream
 /// level events while recording, then submit and wait, honouring the
 /// stop channel at every phase. Segments of a long take transcribe
@@ -1273,7 +1130,7 @@ async fn run_recording(
     generation: u64,
     mut stop: tokio::sync::mpsc::Receiver<bool>,
     updates: crate::update_fanout::UpdateFanout,
-    axes: TakeAxes,
+    options: forge_dictate::NormalizeOptions,
     initiator: Option<u64>,
 ) {
     // Take progress spans the whole take: segments settle while the
@@ -1304,17 +1161,6 @@ async fn run_recording(
     }
 
     let _ = updates.send(SessionUpdate::DictateTranscribing { key: key.clone(), initiator });
-    // The take normalizes with the starting session's /dictate
-    // overrides merged over the crate defaults; the session may have
-    // closed since, in which case the defaults stand. A client-captured
-    // take carries the axes it started with instead.
-    let options = match axes {
-        TakeAxes::FromSession => ws
-            .domain_session_for(&key)
-            .map(|domain| domain.lock().dictate_overrides.normalize_options())
-            .unwrap_or_default(),
-        TakeAxes::Fixed(options) => options,
-    };
     let Ok(ticket) = capture.finish_with(options) else {
         tracing::warn!(
             event_name = "dictate_submit_failed",
@@ -1330,8 +1176,8 @@ async fn run_recording(
         });
         return;
     };
-    // The microphone is released; the runtime entry moves from holding
-    // the mic to awaiting the transcript so Esc still routes here.
+    // The recording is stopped; the runtime entry moves from the live
+    // map to awaiting the transcript so Esc still routes here.
     move_to_finishing(&ws, &key);
 
     // The token is cloned out before the ticket moves into the blocking
@@ -1444,10 +1290,9 @@ async fn wait_for_take<T>(
 /// Stream level events until a stop decision or the capture cap stops
 /// itself. Returns whether the take should be submitted.
 ///
-/// `cap` is enforced HERE as well as in the capture, by wall clock: a device
-/// take's recorder notices it by counting its own loop, and the sample cap
-/// fires only while audio arrives - so a take fed by frames, with the stream
-/// stopped mid-take, has nothing to notice it and would hold the seat until
+/// `cap` is enforced HERE as well as in the capture, by wall clock: the
+/// sample cap fires only while audio arrives, so a take whose stream stops
+/// mid-take has nothing to notice it and would hold the seat until
 /// teardown.
 async fn record_until_stopped(
     key: &SessionSlot,
@@ -1513,10 +1358,10 @@ fn remove_finishing(ws: &crate::Workspace, key: &SessionSlot) {
     runtime.finishing.retain(|take| &take.key != key);
 }
 
-/// Abandon everything `key` has in flight: a held microphone goes back
-/// (dropping the entry closes the stop channel, which is what makes the
-/// recording task release the device) and a submitted take loses its
-/// cancel route. Called when the session closes.
+/// Abandon everything `key` has in flight: a live take goes back
+/// (dropping the entry closes the stop channel, which is what makes its
+/// runner abandon it) and a submitted take loses its cancel route.
+/// Called when the session closes.
 pub(crate) fn teardown_for_closed_session(ws: &crate::Workspace, key: &SessionSlot) {
     let mut runtime = ws.dictate_runtime.lock();
     runtime.recordings.remove(key);
@@ -1933,23 +1778,6 @@ mod tests {
     }
 
     #[test]
-    fn a_refused_take_says_what_failed_to_open() {
-        let gone = refused_message(&forge_dictate::Error::DeviceNotFound {
-            wanted: "shure-id".into(),
-            available: String::new(),
-        });
-        assert!(
-            gone.contains("shure-id"),
-            "a pin that did not open must name what it named, got: {gone}"
-        );
-        assert_eq!(
-            refused_message(&forge_dictate::Error::NoInputDevice),
-            "no input device is available · dictation did not start",
-            "the generic string answers only the genuine no-device case"
-        );
-    }
-
-    #[test]
     fn the_capture_device_resolves_pick_over_pin_over_system() {
         let pick =
             |p: Option<DictateDeviceChoice>| resolve_capture_device(p.as_ref(), Some("config-id"));
@@ -2143,32 +1971,6 @@ mod dictate_lifecycle_tests {
         );
     }
 
-    /// A start while another session's DEVICE take holds the microphone
-    /// is refused before anything is opened, naming the holder. The
-    /// claim is the engine's, because the device is what is exclusive: a
-    /// take fed by a client's own frames holds none and does not
-    /// contend.
-    #[tokio::test]
-    async fn a_start_while_the_microphone_is_held_names_the_holder() {
-        let (ws, _updates) = crate::Workspace::testing_stub();
-        let dir = tempfile::tempdir().unwrap();
-        let engine = forge_dictate::test_support::engine_with_synthetic_microphone(
-            forge_dictate::ConfigBuilder::new().models_dir(dir.path()).normalizer(None).build(),
-        )
-        .expect("an engine starts without its weights");
-        *ws.dictate.engine.lock() = Some(Arc::clone(&engine));
-        let held = engine.try_capture("holder-session").expect("the engine is free");
-
-        let Err(error) = begin_capture(&ws, &key("second-session")) else {
-            panic!("the microphone is held, so a start must be refused");
-        };
-        assert!(
-            error.contains("holder-session"),
-            "the refusal must name the holding session, got: {error}"
-        );
-        drop(held);
-    }
-
     /// Put a live take on the runtime the way a registration does, and
     /// hand back its stop channel so a test can watch what arrives.
     fn live_take(ws: &crate::Workspace, owner: &SessionSlot) -> tokio::sync::mpsc::Receiver<bool> {
@@ -2185,7 +1987,7 @@ mod dictate_lifecycle_tests {
     /// answers the load failure a weightless engine gives.
     fn synthetic_engine() -> (tempfile::TempDir, Arc<forge_dictate::Engine>) {
         let dir = tempfile::tempdir().unwrap();
-        let engine = forge_dictate::test_support::engine_with_synthetic_microphone(
+        let engine = forge_dictate::Engine::new(
             forge_dictate::ConfigBuilder::new().models_dir(dir.path()).normalizer(None).build(),
         )
         .expect("an engine starts without its weights");
@@ -2635,8 +2437,7 @@ mod dictate_lifecycle_tests {
             .normalizer(None)
             .max_capture(Duration::from_secs(1))
             .build();
-        let engine = forge_dictate::test_support::engine_with_synthetic_microphone(cfg)
-            .expect("engine must start");
+        let engine = forge_dictate::Engine::new(cfg).expect("engine must start");
         *ws.dictate.engine.lock() = Some(Arc::clone(&engine));
         let session = key("capped");
         live_session(&ws, &session);
@@ -2664,57 +2465,6 @@ mod dictate_lifecycle_tests {
         .expect("the cap must end a take nobody stops");
         assert!(ended, "the take must resolve rather than hold the seat forever");
         assert!(ws.dictate_runtime.lock().recordings.is_empty(), "and the seat is free again");
-    }
-
-    /// A DEVICE take whose SAMPLE cap fills submits itself: the capture flags
-    /// itself truncated, and the runner's meter is what turns "the microphone
-    /// stopped on its own" into "the take is submitted" rather than a
-    /// microphone held forever.
-    ///
-    /// **The discriminator is the clock, not the outcome.** The runner also
-    /// has a wall-clock deadline over the same cap, so a take left alone
-    /// resolves either way - what tells the two apart is WHEN. The audio here
-    /// arrives a thousand times faster than real time, so the sample cap fills
-    /// at once while the deadline is five seconds out: only the truncated
-    /// branch can answer inside the bound asserted below.
-    #[tokio::test]
-    async fn a_device_take_that_reached_its_cap_submits() {
-        let (ws, mut updates) = crate::Workspace::testing_stub();
-        let dir = tempfile::tempdir().unwrap();
-        let cfg = forge_dictate::ConfigBuilder::new()
-            .models_dir(dir.path())
-            .normalizer(None)
-            .max_capture(Duration::from_secs(5))
-            .build();
-        let engine = forge_dictate::test_support::engine_with_feeding_microphone(
-            cfg,
-            Arc::new(vec![0.5; 6 * forge_dictate::SAMPLE_RATE as usize]),
-            Duration::from_millis(1),
-        )
-        .expect("engine must start");
-        *ws.dictate.engine.lock() = Some(Arc::clone(&engine));
-        let session = key("capped-device");
-        live_session(&ws, &session);
-
-        ws.dispatch(Command::DictateStart { key: session.clone() }).expect("dispatch");
-
-        // Nothing else stops it: the cap is the only thing that can.
-        let ended = tokio::time::timeout(Duration::from_millis(1500), async {
-            loop {
-                match updates.recv().await {
-                    Some(SessionUpdate::DictateEnded { .. }) => break true,
-                    Some(_) => {}
-                    None => break false,
-                }
-            }
-        })
-        .await
-        .expect("the sample cap must end the take well before the wall-clock deadline");
-        assert!(ended, "the take must resolve rather than hold the microphone");
-        assert!(
-            ws.dictate_runtime.lock().recordings.is_empty(),
-            "and the microphone is free again"
-        );
     }
 
     /// The connection going away DROPS the take it was streaming and frees
@@ -2854,21 +2604,6 @@ mod dictate_lifecycle_tests {
         );
     }
 
-    /// A DEVICE take is not the connection's to close: its audio comes from
-    /// this machine and its recording task outlives any one client.
-    #[tokio::test]
-    async fn closing_a_device_take_leaves_it_recording() {
-        let (ws, _updates) = crate::Workspace::testing_stub();
-        let (_dir, engine) = synthetic_engine();
-        *ws.dictate.engine.lock() = Some(Arc::clone(&engine));
-        let session = key("terminal");
-        live_session(&ws, &session);
-
-        let _held = begin_capture(&ws, &session).expect("a device take starts");
-        assert!(!ws.dictate_close(&session, 1), "a device take is not a connection's to close");
-        assert_eq!(ws.dictate_runtime.lock().recordings.len(), 1, "and it keeps recording");
-    }
-
     /// The axes a client sends decide its take's normalizer options,
     /// where a `None` axis would have meant "the crate default".
     #[test]
@@ -2888,82 +2623,6 @@ mod dictate_lifecycle_tests {
             defaults,
             forge_dictate::NormalizeOptions::default(),
             "an unset client must normalize exactly as the crate's own defaults do"
-        );
-    }
-
-    /// A start with no loaded engine is refused with the way out, not
-    /// by touching the microphone.
-    #[tokio::test]
-    async fn a_start_without_an_engine_refuses_with_the_way_out() {
-        let (ws, _updates) = crate::Workspace::testing_stub();
-        assert!(
-            ws.dictate.engine.lock().is_none(),
-            "the stub preflight never ran, so no engine is loaded"
-        );
-        let Err(error) = begin_capture(&ws, &key("any")) else {
-            panic!("no engine is loaded, so a start must be refused");
-        };
-        assert!(
-            error.contains("not ready"),
-            "the refusal must say dictation is not ready, got: {error}"
-        );
-    }
-
-    /// The start command can lose a race with its own session closing -
-    /// the device open waits inside `begin_capture` while the close
-    /// gesture lands. A capture handed to a session that no longer
-    /// exists holds the microphone for nobody.
-    #[tokio::test]
-    async fn a_start_for_a_closed_session_never_holds_the_microphone() {
-        let (ws, _updates) = crate::Workspace::testing_stub();
-        // A synthetic engine, so begin_capture gets past the open and
-        // reaches the liveness check on every machine.
-        let dir = tempfile::tempdir().unwrap();
-        let engine = forge_dictate::test_support::engine_with_synthetic_microphone(
-            forge_dictate::ConfigBuilder::new().models_dir(dir.path()).normalizer(None).build(),
-        )
-        .expect("an engine starts without its weights");
-        *ws.dictate.engine.lock() = Some(engine);
-
-        // No command sender for the key: the session is not live.
-        match begin_capture(&ws, &key("ghost")) {
-            Ok(_) => panic!("a capture must never be handed to a session that is not live"),
-            Err(_) => assert!(
-                ws.dictate_runtime.lock().recordings.is_empty(),
-                "whatever refused the start, no live take may survive it"
-            ),
-        }
-    }
-
-    /// The picker's pick is what a start records from: a pick naming a
-    /// device nothing enumerates must fail the open naming it, rather
-    /// than falling back to the configured pin or the system default.
-    #[tokio::test]
-    async fn a_start_records_from_the_workspace_pick() {
-        let (ws, _updates) = crate::Workspace::testing_stub();
-        // The real recorder: a stand-in that always opens would make the
-        // pick unreachable. No hardware is needed - a device id nothing
-        // enumerates fails the lookup on any machine.
-        let dir = tempfile::tempdir().unwrap();
-        let engine = forge_dictate::Engine::new(
-            forge_dictate::ConfigBuilder::new().models_dir(dir.path()).normalizer(None).build(),
-        )
-        .expect("an engine starts without its weights");
-        *ws.dictate.engine.lock() = Some(engine);
-
-        let session = key("picker-pick");
-        let (cmd_tx, _cmd_rx) = tokio::sync::mpsc::unbounded_channel();
-        ws.command_senders.lock().insert(session.clone(), cmd_tx);
-        *ws.dictate_device_pick.lock() = Some(crate::dictate::DictateDeviceChoice::Device(
-            "forge-dictate-no-such-device".into(),
-        ));
-
-        let Err(error) = begin_capture(&ws, &session) else {
-            panic!("a pick naming an absent device must refuse the start");
-        };
-        assert!(
-            error.contains("forge-dictate-no-such-device"),
-            "the refusal must name the picked device, got: {error}"
         );
     }
 
@@ -3176,7 +2835,13 @@ mod dictate_lifecycle_tests {
         let owner = key("owner");
         ws.dictate_runtime.lock().stop_pending = Some((owner.clone(), None, Instant::now()));
 
-        handle_dictate_start(&ws, owner.clone()).await;
+        // No engine on the stub, so the registration refuses.
+        ws.dispatch(Command::DictateStream {
+            key: owner.clone(),
+            options: DictateAxes::default(),
+            initiator: None,
+        })
+        .expect("dispatch");
 
         assert_eq!(ws.dictate_runtime.lock().stop_pending, None);
         let ended = updates.recv().await.expect("the refusal echo");
@@ -3186,11 +2851,10 @@ mod dictate_lifecycle_tests {
         ));
     }
 
-    /// Closing the session that owns a live take must release the
-    /// microphone and cut the recording task's channel - otherwise the
-    /// mic stays held and the meter keeps emitting for a composer that
-    /// no longer exists, and every later start is refused naming a
-    /// session the user closed.
+    /// Closing the session that owns a live take must release it and cut
+    /// its channel - otherwise the take stays live and the meter keeps
+    /// emitting for a composer that no longer exists, and every later
+    /// start is refused naming a session the user closed.
     #[tokio::test]
     async fn closing_the_session_releases_its_live_take() {
         let (ws, _updates) = crate::Workspace::testing_stub();
@@ -3212,15 +2876,7 @@ mod dictate_lifecycle_tests {
         }
         assert!(
             matches!(stop_rx.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)),
-            "dropping the entry must close the channel, which is what makes the recording task abandon the take"
-        );
-
-        let Err(error) = begin_capture(&ws, &owner) else {
-            panic!("dictation is not ready on the stub, so a start must be refused");
-        };
-        assert!(
-            error.contains("not ready"),
-            "a start after the close must fail on readiness, not on a dead session holding the mic: {error}"
+            "dropping the entry must close the channel, which is what makes the runner abandon the take"
         );
     }
 }

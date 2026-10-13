@@ -12,19 +12,16 @@
 //! bad build. Verifying first is what turns that into a sentence naming
 //! the file.
 //!
-//! # Capture needs a device that offers 16 kHz
+//! # Audio is 16 kHz mono
 //!
-//! Recording negotiates 16 kHz directly and downmixes however many
-//! channels the device gives to mono. Rate conversion is not
-//! implemented, so a device offering only 44.1 or 48 kHz is refused with
-//! [`Error::UnsupportedInput`] listing what it did offer, rather than
-//! being silently resampled. Adding it means a real filtered resampler
+//! A take is fed mono frames at 16 kHz; the device half - opening an
+//! input, downmixing its channels, resampling - is `forge-capture`'s,
+//! wherever a host opens it. Rate conversion is not implemented, so an
+//! [`AudioSource`] declaring another rate is refused rather than
+//! silently resampled. Adding it means a real filtered resampler
 //! (`rubato`), because decimating without one folds everything above the
 //! new Nyquist back into the speech band and yields confident wrong
 //! words instead of obvious noise.
-//!
-//! Reading audio from an [`AudioSource`] has no such restriction: the
-//! source declares its own format and is checked against it.
 //!
 //! # Every entry point here blocks
 //!
@@ -51,17 +48,14 @@ mod fetch;
 mod gates;
 pub mod normalize;
 
-#[cfg(any(test, feature = "test-helpers"))]
-pub mod test_support;
-
 pub use audio::{AudioSource, SAMPLE_RATE, Samples};
 // The device and its list are `forge-capture`'s types: this crate opens the
 // same device a client's shell does, so the shapes cross as re-exports rather
 // than as a second copy.
 pub use config::{Config, ConfigBuilder, ModelFacts, ModelSpec, spec_for_download};
 pub use engine::{
-    Busy, Capture, CaptureMeter, Engine, FrameSink, Outcome, Stages, StreamCapture, Ticket,
-    Transcript, WindowProgress,
+    Capture, CaptureMeter, Engine, FrameSink, Outcome, Stages, StreamCapture, Ticket, Transcript,
+    WindowProgress,
 };
 pub use error::Error;
 pub use fetch::{Progress, prepare};

@@ -325,9 +325,9 @@ pub struct Workspace {
     /// the run. Populated by `start_dictate_preflight`; inert when
     /// `[dictate] enabled` is false.
     pub(crate) dictate: Arc<crate::dictate::DictateState>,
-    /// Live dictation: the recording holding the microphone and the
-    /// submitted takes still awaiting a transcript. Driven by
-    /// `Command::DictateStart` / `Command::DictateStop`.
+    /// Live dictation: the takes being fed frames and the submitted
+    /// takes still awaiting a transcript. Driven by
+    /// `Command::DictateStream` / `Command::DictateStop`.
     pub(crate) dictate_runtime: Mutex<crate::dictate::DictateRuntime>,
     /// The `/dictate` overlay's input-device pick, shared by every
     /// session: `None` until one lands, then it overrides the
@@ -2635,13 +2635,12 @@ impl Workspace {
     /// produced would land anywhere, and stopping it now spends nothing
     /// further on it.
     ///
-    /// Only a take by THIS connection is closed: a device take's audio
-    /// comes from this machine and its recording task outlives any one
-    /// client, and a take that ended with another one started since is
-    /// not this connection's to close. The seat is free the moment this
-    /// returns, so a client that reconnects and starts again is not
-    /// refused by the take it left behind. Answers whether there was one
-    /// to close.
+    /// Only a take by THIS connection is closed: an entry with no sink
+    /// is not a connection's to close, and a take that ended with
+    /// another one started since is not this connection's to close. The
+    /// seat is free the moment this returns, so a client that reconnects
+    /// and starts again is not refused by the take it left behind.
+    /// Answers whether there was one to close.
     pub fn dictate_close(&self, key: &SessionSlot, initiator: u64) -> bool {
         let mut runtime = self.dictate_runtime.lock();
         let live = runtime
@@ -4992,12 +4991,6 @@ impl Workspace {
                     let outcome = self.delete_bench_result(&target, tier, &corpus);
                     self.push_models();
                     return outcome;
-                }
-                Command::DictateStart { key } => {
-                    let ws = Arc::clone(self);
-                    tokio::spawn(async move {
-                        crate::dictate::handle_dictate_start(&ws, key).await;
-                    });
                 }
                 Command::DictateStream { key, options, initiator } => {
                     let updates = self.update_sender();

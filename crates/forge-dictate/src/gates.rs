@@ -1,9 +1,8 @@
 //! The dictate gates: end-to-end runs against the real shipped
-//! weights, ignored by default because they need 1.5 GB of models and
-//! a voice to speak with. The clip is made with macOS `say`, so the
-//! whole module is macOS-only; the file-level cfg rather than one per
-//! test keeps the helpers from going dead-code on other platforms
-//! under `-D warnings`.
+//! weights, ignored by default because they need 1.5 GB of models. The
+//! clip is made with macOS `say`, so the whole module is macOS-only;
+//! the file-level cfg rather than one per test keeps the helpers from
+//! going dead-code on other platforms under `-D warnings`.
 //!
 //! ```bash
 //! cargo run -p forge-dictate --release --example fetch
@@ -12,8 +11,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::{Config, ConfigBuilder, Engine, Error, Outcome, Samples};
 use sha2::{Digest, Sha256};
@@ -195,144 +193,14 @@ fn a_long_take_gate_lands_complete() {
     );
 }
 
-/// The pipelining gate: over the capture path, a segment must
-/// transcribe WHILE the recording is still open, the landed text must
-/// carry every paragraph across the join, and the landed text must be
-/// exactly one normalizer pass over the joined raw - not per-segment
-/// rewrites, which is the failure that makes pipelined text visibly
-/// wrong.
+/// The stream-fed gate: the pipelined take, fed through
+/// `capture_stream` as the socket feeds it - a segment must settle
+/// while the take is still open, every paragraph must survive the
+/// join, and the landed text must be exactly one normalizer pass over
+/// the recorded join.
 #[test]
 #[ignore = "needs the ASR weights; generates a ~90 s `say` clip on first run"]
-fn a_pipelined_take_gate_transcribes_while_recording() {
-    shipped_weights_on_disk();
-    let pcm = read_clip("pipeline", PIPELINE_SCRIPT);
-    #[allow(clippy::cast_precision_loss)]
-    let audio = pcm.len() as f64 / f64::from(crate::SAMPLE_RATE);
-    eprintln!("gate clip: {audio:.1}s");
-    assert!(audio > 70.0, "the clip must cross the window ceiling, got {audio:.0}s");
-
-    let diagnostics = tempfile::tempdir().unwrap();
-    let cfg = ConfigBuilder::new().diagnostics_dir(diagnostics.path()).build();
-    let engine = crate::test_support::engine_with_feeding_microphone(
-        cfg,
-        Arc::new(pcm),
-        // Ten times faster than speech, still slow enough that a
-        // segment finishing means genuine overlap, not a feed that
-        // ended before the first cut.
-        Duration::from_millis(100),
-    )
-    .expect("engine must start");
-    engine.wait_ready().expect("the weights must load");
-    let mut capture = engine.try_capture("pipeline-gate").expect("the mic must be held");
-    let progress = capture.take_progress().expect("the capture carries a progress stream");
-    let recording_started = Instant::now();
-
-    // The overlap proof: a settled segment while the take is live.
-    let mut steps = Vec::new();
-    let deadline = Instant::now() + Duration::from_secs(120);
-    loop {
-        while let Ok(step) = progress.try_recv() {
-            steps.push(step);
-        }
-        if steps.iter().any(|step| step.done >= 1) {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "no segment settled while the recording was open: {steps:?}"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    assert!(
-        steps.iter().all(|step| step.total.is_none()),
-        "a live recording cannot know its total, got {steps:?}"
-    );
-    eprintln!("gate: segment settled during recording after {steps:?}");
-
-    // Finish only once the whole clip is in: at ten times real time
-    // the feed needs about a tenth of the clip's span, and finishing
-    // early would stop the microphone with paragraphs still unspoken.
-    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-    let feed_duration = Duration::from_millis((audio * 100.0) as u64) + Duration::from_secs(2);
-    while recording_started.elapsed() < feed_duration {
-        while let Ok(step) = progress.try_recv() {
-            steps.push(step);
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-
-    let ticket = capture.finish().expect("the take must finish");
-    let outcome = ticket.recv().expect("the take must be answered");
-    let Outcome::Transcript(transcript) = outcome else {
-        panic!("a spoken take must not read as silence: {outcome:?}");
-    };
-    assert!(!transcript.truncated, "no segment may outrun its decode budget");
-
-    // Completeness across the join: the first paragraphs sit in an
-    // early segment, the last in the tail, so both pieces reached the
-    // landed text in order.
-    let asr_lower = transcript.asr.to_lowercase();
-    let text_lower = transcript.text.to_lowercase();
-    for opener in PIPELINE_OPENERS {
-        assert!(
-            asr_lower.contains(opener),
-            "the recognition must carry the paragraph at {opener:?} - the join lost words"
-        );
-        assert!(
-            text_lower.contains(opener),
-            "the normalized text must carry the paragraph at {opener:?}"
-        );
-    }
-
-    // The tally gained its total at stop and counted everything down.
-    while let Ok(step) = progress.try_recv() {
-        steps.push(step);
-    }
-    let Some(last) = steps.last() else { panic!("the take must report its progress: {steps:?}") };
-    assert_eq!(
-        last.done,
-        last.total.expect("the stop must make the total known"),
-        "the final step is the completed take, got {steps:?}"
-    );
-    eprintln!("gate: {last:?}");
-
-    // Normalize once, over the join: the diagnostics store wrote the
-    // exact normalizer input, and the landed text must be one pass
-    // over it - not a per-segment rewrite, which reads differently.
-    let take_dir = std::fs::read_dir(diagnostics.path())
-        .expect("the diagnostics store must exist")
-        .find_map(|entry| Some(entry.ok()?.path()))
-        .expect("one take record");
-    let joined =
-        std::fs::read_to_string(take_dir.join("joined.txt")).expect("the join is recorded");
-    let text = std::fs::read_to_string(take_dir.join("text.txt")).expect("the text is recorded");
-    let joined_lower = joined.to_lowercase();
-    for opener in PIPELINE_OPENERS {
-        assert!(
-            joined_lower.contains(opener),
-            "the recorded join must carry the paragraph at {opener:?}"
-        );
-    }
-    let normalizer_path = dirs::cache_dir()
-        .map(|d| d.join("forge-dictate").join(Config::default().normalizer.expect("shipped").file))
-        .expect("cache");
-    let normalizer =
-        crate::normalize::Normalizer::load(&normalizer_path).expect("the normalizer must load");
-    let one_pass = normalizer
-        .normalize_with(&joined, Config::default().normalize_options)
-        .expect("the recorded join must normalize");
-    assert_eq!(text, one_pass, "the landed text must be exactly one normalizer pass over the join");
-}
-
-/// The stream-fed gate: the same pipelined take, fed through
-/// `capture_stream` as the socket will feed it. Everything the device
-/// gate proves must hold over this path too - a segment settling while
-/// the take is still open, every paragraph across the join, and the
-/// landed text exactly one normalizer pass over the recorded join -
-/// because a take the client streams must be the same take.
-#[test]
-#[ignore = "needs the ASR weights; generates a ~90 s `say` clip on first run"]
-fn a_streamed_take_gate_matches_the_device_path() {
+fn a_streamed_take_gate_transcribes_while_recording() {
     shipped_weights_on_disk();
     let pcm = read_clip("pipeline", PIPELINE_SCRIPT);
     let audio_seconds = pcm.len() / crate::SAMPLE_RATE as usize;
@@ -346,10 +214,10 @@ fn a_streamed_take_gate_matches_the_device_path() {
     let mut stream = engine.capture_stream().expect("the engine must take a stream");
     let progress = stream.capture.take_progress().expect("the capture carries a progress stream");
 
-    // The whole clip, pushed at ten times real time (the device gate's
-    // own pace), polling progress as it goes. A segment settling before
-    // the last push is the overlap proof: recognition ran while the
-    // stream was still open, not after it closed.
+    // The whole clip, pushed at ten times real time, polling progress
+    // as it goes. A segment settling before the last push is the
+    // overlap proof: recognition ran while the stream was still open,
+    // not after it closed.
     let mut steps = Vec::new();
     let mut settled_early = false;
     for chunk in pcm.chunks(crate::SAMPLE_RATE as usize) {
@@ -374,7 +242,7 @@ fn a_streamed_take_gate_matches_the_device_path() {
     };
     assert!(!transcript.truncated, "no segment may outrun its decode budget");
 
-    // Completeness across the join, the same probes the device gate uses.
+    // Completeness across the join.
     let asr_lower = transcript.asr.to_lowercase();
     let text_lower = transcript.text.to_lowercase();
     for opener in PIPELINE_OPENERS {
@@ -430,41 +298,38 @@ fn a_streamed_take_gate_matches_the_device_path() {
 /// `Ok` - so the answer's shape is the assertion, not the clock. The
 /// deadline only bounds a hang: the models run ~80x realtime, so a
 /// fully decoded backlog and an aborted one are both far inside it.
-/// The microphone and engine must still work afterwards.
+/// The engine must still work afterwards.
 #[test]
 #[ignore = "needs the ASR weights; generates a ~110 s `say` clip on first run"]
 fn a_pipelined_cancel_gate_ends_cleanly() {
     shipped_weights_on_disk();
     let pcm = read_clip("cancel", PIPELINE_SCRIPT);
-    let engine = crate::test_support::engine_with_feeding_microphone(
-        Config::default(),
-        Arc::new(pcm),
-        Duration::from_millis(100),
-    )
-    .expect("engine must start");
+    let engine = Engine::new(Config::default()).expect("engine must start");
     engine.wait_ready().expect("the weights must load");
-    let mut capture = engine.try_capture("pipeline-cancel").expect("the mic must be held");
-    let progress = capture.take_progress().expect("the capture carries a progress stream");
+    let mut stream = engine.capture_stream().expect("the engine must take a stream");
+    let progress = stream.capture.take_progress().expect("the capture carries a progress stream");
 
+    // The clip at the gates' own pace, polling progress as it goes, and
+    // stopped at the first settled segment: the cancel below needs
+    // segments still owed, not a finished take.
     let mut steps = Vec::new();
-    let deadline = Instant::now() + Duration::from_secs(120);
-    loop {
+    let mut settled_early = false;
+    for chunk in pcm.chunks(crate::SAMPLE_RATE as usize) {
+        assert!(stream.sink.push_mono(chunk), "every frame below the cap must be kept");
         while let Ok(step) = progress.try_recv() {
             steps.push(step);
         }
-        if steps.iter().any(|step| step.done >= 1) {
+        settled_early |= steps.iter().any(|step| step.done >= 1);
+        if settled_early {
             break;
         }
-        assert!(
-            Instant::now() < deadline,
-            "no segment settled while the recording was open: {steps:?}"
-        );
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(Duration::from_millis(100));
     }
+    assert!(settled_early, "a segment must settle while the stream is still open: {steps:?}");
 
     // Stop while segments are still owed, then cancel and DEMAND the
     // take's answer instead of dropping it unread.
-    let ticket = capture.finish().expect("the take must finish");
+    let ticket = stream.capture.finish().expect("the take must finish");
     ticket.cancel_token().cancel();
     let (answered, waiting) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
@@ -480,7 +345,7 @@ fn a_pipelined_cancel_gate_ends_cleanly() {
 
     // The engine takes another take and answers it - a real one, so
     // the cancellation demonstrably left working weights behind.
-    let second = engine.try_capture("pipeline-cancel-2").expect("the mic must be free");
+    let second = engine.capture_stream().expect("the engine must take another take");
     drop(second);
     let outcome = engine
         .transcribe(crate::Samples::mono(vec![0.5; crate::SAMPLE_RATE as usize]))
