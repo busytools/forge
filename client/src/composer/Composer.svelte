@@ -810,6 +810,12 @@
     if (opening) return;
     const live = untrack(() => take);
     if (live !== null) {
+      // **A take this seat is still closing is absorbed, not refused.** Its
+      // release is draining the capture for a moment - up to a fifth of a
+      // second - and a press inside that window has nothing to start and
+      // nothing to stop: the take it would name is the one the reader just
+      // let go of. A take on another seat is the one worth naming.
+      if (live.closing && boxKey(live.seat) === boxKey(untrack(() => slot))) return;
       box.dictateLine = { tone: 'bad', text: busyLine(live.seat) };
       return;
     }

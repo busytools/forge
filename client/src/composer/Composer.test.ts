@@ -1363,6 +1363,43 @@ describe('the key', () => {
   });
 
   /**
+   * A press inside the release's drain window is absorbed, not refused.
+   *
+   * The release keeps the capture open for a moment so the audio in flight
+   * lands, and the take is still on this side until it does. The press has
+   * nothing to start - the take it would refuse is the one the reader just
+   * let go of - so it is a no-op rather than the "in use" line, which would
+   * name the reader's own take back at them.
+   */
+  it('absorbs a press that lands while the release is draining', async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = open({ dictation: true });
+      harness.page.record = bound('right_cmd', 'auto');
+      flushSync();
+
+      key('ControlRight', 'keydown');
+      await opened();
+      vi.advanceTimersByTime(500); // a hold, not a tap
+      key('ControlRight', 'keyup'); // the release starts the drain
+      flushSync();
+
+      key('ControlRight', 'keydown'); // a press inside the window
+      flushSync();
+      expect(harness.sent, 'nothing new starts').toHaveLength(1);
+      expect(drawn(), 'and nothing is refused by name').not.toContain('in use');
+
+      settle();
+      await Promise.resolve();
+      expect(harness.sent.at(-1)?.command, 'and the take still stops once').toEqual({
+        dictate_stop: { key: { org: 'Busytools', project: 'forge', label: 'lead' }, submit: true },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /**
    * The card's counts move, rather than freezing at their first draw.
    *
    * The card draws them from the ring's own signals, so frames pushed while

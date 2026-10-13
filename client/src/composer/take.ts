@@ -267,6 +267,17 @@ export class LocalTake {
     this.release();
   }
 
+  /**
+   * Whether a release is draining the capture before it closes the take.
+   *
+   * A press inside that window has nothing to start and nothing to stop: the
+   * take it would refuse is the one the reader just let go of, and it frees
+   * itself in a moment.
+   */
+  get closing(): boolean {
+    return this.draining;
+  }
+
   /** The take is over: by the server's word, or by a drop. Idempotent. */
   release(): void {
     if (this.ended) return;
@@ -356,6 +367,12 @@ export class LocalTake {
 /** What a microphone that would not open says, in the vocabulary kept from the
  *  view this client replaced. */
 export function microphoneLine(why: unknown): string {
+  // The shell names its own failures in words - a device id that is gone, a
+  // device that will not open - and they are the reader's to act on, so they
+  // pass through; a browser's failures are DOMExceptions, read by name below.
+  if (typeof why === 'string' && why.trim() !== '') {
+    return `${why} \u{b7} dictation did not start`;
+  }
   const name = why instanceof DOMException ? why.name : '';
   switch (name) {
     case 'NotAllowedError':

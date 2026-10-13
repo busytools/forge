@@ -16,6 +16,7 @@ import {
   LocalTake,
   RELEASE_WAIT_MS,
   WENT_UNSENT,
+  microphoneLine,
   type MicSource,
 } from './take';
 
@@ -495,5 +496,28 @@ describe('a take whose socket is down', () => {
     take.stop(true);
     expect(mic.stopped, 'the release must end the recording there and then').toBe(true);
     take.release();
+  });
+});
+
+describe('the line a microphone that would not open leaves', () => {
+  /**
+   * The desktop's capture names what it knows: a device id that is gone, a
+   * device that will not open, and what else the machine offers. That is the
+   * reader's to act on, so it is not flattened into the generic line the
+   * browser's unnamed failures get.
+   */
+  it("keeps the shell's own words about the device", () => {
+    expect(
+      microphoneLine('no input device named "coreaudio:gone" (available: coreaudio:built-in)'),
+    ).toBe(
+      'no input device named "coreaudio:gone" (available: coreaudio:built-in) \u{b7} dictation did not start',
+    );
+  });
+
+  it('reads a browser refusal by its name, and an empty reason not at all', () => {
+    expect(microphoneLine(new DOMException('denied', 'NotAllowedError'))).toContain(
+      'the microphone was refused',
+    );
+    expect(microphoneLine('  ')).toBe('the microphone did not open \u{b7} dictation did not start');
   });
 });
