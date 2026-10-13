@@ -1,6 +1,7 @@
 /**
  * What the review page writes: the thread JSON its compose and reply paths
- * send, and the anchor capture its comments carry.
+ * send, the seal-and-nudge its finish sends, and the anchor capture its
+ * comments carry.
  *
  * **The anchor is captured here because the lines are here.** The page
  * draws the bounded content, so the line's text - and its neighbours - are
@@ -23,6 +24,7 @@
  */
 
 import type { DiffLineRecord, ReviewStatusRecord, ReviewThreadRecord } from '../session/wire';
+import { mintPromptId } from '../wire/ids';
 import type { SessionSlot } from '../wire/types';
 
 /** How many lines are captured on each side of an anchor, the crate's own
@@ -247,4 +249,61 @@ export function statusCommand(
   return {
     set_review_thread_status: { project: slot.project, branch, thread_id: threadId, status },
   };
+}
+
+/** What one send answers with: whether the command went, and the reply's own
+ *  body for the commands that answer through one. */
+export interface SendOutcome {
+  /** `false` only when the command never left - a closed socket, a seat with
+   *  no branch - which is also the only case the page draws a refusal for. */
+  went: boolean;
+  body: unknown;
+}
+
+/** The number a landed submit's reply carries, or `null` when the reply was
+ *  a word rather than a round. */
+function filedNumber(body: unknown): number | null {
+  if (typeof body !== 'object' || body === null) return null;
+  const number = (body as { number?: unknown }).number;
+  return typeof number === 'number' ? number : null;
+}
+
+/** The nudge a sealed round sends the seat whose branch the review belongs
+ *  to: a prompt in that seat's own chat, so the worker hears a review is
+ *  ready and reads it through the review MCP. The line is the one the view
+ *  this client replaced sent on its own seal. */
+function nudgeCommand(slot: SessionSlot, number: number) {
+  return {
+    prompt_under: {
+      key: slot,
+      text: `Review #${number} ready - address it via the review MCP (\`review__list\`).`,
+      attachments: [],
+      uuid: mintPromptId(),
+      source: 'you',
+    },
+  };
+}
+
+/**
+ * The finish: seal the drafted threads into a round through `send`, then
+ * nudge the seat with the line the round's own number names.
+ *
+ * **A reply that carried no round nudges nobody.** The store refused the
+ * submit or turned it down, so there is no review to read - and a worker
+ * sent to read one that does not exist is worse off than one told nothing.
+ * The submit going is what the round's clearing cares about; the nudge is
+ * owed only to a review that landed.
+ */
+export async function finishRound(
+  send: (command: unknown) => Promise<SendOutcome>,
+  slot: SessionSlot,
+  branch: string,
+  threadIds: string[],
+  summary: string | null,
+): Promise<boolean> {
+  const sealed = await send(submitCommand(slot, branch, threadIds, summary));
+  if (!sealed.went) return false;
+  const number = filedNumber(sealed.body);
+  if (number !== null) await send(nudgeCommand(slot, number));
+  return true;
 }

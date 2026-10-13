@@ -4,11 +4,13 @@ import type { DiffLineRecord, ReviewThreadRecord } from '../session/wire';
 import {
   anchorHash,
   captureContext,
+  finishRound,
   newThread,
   statusCommand,
   submitCommand,
   upsertCommand,
   withReply,
+  type SendOutcome,
 } from './write';
 
 const SLOT = { org: 'Busytools', project: 'forge', label: 'lead' };
@@ -159,5 +161,89 @@ describe('the commands the page writes', () => {
         status: 'Resolved',
       },
     });
+  });
+});
+
+describe('the finish', () => {
+  /** The seat whose review page is being finished - the worker's own, which
+   *  is the page the review is keyed to and never the lead's. */
+  const WORKER = { org: 'Busytools', project: 'forge', label: 'review-nudge' };
+
+  /** A page send: records every command, and answers the submit with `body`. */
+  function recordingSend(body: unknown): {
+    sent: unknown[];
+    send: (c: unknown) => Promise<SendOutcome>;
+  } {
+    const sent: unknown[] = [];
+    const send = (command: unknown): Promise<SendOutcome> => {
+      sent.push(command);
+      return Promise.resolve({
+        went: true,
+        body: 'submit_review' in (command as object) ? body : null,
+      });
+    };
+    return { sent, send };
+  }
+
+  /** A landed submit's reply: the minted round, as the socket delivers it. */
+  const LANDED = { id: 'r9', number: 4, summary: null, created_at: 'x' };
+
+  /**
+   * **The nudge is what the view this client replaced sent on its own seal**:
+   * a prompt into the session whose branch the review belongs to, one line
+   * naming the round and pointing at the review MCP - so the worker hears a
+   * review is ready and reads it back, live and on a fresh read.
+   */
+  it('seals the round, then nudges the seat with the line the terminal sent', async () => {
+    const { sent, send } = recordingSend(LANDED);
+
+    const sealed = await finishRound(send, WORKER, 'work/review-nudge', ['t1'], 'pass one');
+
+    expect(sealed, 'the round sealed').toBe(true);
+    expect(sent[0], 'the round is sealed first').toEqual(
+      submitCommand(WORKER, 'work/review-nudge', ['t1'], 'pass one'),
+    );
+    const nudge = sent[1] as { prompt_under?: Record<string, unknown> } | undefined;
+    expect(nudge?.prompt_under, 'the nudge was not dispatched').toBeDefined();
+    expect(
+      nudge?.prompt_under?.['key'],
+      'the nudge goes to the seat the review belongs to',
+    ).toEqual(WORKER);
+    expect(nudge?.prompt_under?.['text'], 'the words are the view this client replaced sent').toBe(
+      'Review #4 ready - address it via the review MCP (`review__list`).',
+    );
+    expect(nudge?.prompt_under?.['source'], 'the bubble reads as the reader own words').toBe('you');
+    expect(nudge?.prompt_under?.['attachments']).toEqual([]);
+    expect(typeof nudge?.prompt_under?.['uuid'], 'the prompt rides its own id').toBe('string');
+  });
+
+  /**
+   * A reply that carries no round - the store refused, or the dispatch was
+   * turned down - filed nothing to nudge anyone about, so the seat is left
+   * alone: a worker told to go read a review that does not exist is worse
+   * off than one told nothing.
+   */
+  it('nudges nobody when the reply carried no round', async () => {
+    const { sent, send } = recordingSend(null);
+
+    await finishRound(send, WORKER, 'work/review-nudge', ['t1'], null);
+
+    expect(sent, 'the submit went and nothing else').toEqual([
+      submitCommand(WORKER, 'work/review-nudge', ['t1'], null),
+    ]);
+  });
+
+  /** A submit that never left nudges nobody either: there is no review to read. */
+  it('nudges nobody when the submit never left', async () => {
+    const sent: unknown[] = [];
+    const send = (command: unknown): Promise<SendOutcome> => {
+      sent.push(command);
+      return Promise.resolve({ went: false, body: null });
+    };
+
+    const sealed = await finishRound(send, WORKER, 'work/review-nudge', ['t1'], null);
+
+    expect(sealed, 'a submit that never left sealed nothing').toBe(false);
+    expect(sent, 'the submit is all that was dispatched').toHaveLength(1);
   });
 });
