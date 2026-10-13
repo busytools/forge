@@ -14,10 +14,13 @@
    * row, which is what makes them span the table in both modes.
    */
   import { DiffView, DiffModeEnum } from '@git-diff-view/svelte';
-  import { mount, unmount } from 'svelte';
-  import type { ComponentProps } from 'svelte';
+  import { mount, unmount, type ComponentProps } from 'svelte';
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import { VList, type VListHandle } from 'virtua/svelte';
+  import { boxKey } from '../composer/box.svelte';
+  import type { Dictation, TakeLine } from '../composer/dictate.svelte';
+  import { noticeLine, joined } from '../composer/view';
+  import type { ComposerState } from '../composer/wire';
   import type { Connection } from '../socket';
   import type {
     DiffFileRecord,
@@ -27,6 +30,8 @@
   } from '../session/wire';
   import { diffLayerFrom } from '../session/wire';
   import type { SessionSlot } from '../wire/types';
+  import CommentCard from './CommentCard.svelte';
+  import { Landing, type ReviewSpot } from './dictate';
   import {
     anchorRow,
     doorSpot,
@@ -54,6 +59,10 @@
     threads,
     reviews,
     busy,
+    composer,
+    dictation,
+    dictate,
+    line = null,
     oncomment,
     onreply,
     onresolve,
@@ -69,6 +78,15 @@
     threads: ReviewThreadRecord[];
     reviews: ReviewSetRecord[];
     busy: boolean;
+    /** The seat's composer as the record narrows it: the take a landing is read
+     *  off, the notice, and the key and mode the settings panel states. */
+    composer: ComposerState;
+    /** Whether this install can dictate at all, which gates every mic. */
+    dictation: boolean;
+    /** The take this page owns, which the comment box's mic drives. */
+    dictate: Dictation;
+    /** A line about a take, which the box the mic was pressed in carries. */
+    line?: TakeLine | null;
     /** Both answer whether the write landed: a refusal keeps the draft. */
     oncomment: (comment: ComposedComment) => Promise<boolean>;
     onreply: (thread: ReviewThreadRecord, text: string) => Promise<boolean>;
@@ -87,9 +105,49 @@
     else set.add(key);
   }
 
-  /** The composer's spot, and its draft. */
-  let composing = $state<{ path: string; side: 'old' | 'new'; line: number } | null>(null);
-  let composeText = $state('');
+  /**
+   * The comment box this page has open: the spot it was opened on, the words,
+   * and the last take's line.
+   *
+   * **One object, because the card mounted into the row is handed it rather
+   * than the values**: the row is rebuilt whenever the canvas moves the box,
+   * and a component's props are read at the mount - so what the reader typed
+   * has to live where the page can still reach it, exactly as the composer's
+   * draft lives on its own seat's box. The card reads the fields through the
+   * proxy, so a write here is a repaint there.
+   */
+  const box = $state({
+    spot: null as ReviewSpot | null,
+    draft: '',
+    busy: false,
+    line: null as TakeLine | null,
+  });
+  // The write in flight is the page's, but the card reads it through the box:
+  // its props are read at the mount, and a button that never learned the write
+  // had started would file the same comment twice.
+  $effect(() => {
+    box.busy = busy;
+  });
+  /**
+   * This page's memory of the seat's takes: which one it watched, and what it
+   * has placed. A landing is placed once, and the memory is the seat's - the
+   * record in hand can be another seat's between two reads.
+   */
+  const landing = new Landing();
+  $effect(() => {
+    const words = landing.place(boxKey(slot), composer.take !== null, composer.notice);
+    if (words === null) return;
+    // No box on screen has nowhere to put them: the reader closed it, or the
+    // notice is one this page never watched (which the memory refuses).
+    if (box.spot === null) return;
+    box.draft = joined(box.draft, words);
+  });
+  // The line a take left - this page's own, or the record's word about one -
+  // under the box it was pressed in. Declared after the landing, whose memory
+  // is what says whether this page watched the take at all.
+  $effect(() => {
+    box.line = line ?? noticeLine(composer.notice, landing.watched);
+  });
   /** The thread whose reply box is open, and its draft. */
   let replying = $state<string | null>(null);
   let replyText = $state('');
@@ -103,7 +161,7 @@
   /** A scope change closes the composer, whose spot belonged to the old scope. */
   $effect(() => {
     void scopeCommit;
-    composing = null;
+    closeBox();
   });
 
   const scopeLayer = $derived(scopeCommit === null ? layer : (fetched.get(scopeCommit) ?? null));
@@ -295,10 +353,31 @@
     door.textContent = '+';
     door.setAttribute('aria-label', `comment on the ${side} line ${line}`);
     door.addEventListener('click', () => {
-      composing = { path, side, line };
-      composeText = '';
+      openBox({ path, side, line });
     });
     cell.append(door);
+  }
+
+  /** Open the comment box on a line, which is where a take's words will land. */
+  function openBox(spot: ReviewSpot): void {
+    box.spot = spot;
+    box.draft = '';
+    box.line = null;
+  }
+
+  /**
+   * Close it, whatever the write's outcome was.
+   *
+   * What the box was DRAWING goes with it: the settings panel it was holding
+   * open - nothing else on the page can close a panel with no box under it -
+   * and the line the take under it left, which belongs to the attempt rather
+   * than to the next line the reader opens.
+   */
+  function closeBox(): void {
+    box.spot = null;
+    box.draft = '';
+    box.line = null;
+    dictate.panel = false;
   }
 
   /**
@@ -314,13 +393,17 @@
    * its anchor is left untouched, one whose anchor row is not drawn (a
    * folded file, a scope mid-switch) does nothing at all, and only a real
    * insert, move or removal mutates the DOM.
+   *
+   * The comment card is a COMPONENT mounted by hand, because the row exists
+   * only in the viewer's own table: the page holds the box's state and the
+   * card reads it through the box, so a rebuilt row draws the same words.
    */
   $effect(() => {
     void scopeCommit;
     void mode;
     void closedFiles;
     void scoped;
-    void composing;
+    void box.spot;
     void replying;
     void busy;
     void now;
@@ -353,12 +436,13 @@
             build: (at: HTMLTableRowElement) => threadRow(at, thread, placed, side),
           });
         }
-        if (composing !== null && composing.path === path) {
+        if (box.spot !== null && box.spot.path === path) {
+          const spot = box.spot;
           want.push({
-            key: `c:${composing.side}:${composing.line}`,
-            side: composing.side,
-            line: composing.line,
-            build: (at: HTMLTableRowElement) => composerRow(at, path),
+            key: `c:${spot.side}:${spot.line}`,
+            side: spot.side,
+            line: spot.line,
+            build: (at: HTMLTableRowElement) => composerRow(at, spot),
           });
         }
       }
@@ -434,8 +518,7 @@
       if (row === null) return;
       const hit = rowSide(row, target, mode);
       if (hit === null) return;
-      composing = { path, side: hit.side, line: hit.line };
-      composeText = '';
+      openBox({ path, side: hit.side, line: hit.line });
     });
   }
 
@@ -512,8 +595,8 @@
     }
     card.append(acts);
     if (replying === thread.id) {
-      const box = document.createElement('div');
-      box.className = 'rv-reply';
+      const replyBox = document.createElement('div');
+      replyBox.className = 'rv-reply';
       const area = document.createElement('textarea');
       area.className = 'rv-txarea';
       area.rows = 2;
@@ -521,7 +604,7 @@
       area.placeholder = 'Respond to this thread...';
       area.setAttribute('aria-label', 'your response');
       area.dataset['editor'] = 'nowhere';
-      box.append(area);
+      replyBox.append(area);
       const row = document.createElement('div');
       row.className = 'rv-acts';
       const send = document.createElement('button');
@@ -554,8 +637,8 @@
         replyText = '';
       });
       row.append(send, cancel);
-      box.append(row);
-      card.append(box);
+      replyBox.append(row);
+      card.append(replyBox);
     }
     return card;
   }
@@ -581,71 +664,71 @@
     return insertRow(at, side, mode, wrap);
   }
 
-  function composerRow(at: HTMLTableRowElement, path: string): HTMLTableRowElement {
+  function commentSpot(): ReviewSpot | null {
+    return box.spot;
+  }
+
+  /**
+   * File the words the box is holding on the line it was opened on.
+   *
+   * The anchor is captured where the lines are: the row knows only the spot,
+   * so the line's text and its neighbours within the hunk come from the scope
+   * this page holds - the capture the crate's resolver defines.
+   */
+  function fileComment(text: string): void {
+    const at = commentSpot();
+    if (at === null) return;
+    const file = scopeFiles.find((held) => held.path === at.path);
+    const found = file === undefined ? null : findLine(file, at.side, at.line);
+    if (found === null) return;
+    const line = found.hunk.lines[found.index];
+    if (line === undefined) return;
+    // As with a reply: the composer stays open, holding the words, until the
+    // write lands.
+    void oncomment({
+      path: at.path,
+      side: at.side,
+      line: at.line,
+      text,
+      context: captureContext(found.hunk.lines, found.index),
+      lineText: line.text,
+    }).then((filed) => {
+      if (!filed) return;
+      closeBox();
+    });
+  }
+
+  /**
+   * The comment box: a component mounted into the row, over the box state the
+   * page holds.
+   *
+   * Its own card is drawn by `CommentCard` - the words, the two acts and the
+   * mic - because a row built from `createElement` cannot wear the shared
+   * dictation control, and re-deriving one here is what the review's box and
+   * the composer's box are meant to share. The root is held by the mount it
+   * was put into, so the row leaving takes the card and its window listeners
+   * with it.
+   */
+  function composerRow(at: HTMLTableRowElement, spot: ReviewSpot): HTMLTableRowElement {
     const wrap = document.createElement('div');
     wrap.className = 'rv-inline';
-    const card = document.createElement('article');
-    card.className = 'rv-thread compact';
-    const tops = document.createElement('div');
-    tops.className = 'rv-tops';
-    tops.append(span('rv-where', `${path} · line ${composing?.line ?? 0}`));
-    card.append(tops);
-    const area = document.createElement('textarea');
-    area.className = 'rv-txarea';
-    area.rows = 3;
-    area.value = composeText;
-    area.placeholder = 'Comment on this line...';
-    area.setAttribute('aria-label', 'your comment');
-    area.dataset['editor'] = 'nowhere';
-    card.append(area);
-    const acts = document.createElement('div');
-    acts.className = 'rv-acts';
-    const comment = document.createElement('button');
-    comment.type = 'button';
-    comment.className = 'rv-a on';
-    comment.textContent = 'comment';
-    comment.disabled = busy || composeText.trim() === '';
-    area.addEventListener('input', () => {
-      composeText = area.value;
-      // As in the reply box: the row is built once, so the button's state is
-      // kept current here rather than only where it was created.
-      comment.disabled = busy || area.value.trim() === '';
+    const card = mount(CommentCard, {
+      target: wrap,
+      props: {
+        spot,
+        box,
+        slot,
+        dictate,
+        dictation,
+        connection,
+        bind: composer.bind,
+        mode: composer.mode,
+        oncomment: fileComment,
+        oncancel: closeBox,
+      },
     });
-    comment.addEventListener('click', () => {
-      const at = composing;
-      if (at === null) return;
-      const file = scopeFiles.find((held) => held.path === at.path);
-      const found = file === undefined ? null : findLine(file, at.side, at.line);
-      if (found === null) return;
-      const line = found.hunk.lines[found.index];
-      if (line === undefined) return;
-      // As with a reply: the composer stays open, holding the words, until
-      // the write lands.
-      void oncomment({
-        path: at.path,
-        side: at.side,
-        line: at.line,
-        text: composeText.trim(),
-        context: captureContext(found.hunk.lines, found.index),
-        lineText: line.text,
-      }).then((filed) => {
-        if (!filed) return;
-        composing = null;
-        composeText = '';
-      });
-    });
-    const cancel = document.createElement('button');
-    cancel.type = 'button';
-    cancel.className = 'rv-a';
-    cancel.textContent = 'cancel';
-    cancel.addEventListener('click', () => {
-      composing = null;
-      composeText = '';
-    });
-    acts.append(comment, cancel);
-    card.append(acts);
-    wrap.append(card);
-    return insertRow(at, composing?.side ?? 'new', mode, wrap);
+    mounts.hold(wrap, () => void unmount(card));
+    return insertRow(at, spot.side, mode, wrap);
   }
 </script>
 

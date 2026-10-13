@@ -14,28 +14,14 @@
   import { Boxes, boxKey, type Box } from './box.svelte';
   import Autocomplete from './Autocomplete.svelte';
   import TakeCard from './TakeCard.svelte';
+  import DictateControl from './DictateControl.svelte';
   import DictationPanel from './DictationPanel.svelte';
   import Dock from './Dock.svelte';
   import Field from './Field.svelte';
   import { LIST_ID, offer, rowId, type Sources } from './autocomplete';
-  import {
-    boundCode,
-    down,
-    isBareModifier,
-    markChorded,
-    up,
-    type Action,
-    type Held,
-  } from './dictate-key';
-  import {
-    axesFor,
-    deviceFor,
-    rememberAxes,
-    rememberDefaultDevice,
-    rememberDevice,
-  } from './dictation';
+  import { axesFor, deviceFor, rememberAxes, rememberDevice } from './dictation';
   import { focusOf, type Where } from './editors';
-  import { busyLine, LocalTake } from './take';
+  import { bindPushToTalk, Dictation } from './dictate.svelte';
   import { FORGE_COMMANDS } from './forge-commands';
   import {
     blocked,
@@ -121,18 +107,6 @@
    * after the fact - the element that had it is gone.
    */
   let fromMic = false;
-  /** Whether the dictation panel is showing, which the mic opens. */
-  let panel = $state(false);
-  /**
-   * The client-captured take this page started, if any.
-   *
-   * One, not one per seat: the microphone is the client's own. This page
-   * refuses its own second press by name, and a take pressed from another
-   * seat of this client is refused by the server - one live take per
-   * connection, because a frame carries no seat - so a second stream never
-   * opens over the first.
-   */
-  let take = $state<LocalTake | null>(null);
   /**
    * The counts of the take this page last finished, kept while the record
    * still shows it transcribing.
@@ -144,18 +118,6 @@
   let wireDone = $state<{ seat: string; frames: number; bytes: number; elapsedMs: number } | null>(
     null,
   );
-  /** Whether a start is waiting on the browser's permission round trip. */
-  let opening = false;
-  /**
-   * A release or a cancel that landed while the microphone was still
-   * opening, applied the moment the take exists.
-   *
-   * The permission prompt is the everyday case for a first take in an
-   * origin, and it is seconds long: a gesture made during it must end the
-   * take rather than being dropped, or the reader records past the release
-   * until the next press stops it.
-   */
-  let pending: Action | null = null;
 
   /**
    * The axes and input this seat dictates with, which this client holds.
@@ -177,10 +139,43 @@
     box.device = next;
     rememberDevice(boxKey(slot), next);
   }
-  /** The bound key's press in flight, from its press to its release. */
-  let pressed: Held | null = null;
-  /** Whether this platform delivers Cmd, which is what a binding names. */
-  const mac = navigator.platform.toLowerCase().includes('mac');
+
+  /**
+   * The box the last take was attempted on, which is where a line about one
+   * it could not start is owed - the reader may have moved to another seat
+   * while the microphone was opening.
+   */
+  let lineBox: Box | null = null;
+
+  /**
+   * The take this page owns.
+   *
+   * One, not one per seat: the microphone is the client's own, so the box's
+   * own mic and the dock's words row drive this same take - a second press
+   * anywhere is refused by name, and a take pressed from another view of the
+   * same seat is refused by the server, one live take per connection.
+   */
+  const dictate = new Dictation({
+    connection: () => connection,
+    seat: () => untrack(() => slot),
+    shown: () => composer.take !== null,
+    options: () => untrack(() => seatAxes),
+    device: () => deviceFor(boxKey(untrack(() => slot))),
+    onStart: () => {
+      const target = boxes.of(boxKey(untrack(() => slot)));
+      lineBox = target;
+      target.dictateLine = null;
+    },
+    onLine: (line) => {
+      (lineBox ?? box).dictateLine = line;
+    },
+    onRefused: (line) => {
+      box.dictateLine = line;
+    },
+    onEnded: (counts) => {
+      wireDone = counts;
+    },
+  });
 
   const composer = $derived(composerState(record));
   /** This seat's own key, which is what the pinned-row store is read under. */
@@ -202,7 +197,8 @@
    */
   const wire = $derived.by(() => {
     const shown = boxKey(slot);
-    if (take !== null) return boxKey(take.seat) === shown ? take.wire : null;
+    if (dictate.take !== null)
+      return boxKey(dictate.take.seat) === shown ? dictate.take.wire : null;
     if (wireDone === null || wireDone.seat !== shown || composer.take === null) return null;
     // No pace past the release: the line's live reading belongs to a take
     // that is still producing. The levels go with them - the section bar holds
@@ -619,7 +615,7 @@
       // `dispatch` refusal was about - so an outstanding answer would take a
       // refused take as its own reason and clear the stand-down that stops it
       // being sent twice.
-      if (opening || untrack(() => take) !== null) {
+      if (dictate.opening || untrack(() => dictate.take) !== null) {
         box.dictateLine = { tone: 'bad', text: message.why };
         return;
       }
@@ -757,208 +753,61 @@
   }
 
   /**
-   * Open the microphone and start a take this client captures.
+   * The push-to-talk key, shared with every other surface that takes typing:
+   * the same binding, the same press-and-release rule, and the same gate on
+   * the install offering dictation at all.
    *
-   * Async, because the browser's permission round trip is: the presses that
-   * land while it is open are ignored rather than opening a second stream.
-   * A microphone that will not open never reaches the server - it is this
-   * side's failure, and it draws as one - and the take itself is registered
-   * by the server the moment it receives `dictate_stream`, so the frames
-   * that follow always find it.
+   * The one thing that is this box's own is where a begin puts the keyboard:
+   * **it comes to the box before the take starts**, because the shortcut is
+   * how a reader begins without the mouse and the transcript lands where
+   * their keys already are. The guard is insurance rather than a live
+   * condition: while a prompt has the slot the composer's field is morphed
+   * away, so there is no element to focus and no observable difference to
+   * pin. It becomes load-bearing the day a morph keeps the field mounted
+   * under the dock.
    */
-  async function startTake(): Promise<void> {
-    if (opening) return;
-    const live = untrack(() => take);
-    if (live !== null) {
-      box.dictateLine = { tone: 'bad', text: busyLine(live.seat) };
-      return;
-    }
-    const at = boxKey(untrack(() => slot));
-    const target = boxes.of(at);
-    target.dictateLine = null;
-    // A gesture from an earlier attempt has nothing to stop.
-    pending = null;
-    opening = true;
-    try {
-      // The pick in force AT THE PRESS, read once: the panel stays live
-      // under the permission prompt, so a pick changed while the open is in
-      // flight must not turn the take the reader asked for into a learned
-      // "default" - nor a default open into a pick's name.
-      const picked = deviceFor(at);
-      const started = await LocalTake.begin({
-        connection,
-        seat: untrack(() => slot),
-        // The axes in force, which the panel's own state holds: re-reading
-        // storage here would miss an edit made since the page drew.
-        options: untrack(() => seatAxes),
-        device: picked,
-        onLine: (text) => {
-          target.dictateLine = { tone: 'bad', text };
-        },
-        onEnded: () => {
-          const finished = take;
-          if (finished !== null) {
-            wireDone = {
-              seat: boxKey(finished.seat),
-              frames: finished.wire.frames,
-              bytes: finished.wire.bytes,
-              // The clock freezes with the counts: the take is over, and a
-              // duration that kept counting would be reading the wait instead.
-              elapsedMs: finished.wire.elapsedMs,
-            };
-          }
-          take = null;
-        },
-      });
-      if (started === null) {
-        pending = null;
-        return;
-      }
-      // A take with no pick records from the system default, and opening it
-      // is the one moment the browser names what that default IS - the list
-      // it offers carries no default mark. The panel's row says the name
-      // from then on.
-      if (picked === null && started.resolved !== null && started.resolved.label !== '') {
-        rememberDefaultDevice(started.resolved);
-      }
-      take = started;
-      if (pending !== null) {
-        const held = pending;
-        pending = null;
-        started.stop(held === 'finish');
-      }
-    } finally {
-      opening = false;
-    }
-  }
-
-  /** What the bound key asks for, the same three the view this client replaced had. */
-  function act(action: Action): void {
-    if (action === 'begin') {
-      // **The keyboard comes to the box before the take starts** (#1669): the
-      // shortcut is how a reader begins without the mouse, so the transcript
-      // lands where their keys already are.
-      //
-      // The guard is insurance rather than a live condition: while a prompt
-      // has the slot the composer's field is morphed away, so there is no
-      // element to focus and no observable difference to pin. It becomes
-      // load-bearing the day a morph keeps the field mounted under the dock.
+  bindPushToTalk({
+    dictate: () => dictate,
+    offered: () => dictation,
+    bind: () => composer.bind,
+    mode: () => composer.mode,
+    onBegin: () => {
       if (focusOf(where) === 'composer') field?.focus();
-      void startTake();
-      return;
-    }
-    // A gesture during the open is HELD for the take it belongs to: the
-    // permission prompt is seconds long, and dropping it would record past
-    // the reader's release.
-    if (opening) {
-      pending = action;
-      return;
-    }
-    // A take this page is holding: the microphone is ours to let go of, and
-    // the frames stop with it.
-    const live = untrack(() => take);
-    if (live !== null) {
-      live.stop(action === 'finish');
-      return;
-    }
-    // A take this page did NOT start, which the record still shows - a page
-    // reloaded mid-take, or another view's own on the same seat. The row is
-    // on this reader's screen, so the key means here what it means there.
-    if (composer.take !== null) {
-      void connection.dispatch({ dictate_stop: { key: slot, submit: action === 'finish' } });
-    }
-  }
+    },
+  });
 
   /**
-   * The push-to-talk key, which is how a take begins and ends.
-   *
-   * Registered on the window rather than on the field: the binding is a bare
-   * modifier, so it arrives wherever the focus happens to be, and the view
-   * this client replaced registered its own handler globally for the same
-   * reason. What the key means is read when one arrives rather than here, so
-   * this registers once instead of re-registering on every frame the record
-   * moves.
+   * The Escape a live take consumes, and the panel's own: registered on the
+   * window rather than on the field, so it arrives wherever the focus is -
+   * the same rule the view this client replaced applied. It stays here rather
+   * than moving into the shared mic, because this page draws its dock in the
+   * control's place while a prompt holds the slot and the key must keep
+   * working then.
    */
   $effect(() => {
     if (!dictation) return;
     const onDown = (event: KeyboardEvent): void => {
-      // A held key repeats, and a repeat carries no instruction - the same rule
-      // the view this client replaced applied, and without it a toggle take
-      // stops once per repeat.
-      if (event.repeat) return;
-      if (event.key === 'Escape') {
-        // A live take consumes Esc, the same rule the view this client replaced
-        // applied: the surfaces under it never see the key, so one press is one
-        // command and the list a field would close stays where it is. A take
-        // still OPENING counts, for the same reason a reader cannot tell the
-        // two apart.
-        if (composer.take !== null || opening) {
-          event.preventDefault();
-          event.stopPropagation();
-          act('cancel');
-        } else if (panel) {
-          // The next Escape belongs to the panel, which is the surface that is
-          // open rather than a take that is not.
-          event.preventDefault();
-          event.stopPropagation();
-          panel = false;
-          field?.focus();
-        }
-        return;
+      if (event.key !== 'Escape') return;
+      // A live take consumes Esc: the surfaces under it never see the key, so
+      // one press is one command and the list a field would close stays where
+      // it is. A take still OPENING counts, for the same reason a reader
+      // cannot tell the two apart.
+      if (composer.take !== null || dictate.opening) {
+        event.preventDefault();
+        event.stopPropagation();
+        dictate.act('cancel');
+      } else if (dictate.panel) {
+        // The next Escape belongs to the panel, which is the surface that is
+        // open rather than a take that is not.
+        event.preventDefault();
+        event.stopPropagation();
+        dictate.panel = false;
+        field?.focus();
       }
-      if (event.code !== boundCode(composer.bind, mac)) {
-        // Any other KEY while the press is down makes it a chord, and the
-        // chord's release discards what the press began. A bare modifier is
-        // not a key: those go through unchorded.
-        if (!isBareModifier(event.key)) pressed = markChorded(pressed);
-        return;
-      }
-      const step = down(pressed, composer.take !== null, Date.now(), composer.mode);
-      pressed = step.held;
-      if (step.action !== null) act(step.action);
-    };
-    const onUp = (event: KeyboardEvent): void => {
-      if (event.code !== boundCode(composer.bind, mac)) return;
-      const step = up(pressed, Date.now(), composer.mode);
-      pressed = step.held;
-      if (step.action !== null) act(step.action);
     };
     window.addEventListener('keydown', onDown, true);
-    window.addEventListener('keyup', onUp);
-    return () => {
-      window.removeEventListener('keydown', onDown, true);
-      window.removeEventListener('keyup', onUp);
-    };
+    return () => window.removeEventListener('keydown', onDown, true);
   });
-
-  /** A hold on the mic that opens the settings instead of firing a take. */
-  const MIC_HOLD_MS = 450;
-  /**
-   * How long after a hold fires its trailing click may still arrive. The
-   * swallow must expire: a hold whose click never reaches the button (a drag
-   * off, or a touch long-press whose platform sends none) would otherwise eat
-   * the NEXT keyboard or assistive activation of the mic.
-   */
-  const MIC_SWALLOW_MS = 800;
-  let holdTimer: ReturnType<typeof setTimeout> | null = null;
-  /** When the last hold fired, so its release does not also read as a press. */
-  let heldAt = 0;
-
-  /**
-   * The mic is the trigger and the door both: a press starts or ends a take -
-   * a phone has no push-to-talk key, so a mic that only SHOWED the settings
-   * would leave a finger no way to dictate - and a hold opens what dictation
-   * is set to (Ved, 2026-10-08: press once to dictate, hold for settings).
-   */
-  function mic(): void {
-    if (heldAt !== 0 && Date.now() - heldAt < MIC_SWALLOW_MS) {
-      heldAt = 0;
-      return;
-    }
-    heldAt = 0;
-    fromMic = true;
-    micTake();
-  }
 
   /**
    * **A started take keeps the caret on the mic** (Ved, 2026-10-09).
@@ -976,54 +825,9 @@
     micEl?.focus();
   });
 
-  function micHoldStart(event: PointerEvent): void {
-    // Primary button only: a right-click hold is not a hold.
-    if (event.button !== 0) return;
-    heldAt = 0;
-    holdTimer = setTimeout(() => {
-      holdTimer = null;
-      heldAt = Date.now();
-      panel = true;
-    }, MIC_HOLD_MS);
-  }
-
-  function micHoldEnd(): void {
-    if (holdTimer !== null) {
-      clearTimeout(holdTimer);
-      holdTimer = null;
-    } else if (heldAt !== 0) {
-      // The hold fired, so its release is when the trailing click arrives:
-      // re-anchor the swallow here, or a hold longer than its window would
-      // start a take on release.
-      heldAt = Date.now();
-    }
-  }
-
   /** Abandon a take without submitting it, which the dock's Escape does. */
   function abandon(): void {
-    void connection.dispatch({ dictate_stop: { key: slot, submit: false } });
-  }
-
-  /**
-   * The mic on the dock's words row: press to begin a take, press to end it -
-   * the same press semantics the composer's own mic carries. Ending submits,
-   * so the words land in the row they were spoken into.
-   */
-  function micTake(): void {
-    const live = untrack(() => take);
-    // **A take on ANOTHER seat is not this row's to end.** The microphone is
-    // this client's, but the take belongs to the seat it started on - so the
-    // press is refused by name, which is the spec's own case for a second seat,
-    // rather than silently stopping a take this reader cannot see.
-    if (live !== null && boxKey(live.seat) !== boxKey(slot)) {
-      box.dictateLine = { tone: 'bad', text: busyLine(live.seat) };
-      return;
-    }
-    if (opening || live !== null || composer.take !== null) {
-      act('finish');
-      return;
-    }
-    void startTake();
+    dictate.act('cancel');
   }
 
   /**
@@ -1123,7 +927,7 @@
           land={dockLanded}
           onanswer={remember}
           onabandon={abandon}
-          onmic={micTake}
+          onmic={() => dictate.toggle()}
           {dictation}
           takeline={box.dictateLine}
           answered={box.answeredKey !== null &&
@@ -1146,29 +950,15 @@
       {#snippet ctls()}
         <span class="ctls">
           {#if dictation}
-            <button
-              class="mic"
-              type="button"
-              bind:this={micEl}
-              title="press to dictate, hold or Shift+Enter for settings"
-              aria-label={take === null && composer.take === null ? 'dictate' : 'stop dictating'}
-              aria-expanded={panel}
-              onpointerdown={micHoldStart}
-              onpointerup={micHoldEnd}
-              onpointerleave={micHoldEnd}
-              onkeydown={(event: KeyboardEvent) => {
-                // **The hold's door for a keyboard.** The press is the button's
-                // own click; the settings need one modifier shape, said in the
-                // title so it is discoverable rather than folklore.
-                if (event.key === 'Enter' && event.shiftKey) {
-                  event.preventDefault();
-                  panel = true;
-                }
+            <DictateControl
+              {dictate}
+              onpress={() => {
+                fromMic = true;
               }}
-              onclick={mic}
-            >
-              <Icon name="mic" />
-            </button>
+              element={(el: HTMLElement | null) => {
+                micEl = el;
+              }}
+            />
           {/if}
           {#if running}
             <button class="stop" type="button" title="stop" aria-label="stop" onclick={stop}>
@@ -1196,7 +986,7 @@
                  would be typed into is the row they arrive on, so nothing is
                  added and nothing moves when a take starts or ends; the
                  controls ride it, and the surface's ring carries the state. -->
-            <TakeCard take={composer.take} {wire} oncancel={() => act('cancel')} spread />
+            <TakeCard take={composer.take} {wire} oncancel={() => dictate.act('cancel')} spread />
             {@render ctls()}
           {:else}
             <!-- The list belongs to the field rather than being a surface the reader
@@ -1246,7 +1036,7 @@
        `.comp`, as it did before the surface existed. Anything drawn inside the
        surface's box rides its lanes' clipping, and this is the one piece here
        that leaves the box entirely. -->
-  {#if panel}
+  {#if dictate.panel}
     <DictationPanel
       {connection}
       axes={seatAxes}
@@ -1257,7 +1047,7 @@
       onaxes={setAxes}
       ondevice={setDevice}
       onclose={() => {
-        panel = false;
+        dictate.panel = false;
         // The keyboard goes back where Escape puts it, so closing by the
         // button is not a dead end for a keyboard reader.
         field?.focus();
