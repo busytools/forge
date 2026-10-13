@@ -219,9 +219,11 @@ pub enum ClientMessage {
     /// One document, read out of a seat's own tree for a viewer's route.
     ///
     /// `path` resolves against the seat's working directory, and `reviewable`
-    /// is what the hand-off flagged: it rides the read back so the route
-    /// knows whether to offer comments. The answer is a `document_read`
-    /// message or an `error` naming it; those are its only two.
+    /// is what the hand-off asked for - the hand-off's own fact, refused on a
+    /// PDF because that kind can never carry a review. Whether the DOCUMENT
+    /// is reviewable is the read's own answer, not this flag's echo. The
+    /// answer is a `document_read` message or an `error` naming it; those are
+    /// its only two.
     DocumentRead {
         session: SessionSlot,
         path: String,
@@ -589,7 +591,7 @@ mod tests {
         };
         assert_eq!(session, seat, "the seat whose tree the path resolves against");
         assert_eq!(path, "docs/readme.md");
-        assert!(reviewable, "the flag the hand-off passed");
+        assert!(reviewable, "the reviewable flag the request carried");
 
         let answer = ServerMessage::DocumentRead {
             session: seat.clone(),

@@ -2073,8 +2073,8 @@ pub enum SessionUpdate {
     /// parked call, and the reader's answer releases it - `NotNow` here, or
     /// `Done` when the viewer's finish files the reading. `path` is the
     /// resolved absolute path, the viewer's stable address; `reviewable` is
-    /// what the hand-off flagged, so a viewer knows whether to offer
-    /// comments.
+    /// what the hand-off asked for - the ask's own fact rather than the
+    /// document's, because a readable document offers its review either way.
     DocumentHandOffPending {
         key: SessionSlot,
         id: Uuid,

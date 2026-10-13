@@ -2414,7 +2414,7 @@ mod tests {
         assert_eq!(path, "/proj/docs/readme.md", "and the resolved absolute path");
         assert_eq!(document_kind, DocumentKind::Markdown, "and the kind the read detected");
         assert_eq!(bytes, "IyBoaQo=", "the bytes base64: what a client decodes is the document");
-        assert!(reviewable, "and the flag the hand-off passed");
+        assert!(reviewable, "and whether the document is reviewable");
         assert_eq!(content_hash, "42", "and the document's hash, as decimal digits");
         assert_eq!(threads.len(), 1, "the document's OWN comments ride the answer");
         assert_eq!(threads[0].id, "d1");
