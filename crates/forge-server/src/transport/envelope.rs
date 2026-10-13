@@ -254,8 +254,8 @@ pub enum ServerMessage {
     },
     /// A page of one conversation, in answer to `more`: whole turns, each with
     /// the key the server named it by and the messages it ran as. Grouping a
-    /// run of calls inside a turn is the client's, so the units the server
-    /// folded do not cross.
+    /// run of calls inside a turn is the client's, so the messages cross and no
+    /// drawing of them does.
     Page {
         conversation: SessionSlot,
         turns: Vec<crate::transport::wire::TurnWire>,

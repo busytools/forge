@@ -62,11 +62,10 @@ forge-test-harness ─→ primitives + sdk + workspace + server
   facade.
 - **`forge-server`** - the server: what a client reads of the core, and
   no view of its own. The read surface a client uses, the session records
-  as a view sees them, the peer envelope parsing in both directions, the
-  tool family table, forge's own slash commands, the policy that folds a
-  run of blocks, the transcript
-  fold that turns a conversation's messages into the units a view draws,
-  the sub-agent instance list the session task's own fold keeps and
+  as a view sees them, the peer envelope parsing, forge's own slash
+  commands, the transcript
+  fold that says where a conversation's turns sit and the task endings it
+  carries, the sub-agent instance list the session task's own fold keeps and
   pushes, the `ReadCallOutput` verb (with the workspace's tail reader
   re-exported for views), the boot path the `forge` binary runs, and the
   socket that carries all of it to whatever is drawing.
@@ -155,8 +154,8 @@ Work top-down; first match wins.
    verb on the view surface below, not a bare method.
 10. **A session record as a view sees it, or a decision any view would
    make over one?** (the render-ready record, the reducer that derives
-   it, the policy that decides how a run of blocks folds, the peer
-   envelope parsing in both directions) -> `forge-server`. Sits
+   it, the transcript fold that says where a conversation's turns sit, the
+   peer envelope parsing) -> `forge-server`. Sits
    between workspace and the views; the test is "does this render?" -
    if it does, it is the view's.
 11. **A widget, screen, layout, or per-view presentation state?** -> the

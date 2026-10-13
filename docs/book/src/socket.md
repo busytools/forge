@@ -625,12 +625,13 @@ message agree on it, and a client reconciles the two by id. It is also what
 lets a view hold the forged row while the prompt waits in the pile: the
 `command_lifecycle` frames carry the same id.
 
-**The server's fold and the client's are two drawings of one conversation.**
-The server folds a conversation into the units a view draws (and into the
-transcript reads); the client's chat makes its own calls over the same
+**The server's fold and the client's are two readings of one conversation.**
+The server folds a conversation into where its turns sit and the task
+endings it holds, which is what its pages are cut on and what a carried
+ending rides; the client's chat makes its own calls over the same
 frames - its own unit fold, its own lifecycle carving, its own status
-aggregation. Both are rules about a drawing rather than facts about a
-session, and the client's answer is the one on screen.
+aggregation. The drawing is the client's, and the client's answer is the
+one on screen.
 
 ## What is not here
 

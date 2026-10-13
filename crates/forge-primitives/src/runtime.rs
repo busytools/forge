@@ -468,9 +468,9 @@ pub struct SessionTurnState {
     /// Current mode resolution alongside the human-readable label.
     pub mode_state: Option<ModeState>,
 
-    /// Whether an `AvailableAgentsUpdate` has been emitted for this
-    /// turn. The first `system/init` of a turn carries the catalogue;
-    /// subsequent re-fires within the same turn are no-ops.
+    /// Whether the agents catalogue has been emitted for this turn. The first
+    /// `system/init` of a turn carries it; subsequent re-fires within the same
+    /// turn are no-ops.
     pub agents_emitted_this_turn: bool,
 
     /// Last assistant error subtype seen on the wire - survives
