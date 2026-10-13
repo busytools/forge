@@ -1,11 +1,11 @@
 //! What a view has learned from the stream, which its first render and every
 //! later one both read.
 //!
-//! Four of the facts here are announced on the wire once and retained by
-//! nobody: whether a completion has been shown, what a take is doing, which
-//! seats a view is showing, and whether a seat's failed turn has been shown
-//! since it failed. A view that attaches to an already-running session
-//! cannot reconstruct them, so they are folded here rather than in the view.
+//! Three of the facts here are announced on the wire once and retained by
+//! nobody: whether a completion has been shown, which seats a view is
+//! showing, and whether a seat's failed turn has been shown since it failed.
+//! A view that attaches to an already-running session cannot reconstruct
+//! them, so they are folded here rather than in the view.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
@@ -143,17 +143,14 @@ impl Live {
         self.attached.contains_key(slot)
     }
 
-    /// Fold one update in, answering what it asks of each page.
+    /// Fold one update in: the marks it moves, and the composer's own record.
     ///
-    /// The filter is what keeps a busy turn from re-sending the fleet for
-    /// every token of it: only the updates that can change what a page
-    /// draws redraw it. Two answers rather than one, because the pages are
-    /// different: a take's twenty readings a second are the composer's news
-    /// and not the fleet's, and the fleet's region carries no composer.
-    pub fn apply(&mut self, update: &SessionUpdate) -> Redraw {
-        let composer = self.composer.apply(update);
-        let fleet = match fleet_news(update) {
-            FleetNews::Nothing => false,
+    /// The classification is what keeps a busy turn from mattering here for
+    /// every token of it: only the updates that can change what a row draws
+    /// move a mark.
+    pub fn apply(&mut self, update: &SessionUpdate) {
+        self.composer.apply(update);
+        match fleet_news(update) {
             // A turn finished on a session this page is not showing, so the
             // row earns its diamond until the session is opened. A seat a
             // page is open on has already shown it, so it earns nothing,
@@ -162,7 +159,6 @@ impl Live {
                 if !self.attached.contains_key(key) {
                     self.unseen.mark_completed(key);
                 }
-                true
             }
             // Work started again, which supersedes the completion the
             // diamond marks, and a fresh occupant whose history is not a
@@ -170,11 +166,9 @@ impl Live {
             // clears it too, so this is the clear for a seat nobody opened.
             FleetNews::Running(key) | FleetNews::Occupant(key) => {
                 self.unseen.clear(key);
-                true
             }
-            FleetNews::Redraw => true,
-        };
-        Redraw { fleet, composer }
+            FleetNews::Nothing | FleetNews::Redraw => {}
+        }
     }
 }
 
@@ -304,23 +298,6 @@ pub fn fleet_news(update: &SessionUpdate) -> FleetNews<'_> {
         | SessionUpdate::ConnectorSubscriptionsChanged { .. } => FleetNews::Redraw,
         // Everything else is the conversation, which no row shows.
         _ => FleetNews::Nothing,
-    }
-}
-
-/// What one update asks of the two pages that fold the stream: the fleet
-/// region, which draws rows and marks, and the composer, which draws a
-/// take, a prompt and a sign-in. An update can be news to one and not the
-/// other, so one answer cannot serve both.
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
-pub struct Redraw {
-    pub fleet: bool,
-    pub composer: bool,
-}
-
-impl Redraw {
-    /// Whether either page has to be redrawn.
-    pub fn any(self) -> bool {
-        self.fleet || self.composer
     }
 }
 
@@ -460,10 +437,9 @@ mod tests {
         live.apply(&appended(&slot, result_message("success", false)));
         assert!(live.snapshot().unseen.is_unseen(&slot), "precondition: the turn armed it");
 
-        assert!(
-            live.apply(&appended(&slot, session_state("running"))).fleet,
-            "a turn starting redraws the page",
-        );
+        let starting = appended(&slot, session_state("running"));
+        assert!(fleet_news(&starting).any(), "a turn starting redraws the page");
+        live.apply(&starting);
         assert!(
             !live.snapshot().unseen.is_unseen(&slot),
             "and clears a completion nobody looked at",
@@ -523,26 +499,23 @@ mod tests {
         let slot = SessionSlot::lead("Org", "forge");
         let mut live = Live::new();
 
-        assert!(
-            live.apply(&appended(&slot, result_message("error_during_execution", true))).fleet,
-            "a failed turn redraws the rows the failure mark rides",
-        );
+        let failed = appended(&slot, result_message("error_during_execution", true));
+        assert!(fleet_news(&failed).any(), "a failed turn redraws the rows the failure mark rides");
+        live.apply(&failed);
         assert!(
             !live.snapshot().unseen.is_unseen(&slot),
             "but a turn that failed is not a turn that finished, so no diamond",
         );
 
-        assert!(
-            live.apply(&appended(&slot, result_message("success", false))).fleet,
-            "a finished turn redraws the page",
-        );
+        let finished = appended(&slot, result_message("success", false));
+        assert!(fleet_news(&finished).any(), "a finished turn redraws the page");
+        live.apply(&finished);
         assert!(live.snapshot().unseen.is_unseen(&slot), "and leaves the diamond");
 
         let other = SessionSlot::lead("Org", "other");
-        assert!(
-            live.apply(&appended(&other, result_message("success", false))).fleet,
-            "a second slot's finish is the same kind of event",
-        );
+        let elsewhere = appended(&other, result_message("success", false));
+        assert!(fleet_news(&elsewhere).any(), "a second slot's finish is the same kind of event");
+        live.apply(&elsewhere);
         let unseen = live.snapshot().unseen;
         assert!(unseen.is_unseen(&other), "and earns its own diamond");
         assert!(unseen.is_unseen(&slot), "without clearing the first slot's");
@@ -557,10 +530,9 @@ mod tests {
         let mut live = Live::new();
         live.attach(&slot, None);
 
-        assert!(
-            live.apply(&appended(&slot, result_message("success", false))).fleet,
-            "the row settles out of running, so the page is redrawn",
-        );
+        let finished = appended(&slot, result_message("success", false));
+        assert!(fleet_news(&finished).any(), "the row settles out of running, so the page redraws");
+        live.apply(&finished);
         assert!(
             !live.snapshot().unseen.is_unseen(&slot),
             "and the page that is open on it has shown the turn",
@@ -575,10 +547,9 @@ mod tests {
         live.attach(&slot, None);
         live.detach(&slot);
 
-        assert!(
-            live.apply(&appended(&slot, result_message("success", false))).fleet,
-            "the diamond is the home's news again",
-        );
+        let finished = appended(&slot, result_message("success", false));
+        assert!(fleet_news(&finished).any(), "the diamond is the home's news again");
+        live.apply(&finished);
         assert!(
             live.snapshot().unseen.is_unseen(&slot),
             "so a seat nobody is showing earns its diamond",
@@ -643,50 +614,42 @@ mod tests {
         );
     }
 
-    /// **A turn's start redraws, and without the arm the row kept the idle
-    /// it last read** (#1887, measured at ~40s while an agent ran underneath).
-    /// The read is what turns the row running: the roster folds
+    /// **A turn's start is the home's news, and without the arm the row kept
+    /// the idle it last read** (#1887, measured at ~40s while an agent ran
+    /// underneath). The read is what turns the row running: the roster folds
     /// `turn_pending`, which is stamped when the prompt is routed rather than
     /// when a frame lands, so the state is already there for the asking.
     #[test]
     fn a_prompts_lifecycle_redraws_the_page() {
         let slot = SessionSlot::lead("Org", "forge");
-        let mut live = Live::new();
 
         for state in ["queued", "started", "completed", "cancelled", "discarded", "refused"] {
-            assert!(
-                live.apply(&SessionUpdate::PromptLifecycle {
-                    key: slot.clone(),
-                    uuid: "p1".to_owned(),
-                    state: state.to_owned(),
-                })
-                .fleet,
-                "a prompt's {state} is what a row is re-read for",
-            );
+            let update = SessionUpdate::PromptLifecycle {
+                key: slot.clone(),
+                uuid: "p1".to_owned(),
+                state: state.to_owned(),
+            };
+            assert!(fleet_news(&update).any(), "a prompt's {state} is what a row is re-read for");
         }
 
         // The free-form state the protocol promises to carry rather than
         // drop: a build that has not seen it still moves the row.
-        assert!(
-            live.apply(&SessionUpdate::PromptLifecycle {
-                key: slot,
-                uuid: "p1".to_owned(),
-                state: "a-state-from-a-newer-cli".to_owned(),
-            })
-            .fleet,
-            "an unseen state is news too",
-        );
+        let unseen = SessionUpdate::PromptLifecycle {
+            key: slot,
+            uuid: "p1".to_owned(),
+            state: "a-state-from-a-newer-cli".to_owned(),
+        };
+        assert!(fleet_news(&unseen).any(), "an unseen state is news too");
     }
 
     /// The registry that moves `has_background_work`, which is the promotion
     /// that draws an idle-but-busy seat as running. The CLI announces it as a
-    /// conversation frame, and that frame is what this page re-reads for; the
+    /// conversation frame, and that frame is what the home re-reads for; the
     /// `BackgroundTasksChanged` mirror of the same instant carries the
     /// inspector's set and is not the fleet's.
     #[test]
     fn the_clis_background_announcement_redraws_the_page() {
         let slot = SessionSlot::lead("Org", "forge");
-        let mut live = Live::new();
 
         // The wire's own shape: the typed decode needs the frame's `uuid`,
         // and a fixture without one falls back to the generic system variant,
@@ -701,7 +664,7 @@ mod tests {
         .expect("parse a background announcement");
 
         assert!(
-            live.apply(&appended(&slot, announced)).fleet,
+            fleet_news(&appended(&slot, announced)).any(),
             "the registry moving is a row's re-read",
         );
     }
@@ -713,47 +676,42 @@ mod tests {
     #[test]
     fn a_release_that_has_begun_redraws_the_page() {
         let slot = SessionSlot::lead("Org", "forge");
-        let mut live = Live::new();
 
         assert!(
-            live.apply(&SessionUpdate::Releasing { key: slot }).fleet,
+            fleet_news(&SessionUpdate::Releasing { key: slot }).any(),
             "the seat going to sleep is a row's re-read",
         );
     }
 
-    /// The bulk of the stream is the conversation, which this page does not
-    /// draw; redrawing for it would re-send the fleet per token.
+    /// The bulk of the stream is the conversation, which the home does not
+    /// draw; re-sending it for one would rebuild the fleet per token.
     #[test]
     fn a_chat_message_does_not_redraw_the_page() {
         let slot = SessionSlot::lead("Org", "forge");
-        let mut live = Live::new();
 
         assert!(
-            !live
-                .apply(&SessionUpdate::ChatAppended {
-                    key: slot,
-                    origin: None,
-                    msg: serde_json::from_value(serde_json::json!({
-                        "type": "user",
-                        "message": { "role": "user", "content": "hello" },
-                        "session_id": "s",
-                    }))
-                    .expect("parse a user message"),
-                })
-                .any(),
-            "a chat message is not something this page draws",
+            !fleet_news(&SessionUpdate::ChatAppended {
+                key: slot,
+                origin: None,
+                msg: serde_json::from_value(serde_json::json!({
+                    "type": "user",
+                    "message": { "role": "user", "content": "hello" },
+                    "session_id": "s",
+                }))
+                .expect("parse a user message"),
+            })
+            .any(),
+            "a chat message is not something the home draws",
         );
     }
 
     /// A take's readings are the composer's news, not the fleet's. The
     /// region this stream re-sends draws rows, so redrawing it for every
     /// level would rebuild the whole page twenty times a second while a
-    /// take runs - and a composer still has to redraw for them, or the meter
-    /// never moves. Catches either answer being taken for the other.
+    /// take runs.
     #[test]
-    fn a_takes_readings_redraw_the_composer_and_not_the_fleet() {
+    fn a_takes_readings_are_not_the_fleets_news() {
         let slot = SessionSlot::lead("Org", "forge");
-        let mut live = Live::new();
 
         for update in [
             SessionUpdate::DictateStarted {
@@ -764,9 +722,7 @@ mod tests {
             },
             SessionUpdate::DictateLevel { key: slot.clone(), peak_db: -20.0, initiator: None },
         ] {
-            let redraw = live.apply(&update);
-            assert!(!redraw.fleet, "{update:?} is not a row changing");
-            assert!(redraw.composer, "{update:?} is the composer's to draw");
+            assert!(!fleet_news(&update).any(), "{update:?} is not a row changing");
         }
     }
 
@@ -782,15 +738,13 @@ mod tests {
     /// the connection.
     #[test]
     fn the_late_boot_updates_redraw_the_page() {
-        let mut live = Live::new();
-
         for update in [
             SessionUpdate::CatalogLoaded,
             SessionUpdate::DictateAvailability,
             SessionUpdate::CliVersionChanged,
             SessionUpdate::AccountsChanged,
         ] {
-            assert!(live.apply(&update).fleet, "{update:?} is exactly a render wake-up");
+            assert!(fleet_news(&update).any(), "{update:?} is exactly a render wake-up");
         }
     }
 }

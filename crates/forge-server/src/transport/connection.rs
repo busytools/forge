@@ -1751,10 +1751,7 @@ fn page_of_span(
     span: &forge_primitives::TranscriptSpan,
     turns: u32,
 ) -> crate::transport::wire::Page {
-    let mut rendered = crate::transcript::render(&span.messages);
-    // The units are a view's, and a page carries the frames a client folds
-    // for itself - the same reason the held window's fold drops them.
-    rendered.units.clear();
+    let rendered = crate::transcript::render(&span.messages);
     let mut page = page(&span.messages, &rendered, 0, None, turns);
     // The page's oldest row, out of the frames it served: the first one whose
     // id names a row of the span. A frame with no id - a forged ending, an
