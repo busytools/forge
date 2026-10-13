@@ -13,15 +13,24 @@
 # sudo / Touch ID prompt when a cert is actually present.
 #
 # Env overrides:
-#   FORGE_CA_DIR   CA directory  (default: ~/Library/Application Support/forge-tui/ca)
+#   FORGE_CA_DIR   CA directory (default: both app-support names are tried)
 
 set -euo pipefail
 
-# **`forge-tui` here is a historical on-disk identity, not a live path.**
-# The CA was installed under that name and the key material still sits
-# there on a machine that ran the old installer; the app-support tree
-# moved to `forge`, and this default deliberately did not follow it.
-FORGE_CA_DIR="${FORGE_CA_DIR:-$HOME/Library/Application Support/forge-tui/ca}"
+# The CA was installed under the legacy `forge-tui` name, and the
+# app-support tree later moved to `forge` - so the key material sits under
+# whichever name was current when it was written: `forge/ca` on a machine
+# that has run the migration, `forge-tui/ca` on one that has not. Both are
+# tried unless FORGE_CA_DIR overrides.
+CA_DIRS=()
+if [ -n "${FORGE_CA_DIR:-}" ]; then
+    CA_DIRS=("$FORGE_CA_DIR")
+else
+    CA_DIRS=(
+        "$HOME/Library/Application Support/forge/ca"
+        "$HOME/Library/Application Support/forge-tui/ca"
+    )
+fi
 # `security find-certificate -c <name>` matches the CN field only, not
 # the O. The old CA carried CN="forge wire-classification rewriter",
 # O="forge-tui", so the lookup MUST use the CN - matching by O silently
@@ -50,9 +59,14 @@ else
     log_info "forge CA is not trusted in the System keychain, nothing to remove"
 fi
 
-if [ -d "$FORGE_CA_DIR" ]; then
-    rm -rf "$FORGE_CA_DIR"
-    log_success "Deleted CA key material at $FORGE_CA_DIR"
-else
-    log_info "No CA key material at $FORGE_CA_DIR"
+removed=0
+for dir in "${CA_DIRS[@]}"; do
+    if [ -d "$dir" ]; then
+        rm -rf "$dir"
+        log_success "Deleted CA key material at $dir"
+        removed=1
+    fi
+done
+if [ "$removed" -eq 0 ]; then
+    log_info "No CA key material under the app-support CA names"
 fi
