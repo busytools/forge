@@ -20,7 +20,6 @@ each with the drawing it is held against beside it.
 - [Board](./ui/client/board.md)
 - [Review](./ui/client/review.md)
 - [Dictation models](./ui/client/dictate-models.md)
-- [Usage](./ui/client/usage.md)
 - [Extensions](./ui/client/extensions.md)
 - [A document](./ui/client/document.md)
 

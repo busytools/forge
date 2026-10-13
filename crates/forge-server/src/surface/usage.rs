@@ -1,4 +1,4 @@
-//! `usage()`: the token/cost report a `/usage` view draws.
+//! `usage()`: the token/cost report a `/usage` view drew.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -14,7 +14,7 @@ const USAGE_WINDOW: Duration = Duration::from_secs(5);
 
 impl ViewSurface {
     /// Scan the shared session-JSONL pool into the four windows a usage view
-    /// draws.
+    /// drew.
     ///
     /// The scan walks the pool and parses every file behind it, so it runs on
     /// the blocking pool rather than on the task that serves a socket: a

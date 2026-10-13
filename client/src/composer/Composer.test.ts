@@ -1,11 +1,9 @@
 // @vitest-environment jsdom
 import { readFileSync } from 'node:fs';
 import { flushSync, mount, unmount } from 'svelte';
-import { get } from 'svelte/store';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { hideBrowser, showBrowser } from '../browser/host';
-import { currentRoute } from '../routes';
 
 /**
  * The shell's own door, mock-able so both halves of Open's claim are testable
@@ -367,50 +365,6 @@ describe('the box', () => {
       "the id is the send's own, minted here so the CLI's lifecycle frames and the queued row carry it back",
     ).toBe('string');
     expect(field().value, 'the box is empty once the words have gone').toBe('');
-  });
-
-  /**
-   * **A command this view answers itself never crosses the wire.** `/usage`
-   * opens the usage page - the view this client replaced opened its overlay
-   * on the same name - so the name reaches the model only if this
-   * interception is missing.
-   */
-  it('opens the usage page for /usage rather than sending it', () => {
-    const harness = open();
-    type('/usage');
-    // The reader's own flow: the first Enter takes the completion off the
-    // list, the second sends - a typed command is two presses in this box.
-    field().dispatchEvent(
-      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
-    );
-    flushSync();
-    field().dispatchEvent(
-      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
-    );
-    flushSync();
-
-    expect(harness.sent, 'the name crossed the wire').toEqual([]);
-    expect(get(currentRoute), 'the command did not open its page').toEqual({ name: 'usage' });
-    expect(field().value, 'the box is empty once the command ran').toBe('');
-  });
-
-  /**
-   * **The name takes no arguments, and the view this client replaced answered
-   * that with its usage line** rather than opening. The line draws in the
-   * box's own notice row, and the text still never reaches the model.
-   */
-  it('answers /usage with an argument with its usage line, sending nothing', () => {
-    const harness = open();
-    const before = get(currentRoute);
-    type('/usage today');
-    field().dispatchEvent(
-      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
-    );
-    flushSync();
-
-    expect(harness.sent, 'the misused name crossed the wire').toEqual([]);
-    expect(drawn()).toContain('Usage: /usage');
-    expect(get(currentRoute), 'a wrong invocation moved the route').toEqual(before);
   });
 
   it('hands an empty box up to the pile, and only an empty one', () => {
@@ -5352,13 +5306,9 @@ describe('the autocomplete', () => {
     expect(
       [...document.querySelectorAll('.ac .it')].map((row) => row.textContent?.trim()),
       "forge's table is what it offers, matched on the description too",
-    ).toEqual([
-      '/mode Set session mode',
-      '/model Show / set session model',
-      '/usage Token/cost usage by project or model',
-    ]);
+    ).toEqual(['/mode Set session mode', '/model Show / set session model']);
     expect(document.querySelector('.ac .h .n')?.textContent, 'the header counts the matches').toBe(
-      '3',
+      '2',
     );
   });
 

@@ -11,7 +11,7 @@
 //! ([`cron`]), session identities ([`sessions`]), review
 //! threads ([`review`]), forge state
 //! ([`state`], the account-usage cache), the
-//! `/usage` view's per-file token summaries ([`token_usage`]), cached
+//! usage scan's per-file token summaries ([`token_usage`]), cached
 //! model pricing ([`pricing`]), plugin update history ([`plugins`]),
 //! and the catalog's per-file worker-tag scans ([`session_tags`]).
 //!
