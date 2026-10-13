@@ -355,11 +355,15 @@ impl Workspace {
             std::sync::Arc::clone(&accounts),
             reqwest::Client::new(),
         ));
+        // `new_for_test`'s convention: the stub's whole app-support base
+        // sits under the test's own config dir.
+        let app_support = Some(config_dir.join("app-support"));
         let workspace = Self {
             config_dir,
             config,
             systemone,
             catalog: Arc::new(Mutex::new(HashMap::new())),
+            app_support,
             pool: Mutex::new(HashMap::new()),
             // A stub reaches no network either: the refill has nothing to
             // fetch.

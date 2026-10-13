@@ -279,6 +279,12 @@ pub struct Workspace {
     /// for it across `await` points; `Arc` so the scan task can swap
     /// its contents without holding an `Arc<Workspace>` cycle.
     catalog: Arc<Mutex<HashMap<ProjectKey, Vec<SDKSessionInfo>>>>,
+    /// forge's machine-local app-support base, resolved once at
+    /// construction: the single-instance lock, the durable store and the
+    /// dictation catalogue cache all sit under it. `None` means boot
+    /// resolution failed (already warned there); hard rule #14 forbids a
+    /// cwd fallback.
+    pub(crate) app_support: Option<PathBuf>,
     /// Live Agents keyed by the session slot. `parking_lot::Mutex` so the
     /// public methods can take `&self`. `pub(crate)` so sibling
     /// modules (`spawn::handle_deliver_worker_prompt_to_lead`,
@@ -1674,6 +1680,7 @@ impl Workspace {
             config,
             systemone,
             catalog,
+            app_support,
             pool: Mutex::new(HashMap::new()),
             pricing_fetcher: pricing_fetcher.unwrap_or_else(default_pricing_fetcher),
             #[cfg(any(test, feature = "testing"))]
