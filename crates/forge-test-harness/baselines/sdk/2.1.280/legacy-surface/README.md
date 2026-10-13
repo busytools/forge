@@ -1,9 +1,10 @@
 # legacy-surface corpus
 
-The same capture scenarios as the parent directory, recorded with the
-CLI's ambient routing on a model id it does not recognize. The CLI
-tailors its tool surface per model, so this corpus records the surface a
-proxy-backed forge account actually gets.
+The parent directory's capture scenarios as they stood at this corpus's
+capture, recorded with the CLI's ambient routing on a model id it does not
+recognize. The CLI tailors its tool surface per model, so this corpus
+records the surface a proxy-backed forge account actually gets. Three
+baselines stayed parent-only and are named at the end.
 
 At 2.1.280 that surface is 20 built-in tools on
 `deepseek-v4.1-flash[1m]`, 23 in the scenarios that also expose the
@@ -35,8 +36,13 @@ redaction-checks it like the parent corpus.
 Captured with the same `PINNED_CLI_VERSION` binary as the parent corpus.
 See `.claude/skills/claude-cli-upgrade/` for the dual-corpus ritual.
 
-Two baselines are deliberately parent-only: the `real_session_*` triple
-comes from the redaction pipeline rather than a capture, and `set_model`
-drives `claude-sonnet-4-6`, which the capture machine's gateway org does
-not serve, so the scenario 503s here. The same control flow is covered
-by the parent corpus.
+Three baselines are parent-only. The `real_session_*` triple comes from
+the redaction pipeline rather than a capture, and `set_model` drives
+`claude-sonnet-4-6`, which the capture machine's gateway org does not
+serve, so the scenario 503s here; the same control flow is covered by the
+parent corpus. `queued_prompt_lifecycle` postdates this corpus - it landed
+2026-10-03 with the prompt-id stamp, after this directory was captured
+2026-09-23 - and has not been recaptured: what it records is the prompt
+queue's own lifecycle rather than a tool-surface shape, so the
+model-tailored surface this directory exists to hold is not what it
+measures.
