@@ -16,7 +16,6 @@
   import { titleFor, type Route } from '../routes';
   import Session from '../session/Session.svelte';
   import type { Connection } from '../socket';
-  import Usage from '../usage/Usage.svelte';
   import type { ClientSettings } from '../wire/types';
 
   let {
@@ -193,14 +192,6 @@
          directly: its own state (loading, refused, the four sections) is the
          page's, and nothing outside it draws any of it. -->
     <Models {connection} mark={settings.mark} />
-  {:else}
-    <Connect {settings} initialAddress={address} launchFailure={failure} {notice} {onconnect} />
-  {/if}
-{:else if route.name === 'usage'}
-  {#if connection !== null}
-    <!-- The page subscribes the usage itself: the scan is the answer, and
-         its own states (loading, refused, empty) are the page's. -->
-    <Usage {connection} mark={settings.mark} />
   {:else}
     <Connect {settings} initialAddress={address} launchFailure={failure} {notice} {onconnect} />
   {/if}
