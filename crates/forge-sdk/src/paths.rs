@@ -75,9 +75,12 @@ pub fn legacy_app_support_left_behind() -> Option<PathBuf> {
 }
 
 /// [`legacy_app_support_left_behind`]'s rule over explicit paths, so it
-/// is testable without the real machine directories.
+/// is testable without the real machine directories. A stray
+/// non-directory `forge-tui` entry is not the store, and refusing on it
+/// would deadlock against the script, which tests `-d` and finds nothing
+/// to migrate.
 fn left_behind_between(legacy: &Path, current: &Path) -> bool {
-    legacy.exists() && !current.exists()
+    legacy.is_dir() && !current.exists()
 }
 
 /// Stable hex digest of `config_dir` that keys forge's machine-local
@@ -139,6 +142,20 @@ mod tests {
             left_behind_between(&legacy, &current),
             "the legacy tree is the state to refuse on"
         );
+    }
+
+    /// A stray non-directory entry named `forge-tui` is not the legacy
+    /// store: the boot proceeds and the script finds nothing to migrate,
+    /// where an `exists()` test here once refused against a script that
+    /// no-oped.
+    #[test]
+    fn a_stray_file_named_forge_tui_is_not_left_behind() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let legacy = dir.path().join("forge-tui");
+        let current = dir.path().join("forge");
+        std::fs::write(&legacy, "stray").expect("stray file");
+
+        assert!(!left_behind_between(&legacy, &current), "a stray file does not refuse a boot");
     }
 
     /// Once the migration script has run, the current tree exists and
