@@ -3723,7 +3723,7 @@ mod tests {
                 update,
                 SessionUpdate::ConnectionFailed { key: ref emitted, .. } if *emitted == key
             ),
-            "the TUI still receives the ConnectionFailed envelope"
+            "the ConnectionFailed envelope still goes out"
         );
     }
 

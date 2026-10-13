@@ -896,7 +896,7 @@ mod tests {
 
         assert!(of("failed").failed, "a failed word marks the card");
         assert!(of("killed").failed, "and so does a kill");
-        assert!(of("stopped").failed, "and a cancel, which the terminal draws as a kill");
+        assert!(of("stopped").failed, "and a cancel, which reads as a kill");
         assert!(!of("completed").failed, "a clean finish does not");
 
         let notified = subagent_cards(&[

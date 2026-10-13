@@ -2736,7 +2736,7 @@ mod tests_message_extras {
         else {
             panic!("compact_boundary must decode typed, not into System; got {msg:?}");
         };
-        assert_eq!(trigger, "manual", "trigger drives the TUI's pending-compact clear");
+        assert_eq!(trigger, "manual", "trigger drives the pending-compact clear");
         assert_eq!(pre_tokens, 68031, "pre_tokens is the number the usage panel shows");
         assert_eq!(post_tokens, 9149, "post_tokens is what the row says was carried after the cut");
         assert_eq!(uuid, "cb-uuid");

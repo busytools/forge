@@ -7729,7 +7729,7 @@ impl Workspace {
 
     // ---- Refresh helpers (workspace → agent) ----
     //
-    // These five methods are query-style: a view says "re-emit state X
+    // These two methods are query-style: a view says "re-emit state X
     // for `key`" and the payload returns via `SessionUpdate`. They
     // bypass the [`Command`] envelope because they don't carry
     // mutation state, and they need the workspace-side
@@ -10365,8 +10365,8 @@ provider = "anthropic"
     async fn subscribe_hands_every_caller_its_own_stream() {
         let dir = make_workspace_dir();
         let workspace = Workspace::new_for_test(dir.path().to_owned()).expect("new");
-        let mut tui = workspace.subscribe();
-        let mut web = workspace.subscribe();
+        let mut first = workspace.subscribe();
+        let mut second = workspace.subscribe();
 
         assert!(
             workspace.update_tx().send(SessionUpdate::CatalogLoaded),
@@ -10374,11 +10374,11 @@ provider = "anthropic"
         );
 
         assert!(
-            matches!(tui.try_recv(), Ok(SessionUpdate::CatalogLoaded)),
+            matches!(first.try_recv(), Ok(SessionUpdate::CatalogLoaded)),
             "the first subscriber receives the update",
         );
         assert!(
-            matches!(web.try_recv(), Ok(SessionUpdate::CatalogLoaded)),
+            matches!(second.try_recv(), Ok(SessionUpdate::CatalogLoaded)),
             "the second subscriber receives the same update",
         );
     }
@@ -12499,12 +12499,12 @@ provider = "anthropic"
         assert_eq!(
             carried_mode(&new).as_deref(),
             Some("bypassPermissions"),
-            "/new must carry the pooled session's mode, not the TUI session default",
+            "/new must carry the pooled session's mode, not the session default",
         );
         assert_eq!(
             carried_mode(&resume).as_deref(),
             Some("bypassPermissions"),
-            "/resume must carry the pooled session's mode, not the TUI session default",
+            "/resume must carry the pooled session's mode, not the session default",
         );
         // The respawn also re-registers with the gateway: the fresh env
         // set rides the launch settings as overrides, so the respawned
