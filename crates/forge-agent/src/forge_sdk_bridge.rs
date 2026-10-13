@@ -1158,7 +1158,7 @@ impl ForgeSdkBridge {
     /// Cheap clone of the bridge's bound forge-account
     /// `display_name`, when forge-workspace picked one. Used by the
     /// session worker to attach `forge_account` to the initial
-    /// `StatusSnapshot` emit alongside the CLI-side `account`.
+    /// `ForgeAccountIdentity` emit alongside the CLI-side `account`.
     pub(crate) fn display_name(&self) -> Option<String> {
         self.inner.display_name.clone()
     }

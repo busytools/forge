@@ -47,7 +47,7 @@ clap_complete = { workspace = true }
 dirs = { workspace = true }
 forge-primitives = { workspace = true }
 # The binary's first act, before logging resolves the app-support tree:
-# the legacy-name migration (forge_sdk::paths::migrate_legacy_app_support).
+# the legacy-name migration (forge_sdk::paths::legacy_app_support_left_behind).
 forge-sdk = { workspace = true }
 forge-workspace = { workspace = true }
 # A socket's incoming messages are a `futures_util::Stream`.
