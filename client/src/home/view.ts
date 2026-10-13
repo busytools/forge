@@ -601,16 +601,6 @@ export function band(wire: HomeWire, address: string): BandCard[] {
     },
     dictation,
     accounts,
-    // **Another way in, and a door with no state of its own**: the usage
-    // report is a scan of the transcript pool, and the home is not the page
-    // that should pay for one - the card is the door, and the page reads.
-    {
-      title: 'usage',
-      tone: 'ready',
-      value: 'tokens \u{b7} cost',
-      detail: 'by project or model',
-      href: hrefFor({ name: 'usage' }),
-    },
   ];
 }
 

@@ -1,8 +1,9 @@
 //! Cached LiteLLM pricing on the redb `pricing_cache` table.
 //!
 //! One row holds the most-recent fetch: the raw json plus its
-//! `fetched_at`. `/usage` prices from this cache (empty until the first
-//! background fetch lands); the fetch refreshes it about once a day.
+//! `fetched_at`. The usage scan prices from this cache (empty until the
+//! first background fetch lands); the fetch refreshes it about once a
+//! day.
 
 use std::time::SystemTime;
 
