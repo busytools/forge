@@ -304,7 +304,9 @@ mod tests {
     /// A bare boot fixture: one project whose account is base-url'd at a dead
     /// local port (its boot probe fails in milliseconds rather than reaching
     /// an endpoint), dictation off and a gateway port the OS just handed out,
-    /// so the wave's other steps no-op or park.
+    /// so the wave's other steps no-op or park. The port is picked free and
+    /// then handed on - a busy box can take it in between, and the listener's
+    /// failed bind is logged rather than read here.
     fn boot_fixture() -> (Arc<Workspace>, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
@@ -348,6 +350,10 @@ port = {port}
     /// and its pass reaches the network, so the swap-once guard is what a
     /// test can read - a wave without it leaves the account snapshots frozen
     /// at their boot values and the session page's 5h/7d bars never move.
+    ///
+    /// The wave is driven directly here: `start_core` reaches the machine's
+    /// single-instance lock, so the one call from it into this function is the
+    /// boundary this test does not cover.
     #[tokio::test]
     async fn the_boot_wave_starts_the_usage_poller() {
         let (workspace, _dir) = boot_fixture();
