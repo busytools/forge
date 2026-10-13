@@ -150,22 +150,28 @@ mod commands {
         bridge.frame(bytes)
     }
 
-    /// Open this machine's microphone for a take.
+    /// Open this machine's microphone for a take, and answer with the input
+    /// it opened.
     ///
     /// The device open blocks on hardware, so it runs off the main thread;
     /// it is the caller's own answer, unlike the frames, which arrive as
-    /// `client://mic` events while the take runs.
+    /// `client://mic` events while the take runs. The input comes back in the
+    /// panel's own `{ id, label }` shape, which is what it names the system
+    /// default by - asking for no device resolves to that default here, and
+    /// nothing the page holds knows which one it was.
     #[tauri::command]
     pub async fn client_mic_start(
         bridge: tauri::State<'_, Arc<Bridge>>,
         mic: tauri::State<'_, Arc<crate::mic::Mic>>,
         device: Option<String>,
-    ) -> Result<(), String> {
+    ) -> Result<Value, String> {
         let bridge = Arc::clone(bridge.inner());
         let mic = Arc::clone(mic.inner());
-        tauri::async_runtime::spawn_blocking(move || mic.start(&bridge, device))
-            .await
-            .map_err(|error| error.to_string())?
+        tauri::async_runtime::spawn_blocking(move || {
+            mic.start(&bridge, device).map(|held| crate::mic::device_json(&held))
+        })
+        .await
+        .map_err(|error| error.to_string())?
     }
 
     /// Let the capture go: the audio still in flight lands, the last partial
@@ -199,11 +205,7 @@ mod commands {
     pub async fn client_mic_devices() -> Result<Vec<Value>, String> {
         tauri::async_runtime::spawn_blocking(|| {
             forge_capture::devices()
-                .map(|all| {
-                    all.into_iter()
-                        .map(|held| serde_json::json!({ "id": held.id, "label": held.name }))
-                        .collect::<Vec<Value>>()
-                })
+                .map(|all| all.iter().map(crate::mic::device_json).collect::<Vec<Value>>())
                 .map_err(|error| error.to_string())
         })
         .await

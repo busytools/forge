@@ -188,9 +188,9 @@
   }
 
   /**
-   * What the system default IS, once a take has opened it: the browser
-   * reports the input a plain stream resolved to, and nothing else names it.
-   * `null` before the first default take, when the row stays plain.
+   * What the system default IS, once a take has opened it: the take reports
+   * the input a plain stream resolved to, on either leg, and nothing else
+   * names it. `null` before the first default take, when the row stays plain.
    */
   const defaultName = defaultDeviceFor()?.label ?? null;
 

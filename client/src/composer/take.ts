@@ -90,7 +90,7 @@ export interface TakeWiring {
 /** One live take. */
 export class LocalTake {
   readonly seat: SessionSlot;
-  /** The input the take's stream opened, when the browser reported one. */
+  /** The input the take's stream opened, when the source reported one. */
   readonly resolved: { id: string; label: string } | null;
   /**
    * The take's wire side, read live: frames produced, bytes the socket has

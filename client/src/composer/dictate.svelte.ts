@@ -244,8 +244,8 @@ export class Dictation {
         return;
       }
       // A take with no pick records from the system default, and opening it
-      // is the one moment the browser names what that default IS - the list
-      // it offers carries no default mark.
+      // is the one moment the take names what that default IS - the list it
+      // offers carries no default mark, on either leg.
       if (picked === null && started.resolved !== null && started.resolved.label !== '') {
         rememberDefaultDevice(started.resolved);
       }

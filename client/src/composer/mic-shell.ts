@@ -25,27 +25,37 @@ import type { MicSource } from './take';
 export class ShellMic implements MicSource {
   onFrame: ((bytes: Uint8Array) => void) | null = null;
 
-  private constructor(private readonly hearing: UnlistenFn) {}
+  private constructor(
+    private readonly hearing: UnlistenFn,
+    /**
+     * The input the shell opened, which is the one moment a plain take names
+     * the system default: the picker's own list carries no default mark, so
+     * the take learns it from here and remembers it, as it does on the web.
+     */
+    readonly resolved: { id: string; label: string },
+  ) {}
 
   /**
    * Open the picked input - or the system default when nothing is picked -
    * or report why it would not open.
    *
    * The listener goes up before the shell is asked to start, because the
-   * first frames arrive as soon as the device does.
+   * first frames arrive as soon as the device does. The shell answers the
+   * start with the input it opened.
    */
   static async open(device: string | null): Promise<ShellMic> {
     const held: { mic: ShellMic | null } = { mic: null };
     const hearing = await listen<number[]>('client://mic', (event) => {
       held.mic?.onFrame?.(new Uint8Array(event.payload));
     });
+    let resolved: { id: string; label: string };
     try {
-      await invoke('client_mic_start', { device });
+      resolved = await invoke<{ id: string; label: string }>('client_mic_start', { device });
     } catch (why) {
       hearing();
       throw why;
     }
-    const mic = new ShellMic(hearing);
+    const mic = new ShellMic(hearing, resolved);
     held.mic = mic;
     return mic;
   }

@@ -9,7 +9,7 @@ use cpal::traits::{DeviceTrait, StreamTrait};
 use crate::Error;
 use crate::SAMPLE_RATE;
 use crate::convert::InputConverter;
-use crate::device::{input_config, open_device};
+use crate::device::{Device, describe, input_config, open_device};
 
 /// One block of the device's audio, as it arrived.
 pub struct Block<'a> {
@@ -29,9 +29,20 @@ pub struct Block<'a> {
 pub struct Capture {
     stop: Arc<AtomicBool>,
     reader: Option<std::thread::JoinHandle<()>>,
+    /// The input this capture is recording from, as [`open`] resolved it:
+    /// the system default when the caller named none.
+    device: Device,
 }
 
 impl Capture {
+    /// The input this capture opened.
+    ///
+    /// The one place a host learns what the system default IS: naming no
+    /// device is resolved here, and nothing upstream sees the choice.
+    pub fn device(&self) -> &Device {
+        &self.device
+    }
+
     /// Release the device and wait for the reader to finish.
     pub fn stop(mut self) {
         self.signal();
@@ -68,6 +79,7 @@ pub fn open(
     mut on_block: impl FnMut(Block<'_>) + Send + 'static,
 ) -> Result<Capture, Error> {
     let device = open_device(device)?;
+    let held = describe(&device);
     let plan = input_config(&device)?;
     // Channel counts are single digits; the cast cannot lose anything.
     let channels = plan.config.channels as usize;
@@ -109,7 +121,7 @@ pub fn open(
         })
         .map_err(|error| Error::Capture { message: error.to_string() })?;
 
-    let capture = Capture { stop, reader: Some(reader) };
+    let capture = Capture { stop, reader: Some(reader), device: held };
     match started.recv() {
         Ok(Ok(())) => Ok(capture),
         // The stream never played: the reader is on its way out, and its
@@ -122,5 +134,29 @@ pub fn open(
             capture.stop();
             Err(Error::Capture { message: "the capture thread did not start".into() })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests_open {
+    use super::*;
+    use crate::device::devices;
+
+    #[test]
+    #[ignore = "opens the real default input; run with --run-ignored all on a machine with audio hardware"]
+    fn a_capture_reports_the_device_it_opened() {
+        // No audio stack in CI, so an unopenable device proves nothing here;
+        // what must hold is that the device a capture reports back is the one
+        // the host calls the default, which is the fact a panel draws.
+        let Ok(all) = devices() else { return };
+        let Some(default) = all.iter().find(|device| device.is_default) else { return };
+        let Ok(capture) = open(None, |_| {}) else { return };
+        assert_eq!(
+            capture.device().id,
+            default.id,
+            "naming no device must report the system default back to the caller"
+        );
+        assert!(capture.device().is_default, "and report it as the default");
+        capture.stop();
     }
 }

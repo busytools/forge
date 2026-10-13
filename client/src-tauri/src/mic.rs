@@ -45,8 +45,14 @@ impl Mic {
     /// picked - and start handing `bridge`'s page the frames.
     ///
     /// The device is opened before this returns, so a device that will not
-    /// open is an error here rather than a take that records silence.
-    pub fn start(&self, bridge: &Arc<Bridge>, device: Option<String>) -> Result<(), String> {
+    /// open is an error here rather than a take that records silence. The
+    /// input it opened comes back with it, which is the only place a plain
+    /// take names the system default: the picker's list carries no mark.
+    pub fn start(
+        &self,
+        bridge: &Arc<Bridge>,
+        device: Option<String>,
+    ) -> Result<forge_capture::Device, String> {
         let mut live = self.live.lock().unwrap_or_else(PoisonError::into_inner);
         if live.is_some() {
             return Err("the microphone is already recording".to_owned());
@@ -66,8 +72,9 @@ impl Mic {
             }
         })
         .map_err(|error| error.to_string())?;
+        let opened = capture.device().clone();
         *live = Some(Take { capture, held });
-        Ok(())
+        Ok(opened)
     }
 
     /// Let go at once. An abandoned take's audio is thrown away anyway, so
@@ -117,9 +124,33 @@ pub fn encode_frame(samples: &[f32]) -> Vec<u8> {
     bytes
 }
 
+/// One device as the page reads it: the panel's own `{ id, label }` shape,
+/// for both the take's `resolved` (`ShellMic.open`) and the picker's rows.
+pub fn device_json(device: &forge_capture::Device) -> serde_json::Value {
+    serde_json::json!({ "id": device.id, "label": device.name })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The keys the page reads the default's name back by
+    /// (`dictation.ts`'s `rememberDefaultDevice`): `ShellMic.open` hands this
+    /// straight to the take, so a renamed key is a panel that names nothing,
+    /// and no page test sees it.
+    #[test]
+    fn the_device_crosses_as_the_panels_id_and_label() {
+        let opened = forge_capture::Device {
+            id: "coreaudio:builtin".to_owned(),
+            name: "MacBook Pro Microphone".to_owned(),
+            is_default: true,
+        };
+        assert_eq!(
+            device_json(&opened),
+            serde_json::json!({ "id": "coreaudio:builtin", "label": "MacBook Pro Microphone" }),
+            "the page reads `id` and `label`; any other key is a default it cannot name"
+        );
+    }
 
     /// The vector `capture.test.ts` pins the page's encoder to: the two
     /// halves of one wire contract, so a change on either side fails here.
