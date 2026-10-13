@@ -4121,7 +4121,7 @@ impl Workspace {
     /// matched where it runs. The frame and the prompt carry one id either
     /// way - the row a view draws and the turn the model receives are one
     /// thing by id.
-    pub fn dispatch_forged_prompt_under(
+    pub(crate) fn dispatch_forged_prompt_under(
         self: &Arc<Self>,
         key: &SessionSlot,
         text: String,

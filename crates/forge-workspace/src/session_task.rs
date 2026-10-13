@@ -887,8 +887,12 @@ impl SessionTask {
                 // replacement does not carry - so the prompt is dropped
                 // rather than handed to it.
                 if self.continuation_lost_its_occupant(&uuid) {
+                    // The seat's own work, not forge's health: the drop is
+                    // the intended outcome, so the record stays behind
+                    // RUST_LOG rather than claiming a problem.
                     tracing::debug!(
                         target: "forge_workspace::session_task",
+                        event_name = "auto_continue_dropped_occupant_replaced",
                         slot = %self.key.display(),
                         uuid = %uuid,
                         "a continuation's occupant was replaced before it ran; the prompt is dropped",
