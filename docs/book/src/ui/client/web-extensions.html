@@ -23,6 +23,7 @@
     --blue:#61a0e0; --hot:#ffb058; --sel:#20140a; --ctl:#516590;
     --ui: "Fira Code", system-ui, -apple-system, "Segoe UI", sans-serif;
     --mono: "Fira Code", ui-monospace, Menlo, monospace;
+    --fs-title: 18px; --fs-label: 12.5px;
     --r: 10px;
   }
   html, body { height: 100%; }
@@ -49,11 +50,14 @@
   /* The sheet's shared title-and-back chrome, lifted: the pages that wear
      the title-and-back header wear `pagetop`, and these rules reach it. */
   header.top.pagetop .title { display: flex; flex-direction: column; }
-  header.top.pagetop .title .t { font-size: 18px; font-weight: 650; letter-spacing: -.01em; }
-  header.top.pagetop .title .s { font-family: var(--mono); font-size: 12.5px; color: var(--dim); }
-  header.top.pagetop .back { margin-left: auto; font-family: var(--mono); font-size: 12.5px;
-    color: var(--muted); text-decoration: none; border: 1px solid var(--line);
-    border-radius: 9px; padding: 6px 11px; }
+  header.top.pagetop .title .t { font-size: var(--fs-title); font-weight: 650;
+    letter-spacing: -.01em; color: var(--text); }
+  header.top.pagetop .title .s { font-family: var(--mono); font-size: var(--fs-label);
+    color: var(--dim); }
+  header.top.pagetop .back { margin-left: auto; font-family: var(--mono);
+    font-size: var(--fs-label); color: var(--muted); text-decoration: none;
+    border: 1px solid var(--line); border-radius: 9px; padding: 6px 11px; }
+  header.top.pagetop .back:hover { border-color: var(--ctl); color: var(--text); }
 
   /* the marks' legend: three shapes, said once */
   .ext-legend { display: flex; gap: 18px; flex-wrap: wrap; font-family: var(--mono);
@@ -153,6 +157,10 @@
   .phone { max-width: 392px; margin-top: 40px; border: 1px solid var(--line);
     border-radius: 22px; padding: 16px 14px 18px;
     background: linear-gradient(180deg, rgba(13,17,26,.5), rgba(4,5,10,.5)); }
+  /* The phone's header wraps as the app's own does at this width: the
+     title takes its own full row under the brand and the way back. */
+  .phone header.top { flex-wrap: wrap; }
+  .phone header.top .title { order: 3; flex-basis: 100%; }
   .phone .ext-split { flex-direction: column; }
   .phone .ext-rail { flex: none; width: 100%; padding: 0 0 10px; display: flex;
     flex-wrap: wrap; gap: 6px; }
@@ -326,8 +334,8 @@
         <span class="word">forge</span>
       </span>
       <a class="back" href="#">&larr; home</a>
+      <span class="title"><span class="t">extensions</span><span class="s">everything this forge can run</span></span>
     </header>
-    <span class="title"><span class="t">extensions</span><span class="s">everything this forge can run</span></span>
 
     <div class="ext-split">
       <div class="ext-rail">
