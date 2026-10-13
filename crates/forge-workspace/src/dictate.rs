@@ -169,20 +169,6 @@ pub enum DictateDeviceChoice {
     Device(String),
 }
 
-/// The input in force: the session pick when one is set, else the
-/// `[dictate] device` pin, else the system default. The `None`/`Some`
-/// shape matches `forge_dictate::Config::device`.
-pub fn resolve_capture_device(
-    pick: Option<&DictateDeviceChoice>,
-    configured: Option<&str>,
-) -> Option<String> {
-    match pick {
-        Some(DictateDeviceChoice::System) => None,
-        Some(DictateDeviceChoice::Device(id)) => Some(id.clone()),
-        None => configured.map(str::to_owned),
-    }
-}
-
 /// Everything the `/dictate` overlay's device block renders from: the
 /// inputs a pick can offer and the configured pin the session pick
 /// overrides. Resolved by [`crate::Workspace::dictate_device_catalog`].
@@ -1774,32 +1760,6 @@ mod tests {
             pin_echoes,
             vec![Some(DictateDeviceChoice::System), None],
             "the pick echoes when set, and the reset echoes the clear"
-        );
-    }
-
-    #[test]
-    fn the_capture_device_resolves_pick_over_pin_over_system() {
-        let pick =
-            |p: Option<DictateDeviceChoice>| resolve_capture_device(p.as_ref(), Some("config-id"));
-        assert_eq!(
-            pick(Some(DictateDeviceChoice::Device("pin-id".into()))).as_deref(),
-            Some("pin-id"),
-            "a picker pick must beat the configured pin"
-        );
-        assert_eq!(
-            pick(Some(DictateDeviceChoice::System)),
-            None,
-            "the system-default pick must override the configured pin too"
-        );
-        assert_eq!(
-            pick(None).as_deref(),
-            Some("config-id"),
-            "no pick falls through to the configured pin"
-        );
-        assert_eq!(
-            resolve_capture_device(None, None),
-            None,
-            "with neither, the system default records"
         );
     }
 
