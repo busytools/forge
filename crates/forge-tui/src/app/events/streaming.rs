@@ -57,16 +57,7 @@ pub(super) fn append_agent_stream_text(
         blocks.push(new_text_block(chunk.to_owned()));
     }
 
-    let split_count = split_tail_text_block(blocks, render_caches);
-    if split_count > 0 {
-        crate::perf::mark_with("text_block_split_count", "count", split_count);
-    }
-
-    if let Some(MessageBlock::Text(block)) = blocks.last() {
-        crate::perf::mark_with("text_block_active_tail_bytes", "bytes", block.text.len());
-    }
-    let text_block_count = blocks.iter().filter(|b| matches!(b, MessageBlock::Text(..))).count();
-    crate::perf::mark_with("text_block_frozen_count", "count", text_block_count.saturating_sub(1));
+    split_tail_text_block(blocks, render_caches);
 }
 
 fn new_text_block(text: String) -> MessageBlock {

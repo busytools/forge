@@ -689,10 +689,6 @@ pub struct App {
     pub needs_redraw: bool,
     /// Central notification manager (OSC 777 escape when unfocused).
     pub notifications: super::notify::NotificationManager,
-    /// Performance logger. Present only when built with `--features perf`.
-    /// Taken out (`Option::take`) during render, used, then put back to avoid
-    /// borrow conflicts with `&mut App`.
-    pub perf: Option<crate::perf::PerfLogger>,
     /// Global in-memory budget for rendered block and message caches.
     pub render_cache_budget: RenderCacheBudget,
     /// The rendered lines themselves, keyed by the block they belong to.
@@ -1101,7 +1097,6 @@ impl App {
             paste_burst: super::paste_burst::PasteBurstDetector::new(),
             needs_redraw: true,
             notifications: super::notify::NotificationManager::new(),
-            perf: None,
             render_cache_budget: RenderCacheBudget::default(),
             render_caches: std::rc::Rc::new(
                 super::state::render_cache_store::RenderCacheStore::default(),

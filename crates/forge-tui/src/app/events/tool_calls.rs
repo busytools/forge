@@ -344,8 +344,6 @@ fn update_existing_tool_call(app: &mut App, mi: usize, bi: usize, tool_info: &To
         if changed {
             crate::app::state::tool_calls::request_tool_call_layout_dirty(existing);
             layout_dirty = true;
-        } else {
-            crate::perf::mark("tool_update_noop_skips");
         }
     }
     if layout_dirty {

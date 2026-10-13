@@ -1,6 +1,5 @@
 pub mod agent;
 pub mod app;
-pub mod perf;
 pub mod ui;
 
 // The build's stamp lives in `forge-server` and is re-exported here: it says

@@ -469,37 +469,6 @@ fn force_full_redraw<B: ratatui::backend::Backend>(
     terminal.resize(ratatui::layout::Rect::new(0, 0, size.width, size.height))
 }
 
-/// One frame's draw, bracketed into three perf spans: `frame_total`
-/// around the pass, `frame::terminal_draw` around `terminal.draw`, and
-/// `frame::terminal_write` around what `draw` does once the render
-/// callback returns - the buffer diff, the crossterm write and the
-/// stdout flush - so a slow frame separates rendering from writing.
-///
-/// The timers come from the thread-local perf log rather than a
-/// `PerfLogger` handle, which is what lets this be a free function a
-/// test can drive without an `App`.
-fn draw_timed<B, F>(terminal: &mut ratatui::Terminal<B>, render: F) -> Result<(), B::Error>
-where
-    B: ratatui::backend::Backend,
-    F: FnOnce(&mut ratatui::Frame),
-{
-    // Scope order is drop order, and the spans have to close in the
-    // order the log needs: the write span first, then the draw span,
-    // then `frame_total` last, whose drop flushes a slow frame with
-    // every sample in hand. Each is a `_name` binding rather than `_` so
-    // it lives to the end of the scope instead of dropping where bound.
-    let _frame_total = crate::perf::start("frame_total");
-    let _terminal_draw = crate::perf::start("frame::terminal_draw");
-    // Started as the render callback ends so it brackets what `draw` does
-    // after it, not the render itself.
-    let mut _terminal_write: Option<crate::perf::Timer> = None;
-    terminal.draw(|frame| {
-        render(frame);
-        _terminal_write = crate::perf::start("frame::terminal_write");
-    })?;
-    Ok(())
-}
-
 /// Emit the OSC 22 pointer-shape sequence iff the desired shape changed
 /// since the last write. Called once per loop pass, de-duped so a still
 /// pointer costs nothing - and never touches the ratatui frame (hover
@@ -567,30 +536,15 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
 
         // Wait for an event or the next frame tick.
         let time_to_next = tick_duration.saturating_sub(last_render.elapsed());
-        // Measured on the select arm because that is now the only path
-        // terminal events take.
-        let mut input_ms = 0.0;
-        // Accumulates across both apply sites - the select arm below
-        // and the drain loop - because the first update of a burst
-        // lands on the arm while the loop is parked on `recv`, and a
-        // slow one there blocks the loop exactly as it would in the
-        // drain.
-        let mut updates_ms = 0.0;
         tokio::select! {
             Some(Ok(event)) = events.next() => {
-                let input_start = crate::perf::phase_start();
                 events::handle_terminal_event(app, event);
-                input_ms = crate::perf::phase_ms(input_start);
             }
             Some(update) = app.workspace_rx.recv() => {
-                let update_start = crate::perf::phase_start();
                 events::apply_session_update(app, update);
-                updates_ms = crate::perf::phase_ms(update_start);
             }
             Some(update) = app.update_rx.recv() => {
-                let update_start = crate::perf::phase_start();
                 events::apply_session_update(app, update);
-                updates_ms = crate::perf::phase_ms(update_start);
             }
             shutdown = &mut os_shutdown => {
                 if let Err(err) = shutdown {
@@ -613,11 +567,8 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         // stream here supplies a noop waker, which strands its wake
         // thread on the internal reader lock and stalls this loop for
         // tens of ms.
-        let drain_start = crate::perf::phase_start();
         while let Some(update) = next_queued_update(app) {
-            let update_start = crate::perf::phase_start();
             events::apply_session_update(app, update);
-            updates_ms += crate::perf::phase_ms(update_start);
         }
 
         file_index::drain_events(app);
@@ -738,33 +689,18 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
             app.force_redraw = false;
             app.needs_redraw = true;
         }
-        let drain_ms = crate::perf::phase_ms(drain_start);
-        let mut render_ms = None;
         if app.needs_redraw {
-            let render_start = crate::perf::phase_start();
-            if let Some(ref mut perf) = app.perf {
-                perf.next_frame();
-            }
             // FPS overlay is always-on (see
-            // `chat_view::render_perf_fps_overlay`), not gated on the `perf`
-            // Cargo feature. `mark_frame_presented` keeps the EMA fresh so the
-            // overlay shows real numbers in any build.
+            // `chat_view::render_perf_fps_overlay`). `mark_frame_presented`
+            // keeps the EMA fresh so the overlay shows real numbers.
             app.mark_frame_presented(Instant::now());
-            if let Err(error) = draw_timed(&mut terminal, |f| crate::ui::render(f, app)) {
+            if let Err(error) = terminal.draw(|f| crate::ui::render(f, app)) {
                 draw_error = Some(error);
                 break;
             }
-            render_ms = Some(crate::perf::phase_ms(render_start));
             app.needs_redraw = false;
             last_render = Instant::now();
         }
-        crate::perf::record_iteration(&crate::perf::IterationCost {
-            drain_ms,
-            input_ms,
-            updates_ms,
-            render_ms,
-            animating: is_animating,
-        });
     }
 
     // --- Graceful shutdown ---
@@ -1449,58 +1385,6 @@ mod tests {
         // panic then reaches libtest: the hook must not abort on the way.
         pane.close();
         panic!("the pane is gone");
-    }
-
-    /// Every `duration_ms` a slow frame recorded under `metric`, in
-    /// record order.
-    #[cfg(feature = "perf")]
-    fn recorded_ms(path: &std::path::Path, metric: &str) -> Vec<f64> {
-        std::fs::read_to_string(path)
-            .expect("perf log readable")
-            .lines()
-            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-            .filter(|record| record["metric"] == metric)
-            .filter_map(|record| record["duration_ms"].as_f64())
-            .collect()
-    }
-
-    /// The write span is what the frame instrumentation exists to add: a
-    /// slow frame that cannot separate rendering from writing sends the
-    /// next dive back to the same unattributed number. Pinned on a real
-    /// draw rather than on the span names, so deleting the bracket or
-    /// hoisting its start above the render callback fails here.
-    #[cfg(feature = "perf")]
-    #[test]
-    fn the_write_span_covers_the_post_render_half_only() {
-        const RENDER: std::time::Duration = std::time::Duration::from_millis(150);
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("forge-perf.log");
-        // Held for the draw: `open` is what arms the thread-local log the
-        // spans write through, and a frame over the slow-frame threshold
-        // is what makes it flush.
-        let logger = crate::perf::PerfLogger::open(&path).expect("perf log opens");
-
-        let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(8, 3)).expect("terminal");
-        draw_timed(&mut terminal, |frame| {
-            std::thread::sleep(RENDER);
-            frame.render_widget(ratatui::widgets::Paragraph::new("hi"), frame.area());
-        })
-        .expect("draw");
-        drop(logger);
-
-        let total = recorded_ms(&path, "frame_total");
-        assert!(
-            total.first().is_some_and(|ms| *ms >= RENDER.as_secs_f64() * 1000.0),
-            "precondition: the frame is slow enough to flush its samples; got {total:?}",
-        );
-        let write = recorded_ms(&path, "frame::terminal_write");
-        let write_ms = write.first().copied().expect("the write span is recorded");
-        assert!(
-            write_ms < 75.0,
-            "the write span brackets the post-render half, so it excludes the {RENDER:?} \
-             render; got {write_ms} ms",
-        );
     }
 
     fn app_with_connection()

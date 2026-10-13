@@ -10,17 +10,11 @@
 # directory). Whatever branch is checked out is what gets built - the
 # script does not clone, fetch, or reset.
 #
-# `--features perf` is enabled by default. forge's perf sidecar is
-# zero-cost without `--perf-log <path>` (Timer drops short-circuit on
-# the LOG_FILE check), so it stays compiled in unless you pass
-# --no-perf.
-#
 # After install, the script regenerates the zsh completion at
 # ~/.zsh/completions/_forge (override via FORGE_ZSH_COMPLETION_DIR).
 #
 # Usage:
-#   scripts/install.sh             # regular install (perf feature on)
-#   scripts/install.sh --no-perf   # opt out of the perf sidecar
+#   scripts/install.sh
 #
 # Env overrides:
 #   FORGE_ZSH_COMPLETION_DIR    zsh completion dir   (default: ~/.zsh/completions)
@@ -30,15 +24,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FORGE_REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-PERF_FEATURE=1
 while [ $# -gt 0 ]; do
     case "$1" in
-        --no-perf)
-            PERF_FEATURE=0
-            shift
-            ;;
         -h|--help)
-            sed -n '2,28p' "$0"
+            sed -n '2,22p' "$0"
             exit 0
             ;;
         *)
@@ -56,11 +45,7 @@ log_success() { printf '\033[0;32m[OK]\033[0m %s\n' "$*"; }
 die()         { printf '\033[0;31m[ERROR]\033[0m %s\n' "$*" >&2; exit 1; }
 require_cmd() { command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"; }
 
-if [ "$PERF_FEATURE" -eq 1 ]; then
-    BUILD_LABEL="release+perf"
-else
-    BUILD_LABEL="release"
-fi
+BUILD_LABEL="release"
 
 require_cmd cargo
 require_cmd git
@@ -96,9 +81,6 @@ CARGO_ARGS=(
     --locked
     --force
 )
-if [ "$PERF_FEATURE" -eq 1 ]; then
-    CARGO_ARGS+=(--features perf)
-fi
 # cd into FORGE_REPO so rustup picks up its rust-toolchain.toml - without
 # this, cargo uses the global default toolchain which may be older than
 # what forge-tui requires.
@@ -119,11 +101,6 @@ FORGE_BIN="$FORGE_BIN_DIR/forge"
 
 log_success "forge installed at $FORGE_BIN"
 log_success "  forge @ $CURRENT_SHA (branch: $CURRENT_BRANCH, build: $BUILD_LABEL)"
-
-if [ "$PERF_FEATURE" -eq 1 ]; then
-    log_info "Capture frame timings with:"
-    log_info "  $FORGE_BIN --perf-log /tmp/forge-perf.log"
-fi
 
 # zsh completion. The hidden `--generate-completion` flag landed with
 # the workspace migration; older builds won't have it, so we silently

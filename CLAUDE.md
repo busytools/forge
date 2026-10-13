@@ -431,11 +431,11 @@ inspected.
     The page-first step forces a clear visual target before code edits
     begin, and it keeps the doc honest. When in doubt about whether a
     page reflects reality, re-read the implementation and reconcile.
-12. **Diagnostics are self-serve.** The artifacts are the perf log and
-    tracing log under forge's app-support `logs/` dir, plus the JSONL
-    session captures. Telemetry that needs a user to opt in is a forge
-    bug: fix the always-on instrumentation instead of asking for a
-    repro recipe.
+12. **Diagnostics are self-serve.** The artifacts are the tracing log
+    under forge's app-support `logs/` dir, the client's own frame log
+    (`forge-perf.log` beside its `forge.log`), plus the JSONL session
+    captures. Telemetry that needs a user to opt in is a forge bug: fix
+    the always-on instrumentation instead of asking for a repro recipe.
 13. **Deferred work goes to an issue, not an inline TODO.** A
     concrete-fix `TODO(<name>):` naming a specific one-to-three-line
     change is fine. "Consider adding X someday" is not: it rots,
@@ -538,9 +538,9 @@ inspected.
     peer copies stayed.
 
     **Passing the test is not sufficient: contributor-facing text stays
-    in this file.** `perf.rs` runs enabled on a hot path, which
-    `scripts/install.sh` turns on rather than Cargo, and the unicode
-    gate passes both halves but only ever runs in this repo. Out for
+    in this file.** `scripts/install.sh`'s build recipe (`--locked`, the
+    provenance marker) and the unicode gate both pass both halves but
+    exist only in this repo. Out for
     failing the test itself: approval-scope tables, timezone
     presentation, prose punctuation preferences, PR-body voice, commit
     conventions, release workflow. Shipped text also never names a
@@ -774,7 +774,7 @@ inspected.
 
     **A new log site names an `event_name` and says which of the two it
     is.** A demoted level is not a silenced one: the default filter
-    directives in `crates/forge-tui/src/logging.rs` are where a record
+    directives in `crates/forge-server/src/logging.rs` are where a record
     that no longer claims a problem stays readable.
 
 21. **The web view is ONE theme built from reusable components.** Ved,

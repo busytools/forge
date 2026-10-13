@@ -144,8 +144,8 @@ too slow for the inner loop; it catches the errors only a release build
 sees.
 
 `just check-feature-configs` compiles the two forge-tui configurations
-nothing else builds: the one `just install` produces - release, `perf`
-on, the test-only features off - and `testing` on its own.
+nothing else builds: the one `just install` produces - release, the
+test-only features off - and `testing` on its own.
 `--all-features` cannot stand in for either, because it turns every
 feature on regardless and so never exercises which configuration
 enables what: the install build leaving `test-helpers` off, or
@@ -163,10 +163,7 @@ This builds `forge-tui` from the current working tree and installs the
 `forge` binary into cargo's install root, which is `~/.cargo/bin/forge`
 unless you have overridden `CARGO_INSTALL_ROOT` or `CARGO_HOME`. It
 builds whatever branch is checked out; it does not clone, fetch or
-reset. It passes `--features perf` unless you use
-`just install-no-perf`. That default lives in the install script, not
-in `Cargo.toml`, so a plain `cargo build` or `cargo install` does not
-enable `perf`.
+reset.
 
 One side effect worth knowing about: it regenerates the zsh completion
 at `~/.zsh/completions/_forge` (override the directory with
@@ -212,4 +209,3 @@ Useful flags:
 | `--log-file <PATH>` | Write tracing diagnostics to a file. |
 | `--log-filter <FILTER>` | Tracing filter directives, for example `info,app.render=trace`. Overrides `--diagnostics-preset`, and falls back to `RUST_LOG` when omitted. |
 | `--diagnostics-preset <NAME>` | A named logging preset: `runtime`, `session`, `render`, `bridge` or `full`. Ignored when `--log-filter` is given. |
-| `--perf-log <PATH>` | Write perf telemetry to a sidecar JSON file. Needs a build with the `perf` feature. |

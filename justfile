@@ -38,11 +38,11 @@ fmt:
 # else cargo invokes (rustc compile warnings on test/example/bin targets
 # that clippy might let through).
 #
-# Both feature sets run because neither covers the other: without
-# `--all-features` nothing compiles the perf-gated module, and with it
-# nothing compiles the `cfg(not(feature = ...))` branches. Every other
-# job in CI is already on the flag, so the bare invocation is the only
-# thing keeping the default build linted at all.
+# Both feature sets run because neither covers the other: with
+# `--all-features` nothing compiles the `cfg(not(feature = ...))`
+# branches, and without it a feature-gated module goes uncompiled.
+# Every other job in CI is already on the flag, so the bare invocation
+# is the only thing keeping the default build linted at all.
 #
 # Lint everything (lib, tests, examples, bins) with warnings as errors.
 clippy:
@@ -227,30 +227,14 @@ doc:
 # the inner loop. `release` gates on it instead, which is where the
 # ordering actually bites.
 #
-# `--all-features` is what gives the `perf` feature gates a release
-# compile; they are built nowhere else and this check passes on a
-# perf-gated release break without the flag, measured. It does NOT
-# stand in for the shipped configuration - it turns `test-helpers` on,
-# which `scripts/install.sh` leaves off. That is `check-feature-configs`.
+# `--all-features` does NOT stand in for the shipped configuration - it
+# turns `test-helpers` on, which `scripts/install.sh` leaves off. That
+# is `check-feature-configs`.
 #
 # Compile the workspace in release. Mirrors CI's `cargo check --release`.
 check-release:
     RUSTFLAGS="-D warnings" cargo check --release --workspace --all-targets --all-features
 
-# Compiles the two forge-tui configurations nothing else builds. The
-# install one compiles what `scripts/install.sh` does - the `forge`
-# bin, release, `perf` on, the test-only features off, `--locked` - so
-# production code reaching a `#[cfg(feature = "test-helpers")]`
-# constructor fails here instead of at the next `just install`. The
-# `testing` one is that feature by itself: only the dev-dependency
-# self-ref ever turns it on, and that turns `test-helpers` on
-# alongside, so a `testing` feature that fails to enable what its own
-# gated code needs goes unnoticed.
-#
-# `--all-features` covers neither: it turns every feature on regardless,
-# so it never exercises which configuration enables what - the install
-# build leaving `test-helpers` off, or `testing` having to forward it.
-#
 # The client's four steps, cheapest first, so a red never means two things at
 # once. They are inside the gate rather than beside it: the client's build,
 # typecheck and tests used to be a CI job alone, and a gate that does not run
@@ -886,9 +870,20 @@ client-preview:
 
     wait "$preview"
 
-# Compile the feature configurations nothing else builds.
+# Compiles the two forge-tui configurations nothing else builds. The
+# install one compiles what `scripts/install.sh` does - the `forge`
+# bin, release, the test-only features off, `--locked` - so production
+# code reaching a `#[cfg(feature = "test-helpers")]` constructor fails
+# here instead of at the next `just install`. The `testing` one is that
+# feature by itself: only the dev-dependency self-ref ever turns it on,
+# and that turns `test-helpers` on alongside, so a `testing` feature
+# that fails to enable what its own gated code needs goes unnoticed.
+#
+# `--all-features` covers neither: it turns every feature on regardless,
+# so it never exercises which configuration enables what - the install
+# build leaving `test-helpers` off, or `testing` having to forward it.
 check-feature-configs:
-    RUSTFLAGS="-D warnings" cargo check --locked --release -p forge-tui --bin forge --features perf
+    RUSTFLAGS="-D warnings" cargo check --locked --release -p forge-tui --bin forge
     RUSTFLAGS="-D warnings" cargo check --locked -p forge-tui --features testing
 
 # Full pre-commit / pre-PR verification loop.
@@ -1033,15 +1028,9 @@ ci-watch run_id="":
     line="[OK] run $run_id: success at $head_sha"
     record "$line"; echo "$line"
 
-# Build forge-tui from this checkout into ~/.cargo/bin/forge (release+perf, then zsh completions).
+# Build forge-tui from this checkout into ~/.cargo/bin/forge (release, then zsh completions).
 install:
     ./scripts/install.sh
-
-# Only useful for measuring whether perf adds detectable overhead.
-#
-# Same as `install` but strips the perf sidecar entirely.
-install-no-perf:
-    ./scripts/install.sh --no-perf
 
 # Untrust forge's retired proxy CA and delete its key material (idempotent, one-shot).
 remove-cert:

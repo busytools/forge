@@ -33,23 +33,6 @@ use errors::{
 #[cfg(test)]
 use standard::{cap_write_diff_lines, content_summary};
 
-/// Stable-hash a string into a `usize` for the perf-log's `extra`
-/// field. Used by the `tc::render_body` instrumentation (#125
-/// variant 2) so a slow-frame capture can correlate tool names + ids
-/// across logs without leaking raw strings into the diagnostic
-/// stream. The hash is `DefaultHasher`-based - stable per process,
-/// not across forge versions; sufficient for in-session triage.
-fn stable_hash_usize(s: &str) -> usize {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut h = DefaultHasher::new();
-    s.hash(&mut h);
-    // Narrowing a 64-bit hash is what this function is for.
-    #[allow(clippy::cast_possible_truncation)]
-    let truncated = h.finish() as usize;
-    truncated
-}
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ToolCallRenderContext<'a> {
     pub current_mode_id: Option<&'a str>,
@@ -126,20 +109,8 @@ pub fn render_tool_call_cached_with_tools_collapsed(
     // Expanded body: use cache if valid, otherwise render and cache.
     let cached_body = if body_depends_on_width { cache.get_for_width(width) } else { cache.get() };
     if let Some(cached_body) = cached_body {
-        crate::perf::mark_with("tc::cache_hit_body", "lines", cached_body.len());
         out.extend_from_slice(cached_body);
     } else {
-        crate::perf::mark("tc::cache_miss_body");
-        // Hash sdk_tool_name + tool-call id (perf extras are usize-only)
-        // so a slow-frame capture can attribute body-render time to a
-        // tool without leaking raw command strings.
-        let _t = crate::perf::start_with("tc::render_body", "input_bytes", tc.raw_input_bytes);
-        crate::perf::mark_with(
-            "tc::render_body_tool",
-            "name_hash",
-            stable_hash_usize(&tc.sdk_tool_name),
-        );
-        crate::perf::mark_with("tc::render_body_id", "tc_id_hash", stable_hash_usize(&tc.id));
         let body = standard::render_tool_call_body(tc, width);
         if body_depends_on_width {
             cache.store_for_width(body, width);
@@ -170,10 +141,8 @@ pub fn measure_tool_call_height_cached_with_tools_collapsed(
     tools_collapsed: bool,
 ) -> (usize, usize) {
     if tc.cache_measurement_key_matches(width, layout_generation, tools_collapsed) {
-        crate::perf::mark("tc_measure_fast_path_hits");
         return (tc.last_measured_height, 0);
     }
-    crate::perf::mark("tc_measure_recompute_count");
 
     let title = standard::render_tool_call_title(tc, render_context, width, spinner_glyph);
     let title_h =

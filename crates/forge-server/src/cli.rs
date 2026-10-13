@@ -30,14 +30,12 @@ impl DiagnosticsPreset {
             Self::Session => {
                 "info,bridge.lifecycle=debug,bridge.protocol=debug,app.session=debug,forge_server=debug,forge_workspace::output_tail=debug,app.permission=debug,app.command=debug,forge_workspace::dictate=debug,forge_dictate=debug"
             }
-            Self::Render => {
-                "info,app.render=trace,app.cache=debug,app.input=debug,app.paste=debug,app.perf=info"
-            }
+            Self::Render => "info,app.render=trace,app.cache=debug,app.input=debug,app.paste=debug",
             Self::Bridge => {
                 "info,bridge.lifecycle=debug,bridge.protocol=debug,bridge.sdk=debug,bridge.permission=debug,bridge.mcp=debug"
             }
             Self::Full => {
-                "info,app.render=trace,app.perf=info,bridge.lifecycle=debug,bridge.protocol=debug,bridge.sdk=debug,bridge.permission=debug,bridge.mcp=debug,app.session=debug,forge_server=debug,forge_workspace::output_tail=debug,app.tool=debug,app.command=debug,app.permission=debug,app.network=debug,app.update=debug,app.cache=debug,app.input=debug,app.paste=debug,app.config=debug,app.auth=debug,forge_workspace::dictate=debug,forge_dictate=debug"
+                "info,app.render=trace,bridge.lifecycle=debug,bridge.protocol=debug,bridge.sdk=debug,bridge.permission=debug,bridge.mcp=debug,app.session=debug,forge_server=debug,forge_workspace::output_tail=debug,app.tool=debug,app.command=debug,app.permission=debug,app.network=debug,app.update=debug,app.cache=debug,app.input=debug,app.paste=debug,app.config=debug,app.auth=debug,forge_workspace::dictate=debug,forge_dictate=debug"
             }
         }
     }
@@ -82,10 +80,6 @@ pub struct Cli {
     /// Overrides `--diagnostics-preset` and falls back to `RUST_LOG` when omitted.
     #[arg(long, value_name = "FILTER")]
     pub log_filter: Option<String>,
-
-    /// Write high-frequency perf telemetry to a sidecar JSON file (requires `--features perf` build).
-    #[arg(long, value_name = "PATH")]
-    pub perf_log: Option<std::path::PathBuf>,
 }
 
 #[cfg(test)]
@@ -94,14 +88,13 @@ mod tests {
     use clap::{CommandFactory, Parser};
 
     #[test]
-    fn cli_parses_bare_forge_with_default_log_and_perf_flags() {
+    fn cli_parses_bare_forge_with_default_log_flags() {
         let cli = Cli::try_parse_from(["forge"]).expect("parse");
         assert!(cli.project.is_none());
         assert!(cli.generate_completion.is_none());
         assert!(cli.diagnostics_preset.is_none());
         assert!(cli.log_file.is_none());
         assert!(cli.log_filter.is_none());
-        assert!(cli.perf_log.is_none());
     }
 
     #[test]

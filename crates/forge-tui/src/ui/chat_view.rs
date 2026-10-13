@@ -10,19 +10,12 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
-    let _t = app.perf.as_ref().map(|p| p.start("ui::render"));
     let frame_area = frame.area();
     app.cached_frame_area = frame_area;
-    crate::perf::mark_with("ui::frame_width", "cols", usize::from(frame_area.width));
-    crate::perf::mark_with("ui::frame_height", "rows", usize::from(frame_area.height));
 
     help::sync_geometry_state(app, frame_area.width);
-    let help_height = {
-        let _t = app.perf.as_ref().map(|p| p.start("ui::help_height"));
-        help::compute_height(app, frame_area.width)
-    };
+    let help_height = help::compute_height(app, frame_area.width);
     let input_visual_lines = {
-        let _t = app.perf.as_ref().map(|p| p.start("ui::input_visual_lines"));
         // The input box renders inside the chat column, not the full
         // frame - when side panes are visible the chat column is
         // narrower. Pass the chat column width so prompt wrapping math
@@ -34,16 +27,13 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         );
         input::visual_line_count(app, chat_w)
     };
-    let areas = {
-        let _t = app.perf.as_ref().map(|p| p.start("ui::layout"));
-        layout::compute(
-            frame_area,
-            input_visual_lines,
-            help_height,
-            app.projects_pane_visible,
-            app.inspector_pane_visible,
-        )
-    };
+    let areas = layout::compute(
+        frame_area,
+        input_visual_lines,
+        help_height,
+        app.projects_pane_visible,
+        app.inspector_pane_visible,
+    );
     // Cache for the mouse handler: pane click math reads
     // `app.layout.pane` to decide whether a click landed inside the
     // Projects pane before consulting `pane_hit_targets`.
@@ -57,10 +47,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // One build per frame for the Inspector section. Gated because
     // `subagents_view` indexes the whole session before it discovers
     // there is nothing live to show.
-    let subagents = {
-        let _t = app.perf.as_ref().map(|p| p.start("ui::subagents_view"));
-        if app.has_active_subagent_root() { app.subagents_view() } else { Vec::new() }
-    };
+    let subagents = if app.has_active_subagent_root() { app.subagents_view() } else { Vec::new() };
 
     // Narrow tier with either overlay open replaces the chat body
     // with the overlay's full-screen content. Wide / Medium tiers
@@ -69,22 +56,18 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let inspector_overlay = app.inspector_pane_overlay_open && areas.top_bar.is_some();
 
     if !projects_overlay && !inspector_overlay {
-        let _t = app.perf.as_ref().map(|p| p.start("ui::chat"));
         chat::render(frame, areas.body, app);
     }
 
     if projects_overlay {
-        let _t = app.perf.as_ref().map(|p| p.start("ui::projects_overlay"));
         let projects = app.roster_projects();
         projects_pane::render_overlay(frame, areas.body, app, &projects);
     } else if inspector_overlay {
-        let _t = app.perf.as_ref().map(|p| p.start("ui::inspector_overlay"));
         inspector_pane::render_overlay(frame, areas.body, app, &subagents);
     } else {
         // No overlay this frame. Render any visible inline side panes.
         // Each pane renderer manages its own hit-target stamping.
         if let Some(pane_area) = areas.pane {
-            let _t = app.perf.as_ref().map(|p| p.start("ui::projects_pane"));
             let projects = app.roster_projects();
             projects_pane::render(frame, pane_area, app, &projects);
             if let Some(sep_area) = areas.pane_separator {
@@ -97,7 +80,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             app.pane_hit_targets.clear();
         }
         if let Some(pane_right_area) = areas.pane_right {
-            let _t = app.perf.as_ref().map(|p| p.start("ui::inspector_pane"));
             inspector_pane::render(frame, pane_right_area, app, &subagents);
             if let Some(sep_area) = areas.pane_right_separator {
                 render_pane_separator(frame, sep_area);
@@ -109,12 +91,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // the end of `pane_hit_targets` and don't get stomped by the
     // inline-pane / overlay clearing above.
     if let Some(top_bar_area) = areas.top_bar {
-        let _t = app.perf.as_ref().map(|p| p.start("ui::top_bar"));
         top_bar::render(frame, top_bar_area, app);
     }
 
     if areas.help.height > 0 {
-        let _t = app.perf.as_ref().map(|p| p.start("ui::help"));
         help::render(frame, areas.help, app);
     }
 
@@ -127,13 +107,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         rect.height = rect.height.saturating_add(areas.help.height);
         rect
     };
-    {
-        let _t = app.perf.as_ref().map(|p| p.start("ui::input"));
-        input::render(frame, input_box_area, app);
-    }
+    input::render(frame, input_box_area, app);
 
     if autocomplete::is_active(app) {
-        let _t = app.perf.as_ref().map(|p| p.start("ui::autocomplete"));
         autocomplete::render(frame, input_box_area, app);
     }
 

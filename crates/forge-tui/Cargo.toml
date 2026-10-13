@@ -56,10 +56,6 @@ tui-markdown = { workspace = true }
 tui-textarea = { workspace = true }
 
 [features]
-# Forwarded to forge-server, where the diagnostics runtime reads it to pick
-# the perf sidecar's default path. The forwarding is what keeps
-# `--features perf` meaning the same thing on this bin as it always has.
-perf = ["forge-server/perf"]
 # Cross-crate test helpers. Exposes the per-`App` test-capture fields
 # (`test_dispatched_{permission,question}_outcomes`) plus the
 # `try_take_dispatched_*` getters so integration tests in this crate's
