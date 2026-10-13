@@ -419,7 +419,6 @@ impl Workspace {
             usage_poller_started: std::sync::atomic::AtomicBool::new(false),
             cron_scheduler_started: std::sync::atomic::AtomicBool::new(false),
             chase_sweep_started: std::sync::atomic::AtomicBool::new(false),
-            auto_continue_sweep_started: std::sync::atomic::AtomicBool::new(false),
             kick_dispatcher_tx,
             kick_dispatcher_rx_slot: Mutex::new(Some(kick_dispatcher_rx)),
             _single_instance_lock: None,
@@ -536,7 +535,6 @@ impl Workspace {
             model: None,
             env: std::collections::HashMap::new(),
             max_workers,
-            issues: true,
             permission_mode: forge_primitives::permission::PermissionMode::Auto,
         });
     }

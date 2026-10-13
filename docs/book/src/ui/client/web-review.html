@@ -197,15 +197,19 @@
     font-size: var(--fs-label); color: var(--muted); white-space: pre-wrap;
     overflow-wrap: anywhere; }
 
-  .turn { border-left: 1px solid var(--line); padding: 2px 0 2px 10px; margin: 7px 0; }
-  .turn.you { border-left-color: var(--accent); }
-  .who { display: flex; gap: 8px; font-family: var(--mono); font-size: var(--fs-label);
-    color: var(--dim); }
-  .turn.you .who { color: var(--muted); }
-  .tag { color: var(--dim); }
-  .words { margin: 1px 0 0; font-size: var(--fs-base); color: var(--muted);
-    overflow-wrap: anywhere; max-width: 72ch; }
-  .turn.you .words { color: var(--text); }
+  /* One turn of a thread. Both halves of the page draw this shape, and the
+     chip's own box is what separates it from the name. */
+  .rv-turn { border-left: 1px solid var(--line); padding: 2px 0 2px 10px; margin: 7px 0; }
+  .rv-turn.you { border-left-color: var(--accent); }
+  .rv-who { display: flex; align-items: baseline; gap: 8px; font-family: var(--mono);
+    font-size: var(--fs-label); color: var(--dim); }
+  .rv-turn.you .rv-who { color: var(--muted); }
+  .rv-at { border: 1px solid var(--line); border-radius: 99px; padding: 0 8px; }
+  .rv-turn .prose { margin: 1px 0 0; font-size: var(--fs-base); color: var(--muted);
+    max-width: 72ch; }
+  .rv-turn.you .prose { color: var(--text); }
+  .rv-turn .prose code { font-family: var(--mono); font-size: .87em; color: var(--muted);
+    background: var(--s2); border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; }
 
   .rv-quiet { font-size: var(--fs-base); color: var(--dim); padding: 0 2px 8px; }
   .rv-finishrow { display: flex; gap: 9px; align-items: center; }
@@ -349,9 +353,11 @@
                       <span class="state open">open</span>
                       <span class="where">wire.ts &#183; line 199</span>
                     </div>
-                    <div class="turn you">
-                      <div class="who">you</div>
-                      <p class="words">This read is the page's whole input; say so on the type.</p>
+                    <div class="rv-turn you">
+                      <div class="rv-who"><span class="rv-nm">you</span></div>
+                      <div class="prose">
+                        <p>This read is the page's whole input; say so on the type.</p>
+                      </div>
                     </div>
                     <div class="rv-acts">
                       <span class="rv-a">respond</span>
@@ -407,9 +413,11 @@
   | { outcome: 'read'; value: T }
   | { outcome: 'failed'; value: string }</pre>
       </div>
-      <div class="turn you">
-        <div class="who">you</div>
-        <p class="words">The unknown-outcome arm needs to survive the parse - a read that answered something is not a failed one.</p>
+      <div class="rv-turn you">
+        <div class="rv-who"><span class="rv-nm">you</span><span class="rv-at">R1</span></div>
+        <div class="prose">
+          <p>The unknown-outcome arm needs to survive the parse - a read that answered something is not a failed one.</p>
+        </div>
       </div>
     </article>
   </section>
@@ -433,13 +441,17 @@
           <span class="state addressed">addressed</span>
           <span class="where">client/src/review/Review.svelte &#183; line 74</span>
         </div>
-        <div class="turn you">
-          <div class="who">you <span class="tag">R1</span></div>
-          <p class="words">The header says Review but the seat it belongs to is only in the back link. Name the seat here too?</p>
+        <div class="rv-turn you">
+          <div class="rv-who"><span class="rv-nm">you</span><span class="rv-at">R1</span></div>
+          <div class="prose">
+            <p>The header says Review but the seat it belongs to is only in the back link. Name the seat here too?</p>
+          </div>
         </div>
-        <div class="turn">
-          <div class="who">implementer</div>
-          <p class="words">Named it - the header now carries the branch beside the title.</p>
+        <div class="rv-turn">
+          <div class="rv-who"><span class="rv-nm">implementer</span><span class="rv-at">2m</span></div>
+          <div class="prose">
+            <p>Named it - the header now carries the branch beside the title. The <code>E0038</code> was the object-safety change; <code>#[async_trait]</code> is back on the trait.</p>
+          </div>
         </div>
         <div class="rv-acts">
           <span class="rv-a">respond</span>
@@ -452,9 +464,11 @@
           <span class="state open">open</span>
           <span class="where">client/src/review/view.ts &#183; line 54</span>
         </div>
-        <div class="turn you">
-          <div class="who">you <span class="tag">R1</span></div>
-          <p class="words">This counts waits and opens; should it also say how many rounds are unsettled?</p>
+        <div class="rv-turn you">
+          <div class="rv-who"><span class="rv-nm">you</span><span class="rv-at">R1</span></div>
+          <div class="prose">
+            <p>This counts waits and opens; should it also say how many rounds are unsettled?</p>
+          </div>
         </div>
         <div class="rv-acts">
           <span class="rv-a">respond</span>

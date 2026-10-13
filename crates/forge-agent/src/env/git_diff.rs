@@ -342,7 +342,14 @@ pub async fn changed_file_count(cwd: &Path) -> Result<usize, RepoGate> {
     }
 }
 
-pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot {
+/// `env` is `cwd`'s project's own declared environment, carried as the
+/// identity of every `gh` call the scan makes, so the PR row reads as
+/// the project rather than as the server's ambient login.
+pub async fn scan<S: std::hash::BuildHasher>(
+    cwd: &Path,
+    env: &HashMap<String, String, S>,
+    prev: Option<&GitDiffSnapshot>,
+) -> GitDiffSnapshot {
     let raw_branch = match rev_parse_gate(cwd).await {
         Ok(branch) => branch,
         // Both the not-a-repo and scanner-crash cases collapse to the
@@ -478,7 +485,7 @@ pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot
         GitBranch::Named(name) if !on_default => {
             let pushed_sha = resolve_pushed_sha(cwd, PUSHED_SHA_WALK_CAP).await;
             let (pr, closes, pr_fetched_at) =
-                pr_for_head(cwd, name, pushed_sha.as_deref(), prev).await;
+                pr_for_head(cwd, env, name, pushed_sha.as_deref(), prev).await;
             (pr, closes, pr_fetched_at, pushed_sha)
         }
         _ => (None, Vec::new(), None, None),
@@ -860,8 +867,9 @@ enum PrLookup {
 /// returned attempt time so failed / empty lookups rate-limit too.
 /// A `Failed` lookup keeps `prev`'s PR when branch and sha still
 /// match - a gh blip must not flash the row off.
-async fn pr_for_head(
+async fn pr_for_head<S: std::hash::BuildHasher>(
     cwd: &Path,
+    env: &HashMap<String, String, S>,
     branch: &str,
     pushed_sha: Option<&str>,
     prev: Option<&GitDiffSnapshot>,
@@ -874,7 +882,7 @@ async fn pr_for_head(
     if let Some(prev) = cached {
         return (prev.pr.clone(), prev.closes.clone(), prev.pr_fetched_at);
     }
-    match fetch_pr_for_pushed_sha(cwd, pushed_sha).await {
+    match fetch_pr_for_pushed_sha(cwd, env, pushed_sha).await {
         PrLookup::Found(pr, closes) => (Some(pr), closes, Some(now)),
         PrLookup::None => (None, Vec::new(), Some(now)),
         PrLookup::Failed => match prev {
@@ -938,12 +946,16 @@ async fn resolve_pushed_sha(cwd: &Path, cap: usize) -> Option<String> {
 /// subprocess shapes are at DEBUG and the parse failure at WARN. The
 /// commit-not-on-remote shape logs at DEBUG instead because an
 /// unpushed HEAD is a normal mid-work state, not an operator signal.
-async fn fetch_pr_for_pushed_sha(cwd: &Path, pushed_sha: Option<&str>) -> PrLookup {
+async fn fetch_pr_for_pushed_sha<S: std::hash::BuildHasher>(
+    cwd: &Path,
+    env: &HashMap<String, String, S>,
+    pushed_sha: Option<&str>,
+) -> PrLookup {
     let Some(sha) = pushed_sha else {
         return PrLookup::None;
     };
     let endpoint = format!("repos/{{owner}}/{{repo}}/commits/{sha}/pulls");
-    let raw = match run_gh(cwd, &["api", &endpoint], GhNotFound::Tolerate).await {
+    let raw = match run_gh(cwd, env, &["api", &endpoint], GhNotFound::Tolerate).await {
         GitOutput::Ok(s) => s,
         GitOutput::Empty => {
             // A completed query with a definitive negative: exit 0
@@ -968,7 +980,7 @@ async fn fetch_pr_for_pushed_sha(cwd: &Path, pushed_sha: Option<&str>) -> PrLook
         }
         Ok(None) => PrLookup::None,
         Ok(Some((number, url, draft))) => {
-            let closes = fetch_closing_issues(cwd, number).await;
+            let closes = fetch_closing_issues(cwd, env, number).await;
             PrLookup::Found(GitPrInfo { number, url, draft }, closes)
         }
     }
@@ -1013,10 +1025,15 @@ struct GhApiPull {
 /// GraphQL-only field), so this second call keeps the
 /// `→ closes #M` tail rendering. Degrades to an empty list on any
 /// failure - the PR row is the headline, the closes are the tail.
-async fn fetch_closing_issues(cwd: &Path, number: u64) -> Vec<GitIssueRef> {
+async fn fetch_closing_issues<S: std::hash::BuildHasher>(
+    cwd: &Path,
+    env: &HashMap<String, String, S>,
+    number: u64,
+) -> Vec<GitIssueRef> {
     let number = number.to_string();
     let raw = match run_gh(
         cwd,
+        env,
         &["pr", "view", &number, "--json", "closingIssuesReferences"],
         GhNotFound::Fail,
     )
@@ -1181,14 +1198,20 @@ enum GhNotFound {
 }
 
 /// Spawn `gh <args>` from `cwd` (gh derives the github repo from
-/// the current working directory - there's no `-C` equivalent).
+/// the current working directory - there's no `-C` equivalent),
+/// carrying `env` as the project's own identity.
 /// Mirrors [`run_git`]'s timeout / classification / DEBUG logging so
 /// failures distinguish "gh: command not found" (binary missing)
 /// from "gh: To use GitHub CLI in a Git repository, please run …"
 /// (not a github remote) from "no pull requests found" (legitimate
 /// empty result) when triaging "PR row never shows".
-async fn run_gh(cwd: &Path, args: &[&str], not_found: GhNotFound) -> GitOutput {
-    let mut command = git_command::tokio_command("gh");
+async fn run_gh<S: std::hash::BuildHasher>(
+    cwd: &Path,
+    env: &HashMap<String, String, S>,
+    args: &[&str],
+    not_found: GhNotFound,
+) -> GitOutput {
+    let mut command = git_command::gh_tokio_command(env);
     command.current_dir(cwd).args(args).kill_on_drop(true);
     let fut = command.output();
     let output = match timeout(COMMAND_TIMEOUT, fut).await {
@@ -1382,7 +1405,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn scan_no_repo_collapses_to_not_in_repo() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let snap = scan(dir.path(), None).await;
+        let snap = scan(dir.path(), &HashMap::new(), None).await;
         assert_eq!(snap.repo_gate, RepoGate::NotARepo);
         assert!(matches!(snap.worktree, LayerState::Clean));
         assert!(matches!(snap.branch_ahead, LayerState::Clean));
@@ -1539,7 +1562,7 @@ mod tests {
         init_repo(&dir, "main");
         write_file(&dir, "README.md", "hello\n");
         commit_all(&dir, "init");
-        let snap = scan(dir.path(), None).await;
+        let snap = scan(dir.path(), &HashMap::new(), None).await;
         assert_eq!(snap.repo_gate, RepoGate::InRepo);
         assert!(matches!(snap.worktree, LayerState::Clean), "clean tree → no layer 1");
         assert!(matches!(snap.branch_ahead, LayerState::Clean), "on default → no layer 2");
@@ -1554,7 +1577,7 @@ mod tests {
         commit_all(&dir, "init");
         // Dirty: modify the tracked file without committing.
         write_file(&dir, "README.md", "second\nthird\n");
-        let snap = scan(dir.path(), None).await;
+        let snap = scan(dir.path(), &HashMap::new(), None).await;
         let LayerState::Populated(stats) = &snap.worktree else {
             panic!("layer 1 populated on dirty tree");
         };
@@ -1582,7 +1605,7 @@ mod tests {
         write_file(&dir, "feat.rs", "fn x() {}\n");
         commit_all(&dir, "feat commit");
 
-        let snap = scan(dir.path(), None).await;
+        let snap = scan(dir.path(), &HashMap::new(), None).await;
         assert!(matches!(snap.worktree, LayerState::Clean), "clean tree → no layer 1");
         let LayerState::Populated(ahead) = &snap.branch_ahead else {
             panic!("layer 2 populated on feature branch");
@@ -1613,7 +1636,7 @@ mod tests {
         // Dirty the worktree AFTER the feature commit.
         write_file(&dir, "feat.rs", "fn x() {}\nfn y() {}\n");
 
-        let snap = scan(dir.path(), None).await;
+        let snap = scan(dir.path(), &HashMap::new(), None).await;
         let LayerState::Populated(worktree) = &snap.worktree else {
             panic!("layer 1 populated on dirty tree");
         };
@@ -1660,7 +1683,7 @@ mod tests {
         // Dirty in detached state.
         write_file(&dir, "README.md", "third\n");
 
-        let snap = scan(dir.path(), None).await;
+        let snap = scan(dir.path(), &HashMap::new(), None).await;
         assert!(snap.worktree.is_populated(), "detached + dirty → layer 1 populated");
         assert!(
             matches!(snap.branch_ahead, LayerState::Clean),
@@ -1680,7 +1703,7 @@ mod tests {
             StdCommand::new("git").arg("-C").arg(dir.path()).args(args).output().expect("git ok");
         };
         run(&["checkout", "-q", "HEAD~1"]);
-        let snap = scan(dir.path(), None).await;
+        let snap = scan(dir.path(), &HashMap::new(), None).await;
         assert_eq!(snap.repo_gate, RepoGate::InRepo);
         assert!(matches!(snap.worktree, LayerState::Clean));
         assert!(matches!(snap.branch_ahead, LayerState::Clean));
@@ -1756,7 +1779,7 @@ mod tests {
     async fn scan_on_an_unborn_head_has_no_pr_row() {
         let dir = tempfile::tempdir().expect("tempdir");
         init_repo(&dir, "main");
-        let snap = scan(dir.path(), None).await;
+        let snap = scan(dir.path(), &HashMap::new(), None).await;
         assert_eq!(snap.repo_gate, RepoGate::ScannerFailed);
         assert_eq!(snap.pr, None);
         assert_eq!(snap.pushed_sha, None);
@@ -1784,7 +1807,7 @@ mod tests {
             .output()
             .expect("git ok");
 
-        let snap = scan(dir.path(), None).await;
+        let snap = scan(dir.path(), &HashMap::new(), None).await;
         let LayerState::Populated(stats) = &snap.worktree else {
             panic!("dirty tree → layer 1 populated");
         };
@@ -1897,7 +1920,7 @@ mod tests {
         };
 
         let (got_pr, got_closes, got_at) =
-            pr_for_head(dir.path(), "feat/x", Some("aaaa"), Some(&prev)).await;
+            pr_for_head(dir.path(), &HashMap::new(), "feat/x", Some("aaaa"), Some(&prev)).await;
         assert_eq!(got_pr, Some(pr));
         assert_eq!(got_closes, closes);
         assert_eq!(got_at, prev.pr_fetched_at);
@@ -1926,7 +1949,7 @@ mod tests {
         };
 
         let (got_pr, _got_closes, got_at) =
-            pr_for_head(dir.path(), "feat/x", Some("aaaa"), Some(&prev)).await;
+            pr_for_head(dir.path(), &HashMap::new(), "feat/x", Some("aaaa"), Some(&prev)).await;
         assert_eq!(got_pr.as_ref().map(|p| p.number), Some(42), "failed refetch keeps the row");
         let now = std::time::SystemTime::now();
         assert!(
@@ -1957,10 +1980,61 @@ mod tests {
         };
 
         let (got_pr, got_closes, got_at) =
-            pr_for_head(dir.path(), "feat/y", Some("aaaa"), Some(&prev)).await;
+            pr_for_head(dir.path(), &HashMap::new(), "feat/y", Some("aaaa"), Some(&prev)).await;
         assert_eq!(got_pr, None, "a failed lookup must not show another branch's PR");
         assert!(got_closes.is_empty());
         assert!(got_at.is_some());
+    }
+
+    /// The spawn a project's PR read makes carries that project's own
+    /// identity: the env handed to `scan` reaches the `gh` child. Which
+    /// ambient variables come off is pinned in `git_command`; this pins
+    /// that the env is threaded rather than dropped on the way down.
+    /// Real git for the repo, and a `gh` of our own the child finds
+    /// through the PATH the project env carries, so the identity it was
+    /// handed is readable afterwards.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_pr_lookup_spawn_carries_the_projects_env() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        init_repo(&dir, "feature");
+        let run = |args: &[&str]| {
+            let out =
+                StdCommand::new("git").arg("-C").arg(dir.path()).args(args).output().expect("git");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        write_file(&dir, "README.md", "one\n");
+        commit_all(&dir, "pushed commit");
+        // Simulate the push: the tip is on a remote-tracking ref and the
+        // checkout is not the default branch, so the scan runs its PR
+        // lookup against it.
+        run(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        run(&["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
+
+        let bin = dir.path().join("bin");
+        std::fs::create_dir_all(&bin).expect("bin dir");
+        let seen = dir.path().join("gh-seen-identity");
+        let gh = bin.join("gh");
+        std::fs::write(
+            &gh,
+            format!("#!/bin/sh\nprintf '%s' \"$GH_TOKEN\" > {}\nprintf '[]'\n", seen.display()),
+        )
+        .expect("write gh");
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).expect("chmod gh");
+        let env = HashMap::from([
+            ("PATH".to_owned(), bin.display().to_string()),
+            ("GH_TOKEN".to_owned(), "project-token".to_owned()),
+        ]);
+
+        scan(dir.path(), &env, None).await;
+
+        let recorded = std::fs::read_to_string(&seen)
+            .expect("the scan's gh child ran and recorded the identity it was handed");
+        assert_eq!(recorded, "project-token", "the PR lookup spawns gh as the project");
+        // The scan also kicks a throttled background fetch; settle it so
+        // the fixture directory is not removed under a live child.
+        settle_background_fetches().await;
     }
 
     /// The incident shape: a worktree whose local branch name differs
@@ -2171,7 +2245,7 @@ mod tests {
             pr_fetched_at: Some(std::time::SystemTime::now()),
         };
 
-        let snap = scan(dir.path(), Some(&prev)).await;
+        let snap = scan(dir.path(), &HashMap::new(), Some(&prev)).await;
         assert_eq!(snap.pr, Some(synthetic_pr), "cached PR must carry through scan");
         assert_eq!(snap.closes, synthetic_closes);
         assert_eq!(snap.pushed_sha, None, "nothing pushed in this repo");
@@ -2201,7 +2275,7 @@ mod tests {
         };
         // Even with a cache-hit-shaped prev, the default-branch gate
         // wins and the PR field clears.
-        let snap = scan(dir.path(), Some(&prev)).await;
+        let snap = scan(dir.path(), &HashMap::new(), Some(&prev)).await;
         assert_eq!(snap.pr, None);
         assert!(snap.closes.is_empty());
         assert_eq!(snap.pushed_sha, None, "the walk must not run on the default branch");
@@ -2279,7 +2353,10 @@ mod tests {
             Err(RepoGate::ScannerFailed),
             "a checkout git refuses must surface the scanner banner, not read as a non-repo",
         );
-        assert_eq!(scan(dir.path(), None).await.repo_gate, RepoGate::ScannerFailed);
+        assert_eq!(
+            scan(dir.path(), &HashMap::new(), None).await.repo_gate,
+            RepoGate::ScannerFailed,
+        );
     }
 
     /// The one shape where following symlinks reads a broken checkout as
@@ -2294,7 +2371,10 @@ mod tests {
             .expect("symlink");
 
         assert_eq!(repo_presence(dir.path()).await, RepoPresence::Unusable);
-        assert_eq!(scan(dir.path(), None).await.repo_gate, RepoGate::ScannerFailed);
+        assert_eq!(
+            scan(dir.path(), &HashMap::new(), None).await.repo_gate,
+            RepoGate::ScannerFailed,
+        );
     }
 
     /// A worker branch is cut from origin/main while local `main` lags
@@ -2335,7 +2415,7 @@ mod tests {
         wt_run(&["add", "-A"]);
         wt_run(&["commit", "-q", "-m", "Z own"]);
 
-        let snap = scan(&wt, None).await;
+        let snap = scan(&wt, &HashMap::new(), None).await;
         assert_eq!(
             snap.default_branch.as_deref(),
             Some("origin/main"),
@@ -2381,7 +2461,7 @@ mod tests {
         write_file(&dir, "local.txt", "local\n");
         commit_all(&dir, "unpushed");
 
-        let snap = scan(dir.path(), None).await;
+        let snap = scan(dir.path(), &HashMap::new(), None).await;
         assert_eq!(snap.default_branch.as_deref(), Some("origin/main"));
         assert!(
             matches!(snap.branch_ahead, LayerState::Clean),
@@ -2439,7 +2519,7 @@ mod tests {
         run(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
         run(&["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
 
-        let _ = scan(dir.path(), None).await;
+        let _ = scan(dir.path(), &HashMap::new(), None).await;
         let kicked = LAST_FETCH.get().is_some_and(|m| m.lock().contains_key(dir.path()));
         assert!(kicked, "a due scan on an origin-tracking repo claims (kicks) a background fetch");
         assert!(

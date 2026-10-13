@@ -327,16 +327,6 @@ struct ProjectEntry {
     /// forge restart.
     #[serde(default)]
     env_file: Option<String>,
-    /// File this project's task rows as issues in its own tracker
-    /// (github today, through `gh`). On by default; the probe - a repo
-    /// with issues enabled - is the real gate.
-    #[serde(default = "default_issues")]
-    issues: bool,
-}
-
-/// Whether a project files its rows as issues when the key is absent.
-fn default_issues() -> bool {
-    true
 }
 
 /// Unknown fields are rejected so a near-miss key (`providers`) fails
@@ -485,9 +475,6 @@ pub(crate) struct LoadedProject {
     /// Cap on this project's live dynamic workers; `None` keeps the
     /// default. See `ProjectEntry::max_workers`.
     pub max_workers: Option<usize>,
-    /// Whether this project files its rows as issues. See
-    /// `ProjectEntry::issues`.
-    pub issues: bool,
     /// CLI permission mode stamped onto every session this project
     /// spawns. Resolved once at load; absent key resolves to `auto`.
     pub permission_mode: PermissionMode,
@@ -885,7 +872,6 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
                 model: project_entry.model.clone(),
                 env,
                 max_workers: project_entry.max_workers,
-                issues: project_entry.issues,
                 permission_mode,
             });
             // The project model must be served by at least one account

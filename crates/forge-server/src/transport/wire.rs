@@ -1058,7 +1058,11 @@ async fn seed_from_transcript(state: &TransportState, slot: &SessionSlot) -> Opt
     if read.messages.is_empty() {
         return None;
     }
-    Some(state.conversations.insert(slot, Conversation::new(read.messages, read.compaction_count)))
+    Some(state.conversations.insert(
+        slot,
+        // A file read, whole: the cap's own drop is what the floor counts.
+        Conversation::new(read.messages, read.compaction_count, 0),
+    ))
 }
 
 /// How many of a conversation's newest turns a subscribe carries.
@@ -2035,7 +2039,9 @@ mod tests {
         let work = Arc::new(WorkCache::new());
         let repo = root.join("diff-repo");
         fixture_repo(&repo);
-        let mut diff = forge_workspace::env::git_diff::scan(&repo, None).await;
+        let mut diff =
+            forge_workspace::env::git_diff::scan(&repo, &std::collections::HashMap::new(), None)
+                .await;
         diff.pr = Some(forge_primitives::git::GitPrInfo {
             number: 1249,
             url: "https://example.test/pull/1249".to_owned(),
@@ -2468,7 +2474,12 @@ mod tests {
         let surface = fleet.surface();
         let repo = tempfile::tempdir().expect("a repository directory");
         fixture_repo(repo.path());
-        let diff = forge_workspace::env::git_diff::scan(repo.path(), None).await;
+        let diff = forge_workspace::env::git_diff::scan(
+            repo.path(),
+            &std::collections::HashMap::new(),
+            None,
+        )
+        .await;
         surface.store_work_snapshot(
             &seat,
             forge_workspace::work::WorkSnapshot {
@@ -2527,7 +2538,12 @@ mod tests {
         let surface = fleet.surface();
         let repo = tempfile::tempdir().expect("a repository directory");
         fixture_repo(repo.path());
-        let diff = forge_workspace::env::git_diff::scan(repo.path(), None).await;
+        let diff = forge_workspace::env::git_diff::scan(
+            repo.path(),
+            &std::collections::HashMap::new(),
+            None,
+        )
+        .await;
         surface.store_work_snapshot(
             &seat,
             forge_workspace::work::WorkSnapshot {

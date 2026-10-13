@@ -21,16 +21,17 @@ rounds newest first.
 **Files changed** draws the review as it is anchored: the scope control, the
 file tree, and the diff with the threads on their lines.
 
-| Region   | Shows                                                                                                                                                                             | Read from                                                          |
-| -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| Header   | the back link to the seat, `Review`, the branch, the round count, and the loop's state - `N replies to read`, in the warn tone while any thread waits on the reader, and `N open` | the record's `work.branch`, and the two review halves              |
-| Tabs     | `Conversation` and `Files changed`, with the commit count                                                                                                                         | the record's git chain                                             |
-| Scope    | the scope on screen, a stepper, the keys, and the unified/split picker                                                                                                            | the record's git chain (the commit list)                           |
-| Tree     | the scope's files as their own hierarchy - a row per directory and per file, folders before files, indented by depth; a directory carries the files beneath it                    | the scope's diff, and the threads in that scope                    |
-| Canvas   | the scope's files as diffs, with each thread inserted under its own line and the composer under the line a comment is being written on                                            | the scope's diff, the threads, and the server's landing per thread |
-| Outdated | every thread whose code could not be placed, drawn against the lines captured when the comment was written                                                                        | the threads half                                                   |
-| Rounds   | newest first: the round's number, its age, its tally by state, its summary, and each member thread                                                                                | the rounds half                                                    |
-| Finish   | the summary field and `finish review`, live once a comment is drafted                                                                                                             | the page's own drafts                                              |
+| Region        | Shows                                                                                                                                                                                                                                                                           | Read from                                                          |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| Header        | the back link to the seat, `Review`, the branch, the round count, and the loop's state - `N replies to read`, in the warn tone while any thread waits on the reader, and `N open`                                                                                               | the record's `work.branch`, and the two review halves              |
+| Tabs          | `Conversation` and `Files changed`, with the commit count                                                                                                                                                                                                                       | the record's git chain                                             |
+| Scope         | the scope on screen, a stepper, the keys, and the unified/split picker                                                                                                                                                                                                          | the record's git chain (the commit list)                           |
+| Tree          | the scope's files as their own hierarchy - a row per directory and per file, folders before files, indented by depth; a directory carries the files beneath it                                                                                                                  | the scope's diff, and the threads in that scope                    |
+| Canvas        | the scope's files as diffs, with each thread inserted under its own line and the composer under the line a comment is being written on                                                                                                                                          | the scope's diff, the threads, and the server's landing per thread |
+| Outdated      | every thread whose code could not be placed, drawn against the lines captured when the comment was written                                                                                                                                                                      | the threads half                                                   |
+| Rounds        | newest first: the round's number, its age, its tally by state, its summary, and each member thread                                                                                                                                                                              | the rounds half                                                    |
+| Finish        | the summary field and `finish review`, live once a comment is drafted                                                                                                                                                                                                           | the page's own drafts                                              |
+| The chat line | the lines the view this client replaced sent, pushed into the reviewed seat's own chat: `Review #N ready - address it via the review MCP (review__list)` when a round seals, `Reopened a comment in review #N - take another look via the review MCP (review__get)` on a reopen | the page's own dispatch after the write                            |
 
 ## A scope, and where a thread draws
 
@@ -80,9 +81,15 @@ file the list has not drawn yet.
 
 The state chip, then the anchored path and line, then the turns: the
 reviewer's read as `you` behind an accent rule, an agent's by its label
-behind a plain one, and the reviewer's own turns carrying the round that
-sealed them. An agent's turn carries no round, because only reviewer turns
-file into rounds.
+behind a plain one. A turn carries one meta chip beside its name: the round
+that sealed it, which only a reviewer's turn has, or else its age from the
+second turn on, because the thread's opening turn has nothing to be later
+than. Both halves of the page draw the same turn through the same piece, so
+a chip is a chip wherever the turn is read.
+
+A turn's words render as markdown, through the chat's own renderer: a reply
+carrying backticks, `#[async_trait]` or a fenced block reads here the way it
+reads in the conversation, and lines typed into a comment stay lines.
 
 The four states are the server's own: `open`, answered by nobody yet;
 `addressed`, the agent has answered and the ball is with the reader;
@@ -127,6 +134,29 @@ reopen a `set_review_thread_status`, and `finish review` a `submit_review`
 sealing every thread this sitting has drafted or replied on. The summary
 field is the round's own.
 
+**The finish nudges the seat the review belongs to.** A round that sealed
+also sends a `prompt_under` into the reviewed seat's own chat - one line,
+never the comments, which are what the review MCP is for: `Review #N ready -
+address it via the review MCP (review__list)`, the round's own number in it,
+the words the view this client replaced sent on its own seal. The worker
+therefore hears a review is ready and reads it back, live and on a fresh
+read. **Only a round with work in it is worth the nudge**: a round whose
+sealed threads are all resolved or outdated files without one, the predicate
+the view this client replaced sealed by, and a reply that carried no round
+nudges nobody - a worker sent to read a review that does not exist is worse
+off than one told nothing. A nudge is best-effort besides: one that could
+not leave is the worker's own line missing, never a lost review, so its
+failure is drawn nowhere.
+
+**A reopen nudges the same seat the same way.** Flipping a thread back to
+open hands the work back to the worker, so the line names the round the
+reopen is about - the thread's latest filed one, never its origin:
+`Reopened a comment in review #N - take another look via the review MCP
+(review__get)`, or the round-less `Reopened a review comment - take another
+look via the review MCP (review__list)` for a thread no round has filed. A
+resolve does not nudge at all: a thread read and accepted needs no second
+look.
+
 **The anchor is captured where the lines are.** The comment is written on a
 line of the drawn diff, so the page takes that line's text, its neighbours
 within the hunk, and the crate's own hash of the line - the capture the
@@ -160,13 +190,16 @@ press and release the composer's box reads - and the reply boxes in the two
 halves take typing alone.
 
 **The write's outcome is read.** The two commands that answer through a
-reply reject on a refusal, and a dead socket throws before anything goes;
-either way the draft is added only once the write landed, the box that
-wrote it keeps its words, and the refusal is drawn where the reader acted -
+reply carry the server's own answer back - the store's yes, or the word a
+refusal came as - and a dead socket throws before anything goes; either way
+the draft is added only once the write landed, the box that wrote it keeps
+its words, and the refusal is drawn where the reader acted -
 at the top of the page at the wide widths, and riding the top of the
 viewport at the narrow one, where the single column can carry the reader
 far past it. `finish review` keeps the summary and the drafts on a refusal
-rather than clearing words the round never filed.
+rather than clearing words the round never filed, and reads the minted
+round's number out of the reply's own body - that number is what the nudge
+carries.
 
 ## The states the page can be in
 

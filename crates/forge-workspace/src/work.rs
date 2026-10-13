@@ -238,11 +238,6 @@ impl HeldSeats {
         (scanning, Some(stopped))
     }
 
-    /// Whether a view is showing `slot` right now.
-    pub(crate) fn is_held(&self, slot: &SessionSlot) -> bool {
-        self.lock().contains_key(slot)
-    }
-
     /// Give a hold back.
     fn release(&self, slot: &SessionSlot) {
         let mut held = self.lock();
@@ -284,13 +279,10 @@ impl Workspace {
     /// store them under: a sessionless seat's stores drop what they are
     /// given, so the work would be a whole-tree walk with nowhere to land.
     pub async fn hold_seat(self: &Arc<Self>, slot: &SessionSlot) {
-        // A hold is somebody looking: it stamps the seat as shown - which is
-        // what a failure's nudge is refused against - and it ends the
-        // current failure episode, so a later failure is a new one.
+        // A hold is somebody looking: it ends the current failure episode,
+        // so a later failure is a new one.
         if let Some(domain) = self.domain_session_for(slot) {
-            let mut guard = domain.lock();
-            guard.shown_at = Some(std::time::SystemTime::now());
-            guard.auto_continue_spent = false;
+            domain.lock().auto_continue_spent = false;
         }
         let (scanning, stopped) = self.held_work_seats.acquire(slot);
         let Some(stopped) = stopped else {
@@ -346,11 +338,6 @@ impl Workspace {
 
     /// Stop showing `slot`. The last hold stops its loop and its watch.
     pub fn release_seat(&self, slot: &SessionSlot) {
-        // Shown up to now: a failure older than this is one the reader has
-        // already looked at, which is the boundary #1612's mark clears on.
-        if let Some(domain) = self.domain_session_for(slot) {
-            domain.lock().shown_at = Some(std::time::SystemTime::now());
-        }
         self.held_work_seats.release(slot);
     }
 
@@ -523,10 +510,25 @@ impl Workspace {
     /// second scan path is a second answer about one tree.
     pub async fn scan_work_at(&self, slot: &SessionSlot, cwd: &Path) -> WorkSnapshot {
         let previous = self.work_snapshot(slot).map(|held| held.diff);
-        let diff = forge_agent::env::git_diff::scan(cwd, previous.as_ref()).await;
+        let env = self.project_env(slot.project());
+        let diff = forge_agent::env::git_diff::scan(cwd, &env, previous.as_ref()).await;
         let held = WorkSnapshot { diff, cwd: cwd.to_path_buf(), read_at: Instant::now() };
         self.store_work_snapshot(slot, held.clone());
         held
+    }
+
+    /// `project`'s own declared environment, `env_file` included, which
+    /// is the identity a `gh` spawn on its behalf carries: the scan's PR
+    /// row must read as the project, not as the server's ambient login.
+    /// A name no project has declares none, so `gh` falls back to its
+    /// own login.
+    fn project_env(&self, project: &str) -> std::collections::HashMap<String, String> {
+        self.config
+            .projects
+            .iter()
+            .find(|candidate| candidate.name == project)
+            .map(|candidate| candidate.env.clone())
+            .unwrap_or_default()
     }
 }
 
@@ -830,35 +832,6 @@ provider = "anthropic"
         assert!(
             should_scan(Some(&held), false, now + SNAPSHOT_STALENESS),
             "and a read past the window is read whatever the watch said",
-        );
-    }
-
-    /// A hold is what "somebody is looking" means, so it is also what the
-    /// seat's nudge is judged against: a hold stamps the seat as shown, and
-    /// a release stamps it as shown up to that moment rather than clearing
-    /// it - a failure older than either is one the reader has seen.
-    #[tokio::test]
-    async fn a_hold_and_a_release_stamp_the_seat_as_shown() {
-        let dir = a_repo();
-        let (workspace, _updates, _config) = a_workspace(dir.path());
-        let seat = seat();
-        let shown_at =
-            || workspace.domain_session_for(&seat).expect("the seat's session").lock().shown_at;
-
-        assert!(shown_at().is_none(), "nothing has shown the seat yet");
-
-        workspace.hold_seat(&seat).await;
-        let held_at = shown_at().expect("the hold stamps the showing");
-
-        // The two stamps are taken from the clock, so the release is given a
-        // gap to sit strictly after the hold: on a coarse clock, `now()`
-        // twice in a row reads equal.
-        std::thread::sleep(std::time::Duration::from_millis(2));
-        workspace.release_seat(&seat);
-        let released_at = shown_at().expect("and the release stamps it again");
-        assert!(
-            released_at > held_at,
-            "the release stamps its own instant - the seat was shown up to the moment it was let go",
         );
     }
 
@@ -1622,5 +1595,63 @@ provider = "anthropic"
             "and the last one lets the seat and its loop go",
         );
         assert!(workspace.work_snapshot(&seat).is_some(), "while what was read stays readable");
+    }
+
+    /// The scan's `gh` spawn carries the identity of the seat's OWN
+    /// project: a seat in one project must never read as another's, and a
+    /// project that no longer resolves declares nothing, so `gh` falls
+    /// back to its own login rather than to the server's environment.
+    #[test]
+    fn a_seats_scan_carries_its_own_projects_declared_env() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let forge = dir.path().join("forge");
+        std::fs::create_dir_all(&forge).expect("forge dir");
+        std::fs::write(
+            forge.join("forge.toml"),
+            r#"
+[[orgs]]
+name = "TestOrg"
+accounts = ["acct-a"]
+
+[[orgs.projects]]
+name = "alpha"
+path = "/tmp/tp-alpha"
+model = "claude-sonnet-5"
+
+[orgs.projects.env]
+GH_TOKEN = "alpha-token"
+
+[[orgs.projects]]
+name = "beta"
+path = "/tmp/tp-beta"
+model = "claude-sonnet-5"
+
+[orgs.projects.env]
+GH_TOKEN = "beta-token"
+
+[[accounts]]
+display_name = "acct-a"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+"#,
+        )
+        .expect("write forge.toml");
+        let workspace = Workspace::new_for_test(dir.path().to_owned()).expect("workspace");
+
+        assert_eq!(
+            workspace.project_env("alpha").get("GH_TOKEN").map(String::as_str),
+            Some("alpha-token"),
+            "alpha's scan carries alpha's own token",
+        );
+        assert_eq!(
+            workspace.project_env("beta").get("GH_TOKEN").map(String::as_str),
+            Some("beta-token"),
+            "and beta's carries beta's, not the first project's",
+        );
+        assert!(
+            workspace.project_env("gone").is_empty(),
+            "a project that no longer resolves declares none",
+        );
     }
 }
