@@ -42,8 +42,6 @@ time = { workspace = true }
 time-tz = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
-tracing-appender = { workspace = true }
-tracing-subscriber = { workspace = true, features = ["json"] }
 unicode-segmentation = { workspace = true }
 unicode-width = { workspace = true }
 uuid = { workspace = true }
@@ -54,16 +52,14 @@ base64 = { workspace = true }
 dirs = { workspace = true }
 futures = { workspace = true }
 image = { workspace = true }
-# Startup-time RLIMIT_NOFILE bump (#251). macOS launchd hands us a
-# soft cap of 256 which multi-session forge runs through; the `rlimit`
-# crate wraps `setrlimit` without needing an `unsafe` block (workspace
-# forbids `unsafe_code`).
-rlimit = { workspace = true }
 tui-markdown = { workspace = true }
 tui-textarea = { workspace = true }
 
 [features]
-perf = []
+# Forwarded to forge-server, where the diagnostics runtime reads it to pick
+# the perf sidecar's default path. The forwarding is what keeps
+# `--features perf` meaning the same thing on this bin as it always has.
+perf = ["forge-server/perf"]
 # Cross-crate test helpers. Exposes the per-`App` test-capture fields
 # (`test_dispatched_{permission,question}_outcomes`) plus the
 # `try_take_dispatched_*` getters so integration tests in this crate's
@@ -86,6 +82,8 @@ forge-workspace = { workspace = true, features = ["test-helpers", "testing"] }
 insta = { workspace = true }
 pretty_assertions = { workspace = true }
 tempfile = { workspace = true }
+# `app/events.rs`'s own tests capture records with a subscriber.
+tracing-subscriber = { workspace = true }
 tokio = { workspace = true, features = ["full", "test-util"] }
 
 [lints]

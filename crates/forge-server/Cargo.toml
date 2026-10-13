@@ -10,6 +10,12 @@ description = "The server: what a client reads of the core, and no view of its o
 publish = false
 
 [features]
+# The perf sidecar, forwarded from the terminal's own `perf` feature while
+# it exists (`forge-tui/perf` enables this). `logging::resolve_perf_path`
+# reads it to decide the default sidecar path, exactly as it did in the
+# terminal's crate; nothing else here samples anything. It retires with
+# the terminal's perf instrumentation.
+perf = []
 # View fixtures for a sibling crate's `tests/`: a `ViewSurface` over a
 # stub workspace with a seeded roster, so a view test drives a real page
 # without its own manifest naming `forge-workspace`. Production builds
@@ -39,6 +45,12 @@ base64 = { workspace = true }
 # The protocol client's own arguments. A BIN cannot see dev-dependencies, so
 # a binary crate's arguments are a real dependency or they are hand-parsed.
 clap = { workspace = true }
+# `--generate-completion`'s script generator, called by `scripts/install.sh`
+# against the binary this crate now ships.
+clap_complete = { workspace = true }
+# The boot's config-dir resolution (`$HOME/.claude` fallback) and the
+# diagnostics path beside it.
+dirs = { workspace = true }
 forge-primitives = { workspace = true }
 forge-workspace = { workspace = true }
 # A socket's incoming messages are a `futures_util::Stream`.
@@ -53,11 +65,18 @@ serde_json = { workspace = true }
 # that type is a tokio channel. `net` is the listener the socket binds:
 # the workspace's own set does not carry it, and without it
 # `tokio::net::TcpListener` reads as a missing item rather than a missing
-# feature.
-tokio = { workspace = true, features = ["sync", "net"] }
+# feature. `signal` is the headless binary's own Ctrl-C park.
+tokio = { workspace = true, features = ["sync", "net", "signal"] }
 # The Monitor tail read reports a file it could not open, which is a
 # diagnosis a reader makes from the log rather than from the page.
 tracing = { workspace = true }
+# The diagnostics runtime the binary boots: a rotated JSON file beside the
+# state store, the same one the terminal has always written.
+tracing-appender = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["json"] }
+# The FD soft-limit raise (#251), which belongs to the binary rather than
+# to any view.
+rlimit = { workspace = true }
 # The fleet fixture's own directory, which the fixture holds and removes
 # with itself. Gated with `testing`, so no production build links it.
 tempfile = { workspace = true, optional = true }

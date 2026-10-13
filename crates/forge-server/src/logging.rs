@@ -1,4 +1,4 @@
-use crate::{Cli, DiagnosticsPreset};
+use crate::cli::{Cli, DiagnosticsPreset};
 use anyhow::Context as _;
 use std::fs::{File, OpenOptions, create_dir_all, metadata, remove_file, rename};
 use std::io::{BufWriter, Write};
@@ -30,9 +30,12 @@ pub mod targets {
 
 const DEFAULT_LOG_DIR: &str = "forge-tui";
 const DEFAULT_LOG_FILE_NAME: &str = "forge.log";
-pub(crate) const DEFAULT_PERF_FILE_NAME: &str = "forge-perf.log";
-pub(crate) const LOG_ROTATION_MAX_BYTES: u64 = 10 * 1024 * 1024;
-pub(crate) const LOG_ROTATION_MAX_FILES: usize = 5;
+pub const DEFAULT_PERF_FILE_NAME: &str = "forge-perf.log";
+// Public for the terminal's perf sidecar, which rolls its own file through
+// this writer; both the sidecar and these exports retire with the terminal's
+// frame instrumentation.
+pub const LOG_ROTATION_MAX_BYTES: u64 = 10 * 1024 * 1024;
+pub const LOG_ROTATION_MAX_FILES: usize = 5;
 
 pub struct LoggingRuntime {
     _guard: Option<WorkerGuard>,
@@ -230,7 +233,7 @@ fn default_diagnostics_dir() -> anyhow::Result<PathBuf> {
 /// the buffer capacity - a partial write re-enters the check with only
 /// the remainder.
 #[derive(Debug)]
-pub(crate) struct RollingFileWriter {
+pub struct RollingFileWriter {
     base_path: PathBuf,
     max_bytes: u64,
     max_files: usize,
@@ -239,7 +242,7 @@ pub(crate) struct RollingFileWriter {
 }
 
 impl RollingFileWriter {
-    pub(crate) fn new(
+    pub fn new(
         path: &Path,
         append: bool,
         max_bytes: u64,
@@ -379,7 +382,7 @@ mod tests {
         DEFAULT_LOG_DIRECTIVES, RollingFileWriter, clear_rotated_files, resolve_log_path,
         resolve_perf_path, rotated_log_path,
     };
-    use crate::{Cli, DiagnosticsPreset};
+    use crate::cli::{Cli, DiagnosticsPreset};
     use std::fs;
     use std::io::Write;
     use std::path::PathBuf;

@@ -2,7 +2,6 @@ use clap::{CommandFactory, Parser};
 use forge_tui::Cli;
 use forge_tui::error::AppError;
 use std::io::Write;
-use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::info_span;
 
@@ -69,156 +68,17 @@ fn run() -> anyhow::Result<()> {
     let local_set = tokio::task::LocalSet::new();
 
     rt.block_on(local_set.run_until(async move {
-        // Build the workspace orchestrator. Surface load errors to
-        // stderr (TUI hasn't started yet, no tty restoration needed)
-        // and exit non-zero.
-        let config_dir = match resolve_config_dir() {
+        // Build the workspace orchestrator and start the subsystem wave -
+        // one shared boot with the headless server (`forge_server::boot`),
+        // which also validates the CLI's positional `<PROJECT>` before any
+        // view comes up. Surface load errors to stderr (the TUI has not
+        // started yet, no tty restoration needed) and exit non-zero.
+        let config_dir = match forge_server::boot::resolve_config_dir() {
             Ok(p) => p,
             Err(err) => return Err(anyhow::anyhow!("forge: {err}")),
         };
-        let workspace = match forge_workspace::Workspace::new(config_dir) {
-            Ok(w) => Arc::new(w),
-            Err(err) => return Err(anyhow::anyhow!("forge: {err}")),
-        };
-
-        // Validate the CLI's positional `<PROJECT>` arg, if any, before
-        // entering the TUI. This turns `forge xyz` (where `xyz` isn't in
-        // forge.toml) into a clean stderr error + non-zero exit instead
-        // of a TUI flash followed by ConnectionFailed.
-        if let Some(name) = cli.project.as_deref()
-            && let Err(err) = workspace.validate_project_name(name)
-        {
-            return Err(anyhow::anyhow!("forge: {err}"));
-        }
-
-        // Kick off the per-account boot-time loading state machine
-        // (one task per `[[accounts]]` entry) in the background. Each
-        // task drives its account from `Loading` through to a
-        // terminal `Ready` or `Bailed`; the launchpad consults
-        // `all_loaded()` across the map to decide when to un-dim the
-        // project rows. The redb store has already seeded the
-        // in-memory map at `Workspace::new`. The 60 s poller starts
-        // after, run by `start_usage_poller` from
-        // forge-tui's connect path.
-        workspace.start_account_loading_tasks();
-
-        // Bind the gateway's inference listener and open the boot gate
-        // for it. Every spawned session's base URL names this port: a
-        // failed bind holds the gate shut AND spawn attempts are
-        // refused at the spawn entries until forge restarts.
-        workspace.start_gateway_listener();
-
-        // Load the model catalogue's cache and refresh a stale feed in
-        // the background. No-op unless `[dictate] enabled` is set, and
-        // never on the boot path: the fetch is what the models page's
-        // freshness line reports on. Ahead of the preflight because the
-        // preflight's active-model resolution reads the loaded feed when a
-        // `[dictate]` key names a model this machine has not installed.
-        workspace.start_dictate_catalogue();
-
-        // Fetch, verify and load the dictation models, on the same
-        // preflight screen as the accounts. No-op unless `[dictate]
-        // enabled` is set: a 3 GB download is opt-in.
-        workspace.start_dictate_preflight();
-
-        // Spawn the worker-kick drainer task (#259). Routes every
-        // `maybe_kick_worker_on_connected` enqueue through a single
-        // `KICK_DISPATCH_INTERVAL`-spaced dispatcher so multi-worker
-        // boots don't hit Anthropic's per-IP burst limit. Idempotent
-        // - the start helper no-ops a second call.
-        workspace.start_kick_dispatcher();
-
-        // Boot catch-up: one tick fires each overdue cron once, advancing
-        // past the missed slots (a cron missed while forge was down fires
-        // now, not once per skipped tick). Runs after Workspace::new so
-        // spawn-to-fire can spawn an asleep project's session.
-        workspace.fire_due_crons(std::time::SystemTime::now());
-
-        // Start the durable-cron scheduler: wakes every ~60s and fires
-        // crons as they come due, advancing/removing each.
-        workspace.start_cron_scheduler();
-
-        // Start the chase sweep: every ~30s the board's misses are derived
-        // and the crossings delivered - the pass that makes the task list
-        // drive instead of report.
-        workspace.start_chase_sweep();
-
-        // Start the auto-continue sweep: a failed turn nobody has looked at
-        // gets one prompt of forge's own once its delay has run out.
-        workspace.start_auto_continue_sweep();
-
-        // Start the Gotify subsystem when configured with at least one
-        // durable subscription loaded at boot; no-op otherwise.
-        workspace.start_gotify_subsystem();
-
-        // Prove each configured `[[slack]]` token with `auth.test`. A
-        // failure is logged and that workspace stays dormant; it never
-        // stops the boot. No-op with no `[[slack]]` entry.
-        workspace.start_slack_verification();
-
-        // Start one Slack pump per workspace with a durable subscription
-        // loaded at boot; no-op otherwise. The subscribe tool starts one
-        // for a workspace that gains its first.
-        workspace.start_slack_subsystem();
-
-        // Drop review state left behind by branches deleted since the
-        // last run. Worker teardown only catches a branch already gone at
-        // that moment, and a branch usually outlives its worker.
-        workspace.start_review_branch_sweep();
-
-        // Serve the socket on the address `[server]` names. A view beside the
-        // TUI in the same process, which is the point: it starts no subsystem
-        // of its own, so the cron scheduler and the connectors above stay the
-        // only ones. A bind that fails still boots - the TUI is not
-        // downstream of this.
-        //
-        // It takes the port the web view served on, so that page is off from
-        // here: one listener, and the socket is what holds it.
-        let server = workspace.server_config();
-        if server.enabled {
-            let addr = std::net::SocketAddr::new(server.bind, server.port);
-            // Built from the workspace so every piece the socket needs is
-            // derived where the workspace is in hand - the browser relay
-            // above all, which must be the one the sessions ask through.
-            let state =
-                std::sync::Arc::new(forge_server::transport::TransportState::for_workspace(
-                    &workspace,
-                    workspace.client_config(),
-                ));
-            match tokio::net::TcpListener::bind(addr).await {
-                Ok(listener) => {
-                    let bound = listener.local_addr().unwrap_or(addr);
-                    tracing::info!(
-                        target: forge_tui::logging::targets::APP_LIFECYCLE,
-                        event_name = "server_socket_listening",
-                        %bound,
-                        "the server's socket is listening",
-                    );
-                    tokio::spawn(async move {
-                        if let Err(error) = forge_server::transport::serve(state, listener).await {
-                            tracing::error!(
-                                target: forge_tui::logging::targets::APP_LIFECYCLE,
-                                event_name = "server_socket_failed",
-                                error = %error,
-                                "the socket stopped serving; the TUI is unaffected",
-                            );
-                        }
-                    });
-                }
-                Err(error) => tracing::error!(
-                    target: forge_tui::logging::targets::APP_LIFECYCLE,
-                    event_name = "server_socket_bind_failed",
-                    error = %error,
-                    "the socket is not serving; the TUI is unaffected",
-                ),
-            }
-        } else {
-            tracing::debug!(
-                target: forge_tui::logging::targets::APP_LIFECYCLE,
-                event_name = "server_socket_disabled",
-                "[server] enabled = false; nothing is serving this run",
-            );
-        }
+        let workspace = forge_server::boot::start_core(config_dir, cli.project.as_deref())?;
+        let _serving = forge_server::boot::serve_socket(&workspace).await?;
 
         // Create the app (instant, no I/O). The TUI holds an
         // `Arc<Workspace>` clone; main keeps the original so it
@@ -242,27 +102,6 @@ fn run() -> anyhow::Result<()> {
 
         result
     }))
-}
-
-/// Resolve the Claude config directory at the forge-tui orchestration
-/// boundary: honour `$CLAUDE_CONFIG_DIR` (ignoring empty values), else
-/// fall back to `$HOME/.claude`. After this point, the resolved path
-/// is threaded as a typed `PathBuf` (via `Workspace::new`, which in
-/// turn binds each `Agent::spawn(config_dir)` to its account's path).
-///
-/// Per hard rule #14 - no cwd-derived fallbacks. When `$CLAUDE_CONFIG_DIR`
-/// is unset/empty AND `dirs::home_dir()` returns None, refuse to launch
-/// rather than substituting `./.claude`.
-fn resolve_config_dir() -> anyhow::Result<PathBuf> {
-    if let Ok(value) = std::env::var("CLAUDE_CONFIG_DIR") {
-        let trimmed = value.trim_end_matches('/');
-        if !trimmed.is_empty() {
-            return Ok(PathBuf::from(trimmed));
-        }
-    }
-    dirs::home_dir().map(|h| h.join(".claude")).ok_or_else(|| {
-        anyhow::anyhow!("$CLAUDE_CONFIG_DIR unset and could not resolve home directory")
-    })
 }
 
 fn extract_app_error(err: &anyhow::Error) -> Option<AppError> {
