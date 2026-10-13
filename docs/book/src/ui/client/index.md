@@ -1,8 +1,8 @@
 # The client's surfaces
 
 The Svelte app that connects to a running forge and draws it. Its
-surfaces have pages here in the same way the TUI's do: read first,
-sketched with the change, checked afterwards, current state only, and the
+surfaces have pages here: read first, sketched with the change, checked
+afterwards, current state only, and the
 page arrives in the same change that lands the surface rather than as a
 follow-up.
 

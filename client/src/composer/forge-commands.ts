@@ -39,10 +39,9 @@ export function isForgeCommand(name: string): boolean {
  * What a typed forge command does in THIS view, before anything is sent:
  * the route it opens here, or the line it answers a wrong invocation with.
  *
- * The view this client replaced had the same submit path: a name that was a
- * page there is a route here, and a name invoked with arguments it does not
- * take is answered with its usage line rather than reaching the model as
- * prose.
+ * `/usage` is the one name that is a page here, so it routes; a name
+ * invoked with arguments it does not take is answered with its usage line
+ * rather than reaching the model as prose.
  * A name this table does not answer - `/new`, `/model`, and the rest of the
  * core's - returns `null` and crosses the wire as it always did.
  */
