@@ -2,10 +2,9 @@
 """
 Forbid em-dash / en-dash / horizontal-bar / curly quotes in
 forge-authored source, docs and config. Ellipsis U+2026 is ALLOWED
-(legitimate truncation glyph in TUI render). The captured test baselines
+(a legitimate truncation glyph a view draws). The captured test baselines
 are excluded - they mirror upstream wire payloads byte-for-byte and may
-legitimately carry Unicode prose from the CLI's own logs - along with the
-web view's three vendored scripts, which are somebody else's bytes.
+legitimately carry Unicode prose from the CLI's own logs.
 Nothing else is: forge-authored prose that happens to sit beside captured
 data is still scanned, `VENDOR.md` included. Files git ignores (.gitignore / .git/info/exclude, e.g.
 local audit scratch) are skipped too: the gate polices committable forge
@@ -29,7 +28,7 @@ Banned codepoints (kept inline for grep'ability):
   U+201D -  right double curly quote
 
 NOT BANNED:
-  U+2026 ellipsis (used for truncation in TUI render - legit)
+  U+2026 ellipsis (a truncation glyph views draw - legit)
 
 Run from the repo root (or pass a directory argv). Exits 0 on clean
 tree, 1 with file:line:content output on a hit.
@@ -92,9 +91,6 @@ EXCLUDE_PATH_PREFIXES = (
     # tests are about. Editing one would make it not the document it stands
     # for.
     "crates/forge-dictate/tests/fixtures/docs",
-    "crates/forge-web/assets/htmx.min.js",
-    "crates/forge-web/assets/htmx-sse.min.js",
-    "crates/forge-web/assets/idiomorph-ext.min.js",
 )
 
 
