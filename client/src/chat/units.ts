@@ -641,7 +641,8 @@ function isContinuation(text: string): boolean {
 
 /**
  * Whether a `queued_command` block is the harness's own background-completion
- * notice, which nobody typed and this page does not draw.
+ * notice, which nobody typed and which draws the summary line its text
+ * carrier draws (#1680) - and itself, without a summary.
  *
  * Both signals are read, because the terminal reads the text's own prefix
  * where the mode is the field that says which of the three kinds arrived: a
@@ -1553,7 +1554,9 @@ export function fold(
       if (block.type === 'queued_command') {
         const words = queuedText(block.prompt);
         if (!isCompletion(block, words)) continue;
-        const said = noticeFields(words);
+        // Escapes stripped here too, the drawn-row arm's own parse: one
+        // summary, read the same way wherever it is read.
+        const said = noticeFields(stripEscapes(words));
         if (said.call === null) continue;
         const held = tasks.get(said.call);
         tasks.set(said.call, {
@@ -2175,7 +2178,27 @@ export function fold(
 
       if (block.type === 'queued_command') {
         const words = queuedText(block.prompt);
-        if (isCompletion(block, words)) continue;
+        if (isCompletion(block, words)) {
+          // The completion's QUEUED carrier, drawing the same info line the
+          // text envelope draws above (#1680): it wakes a turn on its own, so
+          // a turn woken by one must not read as prompted by nothing. With no
+          // summary it falls through and draws as itself, the same rule-25
+          // default the text carrier keeps. (The terminal drops the kind
+          // outright; the client's own standard governs - rule 24's freeze
+          // clause.)
+          // Escapes stripped, and an empty summary read as absent: both the
+          // text carrier's own parse (#1680's `taskNotificationOf`), so the
+          // two carriers agree on what counts as a summary.
+          const said = noticeFields(stripEscapes(words));
+          if (said.summary !== null && said.summary !== '') {
+            push({
+              kind: 'notice',
+              key: keyOf(at, frame, blockAt),
+              notice: { severity: 'info', text: said.summary },
+            });
+            continue;
+          }
+        }
         // **A queued prompt can be somebody else's words.** Half the queued
         // rows in this machine's transcripts are a peer envelope, and the
         // envelope is a row of its own rather than the reader's - the same
