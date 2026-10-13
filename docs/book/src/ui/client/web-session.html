@@ -1659,68 +1659,74 @@ Set `service_key` per environment in the bot's own config.</pre>
           </details>
 
           <details class="leaf">
-            <summary><svg class="ic gl ok"><use href="#i-read"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/crates/forge-server/src/family.rs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <summary><svg class="ic gl ok"><use href="#i-read"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/client/src/chat/families.ts</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
               <div class="code">
-                <div class="lang">rust</div>
-                <pre><span class="c2">/// The group a tool's calls are summarised under.</span>
-<span class="k">pub enum</span> <span class="f">ToolFamily</span> {
-    <span class="f">Read</span>, <span class="f">Search</span>, <span class="f">Bash</span>, <span class="f">Web</span>, <span class="f">Lsp</span>,
-    <span class="f">Skill</span>, <span class="f">ToolSearch</span>, <span class="f">Config</span>,
-    <span class="c2">/// Every tool this crate has no row for.</span>
-    <span class="f">Tool</span>,
-    <span class="f">Own</span>(<span class="k">&amp;'static</span> <span class="k">str</span>),
-}</pre>
+                <div class="lang">ts</div>
+                <pre><span class="c2">/** The group a call's row is summarised under. */</span>
+<span class="k">export type</span> <span class="f">Family</span> =
+  | <span class="f">'read'</span> | <span class="f">'search'</span> | <span class="f">'bash'</span> | <span class="f">'web'</span> | <span class="f">'lsp'</span>
+  | <span class="f">'skill'</span> | <span class="f">'toolsearch'</span> | <span class="f">'config'</span>
+  | <span class="f">'worktree'</span> | <span class="f">'tool'</span>
+  <span class="c2">/** Every mutation, which the fold gives one row whatever tool it was. */</span>
+  | <span class="f">'edit'</span>;</pre>
               </div>
             </div>
           </details>
           <details class="leaf">
-            <summary><svg class="ic gl ok"><use href="#i-read"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/crates/forge-server/src/grouping.rs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <summary><svg class="ic gl ok"><use href="#i-read"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/client/src/chat/units.ts</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
               <div class="code">
-                <div class="lang">rust</div>
-                <pre><span class="k">pub fn</span> <span class="f">partition_blocks_into_render_units</span>(
-    blocks: <span class="k">&amp;</span>[<span class="f">Block</span>],
-) -&gt; <span class="f">Vec</span>&lt;<span class="f">RenderUnit</span>&gt; {</pre>
+                <div class="lang">ts</div>
+                <pre><span class="k">export function</span> <span class="f">fold</span>(
+  messages: <span class="k">readonly unknown</span>[],
+  self: <span class="f">Self</span> | <span class="k">null</span> = <span class="k">null</span>,
+  live = <span class="k">false</span>,
+  ended = <span class="k">false</span>,
+): <span class="f">Unit</span>[] {</pre>
               </div>
             </div>
           </details>
           <details class="leaf">
-            <summary><svg class="ic gl ok"><use href="#i-read"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/crates/forge-tui/src/ui/tool_call/group.rs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <summary><svg class="ic gl ok"><use href="#i-read"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/client/src/chat/leaves.ts</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
               <div class="code">
-                <div class="lang">rust</div>
-                <pre><span class="k">pub fn</span> <span class="f">kl</span>(row: <span class="f">KindRow</span>, name: <span class="k">&amp;str</span>, n: <span class="k">usize</span>, targets: <span class="k">&amp;</span>[<span class="k">&amp;str</span>]) -&gt; <span class="f">KindLine</span> {</pre>
+                <div class="lang">ts</div>
+                <pre><span class="k">export function</span> <span class="f">leafOf</span>(
+  id: <span class="k">string</span>,
+  name: <span class="k">string</span>,
+  input: <span class="k">unknown</span>,
+): <span class="f">ToolLeaf</span> {</pre>
               </div>
             </div>
           </details>
           <details class="leaf">
-            <summary><svg class="ic gl ok"><use href="#i-read"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/docs/book/src/ui/chat.md</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <summary><svg class="ic gl ok"><use href="#i-read"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/docs/book/src/ui/client/session.md</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
-              <div class="term">## Tool-call grouping (L2 / L1 / L0)
-Consecutive tool calls between two user messages fold into one group.</div>
+              <div class="term">## The run of rows
+Every call, message and thought draws on its own row, in the order it arrived.</div>
             </div>
           </details>
 
           <details class="leaf">
-            <summary><svg class="ic gl ok"><use href="#i-search"/></svg><span class="tn">"render_group_summary" &#183; 3 files</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <summary><svg class="ic gl ok"><use href="#i-search"/></svg><span class="tn">"iconOf(" &#183; 2 files</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
-              <div class="searchhit"><span class="ln">142:</span> <span class="fl">crates/forge-server/src/grouping.rs</span>
-<span class="hit">render_group_summary</span>(unit, width)</div>
-              <div class="searchhit"><span class="ln">88:</span> <span class="fl">crates/forge-tui/src/ui/tool_call/group.rs</span>
-<span class="hit">render_group_summary</span>(&amp;unit, width)</div>
+              <div class="searchhit"><span class="ln">214:</span> <span class="fl">client/src/chat/families.ts</span>
+<span class="k">export function</span> <span class="hit">iconOf</span>(row: <span class="f">KindRow</span>): <span class="k">string</span> {</div>
+              <div class="searchhit"><span class="ln">306:</span> <span class="fl">client/src/chat/Call.svelte</span>
+  <span class="k">const</span> glyph = <span class="f">$derived</span>(forge?.glyph ?? <span class="hit">iconOf</span>(call.row));</div>
             </div>
           </details>
           <details class="leaf">
-            <summary><svg class="ic gl ok"><use href="#i-search"/></svg><span class="tn">"KindLine" &#183; 2 files</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <summary><svg class="ic gl ok"><use href="#i-search"/></svg><span class="tn">"KindRow" &#183; 3 files</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
-              <div class="searchhit"><span class="ln">31:</span> <span class="fl">crates/forge-server/src/family.rs</span>
-<span class="k">pub struct</span> <span class="hit">KindLine</span> {</div>
+              <div class="searchhit"><span class="ln">72:</span> <span class="fl">client/src/chat/families.ts</span>
+<span class="k">export type</span> <span class="hit">KindRow</span> =</div>
             </div>
           </details>
 
           <details class="leaf" open>
-            <summary><svg class="ic gl ok"><use href="#i-edit"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/crates/forge-web/src/home.css</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <summary><svg class="ic gl ok"><use href="#i-edit"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/client/src/assets/web.css</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
               <div class="dif">
                 <div class="h">@@ -30,4 +30,5 @@</div>
@@ -1739,19 +1745,16 @@ Consecutive tool calls between two user messages fold into one group.</div>
             </div>
           </details>
           <details class="leaf" open>
-            <summary><svg class="ic gl ok"><use href="#i-edit"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/crates/forge-web/src/home.rs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <summary><svg class="ic gl ok"><use href="#i-edit"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/client/src/home/Home.svelte</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
               <div class="dif">
-                <div class="h">@@ -195,3 +197,6 @@</div>
-                <div class="ln ctx"><span class="on">195</span><span class="nn">197</span><span class="n"></span><span class="l">             footer {</span></div>
-                <div class="ln d"><span class="on">196</span><span class="nn"></span><span class="n">&#8722;</span><span class="l">                 div .versions { b { "v" (env!("CARGO_PKG_VERSION")) } }</span></div>
-                <div class="ln a"><span class="on"></span><span class="nn">198</span><span class="n">+</span><span class="l">                 div .versions {</span></div>
-                <div class="ln a"><span class="on"></span><span class="nn">199</span><span class="n">+</span><span class="l">                     b { "v" (env!("CARGO_PKG_VERSION")) }</span></div>
-                <div class="ln a"><span class="on"></span><span class="nn">200</span><span class="n">+</span><span class="l">                     @if let Some(installed) = view.cli.as_ref().and_then(|cli| cli.installed.as_deref()) {</span></div>
-                <div class="ln a"><span class="on"></span><span class="nn">201</span><span class="n">+</span><span class="l">                         " \u{b7} claude " (installed)</span></div>
-                <div class="ln ctx"><span class="on">197</span><span class="nn">202</span><span class="n"></span><span class="l">                 }</span></div>
+                <div class="h">@@ -91,2 +91,4 @@</div>
+                <div class="ln ctx"><span class="on">91</span><span class="nn">91</span><span class="n"></span><span class="l">      &lt;b&gt;v{view.header.version}&lt;/b&gt;</span></div>
+                <div class="ln a"><span class="on"></span><span class="nn">92</span><span class="n">+</span><span class="l">      {' \u{b7} '}socket v{PROTOCOL_VERSION}</span></div>
+                <div class="ln a"><span class="on"></span><span class="nn">93</span><span class="n">+</span><span class="l">      {#if view.header.installed}{' \u{b7} '}claude {view.header.installed}{/if}</span></div>
+                <div class="ln ctx"><span class="on">92</span><span class="nn">94</span><span class="n"></span><span class="l">      {#if view.header.update}</span></div>
               </div>
-              <div class="patchline"><span class="patchsize">1 hunk &#183; +4 &#8722;1</span><span class="patchmark">changed outside this edit</span></div>
+              <div class="patchline"><span class="patchsize">1 hunk &#183; +2 &#8722;0</span><span class="patchmark">changed outside this edit</span></div>
             </div>
           </details>
           <details class="leaf" open>
@@ -1773,13 +1776,13 @@ Consecutive tool calls between two user messages fold into one group.</div>
                with every line an addition - and no old-number column, because
                a fixed column of blanks is dead space on every line. -->
           <details class="leaf" open>
-            <summary><svg class="ic gl ok"><use href="#i-edit"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/client/src/theme/tokens.ts</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <summary><svg class="ic gl ok"><use href="#i-edit"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/client/src/theme.ts</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
               <div class="dif added">
                 <div class="h">@@ -0,0 +1,3 @@</div>
-                <div class="ln a"><span class="on"></span><span class="nn">1</span><span class="n">+</span><span class="l">export const CHIP_BG = 'rgba(244,118,0,.1)';</span></div>
-                <div class="ln a"><span class="on"></span><span class="nn">2</span><span class="n">+</span><span class="l">export const HAIRLINE = '1px solid var(--line)';</span></div>
-                <div class="ln a"><span class="on"></span><span class="nn">3</span><span class="n">+</span><span class="l">export const MONO = 'ui-monospace, "Fira Code", monospace';</span></div>
+                <div class="ln a"><span class="on"></span><span class="nn">1</span><span class="n">+</span><span class="l">/**</span></div>
+                <div class="ln a"><span class="on"></span><span class="nn">2</span><span class="n">+</span><span class="l"> * The palettes and typefaces forge ships, by the names `[client] theme` and</span></div>
+                <div class="ln a"><span class="on"></span><span class="nn">3</span><span class="n">+</span><span class="l"> * `[client] font` take.</span></div>
               </div>
               <div class="patchline"><span class="patchsize">1 hunk &#183; +3 &#8722;0</span></div>
             </div>
@@ -1788,7 +1791,7 @@ Consecutive tool calls between two user messages fold into one group.</div>
                reason under it in the caption chrome - the envelope's tags
                are read off in the fold and never reach the page. -->
           <details class="leaf" open>
-            <summary><svg class="ic gl err"><use href="#i-edit"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/crates/forge-web/src/theme.rs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <summary><svg class="ic gl err"><use href="#i-edit"/></svg><span class="tn">/Users/vedhavyas/Projects/forge/client/src/assets/web.css</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
               <div class="dif bare">
                 <div class="ln d"><span class="n">&#8722;</span><span class="l">  flex: none;</span></div>
@@ -1796,9 +1799,7 @@ Consecutive tool calls between two user messages fold into one group.</div>
               </div>
               <div class="errhint">
                 <div class="m">String to replace not found in file.</div>
-                <div class="d">String:   fn outcome(answer: Answer) -&gt; AskOutcome {
-    AskOutcome { model: "test-model".to_owned(), answer, usage: Usage { input_tokens: 10, output_tokens: 3, cost: None } }
-  }</div>
+                <div class="d">String:   .row .what a { flex: none; }</div>
               </div>
               <div class="patchline"><span class="patchsize">1 hunk &#183; +1 &#8722;1</span></div>
             </div>
@@ -1809,13 +1810,13 @@ Consecutive tool calls between two user messages fold into one group.</div>
             <div class="body">
               <div class="term"><span class="pfx">$</span> just check
    Compiling forge-primitives v1.0.90
-   Compiling forge-tui v1.0.90
+   Compiling forge-server v1.0.90
     Finished in 41.2s
 <span class="sum">Summary [92.418s] 1258 tests run: 1258 passed, 1174 skipped</span></div>
             </div>
           </details>
           <details class="leaf running">
-            <summary><svg class="ic gl"><use href="#i-square-terminal"/></svg><span class="st"><span class="ring"></span></span><span class="tn">cargo nextest run -p forge-web</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <summary><svg class="ic gl"><use href="#i-square-terminal"/></svg><span class="st"><span class="ring"></span></span><span class="tn">cargo nextest run -p forge-server</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
           </details>
           <details class="leaf running">
             <summary><svg class="ic gl"><use href="#i-square-terminal"/></svg><span class="st"><span class="ring"></span></span><span class="tn">just check-feature-configs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
@@ -1850,10 +1851,10 @@ A widget that renders a scrollable list of items.</div>
           </details>
 
           <details class="leaf">
-            <summary><svg class="ic gl ok"><use href="#i-lsp"/></svg><span class="tn">hover &#183; crates/forge-tui/src/ui/message.rs</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <summary><svg class="ic gl ok"><use href="#i-lsp"/></svg><span class="tn">hover &#183; client/src/chat/families.ts</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
-              <div class="term">fn <span class="f">render_body</span>(&amp;self, area: <span class="f">Rect</span>) -&gt; <span class="f">Vec</span>&lt;<span class="f">Line</span>&gt;
-docs: Render the message body into rows.</div>
+              <div class="term"><span class="k">export function</span> <span class="f">iconOf</span>(row: <span class="f">KindRow</span>): <span class="k">string</span>
+docs: The sprite a row draws, by the class it belongs to.</div>
             </div>
           </details>
 
@@ -2051,7 +2052,7 @@ docs: Render the message body into rows.</div>
             <div class="body">
               <div class="fam-cm">
                 <div class="fam-hd">
-                  <span class="fam-where">src/chat/units.ts:919</span>
+                  <span class="fam-where">client/src/chat/units.ts:919</span>
                   <span class="fam-tag">new side</span>
                   <span class="fam-chip bad">open</span>
                 </div>
@@ -2410,20 +2411,20 @@ branch main, nothing to commit</div>
             <div class="beat" data-beat="2">
               <details class="leaf" id="lv-a">
                 <summary><svg class="ic gl"><use href="#i-read"/></svg><span class="st" id="lv-a-st"><span class="ring"></span></span>
-                  <span class="tn">/Users/vedhavyas/Projects/forge/crates/forge-server/src/family.rs</span>
+                  <span class="tn">/Users/vedhavyas/Projects/forge/client/src/chat/families.ts</span>
                   <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-                <div class="body"><div class="code"><div class="lang">rust</div>
-                  <pre><span class="k">pub enum</span> <span class="f">ToolFamily</span> { <span class="f">Read</span>, <span class="f">Search</span>, <span class="f">Bash</span>, <span class="f">Web</span>, <span class="f">Lsp</span> }</pre></div></div>
+                <div class="body"><div class="code"><div class="lang">ts</div>
+                  <pre><span class="k">export type</span> <span class="f">Family</span> = <span class="f">'read'</span> | <span class="f">'search'</span> | <span class="f">'bash'</span> | <span class="f">'web'</span> | <span class="f">'lsp'</span></pre></div></div>
               </details>
             </div>
 
             <div class="beat" data-beat="3">
               <details class="leaf" id="lv-b">
                 <summary><svg class="ic gl"><use href="#i-search"/></svg><span class="st" id="lv-b-st"><span class="ring"></span></span>
-                  <span class="tn">"render_group_summary"</span>
+                  <span class="tn">"iconOf("</span>
                   <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-                <div class="body"><div class="searchhit"><span class="ln">142:</span>
-                  <span class="fl">crates/forge-server/src/grouping.rs</span></div></div>
+                <div class="body"><div class="searchhit"><span class="ln">306:</span>
+                  <span class="fl">client/src/chat/Call.svelte</span></div></div>
               </details>
             </div>
 
@@ -2820,16 +2821,16 @@ branch main, nothing to commit</div>
   <div class="pbody">
     <div class="prail">
       <div class="h">files</div>
-      <div class="f cur"><span class="m">M</span><span class="p">home.css</span><span class="c">2</span></div>
-      <div class="f"><span class="m">M</span><span class="p">home.rs</span></div>
+      <div class="f cur"><span class="m">M</span><span class="p">web.css</span><span class="c">2</span></div>
+      <div class="f"><span class="m">M</span><span class="p">Home.svelte</span></div>
       <div class="f"><span class="m">M</span><span class="p">surface/agents.rs</span></div>
       <div class="f"><span class="m">M</span><span class="p">surface.rs</span></div>
-      <div class="f"><span class="m">M</span><span class="p">app/cli_version.rs</span><span class="c">1</span></div>
+      <div class="f"><span class="m">M</span><span class="p">env/cli_version.rs</span><span class="c">1</span></div>
       <div class="f"><span class="m a">A</span><span class="p">web-session.html</span></div>
     </div>
     <div class="pmain">
       <div class="fhead">
-        <span class="path">crates/forge-web/src/home.css</span>
+        <span class="path">client/src/assets/web.css</span>
         <span class="badge">modified</span>
         <span class="pm">+12</span><span class="mm">&minus;4</span>
       </div>
@@ -2841,11 +2842,11 @@ branch main, nothing to commit</div>
         <div class="ln a"><span class="n">33</span><span class="l">+  text-decoration: none; flex: 0 1 auto; min-width: 0;</span></div>
         <div class="ln a"><span class="n">34</span><span class="l">+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;</span></div>
         <div class="ln"><span class="n">35</span><span class="l">}</span></div>
-        <div class="h">@@ -195,6 +197,8 @@ .versions b {</div>
-        <div class="ln"><span class="n">197</span><span class="l">.versions b { color: var(--muted); font-weight: 500; }</span></div>
-        <div class="ln a"><span class="n">198</span><span class="l">+/* An available update is something to act on, so it carries</span></div>
-        <div class="ln a"><span class="n">199</span><span class="l">+   the amber the TUI uses for the same notice. */</span></div>
-        <div class="ln a"><span class="n">200</span><span class="l">+.versions .upd { color: var(--warn); }</span></div>
+        <div class="h">@@ -189,2 +189,4 @@ .versions b {</div>
+        <div class="ln"><span class="n">189</span><span class="l">.versions b { color: var(--muted); font-weight: 500; }</span></div>
+        <div class="ln a"><span class="n">190</span><span class="l">+/* The installed version is context; an available update is something to</span></div>
+        <div class="ln a"><span class="n">191</span><span class="l">+   act on, so it carries the warn amber. */</span></div>
+        <div class="ln a"><span class="n">192</span><span class="l">+.versions .upd { color: var(--warn); }</span></div>
       </div>
     </div>
   </div>
