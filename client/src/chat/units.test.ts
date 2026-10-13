@@ -1775,26 +1775,45 @@ describe('one turn folded into the units a view draws', () => {
     expect(cardsOf(first)[0]?.peer).toBe('lead');
   });
 
-  it('keeps the completion notice the harness sends out of the conversation', () => {
+  it('draws the completion notice the harness sends, in the queued carrier too', () => {
     // The harness's background-completion report is not something a person
-    // said, and the terminal drops the kind outright. **Two signals, and each
-    // is pinned alone**: across 10,148 queued blocks in this machine's
-    // transcripts, 3,113 carry the mode, 3,113 open with the tag, and none
-    // disagrees - so the pair looks redundant and a row carrying both could
-    // not tell a two-signal guard from a one-signal one.
+    // said, and it wakes a turn on its own - so with a summary it draws as an
+    // info line of its own (the same line the text envelope draws, #1680),
+    // never as the reader's turn and never as nothing: a turn woken by one
+    // must not read as prompted by nothing. The terminal drops the kind
+    // outright; the client's own standard governs (rule 24's freeze clause).
+    // **Two signals, each pinned alone**: across 10,148 queued blocks in this
+    // machine's transcripts, 3,113 carry the mode, 3,113 open with the tag,
+    // and none disagrees - so a row carrying both could not tell a two-signal
+    // guard from a one-signal one.
+    const envelope =
+      '<task-notification>\n<task-id>t1</task-id>\n<status>completed</status>\n' +
+      '<summary>Background command "Run both gates" completed (exit code 0)</summary>\n</task-notification>';
+    const byTag = heard([{ type: 'queued_command', commandMode: 'prompt', prompt: envelope }]);
     const byMode = heard([
-      { type: 'queued_command', commandMode: 'task-notification', prompt: 'Task bj5g0t2kq done' },
-    ]);
-    const byTag = heard([
-      {
-        type: 'queued_command',
-        commandMode: 'prompt',
-        prompt: '<task-notification>Task bj5g0t2kq completed</task-notification>',
-      },
+      { type: 'queued_command', commandMode: 'task-notification', prompt: envelope },
     ]);
 
-    expect(fold([byMode]), 'the mode alone drops it').toHaveLength(0);
-    expect(fold([byTag]), 'and so does the tag alone').toHaveLength(0);
+    const tagUnits = fold([byTag]);
+    expect(kinds(tagUnits), 'the tag alone draws the line').toEqual(['notice']);
+    const [tagRow] = tagUnits;
+    expect(tagRow?.kind === 'notice' ? tagRow.notice.text : '', 'the summary it carries').toBe(
+      'Background command "Run both gates" completed (exit code 0)',
+    );
+
+    const modeUnits = fold([byMode]);
+    expect(kinds(modeUnits), 'and so does the mode alone').toEqual(['notice']);
+    const [modeRow] = modeUnits;
+    expect(modeRow?.kind === 'notice' ? modeRow.notice.text : '', 'the same summary').toBe(
+      'Background command "Run both gates" completed (exit code 0)',
+    );
+
+    // No summary in the envelope: it draws as itself, the same rule-25
+    // default the text carrier keeps rather than a silent drop.
+    const bare = heard([
+      { type: 'queued_command', commandMode: 'task-notification', prompt: 'Task bj5g0t2kq done' },
+    ]);
+    expect(kinds(fold([bare])), 'a summary-less completion is not claimed').toEqual(['user']);
   });
 
   it('reads the image in a tool result the way the wire nests it', () => {
