@@ -30,7 +30,7 @@ export const FORGE_COMMANDS: ForgeCommand[] = [
   { name: '/usage', description: 'Show session cost and plan usage' },
 ];
 
-/** Whether forge handles `name` itself, so one command is not drawn twice. */
+/** Whether `name` is in the catalogue, so one command is not drawn twice. */
 export function isForgeCommand(name: string): boolean {
   return FORGE_COMMANDS.some((command) => command.name === name);
 }
