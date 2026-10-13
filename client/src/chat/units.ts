@@ -1554,7 +1554,9 @@ export function fold(
       if (block.type === 'queued_command') {
         const words = queuedText(block.prompt);
         if (!isCompletion(block, words)) continue;
-        const said = noticeFields(words);
+        // Escapes stripped here too, the drawn-row arm's own parse: one
+        // summary, read the same way wherever it is read.
+        const said = noticeFields(stripEscapes(words));
         if (said.call === null) continue;
         const held = tasks.get(said.call);
         tasks.set(said.call, {
