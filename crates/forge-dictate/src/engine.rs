@@ -1876,8 +1876,7 @@ mod tests_engine {
 
     /// The stream-fed take, weightless: pushed samples cross the window
     /// ceiling, the segmenter cuts and queues while the take is still
-    /// open, and the take answers through the same pipeline a device
-    /// take uses.
+    /// open, and the take answers through the pipeline.
     #[test]
     fn a_segment_settles_while_the_stream_is_still_open() {
         let (_dir, engine) = engine_without_weights();

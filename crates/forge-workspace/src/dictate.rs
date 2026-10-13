@@ -913,9 +913,8 @@ impl DictateRuntime {
         }
     }
 
-    /// The live take a socket's frame belongs to, if `key` has one that is
-    /// fed by frames rather than a device AND was started by the same
-    /// connection.
+    /// The live take a socket's frame belongs to, if `key` has one that
+    /// the pushing connection started.
     ///
     /// **The take must be the pushing connection's own**, because a seat's
     /// live take can be another connection's - decision 3's own scenario,
@@ -1993,7 +1992,7 @@ mod dictate_lifecycle_tests {
             "the start echo carries the connection the take belongs to, got {started:?}"
         );
 
-        // The meter reads pushed audio exactly as it reads a device's.
+        // The meter reads the pushed audio.
         let level = tokio::time::timeout(Duration::from_secs(2), updates.recv())
             .await
             .expect("a level must arrive while the take is live")
@@ -2316,9 +2315,9 @@ mod dictate_lifecycle_tests {
         );
     }
 
-    /// A stream take with no engine refuses with the way out, exactly as
-    /// the device path does - and the refusal resolves no take, so a
-    /// client that never saw a start is told why.
+    /// A stream take with no engine refuses with the way out, and the
+    /// refusal resolves no take, so a client that never saw a start is
+    /// told why.
     #[tokio::test]
     async fn a_stream_take_without_an_engine_refuses_with_the_way_out() {
         let (ws, mut updates) = crate::Workspace::testing_stub();
