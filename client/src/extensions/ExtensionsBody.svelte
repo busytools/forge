@@ -162,17 +162,18 @@
   let pendingSource = $state<string | null>(null);
   let pendingFrom = $state(0);
 
-  // The reopen rides the add's OWN outcome, and this runs on every plugin
-  // frame (`settled`) - not only when `failure` becomes set, because a
-  // SUCCESSFUL add lands with no failure at all, and a source left pending
-  // past it would reopen the input on some LATER, unrelated failure while
-  // the line describes something else. The frame must be one that landed
-  // since the submission: without that, the effect's own dependency on
-  // `pendingSource` would clear the draft the moment it is set.
+  // The reopen rides the add's OWN outcome, which is a plugin frame (`settled`)
+  // or the refusal of its dispatch - a refusal lands with no frame at all; a
+  // SUCCESSFUL add lands with no failure at all. A source left pending past
+  // either would ride some LATER, unrelated frame: reopening the input under a
+  // line about something else, or being dropped silently. The frame must be
+  // one that landed since the submission: without that, the effect's own
+  // dependency on `pendingSource` would clear the draft the moment it is set.
   $effect(() => {
     const tick = settled;
-    if (pendingSource === null || tick === pendingFrom) return;
-    if (failure === null) {
+    if (pendingSource === null) return;
+    if (tick === pendingFrom && refusal === null) return;
+    if (refusal === null && failure === null) {
       pendingSource = null;
       return;
     }
