@@ -91,9 +91,20 @@ fn canonicalize_path(path: &str) -> String {
     resolved.nfc().collect()
 }
 
+/// Whether this read has already kept a row under `uuid`.
+///
+/// **The key a re-appended block is deduped by.** A transcript can carry a
+/// block of records twice, the copies differing only by a `slug` field (and
+/// sometimes `parentUuid`), so `uuid` is the one field stable across the pair.
+/// A row with no `uuid` names nothing to dedupe on and is never a repeat.
+fn already_kept(seen: &mut std::collections::HashSet<String>, uuid: &str) -> bool {
+    !uuid.is_empty() && !seen.insert(uuid.to_owned())
+}
+
 fn parse_session_messages<R: std::io::Read>(reader: R) -> SessionHistory {
     let mut out = Vec::new();
     let mut compaction_count = 0_u32;
+    let mut seen = std::collections::HashSet::new();
     for (idx, line_res) in BufReader::new(reader).lines().enumerate() {
         let line = match line_res {
             Ok(l) => l,
@@ -129,6 +140,9 @@ fn parse_session_messages<R: std::io::Read>(reader: R) -> SessionHistory {
         let Some((message, boundary)) = transcript_row(&value) else {
             continue;
         };
+        if already_kept(&mut seen, &message.uuid) {
+            continue;
+        }
         if boundary {
             compaction_count = compaction_count.saturating_add(1);
         }
@@ -844,6 +858,11 @@ fn read_rows_with(
         .position(|(row, _)| !carries_a_result(row))
         .map_or(0, |at| at.min(ROWS_PAST_CUT));
     kept.drain(..deferred);
+    // The re-appended block, deduped the same way the whole-file read does it.
+    // `kept` is oldest-first, so the original copy survives and the later one
+    // is dropped.
+    let mut seen = std::collections::HashSet::new();
+    kept.retain(|(row, _)| !already_kept(&mut seen, &row.uuid));
     // The span runs to the history's start when the read reached the file's
     // own beginning AND the span's oldest row is the first row it found there:
     // a window that reached the start and held no row older than the boundary
@@ -1942,6 +1961,45 @@ mod tests {
         assert!(matches!(msgs[0].kind, SessionMessageKind::Assistant));
     }
 
+    /// A transcript can carry a block of records twice: the second copies
+    /// repeat the `uuid`, the message id and the timestamp of the first,
+    /// differing only by a `slug` field the first lacks, and sit right after a
+    /// later run's session-state rows. The whole-file read handed both copies
+    /// on, so a resumed or freshly-opened conversation drew the block twice.
+    /// The `uuid` is the key that absorbs it - unique per record and stable
+    /// across the pair.
+    #[test]
+    fn parse_session_messages_reads_a_duplicated_block_once() {
+        let jsonl = r#"{"type":"user","message":{"role":"user","content":"first"},"uuid":"u1","session_id":"s1","timestamp":"2026-09-04T02:23:48.850Z"}
+{"type":"assistant","message":{"id":"msg_01","role":"assistant","content":[{"type":"text","text":"answer"}]},"uuid":"a1","session_id":"s1","timestamp":"2026-09-04T02:23:50.062Z"}
+{"type":"last-prompt","uuid":"lp1"}
+{"type":"tag","tag":"t"}
+{"type":"user","message":{"role":"user","content":"first"},"uuid":"u1","slug":"structured-pondering-nygaard","session_id":"s1","timestamp":"2026-09-04T02:23:48.850Z"}
+{"type":"assistant","message":{"id":"msg_01","role":"assistant","content":[{"type":"text","text":"answer"}]},"uuid":"a1","slug":"structured-pondering-nygaard","session_id":"s1","timestamp":"2026-09-04T02:23:50.062Z"}
+"#;
+        let history = parse_session_messages(jsonl.as_bytes());
+        assert_eq!(
+            history.messages.iter().map(|row| row.uuid.as_str()).collect::<Vec<_>>(),
+            ["u1", "a1"],
+            "the duplicated block reads once, in its original order, and the session-state rows \
+             stay out",
+        );
+    }
+
+    /// The dedupe keys on `uuid`, so a boundary row counted from a duplicated
+    /// block is one compaction, not two: the second copy is the same cut.
+    #[test]
+    fn parse_session_messages_counts_a_duplicated_boundary_once() {
+        let jsonl = r#"{"type":"user","message":{"role":"user","content":"one"},"uuid":"u1","session_id":"s1"}
+{"type":"system","subtype":"compact_boundary","uuid":"cb1","session_id":"s1","compactMetadata":{"trigger":"auto","preTokens":1002459,"postTokens":31253}}
+{"type":"last-prompt","uuid":"lp1"}
+{"type":"system","subtype":"compact_boundary","uuid":"cb1","slug":"s","session_id":"s1","compactMetadata":{"trigger":"auto","preTokens":1002459,"postTokens":31253}}
+"#;
+        let history = parse_session_messages(jsonl.as_bytes());
+        assert_eq!(history.compaction_count, 1, "one boundary, written twice");
+        assert_eq!(history.messages.len(), 2, "and drawn once");
+    }
+
     fn session_info_with_tag(session_id: &str, tag: Option<&str>) -> SDKSessionInfo {
         SDKSessionInfo {
             session_id: session_id.to_string(),
@@ -2391,6 +2449,41 @@ mod tests {
             "the newest rows the session wrote",
         );
         assert!(!newest.exhausted, "with more above them");
+    }
+
+    /// **A page reads the duplicated block once too.** The paging span read is
+    /// the second reader of the same file, and it serves the rows a page below
+    /// the window's floor draws - which is where a re-appended block sits. Its
+    /// row-level dedupe keys on the `uuid` the same way the whole-file read's
+    /// does.
+    #[test]
+    fn a_row_read_reads_a_duplicated_block_once() {
+        use std::fmt::Write as _;
+        let config = tempfile::tempdir().unwrap();
+        let cwd = "/Users/me/Projects/playground";
+        let dir = project_dir_for(config.path(), cwd);
+        fs::create_dir_all(&dir).unwrap();
+        let session = "550e8400-e29b-41d4-a716-446655440000";
+        let mut body = a_transcript(6);
+        // A later run's session-state rows, then the re-appended tail block:
+        // u3..u5 written a second time under their original uuids.
+        let _ = writeln!(body, "{{\"type\":\"last-prompt\",\"uuid\":\"lp1\"}}");
+        for at in 3..6 {
+            let _ = writeln!(
+                body,
+                "{{\"type\":\"user\",\"uuid\":\"u{at}\",\"slug\":\"s\",\"session_id\":\"s1\",\
+                 \"message\":{{\"role\":\"user\",\"content\":\"turn {at}\"}}}}"
+            );
+        }
+        write_session_jsonl(&dir, session, &body);
+
+        let span = read_rows(config.path(), session, Some(cwd), None, 100)
+            .expect("the transcript answers with its rows");
+        assert_eq!(
+            ids(&span),
+            ["u0", "u1", "u2", "u3", "u4", "u5"],
+            "the newest rows, the duplicated tail block among them only once",
+        );
     }
 
     /// **A chained read seeks where a locating read searches.** Given the byte
