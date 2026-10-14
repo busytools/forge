@@ -809,12 +809,13 @@ impl SessionTask {
                     // the case that makes it plain, because the boundary drops
                     // the transport's copy and the replay is what rebuilds it.
                     self.retain(&msg);
-                    // `None`: a frame off the wire is the CLI's own, and
-                    // carries no prompt origin.
+                    // `None` either way: a frame off the wire is the CLI's
+                    // own, and carries neither a prompt origin nor a sender.
                     self.emit(SessionUpdate::ChatAppended {
                         key: self.key.clone(),
                         msg,
                         origin: None,
+                        source: None,
                     });
                 }
             }

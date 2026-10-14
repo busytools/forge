@@ -10,30 +10,35 @@
 //! model received.
 
 use forge_primitives::{Message, SessionSlot};
+use forge_workspace::PromptSource;
 
 use crate::surface::SessionUpdate;
 
-/// The display-only user turn `update` draws as, when it delivers to `slot`.
+/// The display-only user turn `update` draws as, when it delivers to `slot`,
+/// with the sender the frame that draws it carries.
 /// `None` for every other update, and for a delivery to another seat: the
 /// same stream carries the whole fleet.
 ///
 /// The prose is checked against the same parser the fold reads it back with,
 /// and a drift is recorded against the delivery that produced it.
-pub fn delivery_turn(update: &SessionUpdate, slot: &SessionSlot) -> Option<Message> {
-    let (source, text, uuid) = match update {
+pub fn delivery_turn(
+    update: &SessionUpdate,
+    slot: &SessionSlot,
+) -> Option<(Message, PromptSource)> {
+    let (source, kind, text, uuid) = match update {
         // The prefix is the fold's own key rather than anything the model
         // reads: `detect_inbound` picks the envelope out of the prose.
         SessionUpdate::CronPromptAppended { key, text, uuid, .. } if key == slot => {
-            ("cron_prompt", format!("[Cron]\n\n{text}"), uuid)
+            (PromptSource::Cron, "cron_prompt", format!("[Cron]\n\n{text}"), uuid)
         }
         SessionUpdate::GotifyNotificationAppended { key, notification, uuid } if key == slot => {
-            ("gotify_notification", notification.to_prose(), uuid)
+            (PromptSource::Gotify, "gotify_notification", notification.to_prose(), uuid)
         }
         SessionUpdate::SlackMessageAppended { key, prose, uuid } if key == slot => {
-            ("slack_message", prose.clone(), uuid)
+            (PromptSource::Slack, "slack_message", prose.clone(), uuid)
         }
         SessionUpdate::PeerEnvelopeAppended { key, wrapped, uuid } if key == slot => {
-            ("peer_envelope", wrapped.to_prose(), uuid)
+            (PromptSource::Peer, "peer_envelope", wrapped.to_prose(), uuid)
         }
         _ => return None,
     };
@@ -44,7 +49,7 @@ pub fn delivery_turn(update: &SessionUpdate, slot: &SessionSlot) -> Option<Messa
         let head: String = text.chars().take(120).collect();
         tracing::error!(
             event_name = "envelope_prose_unrecognised",
-            source,
+            source = kind,
             outcome = "chat_echo_dropped",
             org = slot.org(),
             project = slot.project(),
@@ -58,7 +63,7 @@ pub fn delivery_turn(update: &SessionUpdate, slot: &SessionSlot) -> Option<Messa
     // the duplicate-skip the CLI applies to re-sent uuids is a stdin concern
     // and never sees this frame, and the id is what lets a view hold this row
     // while the prompt waits in the pile.
-    Some(Message::display_only_user(text, uuid.clone()))
+    Some((Message::display_only_user(text, uuid.clone()), source))
 }
 
 #[cfg(test)]
@@ -82,7 +87,7 @@ mod tests {
         };
 
         let events = logged(|| {
-            let turn =
+            let (turn, _) =
                 delivery_turn(&update, &slot).expect("a delivery to this seat still forges a turn");
             assert!(matches!(turn, Message::User { .. }), "the model's own prose is not withheld");
         });
@@ -173,10 +178,27 @@ mod tests {
         }
 
         for (update, expected) in &cases {
-            let turn = delivery_turn(update, &slot).expect("a delivery to this seat forges a turn");
+            let (turn, source) =
+                delivery_turn(update, &slot).expect("a delivery to this seat forges a turn");
             let Message::User { message, uuid, .. } = &turn else {
                 panic!("a delivery draws as the user turn the model's prompt was")
             };
+            // **The sender rides the frame the flush forges**, and it is the
+            // delivery's own kind: a reader's follow arms on `you` alone, so a
+            // cron fire claiming anything else would either carry a parked
+            // reader or lose the delivery's own label (#2198).
+            let expected_source = match update {
+                SessionUpdate::CronPromptAppended { .. } => PromptSource::Cron,
+                SessionUpdate::GotifyNotificationAppended { .. } => PromptSource::Gotify,
+                SessionUpdate::SlackMessageAppended { .. } => PromptSource::Slack,
+                SessionUpdate::PeerEnvelopeAppended { .. } => PromptSource::Peer,
+                other => panic!("this test only carries deliveries: {other:?}"),
+            };
+            assert_eq!(
+                source, expected_source,
+                "the frame says who delivered the words, or a parked reader cannot tell them \
+                 from their own",
+            );
             // **The prompt's own id, off the envelope.** It is what a view
             // holds the row by while the prompt waits, and what pairs the row
             // with the page's later copy - a row minted without it, or with a

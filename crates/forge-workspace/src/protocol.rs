@@ -1427,6 +1427,21 @@ pub enum SessionUpdate {
         /// field existed.
         #[serde(default)]
         origin: Option<PromptOrigin>,
+        /// Who dispatched the prompt this frame writes as a user turn: the
+        /// same [`PromptSource`] the queue's own row carries.
+        ///
+        /// **This is the arm a reader's follow reads**, because the words'
+        /// shape cannot say it: forge's own machinery - an auto-continue, a
+        /// worker kick, a board notice - forges prose as the reader's own row
+        /// on this frame, and arming for one carries a parked reader to the
+        /// foot for words that are nobody's (#2198). Only `you` is a person's
+        /// send.
+        ///
+        /// `None` on every frame the CLI sent; the turns a delivery forges
+        /// carry the delivery's own kind, since their envelope row is not the
+        /// reader's either.
+        #[serde(default)]
+        source: Option<PromptSource>,
     },
     HookObservation {
         key: SessionSlot,

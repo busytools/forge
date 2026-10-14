@@ -602,7 +602,7 @@ impl Conversations {
             // the update arrives, rather than in each connection that sends
             // it.
             _ => {
-                if let Some(msg) = crate::delivery::delivery_turn(update, slot)
+                if let Some((msg, _)) = crate::delivery::delivery_turn(update, slot)
                     && let Some(held) = self.get(slot)
                 {
                     // Forged for display, and in no transcript: the seat has
@@ -836,6 +836,7 @@ mod tests {
             key: a_seat(),
             msg: a_frame("after"),
             origin: None,
+            source: None,
         });
 
         let conversation = held.get(&a_seat()).expect("the seat is held");
@@ -868,6 +869,7 @@ mod tests {
                 extras: serde_json::Map::new(),
             },
             origin: None,
+            source: None,
         });
 
         let conversation = held.get(&a_seat()).expect("the seat is held");
@@ -1097,6 +1099,7 @@ mod tests {
             key: a_seat(),
             msg: a_frame("before the seed"),
             origin: None,
+            source: None,
         });
 
         assert_eq!(held.len(), 0, "a frame alone does not materialise a seat");

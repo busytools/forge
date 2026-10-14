@@ -210,13 +210,20 @@ function stub() {
         update: { chat_appended: { key: LEAD, msg: said('a line arriving') } },
       });
     },
-    /** A prompt the reader sends, as the CLI echoes it back on the seat. */
+    /**
+     * A prompt the reader sends, as the dispatch forges it on the seat.
+     *
+     * `source` rides the forged frame and says whose words it carries - the
+     * same vocabulary the queued row uses - so the two frames that announce
+     * one prompt agree about its sender.
+     */
     prompt(): void {
       send({
         kind: 'update',
         update: {
           chat_appended: {
             key: LEAD,
+            source: 'you',
             msg: {
               type: 'user',
               uuid: 'said-once',
@@ -227,10 +234,39 @@ function stub() {
       });
     },
     /**
+     * A prose turn the core forged for words that are nobody's send: forge's
+     * own machinery writing as a user row - an auto-continue, a worker kick,
+     * a board notice. It rides the frame a person's own send does, and the
+     * source is the one thing that tells the two apart.
+     */
+    forged(source = 'forge'): void {
+      send({
+        kind: 'update',
+        update: {
+          chat_appended: {
+            key: LEAD,
+            source,
+            msg: {
+              type: 'user',
+              uuid: `forged-${source}`,
+              message: { role: 'user', content: [{ type: 'text', text: 'keep going' }] },
+            },
+          },
+        },
+      });
+    },
+    /** The CLI took the queued prompt: the drain draws its held row. */
+    started(): void {
+      send({
+        kind: 'update',
+        update: { prompt_lifecycle: { key: LEAD, uuid: 'said-once', state: 'started' } },
+      });
+    },
+    /**
      * The core saying that prompt is waiting in the CLI's queue, which retracts
      * its row into the hold. `source` rides every queued row on the wire and
      * says who sent it: the reader's own send is `you`, and a cron fire, a
-     * peer message, a delivery or forge's own continuation each carry their
+     * peer message, a delivery or forge's own continuation each carry its
      * own.
      */
     queued(source = 'you'): void {
@@ -1519,6 +1555,42 @@ describe('whether the column follows the newest end', () => {
     await settle();
 
     expect(pinned(), 'a cron fire is not the reader words and may not carry them').toEqual([]);
+  });
+
+  it('does not bring a parked reader back for a prose turn the core forged', async () => {
+    // **The append half of #1614's snap, named by its arm.** forge's own
+    // machinery writes prose as a user row - an auto-continue, a worker kick,
+    // a board notice - on the same frame a person's send uses, and a re-arm
+    // for one of them carries a reader parked above the foot to the bottom on
+    // the next pass. Only the frame's `source` tells the two apart.
+    const server = stub();
+    await draw(server);
+    readerAt(0);
+    await settle();
+    clear();
+
+    server.forged('forge');
+    await settle();
+
+    expect(pinned(), "forge's own words are not the reader's and may not carry them").toEqual([]);
+  });
+
+  it('does not bring a parked reader back when a forged prompt leaves the queue', async () => {
+    // The drain is the append path's other arm: a prompt the CLI queues draws
+    // its row when the CLI takes it, and a re-arm there carries the reader
+    // just as a fresh frame does. Its sender is the queue announcement's, and
+    // only `you` may arm.
+    const server = stub();
+    await draw(server);
+    readerAt(0);
+    await settle();
+    clear();
+
+    server.queued('forge');
+    server.started();
+    await settle();
+
+    expect(pinned(), 'a queued continuation is forge talking to itself').toEqual([]);
   });
 
   it('re-pins when the content changes size under a reader at the foot', async () => {

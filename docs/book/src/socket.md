@@ -597,6 +597,13 @@ the field existed. `view` means a view dispatched them over the socket;
 `ui` marks the core's own dispatch entry and is what a view that draws
 its own words optimistically reads to skip them.
 
+**And it carries a `source`**, the same label the queued row wears: `you`
+for a person's send, and the delivery's or the machinery's own kind
+otherwise. A frame's shape cannot say this - forge's machinery forges prose
+as the reader's own row on the frame a person's send uses - so it is the
+one field that tells a reader's words from forge's when a client decides
+whether new words should bring a scrolled-up reader back to the foot.
+
 **A forged turn carries the prompt's own `uuid`**, the id the prompt was
 dispatched under. The CLI stamps the prompt's id into the transcript it
 persists - on the user row of a prompt that started a turn, and inside the

@@ -4065,17 +4065,17 @@ impl Workspace {
         uuid: String,
     ) -> Result<(), DispatchError> {
         let frame = Message::display_only_user(text.clone(), uuid.clone());
-        let result = self.dispatch_workspace_prompt_under(
-            key,
-            text,
-            crate::protocol::PromptSource::Forge,
-            uuid,
-        );
+        // One source for both the dispatch and the frame the dispatch forges:
+        // the row a view labels and the frame a reader's follow reads arm
+        // alike only while they are one fact (#2198).
+        let source = crate::protocol::PromptSource::Forge;
+        let result = self.dispatch_workspace_prompt_under(key, text, source, uuid);
         if result.is_ok() {
             let _ = self.update_sender().send(SessionUpdate::ChatAppended {
                 key: key.clone(),
                 msg: frame,
                 origin: None,
+                source: Some(source),
             });
         }
         result
@@ -4182,9 +4182,14 @@ impl Workspace {
         // draws it as a turn - and the frame for one would open a live turn in
         // every view but the sender, with nothing left to close it: the refusal
         // is written to the asking socket alone.
+        //
+        // The source rides along the words, because the frame below is the
+        // same one forge's machinery forges prose on and a view arms its
+        // follow off what it says (#2198): taking it from the command keeps
+        // the frame and the queued row's label one fact.
         let prompt = match &cmd {
-            Command::PromptUnder { key, text, uuid, .. } => {
-                Some((key.clone(), text.clone(), uuid.clone()))
+            Command::PromptUnder { key, text, uuid, source, .. } => {
+                Some((key.clone(), text.clone(), uuid.clone(), *source))
             }
             _ => None,
         };
@@ -4215,12 +4220,13 @@ impl Workspace {
             _ => (self.route(cmd), None),
         };
         if outcome.is_ok()
-            && let Some((key, text, uuid)) = prompt
+            && let Some((key, text, uuid, source)) = prompt
         {
             let _ = self.update_sender().send(SessionUpdate::ChatAppended {
                 key: key.clone(),
                 msg: Message::display_only_user(text, uuid),
                 origin: Some(origin),
+                source: Some(source),
             });
             if let Some((severity, answer)) = answer {
                 self.notice(&key, severity, &answer);
@@ -10291,13 +10297,21 @@ provider = "anthropic"
         ws.dispatch_forged_prompt(&key, "get on with it".to_owned()).expect("forged dispatch");
         let drawn = drain_updates(&mut rx);
         let frame = drawn.iter().find_map(|u| match u {
-            SessionUpdate::ChatAppended { msg, origin, .. } => Some((msg, origin)),
+            SessionUpdate::ChatAppended { msg, origin, source, .. } => Some((msg, origin, source)),
             _ => None,
         });
-        let Some((msg, origin)) = frame else {
+        let Some((msg, origin, source)) = frame else {
             panic!("a forged prompt draws its words; got {drawn:?}")
         };
         assert!(origin.is_none(), "no view drew these words, so the frame claims no origin");
+        // **And the source is forge's own**, which is what keeps a parked
+        // reader off the foot: the frame is the same one a person's send
+        // forges, so a reader's follow has only this to tell the two apart
+        // (#2198).
+        assert!(
+            matches!(source, Some(PromptSource::Forge)),
+            "a forged machinery turn is nobody's send, and the frame says whose it is: {source:?}",
+        );
         let Message::User { message, .. } = msg else {
             panic!("a forged prompt draws as the user turn the model received, got {msg:?}")
         };
@@ -18817,10 +18831,16 @@ mod prompt_frame_origin_tests {
         assert!(
             matches!(
                 rx.try_recv(),
-                Ok(SessionUpdate::ChatAppended { origin: Some(PromptOrigin::Ui), key, .. })
-                    if key == seat
+                Ok(SessionUpdate::ChatAppended {
+                    origin: Some(PromptOrigin::Ui),
+                    source: Some(PromptSource::You),
+                    key,
+                    ..
+                }) if key == seat
             ),
-            "the words the terminal drew at submit are marked as its own, or it draws them twice",
+            "the words the terminal drew at submit are marked as its own, or it draws them \
+             twice - and as a person's send, which is the only thing a reader's follow arms \
+             on (#2198)",
         );
     }
 
@@ -19388,10 +19408,16 @@ mod prompt_frame_origin_tests {
         assert!(
             matches!(
                 rx.try_recv(),
-                Ok(SessionUpdate::ChatAppended { origin: Some(PromptOrigin::View), key, .. })
-                    if key == seat
+                Ok(SessionUpdate::ChatAppended {
+                    origin: Some(PromptOrigin::View),
+                    source: Some(PromptSource::You),
+                    key,
+                    ..
+                }) if key == seat
             ),
-            "no view has drawn a send made over the socket, so every view has to",
+            "no view has drawn a send made over the socket, so every view has to - and the \
+             frame says it is a person's send, the one source a reader's follow arms on \
+             (#2198)",
         );
     }
 
