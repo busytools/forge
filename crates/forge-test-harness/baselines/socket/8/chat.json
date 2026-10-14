@@ -115,6 +115,7 @@
     "user_message_uuid",
     "user_message_uuids",
     "uuid",
+    "wire_tool_inputs",
     "workflow_name",
     "workflow_progress"
   ],
@@ -221,7 +222,8 @@
     "script",
     "skill",
     "subagent_type",
-    "timeout"
+    "timeout",
+    "timeout_ms"
   ],
   "/message/content[]/input/questions[]": [
     "header",
@@ -399,6 +401,7 @@
     "noOutputExpected",
     "originalFile",
     "outputFile",
+    "persistent",
     "prompt",
     "query",
     "questions",
@@ -413,6 +416,7 @@
     "summary",
     "taskId",
     "taskType",
+    "timeoutMs",
     "toolStats",
     "totalDurationMs",
     "totalTokens",
@@ -537,6 +541,14 @@
   "/usage/server_tool_use": [
     "web_fetch_requests",
     "web_search_requests"
+  ],
+  "/wire_tool_inputs": [
+    "toolu_01UCpUph7upKdPgdHR6evy3X"
+  ],
+  "/wire_tool_inputs/toolu_01UCpUph7upKdPgdHR6evy3X": [
+    "command",
+    "description",
+    "timeout_ms"
   ],
   "/workflow_progress[]": [
     "agentId",
