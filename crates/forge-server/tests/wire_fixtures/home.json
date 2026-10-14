@@ -87,62 +87,8 @@
         "display_name": "Acct",
         "snapshot": null
       }
-    ],
-    "orgs": [
-      {
-        "org": "TestOrg",
-        "accounts": [
-          "Acct"
-        ],
-        "fallback_accounts": [],
-        "rows": [
-          {
-            "display_name": "Acct",
-            "unusable": null,
-            "budget": {
-              "unknown": {
-                "spend_billed": false
-              }
-            },
-            "fallback": false,
-            "provider": "anthropic",
-            "loading": "loading"
-          }
-        ]
-      }
     ]
   },
-  "plugins": {
-    "update_records": []
-  },
-  "workers": [
-    {
-      "project": "proj",
-      "workers": [
-        {
-          "label": "w1",
-          "charter": "charter for w1",
-          "slot": {
-            "org": "TestOrg",
-            "project": "proj",
-            "label": "w1"
-          },
-          "session_id": null,
-          "spawned_at": {
-            "secs_since_epoch": 0,
-            "nanos_since_epoch": 0
-          },
-          "spawned_by": {
-            "org": "TestOrg",
-            "project": "proj",
-            "label": "lead"
-          },
-          "needs_tag": false,
-          "is_git_repo_at_spawn": false
-        }
-      ]
-    }
-  ],
   "connectors": {
     "gotify": {
       "connected": false

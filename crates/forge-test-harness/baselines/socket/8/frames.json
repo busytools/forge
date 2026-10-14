@@ -706,17 +706,14 @@
         "fleet",
         "forge_version",
         "forge_version_short",
-        "plugins",
         "projects",
         "service_status",
-        "unseen",
-        "workers"
+        "unseen"
       ],
       "/data/accounts": [
         "all_loaded",
         "gateway",
         "loading",
-        "orgs",
         "usage"
       ],
       "/data/accounts/gateway": [
@@ -730,26 +727,6 @@
         "last_error",
         "retry_after",
         "state"
-      ],
-      "/data/accounts/orgs[]": [
-        "accounts",
-        "fallback_accounts",
-        "org",
-        "rows"
-      ],
-      "/data/accounts/orgs[]/rows[]": [
-        "budget",
-        "display_name",
-        "fallback",
-        "loading",
-        "provider",
-        "unusable"
-      ],
-      "/data/accounts/orgs[]/rows[]/budget": [
-        "unknown"
-      ],
-      "/data/accounts/orgs[]/rows[]/budget/unknown": [
-        "spend_billed"
       ],
       "/data/accounts/usage[]": [
         "display_name",
@@ -817,9 +794,6 @@
       "/data/fleet[]/misses[]": [
         "unaccounted_worker"
       ],
-      "/data/plugins": [
-        "update_records"
-      ],
       "/data/projects[]": [
         "chip",
         "connectors",
@@ -848,34 +822,6 @@
         "branch",
         "changed",
         "gate"
-      ],
-      "/data/workers[]": [
-        "project",
-        "workers"
-      ],
-      "/data/workers[]/workers[]": [
-        "charter",
-        "is_git_repo_at_spawn",
-        "label",
-        "needs_tag",
-        "session_id",
-        "slot",
-        "spawned_at",
-        "spawned_by"
-      ],
-      "/data/workers[]/workers[]/slot": [
-        "label",
-        "org",
-        "project"
-      ],
-      "/data/workers[]/workers[]/spawned_at": [
-        "nanos_since_epoch",
-        "secs_since_epoch"
-      ],
-      "/data/workers[]/workers[]/spawned_by": [
-        "label",
-        "org",
-        "project"
       ]
     }
   },

@@ -12,14 +12,6 @@ pub struct SessionState {
     /// Where forge scans git for this session: a git worker's worktree
     /// path, else the caller's `cwd_raw` unchanged.
     pub scan_cwd: PathBuf,
-    /// What this session dictates with, where it has overridden the defaults.
-    ///
-    /// The read path for it: a client that did not watch the change being made
-    /// (a cold load, a reconnect) gets the whole set here, where the update
-    /// stream speaks only after a change. The app-level device pick rides the
-    /// dictate read instead, because it is one answer for the process rather
-    /// than the session.
-    pub dictate_overrides: forge_workspace::DictateOverrides,
     /// The prompts still waiting in the CLI's queue, oldest first - the pile a
     /// client draws.
     ///
@@ -31,17 +23,13 @@ pub struct SessionState {
 
 impl SessionState {
     pub(super) fn collect(workspace: &Workspace, slot: &SessionSlot, cwd_raw: &Path) -> Self {
-        let (dictate_overrides, queue) = workspace
+        let queue = workspace
             .domain_session_for(slot)
-            .map(|domain| {
-                let guard = domain.lock();
-                (guard.dictate_overrides, guard.prompt_queue.clone())
-            })
+            .map(|domain| domain.lock().prompt_queue.clone())
             .unwrap_or_default();
         Self {
             slot: slot.clone(),
             scan_cwd: workspace.git_scan_cwd_for_session(slot, cwd_raw),
-            dictate_overrides,
             queue,
         }
     }
