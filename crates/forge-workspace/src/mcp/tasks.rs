@@ -251,7 +251,9 @@ impl Tool for Update {
          is left alone. `status` is the usual one (pending / in_progress / waiting / completed / \
          failed / canceled), and `owner` takes a session label (\"lead\" for the lead) or the \
          label of a worker. Any session in the project may move any of its tasks, so a lead can \
-         complete a worker's task and a worker can put a row it holds into waiting. A task is \
+         complete a worker's task and a worker can put a row it holds into waiting - and a row \
+         waiting on the user's own look cannot be completed here: the board's approve completes \
+         it, and any other move off `waiting` drops the wait the row held. A task is \
          named by its full id or any unique prefix of one; an exact id wins over any longer id \
          that starts with it, and a prefix matching more than one row is refused with the \
          matching rows named. An unknown id is an error, not a no-op. Returns the task as the \

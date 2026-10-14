@@ -50,6 +50,9 @@ pub(crate) enum MoveError {
     NotWaitingVerification,
     /// The user answered a row that is not waiting on a question.
     NotWaitingQuestion,
+    /// A completion landed on a row waiting on the user's own look: the
+    /// look is what completes it.
+    WaitingOnLook,
 }
 
 /// Append the user's words to a row's detail, keeping what was there.
@@ -99,6 +102,10 @@ impl std::fmt::Display for MoveError {
             Self::Ambiguous(candidates) => write!(f, "{}", ambiguous_words(candidates)),
             Self::NotWaitingVerification => write!(f, "this row is not waiting on your look"),
             Self::NotWaitingQuestion => write!(f, "this row is not waiting on a question"),
+            Self::WaitingOnLook => write!(
+                f,
+                "this row is waiting on the user's look; the board's approve completes it"
+            ),
         }
     }
 }
@@ -251,9 +258,11 @@ impl Workspace {
     /// transition, and return the record as the write left it (`None`
     /// when no such task is there). Open to every session in the project.
     ///
-    /// Two rules ride on top of `f`, so no caller can forget them: a
+    /// Rules ride on top of `f`, so no caller can forget them: a
     /// transition into `completed` on a verify=user row lands in
-    /// `waiting` (the verify gate), and completing a ROOT row closes it -
+    /// `waiting` (the verify gate); a completion of a row already waiting
+    /// on the user's look is refused by name; a move off `waiting` drops
+    /// the wait the row was holding; and completing a ROOT row closes it -
     /// the whole tree moves to the archive, refused while any child is
     /// still open.
     pub(crate) fn update_task(
@@ -293,6 +302,18 @@ impl Workspace {
             let mut next = tasks[index].clone();
             let prior = next.status;
             f(&mut next)?;
+
+            // The look is what completes a row waiting on it: a
+            // completion here is refused, naming the look.
+            if next.status == TaskStatus::Completed
+                && next.waiting_on.as_ref().is_some_and(|wait| wait.verification)
+            {
+                return Err(MoveError::WaitingOnLook);
+            }
+            // A move off `waiting` drops the wait the row was holding.
+            if prior == TaskStatus::Waiting && next.status != TaskStatus::Waiting {
+                next.waiting_on = None;
+            }
 
             if gate
                 && next.status == TaskStatus::Completed
@@ -1632,6 +1653,72 @@ mod tests {
         assert_eq!(t2.waiting_on, None);
         ws.claim_task("proj", &worker, Some(&TaskId::from("t-2")), None)
             .expect("and the row is claimable again");
+    }
+
+    /// The live shape: a worker parks its row on a decision wait - the
+    /// answer is the user's look, typically - and another seat completes
+    /// the row once that answer is in hand. The completion applies, and
+    /// the wait clears as its consequence.
+    #[test]
+    fn another_seat_completes_a_row_parked_on_a_decision_wait() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-complete-parked");
+        let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
+        ws.push_task(Task { owner: Some(worker.clone()), ..sample_task("t-1", "proj") });
+        ws.claim_task("proj", &worker, Some(&TaskId::from("t-1")), None).expect("claim");
+        ws.wait_task(
+            "proj",
+            &TaskId::from("t-1"),
+            &worker,
+            WaitingKind::Decision,
+            Some("the user's look".to_owned()),
+            None,
+        )
+        .expect("the owner may wait its own row");
+
+        let moved = ws
+            .update_task(
+                "proj",
+                &TaskId::from("t-1"),
+                By::Seat(SessionSlot::lead("TestOrg", "proj")),
+                |task| {
+                    task.status = TaskStatus::Completed;
+                },
+            )
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(moved.status, TaskStatus::Completed, "the completion applies as asked");
+        assert_eq!(moved.waiting_on, None, "and the wait clears as its consequence");
+    }
+
+    /// A row already waiting on the user's own look cannot be completed
+    /// through `tasks__update` - the look is what completes it - and the
+    /// refusal names the wait it sits on and what clears it, rather than
+    /// answering with the row still waiting as though the completion had
+    /// applied.
+    #[test]
+    fn completing_a_verification_wait_is_refused_naming_the_look() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-refuse-look");
+        row_awaiting_look(&ws, "t-1");
+
+        let refused = ws
+            .update_task(
+                "proj",
+                &TaskId::from("t-1"),
+                By::Seat(SessionSlot::lead("TestOrg", "proj")),
+                |task| {
+                    task.status = TaskStatus::Completed;
+                },
+            )
+            .expect_err("the user's look is what completes a verification wait");
+        let said = refused.to_string();
+        assert!(said.contains("look"), "the refusal names the wait it is on: {said}");
+
+        let stored = ws.tasks_for_project("proj");
+        assert_eq!(stored[0].status, TaskStatus::Waiting, "and the row keeps waiting for the look");
     }
 
     #[test]

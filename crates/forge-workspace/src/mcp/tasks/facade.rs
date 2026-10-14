@@ -979,6 +979,56 @@ mod prod_facade_tests {
         assert_eq!(kids[0].task.subject, "child");
     }
 
+    /// The live shape, at the seam the tools call through: a worker hands
+    /// its verify=user row to the look - the gate lands it waiting - and
+    /// the lead's completion of it is refused by name, moving the owner
+    /// along with the status and all. The live echo of `"status":
+    /// "waiting"` under a success was this refusal wearing a success, with
+    /// the row's holder a live seat throughout.
+    #[test]
+    fn a_lead_completing_a_workers_row_that_waits_on_the_look_is_refused_by_name() {
+        let (_ws, facade, lead, worker) = fixture();
+        let task = facade
+            .create_task(
+                &worker,
+                TaskDraft {
+                    verify: Some(forge_primitives::tasks::Verify::User),
+                    ..draft("the parked row", Some("reviewer"), Some("epic"))
+                },
+            )
+            .expect("create");
+        let handed = facade
+            .update_task(
+                &worker,
+                &task.id,
+                TaskPatch { status: Some(TaskStatus::Completed), ..TaskPatch::default() },
+            )
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(
+            handed.status,
+            TaskStatus::Waiting,
+            "precondition: the gate hands the worker's row to the look",
+        );
+
+        match facade.update_task(
+            &lead,
+            &task.id,
+            TaskPatch {
+                owner: Some("lead".to_owned()),
+                status: Some(TaskStatus::Completed),
+                ..TaskPatch::default()
+            },
+        ) {
+            Err(TasksError::Refused(said)) => {
+                assert!(said.contains("look"), "the refusal names the wait it sits on: {said}");
+            }
+            other => panic!(
+                "the lead's completion of a row waiting on the look is refused, got {other:?}"
+            ),
+        }
+    }
+
     /// An estimate that is not a duration is refused with its own words,
     /// and nothing else in the patch moves: the caller hears the mistake
     /// instead of the value being dropped on the floor.
