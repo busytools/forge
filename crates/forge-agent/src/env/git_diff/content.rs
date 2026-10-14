@@ -26,7 +26,9 @@ use forge_primitives::git_diff::{GitDiffSnapshot, LayerState};
 use super::hunks::{
     FileStatus, Hunk, MAX_INFLIGHT_FETCHES, NameStatusEntry, parse_hunks, parse_name_status_entries,
 };
-use super::{GitOutput, run_git};
+use std::time::Duration;
+
+use super::{COMMAND_TIMEOUT, GitOutput, run_git_within};
 
 /// Unified-diff context lines each per-file fetch pins. git's own
 /// default: enough to read a change in place, small enough that a
@@ -114,9 +116,16 @@ pub struct CommitContent {
 /// budget. `Clean` for a diff with nothing in it, which for a commit is
 /// an empty change rather than a missing one.
 pub async fn scan_commit(cwd: &Path, sha: &str) -> CommitContent {
-    let ref_spec = super::hunks::commit_ref_spec(cwd, sha).await;
+    scan_commit_within(cwd, sha, COMMAND_TIMEOUT).await
+}
+
+/// [`scan_commit`] with its command budget spelled: **the budget is a
+/// bound on the machine, not on the read**, spent starting each child the
+/// read spawns.
+pub async fn scan_commit_within(cwd: &Path, sha: &str, budget: Duration) -> CommitContent {
+    let ref_spec = super::hunks::commit_ref_spec(cwd, sha, budget).await;
     let mut caps = Caps::default();
-    let files = scan_layer(cwd, &ref_spec, &mut caps).await;
+    let files = scan_layer(cwd, &ref_spec, &mut caps, budget).await;
     CommitContent { files, truncated: caps.withheld }
 }
 
@@ -126,15 +135,25 @@ pub async fn scan_commit(cwd: &Path, sha: &str) -> CommitContent {
 /// [`LayerState::ScanFailed`], a file's to its own `truncated` flag, and
 /// the read's to [`DiffContent::truncated`].
 pub async fn scan<'a>(cwd: &'a Path, snapshot: &'a GitDiffSnapshot) -> DiffContent {
+    scan_within(cwd, snapshot, COMMAND_TIMEOUT).await
+}
+
+/// [`scan`] with its command budget spelled; the budget bounds the
+/// machine's start of each child, not the read's own work.
+pub async fn scan_within<'a>(
+    cwd: &'a Path,
+    snapshot: &'a GitDiffSnapshot,
+    budget: Duration,
+) -> DiffContent {
     let mut caps = Caps::default();
     let worktree = match &snapshot.worktree {
-        LayerState::Populated(_) => scan_layer(cwd, "HEAD", &mut caps).await,
+        LayerState::Populated(_) => scan_layer(cwd, "HEAD", &mut caps, budget).await,
         LayerState::Clean => LayerState::Clean,
         LayerState::ScanFailed => LayerState::ScanFailed,
     };
     let branch_ahead = match &snapshot.branch_ahead {
         LayerState::Populated(_) => match snapshot.default_branch.as_deref() {
-            Some(default) => scan_layer(cwd, &branch_range(default), &mut caps).await,
+            Some(default) => scan_layer(cwd, &branch_range(default), &mut caps, budget).await,
             // The snapshot's own invariant is that a populated layer has a
             // resolved default; a violated one is a failure to report, not
             // an empty answer.
@@ -154,8 +173,13 @@ pub async fn scan<'a>(cwd: &'a Path, snapshot: &'a GitDiffSnapshot) -> DiffConte
 /// hundreds of megabytes to carry half a megabyte; a wave is the same
 /// in-flight count the overlay's reader holds, and folding drops the raw
 /// text before the next wave starts.
-async fn scan_layer(cwd: &Path, ref_spec: &str, caps: &mut Caps) -> LayerState<Vec<FileContent>> {
-    let entries = match run_git(cwd, &["diff", ref_spec, "--name-status"]).await {
+async fn scan_layer(
+    cwd: &Path,
+    ref_spec: &str,
+    caps: &mut Caps,
+    budget: Duration,
+) -> LayerState<Vec<FileContent>> {
+    let entries = match run_git_within(cwd, &["diff", ref_spec, "--name-status"], budget).await {
         GitOutput::Ok(raw) => parse_name_status_entries(&raw),
         GitOutput::Empty => Vec::new(),
         GitOutput::Failed | GitOutput::Oversize => return LayerState::ScanFailed,
@@ -170,7 +194,7 @@ async fn scan_layer(cwd: &Path, ref_spec: &str, caps: &mut Caps) -> LayerState<V
     let mut files = Vec::with_capacity(entries.len());
     for wave in entries[..to_fetch].chunks(MAX_INFLIGHT_FETCHES) {
         let sections = futures::future::join_all(
-            wave.iter().map(|entry| fetch_section(cwd, ref_spec, &entry.path)),
+            wave.iter().map(|entry| fetch_section(cwd, ref_spec, &entry.path, budget)),
         )
         .await;
         for (entry, section) in wave.iter().zip(sections) {
@@ -186,9 +210,11 @@ async fn scan_layer(cwd: &Path, ref_spec: &str, caps: &mut Caps) -> LayerState<V
 /// One file's diff section, `None` when git would not answer it (a crash
 /// or a read past the subprocess cap). A binary body and an empty one
 /// both answer `Some`.
-async fn fetch_section(cwd: &Path, ref_spec: &str, path: &str) -> Option<String> {
+async fn fetch_section(cwd: &Path, ref_spec: &str, path: &str, budget: Duration) -> Option<String> {
     let context = format!("-U{CONTEXT_LINES}");
-    match run_git(cwd, &["diff", ref_spec, "--no-ext-diff", &context, "--", path]).await {
+    match run_git_within(cwd, &["diff", ref_spec, "--no-ext-diff", &context, "--", path], budget)
+        .await
+    {
         GitOutput::Ok(section) => Some(section),
         GitOutput::Empty => Some(String::new()),
         GitOutput::Failed | GitOutput::Oversize => None,
@@ -316,6 +342,7 @@ mod tests {
 
     use tempfile::TempDir;
 
+    use super::super::TEST_GIT_BUDGET;
     use super::super::hunks::DiffLineKind;
     use super::*;
     use forge_primitives::git::GitBranch;
@@ -693,7 +720,7 @@ index 1111111..2222222 160000
         git(&dir, &["add", "added.rs", "blob.bin"]);
 
         let snapshot = scan_stats(dir.path(), None).await;
-        let content = scan(dir.path(), &snapshot).await;
+        let content = scan_within(dir.path(), &snapshot, TEST_GIT_BUDGET).await;
 
         assert!(
             matches!(content.branch_ahead, LayerState::Clean),
@@ -740,7 +767,7 @@ index 1111111..2222222 160000
         write_file(&dir, "base.rs", "base\nedited\n");
 
         let snapshot = scan_stats(dir.path(), None).await;
-        let content = scan(dir.path(), &snapshot).await;
+        let content = scan_within(dir.path(), &snapshot, TEST_GIT_BUDGET).await;
 
         let worktree = populated(content.worktree);
         assert_eq!(worktree.len(), 1);
@@ -777,7 +804,7 @@ index 1111111..2222222 160000
         git(&dir, &["checkout", "-q", "-b", "feat/x"]);
         commit_all(&dir, "second");
 
-        let root_content = scan_commit(dir.path(), &root).await;
+        let root_content = scan_commit_within(dir.path(), &root, TEST_GIT_BUDGET).await;
         assert!(!root_content.truncated, "a one-file commit withholds nothing");
         let files = populated(root_content.files);
         assert_eq!(files.len(), 1, "the root commit's read is its own file");
@@ -786,7 +813,7 @@ index 1111111..2222222 160000
 
         // A branch read would carry both; the commit read must not.
         let snapshot = scan_stats(dir.path(), None).await;
-        let whole = scan(dir.path(), &snapshot).await;
+        let whole = scan_within(dir.path(), &snapshot, TEST_GIT_BUDGET).await;
         let LayerState::Populated(entries) = whole.branch_ahead else {
             panic!("the branch layer is populated");
         };
@@ -855,7 +882,7 @@ index 1111111..2222222 160000
         write_file(&dir, "long.rs", &format!("{}\n", edited.join("\n")));
 
         let snapshot = scan_stats(dir.path(), None).await;
-        let content = scan(dir.path(), &snapshot).await;
+        let content = scan_within(dir.path(), &snapshot, TEST_GIT_BUDGET).await;
 
         let files = populated(content.worktree);
         let file = files.iter().find(|file| file.path == "long.rs").expect("long.rs");
@@ -882,7 +909,7 @@ index 1111111..2222222 160000
         write_file(&dir, "long.rs", &format!("{}\n", edited.join("\n")));
 
         let snapshot = scan_stats(dir.path(), None).await;
-        let content = scan(dir.path(), &snapshot).await;
+        let content = scan_within(dir.path(), &snapshot, TEST_GIT_BUDGET).await;
 
         assert!(content.truncated, "the read says its content was withheld");
         let files = populated(content.worktree);
@@ -912,7 +939,7 @@ index 1111111..2222222 160000
         // Cleaned between the two reads, so the content read finds nothing.
         write_file(&dir, "kept.rs", "one\n");
 
-        let content = scan(dir.path(), &snapshot).await;
+        let content = scan_within(dir.path(), &snapshot, TEST_GIT_BUDGET).await;
 
         assert!(matches!(content.worktree, LayerState::Clean));
         assert!(!content.truncated);
@@ -946,7 +973,7 @@ index 1111111..2222222 160000
         git(&dir, &["add", "-A"]);
 
         let snapshot = scan_stats(dir.path(), None).await;
-        let content = scan(dir.path(), &snapshot).await;
+        let content = scan_within(dir.path(), &snapshot, TEST_GIT_BUDGET).await;
 
         assert!(content.truncated, "the read says its content was withheld");
         let files = populated(content.worktree);
@@ -986,7 +1013,7 @@ index 1111111..2222222 160000
         commit_all(&dir, "base");
 
         let snapshot = scan_stats(dir.path(), None).await;
-        let content = scan(dir.path(), &snapshot).await;
+        let content = scan_within(dir.path(), &snapshot, TEST_GIT_BUDGET).await;
 
         assert!(matches!(content.worktree, LayerState::Clean));
         assert!(matches!(content.branch_ahead, LayerState::Clean));
@@ -1001,7 +1028,7 @@ index 1111111..2222222 160000
 
         let snapshot = scan_stats(dir.path(), None).await;
         assert_eq!(snapshot.repo_gate, RepoGate::NotARepo);
-        let content = scan(dir.path(), &snapshot).await;
+        let content = scan_within(dir.path(), &snapshot, TEST_GIT_BUDGET).await;
 
         assert!(matches!(content.worktree, LayerState::Clean));
         assert!(matches!(content.branch_ahead, LayerState::Clean));
@@ -1026,7 +1053,7 @@ index 1111111..2222222 160000
             pr_fetched_at: None,
         };
 
-        let content = scan(dir.path(), &snapshot).await;
+        let content = scan_within(dir.path(), &snapshot, TEST_GIT_BUDGET).await;
 
         assert!(matches!(content.worktree, LayerState::ScanFailed), "a failed layer stays failed");
         assert!(matches!(content.branch_ahead, LayerState::Clean));

@@ -25,10 +25,11 @@
 //! miscategorising the empty result as "no changes."
 
 use std::path::Path;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use super::{GitOutput, run_git};
+use super::{COMMAND_TIMEOUT, GitOutput, run_git_within};
 
 /// Skip the untracked-file scan entirely when the working tree
 /// has more than this many untracked entries. A fresh-repo state
@@ -186,11 +187,20 @@ const LOG_FIELD_SEP: char = '\u{1f}';
 /// overlay's commit stepper. Empty when the range has no commits
 /// (dirty-tree-only review, `/diff HEAD`, or `target` unresolvable).
 pub async fn scan_commits(cwd: &Path, target: &str) -> Vec<CommitMeta> {
+    scan_commits_within(cwd, target, COMMAND_TIMEOUT).await
+}
+
+/// [`scan_commits`] with its command budget spelled; see the module's
+/// [`scan_within`].
+pub async fn scan_commits_within(cwd: &Path, target: &str, budget: Duration) -> Vec<CommitMeta> {
     let range = format!("{target}..HEAD");
-    let raw = match run_git(cwd, &["log", "--reverse", "--format=%H%x1f%h%x1f%s", &range]).await {
-        GitOutput::Ok(s) => s,
-        GitOutput::Empty | GitOutput::Failed | GitOutput::Oversize => return Vec::new(),
-    };
+    let raw =
+        match run_git_within(cwd, &["log", "--reverse", "--format=%H%x1f%h%x1f%s", &range], budget)
+            .await
+        {
+            GitOutput::Ok(s) => s,
+            GitOutput::Empty | GitOutput::Failed | GitOutput::Oversize => return Vec::new(),
+        };
     raw.lines()
         .filter_map(|line| {
             let mut parts = line.split(LOG_FIELD_SEP);
@@ -215,8 +225,14 @@ pub async fn scan_commits(cwd: &Path, target: &str) -> Vec<CommitMeta> {
 /// surfaces untracked files - a commit's diff is closed over its own
 /// changes.
 pub async fn scan_commit(cwd: &Path, sha: &str) -> ScanOutcome {
-    let ref_spec = commit_ref_spec(cwd, sha).await;
-    scan_with_ref_spec(cwd, &ref_spec).await
+    scan_commit_within(cwd, sha, COMMAND_TIMEOUT).await
+}
+
+/// [`scan_commit`] with its command budget spelled; see the module's
+/// [`scan_within`].
+pub async fn scan_commit_within(cwd: &Path, sha: &str, budget: Duration) -> ScanOutcome {
+    let ref_spec = commit_ref_spec(cwd, sha, budget).await;
+    scan_with_ref_spec(cwd, &ref_spec, budget).await
 }
 
 /// Resolve the two-endpoint `git diff` range for one commit. Uses
@@ -224,8 +240,8 @@ pub async fn scan_commit(cwd: &Path, sha: &str) -> ScanOutcome {
 /// non-zero-exit WARN) to detect a parent: `<sha> <parent…>` means a
 /// normal commit (`<sha>^..<sha>`, first-parent for a merge), a lone
 /// `<sha>` means a root commit (diff against the empty tree).
-pub(crate) async fn commit_ref_spec(cwd: &Path, sha: &str) -> String {
-    match run_git(cwd, &["rev-list", "--parents", "-n", "1", sha]).await {
+pub(crate) async fn commit_ref_spec(cwd: &Path, sha: &str, budget: Duration) -> String {
+    match run_git_within(cwd, &["rev-list", "--parents", "-n", "1", sha], budget).await {
         GitOutput::Ok(s) if s.split_whitespace().count() > 1 => format!("{sha}^..{sha}"),
         GitOutput::Ok(_) => format!("{EMPTY_TREE_SHA}..{sha}"),
         // Best-effort on any anomaly: the normal-commit spec, whose
@@ -240,7 +256,13 @@ pub(crate) async fn commit_ref_spec(cwd: &Path, sha: &str) -> String {
 /// its line-per-commit `git log` parse; the stepper fetches it lazily
 /// per commit alongside the hunks.
 pub async fn scan_commit_body(cwd: &Path, sha: &str) -> String {
-    match run_git(cwd, &["show", "-s", "--format=%b", sha]).await {
+    scan_commit_body_within(cwd, sha, COMMAND_TIMEOUT).await
+}
+
+/// [`scan_commit_body`] with its command budget spelled; see the module's
+/// [`scan_within`].
+pub async fn scan_commit_body_within(cwd: &Path, sha: &str, budget: Duration) -> String {
+    match run_git_within(cwd, &["show", "-s", "--format=%b", sha], budget).await {
         GitOutput::Ok(s) => s.trim_end().to_owned(),
         GitOutput::Empty | GitOutput::Failed | GitOutput::Oversize => String::new(),
     }
@@ -285,15 +307,24 @@ const FALLBACK_CONTEXT_LINES: u32 = 3;
 /// "scan failed, check logs" rather than miscategorising the empty
 /// result as "no changes."
 pub async fn scan(cwd: &Path, target: &str) -> ScanOutcome {
+    scan_within(cwd, target, COMMAND_TIMEOUT).await
+}
+
+/// [`scan`] with its command budget spelled: the shell gives each child
+/// this reader spawns the 10 s `COMMAND_TIMEOUT`, and a test gives them one
+/// of its own. **The budget is a bound on the machine, not on the read**: it
+/// is spent starting each child, so a loaded machine can hold a child's
+/// first output past the shell's 10 s and blank a file's hunk section.
+pub async fn scan_within(cwd: &Path, target: &str, budget: Duration) -> ScanOutcome {
     let ref_spec = diff_ref_spec(target);
-    let mut outcome = scan_with_ref_spec(cwd, &ref_spec).await;
+    let mut outcome = scan_with_ref_spec(cwd, &ref_spec, budget).await;
 
     // Untracked only when the caller is asking for working-tree
     // semantics. `/diff main` from a feature branch already includes
     // committed-since-main + uncommitted via the ref-vs-worktree
     // compare; untracked files don't belong to that comparison.
     if target == "HEAD" {
-        let (untracked, untracked_ok, suppressed) = scan_untracked(cwd).await;
+        let (untracked, untracked_ok, suppressed) = scan_untracked(cwd, budget).await;
         outcome.files.extend(untracked);
         outcome.scanner_ok = outcome.scanner_ok && untracked_ok;
         outcome.untracked_suppressed = suppressed;
@@ -306,9 +337,10 @@ pub async fn scan(cwd: &Path, target: &str) -> ScanOutcome {
 /// already the exact shape git receives - `HEAD`, `main...HEAD`,
 /// `<sha>^..<sha>`, an empty-tree range, etc. Never surfaces untracked
 /// files, so `untracked_suppressed` is always 0.
-async fn scan_with_ref_spec(cwd: &Path, ref_spec: &str) -> ScanOutcome {
+async fn scan_with_ref_spec(cwd: &Path, ref_spec: &str, budget: Duration) -> ScanOutcome {
     let mut scanner_ok = true;
-    let name_status = match run_git(cwd, &["diff", ref_spec, "--name-status"]).await {
+    let name_status = match run_git_within(cwd, &["diff", ref_spec, "--name-status"], budget).await
+    {
         GitOutput::Ok(s) => s,
         GitOutput::Empty => String::new(),
         GitOutput::Failed | GitOutput::Oversize => {
@@ -338,7 +370,7 @@ async fn scan_with_ref_spec(cwd: &Path, ref_spec: &str) -> ScanOutcome {
         let ref_spec_for_fetch = ref_spec.to_owned();
         let mut stream = futures::stream::iter(paths.into_iter().enumerate().map(|(idx, path)| {
             let ref_spec = ref_spec_for_fetch.clone();
-            async move { (idx, fetch_file_hunks(cwd, &ref_spec, &path).await) }
+            async move { (idx, fetch_file_hunks(cwd, &ref_spec, &path, budget).await) }
         }))
         .buffer_unordered(MAX_INFLIGHT_FETCHES);
         while let Some((idx, result)) = stream.next().await {
@@ -403,15 +435,23 @@ enum DiffFetch {
 /// submodule entries and empty diffs return `Ok(vec![])`. Splits the
 /// oversize cap from a genuine subprocess crash so the caller can retry
 /// oversize at a smaller context instead of failing the whole scan.
-async fn run_file_diff(cwd: &Path, ref_spec: &str, path: &str, context: u32) -> DiffFetch {
+async fn run_file_diff(
+    cwd: &Path,
+    ref_spec: &str,
+    path: &str,
+    context: u32,
+    budget: Duration,
+) -> DiffFetch {
     let flag = format!("-U{context}");
-    let section = match run_git(cwd, &["diff", ref_spec, "--no-ext-diff", &flag, "--", path]).await
-    {
-        GitOutput::Ok(s) => s,
-        GitOutput::Empty => return DiffFetch::Ok(Vec::new()),
-        GitOutput::Oversize => return DiffFetch::Oversize,
-        GitOutput::Failed => return DiffFetch::Failed,
-    };
+    let section =
+        match run_git_within(cwd, &["diff", ref_spec, "--no-ext-diff", &flag, "--", path], budget)
+            .await
+        {
+            GitOutput::Ok(s) => s,
+            GitOutput::Empty => return DiffFetch::Ok(Vec::new()),
+            GitOutput::Oversize => return DiffFetch::Oversize,
+            GitOutput::Failed => return DiffFetch::Failed,
+        };
     let hunks = parse_hunks(&section);
     if hunks.is_empty() && contains_hunk_marker(&section) {
         // Parser produced zero hunks despite seeing at least one
@@ -445,12 +485,17 @@ async fn run_file_diff(cwd: &Path, ref_spec: &str, path: &str, context: u32) -> 
 /// `ref_spec` is the already-resolved diff range from [`diff_ref_spec`]
 /// (e.g. `HEAD`, or `main...HEAD`); callers pre-resolve it so the per-file
 /// and top-level scans agree.
-async fn fetch_file_hunks(cwd: &Path, ref_spec: &str, path: &str) -> FileScanOutcome {
-    match run_file_diff(cwd, ref_spec, path, PINNED_CONTEXT_LINES).await {
+async fn fetch_file_hunks(
+    cwd: &Path,
+    ref_spec: &str,
+    path: &str,
+    budget: Duration,
+) -> FileScanOutcome {
+    match run_file_diff(cwd, ref_spec, path, PINNED_CONTEXT_LINES, budget).await {
         DiffFetch::Ok(hunks) => FileScanOutcome::Ok { hunks, oversize: false },
         DiffFetch::Failed => FileScanOutcome::SubprocessFailed,
         DiffFetch::Oversize => {
-            match run_file_diff(cwd, ref_spec, path, FALLBACK_CONTEXT_LINES).await {
+            match run_file_diff(cwd, ref_spec, path, FALLBACK_CONTEXT_LINES, budget).await {
                 DiffFetch::Ok(hunks) => FileScanOutcome::Ok { hunks, oversize: true },
                 DiffFetch::Oversize => FileScanOutcome::Ok { hunks: Vec::new(), oversize: true },
                 DiffFetch::Failed => FileScanOutcome::SubprocessFailed,
@@ -675,12 +720,13 @@ fn parse_pair(s: &str) -> Option<(u32, u32)> {
 ///   it into `files` due to `MAX_UNTRACKED_FILES`. Zero when the
 ///   tree was under the cap (or empty); positive when the cap
 ///   kicked in so the renderer can surface the truncation count.
-async fn scan_untracked(cwd: &Path) -> (Vec<FileHunks>, bool, usize) {
-    let raw = match run_git(cwd, &["ls-files", "--others", "--exclude-standard"]).await {
-        GitOutput::Ok(s) => s,
-        GitOutput::Empty => String::new(),
-        GitOutput::Failed | GitOutput::Oversize => return (Vec::new(), false, 0),
-    };
+async fn scan_untracked(cwd: &Path, budget: Duration) -> (Vec<FileHunks>, bool, usize) {
+    let raw =
+        match run_git_within(cwd, &["ls-files", "--others", "--exclude-standard"], budget).await {
+            GitOutput::Ok(s) => s,
+            GitOutput::Empty => String::new(),
+            GitOutput::Failed | GitOutput::Oversize => return (Vec::new(), false, 0),
+        };
     let untracked: Vec<&str> = raw.lines().filter(|l| !l.is_empty()).collect();
     if untracked.len() > MAX_UNTRACKED_FILES {
         let suppressed = untracked.len();
@@ -789,6 +835,7 @@ async fn scan_untracked(cwd: &Path) -> (Vec<FileHunks>, bool, usize) {
 
 #[cfg(test)]
 mod tests {
+    use super::super::TEST_GIT_BUDGET;
     use super::*;
 
     #[test]
@@ -1119,7 +1166,7 @@ diff --git a/x.rs b/x.rs
     async fn scan_commits_lists_branch_commits_oldest_first() {
         let dir = tempfile::tempdir().expect("tempdir");
         three_commit_branch(&dir);
-        let commits = scan_commits(dir.path(), "main").await;
+        let commits = scan_commits_within(dir.path(), "main", TEST_GIT_BUDGET).await;
         let subjects: Vec<&str> = commits.iter().map(|c| c.subject.as_str()).collect();
         assert_eq!(subjects, vec!["first", "second", "third"], "oldest-first");
         assert!(commits.iter().all(|c| !c.sha.is_empty() && !c.short_sha.is_empty()));
@@ -1133,16 +1180,75 @@ diff --git a/x.rs b/x.rs
         write_file(&dir, "base.txt", "base\n");
         commit(&dir, "init");
         // HEAD..HEAD is empty; a dirty-tree-only review has no stepper.
-        assert!(scan_commits(dir.path(), "HEAD").await.is_empty());
+        assert!(scan_commits_within(dir.path(), "HEAD", TEST_GIT_BUDGET).await.is_empty());
+    }
+
+    /// **The readers take the budget they are given.** A ZERO budget refuses
+    /// a read at its first `git` child, a helper deeper in refuses the same
+    /// way, and the same repo reads under the budget these cases use - the
+    /// seam `run_git_within` now offers every hunk and content read,
+    /// production keeping `COMMAND_TIMEOUT`.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_readers_take_the_budget_they_are_given() {
+        use forge_primitives::git::GitBranch;
+        use forge_primitives::git_diff::{GitDiffSnapshot, GitDiffStats, LayerState, RepoGate};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        init_commit_repo(&dir);
+        write_file(&dir, "base.txt", "base\n");
+        commit(&dir, "init");
+        write_file(&dir, "base.txt", "base\nand a change\n");
+
+        let refused = scan_within(dir.path(), "HEAD", Duration::ZERO).await;
+        assert!(!refused.scanner_ok, "a zero budget reads as a failed scan: {refused:?}");
+        assert!(refused.files.is_empty(), "with nothing read: {refused:?}");
+
+        // A child the reader spawns LATER takes the same budget, so the
+        // claim has a witness beyond the entry's first call: the per-file
+        // fetch, which only runs once the name-status has listed a file.
+        let deeper = fetch_file_hunks(dir.path(), "HEAD", "base.txt", Duration::ZERO).await;
+        assert!(
+            matches!(deeper, FileScanOutcome::SubprocessFailed),
+            "a later child refuses a zero budget too",
+        );
+
+        // And the content reader carries the same seam.
+        let snapshot = GitDiffSnapshot {
+            branch: GitBranch::Named("feature".into()),
+            default_branch: None,
+            repo_gate: RepoGate::InRepo,
+            pushed_sha: None,
+            worktree: LayerState::Populated(GitDiffStats {
+                files: Vec::new(),
+                total_files: 0,
+                total_added: 0,
+                total_removed: 0,
+            }),
+            branch_ahead: LayerState::Clean,
+            pr: None,
+            closes: Vec::new(),
+            pr_fetched_at: None,
+        };
+        let refused_content =
+            super::super::content::scan_within(dir.path(), &snapshot, Duration::ZERO).await;
+        assert!(
+            matches!(refused_content.worktree, LayerState::ScanFailed),
+            "the content reader refuses a zero budget too: {refused_content:?}",
+        );
+
+        // The budget these cases use reads the same repo.
+        let read = scan_within(dir.path(), "HEAD", TEST_GIT_BUDGET).await;
+        assert!(read.scanner_ok, "and the tests' budget reads it: {read:?}");
+        assert_eq!(read.files.len(), 1, "with the changed file: {read:?}");
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn scan_commit_scopes_to_that_commit_only() {
         let dir = tempfile::tempdir().expect("tempdir");
         three_commit_branch(&dir);
-        let commits = scan_commits(dir.path(), "main").await;
+        let commits = scan_commits_within(dir.path(), "main", TEST_GIT_BUDGET).await;
         assert_eq!(commits.len(), 3);
-        let middle = scan_commit(dir.path(), &commits[1].sha).await;
+        let middle = scan_commit_within(dir.path(), &commits[1].sha, TEST_GIT_BUDGET).await;
         let paths: Vec<&str> = middle.files.iter().map(|f| f.path.as_str()).collect();
         assert_eq!(paths, vec!["b.rs"], "middle commit touches only b.rs");
         assert!(middle.scanner_ok);
@@ -1155,7 +1261,7 @@ diff --git a/x.rs b/x.rs
         write_file(&dir, "README.md", "hello\n");
         commit(&dir, "init");
         let root = git_capture(&dir, &["rev-list", "--max-parents=0", "HEAD"]);
-        let outcome = scan_commit(dir.path(), &root).await;
+        let outcome = scan_commit_within(dir.path(), &root, TEST_GIT_BUDGET).await;
         // Parentless root: the empty-tree fallback surfaces its full
         // contents as an added file rather than erroring on `<sha>^`.
         let paths: Vec<&str> = outcome.files.iter().map(|f| f.path.as_str()).collect();
@@ -1181,7 +1287,7 @@ diff --git a/x.rs b/x.rs
             ],
         );
         let sha = git_capture(&dir, &["rev-parse", "HEAD"]);
-        let body = scan_commit_body(dir.path(), &sha).await;
+        let body = scan_commit_body_within(dir.path(), &sha, TEST_GIT_BUDGET).await;
         // `%b` starts after the subject, so the subject never appears.
         assert!(!body.contains("the subject line"), "body excludes the subject: {body:?}");
         assert!(body.contains("body line one"));
@@ -1197,7 +1303,7 @@ diff --git a/x.rs b/x.rs
         write_file(&dir, "a.rs", "a\n");
         commit(&dir, "just a subject");
         let sha = git_capture(&dir, &["rev-parse", "HEAD"]);
-        let body = scan_commit_body(dir.path(), &sha).await;
+        let body = scan_commit_body_within(dir.path(), &sha, TEST_GIT_BUDGET).await;
         assert!(body.is_empty(), "a subject-only commit has an empty body, got {body:?}");
     }
 
@@ -1219,7 +1325,7 @@ diff --git a/x.rs b/x.rs
         "line 17 CHANGED".clone_into(&mut edited[16]);
         write_file(&dir, "f.rs", &format!("{}\n", edited.join("\n")));
 
-        let outcome = scan(dir.path(), "HEAD").await;
+        let outcome = scan_within(dir.path(), "HEAD", TEST_GIT_BUDGET).await;
         assert!(outcome.scanner_ok);
         let file = outcome.files.iter().find(|f| f.path == "f.rs").expect("f.rs scanned");
         assert_eq!(file.hunks.len(), 1, "full context merges the two edits into one hunk");
@@ -1243,7 +1349,7 @@ diff --git a/x.rs b/x.rs
         write_file(&dir, "small.rs", "fn a() { b(); }\n");
         write_file(&dir, "big.txt", &"b".repeat(5 * 1024 * 1024));
 
-        let outcome = scan(dir.path(), "HEAD").await;
+        let outcome = scan_within(dir.path(), "HEAD", TEST_GIT_BUDGET).await;
         assert!(outcome.scanner_ok, "one oversize file must not blank the whole scope");
         let small = outcome.files.iter().find(|f| f.path == "small.rs").expect("small scanned");
         assert!(!small.oversize, "the normal file is not flagged oversize");
