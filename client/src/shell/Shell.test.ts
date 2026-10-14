@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AddressInfo, RawData, WebSocket } from 'ws';
 
 import { DEFAULT_ADDRESS } from '../connect/attempt';
-import { rememberAddress, serverParameter } from '../connect/remembered';
+import { rememberedAddress, rememberAddress, serverParameter } from '../connect/remembered';
 import { homeWire } from '../dev/fixture.data';
 import { PROTOCOL_VERSION } from '../protocol';
 import { closeSeat, closingSeat } from '../session/close';
@@ -232,24 +232,29 @@ async function crossed(): Promise<void> {
 }
 
 /**
- * Wait for the page to arrive at a path, rather than for a fixed count of
- * turns.
+ * Wait for a condition, rather than for a fixed count of turns.
  *
  * **`crossed` is a race under load**: ten 5ms turns is about 50ms of wall
  * clock whatever else the machine is doing - so with the machine busy a
- * removal crossing a real socket can land after it and the assertion fails on
- * a page that was merely slow (measured twice in one day, both times green on
- * the standalone re-run). Waiting on the condition removes the race and keeps
- * the assertion's own message for the case where the page genuinely never
- * arrives; the deadline only stops a broken page from hanging the suite.
+ * frame crossing a real socket can land after it and the assertion fails on
+ * a page that was merely slow (measured twice in one day, both times green
+ * on the standalone re-run). Waiting on the condition removes the race and
+ * keeps the assertion's own message for the case where the page genuinely
+ * never arrives; the deadline only stops a broken page from hanging the
+ * suite.
  */
-async function landed(path: string): Promise<void> {
+async function until(what: () => boolean): Promise<void> {
   const deadline = Date.now() + 2_000;
-  while (location.pathname !== path && Date.now() < deadline) {
+  while (!what() && Date.now() < deadline) {
     flushSync();
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   flushSync();
+}
+
+/** Wait for the page to arrive at a path. */
+async function landed(path: string): Promise<void> {
+  await until(() => location.pathname === path);
 }
 
 /** The font stack the page is drawing with, which is what a greeting put there. */
@@ -366,7 +371,7 @@ describe('the shell at launch', () => {
     const forge = await stubForge({ mark: null, theme: null, font: null });
     forges.push(forge);
     await openAt(`/?server=${forge.address}`, null);
-    await crossed();
+    await until(() => forge.live() === 1);
 
     expect(location.pathname, 'a launch from the root did not land on the home').toBe('/');
     expect(location.search, 'the launch dropped its own parameter').toBe(
@@ -374,8 +379,39 @@ describe('the shell at launch', () => {
     );
     expect(
       document.querySelector('#address'),
-      'the launch did not connect, so the door is what drew',
+      'the launch connected and yet the door is what drew',
     ).toBeNull();
+  });
+
+  /**
+   * **The parameter outranks the remembered address**, which is the whole
+   * point of it: a tab opened at one forge must open there even when another
+   * tab at the same origin remembered a different one.
+   */
+  it('opens on the parameter even when another address is remembered', async () => {
+    const remembered = await stubForge({ mark: null, theme: null, font: null });
+    const named = await stubForge({ mark: null, theme: null, font: null });
+    forges.push(remembered, named);
+    await openAt(`/?server=${named.address}`, remembered.address);
+    await until(() => named.live() === 1);
+
+    expect(named.live(), 'the launch did not dial the parameter').toBe(1);
+    expect(remembered.live(), 'the launch dialed the remembered address instead').toBe(0);
+  });
+
+  /**
+   * **A launch that answered is what the app opens on next time.** A
+   * `?server=` launch is how a scratch stack is met, and a memory that only
+   * moved on door submits stayed on a dead stack while the live one went
+   * unrecorded.
+   */
+  it('remembers the forge a launch landed on', async () => {
+    const forge = await stubForge({ mark: null, theme: null, font: null });
+    forges.push(forge);
+    await openAt(`/?server=${forge.address}`, null);
+    await until(() => forge.live() === 1);
+
+    expect(rememberedAddress(), 'a launch that answered was not remembered').toBe(forge.address);
   });
 
   /**
@@ -390,12 +426,37 @@ describe('the shell at launch', () => {
     await openAt('/?server=::::', null);
 
     submit(forge.address);
-    await crossed();
+    await until(() => serverParameter(location.search) === forge.address);
 
     expect(
       serverParameter(location.search),
       'the parameter still names the address the person replaced',
     ).toBe(forge.address);
+  });
+
+  /**
+   * **What is kept is the connection the app TOOK**, so a door submit that
+   * replaces the connection replaces the memory with it rather than sitting
+   * beside it.
+   */
+  it('replaces the remembered address when the door takes another one', async () => {
+    const first = await stubForge({ mark: null, theme: null, font: null });
+    const second = await stubForge({ mark: null, theme: null, font: null });
+    forges.push(first, second);
+    await openAt('/', first.address);
+    await until(() => first.live() === 1);
+    expect(rememberedAddress(), 'a connection that took was not remembered').toBe(first.address);
+
+    // Back to the door with the connection still held: a submit replaces it.
+    history.replaceState(null, '', '/connect');
+    dispatchEvent(new PopStateEvent('popstate'));
+    await crossed();
+    submit(second.address);
+    await until(() => second.live() === 1);
+
+    expect(rememberedAddress(), 'editing the address left the old one remembered').toBe(
+      second.address,
+    );
   });
 
   /**
@@ -429,6 +490,10 @@ describe('the shell at launch', () => {
     expect(appliedFont(), 'the launch rewrote the settings the submit had taken').toBe(
       fontStack('system')?.ui,
     );
+    expect(
+      rememberedAddress(),
+      'a launch the app discarded still overwrote the address the person chose',
+    ).toBe(asked.address);
   });
 });
 
