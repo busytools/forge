@@ -94,9 +94,10 @@ fn canonicalize_path(path: &str) -> String {
 /// Whether this read has already kept a row under `uuid`.
 ///
 /// **The key a re-appended block is deduped by.** A transcript can carry a
-/// block of records twice, the copies differing only by a `slug` field (and
-/// sometimes `parentUuid`), so `uuid` is the one field stable across the pair.
-/// A row with no `uuid` names nothing to dedupe on and is never a repeat.
+/// block of records twice: the copies share `uuid`, `type` and the message
+/// content, and may differ in metadata fields (`slug`, `promptId`, a zeroed
+/// `usage`). `uuid` is what names the pair, and a row with no `uuid` names
+/// nothing to dedupe on and is never a repeat.
 fn already_kept(seen: &mut std::collections::HashSet<String>, uuid: &str) -> bool {
     !uuid.is_empty() && !seen.insert(uuid.to_owned())
 }
@@ -1962,11 +1963,11 @@ mod tests {
     }
 
     /// A transcript can carry a block of records twice: the second copies
-    /// repeat the `uuid`, the message id and the timestamp of the first,
-    /// differing only by a `slug` field the first lacks, and sit right after a
-    /// later run's session-state rows. The whole-file read handed both copies
-    /// on, so a resumed or freshly-opened conversation drew the block twice.
-    /// The `uuid` is the key that absorbs it - unique per record and stable
+    /// share the `uuid`, `type` and message content of the first and differ
+    /// only in metadata fields, and they sit right after a later run's
+    /// session-state rows. The whole-file read handed both copies on, so a
+    /// resumed or freshly-opened conversation drew the block twice. The
+    /// `uuid` is the key that absorbs it - unique per record and stable
     /// across the pair.
     #[test]
     fn parse_session_messages_reads_a_duplicated_block_once() {
