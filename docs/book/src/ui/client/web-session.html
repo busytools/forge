@@ -148,7 +148,10 @@
      chat header so it stays clickable while the pane is gone ---------- */
   .app { display: grid; grid-template-columns: minmax(0,1fr);
     grid-template-rows: minmax(0, 1fr) auto;
-    gap: var(--ins); padding: var(--ins); height: 100vh; overflow: hidden; }
+    gap: var(--ins);
+    padding: calc(var(--ins) + var(--safe-top)) calc(var(--ins) + var(--safe-right))
+      calc(var(--ins) + var(--safe-bottom)) calc(var(--ins) + var(--safe-left));
+    height: 100vh; overflow: hidden; }
   /* The rail's two non-default modes are the summoned rail: parked
      off-canvas and slid in over a scrim. The drawing shows the DEFAULT,
      `.rail-static`, below; these two `.app` rules mirror web.css rule for
@@ -1146,7 +1149,7 @@
   .pal { position: fixed; inset: 0; z-index: 70; }
   .pal .pscrim { position: absolute; inset: 0; background: rgba(4,5,10,.6);
     backdrop-filter: blur(3px); }
-  .pal .panel { position: absolute; top: 9vh; left: 50%; transform: translateX(-50%);
+  .pal .panel { position: absolute; top: calc(9vh + var(--safe-top)); left: 50%; transform: translateX(-50%);
     width: min(660px, 92vw); border: 1px solid var(--line); border-radius: 14px;
     background: var(--s1); box-shadow: 0 28px 70px rgba(0,0,0,.6); overflow: hidden; }
   .pal .pin { display: flex; align-items: center; gap: 10px; padding: 12px 15px;

@@ -2,8 +2,10 @@ package dev.vedhavyas.forge
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.graphics.Color
 import android.os.Bundle
 import android.webkit.WebView
+import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -24,6 +26,11 @@ class MainActivity : TauriActivity() {
   /** The insets last read, so a page created after them is still handed the current ones. */
   private var lastInsets: WindowInsetsCompat? = null
 
+  /** The lengths last written, so the many dispatches an IME animation
+   *  produces do not re-register the hook for an unchanged script. Cleared
+   *  when a webview is created, because the replay IS for the new document. */
+  private var lastScript: String? = null
+
   companion object {
     /** The microphone request's own code, for the answer that comes back. */
     private const val MIC_REQUEST = 1
@@ -33,10 +40,57 @@ class MainActivity : TauriActivity() {
     // can keep the driver off this page (its devtools target is one of many
     // in this process, and the first playwright finds).
     @Volatile var clientWebView: WebView? = null
+
+    /**
+     * The page's own hook, as the string the document runs: the four lengths
+     * in CSS pixels, which is the unit the sheet's properties are in.
+     *
+     * **Pure on purpose.** The property names and the px-to-CSS-px conversion
+     * are the contract the sheet's `--safe-*` reads rest on, so they are
+     * pinned by a JVM test rather than only exercised on a device.
+     */
+    internal fun safeAreaScript(
+      top: Int,
+      right: Int,
+      bottom: Int,
+      left: Int,
+      density: Float,
+    ): String {
+      val lengths =
+        listOf(
+          "--safe-top" to top,
+          "--safe-right" to right,
+          "--safe-bottom" to bottom,
+          "--safe-left" to left,
+        ).joinToString("") { (name, px) -> "'$name':'${px / density}px'," }
+      // A document-start script can run before the root element exists; the
+      // listener's own pass then waits for the document rather than dropping
+      // the lengths on the floor.
+      return """
+        (() => {
+          const apply = () => {
+            const root = document.documentElement;
+            if (!root) return false;
+            for (const [name, value] of Object.entries({$lengths})) {
+              root.style.setProperty(name, value);
+            }
+            return true;
+          };
+          if (!apply()) document.addEventListener('DOMContentLoaded', apply, { once: true });
+        })();
+      """.trimIndent()
+    }
   }
 
   override fun onCreate(savedInstanceState: Bundle?) {
-    enableEdgeToEdge()
+    // The page is dark in every configuration, so the bars' icons are pinned
+    // light-on-dark rather than left to `auto`, which reads the SYSTEM theme:
+    // dark icons over a near-black page is the "the status bar reads as
+    // missing" report this closes.
+    enableEdgeToEdge(
+      statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
+      navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
+    )
     super.onCreate(savedInstanceState)
     // Android grants the microphone at runtime; the manifest's declaration
     // only makes it askable. Both capture legs need it - the shell's own
@@ -63,6 +117,7 @@ class MainActivity : TauriActivity() {
     clientWebView = webView
     // An insets dispatch that landed before this webview existed is replayed,
     // so the page is never left on the sheet's zero fallback.
+    lastScript = null
     lastInsets?.let { handSafeArea(it) }
   }
 
@@ -72,16 +127,27 @@ class MainActivity : TauriActivity() {
    * The page draws edge-to-edge, so its edges are under the status bar and
    * the gesture bar, and the sheet pads every page root and its own overlays
    * by the four lengths it reads as `--safe-*`. `env(safe-area-inset-*)` is
-   * the same four numbers, but Android's WebView answers zero for them before
-   * WebView 144, so the shell measures the window's insets and hands them in
-   * itself. The document-start hook is what survives the page's load: an
-   * inline style written into a document that is about to be replaced goes
-   * with it.
+   * the same four numbers, but this app's WebView answers zero for them
+   * (measured; Chromium forwards them only in later releases), so the shell
+   * measures the window's insets and hands them in itself. The
+   * document-start hook is what survives the page's load: an inline style
+   * written into a document that is about to be replaced goes with it.
    */
   private fun handSafeArea(insets: WindowInsetsCompat) {
     lastInsets = insets
     val page = webView ?: return
-    val script = safeAreaScript(insets)
+    val bars =
+      insets.getInsets(
+        WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout(),
+      )
+    // With the keyboard up the app's bottom edge is the keyboard's top, while
+    // the nav band is still "visible" at the screen's bottom - padding by it
+    // would open a gap above the composer, so the bottom reports zero then.
+    val bottom = if (insets.isVisible(WindowInsetsCompat.Type.ime())) 0 else bars.bottom
+    val script =
+      safeAreaScript(bars.top, bars.right, bottom, bars.left, resources.displayMetrics.density)
+    if (script == lastScript) return
+    lastScript = script
     safeArea?.remove()
     safeArea =
       if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
@@ -90,38 +156,6 @@ class MainActivity : TauriActivity() {
         null
       }
     page.evaluateJavascript(script, null)
-  }
-
-  /** The insets as CSS pixels, which is the unit the sheet's properties are in. */
-  private fun safeAreaScript(insets: WindowInsetsCompat): String {
-    val bars =
-      insets.getInsets(
-        WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout(),
-      )
-    val density = resources.displayMetrics.density
-    val lengths =
-      listOf(
-        "--safe-top" to bars.top,
-        "--safe-right" to bars.right,
-        "--safe-bottom" to bars.bottom,
-        "--safe-left" to bars.left,
-      ).joinToString("") { (name, px) -> "'$name':'${px / density}px'," }
-    // A document-start script can run before the root element exists; the
-    // listener's own pass then waits for the document rather than dropping
-    // the lengths on the floor.
-    return """
-      (() => {
-        const apply = () => {
-          const root = document.documentElement;
-          if (!root) return false;
-          for (const [name, value] of Object.entries({$lengths})) {
-            root.style.setProperty(name, value);
-          }
-          return true;
-        };
-        if (!apply()) document.addEventListener('DOMContentLoaded', apply, { once: true });
-      })();
-    """.trimIndent()
   }
 
   // The WebView's own back API is inert for this client - its links are

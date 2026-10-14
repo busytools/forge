@@ -121,9 +121,9 @@ describe('the system bars', () => {
    */
   it('pads the page roots and every overlay by the bands the shell measures', () => {
     for (const [what, selector, bands] of [
-      ['the session page', '.app', ['top', 'bottom']],
-      ['the projects rail', '.app .rail.left', ['top', 'bottom']],
-      ['the board drawer', '.dr', ['top', 'bottom']],
+      ['the session page', '.app', ['top', 'right', 'bottom', 'left']],
+      ['the projects rail', '.app .rail.left', ['top', 'bottom', 'left']],
+      ['the board drawer', '.dr', ['top', 'right', 'bottom']],
       ['the palette panel', '.pal .panel', ['top']],
     ] as const) {
       // Every rule for the selector, as one: a box's padding may be spelled
@@ -134,12 +134,39 @@ describe('the system bars', () => {
         expect(rules.join(' '), `${what} drops the ${band} band`).toContain(`var(--safe-${band})`);
       }
     }
+    // The panel's own `top`: a LATER rule for the same selector draws over the
+    // banded one (equal specificity), so the last rule declaring one must be
+    // the rule carrying the band - the sheet's own habit is second rules.
+    const panelTops = rulesFor('.pal .panel').filter((rule) => /(?:^|[;{\s])top:/.test(rule));
+    const panelLast = panelTops[panelTops.length - 1] ?? '';
+    expect(panelLast, 'the palette panel drops the top band in its last top').toContain(
+      'var(--safe-top)',
+    );
     // Every tier, not one: the phone's own `.wrap` rule overrides the padding
-    // below 760px, and a tier left without the terms is the page under the bar.
+    // below 760px, and a tier left short a term is the page under a bar.
     const wraps = rulesFor('.wrap');
     expect(wraps.length, 'the sheet spells .wrap at more than one width').toBeGreaterThan(1);
     for (const rule of wraps) {
-      expect(rule, 'a .wrap tier drops the top band').toContain('var(--safe-top)');
+      for (const band of ['top', 'right', 'bottom', 'left'] as const) {
+        expect(rule, `a .wrap tier drops the ${band} band`).toContain(`var(--safe-${band})`);
+      }
+    }
+  });
+
+  /**
+   * **The fallback every host without the shell reads.** The four are declared
+   * at root as `env(...)` and read as `calc(n + var(...))`, and only the
+   * Android shell writes them inline; drop a declaration and every `calc`
+   * reading it is invalid at computed-value time - the whole declaration
+   * dies, not just the band - on the DESKTOP and the web half, while Android
+   * stays green because the shell's inline values mask the hole.
+   */
+  it('declares every band at root with an env() fallback', () => {
+    const root = rulesFor(':root').join(' ');
+    for (const band of ['top', 'right', 'bottom', 'left'] as const) {
+      expect(root, `--safe-${band} has no root declaration`).toContain(
+        `--safe-${band}: env(safe-area-inset-${band}`,
+      );
     }
   });
 });

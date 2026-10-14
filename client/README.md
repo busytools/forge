@@ -273,7 +273,7 @@ genuinely cannot.
 
 `src-tauri/gen/android/` is the Gradle project `tauri android init`
 generates, and it is committed: the manifest, the Kotlin activity and the
-Gradle files are project source rather than build output, so its five
+Gradle files are project source rather than build output, so its four
 local edits - the manifest's mic permissions and its
 `REQUEST_INSTALL_PACKAGES`, the activity's back handling and the window
 insets it hands the page, the update plugin
