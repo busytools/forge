@@ -417,7 +417,7 @@ describe('the shell at launch', () => {
   });
 
   /**
-   * **A launch that answered is what the app opens on next time.** A
+   * **A launch that landed is what the app opens on next time.** A
    * `?server=` launch is how a scratch stack is met, and a memory that only
    * moved on door submits stayed on a dead stack while the live one went
    * unrecorded.
@@ -428,7 +428,7 @@ describe('the shell at launch', () => {
     await openAt(`/?server=${forge.address}`, null);
     await until(() => forge.homeReads() >= 1);
 
-    expect(rememberedAddress(), 'a launch that answered was not remembered').toBe(forge.address);
+    expect(rememberedAddress(), 'a launch that landed was not remembered').toBe(forge.address);
   });
 
   /**
@@ -461,6 +461,9 @@ describe('the shell at launch', () => {
     forges.push(good);
     await openAt('/?server=::::', good.address);
 
+    // The test's own premise: the launch really failed rather than, say,
+    // silently falling back to the remembered forge.
+    expect(good.live(), 'the remembered forge was dialled, so nothing failed').toBe(0);
     expect(rememberedAddress(), 'a failed launch clobbered the address the app had').toBe(
       good.address,
     );
