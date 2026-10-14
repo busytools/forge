@@ -212,6 +212,17 @@ describe('the queue pile', () => {
     ).toBe(true);
   });
 
+  /**
+   * A uuid is unique only while the core keeps it so - the #2195 shape is a
+   * duplicated row arriving - and both rows must draw rather than throw.
+   */
+  it('draws two queued rows that arrive under one uuid', () => {
+    const { connection } = recording();
+    draw([row('u-dup'), row('u-dup')], connection);
+
+    expect(pile().querySelectorAll('.qcard').length, 'both rows draw').toBe(2);
+  });
+
   it('offers the cancel hint only while a row is walked', () => {
     // Nothing walked means nothing for the key to cancel, so the head must
     // not advertise it (Ved, 2026-10-04): a key offered that does nothing

@@ -215,7 +215,9 @@
       onclick={() => pile?.focus()}
     >
       <div class="qstack" style="height: {FACE_HEIGHT + face * STEP}px">
-        {#each rows as row, at (row.uuid)}
+        <!-- Keyed on the position: a uuid is unique only while the core keeps
+             it so, and a duplicate arriving must draw, not throw. -->
+        {#each rows as row, at (at)}
           {@const depth = face - at}
           {@const src = cardSource(row)}
           {#if depth >= 0}
