@@ -1,11 +1,12 @@
 /**
  * The address the app comes back to.
  *
- * The last address that ANSWERED is kept in the webview's own store and read
- * on launch, so the app opens on the forge it last used rather than on a form.
- * Nothing else is kept: an address that answered nothing is not one to open on
- * next time, and forgetting it would also throw away the one a person is about
- * to fix and try again.
+ * The last address a connection was KEPT on is written to the webview's own
+ * store and read on launch, so the app opens on the forge it last used rather
+ * than on a form. Nothing else is kept: an address that answered nothing, or
+ * one whose connection the shell discarded in favour of a submit, is not one
+ * to open on next time - and forgetting a failure would also throw away the
+ * one a person is about to fix and try again.
  *
  * **Every call on the store is caught, not just the read of the global.** A
  * browser with storage turned off throws on the call, and the read happens
@@ -38,6 +39,25 @@ export function serverParameter(search: string): string | null {
 }
 
 /**
+ * The search that names `address`, when the URL's parameter names another
+ * server; `null` when the URL names no server, or already names this one.
+ *
+ * A connection taken on another address has MOVED the tab a `?server=`
+ * launch pointed at, so the parameter follows it - otherwise the address it
+ * replaced would outrank the connection at the next launch and dial it
+ * again. A URL naming no server is left alone: the address that just took
+ * is remembered, and inventing a parameter would write this launch's guess
+ * into the address bar.
+ */
+export function movedParameter(current: string, address: string): string | null {
+  const named = serverParameter(current);
+  if (named === null || named === address) return null;
+  const search = new URLSearchParams(current);
+  search.set(PARAM, address);
+  return `?${search.toString()}`;
+}
+
+/**
  * The webview's own store, or `null` where there is not one.
  *
  * Reaching the store is its own step and the one most likely to be refused:
@@ -55,7 +75,7 @@ function webview(): Storage | null {
 }
 
 /**
- * The last address that answered, or `null` when none has.
+ * The last address a connection was kept on, or `null` when none has.
  *
  * A store that refuses to be read is the same as one that never held
  * anything: this app's only input is the server URL, so an app that cannot
@@ -71,7 +91,7 @@ export function rememberedAddress(): string | null {
 }
 
 /**
- * Keep the address that just answered, as the one the app opens on.
+ * Keep the address a kept connection took, as the one the app opens on.
  *
  * A store that refuses the write is not something the reader can act on mid
  * session - the connection in front of them is unaffected, and the cost lands

@@ -754,8 +754,8 @@ inspected.
     geometry at 1600 and 430 go in the PR body, and a page's final word
     is Ved looking at it. **And the shipped app carries no fixture, no
     mock data and no dev-only default**: its only input is the server
-    URL, it opens on the last address that answered and shows the connect
-    screen when none does, and nothing bundled ever stands in for a
+    URL, it opens on the last address a connection was kept on and shows the
+    connect screen when none does, and nothing bundled ever stands in for a
     server. The fixtures live under `client/src/dev/` and
     `client/src/dev/fixture.test.ts` builds the app and fails if one
     reaches the bundle.
