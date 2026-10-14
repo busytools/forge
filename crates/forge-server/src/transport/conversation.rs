@@ -840,8 +840,8 @@ mod tests {
         let new = SessionId::from("2a3b4c5d-6e7f-4809-9a1b-234567890abc");
         seeded.set_occupant(Some(old.clone()));
         let seeded = Held::new(seeded);
-        assert!(seeded.holds_occupant(Some(&old)), "a copy of the current occupant is the seat's",);
-        assert!(!seeded.holds_occupant(Some(&new)), "a copy of another occupant is no copy",);
+        assert!(seeded.holds_occupant(Some(&old)), "a copy of the current occupant is the seat's");
+        assert!(!seeded.holds_occupant(Some(&new)), "a copy of another occupant is no copy");
     }
 
     fn a_model() -> forge_primitives::runtime::CurrentModel {
