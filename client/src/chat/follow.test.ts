@@ -226,11 +226,17 @@ function stub() {
         },
       });
     },
-    /** The core saying that prompt is waiting in the CLI's queue, which retracts its row into the hold. */
-    queued(): void {
+    /**
+     * The core saying that prompt is waiting in the CLI's queue, which retracts
+     * its row into the hold. `source` rides every queued row on the wire and
+     * says who sent it: the reader's own send is `you`, and a cron fire, a
+     * peer message, a delivery or forge's own continuation each carry their
+     * own.
+     */
+    queued(source = 'you'): void {
       send({
         kind: 'update',
-        update: { prompt_queued: { key: LEAD, uuid: 'said-once', text: 'what is this' } },
+        update: { prompt_queued: { key: LEAD, uuid: 'said-once', source, text: 'what is this' } },
       });
     },
   };
@@ -1446,6 +1452,41 @@ describe('whether the column follows the newest end', () => {
     await settle();
 
     expect(pinned(), 'a prompt is where the reader wants to be, wherever they were').toEqual([PIN]);
+  });
+
+  it('brings the reader back for their own send the CLI queued', async () => {
+    // A prompt the CLI queues never folds as a user unit, so a mid-turn send
+    // is announced by the queue alone - and the pile's card IS that message's
+    // row, so their own words still put the foot under their eyes.
+    const server = stub();
+    await draw(server);
+    readerAt(0);
+    await settle();
+    clear();
+
+    server.queued('you');
+    await settle();
+
+    expect(pinned(), 'their own queued send still comes back to the foot').toEqual([PIN]);
+  });
+
+  it('does not bring a parked reader back for a prompt that is not theirs', async () => {
+    // **The #1614 snap, named by its arm.** The same `prompt_queued` frame
+    // announces a cron fire, a peer message, a delivery and forge's own
+    // continuation - none of them the reader's words - and a re-arm for one
+    // of them carries a reader parked above the foot to the bottom on the
+    // next pass (measured live: a cron-sourced queue frame moved the reader
+    // 6268 -> 9208 mid-stream). Only `source` tells the two apart.
+    const server = stub();
+    await draw(server);
+    readerAt(0);
+    await settle();
+    clear();
+
+    server.queued('cron');
+    await settle();
+
+    expect(pinned(), 'a cron fire is not the reader words and may not carry them').toEqual([]);
   });
 
   it('re-pins when the content changes size under a reader at the foot', async () => {
