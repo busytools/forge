@@ -1,11 +1,12 @@
 /**
  * The address the app comes back to.
  *
- * The last address that ANSWERED is kept in the webview's own store and read
- * on launch, so the app opens on the forge it last used rather than on a form.
- * Nothing else is kept: an address that answered nothing is not one to open on
- * next time, and forgetting it would also throw away the one a person is about
- * to fix and try again.
+ * The last address a connection was KEPT on is written to the webview's own
+ * store and read on launch, so the app opens on the forge it last used rather
+ * than on a form. Nothing else is kept: an address that answered nothing, or
+ * one whose connection the shell discarded in favour of a submit, is not one
+ * to open on next time - and forgetting a failure would also throw away the
+ * one a person is about to fix and try again.
  *
  * **Every call on the store is caught, not just the read of the global.** A
  * browser with storage turned off throws on the call, and the read happens
@@ -90,7 +91,7 @@ export function rememberedAddress(): string | null {
 }
 
 /**
- * Keep the address that just answered, as the one the app opens on.
+ * Keep the address a kept connection took, as the one the app opens on.
  *
  * A store that refuses the write is not something the reader can act on mid
  * session - the connection in front of them is unaffected, and the cost lands

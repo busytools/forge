@@ -11,7 +11,6 @@
 import { canHost, hostTheBrowser, installTakeoverHook } from '../browser/host';
 import { connect, type Connection } from '../socket';
 import { DEFAULT_SERVER_PORT, settingsFrom, type ClientSettings } from '../wire/types';
-import { rememberAddress } from './remembered';
 import { connectRust } from './rust';
 
 /**
@@ -113,13 +112,7 @@ export async function attempt(
   connect: (input: string) => Promise<Attempt> = connectTo,
 ): Promise<Attempt> {
   try {
-    const answer = await connect(input);
-    // **A connection that took is what the app opens on next time**,
-    // whichever path took it: a `?server=` launch is how a scratch stack is
-    // met, and a memory that only moved on door submits stayed on a dead
-    // stack while the live one went unrecorded (measured 2026-10-14).
-    if (answer.ok) rememberAddress(answer.address);
-    return answer;
+    return await connect(input);
   } catch (error) {
     const why = error instanceof Error ? error.message : String(error);
     return {
@@ -149,10 +142,6 @@ interface Submit {
  * **It cannot reject**, because `attempt` cannot: every path out of a
  * connection, thrown or answered, is one of these two shapes. That is what
  * lets the caller write `busy` from the answer rather than from a `finally`.
- *
- * What the app opens on next time is what `attempt` remembers: this is a
- * door's transition, and remembering belongs to the connection rather than
- * to the screen that asked for one.
  */
 export async function submitAttempt(
   address: string,
