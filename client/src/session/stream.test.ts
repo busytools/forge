@@ -133,7 +133,8 @@ describe('the stream gate', () => {
     gate.inbound(update(1));
     for (let n = 3; n < 3 + 256; n += 1) gate.inbound(update(n));
     expect(emitted, 'the cap released the frames').toHaveLength(1);
-    expect(emitted[0]![0]).toMatchObject({ seq: 3 });
+    const released = emitted[0] ?? [];
+    expect(released[0]).toMatchObject({ seq: 3 });
   });
 
   it('releases the hold when the socket cannot ask', () => {
