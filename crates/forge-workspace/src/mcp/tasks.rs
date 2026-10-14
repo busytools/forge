@@ -253,7 +253,10 @@ impl Tool for Update {
          label of a worker. Any session in the project may move any of its tasks, so a lead can \
          complete a worker's task and a worker can put a row it holds into waiting - and a row \
          waiting on the user's own look cannot be completed here: the board's approve completes \
-         it, and any other move off `waiting` drops the wait the row held. A task is \
+         it, and any other move off `waiting` drops the wait the row held. `verify: \"user\"` \
+         may be set here, but not taken away: a user-bound row keeps that gate until the user's \
+         approve, so clearing it - or moving the row out of its epic - is refused rather than \
+         taken as a way around the look. A task is \
          named by its full id or any unique prefix of one; an exact id wins over any longer id \
          that starts with it, and a prefix matching more than one row is refused with the \
          matching rows named. An unknown id is an error, not a no-op. Returns the task as the \
@@ -292,7 +295,9 @@ impl Tool for Update {
                 "verify": {
                     "type": "string",
                     "enum": ["user", "none"],
-                    "description": "Whether completion waits on the user's look.",
+                    "description": "Whether completion waits on the user's look. Can be set \
+                                    here, but a `user` gate is the user's to clear: an update \
+                                    cannot clear it, or move the row out from under it.",
                 },
                 "links_add": {
                     "type": "array",
