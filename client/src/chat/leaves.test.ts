@@ -34,6 +34,27 @@ describe('what a call body draws', () => {
     expect(JSON.stringify(leaf.body), 'the row says so in words').toContain('no result');
   });
 
+  /**
+   * A call whose result carried nothing says so in words too.
+   *
+   * The sibling of #1836 for the OTHER way a row ends up with nothing to open
+   * onto: the call came back cleanly and its result drew no line - an empty
+   * answer, a command that wrote nothing, a call the fold answered with an
+   * empty body. The chevron opened an empty box for every one of them, and
+   * #2201's second defect names exactly this shape, which is no more
+   * despawn's than it is any other tool's.
+   */
+  it('gives a call whose result said nothing the words for it', () => {
+    const leaf = leafOf(
+      't1',
+      'Bash',
+      { command: 'just check' },
+      { type: 'tool_result', content: [{ type: 'text', text: '' }] },
+    );
+    expect(leaf.status, 'the call came back').toBe('completed');
+    expect(JSON.stringify(leaf.body), 'and the row still says so in words').toContain('no result');
+  });
+
   it("draws the CLI's own hunk where the result carries one, marks included", () => {
     // What the wire says about the change: the range it covers, and the lines
     // with a space for context, `-` for removed, `+` for added. Without it the

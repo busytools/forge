@@ -492,6 +492,43 @@ function blocksIn(message: unknown): unknown[] {
   return Array.isArray(content) ? content : [];
 }
 
+/** Whether a frame makes a call with `id`, which is what a result answers. */
+function makesCall(message: unknown, id: string): boolean {
+  for (const block of blocksIn(message)) {
+    const held = block as { type?: unknown; id?: unknown };
+    if ((held.type === 'tool_use' || held.type === 'server_tool_use') && held.id === id) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * The turn holding the call a frame answers, or `null` for a frame that
+ * answers nothing.
+ *
+ * **A call and the result that answers it are one exchange**, so the result
+ * belongs in the turn the call was made in and not in the newest one. A
+ * drawn frame arriving while a call is out - a delivery opening the next
+ * turn - otherwise took the result with it, and the call's own turn never saw
+ * an answer: its row said `failed: no result` for a call that had come back
+ * cleanly, and the card its result reads was never built (#2201).
+ */
+function answersAt(turns: readonly Turn[], message: unknown): number | null {
+  for (const block of blocksIn(message)) {
+    const asked = block as { type?: unknown; tool_use_id?: unknown };
+    const id = asked.tool_use_id;
+    if (asked.type !== 'tool_result' || typeof id !== 'string') continue;
+    // The newest turn first: an id answers the most recent call of that name.
+    for (let at = turns.length - 1; at >= 0; at -= 1) {
+      const turn = turns[at];
+      if (turn === undefined) continue;
+      if (turn.messages.some((one) => makesCall(one, id))) return at;
+    }
+  }
+  return null;
+}
+
 /**
  * The skill a frame is the body of, or null for every other frame.
  *
@@ -2292,11 +2329,29 @@ export class Chat {
           this.unturned.push(message);
           return held;
         }
-        const grown: Turn = { ...last, messages: [...last.messages, message], held: false };
+        // **A result goes back to the turn holding the call it answers.**
+        // The newest turn is where a drawn-nothing frame usually belongs (a
+        // delivery opened a turn while a call was out), and joining it there
+        // is what left the call unanswered (#2201) - so a frame that names a
+        // call goes to that call's own turn wherever it sits.
+        const home = draws ? null : answersAt(held.turns, message);
+        const at = home ?? held.turns.length - 1;
+        const target = held.turns[at];
+        if (target === undefined) {
+          this.unturned.push(message);
+          return held;
+        }
+        // The newest turn draws again with what joined it, so a hold taken by
+        // the pile is released; an older turn is not the pile's, and its own
+        // flag stands.
+        const grown: Turn =
+          at === held.turns.length - 1
+            ? { ...target, messages: [...target.messages, message], held: false }
+            : { ...target, messages: [...target.messages, message] };
         return this.answered({
           ...held,
           following: follow,
-          turns: [...held.turns.slice(0, -1), grown],
+          turns: [...held.turns.slice(0, at), grown, ...held.turns.slice(at + 1)],
         });
       }
       const taken = new Set(held.turns.map((turn) => turn.key));
