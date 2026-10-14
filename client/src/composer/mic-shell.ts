@@ -21,6 +21,17 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
 import type { MicSource } from './take';
 
+/**
+ * This page load's own id, stated on every hold and press.
+ *
+ * It is what lets the shell end a take a reload stranded: a reload discards
+ * the page that held the take's stop, so a recording another page finds is
+ * one no live page owns, and the shell ends it rather than keeping it. One id
+ * per call would make each call a new page, and a page's own pick change
+ * mid-take would end its own recording.
+ */
+const page = crypto.randomUUID();
+
 /** One live capture in the shell, as this side sees it. */
 export class ShellMic implements MicSource {
   onFrame: ((bytes: Uint8Array) => void) | null = null;
@@ -50,7 +61,7 @@ export class ShellMic implements MicSource {
     });
     let resolved: { id: string; label: string };
     try {
-      resolved = await invoke<{ id: string; label: string }>('client_mic_start', { device });
+      resolved = await invoke<{ id: string; label: string }>('client_mic_start', { device, page });
     } catch (why) {
       hearing();
       throw why;
@@ -123,7 +134,7 @@ export function openShellMic(device: string | null): Promise<MicSource> {
 export async function holdShellMic(device: string | null): Promise<void> {
   if (!isTauri()) return;
   try {
-    await invoke('client_mic_hold', { device });
+    await invoke('client_mic_hold', { device, page });
   } catch {
     // The shell's own log carries why; the press falls back to a cold open.
   }
