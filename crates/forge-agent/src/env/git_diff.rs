@@ -367,16 +367,18 @@ pub async fn scan<S: std::hash::BuildHasher>(
     scan_within(cwd, env, prev, COMMAND_TIMEOUT).await
 }
 
-/// [`scan`] with the PR lookup's command budget spelled: the shell gives
-/// a `gh` child the 10 s `COMMAND_TIMEOUT`, and a test gives it one of its own.
+/// [`scan`] with the scan's command budget spelled: the shell gives every
+/// child a scan spawns the 10 s `COMMAND_TIMEOUT`, and a test gives them one
+/// of its own.
 ///
-/// **The budget is a bound on the machine, not on the lookup**: it is
-/// spent starting the child (a shell script this machine may stall) and
-/// waiting for `gh`, so a test that inherits the shell's 10 s goes red
-/// over a stall that is no part of what it pins - measured 2026-10-14,
-/// `the_pr_lookup_spawn_carries_the_projects_env` failed twice at 10.5 s
-/// and 10.9 s while a gate ran beside the suite, the budget plus the
-/// child's start, and a `gh` held back 11 s reproduces it on demand.
+/// **The budget is a bound on the machine, not on the scan's work**: it is
+/// spent starting each child, so a machine can hold a child's first output
+/// past the shell's 10 s and fail or blank a layer that is merely slow -
+/// measured 2026-10-14: the PR lookup's `gh` child was killed at 10.5 s and
+/// 10.9 s while a gate ran beside the suite, and a `gh` held back 11 s
+/// reproduces it on demand, the same mechanism that reds a scan whose `git`
+/// child stalls. A test that inherits the shell's budget goes red over a
+/// stall that is no part of what it pins.
 async fn scan_within<S: std::hash::BuildHasher>(
     cwd: &Path,
     env: &HashMap<String, String, S>,
@@ -1545,6 +1547,15 @@ mod tests {
         );
 
         let scanned = scan_within(dir.path(), &HashMap::new(), None, TEST_GIT_BUDGET).await;
+        // The seam is not only the scan's first spawn: a helper called
+        // deeper in refuses a zero budget the same way, so the claim has a
+        // witness beyond `rev_parse_gate`'s collapse.
+        let later = numstat(dir.path(), &["diff", "--numstat", "HEAD"], Duration::ZERO).await;
+        assert!(
+            matches!(later, Err(NumstatError::Subprocess)),
+            "a later helper refuses a zero budget too: {later:?}",
+        );
+
         assert_eq!(scanned.repo_gate, RepoGate::InRepo, "and the tests' budget scans the repo");
         assert!(
             matches!(scanned.branch, GitBranch::Named(ref name) if name == "feature"),
