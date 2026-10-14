@@ -120,17 +120,19 @@ describe('the system bars', () => {
    * is invisible on the desktop and a dead control on the phone.
    */
   it('pads every page root and the pane by the bands the shell measures', () => {
-    for (const [what, selector] of [
-      ['the session page', '.app'],
-      ['the projects rail', '.app .rail.left'],
-      ['the board drawer', '.dr'],
+    for (const [what, selector, bands] of [
+      ['the session page', '.app', ['top', 'bottom']],
+      ['the projects rail', '.app .rail.left', ['top', 'bottom']],
+      ['the board drawer', '.dr', ['top', 'bottom']],
+      ['the palette panel', '.pal .panel', ['top']],
     ] as const) {
       // Every rule for the selector, as one: a box's padding may be spelled
       // in a rule of its own, and the later ones here carry other properties.
       const rules = rulesFor(selector);
       expect(rules.length, `${what} spells no rule at all`).toBeGreaterThan(0);
-      expect(rules.join(' '), `${what} drops the top band`).toContain('var(--safe-top)');
-      expect(rules.join(' '), `${what} drops the bottom band`).toContain('var(--safe-bottom)');
+      for (const band of bands) {
+        expect(rules.join(' '), `${what} drops the ${band} band`).toContain(`var(--safe-${band})`);
+      }
     }
     // Every tier, not one: the phone's own `.wrap` rule overrides the padding
     // below 760px, and a tier left without the terms is the page under the bar.
