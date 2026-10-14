@@ -49,14 +49,15 @@ export interface MicSource {
   /** Ask the source to hand over what it is still holding. */
   flushWorklet(): void;
   /**
-   * Close the capture, letting the audio already in flight land first.
+   * End the take, letting the audio already in flight land first.
    *
    * A source that can do this itself says so: the desktop's native capture
    * lives in the shell's own half, which knows its pipeline and hands over
-   * its last frames before it releases the device. A browser's microphone
-   * has no such call - the take drains it with its own windows instead -
-   * so this is absent there and resolves once the last frame has been
-   * handed to `onFrame` where it is present.
+   * its last frames before it ends the take on the held stream - the device
+   * itself stays open, and only the client's exit releases it. A browser's
+   * microphone has no such call - the take drains it with its own windows
+   * instead - so this is absent there and resolves once the last frame has
+   * been handed to `onFrame` where it is present.
    */
   drain?(): Promise<void>;
   stop(): void;
