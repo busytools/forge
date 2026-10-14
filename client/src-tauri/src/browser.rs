@@ -715,7 +715,14 @@ impl BrowserHost {
                 // still asked, on the directory itself.
                 let windowed = chromium::windowed(&dir).await;
                 let opened = chromium::ever_opened(&dir);
-                rows.push(ProfileRow { name, owner, running: false, opened, windowed, closed: true });
+                rows.push(ProfileRow {
+                    name,
+                    owner,
+                    running: false,
+                    opened,
+                    windowed,
+                    closed: true,
+                });
             }
         }
         if let Some(seat) = seat {

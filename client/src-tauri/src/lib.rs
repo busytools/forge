@@ -220,7 +220,9 @@ mod commands {
     /// the take on that stop, so a frame that follows it would have no take
     /// to land in.
     #[tauri::command]
-    pub async fn client_mic_drain(mic: tauri::State<'_, Arc<crate::mic::Mic>>) -> Result<(), String> {
+    pub async fn client_mic_drain(
+        mic: tauri::State<'_, Arc<crate::mic::Mic>>,
+    ) -> Result<(), String> {
         let mic = Arc::clone(mic.inner());
         mic.drain().await;
         Ok(())

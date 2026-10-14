@@ -186,11 +186,7 @@ fn target_of(args: &Value) -> Result<String, String> {
     let Some(target) = args.get("target").and_then(Value::as_str) else {
         return Err("this call needs a `target`: a snapshot ref or a selector".to_owned());
     };
-    let selector = if is_ref(target) {
-        format!("aria-ref={target}")
-    } else {
-        target.to_owned()
-    };
+    let selector = if is_ref(target) { format!("aria-ref={target}") } else { target.to_owned() };
     Ok(format!("page.locator({})", js_string(&selector)))
 }
 
@@ -359,10 +355,7 @@ mod tests {
         else {
             panic!("a forced click is a snippet");
         };
-        assert!(
-            code.contains("aria-ref=f1e7"),
-            "a relettered ref takes the ref engine: {code}",
-        );
+        assert!(code.contains("aria-ref=f1e7"), "a relettered ref takes the ref engine: {code}",);
 
         let Routed::Snippet(capture) =
             route("browser_click_and_capture", &json!({ "target": "f2e3" })).expect("routes")
