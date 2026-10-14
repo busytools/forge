@@ -162,13 +162,32 @@
   .rv-txarea { display: block; width: 100%; background: var(--s1); color: var(--text);
     border: 1px solid var(--ctl); border-radius: 7px; font-family: var(--ui);
     font-size: var(--fs-base); padding: 6px 8px; min-height: 46px; }
-  /* The comment box's dictation control: the composer's own mic, at the far
-     end of the acts, and the line a take it could not start leaves. */
+  /* The boxes' dictation: the composer's own mic at the far end of the acts,
+     the take's bar in the field's place while it runs, and the line a take it
+     could not start leaves. */
   .ic { width: 15px; height: 15px; flex: 0 0 15px; display: block; }
   .mic { flex: none; width: 24px; height: 24px; margin-left: auto;
     display: grid; place-items: center; color: var(--dim); }
   .dictateline { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
     padding-top: 6px; }
+  .rv-line { display: flex; align-items: center; gap: 8px; }
+  /* The take's card, in the field's own line: no chrome, because the row is
+     where the words land rather than something drawn above it. */
+  .tc { align-self: center; margin: 0; border: 0; background: none; padding: 0;
+    flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 10px;
+    font-family: var(--mono); font-size: var(--fs-label); white-space: nowrap; }
+  .tc .dot { width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--accent); }
+  .tc .clock { color: var(--text); }
+  .tc .ready { color: var(--muted); }
+  .tc .fr, .tc .kb, .tc .pace { color: var(--dim); }
+  .tc .pace { color: var(--ok); }
+  .tc .count { color: var(--blue); }
+  .tc .x { color: var(--dim); }
+  .tc .wave { flex: 1 1 auto; min-width: 0; height: 26px; align-self: center; }
+  .tc .wave .area { fill: var(--accent); }
+  .tc .wave .edge { fill: none; stroke: var(--hot); stroke-width: 1.5px; }
+  /* The reply box: the same words box the comment is. */
+  .rv-reply { padding-top: 6px; }
 
   /* ---------- the conversation half ---------- */
   .round { border: 1px solid var(--line); border-radius: var(--r); background: var(--s1);
@@ -363,6 +382,18 @@
                       <span class="rv-a">respond</span>
                       <span class="rv-a">resolve</span>
                     </div>
+                    <!-- The reply box, opened by its own respond: the same
+                         words box the comment is, mic and all. -->
+                    <div class="rv-reply">
+                      <div class="rv-line">
+                        <span class="rv-txarea">Respond to this thread...</span>
+                      </div>
+                      <div class="rv-acts">
+                        <span class="rv-a">send</span>
+                        <span class="rv-a">cancel</span>
+                        <span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span>
+                      </div>
+                    </div>
                   </article>
                 </div>
               </td>
@@ -383,6 +414,30 @@
                       <span class="where">client/src/session/wire.ts &#183; line 199</span>
                     </div>
                     <span class="rv-txarea">Comment on this line...</span>
+                    <div class="rv-acts">
+                      <span class="rv-a on">comment</span>
+                      <span class="rv-a">cancel</span>
+                      <span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span>
+                    </div>
+                  </article>
+                  <!-- The same box mid-take: the bar takes the field's own
+                       line, so nothing is added and nothing moves. -->
+                  <article class="rv-thread">
+                    <div class="rv-tops">
+                      <span class="where">client/src/session/wire.ts &#183; line 199</span>
+                    </div>
+                    <div class="rv-line">
+                      <span class="tc"><span class="dot"></span><span class="clock">0:07</span>
+                        <svg class="wave" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+                          <path class="area" d="M 0 82 C 8 82, 12 58, 20 58 C 28 58, 32 12, 42 12 C 52 12, 54 66, 63 66 C 72 66, 76 30, 85 30 C 94 30, 96 52, 100 52 L 100 100 L 0 100 Z"></path>
+                          <path class="edge" d="M 0 82 C 8 82, 12 58, 20 58 C 28 58, 32 12, 42 12 C 52 12, 54 66, 63 66 C 72 66, 76 30, 85 30 C 94 30, 96 52, 100 52"></path>
+                        </svg>
+                        <span class="ready">2 ready</span>
+                        <span class="fr">412 fr</span>
+                        <span class="kb">251.5 KB</span>
+                        <span class="pace">32 KB/s</span>
+                        <span class="x">&#10005;</span></span>
+                    </div>
                     <div class="rv-acts">
                       <span class="rv-a on">comment</span>
                       <span class="rv-a">cancel</span>
@@ -484,6 +539,7 @@
     <div class="rv-finishrow">
       <span class="rv-summary">summary (optional)</span>
       <span class="rv-finish">finish review (1)</span>
+      <span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span>
     </div>
   </section>
 </main>

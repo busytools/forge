@@ -17,11 +17,9 @@
   import { mount, unmount, type ComponentProps } from 'svelte';
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import { VList, type VListHandle } from 'virtua/svelte';
-  import { boxKey } from '../composer/box.svelte';
-  import type { Dictation, TakeLine } from '../composer/dictate.svelte';
-  import { noticeLine, joined } from '../composer/view';
-  import type { ComposerState } from '../composer/wire';
+  import type { Dictation } from '../composer/dictate.svelte';
   import type { Connection } from '../socket';
+  import type { CommentBox, ReplyBox, Voice } from './boxes';
   import type {
     DiffFileRecord,
     DiffLayerRecord,
@@ -30,8 +28,6 @@
   } from '../session/wire';
   import { diffLayerFrom } from '../session/wire';
   import type { SessionSlot } from '../wire/types';
-  import CommentCard from './CommentCard.svelte';
-  import { Landing, type ReviewSpot } from './dictate';
   import {
     anchorRow,
     doorSpot,
@@ -44,9 +40,10 @@
     treeRows,
   } from './diff';
   import { canvasLine, statusName, threadsInScope } from './view';
-  import { captureContext, type ComposedComment } from './write';
+  import { captureContext, type ComposedComment, type ReviewSpot } from './write';
   import { Mounts } from './mounts';
   import ThreadTurn from './ThreadTurn.svelte';
+  import WordsBox from './WordsBox.svelte';
 
   type DiffFile = NonNullable<ComponentProps<typeof DiffView>['diffFile']>;
 
@@ -59,10 +56,13 @@
     threads,
     reviews,
     busy,
-    composer,
-    dictation,
     dictate,
-    line = null,
+    box = $bindable(),
+    reply = $bindable(),
+    voice,
+    onpress,
+    onhold,
+    onelement,
     oncomment,
     onreply,
     onresolve,
@@ -78,15 +78,22 @@
     threads: ReviewThreadRecord[];
     reviews: ReviewSetRecord[];
     busy: boolean;
-    /** The seat's composer as the record narrows it: the take a landing is read
-     *  off, the notice, and the key and mode the settings panel states. */
-    composer: ComposerState;
-    /** Whether this install can dictate at all, which gates every mic. */
-    dictation: boolean;
-    /** The take this page owns, which the comment box's mic drives. */
+    /** The take this page owns, which every box's mic drives. */
     dictate: Dictation;
-    /** A line about a take, which the box the mic was pressed in carries. */
-    line?: TakeLine | null;
+    /** The comment box this canvas draws: the spot, the words, the write in
+     *  flight, the take's line, and where its take is. The page holds it,
+     *  because the words and the take outlive the row the canvas builds. */
+    box: CommentBox;
+    /** The reply box under a thread, which either half of the page draws. */
+    reply: ReplyBox;
+    /** What dictation means to this page, shared by every box it draws. */
+    voice: Voice;
+    /** The reader pressed a box's mic, or began a take from the key in it. */
+    onpress: (at: 'comment' | 'reply') => void;
+    /** A box's mic was held: the settings open off that box. */
+    onhold: (at: 'comment' | 'reply') => void;
+    /** One box's field element, so a landing or a panel close can focus it. */
+    onelement: (at: 'comment' | 'reply', el: HTMLElement | null) => void;
     /** Both answer whether the write landed: a refusal keeps the draft. */
     oncomment: (comment: ComposedComment) => Promise<boolean>;
     onreply: (thread: ReviewThreadRecord, text: string) => Promise<boolean>;
@@ -104,53 +111,6 @@
     if (set.has(key)) set.delete(key);
     else set.add(key);
   }
-
-  /**
-   * The comment box this page has open: the spot it was opened on, the words,
-   * and the last take's line.
-   *
-   * **One object, because the card mounted into the row is handed it rather
-   * than the values**: the row is rebuilt whenever the canvas moves the box,
-   * and a component's props are read at the mount - so what the reader typed
-   * has to live where the page can still reach it, exactly as the composer's
-   * draft lives on its own seat's box. The card reads the fields through the
-   * proxy, so a write here is a repaint there.
-   */
-  const box = $state({
-    spot: null as ReviewSpot | null,
-    draft: '',
-    busy: false,
-    line: null as TakeLine | null,
-  });
-  // The write in flight is the page's, but the card reads it through the box:
-  // its props are read at the mount, and a button that never learned the write
-  // had started would file the same comment twice.
-  $effect(() => {
-    box.busy = busy;
-  });
-  /**
-   * This page's memory of the seat's takes: which one it watched, and what it
-   * has placed. A landing is placed once, and the memory is the seat's - the
-   * record in hand can be another seat's between two reads.
-   */
-  const landing = new Landing();
-  $effect(() => {
-    const words = landing.place(boxKey(slot), composer.take !== null, composer.notice);
-    if (words === null) return;
-    // No box on screen has nowhere to put them: the reader closed it, or the
-    // notice is one this page never watched (which the memory refuses).
-    if (box.spot === null) return;
-    box.draft = joined(box.draft, words);
-  });
-  // The line a take left - this page's own, or the record's word about one -
-  // under the box it was pressed in. Declared after the landing, whose memory
-  // is what says whether this page watched the take at all.
-  $effect(() => {
-    box.line = line ?? noticeLine(composer.notice, landing.watched);
-  });
-  /** The thread whose reply box is open, and its draft. */
-  let replying = $state<string | null>(null);
-  let replyText = $state('');
 
   let now = $state(Date.now());
   $effect(() => {
@@ -404,7 +364,7 @@
     void closedFiles;
     void scoped;
     void box.spot;
-    void replying;
+    void reply.thread;
     void busy;
     const observers: MutationObserver[] = [];
     const draw = (el: HTMLDivElement, path: string) => {
@@ -426,7 +386,7 @@
           const placed = canvasLine(thread);
           if (placed === null) continue;
           const key = `t:${thread.id}:${statusName(thread.status)}:${thread.comments.length}:${
-            replying === thread.id ? 'open' : ''
+            reply.thread === thread.id ? 'open' : ''
           }`;
           want.push({
             key,
@@ -580,8 +540,8 @@
     respond.textContent = 'respond';
     respond.disabled = busy;
     respond.addEventListener('click', () => {
-      replying = replying === thread.id ? null : thread.id;
-      replyText = '';
+      reply.thread = reply.thread === thread.id ? null : thread.id;
+      reply.draft = '';
     });
     acts.append(respond);
     if (statusName(thread.status) === 'resolved') {
@@ -602,53 +562,49 @@
       acts.append(resolve);
     }
     card.append(acts);
-    if (replying === thread.id) {
-      const replyBox = document.createElement('div');
-      replyBox.className = 'rv-reply';
-      const area = document.createElement('textarea');
-      area.className = 'rv-txarea';
-      area.rows = 2;
-      area.value = replyText;
-      area.placeholder = 'Respond to this thread...';
-      area.setAttribute('aria-label', 'your response');
-      area.dataset['editor'] = 'nowhere';
-      replyBox.append(area);
-      const row = document.createElement('div');
-      row.className = 'rv-acts';
-      const send = document.createElement('button');
-      send.type = 'button';
-      send.className = 'rv-a on';
-      send.textContent = 'send';
-      send.disabled = busy || replyText.trim() === '';
-      area.addEventListener('input', () => {
-        replyText = area.value;
-        // Set at build AND on every keystroke: a row built once carries the
-        // state it was built in, so a one-time `disabled` would leave the
-        // button dead however much was typed into it.
-        send.disabled = busy || area.value.trim() === '';
-      });
-      send.addEventListener('click', () => {
-        // The box closes only once the write landed: a refusal keeps the
-        // reader's words where they wrote them.
-        void onreply(thread, replyText.trim()).then((filed) => {
-          if (!filed) return;
-          replying = null;
-          replyText = '';
-        });
-      });
-      const cancel = document.createElement('button');
-      cancel.type = 'button';
-      cancel.className = 'rv-a';
-      cancel.textContent = 'cancel';
-      cancel.addEventListener('click', () => {
-        replying = null;
-        replyText = '';
-      });
-      row.append(send, cancel);
-      replyBox.append(row);
-      card.append(replyBox);
+    if (reply.thread === thread.id) {
+      // **The same words box the comment is, mounted the same way.** A reply
+      // takes the mic, the take's bar and the settings panel exactly as the
+      // comment box does, and one component draws both halves' boxes - the
+      // conversation half mounts this one too.
+      card.append(replyCard(thread));
     }
     return card;
+  }
+
+  /** The reply box under one thread, over the page's reply state. */
+  function replyCard(thread: ReviewThreadRecord): HTMLElement {
+    const host = document.createElement('div');
+    const card = mount(WordsBox, {
+      target: host,
+      props: {
+        class: 'rv-reply',
+        rows: 2,
+        placeholder: 'Respond to this thread...',
+        label: 'your response',
+        sendLabel: 'send',
+        box: reply,
+        voice,
+        onsend: (text: string) => {
+          // The box closes only once the write landed: a refusal keeps the
+          // reader's words where they wrote them.
+          void onreply(thread, text).then((filed) => {
+            if (!filed) return;
+            reply.thread = null;
+            reply.draft = '';
+          });
+        },
+        oncancel: () => {
+          reply.thread = null;
+          reply.draft = '';
+        },
+        onpress: () => onpress('reply'),
+        onhold: () => onhold('reply'),
+        field: (el: HTMLElement | null) => onelement('reply', el),
+      },
+    });
+    mounts.hold(host, () => void unmount(card));
+    return host;
   }
 
   function threadRow(
@@ -710,29 +666,32 @@
    * The comment box: a component mounted into the row, over the box state the
    * page holds.
    *
-   * Its own card is drawn by `CommentCard` - the words, the two acts and the
-   * mic - because a row built from `createElement` cannot wear the shared
-   * dictation control, and re-deriving one here is what the review's box and
-   * the composer's box are meant to share. The root is held by the mount it
-   * was put into, so the row leaving takes the card and its window listeners
-   * with it.
+   * Its card is drawn by `WordsBox` - the words, the acts and the mic - because
+   * a row built from `createElement` cannot wear the shared dictation control,
+   * and re-deriving one here is what the review's box and the composer's box
+   * are meant to share. **Every live value goes in as a getter**: a mount
+   * reads its props once, and a take starting under the reader has to redraw
+   * the bar without the row being rebuilt.
    */
   function composerRow(at: HTMLTableRowElement, spot: ReviewSpot): HTMLTableRowElement {
     const wrap = document.createElement('div');
     wrap.className = 'rv-inline';
-    const card = mount(CommentCard, {
+    const card = mount(WordsBox, {
       target: wrap,
       props: {
-        spot,
+        class: 'rv-thread compact comment',
+        headline: `${spot.path} · line ${spot.line}`,
+        rows: 3,
+        placeholder: 'Comment on this line...',
+        label: 'your comment',
+        sendLabel: 'comment',
         box,
-        slot,
-        dictate,
-        dictation,
-        connection,
-        bind: composer.bind,
-        mode: composer.mode,
-        oncomment: fileComment,
+        voice,
+        onsend: fileComment,
         oncancel: closeBox,
+        onpress: () => onpress('comment'),
+        onhold: () => onhold('comment'),
+        field: (el: HTMLElement | null) => onelement('comment', el),
       },
     });
     mounts.hold(wrap, () => void unmount(card));

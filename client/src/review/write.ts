@@ -31,6 +31,13 @@ import type { SessionSlot } from '../wire/types';
  *  `CONTEXT_RADIUS`. */
 const CONTEXT_RADIUS = 3;
 
+/** Where a comment box is open: the line of the drawn diff its words belong to. */
+export interface ReviewSpot {
+  path: string;
+  side: 'old' | 'new';
+  line: number;
+}
+
 const OFFSET = 0xcbf29ce484222325n;
 const PRIME = 0x100000001b3n;
 const MASK = (1n << 64n) - 1n;
