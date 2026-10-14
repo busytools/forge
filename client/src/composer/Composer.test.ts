@@ -5122,22 +5122,27 @@ describe('the dock', () => {
   });
 
   it('starts a take from the mic and ends it there', async () => {
-    const harness = open({ record: record({ pending_asks: [questionAsk()] }), dictation: true });
+    vi.useFakeTimers();
+    try {
+      const harness = open({ record: record({ pending_asks: [questionAsk()] }), dictation: true });
 
-    await micPress();
-    expect(
-      harness.sent.map((entry) => entry.command),
-      'the press opens the microphone',
-    ).toMatchObject([
-      { dictate_stream: { key: { org: 'Busytools', project: 'forge', label: 'lead' } } },
-    ]);
+      await micPress();
+      expect(
+        harness.sent.map((entry) => entry.command),
+        'the press opens the microphone',
+      ).toMatchObject([
+        { dictate_stream: { key: { org: 'Busytools', project: 'forge', label: 'lead' } } },
+      ]);
 
-    await micPress();
-    // The release drains the pipeline before its stop goes out.
-    await new Promise((resolve) => setTimeout(resolve, DRAIN_MS + FLUSH_SETTLE_MS + 20));
-    expect(harness.sent.at(-1)?.command, 'and the second press submits it').toMatchObject({
-      dictate_stop: { key: { org: 'Busytools', project: 'forge', label: 'lead' }, submit: true },
-    });
+      await micPress();
+      // The release drains the pipeline before its stop goes out.
+      settle();
+      expect(harness.sent.at(-1)?.command, 'and the second press submits it').toMatchObject({
+        dictate_stop: { key: { org: 'Busytools', project: 'forge', label: 'lead' }, submit: true },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("lands a take's words in the words row, whichever kind holds the slot", async () => {

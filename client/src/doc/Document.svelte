@@ -160,7 +160,7 @@
     const written = commentText.trim();
     if (written === '' || held.path === null || held.contentHash === null) return;
     const draft: DocDraft = {
-      id: crypto.randomUUID(),
+      id: mintPromptId(),
       line: row.line,
       text: written,
       context: row.context,

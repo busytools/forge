@@ -74,10 +74,7 @@ impl Engine {
         )
         .await
         .map_err(|_| {
-            format!(
-                "the engine did not answer within {} s",
-                GENERATION_READ_TIMEOUT.as_secs()
-            )
+            format!("the engine did not answer within {} s", GENERATION_READ_TIMEOUT.as_secs())
         })?
         .map_err(|err| err.to_string())?;
         Ok(answer.generation)
@@ -114,11 +111,8 @@ impl Engine {
 
     /// Whether the takeover is up, for the strip's show/hide button.
     pub async fn windowed(&self) -> Result<bool, String> {
-        let answer: Windowed = self
-            .0
-            .run_mobile_plugin_async("windowed", ())
-            .await
-            .map_err(|err| err.to_string())?;
+        let answer: Windowed =
+            self.0.run_mobile_plugin_async("windowed", ()).await.map_err(|err| err.to_string())?;
         Ok(answer.windowed)
     }
 }

@@ -688,7 +688,8 @@ inspected.
       changes is the presentation, not the content.
 
 22. **The client is gated like the Rust side, and it is a shell.** `just
-    check` runs the client's steps too - Prettier, ESLint on
+    check` runs the client's steps too - the shell crate's rustfmt check
+    (`client-tauri-fmt`), Prettier, ESLint on
     typescript-eslint's type-checked configs, `svelte-check`, `tsc
     --noEmit`, then vitest, then the shell's android warnings check
     (`client-android-warnings`:
@@ -697,8 +698,10 @@ inspected.
     Android) - so one command decides both stacks and its
     verdict line names the first failing step. **The shell under
     `client/src-tauri/` is its own workspace root**, so the workspace's
-    cargo steps and CI's cargo jobs do not reach it; `just check`'s
-    `client-android-warnings` reaches it, and the Unicode punctuation gate
+    cargo steps never reach it and no CI job compiles it beyond the
+    rustfmt check the `cargo fmt --check` job runs against its manifest;
+    `just check`'s `client-tauri-fmt` and `client-android-warnings` reach
+    it, and the Unicode punctuation gate
     and the client's Prettier step reach it too.
     `just client-tauri-check` builds it in the shipping configuration
     and `just client-tauri-bundle` adds the bundles. **Denied as errors**, the

@@ -77,7 +77,18 @@ describe('the shell capture', () => {
     await ShellMic.open('coreaudio:one');
     expect(shell.hearing, 'the listener is up first').toHaveLength(1);
     expect(shell.invoked.map((call) => call.command)).toEqual(['client_mic_start']);
-    expect(shell.invoked[0]?.args).toEqual({ device: 'coreaudio:one' });
+    expect(shell.invoked[0]?.args).toMatchObject({ device: 'coreaudio:one' });
+  });
+
+  it('states the same page id on the hold and the press', async () => {
+    await holdShellMic('coreaudio:one');
+    await ShellMic.open('coreaudio:one');
+    const pages = shell.invoked.map((call) => (call.args as { page?: unknown }).page);
+    expect(pages[0], 'a hold states the page load it comes from').toEqual(expect.any(String));
+    expect(
+      pages[1],
+      'and the press states the same one: an id minted per call would read as a new page, and a pick change mid-take would end its own recording',
+    ).toEqual(pages[0]);
   });
 
   it('reports the input the shell opened, the one place a plain take names the default', async () => {
@@ -143,7 +154,7 @@ describe('the hold', () => {
     expect(
       shell.invoked,
       'the hold is the shell opening the device and keeping it, before any take',
-    ).toEqual([{ command: 'client_mic_hold', args: { device: 'coreaudio:one' } }]);
+    ).toMatchObject([{ command: 'client_mic_hold', args: { device: 'coreaudio:one' } }]);
   });
 
   it('holds the system default when the pick is cleared', async () => {
@@ -151,7 +162,7 @@ describe('the hold', () => {
     expect(
       shell.invoked[0]?.args,
       'a cleared pick is the default, which is what a press asks',
-    ).toEqual({ device: null });
+    ).toMatchObject({ device: null });
   });
 
   it('holds nothing in a browser, where the shell is not the one capturing', async () => {

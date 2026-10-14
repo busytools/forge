@@ -28,9 +28,11 @@ unicode-punct-check:
 script-tests:
     python3 scripts/test_update_manifest.py
 
-# Rewrite files to match rustfmt.
+# Rewrite files to match rustfmt. The shell is a workspace root of its own,
+# so it takes its own invocation.
 fmt:
     cargo fmt
+    cargo fmt --manifest-path client/src-tauri/Cargo.toml
 
 # Mirrors CI's two clippy invocations. `RUSTFLAGS=-D warnings` matches
 # CI's workflow-level env (#257); the `-- -D warnings` after the
@@ -235,6 +237,14 @@ doc:
 check-release:
     RUSTFLAGS="-D warnings" cargo check --release --workspace --all-targets --all-features
 
+# The shell's own rustfmt check. client/src-tauri is a workspace root of its
+# own, so neither `fmt-check` above nor CI's root `cargo fmt --check` reaches
+# its crate, and its formatting drifts silently until someone runs one there.
+#
+# A red is fixed with `just fmt`.
+client-tauri-fmt:
+    cargo fmt --manifest-path client/src-tauri/Cargo.toml --check
+
 # The client's four steps, cheapest first, so a red never means two things at
 # once. They are inside the gate rather than beside it: the client's build,
 # typecheck and tests used to be a CI job alone, and a gate that does not run
@@ -282,9 +292,9 @@ client-tauri-check:
     npm --prefix client run tauri -- build --no-bundle --ci -- --locked
     # The shell's own Rust tests: the shell crate is its own workspace root,
     # so the workspace's cargo steps never reach them. `just check` reaches
-    # the crate only through `client-android-warnings` (one target, warnings
-    # denied), so without this line the tests - and the macOS build beside
-    # them - run in no gate of their own.
+    # the crate only for rustfmt and one Android target (`client-tauri-fmt`
+    # and `client-android-warnings`), so without this line the tests - and the
+    # macOS build beside them - run in no gate of their own.
     cargo nextest run --manifest-path client/src-tauri/Cargo.toml
 
 # Build the shell's bundles: `forge.app` and the dmg, under
@@ -913,7 +923,7 @@ check:
     #!/usr/bin/env bash
     set -euo pipefail
 
-    steps=(fmt-check unicode-punct-check script-tests client-format client-lint client-typecheck client-test client-android-warnings clippy test-all doctest doc)
+    steps=(fmt-check unicode-punct-check script-tests client-tauri-fmt client-format client-lint client-typecheck client-test client-android-warnings clippy test-all doctest doc)
     verdict=""
 
     on_exit() {

@@ -53,6 +53,9 @@ pub(crate) enum MoveError {
     /// A completion landed on a row waiting on the user's own look: the
     /// look is what completes it.
     WaitingOnLook,
+    /// A patch would clear the look gate a row is bound by: the user's
+    /// own approve is what clears it.
+    ClearingLookGate,
 }
 
 /// Append the user's words to a row's detail, keeping what was there.
@@ -105,6 +108,11 @@ impl std::fmt::Display for MoveError {
             Self::WaitingOnLook => write!(
                 f,
                 "this row is waiting on the user's look; the board's approve completes it"
+            ),
+            Self::ClearingLookGate => write!(
+                f,
+                "this row's completion waits on the user's look; an update cannot take that away, \
+                 and the board's approve completes it"
             ),
         }
     }
@@ -201,16 +209,20 @@ fn is_terminal(status: TaskStatus) -> bool {
 }
 
 /// The verify a row is bound by: its own, else its epic's, else none.
-fn effective_verify(tasks: &[Task], index: usize) -> Verify {
-    if let Some(verify) = tasks[index].verify {
+fn bound_verify(row: &Task, tasks: &[Task]) -> Verify {
+    if let Some(verify) = row.verify {
         return verify;
     }
-    tasks[index]
-        .parent
+    row.parent
         .as_ref()
         .and_then(|parent| tasks.iter().find(|t| t.id == *parent))
         .and_then(|parent| parent.verify)
         .unwrap_or(Verify::None)
+}
+
+/// The verify the row at `index` is bound by.
+fn effective_verify(tasks: &[Task], index: usize) -> Verify {
+    bound_verify(&tasks[index], tasks)
 }
 
 impl Workspace {
@@ -260,11 +272,13 @@ impl Workspace {
     ///
     /// Rules ride on top of `f`, so no caller can forget them: a
     /// transition into `completed` on a verify=user row lands in
-    /// `waiting` (the verify gate); a completion of a row already waiting
-    /// on the user's look is refused by name; a move off `waiting` drops
-    /// the wait the row was holding, so a completion of any other waiting
-    /// row applies and clears - a verify=user one is taken by the gate
-    /// and lands on the look instead, its own wait gone; and completing a
+    /// `waiting` (the verify gate); a patch cannot take a user-bound
+    /// row's look gate away - clearing its verify or moving it out of its
+    /// epic is refused by name; a completion of a row already waiting on
+    /// the user's look is refused by name; a move off `waiting` drops the
+    /// wait the row was holding, so a completion of any other waiting row
+    /// applies and clears - a verify=user one is taken by the gate and
+    /// lands on the look instead, its own wait gone; and completing a
     /// ROOT row closes it - the whole tree moves to the archive, refused
     /// while any child is still open.
     pub(crate) fn update_task(
@@ -305,6 +319,15 @@ impl Workspace {
             let prior = next.status;
             f(&mut next)?;
 
+            // The look gate is the user's to clear: an update that would
+            // leave a user-bound row unbound - by clearing its verify or
+            // by moving it out of its epic - is refused by name.
+            if gate
+                && effective_verify(tasks, index) == Verify::User
+                && bound_verify(&next, tasks) != Verify::User
+            {
+                return Err(MoveError::ClearingLookGate);
+            }
             // The look is what completes a row waiting on it: a
             // completion here is refused, naming the look.
             if next.status == TaskStatus::Completed
@@ -1727,6 +1750,91 @@ mod tests {
 
         let stored = ws.tasks_for_project("proj");
         assert_eq!(stored[0].status, TaskStatus::Waiting, "and the row keeps waiting for the look");
+    }
+
+    /// The look gate is not an update's to clear. A `verify: none` patch on
+    /// a user-bound row is refused by name whether the binding is the
+    /// row's own or inherited from its epic, so the two-call path (clear,
+    /// then complete) has no first step - and the stored row keeps the
+    /// gate it was bound by.
+    #[test]
+    fn an_update_cannot_clear_a_user_verify() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-verify-clear");
+        let lead = SessionSlot::lead("TestOrg", "proj");
+        ws.push_task(Task { verify: Some(Verify::User), ..sample_task("t-1", "proj") });
+        ws.push_task(Task { verify: Some(Verify::User), ..sample_task("epic", "proj") });
+        ws.push_task(Task { parent: Some(TaskId::from("epic")), ..sample_task("t-2", "proj") });
+
+        for id in ["t-1", "t-2"] {
+            let refused = ws
+                .update_task("proj", &TaskId::from(id), By::Seat(lead.clone()), |task| {
+                    task.verify = Some(Verify::None);
+                })
+                .expect_err("an update cannot clear the user's look gate");
+            assert_eq!(
+                refused,
+                MoveError::ClearingLookGate,
+                "{id}: the clear's own refusal, not another move error",
+            );
+        }
+
+        let stored = ws.tasks_for_project("proj");
+        let own = stored.iter().find(|t| t.id == TaskId::from("t-1")).expect("t-1");
+        assert_eq!(own.verify, Some(Verify::User), "t-1 keeps its own gate");
+        let inherited = stored.iter().find(|t| t.id == TaskId::from("t-2")).expect("t-2");
+        assert_eq!(inherited.verify, None, "t-2 never grew a gate of its own");
+        assert_eq!(
+            effective_verify(&stored, stored.iter().position(|t| t.id == inherited.id).expect("i")),
+            Verify::User,
+            "and it is still bound by its epic's",
+        );
+
+        // Setting the gate is still the lead's: a row may be armed.
+        ws.update_task("proj", &TaskId::from("t-2"), By::Seat(lead), |task| {
+            task.verify = Some(Verify::User);
+        })
+        .expect("no refusal")
+        .expect("the row is there");
+    }
+
+    /// The other way an update can drop a gate it does not state: the
+    /// binding follows the epic, so moving a row out of a user-bound epic
+    /// un-gates it. Refused like the clear is - while a move between two
+    /// gated epics, or a row carrying its own gate, changes nothing and
+    /// stays allowed.
+    #[test]
+    fn an_update_cannot_move_a_gated_row_out_of_its_epic() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-verify-reparent");
+        let lead = SessionSlot::lead("TestOrg", "proj");
+        ws.push_task(Task { verify: Some(Verify::User), ..sample_task("gated", "proj") });
+        ws.push_task(Task { verify: Some(Verify::User), ..sample_task("gated-too", "proj") });
+        ws.push_task(Task { ..sample_task("free", "proj") });
+        ws.push_task(Task { parent: Some(TaskId::from("gated")), ..sample_task("t-2", "proj") });
+
+        let refused = ws
+            .update_task("proj", &TaskId::from("t-2"), By::Seat(lead.clone()), |task| {
+                task.parent = Some(TaskId::from("free"));
+            })
+            .expect_err("moving a gated row out of its epic takes the look away");
+        assert_eq!(refused, MoveError::ClearingLookGate);
+        let stored = ws.tasks_for_project("proj");
+        let row = stored.iter().find(|t| t.id == TaskId::from("t-2")).expect("t-2");
+        assert_eq!(row.parent, Some(TaskId::from("gated")), "and it stays where it was");
+
+        ws.update_task("proj", &TaskId::from("t-2"), By::Seat(lead.clone()), |task| {
+            task.parent = Some(TaskId::from("gated-too"));
+        })
+        .expect("no refusal")
+        .expect("the row is there");
+        ws.update_task("proj", &TaskId::from("gated"), By::Seat(lead), |task| {
+            task.parent = Some(TaskId::from("free"));
+        })
+        .expect("no refusal")
+        .expect("a row carrying its own gate may move anywhere");
     }
 
     #[test]

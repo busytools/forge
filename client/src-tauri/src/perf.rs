@@ -61,10 +61,7 @@ pub struct ClientPerfRecord {
 /// long task), so a batch is usually one line; the batch shape is what
 /// keeps the boundary one call rather than one per kind.
 #[tauri::command]
-pub fn client_perf(
-    app: tauri::AppHandle,
-    records: Vec<ClientPerfRecord>,
-) -> Result<(), String> {
+pub fn client_perf(app: tauri::AppHandle, records: Vec<ClientPerfRecord>) -> Result<(), String> {
     let dir = app.path().app_log_dir().map_err(|err| err.to_string())?;
     append(&dir, &records, MAX_BYTES).map_err(|err| {
         tauri_plugin_log::log::warn!("perf write failed: {err}");
@@ -136,8 +133,10 @@ mod tests {
     /// it: the boundary narrows once, and this is not that narrowing.
     #[test]
     fn an_unknown_field_from_a_newer_page_is_tolerated() {
-        let line = r#"{"schema":"forge-perf/v1","kind":"frame","run_id":"r","ts_ms":1,"invented":true}"#;
-        let parsed: ClientPerfRecord = serde_json::from_str(line).expect("a new field is tolerated");
+        let line =
+            r#"{"schema":"forge-perf/v1","kind":"frame","run_id":"r","ts_ms":1,"invented":true}"#;
+        let parsed: ClientPerfRecord =
+            serde_json::from_str(line).expect("a new field is tolerated");
         assert_eq!(parsed.kind, "frame");
         assert!(parsed.ms.is_none(), "an absent optional is absence, not zero");
     }

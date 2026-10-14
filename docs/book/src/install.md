@@ -71,7 +71,9 @@ just check
 ```
 
 That runs, in order: `cargo fmt --check`, the Unicode punctuation gate,
-the release scripts' tests (`script-tests`), the client's Prettier check,
+the release scripts' tests (`script-tests`), the shell crate's rustfmt
+check (`client-tauri-fmt`: `cargo fmt --check` against the shell's own
+workspace root), the client's Prettier check,
 its ESLint, `svelte-check` and `tsc --noEmit`
 and then its vitest run,
 the shell crate's android warnings check (`client-android-warnings`:
@@ -97,8 +99,10 @@ here too, so the client is not a second command to remember and a failure
 on either side lands on the same verdict line.
 
 The shell under `client/src-tauri/` is its own workspace root, so the
-workspace's cargo steps and CI's cargo jobs do not reach it. `just check`
-reaches it through `client-android-warnings` alone - the crate compiled
+workspace's cargo steps do not reach it and, in CI, only the `cargo fmt
+--check` job's second invocation does. `just check` reaches it through
+`client-tauri-fmt` (the shell crate's own `cargo fmt --check`) and
+`client-android-warnings` - the crate compiled
 for `aarch64-linux-android` with warnings denied, which is what catches
 desktop-only code going dead on Android - and the Unicode punctuation gate
 and the client's Prettier step reach it too. Everything else about the
