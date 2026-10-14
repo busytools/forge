@@ -724,7 +724,9 @@
                 {#if row.rollup !== null}
                   <span class="b-chip blue b-epic-pill">&#9636; epic</span>
                 {/if}
-                {#each row.links as link (link.label)}
+                <!-- Keyed on the position: the entries carry no identity the
+                     wire guarantees unique. -->
+                {#each row.links as link, at (at)}
                   {#if link.href !== null}
                     <a href={link.href} target="_blank" rel="noreferrer">{link.label}</a>
                   {:else}
