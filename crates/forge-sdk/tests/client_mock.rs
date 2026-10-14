@@ -58,20 +58,31 @@ async fn disconnect_after_send_does_not_hang() {
 /// fail `Client::spawn` at the 60s init budget rather than parking the
 /// caller (and leaking the child) forever. `start_paused` auto-advances
 /// the virtual clock while the runtime is idle on the wedged read, so
-/// the 60s budget elapses without real wall-clock cost.
+/// the 60s budget elapses without real wall-clock cost - and that the
+/// budget ran on the VIRTUAL clock is the thing pinned, because an
+/// absolute real-time bound is a statement about the machine: measured
+/// 2026-10-14, a loaded gate ran this spawn's real time to 12 s, and a
+/// 10 s real bound called that a failure.
 #[tokio::test(start_paused = true)]
 async fn wedged_init_handshake_times_out() {
     let wedged = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mock_claude_wedged_init.sh");
     let opts = OptionsBuilder::new().binary(wedged).build();
 
-    let started = std::time::Instant::now();
+    let real_started = std::time::Instant::now();
+    let virtual_started = tokio::time::Instant::now();
     let err = Client::spawn(opts).await.expect_err("wedged init must fail, not hang");
-    assert!(
-        started.elapsed() < std::time::Duration::from_secs(10),
-        "the init timeout must not wait in real time"
-    );
     let forge_sdk::Error::Connection { reason } = err else {
         panic!("expected a connection error, got {err:?}");
     };
     assert!(reason.contains("timed out"), "the reason names the handshake timeout: {reason}");
+    assert!(
+        virtual_started.elapsed() >= forge_sdk::INIT_HANDSHAKE_TIMEOUT,
+        "the budget is spent on the virtual clock, not the machine's: {:?}",
+        virtual_started.elapsed(),
+    );
+    assert!(
+        real_started.elapsed() < forge_sdk::INIT_HANDSHAKE_TIMEOUT / 2,
+        "and the real wait stays materially under the budget: {:?}",
+        real_started.elapsed(),
+    );
 }

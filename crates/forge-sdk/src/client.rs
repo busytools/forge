@@ -90,7 +90,12 @@ impl Drop for PendingGuard {
 /// Budget for the `initialize` handshake inside [`Client::spawn`]. A
 /// wedged CLI (alive, stdout open, never answering) would otherwise
 /// park the caller forever with the child leaked.
-const INIT_HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+///
+/// Published because a caller that waits on a spawn is waiting on this
+/// budget: a wait shorter than it fails a machine that is merely slow,
+/// so a test derives its own wait from this number rather than
+/// hand-picking one under it.
+pub const INIT_HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// An active `claude` binary subprocess.
 ///
