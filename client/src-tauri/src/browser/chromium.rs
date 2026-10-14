@@ -452,6 +452,25 @@ pub async fn launch(
     profile: &Path,
     page: Option<&str>,
 ) -> Result<ActivePort, String> {
+    launch_within(binary, profile, page, LAUNCH_TIMEOUT).await
+}
+
+/// [`launch`] with its budget spelled: the shell gives a launch
+/// [`LAUNCH_TIMEOUT`], and a test gives it one of its own.
+///
+/// **The budget is a bound on the machine, not on the launch.** The wait is
+/// spent on the OS starting the child and the child answering, and a loaded
+/// machine can hold a child's first write back for many seconds - measured
+/// 2026-10-14, a launch that takes half a second idle took 13 s under load,
+/// and the shell's 15 s expired with the port file never written. A test
+/// that inherited the shell's budget goes red over that stall, which is no
+/// part of what a test pins; see `tests/raise_path.rs`.
+pub async fn launch_within(
+    binary: &Path,
+    profile: &Path,
+    page: Option<&str>,
+    budget: Duration,
+) -> Result<ActivePort, String> {
     if !binary.is_file() {
         return Err(format!("the browser is not there at {} any more", binary.display()));
     }
@@ -510,7 +529,7 @@ pub async fn launch(
     }
     drop(child);
 
-    let deadline = tokio::time::Instant::now() + LAUNCH_TIMEOUT;
+    let deadline = tokio::time::Instant::now() + budget;
     let active = loop {
         if let Some(active) = verified(profile).await {
             // The id is written down only once the launch ANSWERS, so a file
@@ -538,7 +557,7 @@ pub async fn launch(
                 if said.is_empty() { String::new() } else { format!("; it said: {said}") };
             return Err(format!(
                 "the browser did not answer on its port within {} s{because}",
-                LAUNCH_TIMEOUT.as_secs(),
+                budget.as_secs(),
             ));
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -576,10 +595,20 @@ pub async fn ensure(
     profile: &Path,
     page: Option<&str>,
 ) -> Result<ActivePort, String> {
+    ensure_within(binary, profile, page, LAUNCH_TIMEOUT).await
+}
+
+/// [`ensure`] with the launch's budget spelled; see [`launch_within`].
+pub async fn ensure_within(
+    binary: &Path,
+    profile: &Path,
+    page: Option<&str>,
+    budget: Duration,
+) -> Result<ActivePort, String> {
     if let Some(active) = verified(profile).await {
         return Ok(active);
     }
-    launch(binary, profile, page).await
+    launch_within(binary, profile, page, budget).await
 }
 
 /// Create the window a launch keeps, born `background` so it never surfaces
@@ -759,6 +788,15 @@ fn windowed_page(profile: &Path) -> Option<String> {
 /// "the window is up" - what the strip's button toggles on - and [`hide`]
 /// takes it down.
 pub async fn show(binary: &Path, profile: &Path) -> Result<ActivePort, String> {
+    show_within(binary, profile, LAUNCH_TIMEOUT).await
+}
+
+/// [`show`] with the launch's budget spelled; see [`launch_within`].
+pub async fn show_within(
+    binary: &Path,
+    profile: &Path,
+    budget: Duration,
+) -> Result<ActivePort, String> {
     // **A launch from before the window model has no window to raise** - a
     // headless browser an upgraded client adopted. It is closed, once, and
     // the new shape comes up on the page the last raise carried; every raise
@@ -769,7 +807,7 @@ pub async fn show(binary: &Path, profile: &Path) -> Result<ActivePort, String> {
         let _guard = LaunchLock::acquire(profile).await?;
         close_under_lock(profile, active.port).await;
     }
-    let active = ensure(binary, profile, windowed_page(profile).as_deref()).await?;
+    let active = ensure_within(binary, profile, windowed_page(profile).as_deref(), budget).await?;
     let raised = tokio::time::timeout(WINDOW_TIMEOUT, async {
         let mut cdp = window::Cdp::connect(active.port, &active.path).await?;
         let page = cdp.page().await?;

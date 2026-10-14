@@ -14,6 +14,12 @@
 //! browser honours the moves, that the page stays drivable out of sight, that
 //! the fill survives the raise. Those are the live suite's, deliberately.
 //!
+//! The one thing these cases do not take from the shell is the budget a
+//! launch's wait is given: the shell gives it 15 s, and these give it one of
+//! their own (see `TEST_LAUNCH_BUDGET`), because that wait is spent on the
+//! machine starting the stub, which a loaded machine can hold back past the
+//! shell's own.
+//!
 //! One arm is deliberately absent here: a show over a launch from BEFORE the
 //! window model closes that launch, and a close kills by the port's listener
 //! (which, with this test serving the port itself, would be this very test
@@ -24,6 +30,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use forge_client::browser::chromium;
 use futures_util::{SinkExt as _, StreamExt as _};
@@ -40,6 +47,17 @@ const IDENTITY: &str = "/devtools/browser/STUBID";
 const HIDDEN_AT: (i64, i64) = (2008, 1022);
 /// Where a raise puts the window, as `chromium::RAISE_AT` does.
 const RAISED_AT: (i64, i64) = (40, 60);
+
+/// The budget the tests give a launch: **not the shell's own.**
+///
+/// A launch's wait is spent on the OS starting the stub and the stub
+/// answering, and a machine running a gate beside the suite can hold that
+/// back far past the shell's 15 s - measured 2026-10-14, a launch that takes
+/// half a second idle took 13 s under load, and three of these five tests
+/// went red at the deadline with every poll reading no port file at all. The
+/// stall is the machine's, not the launch's, and no case here pins how long
+/// a launch may take, so they give the wait a budget load cannot eat.
+const TEST_LAUNCH_BUDGET: Duration = Duration::from_secs(60);
 
 /// What the fake devtools endpoint has seen: every CDP call, in order, and
 /// the window's current bounds - which the moves change and the assertions
@@ -203,9 +221,10 @@ async fn return_answer(
 }
 
 /// The stub browser, written beside the profile: it reads `stub-config` (this
-/// endpoint's port and identity) from its own directory, writes the port file
-/// a real launch writes, records the command line it was spawned with, and
-/// sleeps until the test's guard reaps it.
+/// endpoint's port, identity and how long to hold its port file back) from its
+/// own directory, writes the port file a real launch writes, records the
+/// command line it was spawned with, and sleeps until the test's guard reaps
+/// it.
 fn stub_browser(dir: &Path) -> PathBuf {
     let stub = dir.join("stub-browser");
     std::fs::write(
@@ -223,6 +242,9 @@ if udd is None:
 with open(os.path.join(udd, "fake-launch.log"), "a") as f:
     f.write(" ".join(argv) + "\n")
 config = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "stub-config")).read().split()
+delay = float(config[2]) if len(config) > 2 else 0.0
+if delay:
+    time.sleep(delay)
 with open(os.path.join(udd, "DevToolsActivePort"), "w") as f:
     f.write(config[0] + "\n" + config[1] + "\n")
 time.sleep(600)
@@ -305,6 +327,16 @@ impl World {
     fn reap_after(&self, pid: Option<u32>) -> Reap {
         Reap { pid }
     }
+
+    /// Hold the stub's port file back by `delay` past the point a launch
+    /// normally writes it: a child the machine has stalled, on demand.
+    fn stub_delay(&self, delay: Duration) {
+        std::fs::write(
+            self.stub.parent().expect("the dir").join("stub-config"),
+            format!("{}\n{IDENTITY}\n{}\n", self.port(), delay.as_secs_f64()),
+        )
+        .expect("the stub config");
+    }
 }
 
 /// Kill the stub a test's launch left, by the pid the launch answered with.
@@ -328,7 +360,7 @@ impl Drop for Reap {
 async fn a_launch_brings_up_a_hidden_window_and_shows_nothing() {
     let world = world().await;
 
-    let launched = chromium::launch(&world.stub, &world.profile, None)
+    let launched = chromium::launch_within(&world.stub, &world.profile, None, TEST_LAUNCH_BUDGET)
         .await
         .unwrap_or_else(|why| panic!("the launch must come up: {why}"));
     let _reap = world.reap_after(launched.pid);
@@ -369,7 +401,7 @@ async fn a_show_with_nothing_running_brings_a_window_up() {
     let world = world().await;
     assert_eq!(chromium::read_active_port(&world.profile), None, "nothing is up");
 
-    let shown = chromium::show(&world.stub, &world.profile)
+    let shown = chromium::show_within(&world.stub, &world.profile, TEST_LAUNCH_BUDGET)
         .await
         .unwrap_or_else(|why| panic!("the person's show must bring a browser up: {why}"));
     let _reap = world.reap_after(shown.pid);
@@ -469,10 +501,56 @@ async fn a_show_over_a_stale_marker_still_brings_a_window_up() {
     )
     .expect("the stale port file");
 
-    let shown = chromium::show(&world.stub, &world.profile)
+    let shown = chromium::show_within(&world.stub, &world.profile, TEST_LAUNCH_BUDGET)
         .await
         .unwrap_or_else(|why| panic!("the show must bring a browser up: {why}"));
     let _reap = world.reap_after(shown.pid);
     assert!(!world.launches().is_empty(), "a fresh launch came up under the stale state",);
     assert!(chromium::windowed(&world.profile).await, "and its window is up");
+}
+
+/// **The launch's wait is the budget it is given.** A stub that holds its
+/// port file back past a small budget is refused by name, and the same stub
+/// is waited out by the budget these tests use - which is the seam the five
+/// cases above rest on, the wait belonging to the machine rather than to
+/// the launch.
+#[tokio::test]
+async fn a_launch_is_bounded_by_the_budget_it_is_given() {
+    let refused_world = world().await;
+    refused_world.stub_delay(Duration::from_secs(2));
+    let refused = chromium::launch_within(
+        &refused_world.stub,
+        &refused_world.profile,
+        None,
+        Duration::from_secs(1),
+    )
+    .await;
+    let Err(why) = refused else {
+        panic!(
+            "a launch whose budget runs out before the child answers is refused, not waited out"
+        );
+    };
+    assert!(why.contains("within 1 s"), "and the refusal names the budget it ran out of: {why}");
+
+    let waited_world = world().await;
+    waited_world.stub_delay(Duration::from_secs(2));
+    let launched = chromium::launch_within(
+        &waited_world.stub,
+        &waited_world.profile,
+        None,
+        TEST_LAUNCH_BUDGET,
+    )
+    .await
+    .unwrap_or_else(|why| panic!("the tests' budget must wait that stub out: {why}"));
+    let _reap = waited_world.reap_after(launched.pid);
+    assert!(
+        waited_world.profile.join("has-window").is_file(),
+        "and what it waited out is a whole launch",
+    );
+    assert!(
+        TEST_LAUNCH_BUDGET >= Duration::from_secs(30),
+        "the tests' budget must stay far past the shell's own 15 s: a loaded machine held a \
+         launch's port file back for 13 s (measured 2026-10-14), which is the stall this seam \
+         exists to keep out of the suite",
+    );
 }
