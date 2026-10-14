@@ -154,12 +154,22 @@ flow straight into the corpus. A session running through a proxy
 tool surface per model, so two recognized models can differ from each
 other as well as from an unrecognized one.
 
-Two things must be pinned, and both are load-bearing:
+Three things must be pinned, and all are load-bearing:
 
 - **The routing.** A `CLAUDE_CODE_OAUTH_TOKEN` with the proxy vars unset,
   and `ANTHROPIC_MODEL` set to the model the previous corpus used, so the
   diff isolates the CLI's version delta. The model is held constant only
   to make that readable.
+- **The feature-flag lever, and the tool surface.** The CLI advertises
+  some tools only while its GrowthBook gate reads true - `Monitor` sits
+  behind `tengu_amber_sentinel`, default off - and
+  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` (set in forge.toml `[env]`,
+  so it rides into every forge-spawned session) puts the CLI in its
+  "essential-traffic" mode, where GrowthBook is never initialized and
+  every gate reads its default. Measured at 2.1.280: with the variable
+  set the captured surface is 21 tools with no Monitor and the monitor
+  scenario records a Bash improvisation; unset, Monitor is advertised and
+  the scenario records the real thing. Unset it for the capture.
 - **The config dir, and the memory lever.** Point `CLAUDE_CONFIG_DIR` at a
   scratch directory, or the machine's plugins, skills, hooks and MCP
   servers ride into every init frame and the corpus can no longer separate

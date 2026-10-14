@@ -907,8 +907,8 @@ describe('one turn folded into the units a view draws', () => {
   it('counts a message once when the CLI repeats it once per content block', () => {
     // One API call is several assistant frames - one per content block - and
     // every one of them carries the whole call's usage block. A capture that
-    // repeats a message shows it: 25 of the 48 shipped captures repeat one,
-    // and `monitor_persistent_stream` has 11 frames over 7 messages. The view
+    // repeats a message shows it: 26 of the 49 shipped captures repeat one,
+    // and `monitor_stream` has 7 frames over 5 messages. The view
     // this client replaced keyed by message id so a repeat overwrote, which is
     // the count this fold has to match.
     const block = (id: string, part: number, tokens: number): unknown => ({
@@ -2615,6 +2615,59 @@ describe('one turn folded into the units a view draws', () => {
     const dead = callsOf(second[0])[0]?.leaf;
     expect(dead?.status, 'a stopped task draws as the kill it is').toBe('killed');
     expect(dead?.note).toEqual({ text: 'Run slow counting loop \u{b7} stopped', tone: 'fail' });
+  });
+
+  it('reads a Monitor as the backgrounded call its own task_started says it is', () => {
+    // The watched command and its task frames as the capture has them
+    // (crates/forge-test-harness/baselines/sdk/2.1.280/monitor_stream.jsonl).
+    // A Monitor's task reaches the wire as a `local_bash` flagged
+    // `is_backgrounded: true`, and that flag is the whole gate on the row
+    // asking for its output once it settles (Call.svelte) - a watched build is
+    // the long output the read exists for, and a CLI that stopped setting the
+    // flag would leave every Monitor row silent.
+    const launch = said([
+      {
+        type: 'tool_use',
+        id: 'toolu_01UCpUph7upKdPgdHR6evy3X',
+        name: 'Monitor',
+        input: {
+          command: 'sleep 1 && echo monitor-line-1 && sleep 0.5 && echo monitor-line-2',
+          description: 'forge-monitor-test',
+          timeout_ms: 60000,
+        },
+      },
+    ]);
+    const launched = heard([
+      {
+        type: 'tool_result',
+        tool_use_id: 'toolu_01UCpUph7upKdPgdHR6evy3X',
+        content:
+          'Monitor started (task b4f1ow726, expires in 1m unless the source ends first; ' +
+          'you get one notice at expiry ...).',
+      },
+    ]);
+    const started = {
+      type: 'system',
+      subtype: 'task_started',
+      task_id: 'b4f1ow726',
+      tool_use_id: 'toolu_01UCpUph7upKdPgdHR6evy3X',
+      description: 'forge-monitor-test',
+      is_backgrounded: true,
+      task_type: 'local_bash',
+    };
+    const notified = {
+      type: 'system',
+      subtype: 'task_notification',
+      task_id: 'b4f1ow726',
+      tool_use_id: 'toolu_01UCpUph7upKdPgdHR6evy3X',
+      status: 'completed',
+      summary: 'Monitor "forge-monitor-test" stream ended',
+    };
+
+    const [group] = fold([launch, launched, started, notified]);
+    const call = callsOf(group)[0]?.leaf;
+    expect(call?.backgrounded, 'the flag the read-back gate rides').toBe(true);
+    expect(call?.status, 'and the CLI ending the watch is what settles it').toBe('completed');
   });
 
   it('settles a foreground task from the turn, not from its own task frame', () => {
