@@ -45,7 +45,7 @@
   .surf { margin-top: 8px; border: 1.5px solid var(--ctl); border-radius: 16px;
     background: linear-gradient(180deg, rgba(20,25,38,.72), rgba(13,17,26,.78));
     box-shadow: 0 14px 38px rgba(0,0,0,.42); display: flex; flex-direction: column; }
-  .surf > * + * { border-top: 1px solid var(--line); }
+  .surf > :not(.sr) + :not(.sr) { border-top: 1px solid var(--line); }
   .surf:has(.mbox.focus) { border-color: rgba(244,118,0,.85); }
   .surf:has(.mbox.hushed) { border-color: rgba(244,118,0,.25); }
   /* The strip lane: the running turn's figures, as the real one draws them. */
