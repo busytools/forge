@@ -363,7 +363,7 @@ pub async fn scan<S: std::hash::BuildHasher>(
 /// `the_pr_lookup_spawn_carries_the_projects_env` failed twice at 10.5 s
 /// and 10.9 s while a gate ran beside the suite, the budget plus the
 /// child's start, and a `gh` held back 11 s reproduces it on demand.
-pub async fn scan_within<S: std::hash::BuildHasher>(
+async fn scan_within<S: std::hash::BuildHasher>(
     cwd: &Path,
     env: &HashMap<String, String, S>,
     prev: Option<&GitDiffSnapshot>,
@@ -1935,8 +1935,8 @@ mod tests {
         );
     }
 
-    /// `pr_for_head` short-circuits the `gh` calls when the cache is
-    /// fresh - even when the `cwd` would make a real `gh` invocation
+    /// `pr_for_head_within` short-circuits the `gh` calls when the cache
+    /// is fresh - even when the `cwd` would make a real `gh` invocation
     /// fail (tempdir has no github remote). The returned `pr` /
     /// `closes` MUST be clones of `prev`'s, proving the cache hit.
     #[tokio::test(flavor = "current_thread")]

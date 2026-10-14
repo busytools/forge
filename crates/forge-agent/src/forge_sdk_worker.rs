@@ -4187,6 +4187,10 @@ mod tests_reader_terminal {
 
     /// A mock whose handshake this machine stalls by `delay` before it
     /// runs: the loaded-machine shape the wait above exists for, on demand.
+    ///
+    /// **The stall spells `/bin/sleep`**: a wrapper that inherits a PATH
+    /// without `sleep` on it (the gh fixture's own bin dir, say) would fail
+    /// to find a bare `sleep` and the stall would silently never happen.
     fn stalled_mock(dir: &std::path::Path, delay: std::time::Duration) -> String {
         use std::os::unix::fs::PermissionsExt as _;
         let real = sdk_mock_binary();
@@ -4195,7 +4199,7 @@ mod tests_reader_terminal {
             &wrapper,
             format!(
                 "#!/bin/sh\nif [ \"${{1:-}}\" = \"--version\" ]; then exec {real} \"$@\"; fi\n\
-                 sleep {}\nexec {real} \"$@\"\n",
+                 /bin/sleep {}\nexec {real} \"$@\"\n",
                 delay.as_secs_f64(),
             ),
         )
