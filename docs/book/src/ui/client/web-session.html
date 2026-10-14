@@ -2598,9 +2598,10 @@ branch main, nothing to commit</div>
                answers waiting to be read on the toggle, the thread count
                otherwise - and the hover panel lists `open review` as its
                door onto the page, then each thread by its file and line with
-               its state. A read that has not landed draws no row at all,
-               which is the same distinction the page keeps. Drawn CLOSED
-               here, like its siblings. -->
+               its state. It draws wherever the tree row draws, with no
+               thread lines when nothing is filed; a threads read that did
+               not land draws as itself. Drawn CLOSED here, like its
+               siblings. -->
           <span class="sg-seg">
             <button type="button" class="sg-tog">
               <svg class="ic"><use href="#i-review"/></svg>

@@ -9,9 +9,9 @@
    *
    * **The strip is how the page is reached**, not only its URL: the row says
    * how many answers wait to be read - the live fact a reviewer is looking
-   * for - and the panel lists the threads and opens the page. It draws only
-   * while the page has something behind it: a thread, or the branch's own
-   * changes.
+   * for - and the panel lists the threads and opens the page. It draws
+   * wherever the tree row draws (#2203), with no thread lines when nothing
+   * is filed; a threads read that did not land draws as itself.
    */
   let open = $state(false);
   /** Where this seat's review lives, handed in by the page that owns the seat. */
@@ -35,13 +35,15 @@
 
   const waiting = $derived(review.waiting());
   const rows = $derived(review.rows());
+  /** The threads the branch has: the read's own row is not one of them. */
+  const count = $derived(rows.filter((row) => !row.synthetic).length);
 
   /** The toggle's own words: what waits, else what is open, else the noun. */
   const label = $derived(
     waiting > 0
       ? `${waiting} to read`
-      : rows.length > 0
-        ? `${rows.length} thread${rows.length === 1 ? '' : 's'}`
+      : count > 0
+        ? `${count} thread${count === 1 ? '' : 's'}`
         : 'review',
   );
 
