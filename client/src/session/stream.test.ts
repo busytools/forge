@@ -103,6 +103,35 @@ describe('the stream gate', () => {
     expect(gate.inbound(update(1))).toHaveLength(1);
   });
 
+  it('a seal under the same occupant also restarts the count', () => {
+    const { gate, asked, emitted } = aGate();
+    gate.inbound(seal('occ', 1));
+    gate.inbound(update(1));
+    gate.inbound(update(2, 5)); // stands for 2..6; expecting is 7
+    // The same occupant seals again - a restart, which the server also mints
+    // from 1 - and the gate must count from 1 with it.
+    gate.inbound(seal('occ', 7));
+    expect(gate.inbound(update(1)), 'the restarted run counts from one').toHaveLength(1);
+    expect(gate.inbound(update(3)), 'and a hole in it is held').toHaveLength(0);
+    expect(asked, 'the hole in the restarted run is asked for').toEqual([{ from: 2, to: 2 }]);
+    expect(emitted, 'nothing released early').toHaveLength(0);
+  });
+
+  it('a snapshot lowers the count when the stream has restarted', () => {
+    const { gate } = aGate();
+    gate.inbound(update(1));
+    gate.inbound(update(2));
+    const restarted = {
+      kind: 'snapshot',
+      subject: { session: LEAD },
+      data: { header: { session_id: 'occupant', seq: 1 } },
+    } as unknown as ServerMessage;
+    gate.inbound(restarted);
+    // Expecting 1 again: a frame at 1 is a successor, and one at 3 is a hole.
+    expect(gate.inbound(update(1))).toHaveLength(1);
+    expect(gate.inbound(update(3))).toHaveLength(0);
+  });
+
   it('a seal passes at once and starts the count over', () => {
     const { gate, emitted } = aGate();
     gate.inbound(update(1));

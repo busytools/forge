@@ -115,7 +115,12 @@ export class StreamGate {
           state.expecting = 1;
         }
         if (typeof header?.seq === 'number') {
-          state.expecting = Math.max(state.expecting, header.seq);
+          // **The answer is the authority on where the stream stands**, the
+          // same rule the store reads it by: a restart under the same
+          // occupant counts from 1 again, and an answer that says so must
+          // lower what this expects - a monotonic maximum would leave the
+          // restarted run's frames reading as already drawn.
+          state.expecting = header.seq;
         }
         return [message];
       }
@@ -127,12 +132,16 @@ export class StreamGate {
 
         const seal = replacer(message.update);
         if (seal !== null) {
+          // **Every seal restarts the count, not only a new occupant.** The
+          // server resets its counter for every `Connected`/`SessionReplaced`
+          // whatever the id says (a restart under the same occupant counts
+          // from 1 again), so this expects 1 after one - holding only on an
+          // id change would read the restarted run's frames as already drawn
+          // and never hold a hole in it.
           const occupant = seal['session_id'];
-          if (typeof occupant === 'string' && occupant !== state.epoch) {
-            this.clear(state);
-            state.epoch = occupant;
-            state.expecting = 1;
-          }
+          this.clear(state);
+          state.expecting = 1;
+          if (typeof occupant === 'string') state.epoch = occupant;
           // The seal is the wipe signal itself: it goes out at once.
           return [message];
         }
