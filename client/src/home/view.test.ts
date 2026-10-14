@@ -1015,6 +1015,30 @@ describe('what a row says', () => {
   });
 
   /**
+   * The held service status is narrowed where it enters, like every arm
+   * here: a severity this client is older than is the warning every
+   * producer defaults to, and a report with no words is no report - the
+   * banner must not draw a line saying nothing.
+   */
+  it('narrows the service status a read carries', () => {
+    const odd = { ...homeWire, service_status: { severity: 'catastrophe', message: 'oy' } };
+    expect(homeFrom(odd as unknown as HomeWire).service_status).toEqual({
+      severity: 'warning',
+      message: 'oy',
+    });
+    const bad = { ...homeWire, service_status: { severity: 'error', message: 'the API is down' } };
+    expect(homeFrom(bad as unknown as HomeWire).service_status).toEqual({
+      severity: 'error',
+      message: 'the API is down',
+    });
+    const empty = { ...homeWire, service_status: { severity: 'warning', message: '' } };
+    expect(
+      homeFrom(empty as unknown as HomeWire).service_status,
+      'nothing wordable is nothing to draw',
+    ).toBeNull();
+  });
+
+  /**
    * The one step back, which is a SHAPE and not only a name.
    *
    * A v7 forge sent each of a project's entries as the TASK alone, flat, under

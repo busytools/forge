@@ -138,6 +138,18 @@
     </div>
   </header>
 
+  <!-- The core's held service status, above the band and only when there is
+       one. **The snapshot is what carries it to this page**: the probe fires
+       once, before a client attaches, and the live announcement is a chat
+       row - so this is how a reader who opened the page after the report was
+       raised learns of it. -->
+  {#if view.upstream !== null}
+    <div class="upstream" class:bad={view.upstream.severity === 'error'}>
+      <span class="k">claude status</span>
+      <span>{view.upstream.message}</span>
+    </div>
+  {/if}
+
   <section class="band">
     {#each band as card (card.title)}
       <Card {...card} />
