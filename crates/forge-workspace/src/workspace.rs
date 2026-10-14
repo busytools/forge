@@ -7285,17 +7285,50 @@ impl Workspace {
         minted_row: bool,
         config_dir: &std::path::Path,
     ) {
+        let effective_cwd = crate::mcp::workers::types::worker_tag_dir(
+            std::path::Path::new(cwd),
+            label,
+            is_git_repo_at_spawn,
+        );
+        self.apply_worker_tag_or_rollback_with_budget(
+            session_key,
+            session_id,
+            project_key,
+            label,
+            &effective_cwd,
+            needs_tag,
+            minted_row,
+            config_dir,
+            WorkerTagRetryBudget {
+                max_attempts: WORKER_TAG_RETRY_ATTEMPTS,
+                delay: WORKER_TAG_RETRY_DELAY,
+            },
+        );
+    }
+
+    /// [`Self::apply_worker_tag_or_rollback_with_config_dir`] with the
+    /// worktree-aware tag directory and the retry budget both injected,
+    /// so a test can shrink the detached task's wall time and derive its
+    /// own wait from the same numbers the task runs on.
+    pub(crate) fn apply_worker_tag_or_rollback_with_budget(
+        self: &Arc<Self>,
+        session_key: &SessionSlot,
+        session_id: &str,
+        project_key: &ProjectKey,
+        label: &str,
+        effective_cwd: &std::path::Path,
+        needs_tag: bool,
+        minted_row: bool,
+        config_dir: &std::path::Path,
+        budget: WorkerTagRetryBudget,
+    ) {
         use tracing::Instrument;
         let workspace = Arc::clone(self);
         let project_key = project_key.clone();
         let session_key = session_key.clone();
         let session_id = session_id.to_owned();
         let label = label.to_owned();
-        let effective_cwd = crate::mcp::workers::types::worker_tag_dir(
-            std::path::Path::new(cwd),
-            &label,
-            is_git_repo_at_spawn,
-        );
+        let effective_cwd = effective_cwd.to_path_buf();
         let config_dir = config_dir.to_path_buf();
         let span = tracing::info_span!(
             "forge_workspace::worker_tag_write",
@@ -7309,8 +7342,8 @@ impl Workspace {
                 &session_id,
                 &tag,
                 &effective_cwd.to_string_lossy(),
-                WORKER_TAG_RETRY_ATTEMPTS,
-                WORKER_TAG_RETRY_DELAY,
+                budget.max_attempts,
+                budget.delay,
             )
             .await;
             match result {
@@ -7817,6 +7850,15 @@ impl Workspace {
             );
         }
     }
+}
+
+/// Retry budget for the detached tag-write: how many attempts
+/// `tag_session_with_retry` gets to find the worker's
+/// `<session_id>.jsonl`, and the delay between them.
+#[derive(Clone, Copy)]
+pub(crate) struct WorkerTagRetryBudget {
+    max_attempts: u32,
+    delay: Duration,
 }
 
 /// Discriminator for how a successful `apply_worker_tag_or_rollback`
@@ -13905,44 +13947,49 @@ mod tag_retry_tests {
         // attempt and the retry will exhaust.
         let _path = jsonl_path_for(cfg.path(), cwd.path(), session_id);
 
-        // Use a tight retry budget so the test completes quickly. The
-        // _with_config_dir entry point spawns the detached tokio task
-        // internally - we override the constants by calling
-        // tag_session_with_retry directly here would be cheating; this
-        // test verifies the wrapper's classification + transition logic.
-        workspace.apply_worker_tag_or_rollback_with_config_dir(
+        // A tight retry budget keeps the detached task fast without
+        // bypassing the wrapper: this test verifies the wrapper's
+        // classification + transition logic, so it must go through the
+        // spawn the production path uses.
+        let retry_budget =
+            WorkerTagRetryBudget { max_attempts: 3, delay: Duration::from_millis(10) };
+        workspace.apply_worker_tag_or_rollback_with_budget(
             &session_key,
             session_id,
             &project_key,
             "idle",
-            &cwd.path().to_string_lossy(),
-            false,
+            cwd.path(),
             true,
             true,
             cfg.path(),
+            retry_budget,
         );
 
-        // The detached task takes ~3s (30 x 100ms) to exhaust against an
-        // absent JSONL. Wait for the StatusChanged that signals it ran
-        // through the deferred-NotFound branch.
-        let status_changed = tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                match rx.recv().await {
-                    Some(SessionUpdate::WorkerStatusChanged { action, status, .. }) => {
-                        if matches!(action, crate::protocol::WorkerStatusAction::StatusChanged) {
-                            return Some(status);
+        // The detached task sleeps once per attempt - after the last one
+        // too - before it can classify the exhaustion, so the wait
+        // derives from the budget handed to it above plus a stall
+        // allowance a loaded machine cannot eat.
+        let task_budget = retry_budget.delay * retry_budget.max_attempts;
+        let status_changed =
+            tokio::time::timeout(task_budget * 10 + Duration::from_secs(5), async {
+                loop {
+                    match rx.recv().await {
+                        Some(SessionUpdate::WorkerStatusChanged { action, status, .. }) => {
+                            if matches!(action, crate::protocol::WorkerStatusAction::StatusChanged)
+                            {
+                                return Some(status);
+                            }
+                            if matches!(action, crate::protocol::WorkerStatusAction::Removed) {
+                                return None;
+                            }
                         }
-                        if matches!(action, crate::protocol::WorkerStatusAction::Removed) {
-                            return None;
-                        }
+                        Some(_) => {}
+                        None => return None,
                     }
-                    Some(_) => {}
-                    None => return None,
                 }
-            }
-        })
-        .await
-        .expect("timed out waiting for StatusChanged");
+            })
+            .await
+            .expect("timed out waiting for StatusChanged");
 
         let status = status_changed.expect("expected StatusChanged, not Removed (rollback)");
         assert_eq!(status.label, "idle");
