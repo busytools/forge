@@ -8,6 +8,7 @@ import { MORE_TURNS, subjectKey } from '../protocol';
 import type { ClientMessage, ServerMessage, SessionUpdate } from '../protocol';
 import type { Connection, ConnectionStatus } from '../socket';
 import type { SessionSlot } from '../wire/types';
+import * as fleet from '../wire/fleet';
 import { Chat, Frames, type PageTurn } from './conversation';
 import type { ToolLeaf } from './leaves';
 import { echoes } from './echoes.svelte';
@@ -994,6 +995,26 @@ describe('the conversation the chat draws', () => {
     const once = drawn();
     server.update({ service_status: { severity: 'error', message: 'The API is down' } });
     expect(drawn(), 'the same report twice is one row').toBe(once);
+  });
+
+  /**
+   * The narrowing has one home: the fold reads the same `reportFrom` the
+   * home's banner does, so a second inline narrowing cannot come back without
+   * this failing.
+   */
+  it('folds a service-status report through the shared narrowing', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    const drawn = () => JSON.stringify(get(chat.value).turns.at(-1)?.messages);
+
+    const narrowed = vi.spyOn(fleet, 'reportFrom');
+    server.update({ service_status: { severity: 'error', message: 'The API is down' } });
+    expect(narrowed, 'the fold narrows through the shared reportFrom').toHaveBeenCalled();
+    expect(drawn(), 'the report still draws').toContain('The API is down');
+    narrowed.mockRestore();
   });
 
   /**
