@@ -45,6 +45,9 @@ function stub() {
       return () => listeners.delete(fn);
     },
     onStatus: () => () => undefined,
+    // The seat made for this connection asks whether it is still alive before
+    // taking its page listeners.
+    status: () => 'open' as const,
     // The chat holds the seat's subscription for its own lifetime (Ved,
     // 2026-10-09); this stub only has to answer the pair.
     subscribe: () => ({ state: () => ({ kind: 'loading' }) }),
