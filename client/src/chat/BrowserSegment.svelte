@@ -69,6 +69,21 @@
    * from the other flags.
    */
   const closed = $derived(profiles.filter((row) => row.closed));
+
+  /**
+   * A row's own second line, in the shell's states. **A closed profile says
+   * closed and keeps the logins it still holds, whichever owner it has** -
+   * it is the row the bulk delete takes. An entry that is held but not
+   * running is NOT closed: it keeps the words its own state earns, "not
+   * opened yet" or "its driver is gone", so the two never read alike.
+   */
+  function stateText(row: ProfileRow): string {
+    if (row.closed) {
+      return `${row.owner === '' ? '' : `${row.owner} · `}closed · its logins are still here`;
+    }
+    const tail = row.running ? '' : row.opened ? ' · its driver is gone' : ' · not opened yet';
+    return `${row.owner}${tail}`;
+  }
   /**
    * The row whose delete is confirming, and the row a delete is running for:
    * Shape A - the confirm happens in the row itself (Ved's pick, 2026-10-11).
@@ -796,17 +811,7 @@
                    row that stayed. -->
               <span class="tx bad">{bulkFailed.get(row.name) ?? ''}</span>
             {:else}
-              <!-- A closed profile - a directory with no entry - says so in
-                   place of the owner it has none of: its logins are here and
-                   this row is where they go. -->
-              <span class="tx">
-                {row.owner === '' ? 'closed · its logins are still here' : row.owner}
-                {row.running || row.owner === ''
-                  ? ''
-                  : row.opened
-                    ? ' · its driver is gone'
-                    : ' · not opened yet'}
-              </span>
+              <span class="tx">{stateText(row)}</span>
             {/if}
             <!-- **The row's own door to its own browser**, the shared row's
                  show one level down: this profile's window over this

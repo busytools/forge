@@ -1177,7 +1177,7 @@ describe('the browser segment', () => {
         running: false,
         opened: false,
         windowed: false,
-        closed: true,
+        closed: false,
       },
       {
         name: 'was-open',
@@ -1185,7 +1185,7 @@ describe('the browser segment', () => {
         running: false,
         opened: true,
         windowed: false,
-        closed: true,
+        closed: false,
       },
     ]);
     const shown = show(false);
@@ -1203,6 +1203,37 @@ describe('the browser segment', () => {
     expect(rowText('was-open'), 'one that HAS been opened keeps the old line').toContain(
       'its driver is gone',
     );
+    shown.stop();
+  });
+
+  /**
+   * **A closed profile and a dead driver must not read alike.** Both are not
+   * running, and only the closed one is on the bulk list - so the row that
+   * goes says closed, whatever owner it has, and the row whose entry is
+   * still held keeps its driver words.
+   */
+  it('a closed row and a dead driver do not read alike', async () => {
+    vi.mocked(listProfiles).mockResolvedValue([
+      closedRow('kdp', 'Busytools/forge/lead'),
+      // A held entry whose driver died: not running, and not closed.
+      { ...runningRow('was-open', 'Busytools/forge/lead'), running: false },
+    ]);
+    const shown = show(false, { org: 'Busytools', project: 'forge', label: 'lead' });
+    click(shown.target.querySelector('.bz-tog'));
+    await vi.waitFor(() => expect(shownText(shown.target)).toContain('kdp'));
+
+    expect(
+      rowText(shown.target, 'kdp'),
+      'a closed profile says closed and keeps its logins note, owner and all',
+    ).toContain('Busytools/forge/lead · closed · its logins are still here');
+    expect(rowText(shown.target, 'kdp'), 'and never claims a driver that left').not.toContain(
+      'its driver is gone',
+    );
+    expect(
+      rowText(shown.target, 'was-open'),
+      'a held entry whose driver died keeps its words',
+    ).toContain('its driver is gone');
+    expect(rowText(shown.target, 'was-open'), 'and is not read as closed').not.toContain('closed');
     shown.stop();
   });
 
