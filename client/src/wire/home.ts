@@ -134,8 +134,15 @@ export interface BoardRow {
   rollup: [number, number] | null;
   /** A child's parent subject. */
   parent_subject: string | null;
-  /** The row's own transitions, in time order - the detail drawer's history. */
+  /**
+   * The row's own transitions, in time order - the detail drawer's history.
+   * The server caps what it carries (the newest of them) and `history_total`
+   * is the whole count, so the drawer words what it withholds; the withheld
+   * tail is not reachable yet (#2242).
+   */
   history: BoardTransition[];
+  /** How many transitions the row has in all, never fewer than the list above. */
+  history_total: number;
 }
 
 /**
@@ -408,6 +415,7 @@ function rowFrom(entry: unknown): BoardRow {
   const raw = (entry ?? {}) as Record<string, unknown>;
   const flat = raw['task'] === undefined || raw['task'] === null;
   const task = (flat ? raw : (raw['task'] as Record<string, unknown>)) ?? {};
+  const history = historyFrom(raw['history']);
   return {
     task: {
       // Spread first, so a field this client is newer than the sender about
@@ -447,8 +455,17 @@ function rowFrom(entry: unknown): BoardRow {
     parent_subject: (raw['parent_subject'] as string | null | undefined) ?? null,
     // A capture or a server older than the field carries none: an empty
     // history draws the drawer without the section rather than throwing.
-    history: historyFrom(raw['history']),
+    history,
+    // A server older than the field carries no count, and the whole trail
+    // is what it sent: the list's own length is the total then, which is
+    // what `row.history_total > row.history.length` reads as no cap.
+    history_total: historyTotalFrom(raw['history_total'], history.length),
   };
+}
+
+/** The row's whole transition count, never below what the row carries. */
+function historyTotalFrom(raw: unknown, shown: number): number {
+  return typeof raw === 'number' && Number.isInteger(raw) && raw >= shown ? raw : shown;
 }
 
 /**

@@ -132,7 +132,10 @@ lands on that card - **Waiting on you** when the wait is a decision, carrying
 the waiting strip's own controls (`approve`, the send-back box, the answer
 box), while a dependency or resource wait draws the section without them, its
 **History** - the row's own transitions, which the core already records for
-the worked time - and the way into the owner's session. The button, the scrim
+the worked time - and the way into the owner's session. The read caps what a
+row carries at its newest twenty, so a long trail reaches the page without
+riding every board encode, and the section words what it withholds
+(`showing the last 20 of 43`). The button, the scrim
 and Escape all close it, and the card has the keyboard back when it goes; a
 jump hands it to the card jumped to instead. The board stays behind it, so a
 reader never loses the lane they were in.

@@ -104,6 +104,7 @@ function wireWithWaiting(): typeof homeWire {
             rollup: null,
             parent_subject: null,
             history: [],
+            history_total: 0,
           },
         ],
       },

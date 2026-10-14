@@ -1167,6 +1167,7 @@ mod tests {
             rollup: None,
             parent_subject: None,
             history: Vec::new(),
+            history_total: 0,
         }
     }
 

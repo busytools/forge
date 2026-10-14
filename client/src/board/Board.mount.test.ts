@@ -74,6 +74,7 @@ function row(task: Task, over: Partial<BoardRow> = {}): BoardRow {
     rollup: null,
     parent_subject: null,
     history: [],
+    history_total: 0,
     ...over,
   };
 }
@@ -859,6 +860,38 @@ describe("the row's own page", () => {
       'https://github.com/busytools/forge/issues/2098',
       '2098',
     ]);
+  });
+
+  /**
+   * The cap is stated where it bites, and only where it bites: a drawer on a
+   * row whose carry the cap bound words the whole count beside the moves it
+   * draws, and a row that rode whole draws no line at all.
+   */
+  it('says how many moves a capped row withholds, and stays quiet otherwise', () => {
+    const capped = withHistory(row(task('cap', 'a long trail', 'in_progress')));
+    const whole = withHistory(row(task('all', 'a short trail', 'pending')));
+    summon(
+      wireWith([
+        { ...capped, history_total: 43 },
+        { ...whole, history_total: 2 },
+      ]),
+    );
+
+    const capCard = document.querySelector('.b-card[data-id="cap"]');
+    if (capCard === null) throw new Error('no card');
+    press(capCard);
+    const drawer = document.querySelector('.dr');
+    expect(drawer?.querySelector('p.dim')?.textContent?.trim(), 'the cap is stated').toBe(
+      'showing the last 2 of 43',
+    );
+    expect(drawer?.querySelectorAll('.dr-hist .h').length, 'and what it has is drawn').toBe(2);
+
+    const allCard = document.querySelector('.b-card[data-id="all"]');
+    if (allCard === null) throw new Error('no card');
+    press(allCard);
+    const next = document.querySelector('.dr');
+    expect(next?.querySelector('p.dim'), 'a row under the cap states nothing').toBeNull();
+    expect(next?.querySelectorAll('.dr-hist .h').length, 'and draws its whole trail').toBe(2);
   });
 
   it('gives the keyboard back to the card when the page closes', async () => {
