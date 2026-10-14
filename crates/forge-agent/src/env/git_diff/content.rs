@@ -324,7 +324,13 @@ mod tests {
     /// The snapshot these tests read, taken with no project env: they
     /// exercise the content walk, never identity.
     async fn scan_stats(cwd: &std::path::Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot {
-        super::super::scan(cwd, &std::collections::HashMap::new(), prev).await
+        super::super::scan_within(
+            cwd,
+            &std::collections::HashMap::new(),
+            prev,
+            super::super::TEST_GIT_BUDGET,
+        )
+        .await
     }
 
     const MODIFIED: &str = r"diff --git a/x.rs b/x.rs
