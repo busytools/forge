@@ -234,10 +234,21 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
    the door is sized like every other control on the page. */
 @media (pointer: coarse) { .band a.svc { min-height: 44px; } }
 
-/* The mock's upstream banner is not here: it hangs on a status probe the
-   core runs once, before a browser can attach, so on the web it could only
-   ever show a notice under a label it does not own. It comes back with a
-   read over a stored probe result. */
+/* The upstream banner: the core's held service status, drawn above the band
+   when the snapshot carries one. Named apart from the rail's own `.banner`,
+   which shares nothing with it but the word. */
+.upstream {
+  display: flex; align-items: center; gap: 10px;
+  border: 1px solid rgba(201,161,59,.35); background: rgba(201,161,59,.07);
+  border-radius: var(--r); padding: 10px 14px; margin-bottom: 22px;
+  font-size: 12.5px; color: var(--warn);
+}
+.upstream.bad { border-color: rgba(224,104,62,.4); background: rgba(224,104,62,.07);
+  color: var(--bad); }
+.upstream .k {
+  font-family: var(--mono); font-size: 10.5px; letter-spacing: .09em;
+  text-transform: uppercase; flex: none;
+}
 
 /* ---------- the state mark: one shape per meaning, never colour alone ----------
    Shared by the rail, the session header and the home's rows, so a state

@@ -128,9 +128,32 @@ export const HANDLERS: Record<string, Apply> = {
     return { ...held, header: { ...held.header, context } };
   },
 
+  /**
+   * An MCP operation the bridge could not finish - the mcp_status timeout
+   * being the live one. The read's own failure rides `mcp_snapshot`; this is
+   * a refresh that failed, so the servers the last good read gave stay and
+   * the section draws the failure beside them rather than going on as if
+   * nothing had failed.
+   */
+  mcp_operation_error: (held, payload) => {
+    const error = record(payload['error']);
+    const message = text(error['message']);
+    if (message === null || message === '') return held;
+    return {
+      ...held,
+      mcp_operation_error: {
+        server_name: text(error['server_name']),
+        operation: text(error['operation']) ?? '',
+        message,
+      },
+    };
+  },
+
   mcp_snapshot: (held, payload) => {
     const mcp = mcpFrom(payload);
-    return mcp === null ? held : { ...held, mcp };
+    // A read landing is the staleness ending: it supersedes any failed
+    // refresh the section was drawing.
+    return mcp === null ? held : { ...held, mcp, mcp_operation_error: null };
   },
 
   /**
@@ -431,7 +454,6 @@ export const IGNORED: readonly string[] = [
   'fatal_error',
   'forge_account_identity',
   'gotify_notification_appended',
-  'mcp_operation_error',
   'peer_envelope_appended',
   'plugins_cli_action_failed',
   'plugins_cli_action_succeeded',

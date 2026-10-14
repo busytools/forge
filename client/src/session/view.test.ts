@@ -8,6 +8,7 @@ import session from '../dev/fixtures/session.json';
 import { PROTOCOL_VERSION } from '../protocol';
 import type { AgentRow, CronEntry, HomeWire, ProjectWire, Task } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
+import { applyUpdate } from './apply';
 import {
   accountChip,
   chipState,
@@ -1669,6 +1670,53 @@ describe('the MCP rows the strip draws', () => {
       reason: 'the CLI refused',
       synthetic: true,
     });
+  });
+
+  /**
+   * **A refresh that failed draws where the rows are.** The operation error
+   * is a live frame - the mcp_status timeout - and a section that dropped it
+   * went on drawing a list nothing had refreshed, silently (rule 25). It
+   * leads the servers the last good read gave, because it is the news the
+   * reader opened the panel for.
+   */
+  it('leads a failed refresh above the servers the last read gave', () => {
+    const held = sessionFrom({
+      ...(session as unknown as Record<string, unknown>),
+      mcp: {
+        error: null,
+        servers: [{ name: 'forge', status: 'connected', tools: [] }],
+      },
+    });
+    const next = applyUpdate(held, {
+      mcp_operation_error: {
+        key: LEAD,
+        error: { server_name: null, operation: 'status', message: 'no response from the CLI' },
+      },
+    });
+
+    const rows = mcpRows(next);
+    expect(rows, 'the servers the read gave, and the failure above them').toHaveLength(2);
+    expect(rows[0], 'the failure leads, plainly, and is no server').toMatchObject({
+      k: 'servers',
+      v: 'refresh failed',
+      reason: 'no response from the CLI',
+      synthetic: true,
+    });
+    expect(rows[1]?.name, 'the server the last good read gave still draws').toBe('forge');
+  });
+
+  /** A failed refresh with nothing else to draw is still a row: the section's own state. */
+  it('draws a failed refresh even when no read ever landed', () => {
+    const next = applyUpdate(record, {
+      mcp_operation_error: {
+        key: LEAD,
+        error: { server_name: null, operation: 'status', message: 'no response from the CLI' },
+      },
+    });
+
+    const rows = mcpRows(next);
+    expect(rows, 'the failure is the whole section').toHaveLength(1);
+    expect(rows[0]?.synthetic, 'and it is no server').toBe(true);
   });
 });
 

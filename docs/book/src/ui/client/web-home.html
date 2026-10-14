@@ -155,13 +155,15 @@
      and the drawing mirrors the rule the page carries. */
   @media (pointer: coarse) { .band a.svc { min-height: 44px; } }
 
-  .banner {
+  .upstream {
     display: flex; align-items: center; gap: 10px;
     border: 1px solid rgba(201,161,59,.35); background: rgba(201,161,59,.07);
     border-radius: var(--r); padding: 10px 14px; margin-bottom: 22px;
     font-size: 12.5px; color: var(--warn);
   }
-  .banner .k {
+  .upstream.bad { border-color: rgba(224,104,62,.4); background: rgba(224,104,62,.07);
+    color: var(--bad); }
+  .upstream .k {
     font-family: var(--mono); font-size: 10.5px; letter-spacing: .09em;
     text-transform: uppercase; flex: none;
   }
@@ -943,10 +945,14 @@
     </div>
 
     <div class="cat">
-      <h4>upstream <span class="why">sits above the band, and only when there is something to say</span></h4>
-      <div class="banner">
+      <h4>upstream <span class="why">sits above the band, and only when there is something to say: the core's held service status, which the snapshot carries to a client that attached after it was raised</span></h4>
+      <div class="upstream">
         <span class="k">claude status</span>
         <span>Elevated error rates on the Messages API. Sessions may fail and retry.</span>
+      </div>
+      <div class="upstream bad">
+        <span class="k">claude status</span>
+        <span>A major outage on the Messages API. Sessions will fail.</span>
       </div>
     </div>
 

@@ -7,6 +7,7 @@
  * the fixture pins what it carries, and the source pins the rest.
  */
 
+import { reportFrom, type ServiceReport } from './fleet';
 import {
   modelStateFrom,
   narrow,
@@ -342,7 +343,14 @@ export interface HomeWire {
   /** The forge build serving the socket, which a client draws rather than its own. */
   forge_version: string;
   forge_version_short: string;
-  service_status: unknown;
+  /**
+   * The service status the core holds, which the home draws above the band -
+   * `null` when it holds none. It is the probe's own report reaching a late
+   * subscriber: the probe fires once, before a client attaches, so a page
+   * that only took the report off the update stream drew nothing for an
+   * outage that was already up.
+   */
+  service_status: ServiceReport | null;
   /** The words of the core's last fatal, which the view this client replaced printed on exit. */
   fatal_error: string | null;
 }
@@ -557,6 +565,10 @@ function estimateFrom(raw: unknown): Task['estimate'] {
 export function homeFrom(data: HomeWire): HomeWire {
   return {
     ...data,
+    // Absent, or carrying nothing wordable, reads as no report: the banner
+    // must not draw a line it cannot word, and a severity outside the two is
+    // the warning every producer defaults to.
+    service_status: reportFrom(data.service_status),
     // Absent, or carrying nothing wordable, reads as no fatal: a page must not
     // draw a stopped line it cannot word.
     fatal_error:

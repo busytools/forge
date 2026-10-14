@@ -615,6 +615,65 @@ describe('applyUpdate', () => {
       expect(next.mcp?.servers).toEqual([]);
       expect(next.mcp?.error).toBe('the bridge did not answer');
     });
+
+    /**
+     * **A failed refresh is news about the section, and the record is where a
+     * row reads it from.** The operation error is a live frame - the
+     * mcp_status timeout - and a record that dropped it left the section
+     * drawing the last good read with nothing saying so.
+     */
+    it('names a failed refresh while keeping the servers the last read gave', () => {
+      const held = applyUpdate(empty(), {
+        mcp_snapshot: {
+          key: SLOT,
+          servers: [{ name: 'forge', status: 'connected', tools: [] }],
+          error: null,
+        },
+      });
+      const next = applyUpdate(held, {
+        mcp_operation_error: {
+          key: SLOT,
+          error: { server_name: null, operation: 'status', message: 'no response from the CLI' },
+        },
+      });
+
+      expect(next.mcp_operation_error).toEqual({
+        server_name: null,
+        operation: 'status',
+        message: 'no response from the CLI',
+      });
+      expect(
+        next.mcp?.servers.map((server) => server.name),
+        'the last good read stands',
+      ).toEqual(['forge']);
+    });
+
+    /** A frame that names no words is nothing to draw, so the record stays as it was. */
+    it('drops a failed refresh that names no words', () => {
+      const next = applyUpdate(empty(), {
+        mcp_operation_error: {
+          key: SLOT,
+          error: { server_name: null, operation: 'status', message: '' },
+        },
+      });
+
+      expect(next.mcp_operation_error).toBeNull();
+    });
+
+    /** A read landing is the staleness ending: it supersedes any failed refresh. */
+    it('clears the failed refresh once a read lands', () => {
+      const failed = applyUpdate(empty(), {
+        mcp_operation_error: {
+          key: SLOT,
+          error: { server_name: null, operation: 'status', message: 'no response from the CLI' },
+        },
+      });
+      const next = applyUpdate(failed, {
+        mcp_snapshot: { key: SLOT, servers: [], error: null },
+      });
+
+      expect(next.mcp_operation_error).toBeNull();
+    });
   });
 
   describe('the parked prompt', () => {
