@@ -938,6 +938,10 @@ pub async fn conversation_for(state: &TransportState, slot: &SessionSlot) -> Opt
     if let Some(held) = state.conversations.get(slot).filter(current) {
         return Some(held);
     }
+    // **The file seeds only a seat with NO copy.** `insert` keeps what is
+    // there, so on a mismatched copy it would hand back the previous run's
+    // rows - the very answer this function exists to refuse. A mismatch goes
+    // straight to the replay, whose reseed replaces the copy in place.
     if state.conversations.get(slot).is_none()
         && let Some(held) = seed_from_transcript(state, slot).await
     {

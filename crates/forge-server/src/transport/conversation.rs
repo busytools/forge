@@ -823,6 +823,27 @@ mod tests {
         SessionSlot::lead("TestOrg", "proj")
     }
 
+    /// **A copy with no occupant answers for any occupant.** The arm is
+    /// load-bearing, not defensive: a transcript-seeded copy carries no
+    /// occupant, and reading it as "not the seat's" would drop the history of
+    /// every sleeping seat a client opens.
+    #[test]
+    fn a_copy_with_no_occupant_matches_any_occupant() {
+        let bare = Held::new(Conversation::empty());
+        assert!(
+            bare.holds_occupant(Some(&SessionId::from("6c2d3e4f-5061-4b72-8839-ad1e2f3a4b56"))),
+            "an occupant-less copy must match a live header, or a sleeping seat answers empty",
+        );
+
+        let mut seeded = Conversation::empty();
+        let old = SessionId::from("1f2e3d4c-5b6a-4978-8801-1234567890ab");
+        let new = SessionId::from("2a3b4c5d-6e7f-4809-9a1b-234567890abc");
+        seeded.set_occupant(Some(old.clone()));
+        let seeded = Held::new(seeded);
+        assert!(seeded.holds_occupant(Some(&old)), "a copy of the current occupant is the seat's",);
+        assert!(!seeded.holds_occupant(Some(&new)), "a copy of another occupant is no copy",);
+    }
+
     fn a_model() -> forge_primitives::runtime::CurrentModel {
         forge_primitives::runtime::CurrentModel {
             requested_id: None,
