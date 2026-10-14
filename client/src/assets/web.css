@@ -2124,7 +2124,11 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
   backdrop-filter: blur(10px); box-shadow: 0 14px 38px rgba(0,0,0,.42);
   display: flex; flex-direction: column;
   transition: border-color .3s ease; }
-.surf > * + * { border-top: 1px solid var(--line); }
+/* Lanes are split by hairlines; the hidden status line is not a lane. Counting
+   it as one grew the band a pixel and drew a hairline from the gate, which is
+   the open's own flinch - the span is absolutely placed and adds
+   nothing to the band but its words. */
+.surf > :not(.sr) + :not(.sr) { border-top: 1px solid var(--line); }
 .surf.rec { border-color: color-mix(in srgb, var(--accent) 35%, var(--hot)); }
 .surf.tr { border-color: var(--blue); }
 .surf.done { border-color: var(--ok); }
@@ -2132,13 +2136,24 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
 .surf:focus-within:not(.rec, .tr, .done, .err) { border-color: var(--accent); }
 /* The capture being opened. The band breathes rather than naming itself in a
    line: a line that appears with the open moves the composer, and this state
-   is where the state belongs anyway (Ved, in the #2159 look). The pair of
-   colours is the rest border and the accent, so the resting band and the
-   working one are one family. */
-.surf.load { border-color: var(--ctl); animation: surf-open 1.2s ease-in-out infinite; }
+   is where the state belongs anyway (Ved, in the #2159 look). The breath is
+   the accent dimmed toward the rest colour, so the resting band and the
+   working one are one family, and the dimming is shallower and slower than
+   the first cut of it - a pulse that reads as a breath. */
+/* **The accent lands before the breath starts.** The transition carries the
+   border to the accent from whatever the band is showing, and the cycle waits
+   out that same clock, so its first frame is the colour already on screen.
+   Opening on the cycle's own first frame is the snap: a focused band sits at
+   the accent, and the rest-colour frame dropped it there in one frame. */
+.surf.load {
+  --arrive: 300ms;
+  border-color: var(--accent);
+  transition: border-color var(--arrive) ease-in-out;
+  animation: surf-open 1.8s ease-in-out var(--arrive) infinite;
+}
 @keyframes surf-open {
-  0%, 100% { border-color: var(--ctl); }
-  50% { border-color: var(--accent); }
+  0%, 100% { border-color: var(--accent); }
+  50% { border-color: color-mix(in srgb, var(--accent) 55%, var(--ctl)); }
 }
 /* Colour and motion are both decoration here: the state is also announced in
    words, and a reader who has asked for less motion gets the colour alone. */
