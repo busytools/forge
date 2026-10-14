@@ -13,6 +13,7 @@ import {
   listProfiles,
   profileWindowed,
   showBrowser,
+  type ProfileRow,
 } from '../browser/host';
 import BrowserSegment from './BrowserSegment.svelte';
 
@@ -289,7 +290,14 @@ describe('the browser segment', () => {
 
   it('keeps the row and says why when the close is refused', async () => {
     vi.mocked(listProfiles).mockResolvedValue([
-      { name: 'hunt', owner: 'Busytools/forge/lead', running: true, opened: true, windowed: false },
+      {
+        name: 'hunt',
+        owner: 'Busytools/forge/lead',
+        running: true,
+        opened: true,
+        windowed: false,
+        closed: false,
+      },
     ]);
     const shown = show(false);
     click(shown.target.querySelector('.bz-tog'));
@@ -319,7 +327,14 @@ describe('the browser segment', () => {
 
   it('arms the delete in the row itself, and keep takes it back', async () => {
     vi.mocked(listProfiles).mockResolvedValue([
-      { name: 'hunt', owner: 'Busytools/forge/lead', running: true, opened: true, windowed: false },
+      {
+        name: 'hunt',
+        owner: 'Busytools/forge/lead',
+        running: true,
+        opened: true,
+        windowed: false,
+        closed: false,
+      },
     ]);
     const shown = show(false);
     click(shown.target.querySelector('.bz-tog'));
@@ -354,7 +369,14 @@ describe('the browser segment', () => {
 
   it('deletes after the confirm and says it is working while it waits', async () => {
     vi.mocked(listProfiles).mockResolvedValue([
-      { name: 'hunt', owner: 'Busytools/forge/lead', running: true, opened: true, windowed: false },
+      {
+        name: 'hunt',
+        owner: 'Busytools/forge/lead',
+        running: true,
+        opened: true,
+        windowed: false,
+        closed: false,
+      },
     ]);
     const gate: { finish?: () => void } = {};
     vi.mocked(deleteProfile).mockImplementation(
@@ -393,7 +415,14 @@ describe('the browser segment', () => {
 
   it('keeps the panel open under a pointer inside it and lets the delete land', async () => {
     vi.mocked(listProfiles).mockResolvedValue([
-      { name: 'hunt', owner: 'Busytools/forge/lead', running: true, opened: true, windowed: false },
+      {
+        name: 'hunt',
+        owner: 'Busytools/forge/lead',
+        running: true,
+        opened: true,
+        windowed: false,
+        closed: false,
+      },
     ]);
     const shown = show(false);
     click(shown.target.querySelector('.bz-tog'));
@@ -434,7 +463,14 @@ describe('the browser segment', () => {
     // outcome line it is about to draw, up.
     vi.mocked(deleteProfile).mockImplementation(() => Promise.resolve(undefined));
     vi.mocked(listProfiles).mockResolvedValue([
-      { name: 'hunt', owner: 'Busytools/forge/lead', running: true, opened: true, windowed: false },
+      {
+        name: 'hunt',
+        owner: 'Busytools/forge/lead',
+        running: true,
+        opened: true,
+        windowed: false,
+        closed: false,
+      },
     ]);
     const shown = show(false);
     click(shown.target.querySelector('.bz-tog'));
@@ -460,7 +496,14 @@ describe('the browser segment', () => {
     // in place, and `mockClear` in `afterEach` clears calls, not those.
     vi.mocked(deleteProfile).mockImplementation(() => Promise.resolve(undefined));
     vi.mocked(listProfiles).mockResolvedValue([
-      { name: 'hunt', owner: 'Busytools/forge/lead', running: true, opened: true, windowed: false },
+      {
+        name: 'hunt',
+        owner: 'Busytools/forge/lead',
+        running: true,
+        opened: true,
+        windowed: false,
+        closed: false,
+      },
     ]);
     const shown = show(false);
     click(shown.target.querySelector('.bz-tog'));
@@ -483,7 +526,14 @@ describe('the browser segment', () => {
 
   it('re-reads when the host says it swept', async () => {
     vi.mocked(listProfiles).mockResolvedValue([
-      { name: 'hunt', owner: 'Busytools/forge/lead', running: true, opened: true, windowed: false },
+      {
+        name: 'hunt',
+        owner: 'Busytools/forge/lead',
+        running: true,
+        opened: true,
+        windowed: false,
+        closed: false,
+      },
     ]);
     const shown = show(false);
     await vi.waitFor(() => expect(shownText(shown.target)).toContain('1 profile'));
@@ -502,7 +552,14 @@ describe('the browser segment', () => {
 
   it('keeps the row and says why when the delete is refused', async () => {
     vi.mocked(listProfiles).mockResolvedValue([
-      { name: 'hunt', owner: 'Busytools/forge/lead', running: true, opened: true, windowed: false },
+      {
+        name: 'hunt',
+        owner: 'Busytools/forge/lead',
+        running: true,
+        opened: true,
+        windowed: false,
+        closed: false,
+      },
     ]);
     vi.mocked(deleteProfile).mockRejectedValueOnce('no profile named hunt on this client');
     const shown = show(false);
@@ -520,13 +577,21 @@ describe('the browser segment', () => {
 
   it("keeps each row's deleting mark while another row's delete is still running", async () => {
     vi.mocked(listProfiles).mockResolvedValue([
-      { name: 'hunt', owner: 'Busytools/forge/lead', running: true, opened: true, windowed: false },
+      {
+        name: 'hunt',
+        owner: 'Busytools/forge/lead',
+        running: true,
+        opened: true,
+        windowed: false,
+        closed: false,
+      },
       {
         name: 'scout',
         owner: 'Busytools/forge/lead',
         running: true,
         opened: true,
         windowed: false,
+        closed: false,
       },
     ]);
     const gates: Record<string, () => void> = {};
@@ -567,6 +632,7 @@ describe('the browser segment', () => {
         running: true,
         opened: true,
         windowed: false,
+        closed: false,
       },
     ]);
     gates.hunt?.();
@@ -593,7 +659,14 @@ describe('the browser segment', () => {
 
   it('lists a closed profile with no close and a way to delete it', async () => {
     vi.mocked(listProfiles).mockResolvedValue([
-      { name: 'hunt', owner: '', running: false, opened: true, windowed: false },
+      {
+        name: 'hunt',
+        owner: '',
+        running: false,
+        opened: true,
+        windowed: false,
+        closed: true,
+      },
     ]);
     const shown = show(false, { org: 'Busytools', project: 'forge', label: 'lead' });
     click(shown.target.querySelector('.bz-tog'));
@@ -606,16 +679,199 @@ describe('the browser segment', () => {
       list(shown.target)?.querySelector('.bz-close'),
       'nothing is open for close to close',
     ).toBeNull();
+    const row = [...(list(shown.target)?.querySelectorAll('.bz-it') ?? [])].find(
+      (it) => it.querySelector('.nm')?.textContent === 'hunt',
+    );
     expect(
-      list(shown.target)?.querySelector('.bz-del'),
+      row?.querySelector('.bz-del'),
       'and the delete is the door that reaches it',
     ).not.toBeNull();
     shown.stop();
   });
 
+  /** A closed profile row: no live entry behind it, its files still here. */
+  const closedRow = (name: string, owner = ''): ProfileRow => ({
+    name,
+    owner,
+    running: false,
+    opened: true,
+    windowed: false,
+    closed: true,
+  });
+
+  /** A row whose driver is there to answer. */
+  const runningRow = (name: string, owner = 'Busytools/forge/lead'): ProfileRow => ({
+    name,
+    owner,
+    running: true,
+    opened: true,
+    windowed: false,
+    closed: false,
+  });
+
+  /** The row whose `.nm` reads `name`, as one string (the PORTALED panel's). */
+  const rowText = (target: HTMLElement, name: string): string =>
+    [...(list(target)?.querySelectorAll('.bz-it') ?? [])]
+      .find((it) => it.querySelector('.nm')?.textContent === name)
+      ?.textContent?.trim() ?? '';
+
+  /**
+   * **The bulk door lists what it will take before it acts**, and the list is
+   * exactly the closed rows: a running profile's logins are not on it, a
+   * live seat's closed profile is, and neither is one whose driver merely
+   * died - that name is still held, and its logins are still its seat's.
+   */
+  it('the delete-all lists the closed profiles before it acts', async () => {
+    const live = 'Busytools/forge/lead';
+    vi.mocked(listProfiles).mockResolvedValue([
+      closedRow('hunt', live),
+      closedRow('kdp-sweep'),
+      runningRow('shown', live),
+      // A dead driver keeps its entry - the shell holds the name - so it is
+      // not running and not closed either.
+      { ...runningRow('dead-driver', live), running: false },
+    ]);
+    const shown = show(false, { org: 'Busytools', project: 'forge', label: 'lead' });
+    click(shown.target.querySelector('.bz-tog'));
+    await vi.waitFor(() => expect(shownText(shown.target)).toContain('kdp-sweep'));
+
+    expect(shownText(shown.target), 'the door names how many it would take').toContain('2 closed');
+    click(list(shown.target)?.querySelector('.bz-del-all'));
+    const bulk = list(shown.target)?.querySelector('.bz-bulk');
+
+    expect(bulk, 'the confirm is what the door arms, not a delete').not.toBeNull();
+    expect(bulk?.textContent, "a live seat's closed profile is on the list").toContain('hunt');
+    expect(bulk?.textContent, 'with the seat it belongs to').toContain(live);
+    expect(bulk?.textContent, 'an ownerless one is on it too, said plainly').toContain('no owner');
+    expect(bulk?.textContent, 'and the profile that is not closed is not on it').not.toContain(
+      'shown',
+    );
+    expect(
+      bulk?.textContent,
+      'nor the one whose driver died: its name is still held, so it is not closed',
+    ).not.toContain('dead-driver');
+    expect(deleteProfile, 'nothing is deleted before the confirm').not.toHaveBeenCalled();
+
+    // Escape backs out of the confirm, not the panel, with the focus kept.
+    const keep = list(shown.target)?.querySelector<HTMLButtonElement>('[data-keep-bulk]') ?? null;
+    if (keep === null) throw new Error('no bulk keep');
+    keep.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    flushSync();
+    expect(
+      list(shown.target)?.querySelector('.bz-bulk'),
+      'escape backs out of the confirm, not the panel',
+    ).toBeNull();
+    expect(list(shown.target), 'and the list the reader was in stays open').not.toBeNull();
+    expect(document.activeElement, 'with the focus back on the toggle').toBe(toggle(shown.target));
+    shown.stop();
+  });
+
+  /**
+   * **One delete per closed profile, run the row's own way**: each row
+   * reports its own work while the shell waits, and the summary says what
+   * went once they all settle.
+   */
+  it("the delete-all runs the row's own delete once per closed profile", async () => {
+    const gates: Record<string, () => void> = {};
+    vi.mocked(deleteProfile).mockImplementation(
+      (name: string) =>
+        new Promise<void>((resolve) => {
+          gates[name] = resolve;
+        }),
+    );
+    vi.mocked(listProfiles).mockResolvedValue([
+      closedRow('hunt'),
+      closedRow('kdp-sweep'),
+      runningRow('shown'),
+    ]);
+    const shown = show(false);
+    click(shown.target.querySelector('.bz-tog'));
+    await vi.waitFor(() => expect(shownText(shown.target)).toContain('kdp-sweep'));
+
+    click(list(shown.target)?.querySelector('.bz-del-all'));
+    click(list(shown.target)?.querySelector('.bz-bulk .bz-del.confirm'));
+    const marks = (): number => (shownText(shown.target).match(/deleting\.\.\./g) ?? []).length;
+    await vi.waitFor(() => {
+      expect(marks(), 'one delete per closed row, each reporting its own work').toBe(2);
+    });
+    expect(
+      vi
+        .mocked(deleteProfile)
+        .mock.calls.map((call) => call[0])
+        .sort(),
+      'exactly the closed names went to the shell, once each',
+    ).toEqual(['hunt', 'kdp-sweep']);
+    expect(
+      list(shown.target)?.querySelector('.bz-del-all'),
+      'and the door waits while the deletes run',
+    ).toBeNull();
+
+    // The deletes settle: the rows fall away with their files and the
+    // summary says what went.
+    vi.mocked(listProfiles).mockResolvedValue([runningRow('shown')]);
+    gates.hunt?.();
+    gates['kdp-sweep']?.();
+    await vi.waitFor(() => {
+      expect(shownText(shown.target), 'the summary says what went').toContain(
+        'deleted 2 closed profiles and their saved logins',
+      );
+    });
+    expect(
+      list(shown.target)?.querySelector('.bz-del-all'),
+      'nothing closed is left, so the door goes with them',
+    ).toBeNull();
+    shown.stop();
+  });
+
+  /**
+   * **A refused delete in the bulk leaves its profile standing and says
+   * why** - on the row that stayed, in the shell's own words - while the
+   * rest go and the summary says what went.
+   */
+  it('a refused bulk delete leaves its profile and says why, while the rest go', async () => {
+    // The shell refuses the FIRST name it is handed - hunt, in the list's own
+    // order - and takes the second. A rejection reason is the command's own
+    // string, which is why `mockRejectedValueOnce` carries it here.
+    vi.mocked(deleteProfile).mockResolvedValue(undefined);
+    vi.mocked(deleteProfile).mockRejectedValueOnce(
+      'the profile could not be removed: it is in use',
+    );
+    vi.mocked(listProfiles).mockResolvedValue([closedRow('hunt'), closedRow('kdp-sweep')]);
+    const shown = show(false);
+    click(shown.target.querySelector('.bz-tog'));
+    await vi.waitFor(() => expect(shownText(shown.target)).toContain('kdp-sweep'));
+
+    click(list(shown.target)?.querySelector('.bz-del-all'));
+    click(list(shown.target)?.querySelector('.bz-bulk .bz-del.confirm'));
+    // The shell refused hunt and took kdp-sweep: the re-read answers what is
+    // left.
+    vi.mocked(listProfiles).mockResolvedValue([closedRow('hunt')]);
+    await vi.waitFor(() => {
+      expect(
+        rowText(shown.target, 'hunt'),
+        "the shell's words land on the row that stayed",
+      ).toContain('the profile could not be removed: it is in use');
+    });
+    expect(
+      [...(list(shown.target)?.querySelectorAll('.bz-it .nm') ?? [])].map((nm) => nm.textContent),
+      'and the profile that went is off the list, the refused one left on it',
+    ).toEqual(['shared', 'hunt']);
+    expect(shownText(shown.target), 'the summary says what went').toContain(
+      'deleted 1 closed profile and its saved logins',
+    );
+    shown.stop();
+  });
+
   it('takes escape as leaving the confirm, not the panel', async () => {
     vi.mocked(listProfiles).mockResolvedValue([
-      { name: 'hunt', owner: 'Busytools/forge/lead', running: true, opened: true, windowed: false },
+      {
+        name: 'hunt',
+        owner: 'Busytools/forge/lead',
+        running: true,
+        opened: true,
+        windowed: false,
+        closed: false,
+      },
     ]);
     const shown = show(false);
     click(shown.target.querySelector('.bz-tog'));
@@ -636,7 +892,14 @@ describe('the browser segment', () => {
 
   it('moves the focus onto keep when a delete arms, and escape backs out from there', async () => {
     vi.mocked(listProfiles).mockResolvedValue([
-      { name: 'hunt', owner: 'Busytools/forge/lead', running: true, opened: true, windowed: false },
+      {
+        name: 'hunt',
+        owner: 'Busytools/forge/lead',
+        running: true,
+        opened: true,
+        windowed: false,
+        closed: false,
+      },
     ]);
     const shown = show(false);
     click(shown.target.querySelector('.bz-tog'));
@@ -869,7 +1132,14 @@ describe('the browser segment', () => {
     // carry this page's seat - that is what makes another seat's profile
     // unreachable here - and the rows drawn are the ones the shell served.
     vi.mocked(listProfiles).mockResolvedValue([
-      { name: 'mine', owner: 'Org/proj/me', running: true, opened: true, windowed: false },
+      {
+        name: 'mine',
+        owner: 'Org/proj/me',
+        running: true,
+        opened: true,
+        windowed: false,
+        closed: false,
+      },
     ]);
     const shown = show(false, { org: 'Org', project: 'proj', label: 'me' });
     await vi.waitFor(() => {
@@ -907,6 +1177,7 @@ describe('the browser segment', () => {
         running: false,
         opened: false,
         windowed: false,
+        closed: false,
       },
       {
         name: 'was-open',
@@ -914,6 +1185,7 @@ describe('the browser segment', () => {
         running: false,
         opened: true,
         windowed: false,
+        closed: false,
       },
     ]);
     const shown = show(false);
@@ -931,6 +1203,37 @@ describe('the browser segment', () => {
     expect(rowText('was-open'), 'one that HAS been opened keeps the old line').toContain(
       'its driver is gone',
     );
+    shown.stop();
+  });
+
+  /**
+   * **A closed profile and a dead driver must not read alike.** Both are not
+   * running, and only the closed one is on the bulk list - so the row that
+   * goes says closed, whatever owner it has, and the row whose entry is
+   * still held keeps its driver words.
+   */
+  it('a closed row and a dead driver do not read alike', async () => {
+    vi.mocked(listProfiles).mockResolvedValue([
+      closedRow('kdp', 'Busytools/forge/lead'),
+      // A held entry whose driver died: not running, and not closed.
+      { ...runningRow('was-open', 'Busytools/forge/lead'), running: false },
+    ]);
+    const shown = show(false, { org: 'Busytools', project: 'forge', label: 'lead' });
+    click(shown.target.querySelector('.bz-tog'));
+    await vi.waitFor(() => expect(shownText(shown.target)).toContain('kdp'));
+
+    expect(
+      rowText(shown.target, 'kdp'),
+      'a closed profile says closed and keeps its logins note, owner and all',
+    ).toContain('Busytools/forge/lead · closed · its logins are still here');
+    expect(rowText(shown.target, 'kdp'), 'and never claims a driver that left').not.toContain(
+      'its driver is gone',
+    );
+    expect(
+      rowText(shown.target, 'was-open'),
+      'a held entry whose driver died keeps its words',
+    ).toContain('its driver is gone');
+    expect(rowText(shown.target, 'was-open'), 'and is not read as closed').not.toContain('closed');
     shown.stop();
   });
 
@@ -954,7 +1257,14 @@ describe('the browser segment', () => {
    *  the button said hide, so a silence would read as done. */
   it('a profile whose window is up says hide, and a refused hide is drawn', async () => {
     vi.mocked(listProfiles).mockResolvedValue([
-      { name: 'hunt', owner: 'Org/proj/me', running: true, opened: true, windowed: true },
+      {
+        name: 'hunt',
+        owner: 'Org/proj/me',
+        running: true,
+        opened: true,
+        windowed: true,
+        closed: false,
+      },
     ]);
     vi.mocked(hideBrowser).mockResolvedValueOnce('no browser profile is open under hunt');
     const shown = show(false, { org: 'Org', project: 'proj', label: 'me' });
