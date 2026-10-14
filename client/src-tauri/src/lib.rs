@@ -162,16 +162,22 @@ mod commands {
     /// carries on, and a press then opens the device itself exactly as it
     /// did before there was a hold. The open blocks on hardware, so it runs
     /// off the main thread like the take's.
+    ///
+    /// The hold also says which page load it comes from, which is how a
+    /// reload mid-take is caught: a take left recording by a page that is
+    /// gone can be ended by nothing else, so a hold from another page ends it
+    /// rather than being answered by it.
     #[tauri::command]
     pub async fn client_mic_hold(
         bridge: tauri::State<'_, Arc<Bridge>>,
         mic: tauri::State<'_, Arc<crate::mic::Mic>>,
         device: Option<String>,
+        page: String,
     ) -> Result<Value, String> {
         let bridge = Arc::clone(bridge.inner());
         let mic = Arc::clone(mic.inner());
         let answered = tauri::async_runtime::spawn_blocking(move || {
-            mic.hold(&bridge, device).map(|held| crate::mic::device_json(&held))
+            mic.hold(&bridge, device, &page).map(|held| crate::mic::device_json(&held))
         })
         .await
         .map_err(|error| error.to_string())?;
@@ -197,16 +203,21 @@ mod commands {
     ///
     /// The frames arrive as `client://mic` events while the take runs, and
     /// only then: a held stream's audio belongs to no take and is dropped.
+    ///
+    /// A press says which page load it comes from the way a hold does, so the
+    /// first press after a reload ends the take the discarded page left
+    /// rather than being refused by it.
     #[tauri::command]
     pub async fn client_mic_start(
         bridge: tauri::State<'_, Arc<Bridge>>,
         mic: tauri::State<'_, Arc<crate::mic::Mic>>,
         device: Option<String>,
+        page: String,
     ) -> Result<Value, String> {
         let bridge = Arc::clone(bridge.inner());
         let mic = Arc::clone(mic.inner());
         tauri::async_runtime::spawn_blocking(move || {
-            mic.start(&bridge, device).map(|held| crate::mic::device_json(&held))
+            mic.start(&bridge, device, &page).map(|held| crate::mic::device_json(&held))
         })
         .await
         .map_err(|error| error.to_string())?
