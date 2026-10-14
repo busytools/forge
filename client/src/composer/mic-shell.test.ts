@@ -9,16 +9,23 @@ const shell = vi.hoisted(() => {
   const invoked: { command: string; args: unknown }[] = [];
   const hearing: { event: string; handler: ((event: { payload: number[] }) => void) | null }[] = [];
   /** What the shell answers the NEXT start with, when a case wants a refusal. */
-  const refuses: { why: string | null } = { why: null };
+  const refuses: { why: string | null; hold: string | null } = { why: null, hold: null };
   /** The input the shell reports for the NEXT start, the way `client_mic_start` does. */
   const opens: { resolved: { id: string; label: string } | null } = { resolved: null };
+  /** Whether this run is the shell's own leg, which is what the hold needs. */
+  const inTauri = { held: true };
   return {
     invoked,
     hearing,
     refuses,
     opens,
+    inTauri,
+    isTauri: (): boolean => inTauri.held,
     invoke: (command: string, args?: unknown): Promise<unknown> => {
       invoked.push({ command, args });
+      if (command === 'client_mic_hold' && refuses.hold !== null) {
+        return Promise.reject(new Error(refuses.hold));
+      }
       if (command === 'client_mic_start') {
         if (refuses.why !== null) return Promise.reject(new Error(refuses.why));
         return Promise.resolve(opens.resolved);
@@ -41,10 +48,13 @@ const shell = vi.hoisted(() => {
   };
 });
 
-vi.mock('@tauri-apps/api/core', () => ({ invoke: shell.invoke }));
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: shell.invoke,
+  isTauri: shell.isTauri,
+}));
 vi.mock('@tauri-apps/api/event', () => ({ listen: shell.listen }));
 
-import { ShellMic } from './mic-shell';
+import { holdShellMic, ShellMic } from './mic-shell';
 
 /** The live `client://mic` handler, or a failure if none is registered. */
 function handler(): (event: { payload: number[] }) => void {
@@ -57,6 +67,9 @@ beforeEach(() => {
   shell.invoked.length = 0;
   shell.hearing.length = 0;
   shell.opens.resolved = null;
+  shell.refuses.why = null;
+  shell.refuses.hold = null;
+  shell.inTauri.held = true;
 });
 
 describe('the shell capture', () => {
@@ -121,5 +134,37 @@ describe('the shell capture', () => {
       shell.hearing.every((entry) => entry.handler === null),
       'a listener left up would feed the next take frames from a device it never opened',
     ).toBe(true);
+  });
+});
+
+describe('the hold', () => {
+  it('keeps the picked input open, so the next press records from the press', async () => {
+    await holdShellMic('coreaudio:one');
+    expect(
+      shell.invoked,
+      'the hold is the shell opening the device and keeping it, before any take',
+    ).toEqual([{ command: 'client_mic_hold', args: { device: 'coreaudio:one' } }]);
+  });
+
+  it('holds the system default when the pick is cleared', async () => {
+    await holdShellMic(null);
+    expect(
+      shell.invoked[0]?.args,
+      'a cleared pick is the default, which is what a press asks',
+    ).toEqual({ device: null });
+  });
+
+  it('holds nothing in a browser, where the shell is not the one capturing', async () => {
+    shell.inTauri.held = false;
+    await holdShellMic('coreaudio:one');
+    expect(shell.invoked, 'the web leg has no shell to hold a device in').toEqual([]);
+  });
+
+  it('is not an error when the shell will not open the device', async () => {
+    shell.refuses.hold = 'no input device named "coreaudio:gone"';
+    await expect(
+      holdShellMic('coreaudio:gone'),
+      'the press then opens the device itself, exactly as it did before there was a hold',
+    ).resolves.toBeUndefined();
   });
 });
