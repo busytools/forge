@@ -54,6 +54,24 @@ pub enum WorktreeError {
     /// `git worktree add` ran but exited non-zero. Carries git's stderr.
     #[error("git worktree add failed: {0}")]
     CreateFailed(String),
+    /// [`remove_orphaned_worktree_dir`] was handed a path that is not a
+    /// direct child of the repo's `.claude/worktrees` root.
+    #[error("refusing to remove {path}: not a worktree under {root}")]
+    OutsideWorktreesRoot { path: String, root: String },
+    /// [`remove_orphaned_worktree_dir`] was handed something that is not
+    /// a plain directory (a file, a symlink, a missing path), so there
+    /// is nothing safe to delete.
+    #[error("refusing to remove {0}: not a directory")]
+    NotAPlainDirectory(String),
+    /// git still lists the path as a worktree, so it is not a leftover:
+    /// its registration is intact and git may be holding uncommitted
+    /// work in it. Also returned when the registration cannot be read -
+    /// refusing is the safe direction.
+    #[error("refusing to remove {0}: git still lists it as a worktree")]
+    StillRegistered(String),
+    /// The leftover directory itself could not be deleted from disk.
+    #[error("failed to delete the leftover worktree directory {path}: {error}")]
+    LeftoverUndeletable { path: String, error: String },
 }
 
 /// Why a worktree is not safe to remove, or `None` when it is clean.
@@ -135,6 +153,73 @@ pub fn remove_worktree(path: &Path, force: bool) -> Result<(), WorktreeError> {
     } else {
         Err(WorktreeError::RemoveFailed(String::from_utf8_lossy(&output.stderr).trim().to_owned()))
     }
+}
+
+/// Delete the directory a failed [`remove_worktree`] left behind, once
+/// git no longer lists it as a worktree.
+///
+/// `git worktree remove` deregisters the path before it walks the tree,
+/// so a delete that fails part-way - a build still writing
+/// into `target/` while the removal runs, which surfaces as "Directory
+/// not empty" - leaves the directory with no registration at all: the
+/// tree can no longer be read by git, and every later removal refuses it
+/// as "not a working tree". The branch, which is where the work actually
+/// lives, is untouched by any of this.
+///
+/// Only the directory is left to delete, and only when the path is
+/// exactly `<repo>/.claude/worktrees/<name>` and git no longer lists it;
+/// anything else refuses rather than guesses. A still-registered
+/// worktree is not a leftover - git may be holding uncommitted work in
+/// it, and `git worktree remove` is the only path allowed to delete one.
+pub fn remove_orphaned_worktree_dir(repo: &Path, path: &Path) -> Result<(), WorktreeError> {
+    let root = repo.join(".claude/worktrees");
+    // The gate is lexical, not a real-path guarantee: `parent` and
+    // `file_name` are compared as path components and nothing here
+    // resolves symlinks, so a symlinked `.claude/worktrees` root would
+    // aim the delete at that link's target - forge's own single-user
+    // namespace. `file_name` is None for a path ending in `..`, which
+    // would otherwise pass the parent test and aim the delete at
+    // `.claude`.
+    if path.parent() != Some(root.as_path()) || path.file_name().is_none() {
+        return Err(WorktreeError::OutsideWorktreesRoot {
+            path: path.display().to_string(),
+            root: root.display().to_string(),
+        });
+    }
+    // `symlink_metadata`, so a symlink at the path is refused rather
+    // than followed.
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_dir() => {}
+        _ => return Err(WorktreeError::NotAPlainDirectory(path.display().to_string())),
+    }
+    if worktree_registered(repo, path) {
+        return Err(WorktreeError::StillRegistered(path.display().to_string()));
+    }
+    std::fs::remove_dir_all(path).map_err(|error| WorktreeError::LeftoverUndeletable {
+        path: path.display().to_string(),
+        error: error.to_string(),
+    })
+}
+
+/// Whether git still lists `path` as one of `repo`'s worktrees. A repo
+/// git cannot read answers `true`, the refusing direction.
+fn worktree_registered(repo: &Path, path: &Path) -> bool {
+    // Canonicalised on both sides: the listed path and the caller's can
+    // disagree on a symlinked prefix (`/tmp` vs `/private/tmp` on macOS)
+    // while naming the same directory.
+    let Some(ours) = std::fs::canonicalize(path).ok() else {
+        return true;
+    };
+    let Ok(out) = scrubbed_git(repo, &["worktree", "list", "--porcelain"]).output() else {
+        return true;
+    };
+    if !out.status.success() {
+        return true;
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| line.strip_prefix("worktree "))
+        .any(|listed| std::fs::canonicalize(listed).is_ok_and(|l| l == ours))
 }
 
 /// What [`ensure_worker_worktree`] had to do, so a caller rolling back
@@ -1348,6 +1433,103 @@ mod tests {
         run_git(&wt, &["add", "."]);
         remove_worktree(&wt, true).expect("force removes a dirty worktree");
         assert!(!wt.exists(), "worktree dir gone after force remove");
+    }
+
+    /// The leftover state a failed delete leaves: the path deregistered,
+    /// the directory still on disk with the build tree in it. `git
+    /// worktree remove` refuses that state for good, and the fallback
+    /// finishes the job on the one path it was handed.
+    #[test]
+    fn orphan_removal_removes_a_deregistered_leftover_directory() {
+        let (dir, wt, _branch) = init_repo_with_worker_worktree("leftover");
+        fs::create_dir_all(wt.join("target").join("debug")).expect("target dir");
+        fs::write(wt.join("target").join("debug").join("obj.o"), "x").expect("object file");
+        fs::remove_dir_all(dir.path().join(".git").join("worktrees").join("leftover"))
+            .expect("deregister the worktree");
+        // Fixture precondition, asserted rather than assumed so a git
+        // that stops refusing fails here instead of passing without the
+        // fallback.
+        assert!(
+            remove_worktree(&wt, true).is_err(),
+            "fixture precondition: git refuses a deregistered worktree"
+        );
+        assert!(wt.exists(), "and the refusal leaves the directory on disk");
+
+        remove_orphaned_worktree_dir(dir.path(), &wt).expect("the leftover directory removes");
+
+        assert!(!wt.exists(), "the leftover directory is gone");
+    }
+
+    /// A registered worktree is not a leftover: git may be holding
+    /// uncommitted work in it, and `git worktree remove` (with its own
+    /// clean check) stays the only path allowed to delete one.
+    #[test]
+    fn orphan_removal_refuses_a_registered_worktree() {
+        let (dir, wt, _branch) = init_repo_with_worker_worktree("registered");
+
+        let err = remove_orphaned_worktree_dir(dir.path(), &wt).expect_err("refused");
+
+        assert!(
+            matches!(err, WorktreeError::StillRegistered(_)),
+            "the refusal names the registration: {err:?}"
+        );
+        assert!(wt.exists(), "the registered worktree is untouched");
+        assert!(worktree_registered(dir.path(), &wt), "and git still lists it");
+    }
+
+    /// Anything that is not a direct child of the worktrees root is
+    /// refused rather than guessed at - the main checkout above all.
+    #[test]
+    fn orphan_removal_refuses_paths_outside_the_worktrees_root() {
+        let (dir, wt, _branch) = init_repo_with_worker_worktree("elsewhere");
+        fs::create_dir_all(dir.path().join("some-dir")).expect("unrelated dir");
+        let root = wt.parent().expect("worktrees root").to_path_buf();
+        let targets =
+            [dir.path().to_path_buf(), root.clone(), root.join(".."), dir.path().join("some-dir")];
+        for target in targets {
+            let err = remove_orphaned_worktree_dir(dir.path(), &target).expect_err("refused");
+            assert!(
+                matches!(err, WorktreeError::OutsideWorktreesRoot { .. }),
+                "the refusal is about the path, not the caller: {err:?} for {target:?}"
+            );
+        }
+        assert!(dir.path().join("some-dir").is_dir(), "nothing outside the root was touched");
+        assert!(root.is_dir(), "the worktrees root stands");
+        assert!(wt.exists(), "the worktree it does hold stands");
+    }
+
+    /// A symlink or a plain file where the directory should be is
+    /// refused, not followed or deleted.
+    #[test]
+    fn orphan_removal_refuses_a_non_directory() {
+        let (dir, wt, _branch) = init_repo_with_worker_worktree("shape");
+        std::fs::remove_dir_all(dir.path().join(".git").join("worktrees").join("shape"))
+            .expect("deregister the worktree");
+        std::fs::remove_dir_all(&wt).expect("clear the worktree dir");
+        let elsewhere = dir.path().join("precious");
+        fs::create_dir_all(&elsewhere).expect("precious dir");
+        fs::write(elsewhere.join("keep.txt"), "keep").expect("keep file");
+        std::os::unix::fs::symlink(&elsewhere, &wt).expect("symlink at the worktree path");
+
+        let err = remove_orphaned_worktree_dir(dir.path(), &wt).expect_err("refused");
+
+        assert!(
+            matches!(err, WorktreeError::NotAPlainDirectory(_)),
+            "a symlink is not a directory to delete: {err:?}"
+        );
+        assert!(
+            elsewhere.join("keep.txt").exists(),
+            "the symlink's target was not deleted through the link"
+        );
+
+        fs::remove_file(&wt).expect("clear the symlink");
+        fs::write(&wt, "not a directory").expect("file at the path");
+        let err = remove_orphaned_worktree_dir(dir.path(), &wt).expect_err("refused");
+        assert!(
+            matches!(err, WorktreeError::NotAPlainDirectory(_)),
+            "a file is not a directory to delete: {err:?}"
+        );
+        assert!(wt.is_file(), "the file was not deleted");
     }
 
     fn branch_exists(repo: &Path, branch: &str) -> bool {

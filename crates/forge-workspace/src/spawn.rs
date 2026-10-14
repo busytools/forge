@@ -2072,6 +2072,67 @@ impl DespawnCleanup {
                     }
                     other => other,
                 };
+                // git deregisters a worktree before it walks the tree, so
+                // a delete that failed part-way (a build still writing
+                // into `target/`) leaves the directory with no
+                // registration: the re-check above can no longer read the
+                // tree and every later `git worktree remove` refuses it.
+                // With the tree unreadable, the fallback re-checks only
+                // the path's shape and that git no longer lists it; the
+                // cleanliness behind the delete is the verdict taken
+                // before teardown (or the caller's `force`), since a
+                // deregistered tree cannot be asked again.
+                let removal = match removal {
+                    Ok(()) => Ok(()),
+                    Err(git_error) => match project_view.as_ref() {
+                        None => Err(git_error.to_string()),
+                        Some(view) => {
+                            match forge_agent::env::worktree::remove_orphaned_worktree_dir(
+                                &view.path,
+                                path,
+                            ) {
+                                Ok(()) => {
+                                    tracing::info!(
+                                        target: "forge_workspace::spawn",
+                                        event_name = "despawn_worktree_leftover_removed",
+                                        project = %project_key.as_str(),
+                                        label = %label,
+                                        worktree = %path.display(),
+                                        "despawn: removed the leftover directory git could no \
+                                         longer remove",
+                                    );
+                                    Ok(())
+                                }
+                                Err(
+                                    forge_agent::env::worktree::WorktreeError::LeftoverUndeletable {
+                                        error,
+                                        ..
+                                    },
+                                ) => Err(format!(
+                                    "{git_error}; and its leftover directory could not be \
+                                     deleted: {error}"
+                                )),
+                                // A refusal means git's own verdict
+                                // stands - a registered worktree, or a
+                                // path that is not the verified one - so
+                                // the caller keeps the message it always
+                                // got.
+                                Err(refusal) => {
+                                    tracing::debug!(
+                                        target: "forge_workspace::spawn",
+                                        event_name = "despawn_worktree_leftover_kept",
+                                        project = %project_key.as_str(),
+                                        label = %label,
+                                        worktree = %path.display(),
+                                        error = %refusal,
+                                        "despawn: the leftover path was left in place",
+                                    );
+                                    Err(git_error.to_string())
+                                }
+                            }
+                        }
+                    },
+                };
                 match removal {
                     Ok(()) => {
                         tracing::info!(
@@ -2100,7 +2161,7 @@ impl DespawnCleanup {
                             error = %err,
                             "despawn: worker torn down but worktree cleanup failed"
                         );
-                        Some(err.to_string())
+                        Some(err)
                     }
                 }
             }
@@ -5316,6 +5377,72 @@ provider = "anthropic"
         );
     }
 
+    /// The despawn leftover: `git worktree remove` failed on the delete
+    /// stage - a build still writing into `target/` while the removal
+    /// walked the tree, which git reports as "Directory not empty" - and
+    /// because it deregisters the path before that walk, the directory
+    /// survives with no registration. Every later `git worktree remove`
+    /// refuses it as "not a working tree", and the despawn's clean
+    /// re-check cannot run at all, so before the fallback this left the
+    /// directory behind for good.
+    ///
+    /// The race itself is not reproducible on demand, so the test drives
+    /// the state it leaves: the deregistered directory, with the build
+    /// tree still in it. The despawn is forced because a deregistered
+    /// tree cannot be read by git, which blocks an unforced despawn by
+    /// design - in the field the check passed a moment earlier, while the
+    /// removal was still racing the build.
+    #[tokio::test]
+    async fn despawn_removes_a_deregistered_leftover_directory_that_git_refuses() {
+        let (workspace, project_key, wt, repo, _config) = git_despawn_fixture("leftover");
+        let target = wt.join("target").join("debug");
+        std::fs::create_dir_all(&target).expect("target dir");
+        std::fs::write(target.join("obj.o"), "x").expect("object file");
+        // Deregister without deleting the directory: exactly what the
+        // failed delete above leaves.
+        std::fs::remove_dir_all(repo.path().join(".git").join("worktrees").join("leftover"))
+            .expect("deregister the worktree");
+        // Fixture precondition, asserted rather than assumed so a git that
+        // stops refusing fails here instead of passing without exercising
+        // the fallback.
+        let refused = std::process::Command::new("git")
+            .args(["worktree", "remove", "--force", wt.to_str().expect("utf8 path")])
+            .current_dir(wt.parent().expect("wt parent"))
+            .output()
+            .expect("spawn git");
+        assert!(
+            !refused.status.success(),
+            "fixture precondition: git refuses the deregistered leftover outright"
+        );
+        assert!(wt.exists(), "and the refusal leaves it on disk");
+        let mut rx = workspace.subscribe();
+
+        let (tx, resp_rx) = tokio::sync::oneshot::channel();
+        handle_despawn_worker(&workspace, &project_key, "leftover", true, tx);
+        let result = resp_rx.await.expect("result");
+
+        assert!(
+            matches!(
+                result,
+                crate::protocol::DespawnResult::Despawned {
+                    worktree_cleanup_warning: None,
+                    branch_cleanup_warning: None,
+                }
+            ),
+            "the leftover directory is removed, so the despawn carries no warning: {result:?}"
+        );
+        assert!(!wt.exists(), "the leftover directory is gone, not orphaned");
+        assert_eq!(
+            drain_removed_dispositions(&mut rx),
+            vec![WorktreeDisposition::Removed],
+            "and the toast is told the disk agrees, not that the removal failed",
+        );
+        assert!(
+            !branch_exists(repo.path(), "worktree-leftover"),
+            "the branch behind it is reaped as usual"
+        );
+    }
+
     /// A despawn hands back with the worktree still on disk: its cleanup
     /// runs off the caller, and the removal happens behind it.
     ///
@@ -5698,15 +5825,26 @@ provider = "anthropic"
         assert!(!wt.exists(), "the worktree really is gone");
     }
 
-    /// A despawn whose removal FAILED leaves the worktree behind, and the
-    /// event separates that from a successful removal.
+    /// A despawn whose removal FAILED leaves something on disk, and the
+    /// event separates that from a successful removal. The leftovers the
+    /// fallback may delete are removed (see the deregistered-leftover test
+    /// above), so the shape that still fails is one the fallback must
+    /// refuse: a symlink at the worktree path. Deleting through it would
+    /// hit whatever directory it points at, so the fallback refuses, git's
+    /// own refusal stands, and the toast says the removal failed.
     #[tokio::test]
     async fn despawn_reports_a_failed_removal_apart_from_a_successful_one() {
         let (workspace, project_key, wt, repo, _config) = git_despawn_fixture("reviewer");
-        // Deregister only. `git worktree remove` would also delete the
-        // directory, which is the case that reads as Removed.
+        let elsewhere = wt.parent().expect("wt parent").join("precious");
+        std::fs::create_dir_all(&elsewhere).expect("precious dir");
+        std::fs::write(elsewhere.join("keep.txt"), "keep").expect("keep file");
+        // Deregister and replace the directory with a symlink to it. The
+        // deregistration is why the despawn needs `force`: an unreadable
+        // tree blocks the unforced path by design.
         std::fs::remove_dir_all(repo.path().join(".git").join("worktrees").join("reviewer"))
             .expect("deregister the worktree");
+        std::fs::remove_dir_all(&wt).expect("clear the worktree dir");
+        std::os::unix::fs::symlink(&elsewhere, &wt).expect("symlink at the worktree path");
         let mut rx = workspace.subscribe();
 
         let (tx, resp_rx) = tokio::sync::oneshot::channel();
@@ -5720,7 +5858,10 @@ provider = "anthropic"
             ),
             "the removal failed: {result:?}"
         );
-        assert!(wt.exists(), "the worktree genuinely lingers - that is what the toast claims");
+        assert!(
+            elsewhere.join("keep.txt").exists(),
+            "the fallback refused the symlink instead of deleting through it"
+        );
         assert_eq!(drain_removed_dispositions(&mut rx), vec![WorktreeDisposition::RemovalFailed]);
     }
 
