@@ -60,6 +60,15 @@ const STDOUT_SIZE_CAP: usize = 8 * 1024 * 1024;
 /// on hung network mounts or genuinely huge repositories.
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// The budget the tests give a scan's `git` children: **not the shell's
+/// own.** A scan's commands are bounded by it while the machine starts each
+/// child, and a loaded machine can hold a child's first output past the
+/// shell's 10 s - the same stall the PR lookup hit (measured 2026-10-14, the
+/// family's reds at 10.5 s and 11.9 s). A stalled child must be a slow case
+/// in the tests, not a red.
+#[cfg(test)]
+pub(super) const TEST_GIT_BUDGET: Duration = Duration::from_secs(60);
+
 /// Number of file rows surfaced in the rendered diff list. The
 /// renderer collapses the rest into a "+N more" line; the count above
 /// the list tells the truth either way.
@@ -101,9 +110,14 @@ enum RepoPresence {
 /// collapsed with "git would not run", which the caller has already
 /// logged with git's stderr.
 async fn repo_presence(cwd: &Path) -> RepoPresence {
+    repo_presence_within(cwd, COMMAND_TIMEOUT).await
+}
+
+/// [`repo_presence`] with its command budget spelled; see [`scan_within`].
+async fn repo_presence_within(cwd: &Path, budget: Duration) -> RepoPresence {
     let mut command = git_command::tokio_command("git");
     command.arg("-C").arg(cwd).args(["rev-parse", "--git-dir"]).kill_on_drop(true);
-    match timeout(COMMAND_TIMEOUT, command.output()).await {
+    match timeout(budget, command.output()).await {
         Ok(Ok(output)) if output.status.success() => RepoPresence::Present,
         Ok(Ok(_)) if dot_git_present(cwd) => RepoPresence::Unusable,
         Ok(Ok(_)) => RepoPresence::Absent,
@@ -144,10 +158,10 @@ fn classify_rev_parse(output: GitOutput, presence: RepoPresence) -> Result<Strin
 /// Resolve the rev-parse gate for `cwd`: the raw branch string, or the
 /// terminal `repo_gate`. The repo-existence probe runs only on a
 /// non-zero exit, so the healthy path still costs a single subprocess.
-async fn rev_parse_gate(cwd: &Path) -> Result<String, RepoGate> {
-    let output = run_git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]).await;
+async fn rev_parse_gate(cwd: &Path, budget: Duration) -> Result<String, RepoGate> {
+    let output = run_git_within(cwd, &["rev-parse", "--abbrev-ref", "HEAD"], budget).await;
     let presence = if matches!(output, GitOutput::Failed) {
-        repo_presence(cwd).await
+        repo_presence_within(cwd, budget).await
     } else {
         RepoPresence::Present
     };
@@ -245,7 +259,7 @@ fn claim_fetch_slot(key: &Path, now: Instant, window: Duration) -> bool {
 /// it for the NEXT scan. Failures (offline, auth, no remote) are
 /// logged at DEBUG and are a no-op: the machine's network is not
 /// forge's condition to report.
-fn kick_background_fetch(cwd: &Path, default_branch: Option<&str>) {
+fn kick_background_fetch(cwd: &Path, default_branch: Option<&str>, budget: Duration) {
     let Some(remote_branch) = default_branch.and_then(|d| d.strip_prefix("origin/")) else {
         return;
     };
@@ -264,7 +278,7 @@ fn kick_background_fetch(cwd: &Path, default_branch: Option<&str>) {
         // A hung remote must not leak the child every throttle window;
         // without the timeout neither kill_on_drop nor the task ever
         // fires.
-        match timeout(COMMAND_TIMEOUT, fetch).await {
+        match timeout(budget, fetch).await {
             Ok(Ok(out)) if out.status.success() => {}
             Ok(Ok(out)) => {
                 tracing::debug!(
@@ -320,7 +334,7 @@ fn kick_background_fetch(cwd: &Path, default_branch: Option<&str>) {
 /// branch)` review scope to the same key the `/diff` overlay persists
 /// under - and name the step that failed when it can't.
 pub async fn current_branch(cwd: &Path) -> Result<Option<String>, RepoGate> {
-    let name = rev_parse_gate(cwd).await?;
+    let name = rev_parse_gate(cwd, COMMAND_TIMEOUT).await?;
     Ok((name != "HEAD" && !name.is_empty()).then_some(name))
 }
 
@@ -369,7 +383,7 @@ async fn scan_within<S: std::hash::BuildHasher>(
     prev: Option<&GitDiffSnapshot>,
     budget: Duration,
 ) -> GitDiffSnapshot {
-    let raw_branch = match rev_parse_gate(cwd).await {
+    let raw_branch = match rev_parse_gate(cwd, budget).await {
         Ok(branch) => branch,
         // Both the not-a-repo and scanner-crash cases collapse to the
         // same all-Clean snapshot, differing only by `repo_gate` so the
@@ -398,10 +412,10 @@ async fn scan_within<S: std::hash::BuildHasher>(
         GitBranch::Named(raw_branch.clone())
     };
 
-    let default_branch = resolve_default_branch(cwd).await;
+    let default_branch = resolve_default_branch(cwd, budget).await;
     // Keep origin/<default> fresh for the NEXT scan without blocking this
     // one - throttled, non-blocking, failure-tolerant.
-    kick_background_fetch(cwd, default_branch.as_deref());
+    kick_background_fetch(cwd, default_branch.as_deref(), budget);
     // `default_branch` may be a remote-tracking ref (`origin/main`); the
     // on-default check compares plain branch names, so strip the
     // `origin/` prefix - a checked-out `main` must still read as the
@@ -410,7 +424,7 @@ async fn scan_within<S: std::hash::BuildHasher>(
         .as_deref()
         .map(|d| d.strip_prefix("origin/").unwrap_or(d))
         .is_some_and(|d| d == raw_branch);
-    let dirty_probe = is_worktree_dirty(cwd).await;
+    let dirty_probe = is_worktree_dirty(cwd, budget).await;
 
     // Layer 1: uncommitted edits vs HEAD. The three legal states
     // (clean tree, populated diff, scan failed) are unrepresentable
@@ -421,12 +435,12 @@ async fn scan_within<S: std::hash::BuildHasher>(
     let worktree: LayerState<GitDiffStats> = match dirty_probe {
         None => LayerState::ScanFailed,
         Some(false) => LayerState::Clean,
-        Some(true) => match numstat(cwd, &["diff", "--numstat", "HEAD"]).await {
+        Some(true) => match numstat(cwd, &["diff", "--numstat", "HEAD"], budget).await {
             Ok(mut stats) => {
                 // One more read of the same tree state for the glyphs the
                 // counts cannot carry; a failed pass leaves every file
                 // `Modified` rather than failing the layer.
-                if let Some(marks) = name_statuses(cwd, "HEAD").await {
+                if let Some(marks) = name_statuses(cwd, "HEAD", budget).await {
                     for file in &mut stats.files {
                         if let Some(status) = marks.get(&file.path) {
                             file.status = *status;
@@ -450,8 +464,8 @@ async fn scan_within<S: std::hash::BuildHasher>(
     let branch_ahead: LayerState<GitBranchAhead> = if !detached && !on_default {
         if let Some(default) = default_branch.as_deref() {
             let range = format!("{default}...HEAD");
-            match numstat(cwd, &["diff", "--numstat", &range]).await {
-                Ok(stats) => match commit_count_in_range(cwd, default, "HEAD").await {
+            match numstat(cwd, &["diff", "--numstat", &range], budget).await {
+                Ok(stats) => match commit_count_in_range(cwd, default, "HEAD", budget).await {
                     None => LayerState::ScanFailed,
                     Some(0) => LayerState::Clean,
                     Some(commit_count) => {
@@ -469,7 +483,7 @@ async fn scan_within<S: std::hash::BuildHasher>(
                         // every file `Modified` rather than failing the
                         // layer.
                         let mut stats = stats;
-                        if let Some(marks) = name_statuses(cwd, &range).await {
+                        if let Some(marks) = name_statuses(cwd, &range, budget).await {
                             for file in &mut stats.files {
                                 if let Some(status) = marks.get(&file.path) {
                                     file.status = *status;
@@ -479,8 +493,9 @@ async fn scan_within<S: std::hash::BuildHasher>(
                         // The chain itself, for the view that draws what
                         // the branch is working on rather than only how
                         // far it runs.
-                        let commits =
-                            commits_in_range(cwd, default, "HEAD").await.unwrap_or_default();
+                        let commits = commits_in_range(cwd, default, "HEAD", budget)
+                            .await
+                            .unwrap_or_default();
                         LayerState::Populated(GitBranchAhead { commit_count, stats, commits })
                     }
                 },
@@ -502,7 +517,7 @@ async fn scan_within<S: std::hash::BuildHasher>(
     // data while the sha and fetch age say the cache still holds.
     let (pr, closes, pr_fetched_at, pushed_sha) = match &branch {
         GitBranch::Named(name) if !on_default => {
-            let pushed_sha = resolve_pushed_sha(cwd, PUSHED_SHA_WALK_CAP).await;
+            let pushed_sha = resolve_pushed_sha(cwd, PUSHED_SHA_WALK_CAP, budget).await;
             let (pr, closes, pr_fetched_at) =
                 pr_for_head_within(cwd, env, name, pushed_sha.as_deref(), prev, budget).await;
             (pr, closes, pr_fetched_at, pushed_sha)
@@ -536,9 +551,14 @@ async fn scan_within<S: std::hash::BuildHasher>(
 /// signal into `LayerState::ScanFailed` instead of masking the
 /// failure as 0. Each non-Ok branch emits a WARN log mirroring the
 /// `gh_pr_lookup_*` pattern.
-async fn commit_count_in_range(cwd: &Path, base: &str, head: &str) -> Option<u32> {
+async fn commit_count_in_range(
+    cwd: &Path,
+    base: &str,
+    head: &str,
+    budget: Duration,
+) -> Option<u32> {
     let range = format!("{base}..{head}");
-    match run_git(cwd, &["rev-list", "--count", &range]).await {
+    match run_git_within(cwd, &["rev-list", "--count", &range], budget).await {
         GitOutput::Ok(s) => match s.trim().parse::<u32>() {
             Ok(count) => Some(count),
             Err(err) => {
@@ -583,19 +603,21 @@ async fn commit_count_in_range(cwd: &Path, base: &str, head: &str) -> Option<u32
 /// The returned value IS the compare-ref - the `origin/` prefix carries
 /// the remote-vs-local decision, so callers wanting the plain branch
 /// name strip it. `None` when nothing resolves.
-async fn resolve_default_branch(cwd: &Path) -> Option<String> {
+async fn resolve_default_branch(cwd: &Path, budget: Duration) -> Option<String> {
     // `origin/HEAD` advertises the remote's default; `--short` yields
     // e.g. `origin/main`. Keep the prefix - it's the remote-tracking
     // ref we want to compare against (GitOutput::Ok is non-empty).
     if let GitOutput::Ok(s) =
-        run_git(cwd, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]).await
+        run_git_within(cwd, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], budget).await
     {
         return Some(s.trim().to_owned());
     }
     // No `origin/HEAD`: try the conventional remote-tracking refs, then
     // a purely-local `main` / `master` (a repo with no origin remote).
     for candidate in ["origin/main", "origin/master", "main", "master"] {
-        if let GitOutput::Ok(_) = run_git(cwd, &["rev-parse", "--verify", candidate]).await {
+        if let GitOutput::Ok(_) =
+            run_git_within(cwd, &["rev-parse", "--verify", candidate], budget).await
+        {
             return Some(candidate.to_owned());
         }
     }
@@ -619,8 +641,8 @@ async fn resolve_default_branch(cwd: &Path) -> Option<String> {
 /// so the renderer can surface "(scan failed)" for layer 1 instead
 /// of silently rendering a clean tree when the probe upstream of
 /// numstat collapsed.
-async fn is_worktree_dirty(cwd: &Path) -> Option<bool> {
-    match run_git(cwd, &["status", "--porcelain=v1", "--untracked-files=no"]).await {
+async fn is_worktree_dirty(cwd: &Path, budget: Duration) -> Option<bool> {
+    match run_git_within(cwd, &["status", "--porcelain=v1", "--untracked-files=no"], budget).await {
         GitOutput::Ok(s) => Some(!s.trim().is_empty()),
         GitOutput::Empty => Some(false),
         GitOutput::Failed | GitOutput::Oversize => None,
@@ -654,8 +676,12 @@ pub enum NumstatError {
 /// failed" from "clean tree, nothing to show". `Empty` (exit 0, no
 /// stdout) collapses to a zero-row stats block since that's the
 /// legitimate "no diff to report" outcome.
-async fn numstat(cwd: &Path, args: &[&str]) -> Result<GitDiffStats, NumstatError> {
-    let raw = match run_git(cwd, args).await {
+async fn numstat(
+    cwd: &Path,
+    args: &[&str],
+    budget: Duration,
+) -> Result<GitDiffStats, NumstatError> {
+    let raw = match run_git_within(cwd, args, budget).await {
         GitOutput::Ok(s) => s,
         GitOutput::Empty => String::new(),
         GitOutput::Failed => return Err(NumstatError::Subprocess),
@@ -732,8 +758,12 @@ fn rename_target(path: &str) -> String {
 /// `git diff --name-status` - the same classifier the hunks pass
 /// reads, so the glyph beside a file matches the one its diff body
 /// would draw. Best-effort: a failed read leaves the counts alone.
-async fn name_statuses(cwd: &Path, target: &str) -> Option<HashMap<String, FileStatus>> {
-    match run_git(cwd, &["diff", "--name-status", target]).await {
+async fn name_statuses(
+    cwd: &Path,
+    target: &str,
+    budget: Duration,
+) -> Option<HashMap<String, FileStatus>> {
+    match run_git_within(cwd, &["diff", "--name-status", target], budget).await {
         GitOutput::Ok(raw) => Some(
             self::hunks::parse_name_status_entries(&raw)
                 .into_iter()
@@ -756,18 +786,29 @@ async fn commits_in_range(
     cwd: &Path,
     base: &str,
     head: &str,
+    budget: Duration,
 ) -> Option<Vec<forge_primitives::git::GitCommit>> {
     let range = format!("{base}..{head}");
     let cap = format!("--max-count={COMMITS_WALK_CAP}");
-    let listed =
-        match run_git(cwd, &["log", &cap, "--numstat", "--format=%h%x1f%s%x1f%ct", &range]).await {
-            GitOutput::Ok(raw) => raw,
-            GitOutput::Empty => return Some(Vec::new()),
-            GitOutput::Failed | GitOutput::Oversize => return None,
-        };
+    let listed = match run_git_within(
+        cwd,
+        &["log", &cap, "--numstat", "--format=%h%x1f%s%x1f%ct", &range],
+        budget,
+    )
+    .await
+    {
+        GitOutput::Ok(raw) => raw,
+        GitOutput::Empty => return Some(Vec::new()),
+        GitOutput::Failed | GitOutput::Oversize => return None,
+    };
     // Best-effort: a failed marks walk leaves every file `Modified`
     // rather than failing the chain.
-    let marks = match run_git(cwd, &["log", &cap, "--name-status", "--format=%h%x1f", &range]).await
+    let marks = match run_git_within(
+        cwd,
+        &["log", &cap, "--name-status", "--format=%h%x1f", &range],
+        budget,
+    )
+    .await
     {
         GitOutput::Ok(raw) => parse_commit_marks(&raw),
         GitOutput::Empty | GitOutput::Failed | GitOutput::Oversize => HashMap::new(),
@@ -935,24 +976,30 @@ fn same_branch_and_sha(prev: &GitDiffSnapshot, branch: &str, pushed_sha: Option<
 /// walk happens inside git so a worktree ahead of the
 /// PR tip by unpushed commits still resolves the commit the PR was
 /// pushed from.
-async fn resolve_pushed_sha(cwd: &Path, cap: usize) -> Option<String> {
-    let remote_shas =
-        match run_git(cwd, &["for-each-ref", "refs/remotes", "--format=%(objectname)"]).await {
-            GitOutput::Ok(raw) => raw
-                .lines()
-                .map(str::trim)
-                .filter(|line| !line.is_empty())
-                .map(str::to_owned)
-                .collect::<std::collections::HashSet<_>>(),
-            GitOutput::Empty | GitOutput::Failed | GitOutput::Oversize => {
-                std::collections::HashSet::default()
-            }
-        };
+async fn resolve_pushed_sha(cwd: &Path, cap: usize, budget: Duration) -> Option<String> {
+    let remote_shas = match run_git_within(
+        cwd,
+        &["for-each-ref", "refs/remotes", "--format=%(objectname)"],
+        budget,
+    )
+    .await
+    {
+        GitOutput::Ok(raw) => raw
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_owned)
+            .collect::<std::collections::HashSet<_>>(),
+        GitOutput::Empty | GitOutput::Failed | GitOutput::Oversize => {
+            std::collections::HashSet::default()
+        }
+    };
     if remote_shas.is_empty() {
         return None;
     }
     let max_count = format!("--max-count={cap}");
-    let walk = run_git(cwd, &["rev-list", "--first-parent", &max_count, "HEAD"]).await;
+    let walk =
+        run_git_within(cwd, &["rev-list", "--first-parent", &max_count, "HEAD"], budget).await;
     let GitOutput::Ok(raw) = walk else {
         return None;
     };
@@ -1138,10 +1185,21 @@ const STDERR_LOG_CAP: usize = 1024;
 /// without re-running, at a level that does not report a miss the
 /// probe makes on every scan of a perfectly ordinary repo.
 pub(super) async fn run_git(cwd: &Path, args: &[&str]) -> GitOutput {
+    run_git_within(cwd, args, COMMAND_TIMEOUT).await
+}
+
+/// [`run_git`] with its command budget spelled: the shell gives a `git`
+/// child [`COMMAND_TIMEOUT`], and a test gives it one of its own.
+///
+/// **The budget is a bound on the machine, not on git**: it is spent
+/// starting the child, so a loaded machine can hold a `git`'s first
+/// output past the shell's 10 s and fail a scan that is merely slow -
+/// see `scan_within` for the measurement and the reproduction.
+pub(super) async fn run_git_within(cwd: &Path, args: &[&str], budget: Duration) -> GitOutput {
     let mut command = git_command::tokio_command("git");
     command.arg("-C").arg(cwd).args(args).kill_on_drop(true);
     let fut = command.output();
-    let output = match timeout(COMMAND_TIMEOUT, fut).await {
+    let output = match timeout(budget, fut).await {
         Ok(Ok(out)) => out,
         Ok(Err(err)) => {
             tracing::debug!(
@@ -1339,6 +1397,17 @@ mod tests {
     /// give the child a budget load cannot eat.
     const TEST_LOOKUP_BUDGET: Duration = Duration::from_secs(60);
 
+    /// The scan these cases drive: the production entry with the budget the
+    /// tests give it ([`TEST_GIT_BUDGET`]), so a machine's stall of a `git`
+    /// child cannot red a case that is not about timing.
+    async fn scan_in_test(
+        cwd: &std::path::Path,
+        env: &HashMap<String, String>,
+        prev: Option<&GitDiffSnapshot>,
+    ) -> GitDiffSnapshot {
+        scan_within(cwd, env, prev, TEST_GIT_BUDGET).await
+    }
+
     fn init_repo(dir: &TempDir, initial_branch: &str) {
         let path = dir.path();
         // The `git init -b <branch>` flag was added in git 2.28; CI
@@ -1442,11 +1511,52 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn scan_no_repo_collapses_to_not_in_repo() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let snap = scan(dir.path(), &HashMap::new(), None).await;
+        let snap = scan_in_test(dir.path(), &HashMap::new(), None).await;
         assert_eq!(snap.repo_gate, RepoGate::NotARepo);
         assert!(matches!(snap.worktree, LayerState::Clean));
         assert!(matches!(snap.branch_ahead, LayerState::Clean));
         assert!(snap.default_branch.is_none());
+    }
+
+    /// **The scan's `git` children take the budget the caller gives.** A
+    /// scan whose budget runs out before `git` answers reads as a failed
+    /// scan, and the same repo scans cleanly under the budget these cases
+    /// use - the seam `repo_presence`, the background fetch and every
+    /// `run_git` spawn now carry, production keeping `COMMAND_TIMEOUT`.
+    ///
+    /// **The refusing budget is ZERO, not a small millisecond count**: a
+    /// child cannot answer on the first poll, so the refusal is a property
+    /// of the seam rather than a race with a fast machine (a 1 ms budget
+    /// was - CI's runner answered a `git` command inside it).
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_scans_git_commands_take_the_budget_they_are_given() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        init_repo(&dir, "feature");
+        // A commit, so the branch is born: an unborn HEAD fails rev-parse on
+        // its own, which would let the refusal arm pass for the wrong reason.
+        write_file(&dir, "README.md", "one\n");
+        commit_all(&dir, "seed");
+
+        let refused = scan_within(dir.path(), &HashMap::new(), None, Duration::ZERO).await;
+        assert_eq!(
+            refused.repo_gate,
+            RepoGate::ScannerFailed,
+            "a budget that runs out before git answers reads as a failed scan",
+        );
+
+        let scanned = scan_within(dir.path(), &HashMap::new(), None, TEST_GIT_BUDGET).await;
+        assert_eq!(scanned.repo_gate, RepoGate::InRepo, "and the tests' budget scans the repo");
+        assert!(
+            matches!(scanned.branch, GitBranch::Named(ref name) if name == "feature"),
+            "with the branch git reported: {:?}",
+            scanned.branch,
+        );
+        assert!(
+            TEST_GIT_BUDGET >= Duration::from_secs(30),
+            "the tests' budget must stay far past the shell's own 10 s: a loaded machine held a \
+             lookup child back for 10.5 s (measured 2026-10-14), the stall this seam exists to \
+             keep out of the suite",
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1599,7 +1709,7 @@ mod tests {
         init_repo(&dir, "main");
         write_file(&dir, "README.md", "hello\n");
         commit_all(&dir, "init");
-        let snap = scan(dir.path(), &HashMap::new(), None).await;
+        let snap = scan_in_test(dir.path(), &HashMap::new(), None).await;
         assert_eq!(snap.repo_gate, RepoGate::InRepo);
         assert!(matches!(snap.worktree, LayerState::Clean), "clean tree → no layer 1");
         assert!(matches!(snap.branch_ahead, LayerState::Clean), "on default → no layer 2");
@@ -1614,7 +1724,7 @@ mod tests {
         commit_all(&dir, "init");
         // Dirty: modify the tracked file without committing.
         write_file(&dir, "README.md", "second\nthird\n");
-        let snap = scan(dir.path(), &HashMap::new(), None).await;
+        let snap = scan_in_test(dir.path(), &HashMap::new(), None).await;
         let LayerState::Populated(stats) = &snap.worktree else {
             panic!("layer 1 populated on dirty tree");
         };
@@ -1642,7 +1752,7 @@ mod tests {
         write_file(&dir, "feat.rs", "fn x() {}\n");
         commit_all(&dir, "feat commit");
 
-        let snap = scan(dir.path(), &HashMap::new(), None).await;
+        let snap = scan_in_test(dir.path(), &HashMap::new(), None).await;
         assert!(matches!(snap.worktree, LayerState::Clean), "clean tree → no layer 1");
         let LayerState::Populated(ahead) = &snap.branch_ahead else {
             panic!("layer 2 populated on feature branch");
@@ -1673,7 +1783,7 @@ mod tests {
         // Dirty the worktree AFTER the feature commit.
         write_file(&dir, "feat.rs", "fn x() {}\nfn y() {}\n");
 
-        let snap = scan(dir.path(), &HashMap::new(), None).await;
+        let snap = scan_in_test(dir.path(), &HashMap::new(), None).await;
         let LayerState::Populated(worktree) = &snap.worktree else {
             panic!("layer 1 populated on dirty tree");
         };
@@ -1720,7 +1830,7 @@ mod tests {
         // Dirty in detached state.
         write_file(&dir, "README.md", "third\n");
 
-        let snap = scan(dir.path(), &HashMap::new(), None).await;
+        let snap = scan_in_test(dir.path(), &HashMap::new(), None).await;
         assert!(snap.worktree.is_populated(), "detached + dirty → layer 1 populated");
         assert!(
             matches!(snap.branch_ahead, LayerState::Clean),
@@ -1740,7 +1850,7 @@ mod tests {
             StdCommand::new("git").arg("-C").arg(dir.path()).args(args).output().expect("git ok");
         };
         run(&["checkout", "-q", "HEAD~1"]);
-        let snap = scan(dir.path(), &HashMap::new(), None).await;
+        let snap = scan_in_test(dir.path(), &HashMap::new(), None).await;
         assert_eq!(snap.repo_gate, RepoGate::InRepo);
         assert!(matches!(snap.worktree, LayerState::Clean));
         assert!(matches!(snap.branch_ahead, LayerState::Clean));
@@ -1778,7 +1888,7 @@ mod tests {
         commit_all(&dir, "unpushed commit");
 
         assert_eq!(
-            resolve_pushed_sha(dir.path(), 500).await.as_deref(),
+            resolve_pushed_sha(dir.path(), 500, TEST_GIT_BUDGET).await.as_deref(),
             Some(pushed.as_str()),
             "the sibling remote-only commit is outside HEAD's ancestry and must not resolve"
         );
@@ -1816,7 +1926,7 @@ mod tests {
     async fn scan_on_an_unborn_head_has_no_pr_row() {
         let dir = tempfile::tempdir().expect("tempdir");
         init_repo(&dir, "main");
-        let snap = scan(dir.path(), &HashMap::new(), None).await;
+        let snap = scan_in_test(dir.path(), &HashMap::new(), None).await;
         assert_eq!(snap.repo_gate, RepoGate::ScannerFailed);
         assert_eq!(snap.pr, None);
         assert_eq!(snap.pushed_sha, None);
@@ -1844,7 +1954,7 @@ mod tests {
             .output()
             .expect("git ok");
 
-        let snap = scan(dir.path(), &HashMap::new(), None).await;
+        let snap = scan_in_test(dir.path(), &HashMap::new(), None).await;
         let LayerState::Populated(stats) = &snap.worktree else {
             panic!("dirty tree → layer 1 populated");
         };
@@ -2168,7 +2278,7 @@ mod tests {
         commit_all(&dir, "unpushed commit 2");
 
         assert_eq!(
-            resolve_pushed_sha(dir.path(), 500).await.as_deref(),
+            resolve_pushed_sha(dir.path(), 500, TEST_GIT_BUDGET).await.as_deref(),
             Some(pushed.as_str()),
             "the walk must stop at the pushed ancestor, not the unpushed tip"
         );
@@ -2190,7 +2300,10 @@ mod tests {
             .output()
             .expect("git ok");
 
-        assert_eq!(resolve_pushed_sha(dir.path(), 500).await.as_deref(), Some(pushed.as_str()));
+        assert_eq!(
+            resolve_pushed_sha(dir.path(), 500, TEST_GIT_BUDGET).await.as_deref(),
+            Some(pushed.as_str())
+        );
     }
 
     /// Nothing pushed - no remote refs share any of HEAD's history.
@@ -2202,7 +2315,7 @@ mod tests {
         write_file(&dir, "README.md", "one\n");
         commit_all(&dir, "local commit");
 
-        assert_eq!(resolve_pushed_sha(dir.path(), 500).await, None);
+        assert_eq!(resolve_pushed_sha(dir.path(), 500, TEST_GIT_BUDGET).await, None);
     }
 
     /// A pathological unpushed history terminates at the cap: shas
@@ -2229,9 +2342,12 @@ mod tests {
 
         // Cap 2 reaches only the newest 2 unpushed commits; the
         // pushed ancestor at depth 5 stays out of reach.
-        assert_eq!(resolve_pushed_sha(dir.path(), 2).await, None);
+        assert_eq!(resolve_pushed_sha(dir.path(), 2, TEST_GIT_BUDGET).await, None);
         // Full cap reaches it.
-        assert_eq!(resolve_pushed_sha(dir.path(), 500).await.as_deref(), Some(pushed.as_str()));
+        assert_eq!(
+            resolve_pushed_sha(dir.path(), 500, TEST_GIT_BUDGET).await.as_deref(),
+            Some(pushed.as_str())
+        );
     }
 
     /// The open-filter + newest-updatedAt selection against the
@@ -2350,7 +2466,7 @@ mod tests {
             pr_fetched_at: Some(std::time::SystemTime::now()),
         };
 
-        let snap = scan(dir.path(), &HashMap::new(), Some(&prev)).await;
+        let snap = scan_in_test(dir.path(), &HashMap::new(), Some(&prev)).await;
         assert_eq!(snap.pr, Some(synthetic_pr), "cached PR must carry through scan");
         assert_eq!(snap.closes, synthetic_closes);
         assert_eq!(snap.pushed_sha, None, "nothing pushed in this repo");
@@ -2380,7 +2496,7 @@ mod tests {
         };
         // Even with a cache-hit-shaped prev, the default-branch gate
         // wins and the PR field clears.
-        let snap = scan(dir.path(), &HashMap::new(), Some(&prev)).await;
+        let snap = scan_in_test(dir.path(), &HashMap::new(), Some(&prev)).await;
         assert_eq!(snap.pr, None);
         assert!(snap.closes.is_empty());
         assert_eq!(snap.pushed_sha, None, "the walk must not run on the default branch");
@@ -2459,7 +2575,7 @@ mod tests {
             "a checkout git refuses must surface the scanner banner, not read as a non-repo",
         );
         assert_eq!(
-            scan(dir.path(), &HashMap::new(), None).await.repo_gate,
+            scan_in_test(dir.path(), &HashMap::new(), None).await.repo_gate,
             RepoGate::ScannerFailed,
         );
     }
@@ -2477,7 +2593,7 @@ mod tests {
 
         assert_eq!(repo_presence(dir.path()).await, RepoPresence::Unusable);
         assert_eq!(
-            scan(dir.path(), &HashMap::new(), None).await.repo_gate,
+            scan_in_test(dir.path(), &HashMap::new(), None).await.repo_gate,
             RepoGate::ScannerFailed,
         );
     }
@@ -2520,7 +2636,7 @@ mod tests {
         wt_run(&["add", "-A"]);
         wt_run(&["commit", "-q", "-m", "Z own"]);
 
-        let snap = scan(&wt, &HashMap::new(), None).await;
+        let snap = scan_in_test(&wt, &HashMap::new(), None).await;
         assert_eq!(
             snap.default_branch.as_deref(),
             Some("origin/main"),
@@ -2566,7 +2682,7 @@ mod tests {
         write_file(&dir, "local.txt", "local\n");
         commit_all(&dir, "unpushed");
 
-        let snap = scan(dir.path(), &HashMap::new(), None).await;
+        let snap = scan_in_test(dir.path(), &HashMap::new(), None).await;
         assert_eq!(snap.default_branch.as_deref(), Some("origin/main"));
         assert!(
             matches!(snap.branch_ahead, LayerState::Clean),
@@ -2624,7 +2740,7 @@ mod tests {
         run(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
         run(&["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
 
-        let _ = scan(dir.path(), &HashMap::new(), None).await;
+        let _ = scan_in_test(dir.path(), &HashMap::new(), None).await;
         let kicked = LAST_FETCH.get().is_some_and(|m| m.lock().contains_key(dir.path()));
         assert!(kicked, "a due scan on an origin-tracking repo claims (kicks) a background fetch");
         assert!(
