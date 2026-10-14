@@ -16,24 +16,27 @@ place.
 |---|---|---|
 | Connect | [connect.md](./connect.md) | `web-connect.html` |
 | Home | [home.md](./home.md) | `web-home.html` |
+| A session | [session.md](./session.md) | `web-session.html` |
+| The composer | [composer.md](./composer.md) | `web-composer.html` |
+| The queue pile | [queue.md](./queue.md) | `web-queue.html` |
 | Board | [board.md](./board.md) | `web-board.html` |
 | Review | [review.md](./review.md) | `web-review.html` |
 | Dictation models | [dictate-models.md](./dictate-models.md) | `web-dictate-models.html` |
 | Extensions | [extensions.md](./extensions.md) | `web-extensions.html` |
 | A document | [document.md](./document.md) | `web-document.html` |
-| The queue pile | (session page pending) | `web-queue.html` |
 
-The session page, the chat and the composer are built; their drawings are
-here and their pages are still to land. `web-session.html` declares six
-sections and the client's plan owns four of them: the fifth is the
-composer's blocking states, and the sixth - the diff review overlay it
-named - landed as a route of its own, [review.md](./review.md), which draws
-the rounds, the diff its threads are anchored to, and the writing.
+`web-session.html` declares six sections and the client's plan owned four
+of them; their pages are [session.md](./session.md) and
+[composer.md](./composer.md) now, and the fifth - the composer's blocking
+states - is drawn by the composer's own page. The sixth, the diff review
+overlay the drawing named, landed as a route of its own,
+[review.md](./review.md), which draws the rounds, the diff its threads
+are anchored to, and the writing.
 
 `web-queue.html` is the queued-prompt pile that draws above the composer:
 the variants it can be in, and the wire's own lifecycle it follows. It
 takes the session page's tokens, its `.strip` neighbours and its own
-spine, and its page lands with the session page's set.
+spine, and [queue.md](./queue.md) is the page beside it.
 
 ## The spine
 
