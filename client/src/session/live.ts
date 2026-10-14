@@ -125,6 +125,19 @@ interface Seat {
    * frames already applied is refused rather than walking the record back.
    */
   lastSeq: number;
+  /**
+   * `lastSeq` as it stood when the ask in flight went out.
+   *
+   * **What tells a stale answer from a counter that started over.** An answer
+   * whose number is behind what the record holds is stale when frames arrived
+   * after the ask - the answer was encoded before them, and asking again
+   * converges on one encoded after. When NO frame arrived since the ask, the
+   * same shape means the seat's stream restarted under it (a resume, a server
+   * restart: the same occupant, the count from 1 again) - and that answer is
+   * the truth about where the stream stands, so re-asking would never
+   * converge on anything else.
+   */
+  askedAt: number;
   /** Hold the seat's subscription open, answering the release: see `hold`. */
   hold: () => () => void;
   /**
@@ -369,6 +382,7 @@ function createSeat(
     asking: false,
     epoch: null,
     lastSeq: 0,
+    askedAt: 0,
     hold,
     open,
   };
@@ -592,6 +606,9 @@ function createSeat(
   function reread(): void {
     if (seat.asking || seat.opened === 0) return;
     seat.asking = true;
+    // Where the stream stood when the ask left, so the answer can be read
+    // against what has arrived since.
+    seat.askedAt = seat.lastSeq;
     connection.refresh(subject);
   }
 
@@ -613,6 +630,7 @@ function createSeat(
     });
     seat.opened += 1;
     seat.asking = true;
+    seat.askedAt = seat.lastSeq;
   }
 
   /**
@@ -799,12 +817,19 @@ function createSeat(
           read();
           return;
         }
-        // **An answer the frames have outrun is not taken.** The number the
-        // answer stands at is behind what has already been applied, so
-        // adopting it would walk the record back over frames it drew: the ask
-        // is made again rather than spent, and the fresh answer lands on the
-        // first clean window.
-        if (reach.seq !== null && reach.seq - 1 < seat.lastSeq && seat.wire !== null) {
+        // **An answer the frames have outrun is not taken - but only when the
+        // frames got there first.** A number behind what the record holds is
+        // stale when frames arrived after the ask: the answer was encoded
+        // before them, and asking again converges on one encoded after.
+        //
+        // With no frame since the ask, the same shape is a stream that
+        // RESTARTED under the client - a resume or a server restart, the same
+        // occupant with the count from 1 again - and that answer is the truth
+        // about where the stream stands. Refusing it would ask forever for an
+        // answer that never comes, so it is taken: never a merge, and never a
+        // loop.
+        const moved = seat.lastSeq !== seat.askedAt;
+        if (reach.seq !== null && reach.seq - 1 < seat.lastSeq && moved && seat.wire !== null) {
           reread();
           return;
         }

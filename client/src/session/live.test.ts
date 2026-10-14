@@ -2405,6 +2405,53 @@ describe('the seat sequence', () => {
   });
 
   /**
+   * **A stream that restarted under the client is not a stale answer.**
+   *
+   * A resume, or a server restart, rebuilds the seat's task with the count
+   * from 1 again - under the SAME occupant, so the epoch does not move. A
+   * client that read the lower number as an answer the frames had outrun
+   * would refuse it and ask again, and the next answer says the same thing:
+   * it would ask for the record forever. The restart is the one case where
+   * the answer wins over the frames.
+   */
+  it('takes the answer when the seat restarted its count from one', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    const occupantId = 'the-same-occupant';
+    page.land(snapshotOf(LEAD, {}, { seq: 1, epoch: occupantId }));
+    for (let at = 1; at <= 5; at += 1) {
+      page.land(
+        frameOf({ chat_appended: { key: LEAD, msg: spoke(`line ${at}`, `u${at}`) } }, at),
+      );
+    }
+    paint();
+
+    // The seat comes back: a `connected` under the same occupant, which asks
+    // for the record without moving the numbers.
+    page.land(frameOf(occupant(occupantId), null));
+    const asked = page.reads();
+
+    // The answer stands where the RESTARTED stream stands - 1.
+    page.land(
+      snapshotOf(
+        LEAD,
+        { header: { turn_in_flight: false }, work: { branch: 'resumed' } },
+        { seq: 1, epoch: occupantId },
+      ),
+    );
+
+    expect(page.read().wire?.work.branch, 'the restarted answer is taken').toBe('resumed');
+    expect(page.reads(), 'and the client is not asking for the record in a loop').toBe(asked);
+
+    // And the restarted stream's own first frame applies, which a record still
+    // holding the old numbers would drop.
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('the new first', 'n1') } }, 1));
+    paint();
+    expect(spoken(page), 'the new count from one is followed').toContain('the new first');
+    page.stop();
+  });
+
+  /**
    * **A refused repair means read the seat again.** The numbers the client
    * holds came from a seat whose occupant has moved on, so nothing in this
    * epoch can answer for them - and a client that retried the same range

@@ -1304,4 +1304,38 @@ describe('the browser role', () => {
       warned.mockRestore();
     }
   });
+
+  /**
+   * **A repaired stretch is a frame this client DRAWS, and the socket must
+   * know it.** The chat folds it through its own listener, so this switch has
+   * nothing to do with it - but the unknown-frame report below is for a frame
+   * that arrived and drew nothing, and a `seat_frames` crossing it read as
+   * exactly that on a live drive: a repair the client had asked for, reported
+   * as a frame it could not draw.
+   */
+  it('knows the repair frame it asked for', async () => {
+    const { server, conn } = await connected();
+    const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const heard: ServerMessage[] = [];
+    conn.onMessage((message) => heard.push(message));
+    try {
+      server.send({
+        kind: 'seat_frames',
+        slot: LEAD,
+        epoch: null,
+        frames: [{ seq: 2, update: 'catalog_loaded' }],
+      });
+
+      await until(() => heard.length === 1, 'the repair to arrive');
+      expect(heard[0]?.kind, 'the frame still reaches the listeners, so the chat folds it').toBe(
+        'seat_frames',
+      );
+      expect(
+        warned.mock.calls.flat().join(' '),
+        'a frame the client draws was reported as one it does not know',
+      ).not.toContain('does not know');
+    } finally {
+      warned.mockRestore();
+    }
+  });
 });

@@ -472,6 +472,13 @@ export function connect(url: string): Connection {
       case 'page':
       case 'commit_diff':
         return;
+      // `seat_frames` is the conversation's too, and the same way: a repaired
+      // stretch folds through the chat's own listener, so this switch knows
+      // the frame and draws nothing of it. Reported as unknown it would read
+      // as a frame the client could not draw - which is exactly what the
+      // report below is for.
+      case 'seat_frames':
+        return;
       // An ask is answered here rather than handed to a page: the handler is
       // the shell's, and the answer has to go back under the ask's own id.
       case 'browser_ask':
