@@ -119,7 +119,7 @@ describe('the system bars', () => {
    * loses one of them, while a padding is being edited for any other reason,
    * is invisible on the desktop and a dead control on the phone.
    */
-  it('pads every page root and the pane by the bands the shell measures', () => {
+  it('pads the page roots and every overlay by the bands the shell measures', () => {
     for (const [what, selector, bands] of [
       ['the session page', '.app', ['top', 'bottom']],
       ['the projects rail', '.app .rail.left', ['top', 'bottom']],
