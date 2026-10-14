@@ -935,7 +935,7 @@
     backdrop-filter: blur(10px); box-shadow: 0 14px 38px rgba(0,0,0,.42);
     display: flex; flex-direction: column; overflow: hidden;
     transition: border-color .3s ease; }
-  .surf > * + * { border-top: 1px solid var(--line); }
+  .surf > :not(.sr) + :not(.sr) { border-top: 1px solid var(--line); }
   /* The state rides the shown specimen's own class, so the ring follows the
      chip that is on rather than decorating every state at once. */
   .surf:has(.cst.on .mbox.rec) { border-color: color-mix(in srgb, var(--accent) 35%, var(--hot)); }

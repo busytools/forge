@@ -78,12 +78,25 @@
     backdrop-filter: blur(10px); box-shadow: 0 14px 38px rgba(0,0,0,.42);
     display: flex; flex-direction: column; overflow: hidden;
     transition: border-color .3s ease; }
-  .surf > * + * { border-top: 1px solid var(--line); }
+  .surf > :not(.sr) + :not(.sr) { border-top: 1px solid var(--line); }
   .surf.rec { border-color: color-mix(in srgb, var(--accent) 35%, var(--hot)); }
   .surf.tr { border-color: var(--blue); }
   .surf.done { border-color: var(--ok); }
   .surf.err { border-color: var(--bad); }
   .surf:focus-within:not(.rec, .tr, .done, .err) { border-color: var(--accent); }
+  /* The capture being opened: the accent eases in, then the border breathes
+     from it toward the rest colour. The cycle waits out the arrival, so its
+     first frame is the colour already on screen. */
+  .surf.load {
+    --arrive: 300ms;
+    border-color: var(--accent);
+    transition: border-color var(--arrive) ease-in-out;
+    animation: surf-open 1.8s ease-in-out var(--arrive) infinite;
+  }
+  @keyframes surf-open {
+    0%, 100% { border-color: var(--accent); }
+    50% { border-color: color-mix(in srgb, var(--accent) 55%, var(--ctl)); }
+  }
   /* The strip lane: the turn's figures on the left, the seat's chips on the
      right; below the width that holds them together the chips take a lane of
      their own that scrolls (the sheet's own rule). */
@@ -626,8 +639,9 @@ graph, ready tally, frames, bytes, pace &#8212; and the dot and the way out are 
       start producing - the browser's pipeline, the device's own wake. **The open is the band's
       own state, and adds no line to the composer**: a line arriving with the press moved the
       whole composer under the reader's hands (Ved, in the #2159 look: "the layout of the
-      composer shifts up and down"), so the band breathes between the rest border and the accent
-      while the capture opens, with the state said in a status line for a screen reader. On the
+      composer shifts up and down"), so the band carries it: the accent eases in from what the
+      band was showing, then the border breathes from the accent toward the rest colour while the
+      capture opens, with the state said in a status line for a screen reader. On the
       desktop's native capture it is over in tens of milliseconds and nothing is seen at all. The
       field keeps the keyboard throughout, and the row is the take's only once there is a take to
       draw, which is what #1669 asks of the start.</p>

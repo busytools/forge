@@ -55,6 +55,8 @@ describe('the palette', () => {
       '--fs-title',
       '--ins',
       '--d',
+      // The band's open clock, declared on the load rule rather than at root.
+      '--arrive',
     ];
     // The stacks arrive beside the palette rather than inside it, from
     // `[client] font` through `fontStack`.
