@@ -36,16 +36,6 @@ use crate::views::{AccountLoadingRow, ProjectView, SessionView};
 #[cfg(any(test, feature = "testing"))]
 pub(crate) mod testing;
 
-/// How often the background poller refreshes account usage. A view's
-/// bottom panel and the gateway's account selection both read
-/// from the cache this poll populates. 60 s upper-bounds how stale
-/// the "which account has more headroom" decision can be while
-/// staying clear of the OAuth usage endpoint's 429 throttle under
-/// multi-instance polling - combined with per-account `last_error`
-/// backoff (see `forge_gateway::AccountState`), transient 429s recover
-/// naturally.
-const USAGE_POLL_INTERVAL: Duration = Duration::from_secs(60);
-
 /// How often the claude version probe re-runs after the boot fetch.
 /// Versions change rarely, so a few minutes is ample - the point is only
 /// to recover a transient boot failure, not to track releases tightly.
@@ -1615,8 +1605,9 @@ impl Workspace {
         // Anthropic's /api/oauth/usage rate-limiter can stall the first
         // live probe for 30 s+; without seed data every account reads as
         // unknown during that window, so nothing is demoted for being at
-        // its cap. The 60 s background poller refreshes these snapshots -
-        // the cache is purely "last known value" seed.
+        // its cap. The background poller refreshes these snapshots on the
+        // configured interval (60 s by default) - the cache is purely
+        // "last known value" seed.
         let state = match &db {
             Some(db) => crate::account_cache::load(db),
             None => crate::account_cache::ForgeState::empty(),
@@ -2932,7 +2923,8 @@ impl Workspace {
         });
     }
 
-    /// Spawn the 60 s background account-usage poller. Fetches
+    /// Spawn the background account-usage poller on the interval
+    /// `[usage] poll_seconds` resolves to (60 s by default). Fetches
     /// OAuth usage for every `[[accounts]]` entry via the per-
     /// account config-dir's credentials file (no Agent spawn
     /// required), writes each result into `AccountStateMap.by_key`.
@@ -2953,6 +2945,7 @@ impl Workspace {
             return;
         }
         let weak = Arc::downgrade(self);
+        let poll_interval = self.config.usage_poll_interval;
         let span = tracing::info_span!("usage_poller");
         tokio::spawn(
             async move {
@@ -2961,10 +2954,10 @@ impl Workspace {
                 // drove the live probes. Firing again right away would
                 // burn another round of Anthropic-side per-IP rate-
                 // limiter capacity for no gain. First tick of this
-                // interval lands one USAGE_POLL_INTERVAL after boot.
+                // interval lands one poll interval after boot.
                 let mut interval = tokio::time::interval_at(
-                    tokio::time::Instant::now() + USAGE_POLL_INTERVAL,
-                    USAGE_POLL_INTERVAL,
+                    tokio::time::Instant::now() + poll_interval,
+                    poll_interval,
                 );
                 interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 loop {
@@ -2987,7 +2980,7 @@ impl Workspace {
     /// output. Snapshot-mapping errors stay at `debug` because they
     /// indicate a response-shape drift rather than something the
     /// user needs to act on. Public so tests can drive a
-    /// deterministic refresh without waiting for the 30 s tick.
+    /// deterministic refresh without waiting for the poll tick.
     pub async fn refresh_account_usage_once(self: &Arc<Self>) {
         // Skip accounts inside an active backoff window - a recent
         // probe failed and re-probing now would just re-trip the same
@@ -3011,7 +3004,8 @@ impl Workspace {
         // has a per-IP burst limit; parallel spawns trip the limit
         // and produce HTTP 429s even well under the user's own quota.
         // Serial execution staggers requests by per-probe latency
-        // (~hundreds of ms), within the 60 s poll interval.
+        // (~hundreds of ms), within the configured poll interval (60 s
+        // by default).
         let mut any_success = false;
         for (key, provider, env) in entries {
             // The backend owns the probe; an auth failure surfaces and
@@ -7676,7 +7670,7 @@ impl Workspace {
     }
 }
 
-/// The repair line the 60 s poller logs under an auth-classified
+/// The repair line the usage poller logs under an auth-classified
 /// failure, keyed on how the account authenticates. Credentials are
 /// boot-frozen, so both classes point at the flat-key edit on the
 /// account block, never a re-authentication of the shared config dir.
