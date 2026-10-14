@@ -75,9 +75,7 @@ impl ProjectView {
     }
 
     /// Variant of [`Self::new_for_test`] that lets the fixture
-    /// supply an org + accounts list - needed for launchpad picker
-    /// snapshot tests where the account hint column reads from
-    /// `accounts[0]`.
+    /// supply an org + accounts list.
     pub fn new_for_test_with_org(
         key: ProjectKey,
         name: impl Into<String>,
@@ -110,15 +108,13 @@ impl ProjectView {
 pub struct AccountRow {
     /// forge.toml `[[accounts]]` display name.
     pub display_name: String,
-    /// `None` when the account is pickable now (not saturated, not bailed).
-    /// The reason renders as the row's status tag: a capped window
-    /// reads `limit hit`, a blocked probe or a bail reads
-    /// `auth failed or expired`.
+    /// `None` when the account is pickable now (not saturated, not
+    /// bailed); `Some` with the class `unusable_reason` reports for it.
     pub unusable: Option<forge_gateway::Unusable>,
     /// What this account has left, in whatever terms its backend bills.
     pub budget: AccountBudget,
     /// `true` when the account is in the org's `fallback_accounts` only.
-    /// Reads after every primary row, carrying a dim `fallback` suffix.
+    /// Fallback rows follow every primary row in the snapshot.
     pub fallback: bool,
     /// The provider whose backend serves this account.
     pub provider: forge_primitives::account::Provider,

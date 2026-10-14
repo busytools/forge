@@ -1606,8 +1606,8 @@ impl Workspace {
         }
         gateway.set_rotation_numbers(config.gateway_rotation);
 
-        // Seed account usage from the machine-local store so the
-        // launchpad picker has usage data immediately at cold boot.
+        // Seed account usage from the machine-local store so usage
+        // reads have data immediately at cold boot.
         // Anthropic's /api/oauth/usage rate-limiter can stall the first
         // live probe for 30 s+; without seed data every account reads as
         // unknown during that window, so nothing is demoted for being at
@@ -2466,22 +2466,22 @@ impl Workspace {
     }
 
     /// `true` when every `[[accounts]]` entry has reached a terminal
-    /// `LoadingState` AND the gateway's listener is bound. The
-    /// launchpad reads this to decide whether project rows are
-    /// clickable - clicking while an account is still resolving means
-    /// the walk runs over a partial map, and spawning before the
-    /// listener is bound stamps a base URL nothing answers. Public so
-    /// a view can gate keyboard + mouse handlers on it without
-    /// reaching into the crate-private account map.
+    /// `LoadingState` AND the gateway's listener is bound. The boot wave
+    /// and the cron spawn path gate on this - spawning while an account
+    /// is still resolving means the walk runs over a partial map, and
+    /// spawning before the listener is bound stamps a base URL nothing
+    /// answers - and a view reads it for its accounts card. Public so a
+    /// view can read the pool's settledness without reaching into the
+    /// crate-private account map.
     pub fn all_accounts_loaded(&self) -> bool {
         self.accounts.all_loaded() && self.gateway_ready.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// Whether a spawn in `project_key` would find an account: the
     /// gateway's walk over the project's declared model, which is what a
-    /// spawn runs and what the launchpad's chips show. `false` for a
+    /// spawn runs and what a project row's refusal reads. `false` for a
     /// project without a model, or one whose org serves nothing it
-    /// declares, which is the row the launchpad keeps unclickable.
+    /// declares, which is the refusal a row draws.
     pub fn project_would_bind(&self, project_key: &ProjectKey) -> bool {
         let Some(project) = self.project_for_key(project_key) else {
             return false;
@@ -3147,9 +3147,9 @@ impl Workspace {
             }
         }
 
-        // Persist the snapshot to disk so the next forge launch's
-        // launchpad picker has seed data even if Anthropic 429s the
-        // first probe. Skipped when no probe succeeded this round -
+        // Persist the snapshot to disk so the next forge launch's usage
+        // reads have seed data even if Anthropic 429s the first probe.
+        // Skipped when no probe succeeded this round -
         // no point rewriting the file with the same contents.
         if any_success {
             let snapshots = self.accounts.snapshots_for_cache();
@@ -3206,8 +3206,8 @@ impl Workspace {
 
     /// Read the cached usage snapshot for an account by display
     /// name. `None` when the poller hasn't yet succeeded (cold
-    /// cache, no credentials, network blip). A view's bottom panel
-    /// renders the 5h / 7d bars from this snapshot.
+    /// cache, no credentials, network blip). A view renders the
+    /// 5h / 7d bars from this snapshot.
     pub fn usage_for(&self, display_name: &str) -> Option<forge_primitives::usage::UsageSnapshot> {
         self.accounts.usage(display_name)
     }
@@ -3279,11 +3279,9 @@ impl Workspace {
 
     /// Read the last poll-attempt failure for an account, if any.
     /// `None` when the most recent poll succeeded (or no attempt
-    /// has been made yet). A view's bottom panel renders a DIM hint
-    /// next to the `5h` / `7d` label when this is `Some` so the
-    /// user can tell an empty bar from an upstream failure (the
-    /// HTTP 429 case is especially common when multiple forge
-    /// instances poll the same Anthropic account).
+    /// has been made yet). The class is what tells an empty bar apart
+    /// from an upstream failure (the HTTP 429 case is especially common
+    /// when multiple forge instances poll the same Anthropic account).
     pub fn usage_error_for(&self, display_name: &str) -> Option<forge_gateway::UsageFetchStatus> {
         self.accounts.usage_error(display_name)
     }
@@ -7781,14 +7779,14 @@ fn account_budget(
     backend.budget(account, snapshot)
 }
 
-/// Map a failed probe to the renderer-facing
-/// [`forge_gateway::UsageFetchStatus`] bucket. Separates HTTP 429 (the
-/// common multi-instance throttle case) from the auth-related
+/// Map a failed probe to the [`forge_gateway::UsageFetchStatus`]
+/// bucket. Separates HTTP 429 (the common multi-instance throttle
+/// case) from the auth-related
 /// failures (`Expired` / `NoCredentials` / `Unauthorized`) and
-/// transport failures (`Network`), so a view's bottom-panel hint
-/// can tell the user something specific rather than a generic
-/// "fetch error". `Unmappable` never reaches the classifiers - both
-/// callers handle a 200 that maps to nothing before classifying.
+/// transport failures (`Network`), so each class keeps its own
+/// meaning rather than a generic "fetch error". `Unmappable` never
+/// reaches the classifiers - both callers handle a 200 that maps to
+/// nothing before classifying.
 pub(crate) fn classify_oauth_usage_error(
     err: &forge_gateway::ProbeError,
 ) -> forge_gateway::UsageFetchStatus {
@@ -12549,10 +12547,9 @@ provider = "anthropic"
     }
 
     /// `classify_oauth_usage_error` must distinguish HTTP 429 from
-    /// auth-related failures so a view's bottom-panel hint reads
-    /// `rate-limited` (the common case under multiple forge
-    /// instances) rather than collapsing every failure to a single
-    /// generic bucket.
+    /// auth-related failures, keeping the `rate-limited` class (the
+    /// common case under multiple forge instances) rather than
+    /// collapsing every failure to a single generic bucket.
     #[test]
     fn classify_oauth_usage_error_buckets_known_variants() {
         use forge_gateway::ProbeError;
@@ -12592,8 +12589,8 @@ provider = "anthropic"
             UsageFetchStatus::NetworkFailed,
         );
         // Non-429 HTTP errors and decode failures fall through to the
-        // generic `Other` bucket - renderers show "fetch failed" so
-        // the user can tell something's wrong without naming a cause.
+        // generic `Other` bucket, so an unmapped failure keeps its own
+        // class instead of being read as a named cause.
         assert_eq!(
             classify_oauth_usage_error(&fetch(OauthUsageError::HttpStatus(500, String::new()))),
             UsageFetchStatus::Other,
@@ -17661,9 +17658,9 @@ provider = "anthropic"
         );
     }
 
-    /// `project_would_bind` is the whole input to the launchpad's click
-    /// gate and to its hint row, so an always-false regression would
-    /// leave every project unclickable and nothing else would fail.
+    /// `project_would_bind` is what a project row's accounts refusal
+    /// reads, so an always-false regression would refuse every project
+    /// and nothing else would fail.
     #[tokio::test]
     async fn project_would_bind_tracks_the_walk() {
         let dir = make_workspace_dir_246();
@@ -17689,8 +17686,8 @@ provider = "anthropic"
         );
 
         // Agent-cooling, which is the one settled state the walk refuses:
-        // it is what renders the launchpad's dim hint on a project that
-        // does declare a model.
+        // it is what draws a project row's refusal on a project that does
+        // declare a model.
         workspace.seed_test_ready_account("Stargate");
         let an_hour_out = std::time::SystemTime::now()
             .duration_since(std::time::SystemTime::UNIX_EPOCH)

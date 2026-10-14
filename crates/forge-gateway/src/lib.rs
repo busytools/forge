@@ -207,12 +207,12 @@ pub trait ProviderBackend: Send + Sync {
     }
 }
 
-/// A cached snapshot the renderer cannot use under this backend.
+/// A cached snapshot that cannot be used under this backend.
 ///
 /// Warns rather than falling back quietly: the redb row is rewritten
 /// only after a successful poll, so a stale one outlives a `forge.toml`
 /// edit and is re-seeded every boot. An account whose provider changed
-/// and whose new endpoint is failing would otherwise show empty columns
+/// and whose new endpoint is failing would otherwise carry no figures
 /// indefinitely with nothing anywhere saying why.
 fn warn_unusable_snapshot(account: &str, provider: Provider, source: UsageSourceKind) {
     tracing::warn!(
