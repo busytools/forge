@@ -3,7 +3,7 @@
 //! Probes one account once and settles it to a terminal `LoadingState`
 //! (`Ready` or `Bailed`) in that single round. Spawned at
 //! `Workspace::new`, one tokio task per `[[accounts]]` entry in
-//! forge.toml. The launchpad blocks project-row clicks until
+//! forge.toml. The boot wave and the cron spawn path wait until
 //! `AccountStateMap::all_loaded()` returns true (every account in a
 //! terminal state); the gateway's walk only considers accounts whose
 //! terminal state is `Ready`.

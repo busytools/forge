@@ -76,25 +76,22 @@ pub enum Unusable {
     Bailed,
 }
 
-/// Boot-time loading state for an account. The launchpad gates click
-/// and spawn until every account in the map has resolved to `Ready`
+/// Boot-time loading state for an account. The boot wave and the cron
+/// spawn path wait for every account in the map to resolve to `Ready`
 /// or `Bailed`; the selection walk skips `Loading` and keeps `Bailed`
-/// as its last resort, while `Loading` keeps the launchpad dim. A
-/// bailed account's `usage` is `None` by construction (the loader
-/// clears it on the transition).
+/// as its last resort. A bailed account's `usage` is `None` by
+/// construction (the loader clears it on the transition).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LoadingState {
-    /// First-pass probe in progress. The launchpad shows `○` (yellow)
-    /// for this account.
+    /// First-pass probe in progress.
     Loading,
     /// Probe returned 200; account is usable and may be assigned to
-    /// sessions. Launchpad glyph: `●` (green).
+    /// sessions.
     Ready,
     /// The probe ended in an auth failure the account cannot recover
     /// from in place. The user fixes the credential and lets the 60 s
-    /// usage poller flip the account back to `Ready`. Launchpad glyph:
-    /// `⚠` (red).
+    /// usage poller flip the account back to `Ready`.
     Bailed,
 }
 
@@ -157,8 +154,8 @@ pub struct AccountState {
     /// `LoadingState` - rate-limit concern, not auth-recovery.
     pub override_armed: bool,
     /// Where this account sits in the boot-time loading state
-    /// machine. The launchpad's "all accounts loaded" gate consults
-    /// this across every account; the selection walk only considers
+    /// machine. The boot wave and the cron spawn path gate on this
+    /// across every account; the selection walk only considers
     /// accounts whose state is `Ready` (or a saturated `Ready`).
     pub loading: LoadingState,
 }
@@ -222,8 +219,8 @@ impl AccountStateMap {
     /// populated; unknown cache entries (account removed from
     /// forge.toml) are ignored. Does NOT clear `last_error` or
     /// `next_probe_at` - the cache is purely seed data; the live
-    /// poller still drives backoff. Used by `Workspace::new` to make
-    /// the launchpad non-empty on cold boot.
+    /// poller still drives backoff. Used by `Workspace::new` so
+    /// usage reads have data on cold boot.
     pub fn seed_from_cache(&mut self, cached: &std::collections::BTreeMap<String, UsageSnapshot>) {
         for (name, snapshot) in cached {
             let key = AccountKey(name.clone());
@@ -404,10 +401,10 @@ impl AccountStateMap {
     }
 
     /// `true` when every account in the map has reached a terminal
-    /// `LoadingState` (`Ready` or `Bailed`). The launchpad uses this
-    /// as the gate for un-dimming project rows + un-blocking clicks.
-    /// Empty maps return `true` (vacuous; no accounts means no work
-    /// to wait on - relevant in the testing-stub path).
+    /// `LoadingState` (`Ready` or `Bailed`). The boot wave and the cron
+    /// spawn path gate on this. Empty maps return `true` (vacuous; no
+    /// accounts means no work to wait on - relevant in the testing-stub
+    /// path).
     pub fn all_loaded(&self) -> bool {
         self.by_key
             .values()
@@ -446,9 +443,8 @@ impl AccountStateMap {
 
     /// Snapshot the current `LoadingState` for `key`. Returns
     /// `LoadingState::Loading` by default for unknown keys
-    /// (defensive - the launchpad's render path may briefly hold an
-    /// account key that hasn't yet been registered in the map during
-    /// reload).
+    /// (defensive - a caller may hold a key that hasn't been
+    /// registered in the map).
     pub fn loading_state(&self, key: &AccountKey) -> LoadingState {
         self.by_key.get(key).map_or(LoadingState::Loading, |s| s.loading)
     }
@@ -1239,7 +1235,7 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
-    // #246: LoadingState gates the launchpad + feeds the selection walk.
+    // #246: LoadingState gates boot + feeds the selection walk.
     //
     // Replaces the PR #238 `consecutive_unauthorized` 3-strike counter:
     // a single 401 now transitions to `LoadingState::Bailed` (clearing
@@ -1255,18 +1251,17 @@ mod tests {
 
     #[test]
     fn loading_state_initial_is_loading() {
-        // Brand-new account state has no probe result yet; the launchpad
-        // dims its row + footer glyph until the loading task lands a
-        // terminal verdict (Ready or Bailed).
+        // Brand-new account state has no probe result yet; it stays
+        // Loading until the loading task lands a terminal verdict (Ready
+        // or Bailed).
         let map = AccountStateMap::new(&[make_account("Gateway")]);
         assert_eq!(map.loading_state(&key("Gateway")), LoadingState::Loading);
     }
 
     #[test]
     fn loading_state_returns_loading_for_unknown_key() {
-        // Defensive: the launchpad render path may briefly hold a key
-        // that hasn't been registered yet; treat unknown keys as
-        // Loading rather than panicking.
+        // Defensive: a caller may hold a key that hasn't been registered
+        // yet; treat unknown keys as Loading rather than panicking.
         let map = AccountStateMap::new(&[make_account("Gateway")]);
         assert_eq!(map.loading_state(&key("NotRegistered")), LoadingState::Loading);
     }
