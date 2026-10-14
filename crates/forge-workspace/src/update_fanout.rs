@@ -74,6 +74,15 @@ struct Shared {
     /// frame of the seat crosses, whichever site emitted it - and the number a
     /// repair hands back is the one minted here.
     rings: HashMap<SessionSlot, VecDeque<SeatUpdate>>,
+    /// The numbers each seat has minted that the ring does NOT hold: the
+    /// frames that close an epoch. A reader measuring whether a copy covers a
+    /// stretch needs them, because a window can never serve them and a gap
+    /// holding only one of them costs the copy nothing.
+    ///
+    /// **Per epoch, not per seat.** An occupant change mints from 1 again, so
+    /// the numbers a seal's epoch carried are re-minted by the run after it -
+    /// and the record of them goes with the ring.
+    unringed: HashMap<SessionSlot, Vec<u64>>,
     /// How many frames a ring keeps. [`SEAT_RING`] in production; a test
     /// drives it down so the transcript fallback is reachable without
     /// emitting thousands of frames.
@@ -88,6 +97,7 @@ impl Default for Shared {
             attached: false,
             sequences: HashMap::new(),
             rings: HashMap::new(),
+            unringed: HashMap::new(),
             ring_cap: SEAT_RING,
         }
     }
@@ -129,13 +139,21 @@ impl Shared {
             self.sequences.remove(&slot);
             // **A new occupant starts counting again**, so the frames before
             // it belong to a stream no client holds any more - and a repair
-            // that could reach into them would splice two conversations.
+            // that could reach into them would splice two conversations. The
+            // unringed numbers are the same: the run after a seal mints them
+            // again, and a stale one would cover a gap the new run opened.
             self.rings.remove(&slot);
+            self.unringed.remove(&slot);
         } else if matches!(update, SessionUpdate::Releasing { .. }) {
             // The seat is being taken down, and its frames are on the far side
             // of a release: nothing asks for the numbers of a seat that is
-            // going away.
+            // going away. **The counter still advances** - the frame carries a
+            // number like any other, and leaving the counter behind mints that
+            // number again for the frame after it, which a client reads as one
+            // already drawn.
             self.rings.remove(&slot);
+            self.sequences.insert(slot.clone(), seq);
+            self.unringed.entry(slot.clone()).or_default().push(seq);
         } else {
             self.sequences.insert(slot.clone(), seq);
         }
@@ -168,6 +186,16 @@ impl Shared {
     /// has emitted nothing.
     fn oldest_kept(&self, slot: &SessionSlot) -> Option<u64> {
         self.rings.get(slot).and_then(|ring| ring.front()).and_then(|frame| frame.seq)
+    }
+
+    /// How many of the numbers in `from..=to` on `slot`'s stream the ring
+    /// holds no frame for.
+    fn unringed_between(&self, slot: &SessionSlot, from: u64, to: u64) -> u64 {
+        let Some(numbers) = self.unringed.get(slot) else {
+            return 0;
+        };
+        u64::try_from(numbers.iter().filter(|number| (from..=to).contains(number)).count())
+            .unwrap_or(u64::MAX)
     }
 
     /// The number `slot`'s next frame will be minted under.
@@ -257,6 +285,11 @@ impl UpdateFanout {
     /// can answer from memory from one it cannot.
     pub(crate) fn oldest_kept(&self, slot: &SessionSlot) -> Option<u64> {
         self.shared.lock().oldest_kept(slot)
+    }
+
+    /// How many numbers in `from..=to` on `slot`'s stream no window can hold.
+    pub(crate) fn unringed_between(&self, slot: &SessionSlot, from: u64, to: u64) -> u64 {
+        self.shared.lock().unringed_between(slot, from, to)
     }
 
     /// Drive the ring's cap down, so a test reaches the transcript fallback
@@ -726,6 +759,75 @@ mod tests {
             fanout.frames_between(&seat, 1, 3).iter().map(|frame| frame.seq).collect::<Vec<_>>(),
             vec![Some(1), Some(2)],
             "and a range reaches only the new count's frames",
+        );
+    }
+
+    /// **A release advances the seat's counter like any other frame.** Keeping
+    /// the epoch frame out of the ring is where the branch began, and leaving
+    /// the counter behind with it mints the released frame's number twice: the
+    /// frame after it repeats a number a client has already drawn and is
+    /// skipped.
+    #[test]
+    fn a_release_advances_the_counter_it_is_numbered_on() {
+        let fanout = UpdateFanout::default();
+        let mut rx = fanout.subscribe(SubscriberRole::Answering);
+        let seat = seat("lead");
+
+        assert!(fanout.send(a_turn_ends(&seat)), "a subscribed fan-out delivers");
+        assert!(
+            fanout.send(SessionUpdate::Releasing { key: seat.clone() }),
+            "a subscribed fan-out delivers"
+        );
+        assert!(fanout.send(a_turn_ends(&seat)), "a subscribed fan-out delivers");
+
+        assert_eq!(next_seq(&mut rx, "seat"), Some(1), "the first frame");
+        assert_eq!(next_seq(&mut rx, "seat"), Some(2), "the release");
+        assert_eq!(
+            next_seq(&mut rx, "seat"),
+            Some(3),
+            "and the frame after it, rather than a number minted twice",
+        );
+    }
+
+    /// **The number a release is numbered under is one no ring will ever
+    /// hold.** A reader measuring whether a copy covers a stretch has to leave
+    /// that number out of the count, or every seat that closes reads as a copy
+    /// behind its own count - ready to be repaired from a window that cannot
+    /// hold the frame in question. A new epoch forgets the old release, because
+    /// the numbers after a seal are minted from 1 again.
+    #[test]
+    fn the_release_is_the_number_the_ring_cannot_serve() {
+        let fanout = UpdateFanout::default();
+        let mut rx = fanout.subscribe(SubscriberRole::Answering);
+        let seat = seat("lead");
+
+        assert!(fanout.send(a_turn_ends(&seat)), "a subscribed fan-out delivers");
+        assert!(
+            fanout.send(SessionUpdate::Releasing { key: seat.clone() }),
+            "a subscribed fan-out delivers"
+        );
+        assert_eq!(next_seq(&mut rx, "seat"), Some(1), "the row");
+        assert_eq!(next_seq(&mut rx, "seat"), Some(2), "and the release after it");
+
+        assert_eq!(
+            fanout.unringed_between(&seat, 1, 1),
+            0,
+            "a row the window holds is not counted among the numbers it cannot serve",
+        );
+        assert_eq!(
+            fanout.unringed_between(&seat, 1, 2),
+            1,
+            "and the release beside it is, because no window can hold it",
+        );
+
+        assert!(fanout.send(occupant_change(&seat)), "a subscribed fan-out delivers");
+        for _ in 0..3 {
+            assert!(fanout.send(a_turn_ends(&seat)), "a subscribed fan-out delivers");
+        }
+        assert_eq!(
+            fanout.unringed_between(&seat, 1, 3),
+            0,
+            "the new epoch mints from 1 again, so the old release's number is forgotten",
         );
     }
 

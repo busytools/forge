@@ -1264,8 +1264,16 @@ async fn catch_up(state: &TransportState, slot: &SessionSlot, want: u64) -> bool
     }
     let from = state.conversations.consumed_for(slot).saturating_add(1);
     let frames = state.surface.seat_frames_between(slot, from, want);
-    if u64::try_from(frames.len()).unwrap_or(u64::MAX) < want.saturating_sub(from).saturating_add(1)
-    {
+    // **A stretch holding only a seal is not a stretch the copy is behind on.**
+    // The frames that close an epoch are numbered but never ringed, so no
+    // window can serve them however far back it reaches - and counting them as
+    // missing would refuse a seat whose newest frame is a release, which is
+    // every seat a client reconnects to after it went to sleep.
+    let needed = want
+        .saturating_sub(from)
+        .saturating_add(1)
+        .saturating_sub(state.surface.seat_unringed_between(slot, from, want));
+    if u64::try_from(frames.len()).unwrap_or(u64::MAX) < needed {
         tracing::error!(
             event_name = "seat_copy_behind",
             slot = %slot.display(),
@@ -1276,22 +1284,17 @@ async fn catch_up(state: &TransportState, slot: &SessionSlot, want: u64) -> bool
         );
         return false;
     }
-    // **A seat the fold has never held has no copy to top up.** Nothing has
-    // connected on it yet, so `apply` has nowhere to put a frame - and the
-    // seed below would come from a transcript that cannot hold what the
-    // stream already sent. The frames materialise the copy instead, which is
-    // what a seat with a live stream and no connect yet needs.
+    // **A seat with no copy gets one from the frames themselves.** The fold
+    // holds nothing for a seat nothing has connected on, which is right for a
+    // passive stream - but an encode that owes this seat a record cannot
+    // answer "no copy" and then name a number, so the stretch materialises it,
+    // seeded EMPTY and built by the applies below: one place a row may enter,
+    // so nothing doubles. The fold, receiving the same frames afterwards,
+    // skips them by the watermark this marks last.
     if state.conversations.get(slot).is_none() {
-        let history: Vec<forge_primitives::Message> = frames
-            .iter()
-            .filter_map(|frame| match &frame.update {
-                crate::SessionUpdate::ChatAppended { msg, .. } => Some(msg.clone()),
-                _ => None,
-            })
-            .collect();
         state
             .conversations
-            .insert(slot, crate::transport::conversation::Conversation::new(history, 0, 0));
+            .insert(slot, crate::transport::conversation::Conversation::new(Vec::new(), 0, 0));
     }
     for frame in &frames {
         state.conversations.apply(&frame.update);

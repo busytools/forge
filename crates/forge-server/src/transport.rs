@@ -186,13 +186,40 @@ async fn fold_the_stream(state: Arc<TransportState>) {
         }
         let seq = frame.seq;
         let update = frame.update;
+        // **A frame an encode has already folded into the copy is not folded
+        // again.** The catch-up fills from the seat's window when this loop
+        // cannot reach in time, and this loop still receives those same frames
+        // afterwards - so the watermark it keeps doubles as its own skip
+        // guard, and the row crosses once whichever path got there first.
+        if let (Some(seq), Some(slot)) = (seq, update.slot())
+            && seq <= state.conversations.consumed_for(slot)
+        {
+            continue;
+        }
         crate::live::Live::lock(&state.live).apply(&update);
         state.conversations.apply(&update);
         // **The watermark an answer is measured against.** Marked after the
-        // apply, so a number this reports is one the copy has taken - which
-        // is what a subscribe's answer waits for before it names its own.
-        if let (Some(seq), Some(slot)) = (seq, update.slot()) {
-            state.conversations.consumed(slot, seq);
+        // apply, and only where there is a copy to take it: a seat nothing has
+        // connected on yet holds no frames, so a number marked there would say
+        // a copy has something it has not.
+        //
+        // **An epoch frame RESETS it instead of marking.** That frame is
+        // numbered on the run it ends and the next run counts from 1 again, so
+        // a watermark left standing would skip the new run's first frames -
+        // exactly the numbers it reuses.
+        if let Some(slot) = update.slot() {
+            let epoch_frame = matches!(
+                update,
+                crate::SessionUpdate::Connected { .. }
+                    | crate::SessionUpdate::SessionReplaced { .. }
+            );
+            if epoch_frame {
+                state.conversations.consumed(slot, 0);
+            } else if let Some(seq) = seq
+                && state.conversations.get(slot).is_some()
+            {
+                state.conversations.consumed(slot, seq);
+            }
         }
         request_context_usage(&state, &mut probes, &update);
     }

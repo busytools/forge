@@ -225,6 +225,14 @@ impl ViewSurface {
         self.workspace.seat_oldest_kept_seq(slot)
     }
 
+    /// How many of the numbers in `from..=to` on `slot`'s stream no window
+    /// holds: the frames that close an epoch are numbered but kept out of the
+    /// ring, so a reader measuring whether a copy covers a stretch leaves them
+    /// out of what it must account for.
+    pub fn seat_unringed_between(&self, slot: &SessionSlot, from: u64, to: u64) -> u64 {
+        self.workspace.seat_unringed_between(slot, from, to)
+    }
+
     /// The live workers, per project.
     pub fn workers(&self) -> Workers {
         Workers::collect(Arc::clone(&self.workspace))

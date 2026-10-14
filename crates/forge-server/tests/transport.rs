@@ -2948,9 +2948,10 @@ async fn wait_for_the_fold(fleet: &Fleet) {
     panic!("the transport's own fold never attached");
 }
 
-/// Whether the answer's conversation carries a row saying `text`.
-fn says(data: &serde_json::Value, text: &str) -> bool {
-    serde_json::to_string(&data["conversation"]).is_ok_and(|body| body.contains(text))
+/// How many times the answer's conversation carries a row saying `text` - the
+/// count a duplicate hides behind a substring check.
+fn says_times(data: &serde_json::Value, text: &str) -> usize {
+    serde_json::to_string(&data["conversation"]).unwrap_or_default().matches(text).count()
 }
 
 /// The thinking tokens the snapshot's turns have spent, summed from the
@@ -3179,11 +3180,106 @@ async fn a_reconnect_answer_covers_every_frame_below_its_number() {
     let (_, data, _) = snapshot_answering(&mut socket).await;
     state.conversations.hold_the_fold(false);
 
-    assert!(
-        says(&data, "the frame the fold has not taken yet"),
-        "the answer carries a number its copy cannot cover: a client adopting seq - 1 would skip \
-         this row's live delivery and never see it",
+    let times = says_times(&data, "the frame the fold has not taken yet");
+    assert_eq!(
+        times, 1,
+        "the row must cross exactly once: absent means the answer carries a number its copy \
+         cannot cover and the client skips its live delivery, and twice means the catch-up \
+         applied a frame the copy already had",
     );
+
+    // **And the fold does not fold it again.** Releasing it lets it consume the
+    // frame the catch-up already applied - which its own watermark must skip,
+    // or the row lands in the copy a second time.
+    state.conversations.hold_the_fold(false);
+    for _ in 0..200 {
+        if state.conversations.consumed_for(&seat) >= 1 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+    let (_, after, _) = snapshot_answering(&mut socket).await;
+    assert_eq!(
+        says_times(&after, "the frame the fold has not taken yet"),
+        1,
+        "the fold applied a frame the catch-up had already put in the copy",
+    );
+}
+
+/// **A caught-up copy is never refused.** A seat that has emitted more than a
+/// window's worth of frames has a ring that shed its oldest, so the fallback's
+/// coverage guard cannot reach back - and a watermark that never advanced
+/// sends every such reconnect down that guard and refuses an ordinary long
+/// seat. Here the fold is NOT held: the copy is caught up, so the answer is
+/// simply the record.
+#[tokio::test]
+async fn a_caught_up_seat_answers_a_reconnect_with_a_shed_window() {
+    let (url, fleet, state) = a_server_with_state().await;
+    let seat = lead_seat();
+    wait_for_the_fold(&fleet).await;
+    // One frame's worth of window, and more frames than it can hold. The seat
+    // connects first, so the copy the fold fills is a real one - a seat with
+    // no copy takes no frames at all, and this is about the copy being behind.
+    forge_workspace::set_seat_ring_cap(&fleet.workspace(), 1);
+    fleet.emit(SessionUpdate::Connected {
+        key: seat.clone(),
+        session_id: SessionId::from("5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45"),
+        cwd: "/tmp".to_owned(),
+        current_model: a_current_model(),
+        available_models: Vec::new(),
+        mode: None,
+        history: Vec::new(),
+        dropped: 0,
+        compaction_count: 0,
+    });
+    for at in 1..=3 {
+        fleet.emit(SessionUpdate::ChatAppended {
+            key: seat.clone(),
+            origin: None,
+            source: None,
+            msg: a_said_frame(&format!("frame {at}")),
+        });
+    }
+    for _ in 0..200 {
+        if state.conversations.consumed_for(&seat) >= 3 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+    let message = next_server(&mut socket).await;
+
+    let ServerMessage::Snapshot { data, .. } = message else {
+        panic!("a caught-up copy is answered with the record, not refused: {message:?}")
+    };
+    for at in 1..=3 {
+        assert_eq!(
+            says_times(&data, &format!("frame {at}")),
+            1,
+            "the copy is the fold's own, and every frame of it crosses once",
+        );
+    }
 }
 
 /// **A copy no window can cover is refused, not answered with a hole.**

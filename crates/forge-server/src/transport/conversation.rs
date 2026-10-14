@@ -558,13 +558,18 @@ impl Conversations {
     }
 
     /// Say the fold loop has consumed `seq` for `slot`.
+    ///
+    /// **`send_replace`, not `send`.** The watch is created with its receiver
+    /// dropped, so `consumed_for` can read the watermark with nobody waiting -
+    /// and `send` is a no-op when a channel has no receivers, which would leave
+    /// the watermark at 0 forever and make every read of it wrong.
     pub fn consumed(&self, slot: &SessionSlot, seq: u64) {
         let mut watches = self.consumed.lock().unwrap_or_else(PoisonError::into_inner);
         let watch = watches.entry(slot.clone()).or_insert_with(|| {
             let (tx, _rx) = tokio::sync::watch::channel(0);
             tx
         });
-        let _ = watch.send(seq);
+        watch.send_replace(seq);
     }
 
     /// Wait, up to `within`, for the fold to have consumed `want` for `slot`,

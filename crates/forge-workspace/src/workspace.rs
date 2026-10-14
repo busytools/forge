@@ -3862,6 +3862,14 @@ impl Workspace {
         self.update_tx.oldest_kept(key)
     }
 
+    /// How many of the numbers in `from..=to` on `key`'s stream no window
+    /// holds: the frames that close an epoch are numbered but kept out of the
+    /// ring, so a reader measuring whether a copy covers a stretch leaves them
+    /// out of what it must account for.
+    pub fn seat_unringed_between(&self, key: &SessionSlot, from: u64, to: u64) -> u64 {
+        self.update_tx.unringed_between(key, from, to)
+    }
+
     /// Borrow the workspace-side [`DomainSession`] for `key`.
     ///
     /// Returns the [`Arc`]-cloned mutex protecting the domain bucket.
