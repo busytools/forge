@@ -28,19 +28,21 @@ press when the default is right, which is almost always, and to give a
 legible reason when it is not.
 
 **The common case is not reaching it at all.** The app keeps the last
-address that answered and opens on it, so this screen is what a first
-launch meets and what the launch meets when the remembered address does
-not answer - and in that second case it opens with that address already
-in the field and the failure already on it, rather than blank. A failed
-launch is not forgotten, either: the address stays remembered, because
-that is the one the reader is about to correct.
+address it held a connection on and opens on it, so this screen is what a
+first launch meets and what the launch meets when the remembered address
+does not answer - and in that second case it opens with that address
+already in the field and the failure already on it, rather than blank. A
+failed launch is not forgotten, either: the address stays remembered,
+because that is the one the reader is about to correct.
 
 **A launch may also name a server outright.** `?server=<address>` - a bare
 `host:port`, or a full `ws://` URL - pre-fills the field and is tried at
 launch, which is how a client is opened already pointed at one forge: a
 scratch stack, a second machine. It outranks the remembered address, and
-the URL keeps the parameter - moving it to `/connect` would drop the one
-thing a reload re-prefills from.
+the parameter stays in the URL through every move the app makes - a tab
+that has been navigated still opens on the forge it was launched at when
+it reloads. A connection taken on another address moves the parameter onto
+it.
 
 **A launch moves the page only from the root**, so a deep link is the one
 place it takes the connection and leaves the route alone. That makes this

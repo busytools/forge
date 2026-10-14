@@ -193,10 +193,16 @@ export const currentRoute = writable<Route>({ name: 'home' });
  * The store is what moves it; the push is for the address bar and history.
  * No popstate event rides this: a listener re-parses the URL, which would
  * drop fields the URL cannot carry.
+ *
+ * **The search rides along**, because `?server=` names the forge THIS tab
+ * is pointed at and outranks the remembered address at the next launch. A
+ * push that dropped it left a reloaded tab dialing whatever was remembered
+ * instead - a dead scratch stack, measured 2026-10-14. The search carries
+ * nothing else: the parameter is its only reader.
  */
 export function goTo(route: Route): void {
   currentRoute.set(route);
-  history.pushState(null, '', hrefFor(route));
+  history.pushState(null, '', `${hrefFor(route)}${location.search}`);
 }
 
 function encode(segment: string): string {

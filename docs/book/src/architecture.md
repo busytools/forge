@@ -363,7 +363,7 @@ rather than something this repo carries.
 
 **And the shipped app is a shell.** Its only input is the server URL: it
 carries no fixture, no mock data and no dev-only default, opens on the
-last address that answered and shows the connect screen when none does,
-and never falls back to bundled data. The fixtures live under
+last address a connection was kept on and shows the connect screen when
+none does, and never falls back to bundled data. The fixtures live under
 `client/src/dev/` and `client/src/dev/fixture.test.ts` builds the app and
 fails if one reaches the bundle.

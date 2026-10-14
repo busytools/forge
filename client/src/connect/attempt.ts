@@ -11,7 +11,6 @@
 import { canHost, hostTheBrowser, installTakeoverHook } from '../browser/host';
 import { connect, type Connection } from '../socket';
 import { DEFAULT_SERVER_PORT, settingsFrom, type ClientSettings } from '../wire/types';
-import { rememberAddress } from './remembered';
 import { connectRust } from './rust';
 
 /**
@@ -143,20 +142,13 @@ interface Submit {
  * **It cannot reject**, because `attempt` cannot: every path out of a
  * connection, thrown or answered, is one of these two shapes. That is what
  * lets the caller write `busy` from the answer rather than from a `finally`.
- *
- * The address that just took is remembered here rather than by the component,
- * for the same reason the transition is: what the app opens on next time is
- * the last submit that worked, and that is a fact a test can check.
  */
 export async function submitAttempt(
   address: string,
   connect: (input: string) => Promise<Attempt> = connectTo,
 ): Promise<Submit> {
   const answer = await attempt(address, connect);
-  if (answer.ok) {
-    rememberAddress(address.trim());
-    return { busy: false, failure: null, connected: answer };
-  }
+  if (answer.ok) return { busy: false, failure: null, connected: answer };
   return { busy: false, failure: answer, connected: null };
 }
 
