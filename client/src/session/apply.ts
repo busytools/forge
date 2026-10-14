@@ -421,7 +421,6 @@ export const IGNORED: readonly string[] = [
   'cli_version_changed',
   'cron_prompt_appended',
   'dictate_availability',
-  'dictate_device_pin',
   // The models page reads the catalogue through its own subject; a
   // session page has nothing of it to draw.
   'dictate_models_changed',

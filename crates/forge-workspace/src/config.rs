@@ -665,6 +665,15 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         );
     }
 
+    if parsed.dictate.device.is_some() {
+        tracing::warn!(
+            target: "forge_workspace::config",
+            event_name = "dictate_device_key_ignored",
+            "[dictate] device is no longer read; capture moved to the client, which picks \
+             its own machine's input, so the key and its value can be deleted",
+        );
+    }
+
     if parsed.orgs.is_empty() {
         return Err(WorkspaceError::NoOrgsConfigured { path });
     }
@@ -3584,6 +3593,11 @@ provider = "anthropic"
                 "projects_section_ignored",
             ),
             ("[ui]", "\n[ui]\nlaunchpad_spinner = \"braille\"\nfps = 120\n", "ui_section_ignored"),
+            (
+                "[dictate] device",
+                "\n[dictate]\ndevice = \"shure-id\"\n",
+                "dictate_device_key_ignored",
+            ),
             (
                 "a gateway key in an env layer",
                 "\n[env]\nANTHROPIC_BASE_URL = \"https://proxy.example\"\n",

@@ -382,14 +382,6 @@ pub enum Command {
     ResetDictateOverrides {
         key: SessionSlot,
     },
-    /// Set the `/dictate` input-device pick, or clear it back to the
-    /// configured pin. Workspace state shared by every session, never
-    /// routed to the agent; the echo lands as
-    /// `SessionUpdate::DictateDevicePin`.
-    SetDictateDevice {
-        key: SessionSlot,
-        pick: Option<crate::dictate::DictateDeviceChoice>,
-    },
     /// Check the model catalogue now. App-level command (`key()` returns
     /// `None`); routed inline. Fire-and-forget: the outcome rides
     /// [`SessionUpdate::DictateModelsChanged`], so a client watches its
@@ -782,8 +774,7 @@ impl Command {
             | Self::RespondPermission { key, .. }
             | Self::RespondQuestion { key, .. }
             | Self::SetDictateOverride { key, .. }
-            | Self::ResetDictateOverrides { key }
-            | Self::SetDictateDevice { key, .. } => Some(key),
+            | Self::ResetDictateOverrides { key } => Some(key),
             Self::SpawnProject { .. }
             | Self::DictateStream { .. }
             | Self::DictateStop { .. }
@@ -905,9 +896,6 @@ impl std::fmt::Debug for Command {
             }
             Self::ResetDictateOverrides { key } => {
                 f.debug_struct("ResetDictateOverrides").field("key", key).finish()
-            }
-            Self::SetDictateDevice { key, .. } => {
-                f.debug_struct("SetDictateDevice").field("key", key).finish_non_exhaustive()
             }
             Self::SpawnProject { project_name, .. } => f
                 .debug_struct("SpawnProject")
@@ -1460,14 +1448,6 @@ pub enum SessionUpdate {
         key: SessionSlot,
         overrides: crate::dictate::DictateOverrides,
     },
-    /// The input-device pick in force after a `/dictate` device edit
-    /// landed - workspace state shared by every session. Sent after
-    /// every `SetDictateDevice`, and alongside the overrides echo by
-    /// a Reset.
-    DictateDevicePin {
-        key: SessionSlot,
-        pick: Option<crate::dictate::DictateDeviceChoice>,
-    },
     ContextUsageSnapshot {
         key: SessionSlot,
         percentage: Option<u8>,
@@ -1987,7 +1967,6 @@ impl SessionUpdate {
             | Self::TurnError { key, .. }
             | Self::ForgeAccountIdentity { key, .. }
             | Self::DictateOverrides { key, .. }
-            | Self::DictateDevicePin { key, .. }
             | Self::ReviewActivityNotice { key, .. }
             | Self::DictateStarted { key, .. }
             | Self::DictateLevel { key, .. }
@@ -2124,9 +2103,6 @@ impl std::fmt::Debug for SessionUpdate {
             }
             Self::DictateOverrides { key, .. } => {
                 f.debug_struct("DictateOverrides").field("key", key).finish_non_exhaustive()
-            }
-            Self::DictateDevicePin { key, .. } => {
-                f.debug_struct("DictateDevicePin").field("key", key).finish_non_exhaustive()
             }
             Self::ContextUsageSnapshot { key, .. } => {
                 f.debug_struct("ContextUsageSnapshot").field("key", key).finish_non_exhaustive()

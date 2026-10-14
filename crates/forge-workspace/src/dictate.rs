@@ -156,30 +156,6 @@ pub enum DictateOverrideUpdate {
     Reset,
 }
 
-/// A pick in the `/dictate` overlay's device list. The `forge.toml`
-/// `[dictate] device` pin is the default state, so it needs no
-/// variant: the field is `None` until a pick lands. A pick overrides
-/// the pin for every session until forge restarts.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DictateDeviceChoice {
-    /// Record from the system default input, whatever the pin names.
-    System,
-    /// Record from this device id.
-    Device(String),
-}
-
-/// Everything the `/dictate` overlay's device block renders from: the
-/// inputs a pick can offer and the configured pin the session pick
-/// overrides. Resolved by [`crate::Workspace::dictate_device_catalog`].
-#[derive(Debug, Clone)]
-pub struct DictateDeviceCatalog {
-    /// Every input present, in enumeration order.
-    pub devices: Vec<forge_dictate::Device>,
-    /// The `forge.toml` `[dictate] device` pin, if one is set.
-    pub configured: Option<String>,
-}
-
 impl DictateBind {
     /// What the forge.toml key accepts.
     pub fn label(self) -> &'static str {
@@ -217,7 +193,7 @@ impl<'de> Deserialize<'de> for DictateBind {
 /// prompt axes are permissions rather than instructions - they say what
 /// the model MAY change, not what it must - so exposing them means
 /// flipping one, seeing no difference, and concluding it is broken.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct DictateSettings {
     /// Off unless asked for: turning it on costs a 3.07 GB download the
@@ -229,11 +205,12 @@ pub struct DictateSettings {
     /// directory.
     #[serde(default)]
     pub models_dir: Option<String>,
-    /// Input to record from, by device id rather than name: the id is
-    /// what survives a restart and a rename. Absent means the system
-    /// default.
+    /// Ghost of the retired `[dictate] device` pin: read only so a stale
+    /// forge.toml still carrying it warns at load instead of being refused
+    /// as an unknown key. Capture moved to the client, which picks its own
+    /// machine's input, so nothing reads this.
     #[serde(default)]
-    pub device: Option<String>,
+    pub device: Option<toml::Value>,
     /// The model the transcribing role runs, as the feed's own variant
     /// name. Set, it wins over every runtime pick and refuses Activate
     /// for the role; absent leaves the role to the last pick or the
@@ -334,9 +311,6 @@ impl DictateSettings {
             .max_capture(Duration::from_secs(self.max_capture_minutes.saturating_mul(60)));
         if let Some(dir) = self.models_dir.as_deref() {
             builder = builder.models_dir(crate::config::expand_home(dir));
-        }
-        if let Some(device) = self.device.as_deref() {
-            builder = builder.device(device);
         }
         if let Some(language) = self.language.as_deref() {
             builder = builder.language(language);
@@ -1675,91 +1649,6 @@ mod tests {
             .dispatch(Command::ResetDictateOverrides { key })
             .expect_err("an unknown session must be refused");
         assert!(matches!(err, crate::DispatchError::UnknownSession(_)));
-    }
-
-    #[test]
-    fn a_device_pick_lands_on_the_workspace_and_echoes() {
-        let (workspace, mut updates) = crate::Workspace::testing_stub();
-        let key = crate::SessionSlot::from_str_for_test("dictate-device");
-        workspace.register_domain_session(key.clone(), None);
-
-        workspace
-            .dispatch(Command::SetDictateDevice {
-                key: key.clone(),
-                pick: Some(DictateDeviceChoice::Device("shure-id".into())),
-            })
-            .expect("dispatch");
-
-        assert_eq!(
-            *workspace.dictate_device_pick.lock(),
-            Some(DictateDeviceChoice::Device("shure-id".into())),
-        );
-        let echo = updates.try_recv().expect("a pin echo for the pick");
-        match echo {
-            SessionUpdate::DictateDevicePin { key: echoed, pick } => {
-                assert_eq!(echoed, key);
-                assert_eq!(pick, Some(DictateDeviceChoice::Device("shure-id".into())));
-            }
-            other => panic!("unexpected update: {other:?}"),
-        }
-    }
-
-    /// The pick is shared by every session: a dispatch from one key is
-    /// visible in the workspace state the next capture resolves from,
-    /// whichever session it runs under.
-    #[test]
-    fn a_device_pick_is_shared_by_every_session() {
-        let (workspace, _updates) = crate::Workspace::testing_stub();
-        let first = crate::SessionSlot::from_str_for_test("dictate-first");
-        let second = crate::SessionSlot::from_str_for_test("dictate-second");
-        workspace.register_domain_session(first.clone(), None);
-        workspace.register_domain_session(second.clone(), None);
-
-        workspace
-            .dispatch(Command::SetDictateDevice {
-                key: first,
-                pick: Some(DictateDeviceChoice::System),
-            })
-            .expect("dispatch");
-
-        assert_eq!(
-            *workspace.dictate_device_pick.lock(),
-            Some(DictateDeviceChoice::System),
-            "the pick must be workspace state, not the dispatching session's"
-        );
-    }
-
-    #[test]
-    fn reset_clears_the_device_pick_with_the_axes() {
-        let (workspace, mut updates) = crate::Workspace::testing_stub();
-        let key = crate::SessionSlot::from_str_for_test("dictate-device-reset");
-        workspace.register_domain_session(key.clone(), None);
-
-        workspace
-            .dispatch(Command::SetDictateDevice {
-                key: key.clone(),
-                pick: Some(DictateDeviceChoice::System),
-            })
-            .expect("dispatch");
-        workspace.dispatch(Command::ResetDictateOverrides { key: key.clone() }).expect("dispatch");
-
-        assert_eq!(
-            *workspace.dictate_device_pick.lock(),
-            None,
-            "back to defaults means back to the configured pin, so the pick must go"
-        );
-
-        let mut pin_echoes = vec![];
-        while let Ok(update) = updates.try_recv() {
-            if let SessionUpdate::DictateDevicePin { pick, .. } = update {
-                pin_echoes.push(pick);
-            }
-        }
-        assert_eq!(
-            pin_echoes,
-            vec![Some(DictateDeviceChoice::System), None],
-            "the pick echoes when set, and the reset echoes the clear"
-        );
     }
 
     /// The mode rides the same parsing rules as `bind`: three values,

@@ -54,7 +54,6 @@ function recording(): { connection: Connection; sent: Record<string, unknown>[] 
       return null;
     },
     more: () => false,
-    devices: () => false,
     commitDiff: () => false,
     readDocument: () => false,
     frame: () => false,

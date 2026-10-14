@@ -62,7 +62,6 @@ function fakeConnection() {
     },
     dispatch: () => null,
     more: () => false,
-    devices: () => false,
     commitDiff: () => false,
     readDocument: () => false,
     frame: () => false,

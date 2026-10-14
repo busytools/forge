@@ -62,24 +62,6 @@ pub enum Error {
     #[error("audio has {actual} channels, expected mono; downmix before transcribing")]
     Channels { actual: u16 },
 
-    /// No input device is available at all.
-    #[error("no input device is available")]
-    NoInputDevice,
-
-    /// The input device offers nothing this crate can open: no F32
-    /// config at all. F32 offers at other rates are converted instead,
-    /// so what remains here is the case the offered list names.
-    #[error(
-        "the models read {wanted} Hz f32 but the device offers no f32 input; it offers {offered}"
-    )]
-    UnsupportedInput { wanted: u32, offered: String },
-
-    /// A device was named and is not there. Never falls back to the
-    /// default: a silent substitution is the failure this crate exists
-    /// to avoid.
-    #[error("no input device with id {wanted}; available: {available}")]
-    DeviceNotFound { wanted: String, available: String },
-
     /// Opening or running the input stream failed.
     #[error("microphone capture failed: {message}")]
     Capture { message: String },
@@ -123,22 +105,4 @@ pub enum Error {
     /// this crate reads, or a fixture set that disagrees with itself.
     #[error("bench: {message}")]
     Bench { message: String },
-}
-
-/// The capture crate's failures, in this crate's own vocabulary: a caller
-/// that spends a take against a device reads one error type either way, and
-/// the variants keep the wording their own callers match on.
-impl From<forge_capture::Error> for Error {
-    fn from(error: forge_capture::Error) -> Self {
-        match error {
-            forge_capture::Error::NoInputDevice => Self::NoInputDevice,
-            forge_capture::Error::DeviceNotFound { wanted, available } => {
-                Self::DeviceNotFound { wanted, available }
-            }
-            forge_capture::Error::UnsupportedInput { wanted, offered } => {
-                Self::UnsupportedInput { wanted, offered }
-            }
-            forge_capture::Error::Capture { message } => Self::Capture { message },
-        }
-    }
 }

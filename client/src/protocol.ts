@@ -217,19 +217,6 @@ function isSlot(value: unknown): value is SessionSlot {
  */
 export type DocumentKind = 'markdown' | 'pdf' | 'text' | { other: string };
 
-/** One input forge can record from, as the socket names it. */
-export interface DictateDevice {
-  /**
-   * The stable identity, which is what a pick sends back: names collide between
-   * two identical interfaces and change when a user renames one.
-   */
-  id: string;
-  /** The human label a picker draws. Not an identity. */
-  name: string;
-  /** Whether the system would pick this one when asked for no particular device. */
-  is_default: boolean;
-}
-
 /** What a client sends. */
 export type ClientMessage =
   | {
@@ -269,15 +256,6 @@ export type ClientMessage =
   | { kind: 'unsubscribe'; what: Subject }
   | { kind: 'command'; command: Command; reply_to: number | null }
   | { kind: 'more'; conversation: SessionSlot; before: string | null; turns: number }
-  /**
-   * Ask for the inputs forge can record from.
-   *
-   * On demand rather than carried: the walk opens the microphone stack, and a
-   * record is encoded per request and re-sent on every reconnect, so a field
-   * would be a permission check per frame and per connection. The answer is a
-   * `devices` message or an `error` naming it, and those are its only two.
-   */
-  | { kind: 'devices' }
   /**
    * One commit's own diff, for a review page's commit scopes.
    *
@@ -355,15 +333,6 @@ export type ServerMessage =
       cursor: string | null;
       reconciled?: boolean;
     }
-  /**
-   * The inputs forge can record from, in answer to `devices`.
-   *
-   * `configured` is the `forge.toml` pin and NOT what is in force: a pick moves
-   * the process's input for the rest of the run, and what it moved to rides the
-   * home snapshot's `dictate.device`. A picker drawing `configured` as the
-   * current input is wrong from its first pick onward.
-   */
-  | { kind: 'devices'; devices: DictateDevice[]; configured: string | null }
   /**
    * The answer to `commit_diff`: one commit's own bounded diff, in the same
    * layer shape the record's content read carries, so both scopes draw

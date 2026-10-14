@@ -60,7 +60,7 @@ use forge_primitives::{Message, SessionSlot};
 use forge_sdk::transport::codec::{DecodedLine, decode_dispatch};
 use forge_server::transport::PROTOCOL_VERSION;
 use forge_server::transport::envelope::{ClientMessage, ClientSettings, ServerMessage, Subject};
-use forge_server::transport::wire::{DeviceWire, TurnWire};
+use forge_server::transport::wire::TurnWire;
 use forge_server::{Command, SessionUpdate};
 use forge_test_harness::sdk_wire::{baseline_dir, legacy_baseline_dir, load_baseline_from};
 use forge_workspace::DictateModelState;
@@ -248,7 +248,7 @@ macro_rules! assert_serde_names {
 census!(ServerMessage,
     [
         Greeting struct, Snapshot struct, Update struct, Page struct,
-        Devices struct, CommitDiff struct, Reply struct, BrowserRole struct, Error struct,
+        CommitDiff struct, Reply struct, BrowserRole struct, Error struct,
         BrowserAsk struct,
         DocumentRead struct,
         BrowserSeats struct,
@@ -268,7 +268,7 @@ census!(SessionUpdate,
         PermissionRequest struct, QuestionRequest struct, PendingInteractionResolved struct,
         McpOperationError struct, TurnComplete struct, TurnCancelled struct, TurnError struct,
         ChatAppended struct, HookObservation struct,
-        ForgeAccountIdentity struct, DictateOverrides struct, DictateDevicePin struct,
+        ForgeAccountIdentity struct, DictateOverrides struct,
         ContextUsageSnapshot struct, McpSnapshot struct,
         ProcessesChanged struct, MonitorsChanged struct, BackgroundTasksChanged struct,
         WorkChanged struct, TasksChanged struct, CronSchedulesChanged struct,
@@ -304,7 +304,7 @@ census!(Command,
         RespondBrowserHandOff struct,
         AnswerDocumentHandOff struct,
         RespondQuestion struct, SetDictateOverride struct, ResetDictateOverrides struct,
-        SetDictateDevice struct, DictateCatalogueCheck struct, DictateInstall struct,
+        DictateCatalogueCheck struct, DictateInstall struct,
         DictateActivate struct, DictateDeactivate struct, DictateBench struct,
         DictateBenchStop struct, DictateReadAloudStart struct, DictateReadAloudStop struct,
         DictateReadAloudDelete struct, DictateBenchDelete struct, DictateUninstall struct,
@@ -328,7 +328,6 @@ census!(Command,
 census!(ClientMessage,
     [
         Subscribe struct, Unsubscribe struct, Command struct, More struct, CommitDiff struct,
-        Devices struct,
         BrowserAnswer struct,
         BrowserTakeRole struct,
         DocumentRead struct,
@@ -794,7 +793,6 @@ fn frames_record() -> Value {
             reply_to: None,
         },
         ClientMessage::More { conversation: seat.clone(), before: None, turns: 1 },
-        ClientMessage::Devices,
         ClientMessage::BrowserAnswer {
             id: 1,
             parts: vec![forge_primitives::browser::BrowserPart::Text { text: "done".to_owned() }],
@@ -864,17 +862,6 @@ fn frames_record() -> Value {
                 font: None,
                 dictate: forge_workspace::DictateAxes::default(),
             },
-        }),
-    );
-    payload_sampled.insert(
-        "Devices".to_owned(),
-        shape_of(&ServerMessage::Devices {
-            devices: vec![DeviceWire {
-                id: "a-mic".to_owned(),
-                name: "Studio Mic".to_owned(),
-                is_default: true,
-            }],
-            configured: Some("a-mic".to_owned()),
         }),
     );
     // The ask, whose fields a client writes by hand on the way back: the id it

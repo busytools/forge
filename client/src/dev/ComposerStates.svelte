@@ -45,7 +45,6 @@
       (globalThis as { __composerSent?: unknown[] }).__composerSent = sent;
       return null;
     },
-    devices: () => true,
     onMessage: () => () => {},
     store: () => undefined,
     // The strip lane the composer draws now reads the browser role as it

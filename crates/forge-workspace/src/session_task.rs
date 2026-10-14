@@ -1606,7 +1606,6 @@ pub(crate) fn execute_command_via_handle(
         // Handled inline in `Workspace::dispatch`; never agent traffic.
         misrouted @ (Command::SetDictateOverride { .. }
         | Command::ResetDictateOverrides { .. }
-        | Command::SetDictateDevice { .. }
         | Command::DictateStream { .. }
         | Command::DictateStop { .. }
         | Command::SpawnProject { .. }
@@ -6024,17 +6023,13 @@ provider = "anthropic"
     /// The replaced identity's `/dictate` override axes die with it:
     /// a view mints a blank bucket for the new session, so an axis
     /// left on the domain would style a session that no longer exists.
-    /// The device pick is workspace state shared by every session, so
-    /// the replacement must leave it - and echo nothing.
     #[tokio::test]
-    async fn a_replaced_identity_drops_its_overrides_but_not_the_device_pick() {
+    async fn a_replaced_identity_drops_its_overrides() {
         let (workspace, mut update_rx) = crate::Workspace::testing_stub();
         let session_key = SessionSlot::from_str_for_test("dictate-rekey-uuid");
         let domain =
             Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
         domain.lock().dictate_overrides.styling = Some(forge_dictate::normalize::Styling::Formal);
-        *workspace.dictate_device_pick.lock() =
-            Some(crate::dictate::DictateDeviceChoice::Device("shure-id".into()));
 
         let (handle, _agent_cmd_rx) = Agent::testing_stub();
         let (_cmd_tx, command_rx) =
@@ -6072,17 +6067,9 @@ provider = "anthropic"
         });
 
         assert_eq!(domain.lock().dictate_overrides, crate::dictate::DictateOverrides::default());
-        assert_eq!(
-            *workspace.dictate_device_pick.lock(),
-            Some(crate::dictate::DictateDeviceChoice::Device("shure-id".into())),
-            "the pick is workspace state: a session replacement must not clear it"
-        );
 
         let mut replaced_seen = false;
         while let Ok(u) = update_rx.try_recv() {
-            if let SessionUpdate::DictateDevicePin { .. } = u {
-                panic!("a replacement must not echo a device-pin clear: {u:?}");
-            }
             replaced_seen |= matches!(u, SessionUpdate::SessionReplaced { .. });
         }
         assert!(

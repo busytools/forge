@@ -306,12 +306,6 @@ pub struct Workspace {
     /// takes still awaiting a transcript. Driven by
     /// `Command::DictateStream` / `Command::DictateStop`.
     pub(crate) dictate_runtime: Mutex<crate::dictate::DictateRuntime>,
-    /// The `/dictate` overlay's input-device pick, shared by every
-    /// session: `None` until one lands, then it overrides the
-    /// `forge.toml` `[dictate] device` pin for every capture until the
-    /// process ends. Set by `Command::SetDictateDevice`; a Reset
-    /// clears it. Volatile, never persisted.
-    pub(crate) dictate_device_pick: Mutex<Option<crate::dictate::DictateDeviceChoice>>,
     /// The browser relay: the one client connection that drives the browser.
     /// The workspace owns it because both halves need the same one - the
     /// tools in `mcp::browser` ask through it, and the transport registers
@@ -1672,7 +1666,6 @@ impl Workspace {
             gateway_bind_error: Mutex::new(None),
             dictate: Arc::new(crate::dictate::DictateState::new(&config_dictate)),
             dictate_runtime: Mutex::new(crate::dictate::DictateRuntime::default()),
-            dictate_device_pick: Mutex::new(None),
             browser: Arc::new(crate::browser::BrowserRelay::new()),
             attached_clients: std::sync::atomic::AtomicUsize::new(0),
             document_handoffs: parking_lot::Mutex::new(HashMap::new()),
@@ -2660,32 +2653,6 @@ impl Workspace {
     pub fn dictate_push(&self, key: &SessionSlot, samples: &[f32], initiator: Option<u64>) -> bool {
         let runtime = self.dictate_runtime.lock();
         runtime.frame_sink_for(key, initiator).is_some_and(|sink| sink.push_mono(samples))
-    }
-
-    /// The device this process records from, once a `/dictate` pick moved it.
-    ///
-    /// Volatile and process-wide rather than per session: a pick overrides the
-    /// `[dictate] device` pin for every session until forge restarts, which is
-    /// why it rides the dictate read rather than a session's state.
-    pub fn dictate_device_pick(&self) -> Option<crate::dictate::DictateDeviceChoice> {
-        self.dictate_device_pick.lock().clone()
-    }
-
-    /// The inputs a `/dictate` device pick can offer, plus the configured
-    /// pin. Blocking (the cpal device walk), so a view calls it from a
-    /// spawned task, never its render thread, and the socket answers its
-    /// `devices` request with it off the connection's task.
-    ///
-    /// # Errors
-    ///
-    /// When the audio stack cannot be enumerated at all; the overlay
-    /// renders the message in place of a list.
-    pub fn dictate_device_catalog(&self) -> Result<crate::dictate::DictateDeviceCatalog, String> {
-        let devices = forge_dictate::devices().map_err(|error| error.to_string())?;
-        Ok(crate::dictate::DictateDeviceCatalog {
-            devices,
-            configured: self.config.dictate.device.clone(),
-        })
     }
 
     /// Stop the in-flight model fetch. Whatever reached the disk stays
@@ -3918,33 +3885,12 @@ impl Workspace {
             }
             crate::dictate::DictateOverrideUpdate::Reset => {
                 domain.lock().dictate_overrides = crate::dictate::DictateOverrides::default();
-                *self.dictate_device_pick.lock() = None;
             }
         }
         let overrides = domain.lock().dictate_overrides;
-        let pick = self.dictate_device_pick.lock().clone();
         let _ = self
             .update_sender()
             .send(SessionUpdate::DictateOverrides { key: key.clone(), overrides });
-        let _ =
-            self.update_sender().send(SessionUpdate::DictateDevicePin { key: key.clone(), pick });
-        Ok(())
-    }
-
-    /// Apply a `/dictate` device pick (or its clear) and echo it. The
-    /// pick is workspace state shared by every session - it overrides
-    /// the configured pin for every capture until the process ends.
-    fn apply_dictate_device(
-        self: &Arc<Self>,
-        key: &SessionSlot,
-        pick: Option<crate::dictate::DictateDeviceChoice>,
-    ) -> Result<(), DispatchError> {
-        if self.domain_session_for(key).is_none() {
-            return Err(DispatchError::UnknownSession(key.clone()));
-        }
-        (*self.dictate_device_pick.lock()).clone_from(&pick);
-        let _ =
-            self.update_sender().send(SessionUpdate::DictateDevicePin { key: key.clone(), pick });
         Ok(())
     }
 
@@ -4526,9 +4472,6 @@ impl Workspace {
                         &key,
                         crate::dictate::DictateOverrideUpdate::Reset,
                     );
-                }
-                Command::SetDictateDevice { key, pick } => {
-                    return self.apply_dictate_device(&key, pick);
                 }
                 _ => {}
             }

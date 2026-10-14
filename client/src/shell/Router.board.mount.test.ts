@@ -41,7 +41,6 @@ function recording(sent: Record<string, unknown>[]): { connection: Connection } 
       return null;
     },
     more: refuse,
-    devices: refuse,
     frame: refuse,
     onBrowserAsk: refuse,
     browserRole: refuse,

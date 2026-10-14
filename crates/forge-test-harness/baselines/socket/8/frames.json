@@ -4,7 +4,6 @@
     "BrowserRole": "browser_role",
     "BrowserSeats": "browser_seats",
     "CommitDiff": "commit_diff",
-    "Devices": "devices",
     "DocumentRead": "document_read",
     "Error": "error",
     "Greeting": "greeting",
@@ -30,7 +29,6 @@
     "CronPromptAppended": "cron_prompt_appended",
     "CronSchedulesChanged": "cron_schedules_changed",
     "DictateAvailability": "dictate_availability",
-    "DictateDevicePin": "dictate_device_pin",
     "DictateEnded": "dictate_ended",
     "DictateLevel": "dictate_level",
     "DictateModelsChanged": "dictate_models_changed",
@@ -134,7 +132,6 @@
     "RespondQuestion": "respond_question",
     "RespondSlackPost": "respond_slack_post",
     "ResumeSession": "resume_session",
-    "SetDictateDevice": "set_dictate_device",
     "SetDictateOverride": "set_dictate_override",
     "SetMode": "set_mode",
     "SetModel": "set_model",
@@ -155,7 +152,6 @@
     "BrowserTakeRole": "browser_take_role",
     "Command": "command",
     "CommitDiff": "commit_diff",
-    "Devices": "devices",
     "DocumentRead": "document_read",
     "More": "more",
     "Subscribe": "subscribe",
@@ -267,18 +263,6 @@
         "new_line",
         "old_line",
         "text"
-      ]
-    },
-    "Devices": {
-      "": [
-        "configured",
-        "devices",
-        "kind"
-      ],
-      "/devices[]": [
-        "id",
-        "is_default",
-        "name"
       ]
     },
     "DictateModelsChanged": {
@@ -809,7 +793,6 @@
         "load_failed"
       ],
       "/data/dictate": [
-        "device",
         "enabled",
         "models_dir",
         "snapshot"

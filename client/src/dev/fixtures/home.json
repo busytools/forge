@@ -169,8 +169,7 @@
       ],
       "failure": null
     },
-    "models_dir": "<fixture>/models",
-    "device": null
+    "models_dir": "<fixture>/models"
   },
   "cli_version": {
     "installed": "1.0.0",

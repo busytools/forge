@@ -357,14 +357,6 @@ pub struct ProjectConnectorsWire {
 }
 
 /// Dictation's preflight state.
-///
-/// **The device catalog is not a field here, and asking for it is its own
-/// read.** Enumerating devices is a blocking walk on the machine running
-/// forge, which trips a microphone check, and a record is encoded per request
-/// and re-sent on every reconnect - so a field would be a permission check per
-/// frame and per connection. What crosses here is the input a pick has already
-/// moved this process to, in `device` below; the list to pick FROM is asked
-/// for on demand and answered by the socket's `devices` message.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct DictateWire {
@@ -376,23 +368,6 @@ pub struct DictateWire {
     pub enabled: bool,
     pub snapshot: Value,
     pub models_dir: Option<std::path::PathBuf>,
-    /// The input a pick has moved this process to, over the configured pin.
-    /// `None` means the pin stands.
-    pub device: Option<forge_workspace::DictateDeviceChoice>,
-}
-
-/// One input forge can record from, as a picker draws it.
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub struct DeviceWire {
-    /// The stable identity, which is what a pick sends back: names collide
-    /// between two identical interfaces and change when a user renames one.
-    pub id: String,
-    /// Human label for a picker. Not an identity.
-    pub name: String,
-    /// Whether the system would pick this one when asked for no particular
-    /// device.
-    pub is_default: bool,
 }
 
 /// One session, as a client sees it: every read a session-scoped view makes.
@@ -1297,7 +1272,6 @@ async fn home(state: &TransportState, surface: &ViewSurface) -> HomeWire {
             enabled: dictate.enabled,
             snapshot: serde_json::to_value(dictate.snapshot).unwrap_or(Value::Null),
             models_dir: dictate.models_dir,
-            device: dictate.device,
         },
         cli_version: surface.cli_version().and_then(|version| serde_json::to_value(version).ok()),
         forge_version: crate::FORGE_VERSION.to_owned(),
@@ -2931,9 +2905,8 @@ mod tests {
         );
     }
 
-    /// A client could set a session's dictation and move the process's input,
-    /// and no record carried either back: three commands crossed the wire and
-    /// nothing read what they had set.
+    /// A client could set a session's dictation and no record carried it
+    /// back: the command crossed the wire and nothing read what it had set.
     #[tokio::test]
     async fn the_dictation_a_client_set_comes_back() {
         let fleet =
@@ -2953,12 +2926,6 @@ mod tests {
                 ),
             })
             .expect("the session's override is applied");
-        surface
-            .dispatch(crate::Command::SetDictateDevice {
-                key: seat.clone(),
-                pick: Some(forge_workspace::DictateDeviceChoice::Device("a-mic".to_owned())),
-            })
-            .expect("the device pick is applied");
 
         let state = TransportState {
             surface: Arc::clone(&surface),
@@ -2973,12 +2940,6 @@ mod tests {
         assert_eq!(
             session["state"]["dictate_overrides"]["styling"], "semi_formal",
             "the override the client set is the override it reads back: {session}",
-        );
-
-        let home = encode_subject(&state, &Subject::Home).await.expect("encode");
-        assert_eq!(
-            home["dictate"]["device"]["device"], "a-mic",
-            "and the device it moved to is on the dictate read: {home}",
         );
         let _ = cwd;
     }

@@ -414,8 +414,7 @@ pub(crate) async fn spawn_session(
         launch_settings,
         id.resumed(),
         &config_dir,
-    )
-    .await;
+    );
 
     // Reader subtask - owns the events receiver. Client is the writer-side
     // handle (Arc-backed, Clone) and stays on the bridge; the reader also
@@ -467,7 +466,7 @@ fn initial_mode_state(
 
 /// Build the typed `Connected` envelope from the SDK's cached init data
 /// + the initialize `control_response`, and emit it onto `event_tx`.
-async fn emit_connected(
+fn emit_connected(
     event_tx: &mpsc::UnboundedSender<AgentEvent>,
     client: &Client,
     session_id: &str,

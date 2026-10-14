@@ -93,16 +93,14 @@ pub mod work;
 mod workspace;
 
 pub use dictate::{
-    DictateAxes, DictateBind, DictateDeviceCatalog, DictateDeviceChoice, DictateFailure,
-    DictateMode, DictateModel, DictateModelState, DictateOverrideUpdate, DictateOverrides,
-    DictateRole, DictateSettings, DictateSnapshot,
+    DictateAxes, DictateBind, DictateFailure, DictateMode, DictateModel, DictateModelState,
+    DictateOverrideUpdate, DictateOverrides, DictateRole, DictateSettings, DictateSnapshot,
 };
 pub use forge_gateway::{LoadingState, Unusable, UsageFetchStatus};
 // The normalizer's prompt axes reach a view only through this
 // re-export: no view depends on a forge-dictate crate of its own.
 pub use domain_session::{ContextUsage, DomainSession, McpServers};
 pub use error::WorkspaceError;
-pub use forge_dictate::Device;
 pub use forge_dictate::normalize::{Context, Structure, Styling};
 pub use protocol::{
     Command, DictateOutcome, DispatchError, NoticeSeverity, PromptOrigin, SessionUpdate,

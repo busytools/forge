@@ -54,7 +54,7 @@ pub enum SocketEvent {
     /// The connection opened, dropped, or was closed by our own hand.
     Status(Status),
     /// A server frame, verbatim: the greeting, snapshots, updates, pages,
-    /// asks, devices and errors alike. The receiver reads `kind`.
+    /// asks and errors alike. The receiver reads `kind`.
     Message(Value),
     /// The browser role moved - granted, taken, or released with the drop.
     Role { hosting: bool },
@@ -170,7 +170,6 @@ enum Outbound {
         before: Option<String>,
         turns: u64,
     },
-    Devices,
     CommitDiff {
         session: Value,
         sha: String,
@@ -245,11 +244,6 @@ impl Socket {
     /// Ask for more turns of a conversation.
     pub fn more(&self, conversation: Value, before: Option<String>, turns: u64) {
         let _ = self.tx.send(Outbound::More { conversation, before, turns });
-    }
-
-    /// The dictation devices, answered by a `devices` frame.
-    pub fn devices(&self) {
-        let _ = self.tx.send(Outbound::Devices);
     }
 
     /// One commit's own diff, answered by a `commit_diff` frame.
@@ -371,7 +365,6 @@ fn apply_offline(next: Outbound, held: &mut Vec<Held>, awaiting: &mut Vec<String
             false
         }
         Outbound::More { .. }
-        | Outbound::Devices
         | Outbound::CommitDiff { .. }
         | Outbound::DocumentRead { .. }
         | Outbound::Answer { .. }
@@ -530,9 +523,6 @@ async fn run(
                                         .into(),
                                 ))
                                 .await;
-                        }
-                        Outbound::Devices => {
-                            let _ = writer.send(Message::Text(json!({ "kind": "devices" }).to_string().into())).await;
                         }
                         Outbound::CommitDiff { session, sha } => {
                             let _ = writer
