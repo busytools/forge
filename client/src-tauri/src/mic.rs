@@ -442,10 +442,10 @@ mod tests {
             assert_eq!(started.id, "one");
             assert_eq!(rig.calls(), vec!["open one"], "the press opens nothing");
 
-            // And the release does not close it either: the same device
+            // And ending the take does not close it either: the same device
             // serves the next take.
             rig.mic.stop();
-            assert_eq!(rig.calls(), vec!["open one"], "the release keeps the device open");
+            assert_eq!(rig.calls(), vec!["open one"], "the take's end keeps the device open");
             rig.mic.start(&rig.bridge, Some("one".to_owned())).expect("the next take is warm");
             assert_eq!(rig.calls(), vec!["open one"], "the second press opens nothing either");
         }
@@ -585,8 +585,8 @@ mod tests {
         }
         assert!(frames > 0, "a take on a held capture must be fed the device's frames");
 
-        // And the release keeps the device: the second take is served by the
-        // same capture, which is the whole point of holding it.
+        // And ending the take keeps the device: the second take is served by
+        // the same capture, which is the whole point of holding it.
         mic.stop();
         let again = mic.start(&bridge, None).expect("the next take is served without reopening");
         assert_eq!(again.id, held.id, "the same device, still open");

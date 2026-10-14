@@ -117,13 +117,13 @@ describe('the shell capture', () => {
     ).toEqual(['client_mic_start', 'client_mic_drain']);
   });
 
-  it('lets the device go at once when the audio is being thrown away', async () => {
+  it('ends the take at once when the audio is being thrown away', async () => {
     const mic = await ShellMic.open(null);
     mic.stop();
     expect(shell.invoked.at(-1)?.command).toBe('client_mic_stop');
     expect(
       shell.hearing.every((entry) => entry.handler === null),
-      'and the frames stop reaching a take that is over',
+      'and the frames stop reaching a take that is over: the held device stays open',
     ).toBe(true);
   });
 
