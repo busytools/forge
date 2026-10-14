@@ -1142,9 +1142,9 @@ async fn handle_client(
         }
         ClientMessage::DocumentRead { session, path, reviewable } => {
             // A file off disk takes as long as it takes, so the read runs in
-            // a blocking task rather than inline - the same shape the device
-            // walk below takes. Nothing parks on the reader's pace: the
-            // answer is the read, and the review's finish is its own event.
+            // a blocking task rather than inline. Nothing parks on the
+            // reader's pace: the answer is the read, and the review's finish
+            // is its own event.
             let surface = Arc::clone(&state.surface);
             let seat = session.clone();
             let outcome = tokio::task::spawn_blocking(move || {
