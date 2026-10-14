@@ -499,6 +499,19 @@ mod tests {
 
         assert_eq!(sink.flushes, 1, "the run is one flush, as any batch is");
         assert_eq!(sink.fed.len(), 1, "and one frame where the CLI sent three");
+        // **The span is what keeps the run from reading as a hole.** A client
+        // told only the survivor's own number would ask for frames it had
+        // already drawn - and be handed rows it had already drawn.
+        let Message::Text(text) = &sink.fed[0] else {
+            panic!("the stream crosses as text, and this is {:?}", sink.fed[0])
+        };
+        let ServerMessage::Update { seq, span, .. } =
+            serde_json::from_str(text.as_str()).expect("a frame a client decodes")
+        else {
+            panic!("every frame a batch writes is an update");
+        };
+        assert_eq!(seq, Some(1), "the survivor keeps the run's oldest number");
+        assert_eq!(span, 3, "and carries how many of the seat's numbers it stands for");
         assert_eq!(
             describe(&sent(&sink)[0].update),
             "lead: 30 running, 280 grown",

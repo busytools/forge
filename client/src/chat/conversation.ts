@@ -1296,7 +1296,16 @@ export class Chat {
         // repair, so a row the reader wrote before they were away does not
         // bring them to the foot.
         if (subjectKey({ session: message.slot }) !== this.key) return;
-        for (const frame of message.frames) this.takeUpdate(frame.update, true);
+        for (const frame of message.frames) {
+          // **A repaired row the conversation already carries is not drawn
+          // again.** A repair is the one path that applies frames numbered
+          // below the record's newest - the live stream skips those as already
+          // drawn - and the client asks for a stretch it believes it missed,
+          // which a page's own read can have filled first. The row's identity
+          // is its id, the same key the fold reconciles a prompt by.
+          if (this.carries(frame.update)) continue;
+          this.takeUpdate(frame.update, true);
+        }
         return;
       default:
         return;
@@ -1765,6 +1774,16 @@ export class Chat {
     if (held) this.forgot();
     this.clearRetry();
     this.ask(null);
+  }
+
+  /**
+   * Whether the conversation already holds the row a `chat_appended` frame
+   * carries, by the id the fold reconciles on.
+   */
+  private carries(update: SessionUpdate): boolean {
+    const id = uuidOf((update as { chat_appended?: { msg?: unknown } }).chat_appended?.msg);
+    if (id === null) return false;
+    return this.held.turns.some((turn) => turn.messages.some((message) => uuidOf(message) === id));
   }
 
   /**

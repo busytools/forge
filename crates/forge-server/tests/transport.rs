@@ -2948,6 +2948,11 @@ async fn wait_for_the_fold(fleet: &Fleet) {
     panic!("the transport's own fold never attached");
 }
 
+/// Whether the answer's conversation carries a row saying `text`.
+fn says(data: &serde_json::Value, text: &str) -> bool {
+    serde_json::to_string(&data["conversation"]).is_ok_and(|body| body.contains(text))
+}
+
 /// The thinking tokens the snapshot's turns have spent, summed from the
 /// deltas their frames carry.
 fn thinking_spent(data: &serde_json::Value) -> i64 {
@@ -3126,6 +3131,183 @@ async fn a_resumed_seats_answer_starts_its_new_epoch_at_one() {
     );
 }
 
+/// **The answer's copy covers every frame below the number it carries.**
+///
+/// The copy is filled by the transport's fold loop consuming the same stream
+/// in a task of its own, so a frame minted before the answer's number is read
+/// can reach the copy after it - and a client that adopts `seq - 1` then skips
+/// the frame's live delivery as already drawn. A row lost in silence, on the
+/// one path this cut exists for.
+///
+/// The fold is held to make the window deterministic rather than raced: the
+/// frame below cannot reach the copy on its own, so only the answer's own
+/// catch-up can put it there.
+///
+/// Two mutations die here, one per window:
+/// - removing the catch-up leaves the row absent (the fold never took it);
+/// - reading the answer's number AFTER the copy - the order this fixes -
+///   catches up the copy but reads the turns before it, so the row is absent
+///   again.
+#[tokio::test]
+async fn a_reconnect_answer_covers_every_frame_below_its_number() {
+    let (url, fleet, state) = a_server_with_state().await;
+    let seat = lead_seat();
+    wait_for_the_fold(&fleet).await;
+
+    state.conversations.hold_the_fold(true);
+    fleet.emit(SessionUpdate::ChatAppended {
+        key: seat.clone(),
+        origin: None,
+        source: None,
+        msg: a_said_frame("the frame the fold has not taken yet"),
+    });
+
+    // **The FIRST answer, not a poll.** Every subscribe tops the copy up, so a
+    // second attempt would carry the row whatever the order was - the window
+    // is only open for the answer that finds it.
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+    let (_, data, _) = snapshot_answering(&mut socket).await;
+    state.conversations.hold_the_fold(false);
+
+    assert!(
+        says(&data, "the frame the fold has not taken yet"),
+        "the answer carries a number its copy cannot cover: a client adopting seq - 1 would skip \
+         this row's live delivery and never see it",
+    );
+}
+
+/// **A copy no window can cover is refused, not answered with a hole.**
+///
+/// The fold is stuck and the seat's own window has shed the frames below the
+/// number an answer would carry, so the only honest answer is none: the read
+/// names the seat and the reason, and the client reads it as ask-again rather
+/// than as a record with a row silently missing from it.
+#[tokio::test]
+async fn a_copy_no_window_can_cover_is_refused_rather_than_answered() {
+    let (url, fleet, state) = a_server_with_state().await;
+    let seat = lead_seat();
+    wait_for_the_fold(&fleet).await;
+    // One frame's worth of window, so the stretch below cannot all be in it.
+    forge_workspace::set_seat_ring_cap(&fleet.workspace(), 1);
+
+    state.conversations.hold_the_fold(true);
+    for at in 1..=2 {
+        fleet.emit(SessionUpdate::ChatAppended {
+            key: seat.clone(),
+            origin: None,
+            source: None,
+            msg: a_said_frame(&format!("frame {at}")),
+        });
+    }
+
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+    let message = next_server(&mut socket).await;
+    state.conversations.hold_the_fold(false);
+
+    let ServerMessage::Error { what, why, .. } = message else {
+        panic!("an answer whose copy cannot be covered was answered anyway: {message:?}")
+    };
+    assert_eq!(what, "subscribe", "the refusal names what was asked for");
+    assert!(
+        why.contains(&seat.display()) && why.contains("has not settled"),
+        "and names the seat and the reason, so a stuck fold is forge's problem and not a row \
+         lost in silence: {why}",
+    );
+}
+
+/// **A range ask after an occupant change reaches the new epoch's frames.**
+///
+/// The frame that OPENS an epoch is numbered on the run it ends and is not
+/// ringed, so the new run's window starts at 1 - and the first thing a client
+/// that missed the change asks for is frame 1. A ring that kept the opening
+/// frame reports a front of 2, and the ask falls through to a transcript that
+/// holds nothing of the new run: the repair is dead for the whole epoch.
+#[tokio::test]
+async fn a_range_ask_after_an_occupant_change_reaches_the_new_epoch() {
+    let (url, fleet, _state) = a_server_with_state().await;
+    let seat = lead_seat();
+    wait_for_the_fold(&fleet).await;
+    fleet.emit(SessionUpdate::TurnComplete { key: seat.clone(), terminal_reason: None });
+    fleet.emit(SessionUpdate::SessionReplaced {
+        key: seat.clone(),
+        session_id: SessionId::from("6c2d3e4f-5061-4b72-8839-ad1e2f3a4b56"),
+        cwd: "/tmp".to_owned(),
+        current_model: a_current_model(),
+        available_models: Vec::new(),
+        mode: None,
+        history: Vec::new(),
+        dropped: 0,
+        compaction_count: 0,
+    });
+    fleet.emit(SessionUpdate::ChatAppended {
+        key: seat.clone(),
+        origin: None,
+        source: None,
+        msg: a_said_frame("the new epoch's first"),
+    });
+
+    let mut socket = connect(&url).await;
+    send(&mut socket, ClientMessage::SeatRange { slot: seat.clone(), epoch: None, from: 1, to: 1 })
+        .await;
+
+    let ServerMessage::SeatFrames { frames, .. } = next_server(&mut socket).await else {
+        panic!("a range ask is answered with the frames it asked for")
+    };
+    assert_eq!(frames.len(), 1, "the new epoch's first frame is the one frame the range holds");
+    assert_eq!(frames[0].seq, 1, "numbered where the new run starts");
+    let body = serde_json::to_string(&frames[0].update).unwrap_or_default();
+    assert!(body.contains("the new epoch's first"), "and it is that frame: {body}");
+}
+
+/// **A repaired frame crosses with no history on it.** The ring holds what the
+/// fanout emitted, and a frame carrying the history an epoch hands over must
+/// not ride a client frame (#2157) nor lean on the socket's size bound - so
+/// the repair path goes through the same stripper as every other path to a
+/// client. A `HistoryReplayed` is the shape that proves it: it is a frame with
+/// a conversation in it, and the ring keeps it.
+#[tokio::test]
+async fn a_repair_answer_carries_no_history() {
+    let (url, fleet, _state) = a_server_with_state().await;
+    let seat = lead_seat();
+    wait_for_the_fold(&fleet).await;
+    fleet.emit(SessionUpdate::HistoryReplayed {
+        key: seat.clone(),
+        history: vec![a_said_frame("the replayed words")],
+        compaction_count: 0,
+    });
+
+    let mut socket = connect(&url).await;
+    send(&mut socket, ClientMessage::SeatRange { slot: seat.clone(), epoch: None, from: 1, to: 1 })
+        .await;
+
+    let ServerMessage::SeatFrames { frames, .. } = next_server(&mut socket).await else {
+        panic!("a range ask is answered with the frames it asked for")
+    };
+    assert_eq!(frames.len(), 1, "the replay is the frame the ring holds");
+    let body = serde_json::to_string(&frames[0].update).unwrap_or_default();
+    assert!(!body.contains("the replayed words"), "the history crossed on a repair: {body}");
+}
+
 /// A range ask is answered from the window the seat already keeps: the frames
 /// asked for, each carrying the number it was minted under, so a client that
 /// missed a stretch can fold exactly those and carry on.
@@ -3178,7 +3360,7 @@ async fn a_range_older_than_the_window_falls_back_to_the_transcript() {
     fleet.seed_transcript("TestOrg", "proj", "lead", &borrowed).expect("the transcript seeds");
     // The window has already shed all but its newest frame, which is what
     // makes the ask below reach past it.
-    fleet.workspace().set_seat_ring_cap_for_test(1);
+    forge_workspace::set_seat_ring_cap(&fleet.workspace(), 1);
     wait_for_the_fold(&fleet).await;
     for at in 1..=4 {
         fleet.emit(SessionUpdate::ChatAppended {

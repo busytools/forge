@@ -179,9 +179,21 @@ async fn fold_the_stream(state: Arc<TransportState>) {
     let mut updates = state.surface.subscribe_mirror();
     let mut probes = probe::ContextProbe::default();
     while let Some(frame) = updates.recv().await {
+        // A test's hold, so an encode's catch-up is driven rather than raced.
+        #[cfg(any(test, feature = "testing"))]
+        while state.conversations.fold_is_held() {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let seq = frame.seq;
         let update = frame.update;
         crate::live::Live::lock(&state.live).apply(&update);
         state.conversations.apply(&update);
+        // **The watermark an answer is measured against.** Marked after the
+        // apply, so a number this reports is one the copy has taken - which
+        // is what a subscribe's answer waits for before it names its own.
+        if let (Some(seq), Some(slot)) = (seq, update.slot()) {
+            state.conversations.consumed(slot, seq);
+        }
         request_context_usage(&state, &mut probes, &update);
     }
 }

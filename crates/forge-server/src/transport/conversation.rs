@@ -525,11 +525,89 @@ pub struct Conversations {
     /// Fires when a seat is first held, so a request that had to ask for a
     /// replay knows when its answer has landed.
     seeded: tokio::sync::Notify,
+    /// The newest number the fold loop has consumed for each seat, in a watch
+    /// so an encode can wait on it.
+    ///
+    /// **What an answer's copy is measured against.** A subscribe's answer
+    /// carries the number its seat's stream will continue from, and every
+    /// frame numbered below that must be inside the copy it carries - because
+    /// the client adopts `seq - 1` and treats a later delivery of anything at
+    /// or below it as already drawn. The copy is filled by the fold loop,
+    /// which consumes the fanout in a task of its own, so "the frame was
+    /// emitted before the counter was read" does not yet mean "the copy has
+    /// it": this is where that is known.
+    consumed: Mutex<HashMap<SessionSlot, tokio::sync::watch::Sender<u64>>>,
+    /// A test's hold on the fold loop, so the window above can be driven
+    /// rather than raced: while it is set, the loop does not consume.
+    #[cfg(any(test, feature = "testing"))]
+    fold_held: std::sync::atomic::AtomicBool,
 }
 
 impl Conversations {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The newest number the fold loop has consumed for `slot`.
+    pub fn consumed_for(&self, slot: &SessionSlot) -> u64 {
+        self.consumed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(slot)
+            .map_or(0, |watch| *watch.borrow())
+    }
+
+    /// Say the fold loop has consumed `seq` for `slot`.
+    pub fn consumed(&self, slot: &SessionSlot, seq: u64) {
+        let mut watches = self.consumed.lock().unwrap_or_else(PoisonError::into_inner);
+        let watch = watches.entry(slot.clone()).or_insert_with(|| {
+            let (tx, _rx) = tokio::sync::watch::channel(0);
+            tx
+        });
+        let _ = watch.send(seq);
+    }
+
+    /// Wait, up to `within`, for the fold to have consumed `want` for `slot`,
+    /// answering whether it did.
+    ///
+    /// **Bounded, because the caller has a fallback and a stuck fold must not
+    /// become a stall**: the caller fills the gap from the seat's own window
+    /// and refuses only if that cannot reach either.
+    pub async fn await_consumed(
+        &self,
+        slot: &SessionSlot,
+        want: u64,
+        within: std::time::Duration,
+    ) -> bool {
+        let mut watch = {
+            let mut watches = self.consumed.lock().unwrap_or_else(PoisonError::into_inner);
+            watches
+                .entry(slot.clone())
+                .or_insert_with(|| {
+                    let (tx, _rx) = tokio::sync::watch::channel(0);
+                    tx
+                })
+                .subscribe()
+        };
+        if *watch.borrow() >= want {
+            return true;
+        }
+        tokio::time::timeout(within, watch.wait_for(|seen| *seen >= want))
+            .await
+            .is_ok_and(|seen| seen.is_ok())
+    }
+
+    /// Hold the fold loop, or let it go. Test-only: it is the seam that makes
+    /// the copy's lag deterministic instead of a race.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn hold_the_fold(&self, held: bool) {
+        self.fold_held.store(held, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Whether a test is holding the fold loop.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn fold_is_held(&self) -> bool {
+        self.fold_held.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// The seat's conversation if one is held.

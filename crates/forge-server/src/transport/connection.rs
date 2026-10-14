@@ -1191,7 +1191,14 @@ async fn handle_client(
                     .seat_frames_between(&slot, from, to)
                     .into_iter()
                     .filter_map(|frame| {
-                        Some(SeatFrameWire { seq: frame.seq?, update: frame.update })
+                        // **The same stripper every other path to a client goes
+                        // through.** The ring holds what the fanout emitted,
+                        // and a frame that carries the history an epoch hands
+                        // over must not ride a client frame (#2157) - nor lean
+                        // on the socket's size bound. The transcript branch
+                        // builds only `ChatAppended`, so this is the branch
+                        // that can hold one.
+                        Some(SeatFrameWire { seq: frame.seq?, update: for_a_client(frame.update) })
                     })
                     .collect(),
                 // The window has shed it, so the transcript answers.

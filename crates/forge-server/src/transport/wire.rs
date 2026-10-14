@@ -1236,6 +1236,70 @@ async fn home(state: &TransportState, surface: &ViewSurface) -> HomeWire {
     }
 }
 
+/// How long an encode waits for the fold loop to catch up before filling the
+/// gap from the seat's own window.
+///
+/// **A scheduling hop, not a stall.** The common case is already caught up
+/// (the wait is not entered) or one hop behind; the fallback below is what
+/// keeps the bound from being a way to lose frames.
+const CATCH_UP_WAIT: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Bring `slot`'s held conversation up to `want`, or report that it cannot.
+///
+/// **One requirement: the copy an answer carries must hold every frame
+/// numbered at or below `want`.** The fold loop consumes the fanout in a task
+/// of its own, so a frame minted before the counter was read can reach the
+/// copy after it - waited on here, briefly. When the wait runs out the frames
+/// come from the seat's own window instead, which the fanout feeds directly
+/// (every frame, subscriber or not) with the newest `CONVERSATION_CAP` of
+/// them. Only a gap wider than that window is refused, loudly and by name: a
+/// stuck fold is forge's problem, and an answer that pretended otherwise is a
+/// row lost in silence.
+async fn catch_up(state: &TransportState, slot: &SessionSlot, want: u64) -> bool {
+    if want == 0 || state.conversations.consumed_for(slot) >= want {
+        return true;
+    }
+    if state.conversations.await_consumed(slot, want, CATCH_UP_WAIT).await {
+        return true;
+    }
+    let from = state.conversations.consumed_for(slot).saturating_add(1);
+    let frames = state.surface.seat_frames_between(slot, from, want);
+    if u64::try_from(frames.len()).unwrap_or(u64::MAX) < want.saturating_sub(from).saturating_add(1)
+    {
+        tracing::error!(
+            event_name = "seat_copy_behind",
+            slot = %slot.display(),
+            want,
+            got = frames.len(),
+            "the seat's copy is behind the number an answer would carry and its own window no \
+             longer reaches back; the read is refused rather than answered with a hole",
+        );
+        return false;
+    }
+    // **A seat the fold has never held has no copy to top up.** Nothing has
+    // connected on it yet, so `apply` has nowhere to put a frame - and the
+    // seed below would come from a transcript that cannot hold what the
+    // stream already sent. The frames materialise the copy instead, which is
+    // what a seat with a live stream and no connect yet needs.
+    if state.conversations.get(slot).is_none() {
+        let history: Vec<forge_primitives::Message> = frames
+            .iter()
+            .filter_map(|frame| match &frame.update {
+                crate::SessionUpdate::ChatAppended { msg, .. } => Some(msg.clone()),
+                _ => None,
+            })
+            .collect();
+        state
+            .conversations
+            .insert(slot, crate::transport::conversation::Conversation::new(history, 0, 0));
+    }
+    for frame in &frames {
+        state.conversations.apply(&frame.update);
+    }
+    state.conversations.consumed(slot, want);
+    true
+}
+
 /// One session's record, from the reads a session-scoped view makes.
 async fn session(
     state: &TransportState,
@@ -1244,6 +1308,24 @@ async fn session(
     cwd: &Path,
 ) -> Result<SessionWire> {
     let header = surface.header(slot);
+    // **The number is read BEFORE the copy's frames are.** Every frame minted
+    // before this read is one the read below must carry; anything minted after
+    // it carries a number at or above `seq`, which a client applies live rather
+    // than skipping as already drawn. Read after the read, a frame minted in
+    // between is in neither - a silently lost row on the reconnect path.
+    let seq = surface.seat_next_seq(slot);
+    // **And the copy has to have caught up to it.** The copy is filled by the
+    // fold loop consuming the same stream in another task, so a frame minted
+    // before the read can land after it: waited on briefly, and filled from
+    // the seat's own window when the wait runs out. The answer never names a
+    // number its copy cannot cover - a refusal is visible, a lost row is not.
+    if !catch_up(state, slot, seq.saturating_sub(1)).await {
+        anyhow::bail!(
+            "the seat's stream has not settled for {}; its copy is behind the number an answer \
+             would carry",
+            slot.display()
+        );
+    }
     // The conversation's share of the record, taken through one blocking task
     // so the fold never runs on the reactor or under the lock. A seat with no
     // conversation is answered with the empty one.
@@ -1342,7 +1424,7 @@ async fn session(
         conversation: ConversationWire { turns, compaction_count },
         header: SessionHeaderWire {
             session_id: header.session_id.clone(),
-            seq: surface.seat_next_seq(slot),
+            seq,
             model: header.model.as_ref().and_then(|model| serde_json::to_value(model).ok()),
             effort: serde_json::to_value(header.effort).unwrap_or(Value::Null),
             permission_mode: header

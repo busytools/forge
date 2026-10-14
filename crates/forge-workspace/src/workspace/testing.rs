@@ -17,6 +17,14 @@ use crate::update_fanout::{SeatUpdate, SubscriberRole, UpdateFanout};
 use crate::workspace::{KickRequest, PendingInteractionKind, PooledAgent, Workspace};
 use forge_gateway::AccountKey;
 
+/// Drive a seat's frame window down, so a fixture reaches the transcript
+/// fallback without emitting a window's worth of frames. The window is
+/// otherwise the constant it ships as, and the module this sits in is the
+/// gate that keeps it out of production.
+pub fn set_seat_ring_cap(workspace: &Workspace, cap: usize) {
+    workspace.update_tx.set_ring_cap(cap);
+}
+
 /// The tool id a parked test prompt answers to, so a test addresses the one
 /// it seeded rather than a key it has to know how the fixture built.
 #[cfg(any(test, feature = "testing"))]

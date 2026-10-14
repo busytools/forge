@@ -2968,6 +2968,43 @@ describe('the conversation the chat draws', () => {
   });
 
   /**
+   * **A repaired frame whose row is already drawn draws once.** A repair
+   * answers with the frames the client asked for, and one of them can be a
+   * row the page already carried - the fold's own identity is what says the
+   * two are one, rather than a second copy of the same words under the
+   * first.
+   */
+  it('draws a repaired frame whose row is already there only once', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'the same words')], null));
+    const repeated = {
+      chat_appended: {
+        key: LEAD,
+        msg: {
+          type: 'user',
+          uuid: 'u-the same words',
+          message: { role: 'user', content: [{ type: 'text', text: 'the same words' }] },
+        },
+      },
+    };
+
+    server.send({
+      kind: 'seat_frames',
+      slot: LEAD,
+      epoch: null,
+      frames: [{ seq: 5, update: repeated }],
+    });
+
+    const drawn = words(chat).split('"u-the same words"').length - 1;
+    expect(drawn, 'the same row drew twice, so the repair copied a row the page already held').toBe(
+      1,
+    );
+    stop();
+  });
+
+  /**
    * **A repaired stretch folds into the turn it belongs to.**
    *
    * A range ask is answered with the frames the seat emitted in the gap, and

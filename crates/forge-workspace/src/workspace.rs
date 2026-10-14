@@ -3862,14 +3862,6 @@ impl Workspace {
         self.update_tx.oldest_kept(key)
     }
 
-    /// Drive the seat window's cap down. Test-only: it is what lets a fixture
-    /// reach the transcript fallback without emitting a window's worth of
-    /// frames.
-    #[cfg(any(test, feature = "testing"))]
-    pub fn set_seat_ring_cap_for_test(&self, cap: usize) {
-        self.update_tx.set_ring_cap(cap);
-    }
-
     /// Borrow the workspace-side [`DomainSession`] for `key`.
     ///
     /// Returns the [`Arc`]-cloned mutex protecting the domain bucket.

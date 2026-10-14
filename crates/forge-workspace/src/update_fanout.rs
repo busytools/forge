@@ -102,17 +102,28 @@ impl Shared {
     /// counter starts over, so the frame after one opens the new epoch at 1:
     /// the client learns the occupant from that frame itself and wipes to
     /// expect 1, never a gap.
+    ///
+    /// **One lock serializes numbering and delivery.** [`UpdateFanout::deliver`]
+    /// mints and fans out under the same guard, so the numbers a seat's
+    /// subscribers receive are in the order they were minted. Lifting the mint
+    /// out of that guard - or fanning out around it - reorders a seat's stream
+    /// against its own numbers.
     fn numbered(&mut self, update: SessionUpdate) -> SeatUpdate {
         let Some(slot) = update.slot().cloned() else {
             return SeatUpdate { seq: None, update };
         };
-        if matches!(update, SessionUpdate::Releasing { .. }) {
-            // The seat is being taken down, and its frames are on the far side
-            // of a release: nothing asks for the numbers of a seat that is
-            // going away.
-            self.rings.remove(&slot);
-        }
         let seq = self.next_seq(&slot);
+        // **The frames that open or close an epoch stay out of the ring.**
+        // They carry the count of the run they end - and the history the
+        // epoch hands over - so a ring that kept one would report a front
+        // number the new run cannot answer for, and let that old number
+        // collide with a new one as the count climbs back to it.
+        let epoch_frame = matches!(
+            update,
+            SessionUpdate::Connected { .. }
+                | SessionUpdate::SessionReplaced { .. }
+                | SessionUpdate::Releasing { .. }
+        );
         if matches!(update, SessionUpdate::Connected { .. } | SessionUpdate::SessionReplaced { .. })
         {
             self.sequences.remove(&slot);
@@ -120,14 +131,21 @@ impl Shared {
             // it belong to a stream no client holds any more - and a repair
             // that could reach into them would splice two conversations.
             self.rings.remove(&slot);
+        } else if matches!(update, SessionUpdate::Releasing { .. }) {
+            // The seat is being taken down, and its frames are on the far side
+            // of a release: nothing asks for the numbers of a seat that is
+            // going away.
+            self.rings.remove(&slot);
         } else {
             self.sequences.insert(slot.clone(), seq);
         }
         let frame = SeatUpdate { seq: Some(seq), update };
-        let ring = self.rings.entry(slot).or_default();
-        ring.push_back(frame.clone());
-        while ring.len() > self.ring_cap {
-            ring.pop_front();
+        if !epoch_frame {
+            let ring = self.rings.entry(slot).or_default();
+            ring.push_back(frame.clone());
+            while ring.len() > self.ring_cap {
+                ring.pop_front();
+            }
         }
         frame
     }
@@ -669,6 +687,46 @@ mod tests {
         );
         assert_eq!(next_seq(&mut rx, "lead"), Some(2), "the lead's next is the successor");
         assert_eq!(next_seq(&mut rx, "worker"), Some(2), "and so is the worker's");
+    }
+
+    /// **An occupant change leaves the ring holding only the new epoch.** The
+    /// frame that OPENS an epoch carries the count of the run it ends, so a
+    /// ring that kept it would report a front number the new run cannot answer
+    /// for, and the old number would collide with a new one as the count climbs
+    /// back to it. Repairs would fall to the transcript for frames the window
+    /// still holds.
+    #[test]
+    fn an_occupant_change_leaves_the_ring_on_the_new_epoch_alone() {
+        let fanout = UpdateFanout::default();
+        let mut rx = fanout.subscribe(SubscriberRole::Answering);
+        let seat = seat("lead");
+
+        assert!(fanout.send(a_turn_ends(&seat)), "a subscribed fan-out delivers");
+        assert!(fanout.send(a_turn_ends(&seat)), "a subscribed fan-out delivers");
+        assert!(fanout.send(occupant_change(&seat)), "a subscribed fan-out delivers");
+        assert!(fanout.send(a_turn_ends(&seat)), "a subscribed fan-out delivers");
+        assert!(fanout.send(a_turn_ends(&seat)), "a subscribed fan-out delivers");
+
+        assert_eq!(next_seq(&mut rx, "seat"), Some(1), "the old run's first frame");
+        assert_eq!(next_seq(&mut rx, "seat"), Some(2), "and its second");
+        assert_eq!(
+            next_seq(&mut rx, "seat"),
+            Some(3),
+            "the occupant frame is numbered on the counter it ends",
+        );
+        assert_eq!(next_seq(&mut rx, "seat"), Some(1), "and the new epoch opens at 1");
+        assert_eq!(next_seq(&mut rx, "seat"), Some(2), "counting on");
+
+        assert_eq!(
+            fanout.oldest_kept(&seat),
+            Some(1),
+            "the ring's front is the new epoch's first frame, not the frame that ended the old run",
+        );
+        assert_eq!(
+            fanout.frames_between(&seat, 1, 3).iter().map(|frame| frame.seq).collect::<Vec<_>>(),
+            vec![Some(1), Some(2)],
+            "and a range reaches only the new count's frames",
+        );
     }
 
     /// The boot backlog keeps the numbers its frames were minted with, so a
