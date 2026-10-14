@@ -24,7 +24,7 @@
               "id": "tu-old",
               "name": "Read",
               "input": {
-                "file_path": "/Users/vedhavyas/Projects/forge/crates/forge-server/src/grouping.rs"
+                "file_path": "<redacted-home>/Projects/forge/client/src/chat/units.ts"
               }
             }
           ]
@@ -39,7 +39,7 @@
             {
               "type": "tool_result",
               "tool_use_id": "tu-old",
-              "content": "/// Render-time grouping of consecutive tool calls.\n"
+              "content": "/// Fold a turn's messages into the units a view draws.\n"
             }
           ]
         }
@@ -81,21 +81,21 @@
                 "id": "tu-read",
                 "name": "Read",
                 "input": {
-                  "file_path": "/Users/vedhavyas/Projects/forge/crates/forge-server/src/family.rs"
+                  "file_path": "<redacted-home>/Projects/forge/client/src/chat/families.ts"
                 }
               },
               {
                 "type": "tool_use",
                 "id": "tu-grep",
                 "name": "Grep",
-                "input": { "pattern": "render_group_summary", "path": "crates" }
+                "input": { "pattern": "iconOf(", "path": "client" }
               },
               {
                 "type": "tool_use",
                 "id": "tu-edit",
                 "name": "Edit",
                 "input": {
-                  "file_path": "/Users/vedhavyas/Projects/forge/crates/forge-web/src/home.css",
+                  "file_path": "<redacted-home>/Projects/forge/client/src/assets/web.css",
                   "old_string": "  text-decoration: none; flex: none;",
                   "new_string": "  text-decoration: none; flex: 0 1 auto; min-width: 0;"
                 }
@@ -105,8 +105,8 @@
                 "id": "tu-write",
                 "name": "Write",
                 "input": {
-                  "file_path": "/Users/vedhavyas/Projects/forge/crates/forge-server/src/family.rs",
-                  "content": "//! Which family a tool belongs to.\n\npub enum ToolFamily {\n    Read,\n    Search,\n    Bash,\n}\n"
+                  "file_path": "<redacted-home>/Projects/forge/client/src/chat/families.ts",
+                  "content": "// Which family a call belongs to.\n\nexport type Family = 'read' | 'search' | 'bash' | 'web' | 'lsp';\n"
                 }
               },
               {
@@ -128,12 +128,12 @@
               {
                 "type": "tool_result",
                 "tool_use_id": "tu-read",
-                "content": "/// The group a tool's calls are summarised under.\npub enum ToolFamily {\n    Read,\n    Search,\n    Bash,\n}\n"
+                "content": "/** The group a call's row is summarised under. */\nexport type Family = 'read' | 'search' | 'bash' | 'web' | 'lsp';\n"
               },
               {
                 "type": "tool_result",
                 "tool_use_id": "tu-grep",
-                "content": "crates/forge-server/src/grouping.rs:142:pub fn render_group_summary(unit: &RenderUnit, width: usize) -> Line<'static> {\ncrates/forge-tui/src/ui/tool_call/group.rs:88:    render_group_summary(&unit, width)\n"
+                "content": "client/src/chat/families.ts:214:export function iconOf(row: KindRow): string {\nclient/src/chat/Call.svelte:306:  const glyph = $derived(forge?.glyph ?? iconOf(call.row));\n"
               },
               {
                 "type": "tool_result",
@@ -148,7 +148,7 @@
               {
                 "type": "tool_result",
                 "tool_use_id": "tu-bash",
-                "content": "\u001b[1m   Compiling forge-primitives v1.0.92\u001b[0m\n   Compiling forge-tui v1.0.92\n    Finished in 41.2s\n\u001b[32mSummary [92.418s] 1258 tests run: 1258 passed, 1174 skipped\u001b[0m\n"
+                "content": "\u001b[1m   Compiling forge-primitives v1.0.92\u001b[0m\n   Compiling forge-server v1.0.92\n    Finished in 41.2s\n\u001b[32mSummary [92.418s] 1258 tests run: 1258 passed, 1174 skipped\u001b[0m\n"
               }
             ]
           }
@@ -163,7 +163,7 @@
             "content": [
               {
                 "type": "text",
-                "text": "The gate is green. The grouping policy still lives in `forge-server`, so a second view inherits it rather than restating it."
+                "text": "The gate is green. The family table has one home, so no view restates it."
               }
             ]
           }
@@ -175,7 +175,7 @@
           "hookCount": 3,
           "hookInfos": [
             {
-              "command": "/Users/vedhavyas/.claude/hooks/session-start-style.sh",
+              "command": "<redacted-home>/.claude/hooks/session-start-style.sh",
               "durationMs": 412
             },
             { "command": "cargo fmt --check", "durationMs": 1180 }
@@ -324,7 +324,7 @@
                 "name": "LSP",
                 "input": {
                   "operation": "hover",
-                  "filePath": "/Users/vedhavyas/Projects/forge/crates/forge-tui/src/ui/message.rs"
+                  "filePath": "<redacted-home>/Projects/forge/client/src/chat/families.ts"
                 }
               },
               {
@@ -347,7 +347,7 @@
               {
                 "type": "tool_result",
                 "tool_use_id": "tu-lsp",
-                "content": "fn render_body(&self, area: Rect) -> Vec<Line>\ndocs: Render the message body into rows."
+                "content": "export function iconOf(row: KindRow): string\ndocs: The sprite a row draws, by the class it belongs to."
               },
               {
                 "type": "tool_result",
@@ -671,21 +671,21 @@
         "pid": 22850,
         "parent_pid": 22823,
         "name": "node",
-        "command": "node /Users/vedhavyas/Projects/forge/.claude/worktrees/session-design/client/node_modules/.bin/eslint .",
+        "command": "node <redacted-home>/Projects/forge/.claude/worktrees/session-design/client/node_modules/.bin/eslint .",
         "memory_bytes": 1395864371
       },
       {
         "pid": 95464,
         "parent_pid": 4415,
         "name": "zsh",
-        "command": "/bin/zsh -c source /Users/vedhavyas/.claude/shell-snapshots/snapshot-zsh-1791200565159-w521xt.sh 2>/dev/null || true && setopt NO_EXTENDED_GLOB NO_BARE_GLOB_QUAL 2>/dev/null || true && unalias -m '*' && cd /Users/vedhavyas/Projects/forge",
+        "command": "/bin/zsh -c source <redacted-home>/.claude/shell-snapshots/snapshot-zsh-1791200565159-w521xt.sh 2>/dev/null || true && setopt NO_EXTENDED_GLOB NO_BARE_GLOB_QUAL 2>/dev/null || true && unalias -m '*' && cd <redacted-home>/Projects/forge",
         "memory_bytes": 48234496
       },
       {
         "pid": 96282,
         "parent_pid": 4415,
         "name": "node",
-        "command": "node /Users/vedhavyas/.npm/_npx/9833c18b2d85bc59/node_modules/.bin/playwright-mcp --cdp-endpoint http://127.0.0.1:9222",
+        "command": "node <redacted-home>/.npm/_npx/9833c18b2d85bc59/node_modules/.bin/playwright-mcp --cdp-endpoint http://127.0.0.1:9222",
         "memory_bytes": 35651584
       },
       {

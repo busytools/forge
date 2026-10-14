@@ -684,10 +684,10 @@
       Every mark is one <code>&lt;svg viewBox="0 0 24 24"&gt;</code> using <code>currentColor</code>, so the
       accent is a <code>color</code> change on the caller and nothing else. The shapes live in one
       <code>&lt;defs&gt;</code> block at the top of this page and every size is a <code>&lt;use&gt;</code>,
-      so a drawing exists once and a change lands at all three sizes at once. In the crate the same string
-      goes into <code>mark_path</code> in <code>crates/forge-web/src/brand.rs</code>, and
-      <code>every_shipped_name_has_its_own_drawing</code> fails the build for any name added to
-      <code>MARK_NAMES</code> without a drawing of its own beside it.
+      so a drawing exists once and a change lands at all three sizes at once. In the client the same string
+      goes into <code>PATHS</code> in <code>client/src/brand.ts</code>, and the brand-marks case in
+      <code>connect/attempt.test.ts</code> fails for any name in <code>MARK_NAMES</code> that draws only the
+      built-in instead of a drawing of its own.
     </p>
     <p class="lede">
       A sheet to pick from or reject: panes is picked, and the set in the product follows what

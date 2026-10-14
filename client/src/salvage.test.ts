@@ -112,7 +112,9 @@ describe('the salvage copies', () => {
     // highlighter's (`--syn-*`, `--add-bg`, `--del-bg`), skipped here
     // exactly as they were skipped from the other side before. 214 now that
     // the usage page is gone: its drawing declared the palette's seventeen.
-    expect(compared, 'the sweep no longer reaches the same tokens').toBe(214);
+    // 191 after the residue cut's two unreferenced home drawings left this
+    // sweep, the queue drawing's own `--violet` adding one back.
+    expect(compared, 'the sweep no longer reaches the same tokens').toBe(191);
   });
 
   /**
@@ -147,7 +149,9 @@ describe('the salvage copies', () => {
     }
 
     expect(drifts, 'a legend prints a colour the app does not ship').toEqual([]);
-    expect(rows, 'the sweep no longer reaches every legend row').toBe(30);
+    // 18 after the residue cut's two unreferenced home drawings left, six
+    // rows each.
+    expect(rows, 'the sweep no longer reaches every legend row').toBe(18);
   });
 
   /**
@@ -191,8 +195,9 @@ describe('the salvage copies', () => {
     // drawing, which declares both stacks the same way, and the review
     // drawing's two add to both: this is the merged tree's count. The
     // document viewer's drawing declares both too; 30, the usage page's
-    // drawing having gone with its page.
-    expect(compared, 'the sweep no longer reaches every stack').toBe(30);
+    // drawing having gone with its page. 26, the residue cut's two
+    // unreferenced home drawings having gone with theirs.
+    expect(compared, 'the sweep no longer reaches every stack').toBe(26);
   });
 });
 

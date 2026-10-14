@@ -1,16 +1,7 @@
 # Workspace-wide clippy configuration.
 
-# A binary workspace with no published crates, so breaking an exported
-# item is not a concern the lint needs to guard.
-avoid-breaking-exported-api = false
-
 # Toolchain pin (matches workspace.package.rust-version).
 msrv = "1.88.0"
-
-# Library code should use Result, not catch_unwind.
-disallowed-methods = [
-    { path = "std::panic::catch_unwind", reason = "library code should use Result, not catch_unwind" },
-]
 
 # Tests can use these freely; production code is gated via [workspace.lints].
 allow-unwrap-in-tests = true
@@ -19,9 +10,6 @@ allow-panic-in-tests = true
 allow-print-in-tests = true
 allow-dbg-in-tests = true
 allow-indexing-slicing-in-tests = true
-
-# CLI tools deal with deep path nesting (e.g., ~/.config/forge/...).
-absolute-paths-max-segments = 3
 
 # Bumped from default 7 to cover recursion fns with state threaded as
 # flat params.

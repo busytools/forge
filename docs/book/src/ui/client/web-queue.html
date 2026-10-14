@@ -14,7 +14,7 @@
     --line:#222a3c; --ctl:#516590;
     --text:#c9d1d9; --muted:#8f98a8; --dim:#788294;
     --accent:#f47600; --ok:#82c76b; --bad:#e0683e; --warn:#c9a13b;
-    --blue:#61a0e0; --teal:#4ec9c9;
+    --blue:#61a0e0; --teal:#4ec9c9; --violet:#b79ae0;
     --ui: "Fira Code", system-ui, -apple-system, "Segoe UI", sans-serif;
     --mono: "Fira Code", ui-monospace, Menlo, monospace;
     --fs-prose: 15.5px; --fs-data: 14px; --fs-label: 12.5px; --r: 12px;
@@ -78,13 +78,10 @@
   .qcard .m .src.peer{color:var(--blue)} .qcard .m .src.forge{color:var(--violet)}
   .qcard .m .nx { color: var(--accent); }
   .qcard .m .pos { margin-left: auto; }
-  .qcard .m .del { display: none; font-family: var(--mono); font-size: var(--fs-label);
-    color: var(--dim); background: none; border: 1px solid #2a3244; border-radius: 6px; padding: 0 7px; }
   .qcard.back .w, .qcard.back .m { visibility: hidden; }
   .qcard.face { z-index: 60; border-color: var(--ctl); background: var(--s3);
     box-shadow: 0 12px 28px rgba(0,0,0,.42); }
   .qcard.face .w { color: var(--text); }
-  .qcard.face .m .del { display: inline-block; }
 
   /* The box's lane: no chrome of its own - the surface's ring is the state. */
   .mbox { padding: 11px 14px; display: flex; flex-direction: column; gap: 8px; }
@@ -124,7 +121,7 @@
   <p class="sub">The queued-prompt pile, in the variants it can be in. Every tile is the same foot: the queue pile above the surface, whose first lane is the strip and whose second is the box or the prompt's own lane - the lanes are drawn as <span class="mono">web-session.html</span> and <span class="mono">web-composer.html</span> draw them today, and the pile is new here. Every tile draws the real states; the timings under
   <span class="mono">The wire</span> are the measured ones.</p>
   <div class="legend">
-    <span>sources: <span style="color:var(--text)">you</span> &#183; <span style="color:var(--warn)">cron</span> &#183; <span style="color:var(--teal)">gotify</span> &#183; <span style="color:var(--ok)">slack</span> &#183; <span style="color:var(--blue)">peer</span></span>
+    <span>sources: <span style="color:var(--text)">you</span> &#183; <span style="color:var(--warn)">cron</span> &#183; <span style="color:var(--teal)">gotify</span> &#183; <span style="color:var(--ok)">slack</span> &#183; <span style="color:var(--blue)">peer</span> &#183; <span style="color:var(--violet)">forge</span></span>
     <span>one 16px arc per queued prompt; no cap</span>
     <span>words only on the face; arcs are clean</span>
   </div>
@@ -204,9 +201,7 @@ function foot(tile, spec) {
       c.style.zIndex = String(hidden ? 50 : 60 - d);
       c.innerHTML = `<div class="w">${it.text}</div>
         <div class="m"><span class="src ${it.src}">${it.src}</span>
-        <span class="pos">${cur >= 0 && i === cur ? `#${i + 1} / ${n}` : (i === 0 ? '<span class="nx">next</span>' : '')}</span>
-        <button class="del">&#9003;</button></div>`;
-      if (spec.leaving && i === cur) c.style.transform = 'translate(22px,-8px) scale(.96)', c.style.opacity = '.35';
+        <span class="pos">${cur >= 0 && i === cur ? `#${i + 1} / ${n}` : (i === 0 ? '<span class="nx">next</span>' : '')}</span></div>`;
       if (spec.cascade && i < (spec.cascade ?? 0)) {
         c.style.transform = `translate(-30px,-${44 + i * 6}px) scale(.95)`;
         c.style.opacity = '0';
@@ -214,8 +209,8 @@ function foot(tile, spec) {
       stack.appendChild(c);
     });
     qc.innerHTML = cur >= 0
-      ? `queued <b>${n}</b> &middot; on <b>${cur + 1}</b><span class="k"><b>&#8593;&#8595;</b> move &middot; <b>&#9003;</b> delete &middot; esc back</span>`
-      : `queued <b>${n}</b><span class="k"><b>&#8593;</b> to walk</span>`;
+      ? `queued <b>${n}</b><span class="k"><b>&#8593;&#8595;</b> walk &middot; <b>&#9003;</b> cancel</span>`
+      : `queued <b>${n}</b><span class="k"><b>&#8593;&#8595;</b> walk</span>`;
   }
   const slot = el.querySelector('.mslot');
   if (spec.dock) {
@@ -256,8 +251,8 @@ const tiles = {
       note: 'the box takes the focus ring back the moment the walk leaves the pile' },
   ],
   g3: [
-    { cap: 'Delete - the row leaving', items: many(12), cur: 5, leaving: true },
-    { cap: 'Delete - after; the pile closes the gap', items: many(11), cur: 5 },
+    { cap: 'Cancel - the walked row, before the key', items: many(12), cur: 5 },
+    { cap: 'Cancel - after; the row leaves on the core\'s own frame', items: many(11), cur: 5 },
     { cap: 'Delivery - the front lifts out', items: many(12), cur: -1,
       note: 'the oldest (next) leaves the top of the pile and lands in the chat as a turn' },
     { cap: 'Delivery - gone; the pile shifts up', items: many(11), cur: -1 },
