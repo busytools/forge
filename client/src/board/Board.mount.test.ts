@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { homeWire } from '../dev/fixture.data';
 import { violationsOf } from '../testing/axe';
-import type { BoardRow, HomeWire, Marks, Task, TaskStatus } from '../wire/home';
+import type { BoardRow, HomeWire, Marks, Task, TaskLinkWire, TaskStatus } from '../wire/home';
 import Board from './Board.svelte';
 import Frames from './testing/Frames.svelte';
 
@@ -812,6 +812,53 @@ describe("the row's own page", () => {
 
     press(card, { x: 80, y: 80 });
     expect(document.querySelector('.dr'), 'a drag is not a click').toBeNull();
+  });
+
+  /**
+   * A row whose links collide draws on the card and in the drawer: the lists
+   * key on the position, since the entries carry no identity the wire
+   * guarantees unique.
+   */
+  it('draws a row whose links collide, on the card and in the drawer', () => {
+    const link = (target: string): TaskLinkWire => ({
+      kind: 'issue',
+      label: null,
+      target,
+      state: null,
+      added_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+    });
+    summon(
+      wireWith([
+        row(
+          task('l1', 'links that read alike', 'in_progress', {
+            links: [
+              link('2098'),
+              link('https://github.com/busytools/forge/issues/2098'),
+              link('2098'),
+            ],
+          }),
+        ),
+      ]),
+    );
+    const holds = (root: Element | null): string[] =>
+      [...(root?.querySelectorAll('a, .b-link, span') ?? [])]
+        .map((el) => (el.textContent ?? '').trim())
+        .filter((word) => word.includes('2098'));
+    expect(holds(document.querySelector('.b-card')), 'every link draws on the card').toEqual([
+      '2098',
+      '2098',
+      '2098',
+    ]);
+
+    const card = document.querySelector('.b-card[data-id="l1"]');
+    if (card === null) throw new Error('no card');
+    press(card);
+    expect(document.querySelector('.dr'), 'the click opens the row page').not.toBeNull();
+    expect(holds(document.querySelector('.dr')), 'and every link draws in the drawer').toEqual([
+      '2098',
+      'https://github.com/busytools/forge/issues/2098',
+      '2098',
+    ]);
   });
 
   it('gives the keyboard back to the card when the page closes', async () => {

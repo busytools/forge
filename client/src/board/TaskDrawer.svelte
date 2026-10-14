@@ -164,7 +164,9 @@
       <dt>links</dt>
       <dd>
         {#if task.links.length === 0}<span class="dim">none</span>{:else}
-          {#each task.links as link, at (link.target)}
+          <!-- Keyed on the position: the entries carry no identity the wire
+               guarantees unique. -->
+          {#each task.links as link, at (at)}
             {#if at > 0}<span class="dim"> · </span>{/if}
             {#if link.target.startsWith('http')}
               <a href={link.target} target="_blank" rel="noreferrer">{link.label ?? link.target}</a>
