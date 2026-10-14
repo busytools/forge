@@ -89,6 +89,31 @@ describe('the stream gate', () => {
     expect(emitted, 'nothing needed the deferred path').toHaveLength(0);
   });
 
+  it('a second hole inside the held run gets its own ask, and the run lands in order', () => {
+    const { gate, asked } = aGate();
+    gate.inbound(update(1));
+    // 3 opens the hole [2,2]; 6 opens a second one, [3,5], inside the held run.
+    expect(gate.inbound(update(3)), 'the first frame above a hole waits').toHaveLength(0);
+    expect(gate.inbound(update(6)), 'and so does one above a second').toHaveLength(0);
+    expect(asked, 'each hole gets its own ask').toEqual([
+      { from: 2, to: 2 },
+      { from: 4, to: 5 },
+    ]);
+
+    const first = gate.inbound(repaired(2));
+    // 2 arrives, so 3 - held all along - is contiguous with it and follows.
+    expect(first.map((m) => (m as { kind: string }).kind)).toEqual(['seat_frames', 'update']);
+    expect((first[1] as { seq: number }).seq, 'the held successor follows its repair').toBe(3);
+
+    const second = gate.inbound(repaired(3, 4, 5));
+    expect(second.map((m) => (m as { kind: string }).kind)).toEqual(['seat_frames', 'update']);
+    const repairedSeqs = (second[0] as { frames: { seq: number }[] }).frames.map(
+      (frame) => frame.seq,
+    );
+    expect(repairedSeqs, 'the repaired stretch lands in sequence').toEqual([4, 5]);
+    expect((second[1] as { seq: number }).seq, 'and the held frame follows it').toBe(6);
+  });
+
   it('a frame behind the newest number still passes (the readers dedupe)', () => {
     const { gate } = aGate();
     gate.inbound(update(1));

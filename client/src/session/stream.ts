@@ -12,10 +12,14 @@
  *
  * The numbers are the seat's own (see the seat-snapshot-and-sequence design):
  * each update frame carries the oldest `seq` it stands for and how many
- * numbers `span` it covers. A gap wider than one number is a hole; the frames
- * above it are held, a `seat_range` ask goes out for the gap, and the answer
- * releases the hold in sequence - the repaired frames first (they arrive
- * inside the `seat_frames` message), then the held ones, oldest first.
+ * numbers `span` it covers. Numbers nobody has seen are MISSING ranges; the
+ * frames above them wait, a `seat_range` ask goes out per range, and once the
+ * ranges are filled everything is emitted in strict sequence - repaired
+ * frames back inside `seat_frames` messages (that message is the call path
+ * that strips a repeat and keeps a repair from arming the follow), waiting
+ * frames as the updates they were. A second hole inside the held run opens
+ * its own ask: a release that stepped past an unfilled range would swallow
+ * whatever fell in it (seen once live, and pinned by a unit here).
  *
  * What this layer deliberately does NOT do: drop anything. A frame behind the
  * newest number still reaches the readers (the store skips it as drawn; the
@@ -27,34 +31,55 @@
 import { slotOf, subjectKey, type ServerMessage, type SessionUpdate } from '../protocol';
 import type { SessionSlot } from '../wire/types';
 
-/** How many frames one seat holds above a hole before it releases them. */
+/** How many frames one seat waits with before it releases them unordered. */
 const HELD_CAP = 256;
 
 /**
- * How long a hold waits for its answer before releasing the frames.
+ * How long a hold waits for its answers before releasing the frames.
  *
  * **A hold with no answer coming must not freeze the seat.** A socket that
- * dropped mid-ask, or a range no window could fill, would otherwise hold
+ * dropped mid-ask, or a range no window could fill, would otherwise wait
  * forever; the release is the fallback the readers' own rules (the store's
- * second-layer hold, the chat's identity) already know how to take.
+ * second-layer hold, the chat's row identity) already know how to take.
  */
 const HELD_DEADLINE_MS = 5000;
 
-/** One frame held above a hole, with the numbers it stands for. */
-interface Held {
+/** One numbered frame: an update or a repaired frame, with what it covers. */
+interface Frame {
   seq: number;
   span: number;
-  message: ServerMessage;
+  update: SessionUpdate;
+}
+
+/** A range of numbers nobody has delivered or repaired yet. */
+interface Range {
+  from: number;
+  to: number;
 }
 
 interface StreamState {
   /** The occupant the numbers belong to, off the seal or the answer. */
   epoch: string | null;
-  /** The next number this stream expects to deliver. */
+  /** The next number the run owes, in strict sequence. */
   expecting: number;
-  /** A range ask is in flight for this seat. */
-  asking: boolean;
-  held: Held[];
+  /**
+   * The highest number the run has SEEN, waiting or delivered.
+   *
+   * **What says where the holes are.** A frame's own numbers are never
+   * missing, however long it waits - only the stretch between what was last
+   * seen and a frame that jumps ahead is.
+   */
+  seenThrough: number;
+  /** Ranges seen as holes and not yet filled, sorted and merged. */
+  missing: Range[];
+  /** The ranges an ask has already gone out for. */
+  asked: Range[];
+  /** Update frames seen but not yet deliverable, in arrival order. */
+  waiting: Frame[];
+  /** Repaired frames received but not yet delivered, in arrival order. */
+  repairs: Frame[];
+  /** The slot and epoch of the `seat_frames` answers the repairs came in. */
+  origin: { slot: SessionSlot; epoch: string | null } | null;
   deadline: ReturnType<typeof setTimeout> | null;
 }
 
@@ -69,7 +94,17 @@ export interface GateDeps {
 function stateOf(streams: Map<string, StreamState>, key: string): StreamState {
   let state = streams.get(key);
   if (state === undefined) {
-    state = { epoch: null, expecting: 1, asking: false, held: [], deadline: null };
+    state = {
+      epoch: null,
+      expecting: 1,
+      seenThrough: 0,
+      missing: [],
+      asked: [],
+      waiting: [],
+      repairs: [],
+      origin: null,
+      deadline: null,
+    };
     streams.set(key, state);
   }
   return state;
@@ -87,6 +122,40 @@ function replacer(update: SessionUpdate): Record<string, unknown> | null {
   return null;
 }
 
+/** Merge `range` into a sorted, merged list. */
+function cover(ranges: Range[], range: Range): void {
+  let at = 0;
+  while (at < ranges.length && ranges[at]!.to < range.from - 1) at += 1;
+  let merged = { ...range };
+  while (at < ranges.length && ranges[at]!.from <= merged.to + 1) {
+    merged = {
+      from: Math.min(merged.from, ranges[at]!.from),
+      to: Math.max(merged.to, ranges[at]!.to),
+    };
+    ranges.splice(at, 1);
+  }
+  ranges.splice(at, 0, merged);
+}
+
+/** Take `from..=to` out of a sorted, merged list: those numbers are filled. */
+function filled(ranges: Range[], from: number, to: number): void {
+  const kept: Range[] = [];
+  for (const range of ranges) {
+    if (range.to < from || range.from > to) {
+      kept.push(range);
+      continue;
+    }
+    if (range.from < from) kept.push({ from: range.from, to: from - 1 });
+    if (range.to > to) kept.push({ from: to + 1, to: range.to });
+  }
+  ranges.splice(0, ranges.length, ...kept);
+}
+
+/** Whether `ranges` covers `range` entirely. */
+function covers(ranges: Range[], range: Range): boolean {
+  return ranges.some((held) => held.from <= range.from && held.to >= range.to);
+}
+
 export class StreamGate {
   private readonly streams = new Map<string, StreamState>();
 
@@ -95,8 +164,8 @@ export class StreamGate {
   /**
    * One inbound message; whatever should reach the consumers now, in order.
    *
-   * A message that arms a hold returns `[]` and reaches the consumers later,
-   * through `emit`, when its repair lands (or the deadline fires).
+   * A message that opens a hold returns `[]` and reaches the consumers later,
+   * through `emit`, when its repairs land (or the deadline fires).
    */
   inbound(message: ServerMessage): ServerMessage[] {
     switch (message.kind) {
@@ -113,14 +182,17 @@ export class StreamGate {
           this.clear(state);
           state.epoch = occupant;
           state.expecting = 1;
+          state.seenThrough = 0;
         }
-        if (typeof header?.seq === 'number') {
+        if (typeof header?.seq === 'number' && this.settled(state)) {
           // **The answer is the authority on where the stream stands**, the
           // same rule the store reads it by: a restart under the same
           // occupant counts from 1 again, and an answer that says so must
           // lower what this expects - a monotonic maximum would leave the
-          // restarted run's frames reading as already drawn.
+          // restarted run's frames reading as already drawn. A hold in
+          // flight is where the answer is NOT: its ranges decide.
           state.expecting = header.seq;
+          state.seenThrough = header.seq - 1;
         }
         return [message];
       }
@@ -141,6 +213,7 @@ export class StreamGate {
           const occupant = seal['session_id'];
           this.clear(state);
           state.expecting = 1;
+          state.seenThrough = 0;
           if (typeof occupant === 'string') state.epoch = occupant;
           // The seal is the wipe signal itself: it goes out at once.
           return [message];
@@ -151,58 +224,54 @@ export class StreamGate {
         const span = typeof message.span === 'number' && message.span > 0 ? message.span : 1;
         const reach = seq + span - 1;
 
-        if (state.asking) {
-          state.held.push({ seq, span, message });
-          if (state.held.length >= HELD_CAP) this.release(state);
+        if (reach < state.expecting) {
+          // Already delivered as far as this run is concerned: a repeat, a
+          // replay or a reorder - the readers decide what to do with it.
+          return [message];
+        }
+        state.waiting.push({ seq, span, update: message.update });
+        if (seq > state.seenThrough + 1) {
+          // A hole opens here - and one that opens while an earlier hole is
+          // still unfilled gets its own ask, because a release stepping past
+          // it would swallow whatever fell in it.
+          this.open(state, { from: state.seenThrough + 1, to: seq - 1 }, slot);
+        }
+        state.seenThrough = Math.max(state.seenThrough, reach);
+        if (state.waiting.length >= HELD_CAP) {
+          this.release(state);
           return [];
         }
-        if (seq > state.expecting) {
-          // The hole: hold this frame and everything after, ask for the gap.
-          state.asking = true;
-          state.held.push({ seq, span, message });
-          state.deadline = setTimeout(() => this.release(state), HELD_DEADLINE_MS);
-          if (!this.deps.ask(slot, state.epoch, state.expecting, seq - 1)) {
-            this.release(state);
-          }
-          return [];
-        }
-        // A successor, or a frame already drawn (the readers decide which).
-        state.expecting = Math.max(state.expecting, reach + 1);
-        return [message];
+        const out = this.drain(state);
+        this.arm(state);
+        return out;
       }
       case 'seat_frames': {
         const slot = message.slot as SessionSlot | undefined;
         if (slot === undefined) return [message];
         const key = subjectKey({ session: slot });
         const state = this.streams.get(key);
-        if (state === undefined || (!state.asking && state.held.length === 0)) {
-          return [message];
-        }
-        // The repaired frames arrive inside the message, so the readers apply
-        // them first; the held frames follow, oldest first. A repaired frame
-        // stands for its own span when the server carries one (a folded run
-        // repaired from the seat's window), one number otherwise.
+        if (state === undefined || this.settled(state)) return [message];
+        state.origin = { slot, epoch: message.epoch ?? null };
         for (const frame of message.frames) {
           const carried = frame as { seq: number; span?: unknown };
           const span = typeof carried.span === 'number' && carried.span > 0 ? carried.span : 1;
-          state.expecting = Math.max(state.expecting, frame.seq + span);
+          filled(state.missing, frame.seq, frame.seq + span - 1);
+          state.repairs.push({ seq: frame.seq, span, update: frame.update });
         }
-        if (state.deadline !== null) clearTimeout(state.deadline);
-        state.asking = false;
-        state.deadline = null;
-        const held = state.held.splice(0).sort((a, b) => a.seq - b.seq);
-        for (const frame of held) {
-          state.expecting = Math.max(state.expecting, frame.seq + frame.span);
-        }
-        return [message, ...held.map((frame) => frame.message)];
+        const out = this.drain(state);
+        this.arm(state);
+        return out;
       }
       case 'error': {
         if (message.what === 'seat_range' && message.seat !== undefined) {
           const key = subjectKey({ session: message.seat });
           const state = this.streams.get(key);
           if (state !== undefined) {
+            // The numbers the client held came from an epoch that has moved
+            // on; the readers re-read the seat, which answers for the new one.
             this.clear(state);
             state.expecting = 1;
+            state.seenThrough = 0;
           }
         }
         return [message];
@@ -218,23 +287,146 @@ export class StreamGate {
     this.streams.clear();
   }
 
-  /** Release a hold as it stands, in sequence: the answer never came. */
+  /** Whether nothing is in flight for this seat. */
+  private settled(state: StreamState): boolean {
+    return (
+      state.missing.length === 0 &&
+      state.waiting.length === 0 &&
+      state.repairs.length === 0 &&
+      state.deadline === null
+    );
+  }
+
+  /** Record a hole and ask for it, once per range. */
+  private open(state: StreamState, range: Range, slot: SessionSlot): void {
+    cover(state.missing, range);
+    if (covers(state.asked, range)) return;
+    cover(state.asked, range);
+    if (!this.deps.ask(slot, state.epoch, range.from, range.to)) {
+      // No socket is open, so no answer is coming: nothing waits for one.
+      this.release(state);
+    }
+  }
+
+  /**
+   * Emit, in strict sequence, everything the run can now deliver.
+   *
+   * Repaired frames go back inside `seat_frames` messages (maximal runs of
+   * consecutive repaired numbers, cut by whatever frame comes next), because
+   * that message is the call path that strips a repeat and keeps a repair
+   * from arming the follow; waiting frames go out as the updates they were.
+   */
+  private drain(state: StreamState): ServerMessage[] {
+    const out: ServerMessage[] = [];
+    let batch: { seq: number; update: SessionUpdate }[] = [];
+    const flushBatch = (): void => {
+      if (batch.length === 0 || state.origin === null) return;
+      out.push({
+        kind: 'seat_frames',
+        slot: state.origin.slot,
+        epoch: state.origin.epoch,
+        frames: batch,
+      } as unknown as ServerMessage);
+      batch = [];
+    };
+
+    for (;;) {
+      const at = state.expecting;
+      const repair = state.repairs.find((frame) => frame.seq <= at && at < frame.seq + frame.span);
+      if (repair !== undefined) {
+        state.repairs = state.repairs.filter((frame) => frame !== repair);
+        batch.push({ seq: repair.seq, update: repair.update });
+        state.expecting = repair.seq + repair.span;
+        continue;
+      }
+      const waiting = state.waiting.find((frame) => frame.seq <= at && at < frame.seq + frame.span);
+      if (waiting !== undefined) {
+        flushBatch();
+        state.waiting = state.waiting.filter((frame) => frame !== waiting);
+        out.push({
+          kind: 'update',
+          seq: waiting.seq,
+          span: waiting.span,
+          update: waiting.update,
+        } as ServerMessage);
+        state.expecting = Math.max(state.expecting, waiting.seq + waiting.span);
+        continue;
+      }
+      break;
+    }
+    flushBatch();
+    return out;
+  }
+
+  /** Renew the hold's deadline, or settle it when nothing is pending. */
+  private arm(state: StreamState): void {
+    if (state.deadline !== null) clearTimeout(state.deadline);
+    state.deadline = null;
+    if (this.settled(state)) {
+      state.asked.length = 0;
+      return;
+    }
+    // Anything a released prefix did not cover needs its own ask.
+    if (state.origin !== null && state.missing.length > 0) {
+      for (const range of [...state.missing]) {
+        if (covers(state.asked, range)) continue;
+        cover(state.asked, range);
+        this.deps.ask(state.origin.slot, state.epoch, range.from, range.to);
+      }
+    }
+    state.deadline = setTimeout(() => this.release(state), HELD_DEADLINE_MS);
+  }
+
+  /** Release a hold as it stands, in sequence: an answer never came. */
   private release(state: StreamState): void {
     if (state.deadline !== null) clearTimeout(state.deadline);
-    const held = state.held.splice(0).sort((a, b) => a.seq - b.seq);
-    state.asking = false;
     state.deadline = null;
-    if (held.length === 0) return;
-    for (const frame of held) {
+    const frames = [
+      ...state.repairs.map((frame) => ({ frame, repaired: true })),
+      ...state.waiting.map((frame) => ({ frame, repaired: false })),
+    ].sort((a, b) => a.frame.seq - b.frame.seq);
+    state.repairs.length = 0;
+    state.waiting.length = 0;
+    state.missing.length = 0;
+    state.asked.length = 0;
+    if (frames.length === 0) return;
+    const out: ServerMessage[] = [];
+    let batch: { seq: number; update: SessionUpdate }[] = [];
+    const flushBatch = (): void => {
+      if (batch.length === 0 || state.origin === null) return;
+      out.push({
+        kind: 'seat_frames',
+        slot: state.origin.slot,
+        epoch: state.origin.epoch,
+        frames: batch,
+      } as unknown as ServerMessage);
+      batch = [];
+    };
+    for (const { frame, repaired } of frames) {
+      if (repaired) {
+        batch.push({ seq: frame.seq, update: frame.update });
+      } else {
+        flushBatch();
+        out.push({
+          kind: 'update',
+          seq: frame.seq,
+          span: frame.span,
+          update: frame.update,
+        } as ServerMessage);
+      }
       state.expecting = Math.max(state.expecting, frame.seq + frame.span);
     }
-    this.deps.emit(held.map((frame) => frame.message));
+    flushBatch();
+    this.deps.emit(out);
   }
 
   private clear(state: StreamState): void {
     if (state.deadline !== null) clearTimeout(state.deadline);
     state.deadline = null;
-    state.asking = false;
-    state.held.length = 0;
+    state.missing.length = 0;
+    state.asked.length = 0;
+    state.waiting.length = 0;
+    state.repairs.length = 0;
+    state.origin = null;
   }
 }
