@@ -158,7 +158,11 @@ const THREAD = {
 };
 
 /** The seat's record, as the page reads it - only the fields it reads are real. */
-function record(composer: unknown, threads: unknown[] = []): SessionRecord {
+function record(
+  composer: unknown,
+  threads: unknown[] = [],
+  reviews: unknown[] = [],
+): SessionRecord {
   return {
     slot: SLOT,
     composer,
@@ -167,7 +171,7 @@ function record(composer: unknown, threads: unknown[] = []): SessionRecord {
     diff: { branchAhead: DIFF },
     reviews: {
       threads: { outcome: 'read', value: threads },
-      reviews: { outcome: 'read', value: [] },
+      reviews: { outcome: 'read', value: reviews },
     },
   } as unknown as SessionRecord;
 }
@@ -202,10 +206,26 @@ const LANDED = {
   notice: { kind: 'landed', text: 'this read is the whole input', truncated: false },
 };
 
+/** One filed round, so the conversation half draws its thread and its reply. */
+const ROUND = { id: 'r1', number: 1, summary: null, created_at: 'x' };
+
+/** The thread as a round carries it: its opening turn belongs to ROUND. */
+const HELD_THREAD = {
+  ...THREAD,
+  comments: [{ ...THREAD.comments[0], review_id: 'r1' }],
+};
+
+/** The commands the page dispatched, cleared at each draw, so a test can
+ *  read what a take's start or its end put on the wire. */
+let sent: unknown[] = [];
+
 function connection(): Connection {
   return {
     settings: () => null,
-    dispatch: () => null,
+    dispatch: (command?: unknown) => {
+      sent.push(command);
+      return null;
+    },
     refresh: () => undefined,
     commitDiff: () => undefined,
     status: () => 'open',
@@ -216,13 +236,14 @@ function connection(): Connection {
 
 /** The page over a seat whose record the test drives, drawn to the point its
  *  diff's own doors are on screen. */
-async function draw(threads: unknown[] = []): Promise<void> {
+async function draw(threads: unknown[] = [], reviews: unknown[] = []): Promise<void> {
+  sent = [];
   app = mount(Review, {
     target: document.body,
     props: { connection: connection(), slot: SLOT, dictation: true },
   });
   flushSync();
-  push({ wire: record(IDLE, threads), refused: null });
+  push({ wire: record(IDLE, threads, reviews), refused: null });
   // Unified, in which each row carries one number cell: the stood-in viewer
   // draws that shape, and the doors hang off the lines' own rows.
   await settle(() => {
@@ -273,8 +294,26 @@ function micIn(where: string): HTMLButtonElement {
   return found;
 }
 
+/**
+ * Let a take's start settle: opening the microphone is a promise, and the
+ * command goes once it resolves.
+ */
+async function opened(): Promise<void> {
+  for (let turn = 0; turn < 4; turn += 1) await Promise.resolve();
+  flushSync();
+}
+
+/** The commands dispatched so far, as one string a failure message can carry. */
+function wire(): string {
+  return sent.map((command) => JSON.stringify(command)).join(' ');
+}
+
 /** The page's take, from a box's mic to its landing, and the words it left. */
-async function dictateInto(where: string, threads: unknown[] = []): Promise<void> {
+async function dictateInto(
+  where: string,
+  threads: unknown[] = [],
+  reviews: unknown[] = [],
+): Promise<void> {
   micIn(where).click();
   await vi.waitFor(
     () => {
@@ -287,9 +326,9 @@ async function dictateInto(where: string, threads: unknown[] = []): Promise<void
   );
   // The server registers the take where the record can see it, and then the
   // release lands the words - the order the frames really arrive in.
-  push({ wire: record(TAKE, threads), refused: null });
+  push({ wire: record(TAKE, threads, reviews), refused: null });
   flushSync();
-  push({ wire: record(LANDED, threads), refused: null });
+  push({ wire: record(LANDED, threads, reviews), refused: null });
   // The reader's release: the take ends, the bar goes with it, and the box
   // draws the words that landed in it. The release drains the capture on real
   // timers (#2159), so this waits in real time rather than in frames.
@@ -375,5 +414,171 @@ describe("the take's bar", () => {
       document.querySelector('.rv-reply .rv-txarea'),
       'which still draws the field it was drawing',
     ).not.toBeNull();
+  });
+});
+
+describe("a take's end", () => {
+  /**
+   * **A take goes with its box.** Closing the box mid-take ends the take:
+   * without it the microphone keeps capturing into a box nothing draws, and
+   * the words land where the reader cannot see them.
+   */
+  it('ends the take when its box closes', async () => {
+    await draw();
+    await openComment();
+
+    micIn('.rv-thread.comment').click();
+    await opened();
+    push({ wire: record(TAKE), refused: null });
+    flushSync();
+    sent = [];
+
+    const cancel = [
+      ...document.querySelectorAll<HTMLButtonElement>('.rv-thread.comment .rv-acts button'),
+    ].find((button) => button.textContent?.trim() === 'cancel');
+    if (cancel === undefined) throw new Error('the comment box drew no cancel');
+    cancel.click();
+    flushSync();
+
+    expect(wire(), 'a take outlived the box that began it').toContain('"submit":false');
+  });
+
+  /** Escape is the other door out of a live take, wherever the focus is. */
+  it('cancels a live take on Escape', async () => {
+    await draw();
+    await openComment();
+
+    micIn('.rv-thread.comment').click();
+    await opened();
+    push({ wire: record(TAKE), refused: null });
+    flushSync();
+    sent = [];
+
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
+    );
+    flushSync();
+
+    expect(wire(), 'Escape left the take running').toContain('"submit":false');
+  });
+});
+
+describe("the record's line", () => {
+  /**
+   * **The record's line goes to the box that began the take.** A take that
+   * fails server-side settles as a line on the record, and a line routed to
+   * the comment box by default draws nothing at all for a take that failed in
+   * the reply - whose box is not the comment box, and whose failure the
+   * reader would then never see.
+   */
+  it("draws a failed take's line in the box that began it", async () => {
+    await draw([THREAD]);
+    await openComment();
+    await openReply();
+
+    micIn('.rv-reply').click();
+    await opened();
+    push({ wire: record(TAKE, [THREAD]), refused: null });
+    flushSync();
+    push({
+      wire: record(
+        {
+          ...TAKE,
+          take: null,
+          notice: { kind: 'line', tone: 'bad', text: 'nothing above -60 dBFS in 3s' },
+        },
+        [THREAD],
+      ),
+      refused: null,
+    });
+    flushSync();
+
+    expect(
+      document.querySelector('.rv-reply .rv-dictateline')?.textContent,
+      "the failed take's line, in the box that began it",
+    ).toContain('nothing above -60 dBFS in 3s');
+    expect(
+      document.querySelector('.rv-thread.comment .rv-dictateline'),
+      'and not in the comment box, which began nothing',
+    ).toBeNull();
+  });
+});
+
+describe("the key's box", () => {
+  /**
+   * **A key-begun take goes to a box that is DRAWN.** A comment spot outlives
+   * the files tab; the take it would have claimed is the summary's, whose box
+   * is on screen - never one the reader cannot see.
+   */
+  it('gives the key take to the drawn summary, not a stale comment spot', async () => {
+    await draw();
+    await openComment();
+    await openConversation();
+
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', { code: 'ControlRight', bubbles: true, cancelable: true }),
+    );
+    await opened();
+
+    push({ wire: record(TAKE), refused: null });
+    flushSync();
+    push({ wire: record(LANDED), refused: null });
+    flushSync();
+    expect(wire(), 'the key began no take at all').toContain('dictate_stream');
+
+    // The release ends the take, and the bar goes with it - on the drain's
+    // real timers (#2159), which is what puts the field back in the
+    // summary's line for the assertion to read. The hold has to clear
+    // TAP_MS, or the release is a tap and means nothing.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    window.dispatchEvent(
+      new KeyboardEvent('keyup', { code: 'ControlRight', bubbles: true, cancelable: true }),
+    );
+    await vi.waitFor(
+      () => {
+        expect(
+          document.querySelector('.rv-finishrow .takeline'),
+          'the bar goes with the take',
+        ).toBeNull();
+      },
+      { timeout: 2000 },
+    );
+
+    expect(
+      document.querySelector<HTMLInputElement>('.rv-summary')?.value,
+      'the key take went somewhere the reader cannot see',
+    ).toBe('this read is the whole input');
+  });
+});
+
+describe("the conversation half's reply box", () => {
+  /**
+   * **A box is a box on either half.** The conversation half's reply takes a
+   * take from its own mic, and the words land APPENDED - what the reader
+   * typed before the press survives the landing.
+   */
+  it('takes a take from its own mic, after what was typed', async () => {
+    await draw([HELD_THREAD], [ROUND]);
+    await openConversation();
+
+    const respond = [...document.querySelectorAll<HTMLButtonElement>('.thread .acts button')].find(
+      (button) => button.textContent?.trim() === 'respond',
+    );
+    if (respond === undefined) throw new Error('the conversation half drew no respond');
+    respond.click();
+    await settle(() => document.querySelector('.rv-reply') !== null);
+
+    const box = document.querySelector<HTMLTextAreaElement>('.rv-reply .rv-txarea');
+    if (box === null) throw new Error('the reply box drew no field');
+    box.value = 'noted: ';
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+
+    await dictateInto('.rv-reply', [HELD_THREAD], [ROUND]);
+
+    expect(
+      document.querySelector<HTMLTextAreaElement>('.rv-reply .rv-txarea')?.value,
+      "the take's words were not appended to what was already typed",
+    ).toBe('noted: this read is the whole input');
   });
 });

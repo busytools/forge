@@ -842,7 +842,7 @@ describe("the block's own take", () => {
   };
 
   /** The viewer with the dictation offer on, which every mic is gated by. */
-  function drawWithDictation(): void {
+  function drawWithDictation(): ReturnType<typeof fakeDoc> {
     const page = fakeDoc({
       kind: 'landed',
       document_kind: 'markdown',
@@ -862,6 +862,7 @@ describe("the block's own take", () => {
       },
     });
     flushSync();
+    return page;
   }
 
   function composeMic(): HTMLButtonElement {
@@ -908,6 +909,43 @@ describe("the block's own take", () => {
       document.querySelector<HTMLTextAreaElement>('.doc-compose textarea')?.value,
       'the words, at the end of the box that was open',
     ).toBe('the second line reads well');
+  });
+
+  /**
+   * **A take goes with its box.** Closing the composer mid-take ends the
+   * take: without it the microphone keeps capturing into a box nothing
+   * draws, and the words land where the reader cannot see them.
+   */
+  it('ends the take when its box closes', async () => {
+    const page = drawWithDictation();
+    push(seatRecord(IDLE));
+    blockTarget('line two').click();
+    flushSync();
+
+    composeMic().click();
+    await vi.waitFor(
+      () => {
+        expect(
+          document.querySelector('.doc-compose .takeline'),
+          "the take's bar, in the box's own line",
+        ).not.toBeNull();
+      },
+      { timeout: 2000 },
+    );
+    push(seatRecord(TAKE));
+    flushSync();
+
+    const cancel = [
+      ...document.querySelectorAll<HTMLButtonElement>('.doc-compose-acts button'),
+    ].find((button) => button.textContent?.trim() === 'cancel');
+    if (cancel === undefined) throw new Error("the block's box drew no cancel");
+    cancel.click();
+    flushSync();
+
+    expect(
+      page.sent.map((command) => JSON.stringify(command)).join(' '),
+      'a take outlived the box that closed',
+    ).toContain('"submit":false');
   });
 });
 

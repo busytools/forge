@@ -156,6 +156,9 @@
   /** The block a composer is open on, and what is typed into it. */
   let composing = $state<number | null>(null);
   let commentText = $state('');
+  /** The block whose box began the current take, stamped when the take starts:
+   *  it is what says the take goes with that box and lands only there. */
+  let takeIn = $state<number | null>(null);
 
   /**
    * The seat's own record, read as an observer: the take's phase and the
@@ -213,6 +216,9 @@
     device: () => deviceFor(boxKey(slot)),
     capture: openCapture,
     onStart: () => {
+      // The take belongs to the box the press came from, which is the open
+      // one: the mic is drawn only inside a box.
+      takeIn = composing;
       dictateLine = null;
     },
     onLine: (line) => {
@@ -227,19 +233,30 @@
   const rowWire = $derived(takeCounts(dictate, slot));
 
   /**
-   * A landed take puts its words at the end of the box that is open, once.
+   * A landed take puts its words at the end of the box that began it, once.
    *
-   * **A box that is not open has nowhere to put them** - the reader closed the
-   * composer, or the notice is one this page never watched (which the memory
-   * refuses) - and the words are dropped rather than written where the reader
-   * is not. The box takes the keyboard with them, the rule the composer's own
-   * landing keeps.
+   * **A box that is not open, or no longer the take's own, has nowhere to put
+   * them** - the reader closed the composer or moved it, or the notice is one
+   * this page never watched (which the memory refuses) - and the words are
+   * dropped rather than written where the reader is not. The box takes the
+   * keyboard with them, the rule the composer's own landing keeps.
    */
   $effect(() => {
     const words = landing.place(boxKey(slot), composer.take !== null, composer.notice);
-    if (words === null || composing === null) return;
+    if (words === null || composing === null || composing !== takeIn) return;
     commentText = joined(commentText, words);
     field?.focus();
+  });
+
+  /**
+   * **A take goes with its box.** Closing the composer, or moving it to
+   * another block, ends the take rather than leaving the microphone
+   * capturing into a box nothing draws - whose words would land under
+   * another block, one press from being filed against the wrong part.
+   */
+  $effect(() => {
+    if (takeIn === null || composing === takeIn) return;
+    if (dictate.take !== null || dictate.opening) dictate.act('cancel');
   });
 
   // The line a take owes - this page's own about the attempt, or the record's
@@ -299,6 +316,8 @@
   function openComposer(row: DocRow): void {
     composing = composing === row.line ? null : row.line;
     commentText = '';
+    // The panel was opened off the box that is going; it goes with it.
+    dictate.panel = false;
   }
 
   /** Write one comment: held as a draft here, upserted to the store the

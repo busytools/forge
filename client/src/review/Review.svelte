@@ -167,9 +167,9 @@
   /**
    * Where a take's words belong: the box whose mic began it.
    *
-   * Stamped when the microphone actually opens - the press's own report only
-   * NAMES a box, and a press that refused, or one that ended a live take,
-   * must not move a landing that belongs to where that take began.
+   * Stamped when the take starts - the press's own report only NAMES a box,
+   * and a press that refused, or one that ended a live take, must not move a
+   * landing that belongs to where that take began.
    */
   let takeIn = $state<BoxName | null>(null);
   /** Where the last mic was pressed, or the last key begun a take: the box a
@@ -267,19 +267,42 @@
   const rowPhase = $derived(takePhase(dictate, composer.take, slot));
   const rowWire = $derived(takeCounts(dictate, slot));
 
-  /** What dictation means to this page, built once and handed to every box. */
-  const voice = $derived({
+  /**
+   * What dictation means to this page, built once and handed to every box.
+   *
+   * **One stable object whose fields are getters**, because the canvas mounts
+   * its boxes by hand and a mount reads its props once: a `$derived` object
+   * here would freeze the axes and the device at the box's mount, and the
+   * panel opened off that box would then show stale chips and merge each
+   * click onto the snapshot (the row the reconciler keeps is never rebuilt -
+   * the same rule `composerRow` states for every other live value).
+   */
+  const voice = {
     dictate,
-    offered: dictation,
-    connection,
-    bind: composer.bind,
-    mode: composer.mode,
-    axes: seatAxes,
-    device: seatDevice,
-    defaults,
+    get offered() {
+      return dictation;
+    },
+    get connection() {
+      return connection;
+    },
+    get bind() {
+      return composer.bind;
+    },
+    get mode() {
+      return composer.mode;
+    },
+    get axes() {
+      return seatAxes;
+    },
+    get device() {
+      return seatDevice;
+    },
+    get defaults() {
+      return defaults;
+    },
     onaxes: setAxes,
     ondevice: setDevice,
-  });
+  };
 
   /**
    * One box's own take row, or `null` when the take is another box's: a take
@@ -336,22 +359,46 @@
 
   /**
    * The line a take owes, drawn in the box it belongs to: this page's own
-   * about the attempt, or the record's about a take the page watched - which
-   * keeps drawing in the comment box, where it has drawn since the box was
-   * the page's only one.
+   * line goes to the box the attempt was made in, the record's to the box
+   * the take began in - and to the comment box only when no take of this
+   * page's is in play, where it has drawn since the box was the page's only
+   * one. A record line hard-routed to the comment box would draw nothing at
+   * all for a take that failed in the reply or the summary, whose box is not
+   * the comment box and whose failure the reader would never see.
    */
   $effect(() => {
     const line = dictateLine ?? noticeLine(composer.notice, landing.watched);
-    const at = dictateLine === null ? 'comment' : lineIn;
+    const at = dictateLine !== null ? lineIn : (takeIn ?? 'comment');
     box.line = at === 'comment' ? line : null;
     reply.line = at === 'reply' ? line : null;
     summaryLine = at === 'summary' ? line : null;
   });
 
   /**
+   * **A take goes with its box.** The box that began a take ending - the
+   * reader's cancel, a scope change, the canvas going with the tab - ends
+   * the take with it: leaving the microphone capturing into a box nothing
+   * draws is a take whose words land where the reader cannot see them, and
+   * whose bar is drawn nowhere. The summary is exempt only in name - its
+   * box is the conversation half's, which is always drawn.
+   */
+  $effect(() => {
+    if (takeIn === null || takeIn === 'summary') return;
+    // The comment box is the canvas's alone, so the files tab is part of
+    // whether it is drawn; the reply box is drawn by whichever half is up.
+    const gone =
+      takeIn === 'comment' ? box.spot === null || tab !== 'files' : reply.thread === null;
+    if (gone && (dictate.take !== null || dictate.opening)) dictate.act('cancel');
+  });
+
+  /**
    * The box a key-begun take belongs to: the one the reader is in, else the
    * one open, else the summary - the conversation half's box that is always
    * there. `null` when the page has a take with nowhere to land.
+   *
+   * **The canvas's boxes count only while the canvas is what draws them.**
+   * A spot or an open thread outlives the files tab, and a take begun
+   * against one the reader cannot see has no bar drawn anywhere.
    */
   function pttBox(): BoxName | null {
     const held = document.activeElement;
@@ -360,7 +407,7 @@
         if (elements[at] === held) return at;
       }
     }
-    if (box.spot !== null) return 'comment';
+    if (tab === 'files' && box.spot !== null) return 'comment';
     if (reply.thread !== null) return 'reply';
     return tab === 'conversation' ? 'summary' : null;
   }
@@ -911,7 +958,7 @@
               />
             {/if}
             {#if dictate.panel && panelIn === 'summary'}
-              <div class="rv-voicepanel">
+              <div>
                 <DictationPanel
                   connection={voice.connection}
                   axes={voice.axes}
