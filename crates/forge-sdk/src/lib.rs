@@ -58,7 +58,7 @@ pub mod subagents;
 pub mod transport;
 
 pub use crate::mcp::macros::__private;
-pub use client::{Client, ClientEvents};
+pub use client::{Client, ClientEvents, INIT_HANDSHAKE_TIMEOUT};
 pub use error::Error;
 pub use hooks::{
     BaseHookInput, HookCallback, HookContext, HookDecision, HookKind, Hooks, HooksBuilder,
