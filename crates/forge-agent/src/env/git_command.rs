@@ -27,6 +27,61 @@ pub(super) fn tokio_command(program: &str) -> tokio::process::Command {
     command(program).into()
 }
 
+/// A `git` spawn positioned at `cwd`.
+///
+/// **The machine's own `git`, unless a test pointed that directory
+/// elsewhere** (`point_git_at`): a warm `git` can run to completion
+/// before a caller's first poll, so a case that needs a child which
+/// cannot - a zero-budget refusal - has to drive a wrapper of its own.
+pub(super) fn tokio_git_command(cwd: &std::path::Path) -> tokio::process::Command {
+    #[cfg(test)]
+    if let Some(program) = test_git_program(cwd) {
+        return tokio_command(&program.to_string_lossy());
+    }
+    #[cfg(not(test))]
+    let _ = cwd;
+    tokio_command("git")
+}
+
+/// Point every `git` spawn positioned at `cwd` at `program`, for this
+/// process's tests. Keyed by directory so parallel cases never run the
+/// machine's `git` through another case's wrapper.
+#[cfg(test)]
+pub(super) fn point_git_at(cwd: &std::path::Path, program: &std::path::Path) {
+    git_programs()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push((cwd.to_path_buf(), program.to_path_buf()));
+}
+
+/// Drop a directory's pointer, back to the machine's `git`.
+#[cfg(test)]
+pub(super) fn clear_git_point(cwd: &std::path::Path) {
+    git_programs()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .retain(|(pointed, _)| pointed != cwd);
+}
+
+#[cfg(test)]
+fn test_git_program(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
+    git_programs()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .rev()
+        .find(|(pointed, _)| pointed == cwd)
+        .map(|(_, program)| program.clone())
+}
+
+#[cfg(test)]
+fn git_programs() -> &'static std::sync::Mutex<Vec<(std::path::PathBuf, std::path::PathBuf)>> {
+    static POINTS: std::sync::OnceLock<
+        std::sync::Mutex<Vec<(std::path::PathBuf, std::path::PathBuf)>>,
+    > = std::sync::OnceLock::new();
+    POINTS.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+
 /// The environment variables `gh` reads for auth, in its own precedence
 /// order; GITHUB_PAT_TOKEN is not one of them, but the environment that
 /// carries the hazard declares it beside the two that are.

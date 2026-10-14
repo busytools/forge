@@ -1199,6 +1199,11 @@ diff --git a/x.rs b/x.rs
         commit(&dir, "init");
         write_file(&dir, "base.txt", "base\nand a change\n");
 
+        // Every refusal below runs against a `git` that cannot answer inside
+        // the zero budget: the machine's own can, and did, on CI (#2249).
+        let bin = tempfile::tempdir().expect("tempdir");
+        super::super::stall_git_at(dir.path(), bin.path());
+
         let refused = scan_within(dir.path(), "HEAD", Duration::ZERO).await;
         assert!(!refused.scanner_ok, "a zero budget reads as a failed scan: {refused:?}");
         assert!(refused.files.is_empty(), "with nothing read: {refused:?}");
@@ -1237,6 +1242,7 @@ diff --git a/x.rs b/x.rs
         );
 
         // The budget these cases use reads the same repo.
+        crate::env::git_command::clear_git_point(dir.path());
         let read = scan_within(dir.path(), "HEAD", TEST_GIT_BUDGET).await;
         assert!(read.scanner_ok, "and the tests' budget reads it: {read:?}");
         assert_eq!(read.files.len(), 1, "with the changed file: {read:?}");

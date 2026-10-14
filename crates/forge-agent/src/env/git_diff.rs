@@ -69,6 +69,25 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 #[cfg(test)]
 pub(super) const TEST_GIT_BUDGET: Duration = Duration::from_secs(60);
 
+/// Point the repo at `dir` at a `git` of our own that sleeps before it
+/// answers: a child that cannot finish inside a zero budget's first poll,
+/// where the machine's warm `git` can - `timeout` polls its value before
+/// its delay, so an instant child answers inside a zero budget, which is
+/// how the witness's refusal arms redded CI (#2249). With this the
+/// refusals are a property of the seam, not a race.
+///
+/// The wrapper lives in `bin`, **outside the repo**: a file inside would
+/// read back as an untracked change and skew a scan's own file list.
+#[cfg(test)]
+pub(super) fn stall_git_at(dir: &std::path::Path, bin: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let wrapper = bin.join("stalled-git");
+    std::fs::write(&wrapper, "#!/bin/sh\n/bin/sleep 5\nexec git \"$@\"\n").expect("the wrapper");
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).expect("+x");
+    crate::env::git_command::point_git_at(dir, &wrapper);
+}
+
 /// Number of file rows surfaced in the rendered diff list. The
 /// renderer collapses the rest into a "+N more" line; the count above
 /// the list tells the truth either way.
@@ -115,7 +134,7 @@ async fn repo_presence(cwd: &Path) -> RepoPresence {
 
 /// [`repo_presence`] with its command budget spelled; see [`scan_within`].
 async fn repo_presence_within(cwd: &Path, budget: Duration) -> RepoPresence {
-    let mut command = git_command::tokio_command("git");
+    let mut command = git_command::tokio_git_command(cwd);
     command.arg("-C").arg(cwd).args(["rev-parse", "--git-dir"]).kill_on_drop(true);
     match timeout(budget, command.output()).await {
         Ok(Ok(output)) if output.status.success() => RepoPresence::Present,
@@ -269,7 +288,7 @@ fn kick_background_fetch(cwd: &Path, default_branch: Option<&str>, budget: Durat
     let cwd = cwd.to_path_buf();
     let remote_branch = remote_branch.to_owned();
     track_background_fetch(tokio::spawn(async move {
-        let fetch = git_command::tokio_command("git")
+        let fetch = git_command::tokio_git_command(&cwd)
             .arg("-C")
             .arg(&cwd)
             .args(["fetch", "origin", &remote_branch])
@@ -1198,7 +1217,7 @@ pub(super) async fn run_git(cwd: &Path, args: &[&str]) -> GitOutput {
 /// output past the shell's 10 s and fail a scan that is merely slow -
 /// see `scan_within` for the measurement and the reproduction.
 pub(super) async fn run_git_within(cwd: &Path, args: &[&str], budget: Duration) -> GitOutput {
-    let mut command = git_command::tokio_command("git");
+    let mut command = git_command::tokio_git_command(cwd);
     command.arg("-C").arg(cwd).args(args).kill_on_drop(true);
     let fut = command.output();
     let output = match timeout(budget, fut).await {
@@ -1539,6 +1558,11 @@ mod tests {
         write_file(&dir, "README.md", "one\n");
         commit_all(&dir, "seed");
 
+        // Both refusals run against a `git` that cannot answer inside the
+        // zero budget: the machine's own can, and did, on CI (#2249).
+        let bin = tempfile::tempdir().expect("tempdir");
+        stall_git_at(dir.path(), bin.path());
+
         let refused = scan_within(dir.path(), &HashMap::new(), None, Duration::ZERO).await;
         assert_eq!(
             refused.repo_gate,
@@ -1546,7 +1570,6 @@ mod tests {
             "a budget that runs out before git answers reads as a failed scan",
         );
 
-        let scanned = scan_within(dir.path(), &HashMap::new(), None, TEST_GIT_BUDGET).await;
         // The seam is not only the scan's first spawn: a helper called
         // deeper in refuses a zero budget the same way, so the claim has a
         // witness beyond `rev_parse_gate`'s collapse.
@@ -1556,6 +1579,8 @@ mod tests {
             "a later helper refuses a zero budget too: {later:?}",
         );
 
+        crate::env::git_command::clear_git_point(dir.path());
+        let scanned = scan_within(dir.path(), &HashMap::new(), None, TEST_GIT_BUDGET).await;
         assert_eq!(scanned.repo_gate, RepoGate::InRepo, "and the tests' budget scans the repo");
         assert!(
             matches!(scanned.branch, GitBranch::Named(ref name) if name == "feature"),
