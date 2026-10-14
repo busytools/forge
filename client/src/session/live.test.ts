@@ -1009,6 +1009,36 @@ function paint(): void {
   for (const run of waiting) run();
 }
 
+/**
+ * The page listeners a case has left installed, as `document/focus` lines.
+ *
+ * **A listener on the document is what pins a seat** (#2136): each one closes
+ * over the seat that registered it, and through the seat over the connection
+ * it was made on - so a listener left behind holds a whole connection's stores
+ * reachable for as long as the page lives. The ledger reads registrations the
+ * way the DOM would: what was added and never taken back.
+ */
+function pageListeners(): () => string[] {
+  const spies = [
+    { at: 'document', drop: false, spy: vi.spyOn(document, 'addEventListener') },
+    { at: 'document', drop: true, spy: vi.spyOn(document, 'removeEventListener') },
+    { at: 'window', drop: false, spy: vi.spyOn(window, 'addEventListener') },
+    { at: 'window', drop: true, spy: vi.spyOn(window, 'removeEventListener') },
+  ];
+  return () => {
+    const held = new Map<string, number>();
+    for (const { at, drop, spy } of spies) {
+      for (const call of spy.mock.calls) {
+        const key = `${at}/${String(call[0])}`;
+        held.set(key, (held.get(key) ?? 0) + (drop ? -1 : 1));
+      }
+    }
+    return [...held]
+      .filter(([, count]) => count > 0)
+      .map(([key, count]) => (count > 1 ? `${key} x${count}` : key));
+  };
+}
+
 beforeEach(stubFrames);
 
 // A test that fails part-way through a fake-timer case would otherwise leave
@@ -1098,6 +1128,7 @@ function drivable(refusedAtFirst = false): Driveable {
   let subscribed = 0;
   let unsubscribed = 0;
   let refused = refusedAtFirst;
+  let status: ConnectionStatus = 'open';
 
   const seatState = (): StoreState =>
     refused ? { kind: 'refused', why: NO_SESSION } : { kind: 'ready' };
@@ -1160,7 +1191,9 @@ function drivable(refusedAtFirst = false): Driveable {
     settings: () => null,
     skew: () => null,
     serverProtocol: () => PROTOCOL_VERSION,
-    status: () => 'open',
+    // The state the case last drove it to, as both connections report theirs:
+    // a seat asks before it takes its page listeners.
+    status: () => status,
     close: () => {},
     land: (message) => {
       if (message.kind === 'snapshot') {
@@ -1169,6 +1202,7 @@ function drivable(refusedAtFirst = false): Driveable {
       for (const fn of listeners) fn(message);
     },
     wentTo: (next) => {
+      status = next;
       for (const fn of watchers) fn(next);
     },
     reads: () => reads,
@@ -1407,6 +1441,45 @@ describe('the record a page holds over an update stream', () => {
   });
 
   /**
+   * **A seat's lifetime ends with the connection it was made on** (#2136).
+   *
+   * The shell closes the socket and replaces it when the address changes, and
+   * the seat's return-to-visibility listeners are registered on the DOCUMENT -
+   * so a seat outliving its connection left its three behind, each closing
+   * over the seat and, through it, the old connection and its stores: a whole
+   * connection's records kept reachable for the page's life, one set per
+   * address change.
+   */
+  it('a seat released with its connection leaves no page listeners behind', () => {
+    const held = pageListeners();
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD));
+    expect(held(), 'the seat listens for the page from its first moment').toHaveLength(3);
+
+    // A drop is not an end: the same connection reconnects, and these are
+    // what a return draws the suspended paint with (#2132).
+    connection.wentTo('connecting');
+    expect(held(), 'a drop must not end the seat').toHaveLength(3);
+    connection.wentTo('open');
+
+    // The address changed: the shell closes the connection the pages were
+    // reading through and hands them the new one.
+    connection.wentTo('closed');
+
+    expect(held(), "a replaced connection's seat still holds its page listeners").toEqual([]);
+
+    // And it is let go rather than left deaf on a dead connection: the next
+    // ask for the seat is a new one, holding nothing of the old, and it takes
+    // no page listener of its own either.
+    const back = watch(connection);
+    expect(back.read().wire, 'the released seat was handed back on the dead connection').toBeNull();
+    expect(held(), 'a seat born on a closed connection took a page listener').toEqual([]);
+    back.stop();
+    page.stop();
+  });
+
+  /**
    * **A fired cron's schedule is on the frame and on no field of the record.**
    * The row's prose carries the prompt alone, so the pump keeps the pairing
    * the frame states - and it has to do so where the record's own early return
@@ -1545,7 +1618,9 @@ describe('the record a page holds over an update stream', () => {
     paint();
     expect(page.read().wire?.conversation.turns, 'precondition: the frame landed').toHaveLength(1);
 
-    page.wentTo('closed');
+    // A drop reports `connecting` on both connections; `closed` is the shell
+    // replacing the connection, which releases the seat instead.
+    page.wentTo('connecting');
     page.wentTo('open');
     page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }));
 
@@ -1884,7 +1959,9 @@ describe('the seat the client holds between visits', () => {
     expect(away.read().wire?.conversation.turns, 'precondition: the frame landed').toHaveLength(1);
     away.stop();
 
-    connection.wentTo('closed');
+    // A drop reports `connecting` on both connections; `closed` is the shell
+    // replacing the connection, which releases the seat instead.
+    connection.wentTo('connecting');
     connection.wentTo('open');
     connection.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }));
 
