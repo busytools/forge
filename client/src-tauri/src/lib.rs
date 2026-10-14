@@ -150,15 +150,53 @@ mod commands {
         bridge.frame(bytes)
     }
 
+    /// Keep this machine's microphone open for the picked input, so a press
+    /// records from the press rather than opening a device under it.
+    ///
+    /// The page names the input to hold - at client start, and again when
+    /// the pick changes - and the device stays open, and its indicator lit,
+    /// until the client exits. A take consumes the held stream without
+    /// closing it, so the hold outlives every take.
+    ///
+    /// A hold that will not open is answered rather than drawn: the caller
+    /// carries on, and a press then opens the device itself exactly as it
+    /// did before there was a hold. The open blocks on hardware, so it runs
+    /// off the main thread like the take's.
+    #[tauri::command]
+    pub async fn client_mic_hold(
+        bridge: tauri::State<'_, Arc<Bridge>>,
+        mic: tauri::State<'_, Arc<crate::mic::Mic>>,
+        device: Option<String>,
+    ) -> Result<Value, String> {
+        let bridge = Arc::clone(bridge.inner());
+        let mic = Arc::clone(mic.inner());
+        let answered = tauri::async_runtime::spawn_blocking(move || {
+            mic.hold(&bridge, device).map(|held| crate::mic::device_json(&held))
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+        if let Err(why) = &answered {
+            // A hold that will not open is not the reader's to act on at the
+            // moment it happens - the press still opens the device itself -
+            // but the log says why the warming is off.
+            tauri_plugin_log::log::warn!("the microphone hold did not open: {why}");
+        }
+        answered
+    }
+
     /// Open this machine's microphone for a take, and answer with the input
     /// it opened.
     ///
-    /// The device open blocks on hardware, so it runs off the main thread;
-    /// it is the caller's own answer, unlike the frames, which arrive as
-    /// `client://mic` events while the take runs. The input comes back in the
-    /// panel's own `{ id, label }` shape, which is what it names the system
-    /// default by - asking for no device resolves to that default here, and
-    /// nothing the page holds knows which one it was.
+    /// The held capture serves the take when it is the one asked for, so
+    /// this usually answers without touching the device at all; a device
+    /// that is not held is opened here, which blocks on hardware and so runs
+    /// off the main thread. The input comes back in the panel's own
+    /// `{ id, label }` shape, which is what it names the system default by -
+    /// asking for no device resolves to that default here, and nothing the
+    /// page holds knows which one it was.
+    ///
+    /// The frames arrive as `client://mic` events while the take runs, and
+    /// only then: a held stream's audio belongs to no take and is dropped.
     #[tauri::command]
     pub async fn client_mic_start(
         bridge: tauri::State<'_, Arc<Bridge>>,
@@ -174,25 +212,23 @@ mod commands {
         .map_err(|error| error.to_string())?
     }
 
-    /// Let the capture go: the audio still in flight lands, the last partial
-    /// frame goes to the page, and the device is released.
+    /// End the take: the audio still in flight lands, the last partial frame
+    /// goes to the page, and the device stays open and warm for the next
+    /// press.
     ///
     /// The caller sends its stop after this answers - the server finalises
     /// the take on that stop, so a frame that follows it would have no take
     /// to land in.
     #[tauri::command]
-    pub async fn client_mic_drain(
-        bridge: tauri::State<'_, Arc<Bridge>>,
-        mic: tauri::State<'_, Arc<crate::mic::Mic>>,
-    ) -> Result<(), String> {
-        let bridge = Arc::clone(bridge.inner());
+    pub async fn client_mic_drain(mic: tauri::State<'_, Arc<crate::mic::Mic>>) -> Result<(), String> {
         let mic = Arc::clone(mic.inner());
-        mic.drain(&bridge).await;
+        mic.drain().await;
         Ok(())
     }
 
-    /// Let the capture go at once: an abandoned take throws its audio away,
-    /// so nothing waits for the pipeline to land.
+    /// End the take at once: an abandoned take throws its audio away, so
+    /// nothing waits for the pipeline to land. The device stays open and
+    /// warm for the next press.
     #[tauri::command]
     pub fn client_mic_stop(mic: tauri::State<'_, Arc<crate::mic::Mic>>) {
         mic.stop();
@@ -294,6 +330,7 @@ pub fn run() {
             commands::client_more,
             commands::client_dispatch,
             commands::client_frame,
+            commands::client_mic_hold,
             commands::client_mic_start,
             commands::client_mic_drain,
             commands::client_mic_stop,
@@ -340,6 +377,7 @@ pub fn run() {
             commands::client_more,
             commands::client_dispatch,
             commands::client_frame,
+            commands::client_mic_hold,
             commands::client_mic_start,
             commands::client_mic_drain,
             commands::client_mic_stop,
@@ -425,21 +463,26 @@ pub fn run() {
         }
     };
 
-    // The parameters are underscore-prefixed because the phone build strips
-    // the only block that reads them, and its warnings check denies an unused
-    // variable.
-    app.run(|_handle, _event| {
+    app.run(|handle, event| {
         // **A host must not outlive its client.** Every browser this client
         // claimed dies with it. `RunEvent::Exit` covers a quit and `exit()`;
         // a crash, a SIGKILL and the update restart's main-thread path run no
         // exit handler at all, and the next boot's sweep is what reaps those.
         #[cfg(desktop)]
-        if let tauri::RunEvent::Exit = _event
-            && let Some(host) = _handle.try_state::<std::sync::Arc<browser::BrowserHost>>()
+        if let tauri::RunEvent::Exit = event
+            && let Some(host) = handle.try_state::<std::sync::Arc<browser::BrowserHost>>()
         {
             tauri::async_runtime::block_on(async {
                 let _ = tokio::time::timeout(EXIT_REAP_BOUND, host.reap_owned()).await;
             });
+        }
+        // The held microphone goes with the client too, so the indicator is
+        // out the moment the window is; a crash and a SIGKILL release it the
+        // way the OS releases any process's device.
+        if let tauri::RunEvent::Exit = event
+            && let Some(mic) = handle.try_state::<std::sync::Arc<crate::mic::Mic>>()
+        {
+            mic.release();
         }
     });
 }

@@ -10,6 +10,7 @@
 import { isTauri } from '@tauri-apps/api/core';
 
 import type { Mode } from './dictate-key';
+import { holdShellMic } from './mic-shell';
 import { axesFrom, type DictateAxes } from '../session/wire';
 import type { DictateContext, DictateStructure, DictateStyling } from '../session/wire';
 
@@ -114,9 +115,30 @@ export function deviceFor(seat: string): string | null {
   return typeof held === 'string' ? held : null;
 }
 
-/** Remember this seat's input, or forget it (back to the system default). */
+/**
+ * Remember this seat's input, or forget it (back to the system default).
+ *
+ * The shell's hold moves with it: every pick goes through here, and a pick
+ * the shell is not holding is a press that opens a device under itself.
+ * The hold is best-effort - a shell leg that is not there (a browser), or a
+ * device that will not open, leaves the press its own cold open.
+ */
 export function rememberDevice(seat: string, device: string | null): void {
   keep(deviceKey(seat), device);
+  void holdShellMic(device);
+}
+
+/**
+ * Hold what a press on this seat would ask for.
+ *
+ * The other half of the hold: a pick states itself as it changes, and this
+ * states the one already in force when a page that takes typing appears, so
+ * the session's first press is warm rather than paying the device open.
+ * Nothing happens in a browser, and a shell that will not open the input
+ * says so in its own log.
+ */
+export function holdDeviceFor(seat: string): void {
+  void holdShellMic(deviceFor(seat));
 }
 
 /**

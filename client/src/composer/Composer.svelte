@@ -111,9 +111,10 @@
    * The counts of the take this page last finished, kept while the record
    * still shows it transcribing.
    *
-   * A local take lets go of the microphone at the release, so its counts go
-   * with it - but the record's take stays on screen through transcription,
-   * and the line that says what it sent belongs there for as long as it does.
+   * A local take ends at the release: it lets go of the reading while the
+   * held device stays open for the next press, so its counts go with it -
+   * but the record's take stays on screen through transcription, and the
+   * line that says what it sent belongs there for as long as it does.
    */
   let wireDone = $state<{ seat: string; frames: number; bytes: number; elapsedMs: number } | null>(
     null,

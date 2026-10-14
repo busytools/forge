@@ -1,7 +1,9 @@
 <script lang="ts">
   import Chat from '../chat/Chat.svelte';
   import type { Attempt } from '../connect/attempt';
+  import { boxKey } from '../composer/box.svelte';
   import Composer from '../composer/Composer.svelte';
+  import { holdDeviceFor } from '../composer/dictation';
   import { dictationOffered } from '../composer/view';
   import Connect from '../connect/Connect.svelte';
   import Fixture from '../dev/Fixture.svelte';
@@ -81,6 +83,19 @@
     document.title = titleFor(route);
     const where = perfSurface(route);
     notePerfSurface(where.surface, where.session);
+  });
+
+  /**
+   * **The microphone is held for the page that takes typing**, so its first
+   * press records from the press rather than opening a device under it. The
+   * hold follows the seat's own pick, and none is taken while dictation is
+   * not offered - a switched-off install must not light the indicator - so
+   * it lands as the mic is drawn and moves with the seat.
+   */
+  $effect(() => {
+    if (!dictate) return;
+    if (route.name !== 'session' && route.name !== 'review') return;
+    holdDeviceFor(boxKey(route.slot));
   });
 </script>
 
