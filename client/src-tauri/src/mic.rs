@@ -301,6 +301,9 @@ impl Mic {
 
     /// End the take at once, throwing its audio away. The device stays
     /// open, so the next press records from the press.
+    ///
+    /// No page guard here, unlike the hold and the press: one in flight from
+    /// a page that is gone ends whatever records when it lands (#2252).
     pub fn stop(&self) {
         let mut warm = self.warm.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(held) = warm.as_mut() {
@@ -314,6 +317,10 @@ impl Mic {
     /// The caller sends its stop only after this returns: the stop is what
     /// finalises the take on the server, so a frame that follows it has no
     /// take to land in.
+    ///
+    /// The window it sleeps for is unguarded by page the same way: a drain
+    /// still in flight from a reloaded page ends the take the new page began
+    /// inside those 150 ms (#2252).
     pub async fn drain(&self) {
         tokio::time::sleep(Duration::from_millis(DRAIN_MS)).await;
         let mut warm = self.warm.lock().unwrap_or_else(PoisonError::into_inner);
