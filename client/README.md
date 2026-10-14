@@ -356,9 +356,11 @@ the phone first, since Android cannot replace an app across signatures.
 draws is a `<use>` reference to it.** `Sprite.svelte` inlines it once per
 page and rows and pages draw through `Icon.svelte`, which is what lets a
 page's own rule colour an icon by the row it sits in. The set is Lucide's
-(MIT), and `Sprite.test.ts` holds the sprite to what the session and
-composer drawings ask for, so an icon a page draws and the sprite lacks
-fails the suite rather than drawing as a gap.
+(MIT) with one exception: the Slack brand mark ships beside it, because a
+logo is the one glyph Lucide deliberately does not carry. `Sprite.test.ts`
+holds the sprite to what the session and composer drawings ask for, so an
+icon a page draws and the sprite lacks fails the suite rather than drawing
+as a gap.
 
 - `src/theme.ts` - the palettes and typeface stacks the names resolve to.
   The greeting carries the NAMES; the values live here, and there is no
