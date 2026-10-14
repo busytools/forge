@@ -1605,8 +1605,9 @@ impl Workspace {
         // Anthropic's /api/oauth/usage rate-limiter can stall the first
         // live probe for 30 s+; without seed data every account reads as
         // unknown during that window, so nothing is demoted for being at
-        // its cap. The 60 s background poller refreshes these snapshots -
-        // the cache is purely "last known value" seed.
+        // its cap. The background poller refreshes these snapshots on the
+        // configured interval (60 s by default) - the cache is purely
+        // "last known value" seed.
         let state = match &db {
             Some(db) => crate::account_cache::load(db),
             None => crate::account_cache::ForgeState::empty(),
@@ -3003,7 +3004,8 @@ impl Workspace {
         // has a per-IP burst limit; parallel spawns trip the limit
         // and produce HTTP 429s even well under the user's own quota.
         // Serial execution staggers requests by per-probe latency
-        // (~hundreds of ms), within the 60 s poll interval.
+        // (~hundreds of ms), within the configured poll interval (60 s
+        // by default).
         let mut any_success = false;
         for (key, provider, env) in entries {
             // The backend owns the probe; an auth failure surfaces and
@@ -7668,7 +7670,7 @@ impl Workspace {
     }
 }
 
-/// The repair line the 60 s poller logs under an auth-classified
+/// The repair line the usage poller logs under an auth-classified
 /// failure, keyed on how the account authenticates. Credentials are
 /// boot-frozen, so both classes point at the flat-key edit on the
 /// account block, never a re-authentication of the shared config dir.
