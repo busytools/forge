@@ -1032,6 +1032,46 @@ mod prod_facade_tests {
         }
     }
 
+    /// The live call that walked around the gate: clearing a user-bound
+    /// row's verify while asking to complete it is refused by name, and
+    /// the row keeps its gate - so the two-call path has no first step.
+    #[test]
+    fn a_clear_of_a_user_verify_is_refused_by_name() {
+        let (ws, facade, lead, worker) = fixture();
+        let task = facade
+            .create_task(
+                &worker,
+                TaskDraft {
+                    verify: Some(forge_primitives::tasks::Verify::User),
+                    ..draft("the gated row", Some("reviewer"), Some("epic"))
+                },
+            )
+            .expect("create");
+
+        let refused = facade.update_task(
+            &lead,
+            &task.id,
+            TaskPatch {
+                status: Some(TaskStatus::Completed),
+                verify: Some(forge_primitives::tasks::Verify::None),
+                ..TaskPatch::default()
+            },
+        );
+        match refused {
+            Err(TasksError::Refused(said)) => assert!(
+                said.contains("an update cannot take that away"),
+                "the refusal says the gate is not the update's to clear: {said}",
+            ),
+            other => panic!("the clear-and-complete call is refused, got {other:?}"),
+        }
+        let stored = ws.tasks_for_project("myproj");
+        assert_eq!(
+            stored[0].verify,
+            Some(forge_primitives::tasks::Verify::User),
+            "and the row keeps the gate",
+        );
+    }
+
     /// An estimate that is not a duration is refused with its own words,
     /// and nothing else in the patch moves: the caller hears the mistake
     /// instead of the value being dropped on the floor.
