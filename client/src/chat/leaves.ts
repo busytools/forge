@@ -604,11 +604,14 @@ export function leafOf(
       : settledBy(result, abandoned);
   const forge = forgeCardOf(name, input, result);
   const drawn = drawnBody(name, body, result, settled === 'failed' || settled === 'killed');
-  // A settled failure with nothing to open onto says so in words: the summary
-  // carries no text mark of its own, so the tone alone would be the state's
-  // only carrier, and the chevron would open an empty body (#1836, rule 22).
+  // A settled call with nothing to open onto says so in words, whichever way
+  // it settled: the summary carries no text mark of its own, so the tone alone
+  // would be the state's only carrier, and the chevron would open an empty
+  // body (#1836, rule 22). A clean answer that drew no line leaves one just as
+  // surely as a failure does, and a call still out is the one state that has
+  // an empty body and no words, because its body is not written yet.
   const shown =
-    drawn.length === 0 && (settled === 'failed' || settled === 'killed')
+    drawn.length === 0 && settled !== 'pending' && settled !== 'in_progress'
       ? [{ kind: 'text' as const, text: 'no result' }]
       : drawn;
   return {
