@@ -263,6 +263,21 @@ function stub() {
       });
     },
     /**
+     * The read's own queue, which the snapshot carries.
+     *
+     * **For a client that attaches mid-queue this is the only word it ever
+     * gets about those prompts**: the pending backlog of `prompt_queued`
+     * frames goes to the first-ever subscriber alone, so the sender of these
+     * words is knowable here and nowhere else.
+     */
+    readQueue(rows: Array<{ uuid: string; source: string; text: string }>): void {
+      send({
+        kind: 'snapshot',
+        subject: { session: LEAD },
+        data: { header: { turn_in_flight: true }, state: { queue: rows } },
+      });
+    },
+    /**
      * The core saying that prompt is waiting in the CLI's queue, which retracts
      * its row into the hold. `source` rides every queued row on the wire and
      * says who sent it: the reader's own send is `you`, and a cron fire, a
@@ -1591,6 +1606,30 @@ describe('whether the column follows the newest end', () => {
     await settle();
 
     expect(pinned(), 'a queued continuation is forge talking to itself').toEqual([]);
+  });
+
+  it('brings the reader back for their own queued words that only the read carried', async () => {
+    // **The drain's positive arm, and the one case nothing else covers.** A
+    // client that attaches to a seat whose prompt is already waiting gets no
+    // `prompt_queued` frame - the pending backlog goes to the first-ever
+    // subscriber alone - so the snapshot's queue is the only thing that knows
+    // the words are the reader's, and the drain at `started` is the one place
+    // they can put the foot back under them. Without it their own words draw
+    // and the reader stays wherever the attach left them.
+    const server = stub();
+    await draw(server);
+    readerAt(0);
+    await settle();
+    clear();
+
+    server.readQueue([{ uuid: 'said-once', source: 'you', text: 'what is this' }]);
+    await settle();
+    server.started();
+    await settle();
+
+    expect(pinned(), 'their own queued words come back to the foot off the read alone').toEqual([
+      PIN,
+    ]);
   });
 
   it('re-pins when the content changes size under a reader at the foot', async () => {
