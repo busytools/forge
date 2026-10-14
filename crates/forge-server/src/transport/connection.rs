@@ -693,6 +693,7 @@ async fn handle_client(
                 what: "client_message".to_owned(),
                 why: "that is not a message this server knows".to_owned(),
                 seat: None,
+                dispatch_id: None,
             },
         )
         .await;
@@ -847,6 +848,7 @@ async fn handle_client(
                             what: "subscribe".to_owned(),
                             why: refusal.to_string(),
                             seat: None,
+                            dispatch_id: None,
                         },
                     )
                     .await?;
@@ -910,6 +912,11 @@ async fn handle_client(
             // outcome rides the subscription, so it has no reply to set - and a
             // client that set one anyway is watching a channel nothing will
             // come down, which is refused rather than ignored.
+            // Read before any arm moves the command: every refusal below
+            // answers the dispatch the press named, so the press can
+            // attribute the refusal to itself rather than to whatever was
+            // pressed last.
+            let dispatch_id = command.dispatch_id();
             match (reply_to, answers_through_a_reply(&command)) {
                 (Some(to), true) => dispatch_answering(socket, state, command, to).await,
                 (None, true) => {
@@ -919,6 +926,7 @@ async fn handle_client(
                             what: "reply_to".to_owned(),
                             why: "this command answers through `reply_to` and no update carries its outcome, so that field is required: without it a client cannot tell a refusal from success".to_owned(),
                             seat: None,
+                            dispatch_id,
                         },
                     )
                     .await
@@ -933,6 +941,7 @@ async fn handle_client(
                             what: "reply_to".to_owned(),
                             why: "this command's outcome rides the subscription rather than a reply, so it is sent without `reply_to`: there is no message a reply for it would carry".to_owned(),
                             seat: None,
+                            dispatch_id,
                         },
                     )
                     .await
@@ -956,15 +965,7 @@ async fn handle_client(
                         Ok(())
                     }
                     Err(refusal) => {
-                        send(
-                            socket,
-                            ServerMessage::Error {
-                                what: refusal_tag(&refusal).to_owned(),
-                                why: refusal.to_string(),
-                                seat: None,
-                            },
-                        )
-                        .await
+                        send(socket, dispatch_refusal(&refusal, dispatch_id)).await
                     }
                 },
             }
@@ -990,6 +991,7 @@ async fn handle_client(
                         // drains only its own**: the connection is shared and an
                         // error carries no other seat.
                         seat: Some(conversation.clone()),
+                        dispatch_id: None,
                     },
                 )
                 .await;
@@ -1023,6 +1025,7 @@ async fn handle_client(
                             conversation.display()
                         ),
                         seat: Some(conversation.clone()),
+                        dispatch_id: None,
                     },
                 )
                 .await;
@@ -1075,6 +1078,7 @@ async fn handle_client(
                                     seat.display()
                                 ),
                                 seat: Some(seat),
+                                dispatch_id: None,
                             },
                         )
                         .await
@@ -1129,6 +1133,7 @@ async fn handle_client(
                                 seat.display()
                             ),
                             seat: Some(seat.clone()),
+                            dispatch_id: None,
                         },
                     )
                     .await;
@@ -1164,6 +1169,7 @@ async fn handle_client(
                         what: "commit_diff".to_owned(),
                         why: format!("forge holds no session for {}", session.display()),
                         seat: Some(session),
+                        dispatch_id: None,
                     },
                 )
                 .await;
@@ -1834,20 +1840,15 @@ async fn dispatch_answering(
         // Every other command is fire-and-forget: success sends nothing
         // extra, because the update arrives through the subscription the
         // client already has.
-        other => match state.surface.dispatch(other) {
-            Ok(()) => Ok(()),
-            Err(refusal) => {
-                send(
-                    socket,
-                    ServerMessage::Error {
-                        what: refusal_tag(&refusal).to_owned(),
-                        why: refusal.to_string(),
-                        seat: None,
-                    },
-                )
-                .await
+        other => {
+            // As at the fire-and-forget path: whatever dispatch a press
+            // named rides the refusal back.
+            let dispatch_id = other.dispatch_id();
+            match state.surface.dispatch(other) {
+                Ok(()) => Ok(()),
+                Err(refusal) => send(socket, dispatch_refusal(&refusal, dispatch_id)).await,
             }
-        },
+        }
     }
 }
 
@@ -1867,6 +1868,7 @@ fn document_answer(
                 what: "document_read".to_owned(),
                 why,
                 seat: Some(seat.clone()),
+                dispatch_id: None,
             };
         }
     };
@@ -1883,6 +1885,7 @@ fn document_answer(
                 what: "document_read".to_owned(),
                 why: format!("the document's review could not be read: {why}"),
                 seat: Some(seat.clone()),
+                dispatch_id: None,
             };
         }
     };
@@ -1909,6 +1912,19 @@ fn refusal_tag(refusal: &DispatchError) -> &'static str {
         DispatchError::NoDraftWaiting { .. } => "respond_slack_post",
         DispatchError::NoBrowserHandOffWaiting { .. } => "respond_browser_hand_off",
         _ => "dispatch",
+    }
+}
+
+/// One refused dispatch, as the frame the asking client reads: the operation
+/// the refusal names, the core's own words, and the dispatch id the press
+/// that made it minted - echoed so a press can attribute this refusal to
+/// itself rather than to whatever was pressed last.
+fn dispatch_refusal(refusal: &DispatchError, dispatch_id: Option<u64>) -> ServerMessage {
+    ServerMessage::Error {
+        what: refusal_tag(refusal).to_owned(),
+        why: refusal.to_string(),
+        seat: None,
+        dispatch_id,
     }
 }
 
@@ -2374,12 +2390,39 @@ mod tests {
             &seat,
             Err("a PDF opens read-only; it cannot be handed reviewable".to_owned()),
         );
-        let ServerMessage::Error { what, why, seat: named } = refused else {
+        let ServerMessage::Error { what, why, seat: named, .. } = refused else {
             panic!("a refused read is an error, not an empty document")
         };
         assert_eq!(what, "document_read", "the refusal names what was asked for");
         assert!(why.contains("read-only"), "and carries the read's own reason: {why}");
         assert_eq!(named, Some(seat), "under the seat that asked");
+    }
+
+    /// **A refused dispatch answers the press that made it.** The refusal
+    /// carries the dispatch id that press minted, which is what lets a page
+    /// tell its own refused press from a sibling's; with nothing to name,
+    /// the refusal would have to be attributed by "whoever pressed last",
+    /// and the add's own refusal landing after a sibling's press would be
+    /// handed to the sibling.
+    #[test]
+    fn a_refused_dispatch_echoes_the_dispatch_its_press_made() {
+        let refused = dispatch_refusal(&DispatchError::PluginActionRunning, Some(41));
+        let ServerMessage::Error { what, why, seat, dispatch_id } = refused else {
+            panic!("a refusal is an error frame")
+        };
+        assert_eq!(what, "dispatch", "the tag a client routes a refusal by");
+        assert!(
+            why.contains("already running"),
+            "in the core's own words, not this layer's: {why}"
+        );
+        assert_eq!(seat, None, "a plugin refusal belongs to no seat");
+        assert_eq!(dispatch_id, Some(41), "and it names the dispatch the press made");
+
+        let refused = dispatch_refusal(&DispatchError::PluginActionRunning, None);
+        let ServerMessage::Error { dispatch_id, .. } = refused else {
+            panic!("a refusal is an error frame")
+        };
+        assert_eq!(dispatch_id, None, "a press that named none is echoed with none");
     }
 
     /// A transcript of `turns` single-frame turns, each a user row carrying

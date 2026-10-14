@@ -46,6 +46,22 @@ function openMarketplaces(): void {
   flushSync();
 }
 
+/**
+ * The dispatch id the page minted for its add press, read off the command it
+ * sent: what the core echoes in the frames and refusals that answer that
+ * press, and what the latch keys its own answer on.
+ */
+function sentDispatch(page: FakePage): number {
+  for (const command of page.sent) {
+    if (typeof command === 'string') continue;
+    const fields = command['marketplace_add'];
+    if (fields === undefined) continue;
+    const id = fields['dispatch_id'];
+    if (typeof id === 'number') return id;
+  }
+  throw new Error('the add press sent no dispatch id');
+}
+
 describe('the extensions page over a live connection', () => {
   it("draws a failed action in the core's own words", () => {
     const page = draw();
@@ -99,7 +115,13 @@ describe('the extensions page over a live connection', () => {
     flushSync();
 
     page.emit({
-      plugins_cli_action_failed: { cwd_raw: '/tmp/proj', message: 'no such repository' },
+      plugins_cli_action_failed: {
+        cwd_raw: '/tmp/proj',
+        message: 'no such repository',
+        // The frame names the dispatch the press made: that is what disposes
+        // of this add's draft and no other press's.
+        dispatch_id: sentDispatch(page),
+      },
     });
     flushSync();
 
@@ -125,7 +147,12 @@ describe('the extensions page over a live connection', () => {
 
     // A refusal produces no plugin frame, so the refusal IS the add's whole
     // outcome: the source comes back under the core's own words, at once.
-    page.say({ kind: 'error', what: 'dispatch', why: 'a second plugin action is running' });
+    page.say({
+      kind: 'error',
+      what: 'dispatch',
+      why: 'a second plugin action is running',
+      dispatch_id: sentDispatch(page),
+    });
     flushSync();
 
     const reopened = document.querySelector<HTMLInputElement>('.ext-add-in');
@@ -146,7 +173,12 @@ describe('the extensions page over a live connection', () => {
     flushSync();
     buttonByText('add').click();
     flushSync();
-    page.say({ kind: 'error', what: 'dispatch', why: 'a second plugin action is running' });
+    page.say({
+      kind: 'error',
+      what: 'dispatch',
+      why: 'a second plugin action is running',
+      dispatch_id: sentDispatch(page),
+    });
     flushSync();
 
     // An unrelated action's success must not be what disposes of the source:
@@ -179,7 +211,9 @@ describe('the extensions page over a live connection', () => {
 
     // The add is in flight (the core accepted it; the CLI runs for seconds).
     // A sibling action pressed in that window is refused by the core, and
-    // that refusal is the sibling's own: the add's latch must not ride it.
+    // that refusal names the sibling's own dispatch - a repair press mints
+    // none - and never the add's.
+    const add = sentDispatch(page);
     buttonByText('repair').click();
     flushSync();
     page.say({ kind: 'error', what: 'dispatch', why: 'a plugin action is already running' });
@@ -198,6 +232,7 @@ describe('the extensions page over a live connection', () => {
       plugins_cli_action_succeeded: {
         cwd_raw: '/tmp/proj',
         result: { snapshot: null, message: 'added', claude_path: '/usr/bin/claude' },
+        dispatch_id: add,
       },
     });
     flushSync();
@@ -205,6 +240,81 @@ describe('the extensions page over a live connection', () => {
       document.querySelector('.ext-add-in'),
       "the add's own success leaves the input closed",
     ).toBeNull();
+  });
+
+  it("keeps a refused add's draft when an unrelated frame lands first", () => {
+    const page = draw();
+    openMarketplaces();
+    buttonByText('add marketplace').click();
+    flushSync();
+    const field = document.querySelector<HTMLInputElement>('.ext-add-in');
+    if (field === null) throw new Error('no add field');
+    field.value = 'owner/raced';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    buttonByText('add').click();
+    flushSync();
+
+    // An unrelated plugin frame lands while the add's own answer is still in
+    // flight: it answers some other dispatch, and it must not be what
+    // disposes of this add's draft.
+    page.emit({
+      plugins_cli_action_succeeded: {
+        cwd_raw: '/tmp/proj',
+        result: { snapshot: null, message: 'checked', claude_path: '/usr/bin/claude' },
+      },
+    });
+    flushSync();
+
+    // The add's own refusal lands after it - it names the dispatch the add's
+    // press made - and it reopens the input.
+    page.say({
+      kind: 'error',
+      what: 'dispatch',
+      why: 'a second plugin action is running',
+      dispatch_id: sentDispatch(page),
+    });
+    flushSync();
+
+    const reopened = document.querySelector<HTMLInputElement>('.ext-add-in');
+    expect(reopened, "an unrelated frame does not take the refused add's draft").not.toBeNull();
+    expect(reopened?.value).toBe('owner/raced');
+    expect(document.body.textContent).toContain('a second plugin action is running');
+  });
+
+  it('reopens the add when its own refusal lands after a sibling press', () => {
+    const page = draw();
+    openMarketplaces();
+    buttonByText('add marketplace').click();
+    flushSync();
+    const field = document.querySelector<HTMLInputElement>('.ext-add-in');
+    if (field === null) throw new Error('no add field');
+    field.value = 'owner/late';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    buttonByText('add').click();
+    flushSync();
+
+    // A sibling action is pressed before the add's refusal lands, and the
+    // refusal that then arrives is the ADD's own: attribution by "whoever
+    // pressed last" hands it to the sibling and leaves the add's draft held
+    // for an answer that never comes.
+    buttonByText('repair').click();
+    flushSync();
+    page.say({
+      kind: 'error',
+      what: 'dispatch',
+      why: 'a second plugin action is running',
+      dispatch_id: sentDispatch(page),
+    });
+    flushSync();
+
+    const reopened = document.querySelector<HTMLInputElement>('.ext-add-in');
+    expect(
+      reopened,
+      "the add's own refusal reopens its input after a sibling press",
+    ).not.toBeNull();
+    expect(reopened?.value).toBe('owner/late');
   });
 
   it('does not reopen a settled add on some later failure', () => {
@@ -226,6 +336,7 @@ describe('the extensions page over a live connection', () => {
       plugins_cli_action_succeeded: {
         cwd_raw: '/tmp/proj',
         result: { snapshot: null, message: 'added', claude_path: '/usr/bin/claude' },
+        dispatch_id: sentDispatch(page),
       },
     });
     flushSync();

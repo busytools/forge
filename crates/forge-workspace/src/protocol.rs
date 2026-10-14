@@ -483,8 +483,15 @@ pub enum Command {
     /// plugins have a newer marketplace version, applying nothing.
     PluginCheckUpdates,
     /// Add a marketplace by `owner/repo` or URL, at user scope.
+    ///
+    /// `dispatch_id` is the pressing view's own token for this press - the
+    /// add is the one plugin action whose answer disposes a draft a page is
+    /// holding - and it rides back on the refusal of this dispatch and on
+    /// the outcome frames that answer it, so the press can attribute its own
+    /// answer to itself.
     MarketplaceAdd {
         source: String,
+        dispatch_id: Option<u64>,
     },
     /// Repair a drifted marketplace with the CLI's remove-and-re-add pair.
     MarketplaceRepair {
@@ -817,6 +824,15 @@ impl Command {
             | Self::MarketplaceRepair { .. } => None,
         }
     }
+
+    /// The dispatch id the press that made this command minted, when it
+    /// named one: what a refusal echoes and the outcome frames carry back.
+    pub fn dispatch_id(&self) -> Option<u64> {
+        match self {
+            Self::MarketplaceAdd { dispatch_id, .. } => *dispatch_id,
+            _ => None,
+        }
+    }
 }
 
 impl std::fmt::Debug for Command {
@@ -1048,9 +1064,11 @@ impl std::fmt::Debug for Command {
                 .finish(),
             Self::PluginUpdateAll => f.write_str("PluginUpdateAll"),
             Self::PluginCheckUpdates => f.write_str("PluginCheckUpdates"),
-            Self::MarketplaceAdd { source } => {
-                f.debug_struct("MarketplaceAdd").field("source", source).finish()
-            }
+            Self::MarketplaceAdd { source, dispatch_id } => f
+                .debug_struct("MarketplaceAdd")
+                .field("source", source)
+                .field("dispatch_id", dispatch_id)
+                .finish(),
             Self::MarketplaceRepair { name } => {
                 f.debug_struct("MarketplaceRepair").field("name", name).finish()
             }
@@ -1626,10 +1644,16 @@ pub enum SessionUpdate {
     PluginsCliActionSucceeded {
         cwd_raw: String,
         result: PluginsCliActionSuccess,
+        /// The dispatch this outcome answers, when the press that made it
+        /// named one - `None` for an internal dispatch no press owns.
+        dispatch_id: Option<u64>,
     },
     PluginsCliActionFailed {
         cwd_raw: String,
         message: String,
+        /// As on the succeeded frame above: the dispatch this failure
+        /// answers, when the press that made it named one.
+        dispatch_id: Option<u64>,
     },
     /// A section-level update run or check moved: one or more rows
     /// changed state. Carries the whole run so the pane replaces its
@@ -2925,6 +2949,27 @@ mod workers_command_tests {
         ] {
             assert!(command.key().is_none(), "app-level: {command:?}");
         }
+    }
+
+    /// The add's dispatch id crosses, and a press that named none still
+    /// parses: the accessor is what a refusal echoes and the outcome frames
+    /// carry, which is the identity a page keys its own answer on.
+    #[test]
+    fn a_marketplace_add_names_the_dispatch_its_press_made() {
+        let named: Command =
+            serde_json::from_str(r#"{"marketplace_add":{"source":"owner/repo","dispatch_id":41}}"#)
+                .expect("a press that names its dispatch");
+        assert_eq!(named.dispatch_id(), Some(41), "the accessor reads the press's own id");
+
+        let bare: Command = serde_json::from_str(r#"{"marketplace_add":{"source":"owner/repo"}}"#)
+            .expect("a press that named none still parses");
+        assert_eq!(bare.dispatch_id(), None, "and answers none");
+
+        assert_eq!(
+            Command::PluginCheckUpdates.dispatch_id(),
+            None,
+            "a command no press names a dispatch for carries none",
+        );
     }
 
     /// A move WITHOUT a place parses: the keyboard's lane step sends the

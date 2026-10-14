@@ -10,6 +10,7 @@
    * X for a failure. Everything rare is a chip in words.
    */
   import type { ProjectView } from '../wire/home';
+  import { mintDispatchId } from '../wire/ids';
   import Brand from '../components/Brand.svelte';
   import Chevron from '../components/Chevron.svelte';
   import InstallDialog from './InstallDialog.svelte';
@@ -32,6 +33,7 @@
     wire,
     refusal,
     addRefused = 0,
+    addAnswered = 0,
     failure = null,
     settled = 0,
     projects,
@@ -50,6 +52,9 @@
      * of the refusal to its press. A sibling action's refusal is the
      * sibling's, and never disposes of the add's pending latch. */
     addRefused?: number;
+    /** Ticks when a frame naming the ADD's OWN dispatch lands - the outcome
+     * half of the same attribution. */
+    addAnswered?: number;
     /** A failed action or refresh, in the core's own words, from the live
      * stream: a failed update, install, add or repair reaches the page this
      * way, and a press with nothing said back reads as a press that did
@@ -65,7 +70,7 @@
     check: () => void;
     install: (pluginId: string, scope: string, project: string | null) => void;
     repair: (name: string) => void;
-    addmarketplace: (source: string) => void;
+    addmarketplace: (source: string, dispatch_id: number) => void;
   } = $props();
 
   let pane = $state<PaneId>('installed');
@@ -162,25 +167,27 @@
 
   /** The draft of an add whose dispatch has not answered: kept so a rejected
    * source is reopened with its words rather than silently discarded; the
-   * frame and add-refusal counts it was submitted at, so only an answer that
+   * refusal and outcome counts it was submitted at, so only an answer that
    * landed AFTER the submission counts as its own. */
   let pendingSource = $state<string | null>(null);
-  let pendingFrom = $state(0);
   let refusedFrom = $state(0);
+  let answeredFrom = $state(0);
 
-  // The reopen rides the add's OWN outcome, a plugin frame (`settled`) or the
-  // refusal of its dispatch - a refusal lands with no frame at all, a
-  // SUCCESSFUL add lands with no failure at all. The refusal is the add's own
-  // only when the press that owns it is the add's (`addRefused`: a refusal
-  // frame names no command, and a sibling action's refusal is the sibling's),
-  // and either answer must have landed since the submission - without that
-  // guard, the effect's own dependency on `pendingSource` would dispose of
-  // the draft the moment it is set.
+  // The reopen rides the add's OWN answers, and only those: the refusal of
+  // its dispatch (`addRefused`) or the outcome frame naming it
+  // (`addAnswered`) - a refusal lands with no frame at all, a SUCCESSFUL add
+  // lands with no failure at all. Both counts move for this add's dispatch
+  // alone, so a sibling action's frame or refusal, or an internal dispatch's
+  // outcome, leaves the draft where it is. Either answer must also have
+  // landed since the submission - without that guard, the effect's own
+  // dependency on `pendingSource` would dispose of the draft the moment it
+  // is set.
   $effect(() => {
-    const tick = settled;
+    const refused = addRefused;
+    const answered = addAnswered;
     if (pendingSource === null) return;
-    if (tick === pendingFrom && addRefused === refusedFrom) return;
-    if (addRefused === refusedFrom && failure === null) {
+    if (refused === refusedFrom && answered === answeredFrom) return;
+    if (answered !== answeredFrom && failure === null) {
       pendingSource = null;
       return;
     }
@@ -234,10 +241,12 @@
     if (source === '') return;
     // The counts are read BEFORE the dispatch: a refusal that lands with it
     // (the socket closed under the press) is still this add's own answer.
-    pendingFrom = settled;
     refusedFrom = addRefused;
-    addmarketplace(source);
-    // The draft is kept until the outcome lands: a rejected source reopens
+    answeredFrom = addAnswered;
+    // The press's own dispatch id, minted here: the answers that name it are
+    // this add's, and no other press's answer can dispose of the draft.
+    addmarketplace(source, mintDispatchId());
+    // The draft is kept until the answer lands: a rejected source reopens
     // the input with its words rather than vanishing (see the effect above).
     pendingSource = source;
     adding = false;

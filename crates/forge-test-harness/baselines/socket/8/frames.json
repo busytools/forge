@@ -600,6 +600,47 @@
         "type"
       ]
     },
+    "PluginsCliActionFailed": {
+      "": [
+        "kind",
+        "update"
+      ],
+      "/update": [
+        "plugins_cli_action_failed"
+      ],
+      "/update/plugins_cli_action_failed": [
+        "cwd_raw",
+        "dispatch_id",
+        "message"
+      ]
+    },
+    "PluginsCliActionSucceeded": {
+      "": [
+        "kind",
+        "update"
+      ],
+      "/update": [
+        "plugins_cli_action_succeeded"
+      ],
+      "/update/plugins_cli_action_succeeded": [
+        "cwd_raw",
+        "dispatch_id",
+        "result"
+      ],
+      "/update/plugins_cli_action_succeeded/result": [
+        "claude_path",
+        "message",
+        "snapshot"
+      ],
+      "/update/plugins_cli_action_succeeded/result/snapshot": [
+        "components",
+        "installed",
+        "marketplace",
+        "marketplace_health",
+        "marketplaces",
+        "token_costs"
+      ]
+    },
     "SnapshotExtensions": {
       "": [
         "data",
@@ -907,6 +948,15 @@
         "context",
         "structure",
         "styling"
+      ]
+    },
+    "MarketplaceAdd": {
+      "": [
+        "marketplace_add"
+      ],
+      "/marketplace_add": [
+        "dispatch_id",
+        "source"
       ]
     }
   },

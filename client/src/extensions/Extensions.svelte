@@ -33,16 +33,19 @@
    */
   let refusal = $state<string | null>(null);
   /**
-   * Which dispatch the next refusal would answer: the add, or any other
-   * action. A refusal frame names no command, so the press that owns it is
-   * what decides whether the add's pending latch may be disposed of by it -
-   * a sibling action's refusal is the sibling's own. Not `$state`: nothing
-   * draws from it.
+   * The dispatch of the add currently in flight, as the press that made it
+   * named it: an answer that names this dispatch is the add's own, and any
+   * other answer - a sibling action's frame or refusal, an internal
+   * dispatch's outcome - names something else and never answers the add.
+   * Not `$state`: nothing draws from it.
    */
-  let refusalFor: 'add' | 'other' | null = null;
+  let addDispatch: number | null = null;
   /** Ticks when the ADD's own dispatch is refused, so the body's pending
    * latch rides its own answer rather than any refusal on the page. */
   let addRefused = $state(0);
+  /** Ticks when a frame naming the ADD's own dispatch lands, success or
+   * failure alike: the other half of the latch's own answer. */
+  let addAnswered = $state(0);
   /**
    * The core's own words for an action that ran and failed - an update, an
    * install, a marketplace add or repair - which rides the `Plugins` frames
@@ -68,8 +71,12 @@
     return open.onMessage((message) => {
       if (message.kind === 'error' && message.what === 'dispatch') {
         refusal = message.why;
-        if (refusalFor === 'add') addRefused += 1;
-        refusalFor = null;
+        // The add's own, when the refusal echoes the dispatch its press
+        // named - a sibling action's refusal names its own or none.
+        if (addDispatch !== null && message.dispatch_id === addDispatch) {
+          addRefused += 1;
+          addDispatch = null;
+        }
       }
       if (message.kind !== 'update') return;
       const variant =
@@ -80,7 +87,7 @@
       const payload =
         typeof message.update === 'string'
           ? undefined
-          : (message.update[variant] as { message?: unknown } | undefined);
+          : (message.update[variant] as { message?: unknown; dispatch_id?: unknown } | undefined);
       if (variant === 'plugins_cli_action_succeeded') {
         failure = null;
       } else if (
@@ -89,35 +96,39 @@
       ) {
         failure = typeof payload?.message === 'string' ? payload.message : variant;
       }
+      // The add's own answer, after the failure line above is written so the
+      // body's effect reads both in one run.
+      const answered = payload?.dispatch_id;
+      if (addDispatch !== null && typeof answered === 'number' && answered === addDispatch) {
+        addAnswered += 1;
+        addDispatch = null;
+      }
     });
   });
 
   /**
-   * Dispatch one action.
+   * Dispatch one action, answering whether it went.
    *
    * The outcome rides the subscription in every case - an action landing is
    * a `Plugins` frame - so nothing is asked for here; the page's own live
    * wiring turns the frame into a read. A dispatch with no open socket
    * throws before anything is sent, and that belongs in the same line as a
-   * refusal.
+   * refusal: `false` says the command never left, so no frame or refusal
+   * will ever name it.
    */
-  function act(command: Command, forAdd = false): void {
+  function act(command: Command): boolean {
     const open = connection;
-    if (open === null) return;
-    // The press that owns the next refusal: a sibling action's press claims
-    // it, so the add's own pending latch is never disposed of by a refusal
-    // the add never made.
-    refusalFor = forAdd ? 'add' : 'other';
+    if (open === null) return false;
     refusal = null;
     // A fresh press supersedes the last failure's line the way it supersedes
     // a refusal: the reader is acting on it, not reading it.
     failure = null;
     try {
       void open.dispatch(command);
+      return true;
     } catch (why) {
       refusal = why instanceof Error ? why.message : String(why);
-      if (forAdd) addRefused += 1;
-      refusalFor = null;
+      return false;
     }
   }
 
@@ -141,8 +152,15 @@
     act({ marketplace_repair: { name } });
   }
 
-  function addmarketplace(source: string): void {
-    act({ marketplace_add: { source } }, true);
+  function addmarketplace(source: string, dispatch_id: number): void {
+    // Registered before the press so the listener can attribute the answers:
+    // a refusal that lands with it - the socket closed under the press - is
+    // still this add's own, and never a sibling's.
+    addDispatch = dispatch_id;
+    if (!act({ marketplace_add: { source, dispatch_id } })) {
+      addRefused += 1;
+      addDispatch = null;
+    }
   }
 </script>
 
@@ -160,6 +178,7 @@
       wire={page.read}
       {refusal}
       {addRefused}
+      {addAnswered}
       {failure}
       {settled}
       {projects}

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { mintPromptId } from './ids';
+import { mintDispatchId, mintPromptId } from './ids';
 
 /**
  * The id every prompt is sent under.
@@ -44,5 +44,38 @@ describe('minting a prompt id', () => {
 
     const minted = new Set([mintPromptId(), mintPromptId(), mintPromptId()]);
     expect(minted.size, 'a repeat makes the CLI drop the prompt silently').toBe(3);
+  });
+});
+
+describe('minting a dispatch id', () => {
+  it('draws an exact 53-bit number, so the id crosses as the integer it is', () => {
+    // The saturated draw is the worst case for the id's arithmetic: a sum a
+    // 32-bit shift would push past 2^53, where a JS number rounds and the id
+    // stops naming one dispatch.
+    vi.stubGlobal('crypto', {
+      getRandomValues: (words: Uint32Array) => {
+        words.fill(0xffff_ffff);
+        return words;
+      },
+    });
+
+    expect(
+      Number.isSafeInteger(mintDispatchId()),
+      'past 2^53 the value rounds, and the wire takes a u64',
+    ).toBe(true);
+
+    vi.unstubAllGlobals();
+    const minted = new Set([mintDispatchId(), mintDispatchId(), mintDispatchId()]);
+    expect(minted.size, 'a repeat would let one press answer another').toBe(3);
+  });
+
+  it('still mints an exact id with no entropy source, drawing a fresh one each time', () => {
+    vi.stubGlobal('crypto', undefined);
+
+    const minted = new Set([mintDispatchId(), mintDispatchId(), mintDispatchId()]);
+    expect(minted.size).toBe(3);
+    for (const id of minted) {
+      expect(Number.isSafeInteger(id)).toBe(true);
+    }
   });
 });

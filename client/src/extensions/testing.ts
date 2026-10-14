@@ -114,7 +114,7 @@ export interface Recorder {
     check: () => void;
     install: (pluginId: string, scope: string, project: string | null) => void;
     repair: (name: string) => void;
-    addmarketplace: (source: string) => void;
+    addmarketplace: (source: string, dispatch_id: number) => void;
   };
 }
 
@@ -130,7 +130,8 @@ export function recorder(): Recorder {
       install: (pluginId: string, scope: string, project: string | null) =>
         commands.push({ plugin_install: { plugin_id: pluginId, scope, project } }),
       repair: (name: string) => commands.push({ marketplace_repair: { name } }),
-      addmarketplace: (source: string) => commands.push({ marketplace_add: { source } }),
+      addmarketplace: (source: string, dispatch_id: number) =>
+        commands.push({ marketplace_add: { source, dispatch_id } }),
     },
   };
 }
