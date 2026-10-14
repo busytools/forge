@@ -2420,9 +2420,7 @@ describe('the seat sequence', () => {
     const occupantId = 'the-same-occupant';
     page.land(snapshotOf(LEAD, {}, { seq: 1, epoch: occupantId }));
     for (let at = 1; at <= 5; at += 1) {
-      page.land(
-        frameOf({ chat_appended: { key: LEAD, msg: spoke(`line ${at}`, `u${at}`) } }, at),
-      );
+      page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke(`line ${at}`, `u${at}`) } }, at));
     }
     paint();
 
