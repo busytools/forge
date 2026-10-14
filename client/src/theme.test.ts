@@ -23,11 +23,16 @@ function captures(text: string, pattern: RegExp): string[] {
   return found;
 }
 
-/** Every rule body the sheet writes for this exact selector, whitespace-normalised. */
+/**
+ * Every rule body the sheet writes for this exact selector, whitespace-normalised
+ * and with comments stripped: a commented-out declaration is not a declaration,
+ * and the band checks below are `toContain`s a comment would satisfy.
+ */
 function rulesFor(selector: string): string[] {
+  const uncommented = sheet.replace(/\/\*[\s\S]*?\*\//g, ' ');
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return [...sheet.matchAll(new RegExp(`^\\s*${escaped}\\s*\\{([^}]*)\\}`, 'gm'))].map((match) =>
-    (match[1] ?? '').replace(/\s+/g, ' ').trim(),
+  return [...uncommented.matchAll(new RegExp(`^\\s*${escaped}\\s*\\{([^}]*)\\}`, 'gm'))].map(
+    (match) => (match[1] ?? '').replace(/\s+/g, ' ').trim(),
   );
 }
 
@@ -123,7 +128,7 @@ describe('the system bars', () => {
     for (const [what, selector, bands] of [
       ['the session page', '.app', ['top', 'right', 'bottom', 'left']],
       ['the projects rail', '.app .rail.left', ['top', 'bottom', 'left']],
-      ['the board drawer', '.dr', ['top', 'right', 'bottom']],
+      ['the board drawer', '.dr', ['top', 'right', 'bottom', 'left']],
       ['the palette panel', '.pal .panel', ['top']],
     ] as const) {
       // Every rule for the selector, as one: a box's padding may be spelled
@@ -162,7 +167,9 @@ describe('the system bars', () => {
    * stays green because the shell's inline values mask the hole.
    */
   it('declares every band at root with an env() fallback', () => {
-    const root = rulesFor(':root').join(' ');
+    // The base sheet's own rule, not the media blocks': a fallback declared
+    // only under 760px leaves every wider host without one.
+    const root = rulesFor(':root')[0] ?? '';
     for (const band of ['top', 'right', 'bottom', 'left'] as const) {
       expect(root, `--safe-${band} has no root declaration`).toContain(
         `--safe-${band}: env(safe-area-inset-${band}`,

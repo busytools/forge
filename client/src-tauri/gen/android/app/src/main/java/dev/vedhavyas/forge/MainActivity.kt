@@ -146,15 +146,19 @@ class MainActivity : TauriActivity() {
     val bottom = if (insets.isVisible(WindowInsetsCompat.Type.ime())) 0 else bars.bottom
     val script =
       safeAreaScript(bars.top, bars.right, bottom, bars.left, resources.displayMetrics.density)
-    if (script == lastScript) return
-    lastScript = script
-    safeArea?.remove()
-    safeArea =
-      if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
-        WebViewCompat.addDocumentStartJavaScript(page, script, setOf("*"))
-      } else {
-        null
-      }
+    if (script != lastScript) {
+      lastScript = script
+      safeArea?.remove()
+      safeArea =
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+          WebViewCompat.addDocumentStartJavaScript(page, script, setOf("*"))
+        } else {
+          null
+        }
+    }
+    // Written on every dispatch, idempotent: on a WebView without the
+    // document-start hook this is the only thing that re-applies the lengths
+    // to a document that reloaded, so the cache above must not skip it.
     page.evaluateJavascript(script, null)
   }
 

@@ -25,7 +25,7 @@ class SafeAreaScriptTest {
       MainActivity.safeAreaScript(top = 0, right = 0, bottom = 0, left = 0, density = 1f)
     assertTrue(
       script,
-      script.contains("document.addEventListener('DOMContentLoaded', apply"),
+      script.contains("if (!apply()) document.addEventListener('DOMContentLoaded', apply"),
     )
   }
 }
