@@ -75,7 +75,7 @@ function webview(): Storage | null {
 }
 
 /**
- * The last address that answered, or `null` when none has.
+ * The last address a connection was kept on, or `null` when none has.
  *
  * A store that refuses to be read is the same as one that never held
  * anything: this app's only input is the server URL, so an app that cannot

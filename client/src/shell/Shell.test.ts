@@ -114,6 +114,9 @@ async function stubForge(
     server.once('connection', resolve);
   });
 
+  /** Home reads seen, which is what says a connection was taken. */
+  let homeReads = 0;
+
   const greet = (socket: WebSocket): void => {
     socket.send(
       JSON.stringify({
@@ -130,6 +133,7 @@ async function stubForge(
       const message: unknown = JSON.parse(frameText(raw));
       const asked = message as { kind?: unknown; what?: unknown };
       if (asked.kind === 'subscribe' && asked.what === 'home') {
+        homeReads += 1;
         socket.send(JSON.stringify({ kind: 'snapshot', subject: 'home', data: homeWire }));
       }
     });
@@ -140,6 +144,15 @@ async function stubForge(
     address: `127.0.0.1:${port}`,
     /** How many clients it still has on the end of it. */
     live: () => server.clients.size,
+    /**
+     * How many home reads a client has made on it.
+     *
+     * **The signal that a connection was TAKEN, not merely accepted.** The
+     * shell subscribes the home once it holds the connection, so this flips
+     * only after the address was kept - waiting on `live()` alone raced the
+     * greeting on CI (the accept is one frame earlier than the take).
+     */
+    homeReads: () => homeReads,
     attached,
     /** Let the greeting go, which is what lands a held launch. */
     greet(again: number = version) {
@@ -245,8 +258,11 @@ async function crossed(): Promise<void> {
  */
 async function until(what: () => boolean): Promise<void> {
   const deadline = Date.now() + 2_000;
-  while (!what() && Date.now() < deadline) {
+  for (;;) {
+    // Flush BEFORE the check, so a condition reading rendered state sees the
+    // frame it is waiting on rather than the one before it.
     flushSync();
+    if (what() || Date.now() > deadline) break;
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   flushSync();
@@ -371,16 +387,17 @@ describe('the shell at launch', () => {
     const forge = await stubForge({ mark: null, theme: null, font: null });
     forges.push(forge);
     await openAt(`/?server=${forge.address}`, null);
-    await until(() => forge.live() === 1);
+    await until(() => forge.homeReads() >= 1);
 
     expect(location.pathname, 'a launch from the root did not land on the home').toBe('/');
     expect(location.search, 'the launch dropped its own parameter').toBe(
       `?server=${forge.address}`,
     );
     expect(
-      document.querySelector('#address'),
-      'the launch connected and yet the door is what drew',
-    ).toBeNull();
+      forge.homeReads(),
+      'the launch never landed, so nothing about it can be drawn',
+    ).toBeGreaterThan(0);
+    expect(document.querySelector('#address'), 'the door drew for a launch that landed').toBeNull();
   });
 
   /**
@@ -393,7 +410,7 @@ describe('the shell at launch', () => {
     const named = await stubForge({ mark: null, theme: null, font: null });
     forges.push(remembered, named);
     await openAt(`/?server=${named.address}`, remembered.address);
-    await until(() => named.live() === 1);
+    await until(() => named.homeReads() >= 1);
 
     expect(named.live(), 'the launch did not dial the parameter').toBe(1);
     expect(remembered.live(), 'the launch dialed the remembered address instead').toBe(0);
@@ -409,7 +426,7 @@ describe('the shell at launch', () => {
     const forge = await stubForge({ mark: null, theme: null, font: null });
     forges.push(forge);
     await openAt(`/?server=${forge.address}`, null);
-    await until(() => forge.live() === 1);
+    await until(() => forge.homeReads() >= 1);
 
     expect(rememberedAddress(), 'a launch that answered was not remembered').toBe(forge.address);
   });
@@ -435,6 +452,21 @@ describe('the shell at launch', () => {
   });
 
   /**
+   * **A launch that fails does not touch the memory.** The write lives in the
+   * shell, so the pin does too: a tab pointed at a dead address goes on
+   * opening on the forge it had.
+   */
+  it('leaves the remembered address alone when a launch fails', async () => {
+    const good = await stubForge({ mark: null, theme: null, font: null });
+    forges.push(good);
+    await openAt('/?server=::::', good.address);
+
+    expect(rememberedAddress(), 'a failed launch clobbered the address the app had').toBe(
+      good.address,
+    );
+  });
+
+  /**
    * **What is kept is the connection the app TOOK**, so a door submit that
    * replaces the connection replaces the memory with it rather than sitting
    * beside it.
@@ -444,15 +476,18 @@ describe('the shell at launch', () => {
     const second = await stubForge({ mark: null, theme: null, font: null });
     forges.push(first, second);
     await openAt('/', first.address);
-    await until(() => first.live() === 1);
-    expect(rememberedAddress(), 'a connection that took was not remembered').toBe(first.address);
+    // The wait IS the landing: a home read happens only after the launch was
+    // taken, so what follows runs against a finished launch. (An assertion
+    // here on the store would be pre-satisfied - `openAt` remembers the
+    // address itself.)
+    await until(() => first.homeReads() >= 1);
 
     // Back to the door with the connection still held: a submit replaces it.
     history.replaceState(null, '', '/connect');
     dispatchEvent(new PopStateEvent('popstate'));
     await crossed();
     submit(second.address);
-    await until(() => second.live() === 1);
+    await until(() => second.homeReads() >= 1);
 
     expect(rememberedAddress(), 'editing the address left the old one remembered').toBe(
       second.address,

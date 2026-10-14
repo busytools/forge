@@ -33,6 +33,7 @@ describe('the server a launch names', () => {
   it('moves the server parameter to an address that took', () => {
     const moved = movedParameter('?server=127.0.0.1:8791', '127.0.0.1:8803');
     expect(moved, 'the parameter did not follow the connection').not.toBeNull();
+    expect(moved?.[0], 'the moved search lost its leading ?').toBe('?');
     expect(
       serverParameter(moved ?? ''),
       'reading the moved parameter back did not yield the address that took',

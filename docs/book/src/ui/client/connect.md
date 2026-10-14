@@ -28,12 +28,12 @@ press when the default is right, which is almost always, and to give a
 legible reason when it is not.
 
 **The common case is not reaching it at all.** The app keeps the last
-address that answered and opens on it, so this screen is what a first
-launch meets and what the launch meets when the remembered address does
-not answer - and in that second case it opens with that address already
-in the field and the failure already on it, rather than blank. A failed
-launch is not forgotten, either: the address stays remembered, because
-that is the one the reader is about to correct.
+address it held a connection on and opens on it, so this screen is what a
+first launch meets and what the launch meets when the remembered address
+does not answer - and in that second case it opens with that address
+already in the field and the failure already on it, rather than blank. A
+failed launch is not forgotten, either: the address stays remembered,
+because that is the one the reader is about to correct.
 
 **A launch may also name a server outright.** `?server=<address>` - a bare
 `host:port`, or a full `ws://` URL - pre-fills the field and is tried at
