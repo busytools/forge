@@ -123,15 +123,18 @@ async fn scan_inventory(cli: &PluginCli) -> Result<PluginsInventorySnapshot, Str
 
 /// Report a failed action, or a refusal found before one could run, on the
 /// frame the page already listens for.
-fn fail_action(ws: &Arc<Workspace>, cwd: String, message: String) {
+fn fail_action(ws: &Arc<Workspace>, cwd: String, message: String, dispatch_id: Option<u64>) {
     tracing::warn!(
         event_name = "plugin_cli_action_failed",
         cwd = %cwd,
         error = %message,
         "a plugin action failed",
     );
-    let _ =
-        ws.update_sender().send(SessionUpdate::PluginsCliActionFailed { cwd_raw: cwd, message });
+    let _ = ws.update_sender().send(SessionUpdate::PluginsCliActionFailed {
+        cwd_raw: cwd,
+        message,
+        dispatch_id,
+    });
 }
 
 /// Run one CLI action and report its outcome on the `Plugins` frames.
@@ -141,15 +144,17 @@ async fn run_action(
     cwd: String,
     args: Vec<String>,
     message: String,
+    dispatch_id: Option<u64>,
 ) {
     match (cli.run_and_refresh)(cwd.clone(), args).await {
         Ok((snapshot, claude_path)) => {
             let _ = ws.update_sender().send(SessionUpdate::PluginsCliActionSucceeded {
                 cwd_raw: cwd,
                 result: PluginsCliActionSuccess { snapshot, message, claude_path },
+                dispatch_id,
             });
         }
-        Err(message) => fail_action(ws, cwd, message),
+        Err(message) => fail_action(ws, cwd, message, dispatch_id),
     }
 }
 
@@ -265,7 +270,9 @@ impl Workspace {
         };
         let args =
             vec!["plugin".to_owned(), "install".to_owned(), plugin_id, "--scope".to_owned(), scope];
-        self.start_plugin_cli_action(cwd, args, message)
+        // An install names no dispatch: only the add's press holds a draft
+        // that its answer disposes.
+        self.start_plugin_cli_action(cwd, args, message, None)
     }
 
     /// Update one installed plugin, in the scope and project the registry
@@ -288,7 +295,7 @@ impl Workspace {
             let cli = ws.plugin_cli();
             let snapshot = match scan_inventory(&cli).await {
                 Ok(snapshot) => snapshot,
-                Err(message) => return fail_action(&ws, home, message),
+                Err(message) => return fail_action(&ws, home, message, None),
             };
             let Some(entry) = snapshot
                 .installed
@@ -302,6 +309,7 @@ impl Workspace {
                     format!(
                         "plugin '{plugin_id}' is not installed in {scope} scope; refresh the page"
                     ),
+                    None,
                 );
             };
             let cwd = plugin_call_cwd(&scope, entry.project_path.as_deref(), &home);
@@ -313,7 +321,7 @@ impl Workspace {
                 "--scope".to_owned(),
                 scope,
             ];
-            run_action(&ws, &cli, cwd, args, message).await;
+            run_action(&ws, &cli, cwd, args, message, None).await;
         });
         Ok(())
     }
@@ -325,13 +333,14 @@ impl Workspace {
         cwd: String,
         args: Vec<String>,
         message: String,
+        dispatch_id: Option<u64>,
     ) -> Result<(), DispatchError> {
         self.begin_plugin_action()?;
         let ws = Arc::clone(self);
         tokio::spawn(async move {
             let _guard = PluginActionGuard(Arc::clone(&ws));
             let cli = ws.plugin_cli();
-            run_action(&ws, &cli, cwd, args, message).await;
+            run_action(&ws, &cli, cwd, args, message, dispatch_id).await;
         });
         Ok(())
     }
@@ -353,7 +362,7 @@ impl Workspace {
             let cli = ws.plugin_cli();
             let snapshot = match scan_inventory(&cli).await {
                 Ok(snapshot) => snapshot,
-                Err(message) => return fail_action(&ws, home, message),
+                Err(message) => return fail_action(&ws, home, message, None),
             };
             let rows = stale_rows(&snapshot.installed, &snapshot.marketplace, &home);
             if rows.is_empty() {
@@ -435,6 +444,7 @@ impl Workspace {
     pub(crate) fn start_marketplace_add(
         self: &Arc<Self>,
         source: String,
+        dispatch_id: Option<u64>,
     ) -> Result<(), DispatchError> {
         let home = Self::plugin_home()?;
         let message = format!("Added marketplace {source}");
@@ -446,7 +456,7 @@ impl Workspace {
             "--scope".to_owned(),
             "user".to_owned(),
         ];
-        self.start_plugin_cli_action(home, args, message)
+        self.start_plugin_cli_action(home, args, message, dispatch_id)
     }
 
     /// Repair a drifted marketplace with the CLI's remove-and-re-add pair.
@@ -465,7 +475,7 @@ impl Workspace {
             let cli = ws.plugin_cli();
             let snapshot = match scan_inventory(&cli).await {
                 Ok(snapshot) => snapshot,
-                Err(message) => return fail_action(&ws, home, message),
+                Err(message) => return fail_action(&ws, home, message, None),
             };
             let Some(marketplace) =
                 snapshot.marketplaces.iter().find(|marketplace| marketplace.name == name).cloned()
@@ -474,6 +484,7 @@ impl Workspace {
                     &ws,
                     home,
                     format!("no marketplace named '{name}' is configured; refresh the page"),
+                    None,
                 );
             };
             let readd_source = match marketplace.source.as_deref() {
@@ -511,9 +522,10 @@ impl Workspace {
                             message: format!("Repaired {name} marketplace"),
                             claude_path,
                         },
+                        dispatch_id: None,
                     });
                 }
-                Err(message) => fail_action(&ws, home, message),
+                Err(message) => fail_action(&ws, home, message, None),
             }
         });
         Ok(())
@@ -1052,6 +1064,30 @@ provider = \"anthropic\"
             !ws.plugin_action_running.load(Ordering::Acquire),
             "the gate opened when the action ended"
         );
+    }
+
+    /// The add's outcome names the dispatch its press made - the identity a
+    /// page holding a draft until its press answers keys on, so a frame that
+    /// answers anything else never disposes of it.
+    #[tokio::test]
+    async fn an_adds_outcome_names_the_dispatch_it_answers() {
+        let (ws, mut rx) = Workspace::testing_stub();
+        let (cli, _calls) =
+            fake_cli(&PluginsInventorySnapshot::default(), &PluginsInventorySnapshot::default());
+        ws.set_plugin_cli(cli);
+
+        ws.dispatch(Command::MarketplaceAdd {
+            source: "owner/repo".to_owned(),
+            dispatch_id: Some(41),
+        })
+        .expect("the add dispatches");
+
+        let SessionUpdate::PluginsCliActionSucceeded { dispatch_id, .. } =
+            next_update(&mut rx).await
+        else {
+            panic!("the add reports its outcome");
+        };
+        assert_eq!(dispatch_id, Some(41), "the frame names the dispatch the press made");
     }
 
     /// A repair is the CLI's remove-and-re-add pair, and the re-add source

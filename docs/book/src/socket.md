@@ -443,8 +443,11 @@ content_hash, threads, reviews}`** - in answer to `document_read`: the
   the sweep that reads it is idempotent. A store that cannot be read sends
   no set at all, because a client reading "no seats" would delete every
   profile it holds.
-- **`error {what, why}`** - `what` failed and `why`, in the core's own
-  words.
+- **`error {what, why, seat, dispatch_id}`** - `what` failed and `why`, in
+  the core's own words. `seat` names the conversation a refusal belongs to
+  where it belongs to one, and `dispatch_id` the dispatch the refused press
+  made, so only that press hears its own refusal; both are `null` where they
+  do not apply.
 
 ## What a subject carries
 

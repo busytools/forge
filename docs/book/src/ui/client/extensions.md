@@ -115,14 +115,17 @@ because of a query.
   the dispatch - a second action while one runs, a project-scoped install
   with no project named, a project `forge.toml` does not declare. An add
   among them reopens its input with the draft kept, because a refused
-  dispatch is that add's whole outcome and no plugin frame follows it.
+  dispatch is that add's whole outcome and no plugin frame follows it; the
+  refusal names the dispatch the add's press made, so a sibling action's
+  refusal never reopens the add's input.
 - **An action that ran and failed**: the core's own words above the page -
   a failed update, install, marketplace add or repair, a plugin the registry
   does not hold in that scope, or a scan with no root to walk, all of which
   ride the `Plugins` frames rather than a reply - with the row's own reason on it
   where the run reported one, and a rejected add reopening its input with
   the draft kept, because a source that vanishes with its error cannot be
-  fixed.
+  fixed. An outcome frame names the dispatch its press made, so an
+  unrelated action's frame never disposes of the add's draft.
 - **A search that matches nothing**: the lists empty and the counts under
   them say how many rows were on the page before the query.
 - **Reading**: connected, and the subject's snapshot has not landed.

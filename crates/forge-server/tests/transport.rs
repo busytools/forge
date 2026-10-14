@@ -2469,6 +2469,88 @@ async fn a_reply_to_on_a_command_that_has_no_reply_is_refused() {
     assert!(fleet.dispatched().is_empty(), "a refused command must not run behind the refusal");
 }
 
+/// **A refused dispatch answers the press that made it.** The connection
+/// reads the dispatch id off the command and echoes it on the refusal, which
+/// is the whole of the attribution: a page holding a draft until its own
+/// dispatch answers compares this against the id it minted, so a sibling
+/// action's refusal - naming its own or none - never disposes of that draft.
+///
+/// This is the protocol-mismatch arm (`reply_to` on a command that has no
+/// reply). The arm a page's own add press travels is the one below.
+#[tokio::test]
+async fn a_refusal_echoes_the_dispatch_its_press_named() {
+    let (url, fleet) = a_server().await;
+    fleet.intercept_dispatch();
+    let mut socket = connect(&url).await;
+
+    send(
+        &mut socket,
+        ClientMessage::Command {
+            command: Box::new(Command::MarketplaceAdd {
+                source: "owner/repo".to_owned(),
+                dispatch_id: Some(41),
+            }),
+            reply_to: Some(7),
+        },
+    )
+    .await;
+
+    let ServerMessage::Error { what, dispatch_id, .. } = next_server(&mut socket).await else {
+        panic!("a refused dispatch is answered with an error");
+    };
+    assert_eq!(what, "reply_to", "the refusal names what was wrong");
+    assert_eq!(dispatch_id, Some(41), "and the dispatch the press named rides it back");
+    assert!(fleet.dispatched().is_empty(), "the refused command did not run");
+}
+
+/// **The refusal a page's own add press actually gets.** The add is
+/// fire-and-forget - sent without `reply_to`, the way the page sends it - so
+/// its refusals travel the fire-and-forget arm, not the mismatch arm above: a
+/// regression that dropped the echo from that arm alone would leave this file
+/// green while the page lost its attribution.
+#[tokio::test]
+async fn a_fire_and_forget_refusal_echoes_the_dispatch_its_press_named() {
+    let (url, fleet) = a_server().await;
+    // Hold the single-action gate: a run whose scan blocks until this test
+    // releases it, so the add below is refused while the gate is held. The
+    // gate is taken at dispatch, before the scan starts, so the refusal does
+    // not race the release.
+    let (release, held) = std::sync::mpsc::channel::<()>();
+    let held = Mutex::new(held);
+    fleet.workspace().set_plugin_scan_for_test(move || {
+        let _ = held.lock().expect("the scan's lock").recv();
+        None
+    });
+    let mut socket = connect(&url).await;
+
+    send(
+        &mut socket,
+        ClientMessage::Command { command: Box::new(Command::PluginUpdateAll), reply_to: None },
+    )
+    .await;
+    send(
+        &mut socket,
+        ClientMessage::Command {
+            command: Box::new(Command::MarketplaceAdd {
+                source: "owner/repo".to_owned(),
+                dispatch_id: Some(41),
+            }),
+            reply_to: None,
+        },
+    )
+    .await;
+
+    let ServerMessage::Error { what, why, dispatch_id, .. } = next_server(&mut socket).await else {
+        panic!("a refused dispatch is answered with an error");
+    };
+    assert_eq!(what, "dispatch", "the tag a page routes a refused press by");
+    assert!(why.contains("already running"), "in the core's own words: {why}");
+    assert_eq!(dispatch_id, Some(41), "and the dispatch the press named rides it back");
+
+    // Let the held run finish rather than leaving its scan blocked for good.
+    release.send(()).expect("the held scan is released");
+}
+
 /// Answering a prompt that is not waiting - already answered on another
 /// client, or a prompt of another kind - is a click on a dock that is gone.
 /// The core used to log it and report `Ok(())`, so the socket sent nothing and
@@ -2842,7 +2924,7 @@ async fn a_more_that_cannot_be_answered_is_refused() {
     send(&mut socket, ClientMessage::More { conversation: lead_seat(), before: None, turns: 5 })
         .await;
 
-    let ServerMessage::Error { what, why, seat } = next_server(&mut socket).await else {
+    let ServerMessage::Error { what, why, seat, .. } = next_server(&mut socket).await else {
         panic!("a page that cannot be answered is refused rather than answered empty")
     };
     assert_eq!(what, "more", "the refusal names what was asked for");

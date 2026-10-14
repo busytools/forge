@@ -25,3 +25,23 @@ export function mintPromptId(): string {
   counted += 1;
   return `p-${Date.now().toString(16)}-${counted.toString(16)}`;
 }
+
+/**
+ * A fresh dispatch id: the token one press's answers name back.
+ *
+ * A random 53-bit integer - the largest a JS number holds exactly, so it
+ * crosses as the integer it is - rather than a counter, because the outcome
+ * frames reach every client watching the page: a per-page counter would
+ * collide across two clients, and one client's answer would then dispose the
+ * other's draft. `Math.random` is the fallback, weaker but present wherever
+ * `getRandomValues` is not.
+ */
+export function mintDispatchId(): number {
+  const web = globalThis.crypto;
+  if (typeof web?.getRandomValues === 'function') {
+    const [high, low] = web.getRandomValues(new Uint32Array(2));
+    // 21 bits from the low word keeps the sum under 2^53.
+    return (high ?? 0) * 2 ** 21 + ((low ?? 0) % 2 ** 21);
+  }
+  return Math.floor(Math.random() * 2 ** 53);
+}

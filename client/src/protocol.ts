@@ -370,8 +370,18 @@ export type ServerMessage =
    * one: a `more` the server could not answer names its seat, so a client
    * holding several seats' asks drains only its own. Absent from a server that
    * predates the field, and from refusals that are about nothing seat-shaped.
+   *
+   * `dispatch_id` is the dispatch a refused command answered by - a press
+   * that named one hears its refusal by name. `null` when the refused
+   * command named none, and absent from a server that predates the field.
    */
-  | { kind: 'error'; what: string; why: string; seat?: SessionSlot }
+  | {
+      kind: 'error';
+      what: string;
+      why: string;
+      seat?: SessionSlot;
+      dispatch_id?: number | null;
+    }
   /**
    * One browser tool call, sent to the client that holds the browser role.
    *

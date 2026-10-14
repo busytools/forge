@@ -300,6 +300,10 @@ pub enum ServerMessage {
         /// additive - a client of either age reads it, and a refusal that names
         /// no seat is read the way it always was.
         seat: Option<SessionSlot>,
+        /// The dispatch a refused command answered by, echoed from what the
+        /// press minted: a client that holds a draft until its own dispatch
+        /// answers tells this refusal from any other by it.
+        dispatch_id: Option<u64>,
     },
     /// One browser tool call, sent to the client that holds the browser role.
     ///
@@ -727,10 +731,12 @@ mod tests {
                     message: "done".to_owned(),
                     claude_path: std::path::PathBuf::from("claude"),
                 },
+                dispatch_id: Some(1),
             },
             SessionUpdate::PluginsCliActionFailed {
                 cwd_raw: "/tmp/proj".to_owned(),
                 message: "no".to_owned(),
+                dispatch_id: None,
             },
             SessionUpdate::PluginsUpdateRunProgress {
                 cwd_raw: "/tmp/proj".to_owned(),

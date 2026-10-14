@@ -4857,8 +4857,8 @@ impl Workspace {
                 Command::PluginCheckUpdates => {
                     return self.start_plugin_check();
                 }
-                Command::MarketplaceAdd { source } => {
-                    return self.start_marketplace_add(source);
+                Command::MarketplaceAdd { source, dispatch_id } => {
+                    return self.start_marketplace_add(source, dispatch_id);
                 }
                 Command::MarketplaceRepair { name } => {
                     return self.start_marketplace_repair(name);

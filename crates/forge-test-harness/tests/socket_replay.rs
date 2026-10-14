@@ -54,7 +54,7 @@ use forge_dictate::catalogue::EntryKind;
 use forge_primitives::plugins::{
     InstalledPluginEntry, MarketplaceEntry, MarketplaceHealth, MarketplaceSourceEntry,
     PluginCapability, PluginComponents, PluginRunRowStatus, PluginUpdateRun, PluginUpdateRunRow,
-    PluginUpdateTrigger, PluginsInventorySnapshot,
+    PluginUpdateTrigger, PluginsCliActionSuccess, PluginsInventorySnapshot,
 };
 use forge_primitives::{Message, SessionSlot};
 use forge_sdk::transport::codec::{DecodedLine, decode_dispatch};
@@ -722,6 +722,7 @@ fn frames_record() -> Value {
             // what lets a client holding several seats' asks drain only its
             // own.
             seat: Some(seat.clone()),
+            dispatch_id: Some(1),
         },
         ServerMessage::BrowserAsk {
             id: 1,
@@ -1249,6 +1250,35 @@ fn frames_record() -> Value {
             .expect("the extensions read encodes"),
         }),
     );
+    // **An action's outcome, whose fields the page parses.** The failed
+    // frame draws `message`, and both frames are what an add's draft latch
+    // keys on by `dispatch_id` - a one-sided rename on either would leave
+    // the page drawing the wrong words, or disposing a draft on a frame
+    // that answers it not at all, with every suite green.
+    payload_sampled.insert(
+        "PluginsCliActionSucceeded".to_owned(),
+        shape_of(&ServerMessage::Update {
+            update: Box::new(SessionUpdate::PluginsCliActionSucceeded {
+                cwd_raw: "/tmp/proj".to_owned(),
+                result: PluginsCliActionSuccess {
+                    snapshot: PluginsInventorySnapshot::default(),
+                    message: "Added marketplace owner/repo".to_owned(),
+                    claude_path: PathBuf::from("/usr/local/bin/claude"),
+                },
+                dispatch_id: Some(1),
+            }),
+        }),
+    );
+    payload_sampled.insert(
+        "PluginsCliActionFailed".to_owned(),
+        shape_of(&ServerMessage::Update {
+            update: Box::new(SessionUpdate::PluginsCliActionFailed {
+                cwd_raw: "/tmp/proj".to_owned(),
+                message: "the marketplace refused it".to_owned(),
+                dispatch_id: Some(1),
+            }),
+        }),
+    );
 
     json!({
         "server_message": named(SERVER_MESSAGE_VARIANTS),
@@ -1302,6 +1332,13 @@ fn command_sampled(seat: &SessionSlot) -> BTreeMap<String, BTreeMap<String, Valu
     sampled.insert(
         "DictateReadAloudStop".to_owned(),
         sample(Command::DictateReadAloudStop { keep: true, initiator: Some(1) }),
+    );
+    // The add, because the page writes its dispatch id by hand: a rename here
+    // would leave the client's own literal writing a key nothing reads, with
+    // every suite green on both sides.
+    sampled.insert(
+        "MarketplaceAdd".to_owned(),
+        sample(Command::MarketplaceAdd { source: "owner/repo".to_owned(), dispatch_id: Some(1) }),
     );
     sampled
 }
