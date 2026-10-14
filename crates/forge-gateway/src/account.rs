@@ -4,8 +4,8 @@
 //! account's declared models, its `LoadingState`, its latest usage
 //! snapshot and its last probe outcome. The walk that turns that into
 //! a picked account lives in `selection.rs`; this module owns the
-//! state and the classification the walk and the `/gateway` view both
-//! read.
+//! state and the classification the walk and the accounts read both
+//! use.
 //!
 //! **Two-tier classification:**
 //!
@@ -20,10 +20,10 @@
 //!    authenticate.
 //!
 //! Saturation and probe failures are classification only - they feed
-//! the walk's preference order and the `/gateway` view's reasons.
+//! the walk's preference order and the accounts read.
 //!
-//! Rate-limited accounts are visible in a view's bottom-panel bars so
-//! the user can wait for the window to reset.
+//! Rate-limited accounts are visible in a view's usage bars so the
+//! user can wait for the window to reset.
 
 use forge_primitives::usage::{UsageSnapshot, UsageWindow};
 
@@ -34,8 +34,8 @@ use forge_primitives::account::LoadedAccount;
 pub struct AccountKey(pub String);
 
 /// Classification of the latest usage-poll attempt outcome for an
-/// account. Surfaced to a view's bottom panel so empty bars can
-/// distinguish "still warming the cache" from a real failure.
+/// account. Feeds `unusable_reason`'s probe-blocked branch and the
+/// backoff schedule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UsageFetchStatus {
@@ -51,9 +51,9 @@ pub enum UsageFetchStatus {
     Unauthorized,
     /// Network failure reaching the API (DNS, TLS, timeout, …).
     NetworkFailed,
-    /// Decode / unknown-HTTP-status fallthrough. Distinct from the
-    /// above so renderers can show a generic "fetch error" when the
-    /// cause doesn't map to a known bucket.
+    /// Decode / unknown-HTTP-status fallthrough, kept distinct so an
+    /// unmapped cause names itself instead of wearing a known bucket.
+    /// Like `NetworkFailed` it does not block the account.
     Other,
 }
 
@@ -117,16 +117,13 @@ pub struct AccountState {
     pub env: std::collections::HashMap<String, String>,
     /// Latest usage snapshot fetched by the workspace's background
     /// poller. `None` until the first successful fetch. Drives the
-    /// selection walk's order; also surfaced to a view's bottom panel
-    /// via `Workspace::usage_for`.
+    /// selection walk's order; also read by a view's usage bars via
+    /// `Workspace::usage_for`.
     pub usage: Option<UsageSnapshot>,
     /// Latest poll-attempt outcome when the fetch failed. Cleared
-    /// (set to `None`) on the next successful fetch. A view reads
-    /// this via `Workspace::usage_error_for` to render a DIM hint
-    /// (`rate-limited` / `expired` / …) next to a 5h/7d row whose
-    /// bar can't fill because the underlying request didn't return
-    /// data. Without it the empty bar reads like a forge bug rather
-    /// than an upstream failure.
+    /// (set to `None`) on the next successful fetch. `unusable_reason`
+    /// reads this to classify a probe-blocked account, and the write
+    /// schedules the next probe's backoff (`next_probe_at`).
     pub last_error: Option<UsageFetchStatus>,
     /// Earliest wall-clock time we're allowed to probe this account
     /// again. The poller skips accounts whose `next_probe_at` is in
@@ -288,16 +285,16 @@ impl AccountStateMap {
             // Arm the scheduler-hook override: this fresh snapshot
             // earns ONE probe attempt once its `resets_at` passes.
             // Without re-arming, the hook stays disarmed forever after
-            // its first fire and the stale-cache bar never gets a fresh
-            // probe even on a healthy account.
+            // its first fire and a stale cached window never gets a
+            // fresh probe even on a healthy account.
             state.override_armed = true;
         }
     }
 
     /// Drive a `LoadingState` transition for `key`, used by the
     /// boot-time loading task. Setting `Bailed` clears the cached
-    /// `usage` so the renderer drops the stale %bar (replaces the PR
-    /// #238 3-strike counter; bailed accounts have no live snapshot by
+    /// `usage` so no stale bar is drawn (replaces the PR #238
+    /// 3-strike counter; bailed accounts have no live snapshot by
     /// construction).
     pub fn set_loading(&mut self, key: &AccountKey, loading: LoadingState) {
         if let Some(state) = self.by_key.get_mut(key) {
@@ -346,8 +343,8 @@ impl AccountStateMap {
             // Auth-recovery cache-clear: an Unauthorized or Expired
             // probe response means the account's credential is dead.
             // Transition `loading` to `Bailed` and drop the
-            // cached `usage` so the renderer surfaces the error label
-            // instead of the stale %bar. The account recovers via the
+            // cached `usage` so no stale bar is drawn and the account
+            // reads bailed. The account recovers via the
             // 60 s usage poller after the edited env is re-read at a
             // restart. Other statuses leave
             // `loading` alone (a transient `RateLimited` or
@@ -421,15 +418,14 @@ impl AccountStateMap {
     }
 
     /// Why `key` is out of the usable tier, `None` when pickable: what
-    /// the `/gateway` view renders as a row's reason and what the walk
-    /// reads to demote an account. `Bailed`
+    /// the walk reads to demote an account. `Bailed`
     /// outranks the probe classes: it is the loading task's terminal
     /// verdict, and a bailed account has no cached windows to saturate
     /// with. A snapshot whose source is not the account backend's is
     /// treated as absent, the same refusal `budget()` applies - the
     /// redb cache survives a provider edit and is re-seeded at boot,
-    /// and without this a stale windowed snapshot would tag a spend
-    /// row `limit hit`.
+    /// and without this a stale windowed snapshot would classify a
+    /// spend row as saturated.
     pub fn unusable_reason(&self, key: &AccountKey) -> Option<Unusable> {
         if self.loading_state(key) == LoadingState::Bailed {
             return Some(Unusable::Bailed);
@@ -1241,7 +1237,7 @@ mod tests {
     // a single 401 now transitions to `LoadingState::Bailed` (clearing
     // the cached usage). The 60 s usage poller absorbs transient
     // failures by re-probing. The user-visible effect is the same -
-    // bailed accounts surface the auth label instead of a stale %bar -
+    // a bailed account reads as bailed instead of showing a stale bar -
     // just the storage shape moved.
     // ---------------------------------------------------------------
 
@@ -1279,9 +1275,8 @@ mod tests {
     fn set_last_error_unauthorized_transitions_to_bailed_and_clears_usage() {
         // Subsumes the PR #238 three-strike test. Single Unauthorized
         // (not three) now flips loading to Bailed and clears the
-        // cached usage so the renderer drops the stale %bar in favour
-        // of the unauthorized label. The 60 s usage poller re-probes
-        // the account.
+        // cached usage, so no stale bar is drawn and the account reads
+        // bailed. The 60 s usage poller re-probes the account.
         let mut map = AccountStateMap::new(&[make_account("Personal")]);
         let k = key("Personal");
         map.set_usage(&k, snapshot(Some(30.0), Some(40.0)));
@@ -1312,8 +1307,8 @@ mod tests {
     fn set_last_error_rate_limited_leaves_loading_unchanged() {
         // RateLimited is a probe-side throttle, not an auth failure;
         // loading state must NOT transition to Bailed. The cached
-        // usage is also preserved so the bottom panel can keep showing
-        // the last known-good bars while the probe backs off.
+        // usage is also preserved so a view keeps showing the last
+        // known-good bars while the probe backs off.
         let mut map = AccountStateMap::new(&[make_account("Gateway")]);
         let k = key("Gateway");
         map.set_usage(&k, snapshot(Some(30.0), Some(40.0)));

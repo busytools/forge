@@ -192,8 +192,8 @@ pub enum AccountBudget {
     /// this account.
     ///
     /// `spend_billed` carries the account's billing model anyway, so
-    /// the row's empty columns sit under the labels it would really
-    /// have rather than asserting windows an API account has none of.
+    /// unknown figures are named in the account's own terms rather
+    /// than as windows an API account has none of.
     Unknown { spend_billed: bool },
     /// Plan windows, as percentages of an allowance that resets. Each
     /// column is `None` when the snapshot carried no window for it -

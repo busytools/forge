@@ -3206,8 +3206,8 @@ impl Workspace {
 
     /// Read the cached usage snapshot for an account by display
     /// name. `None` when the poller hasn't yet succeeded (cold
-    /// cache, no credentials, network blip). A view's bottom panel
-    /// renders the 5h / 7d bars from this snapshot.
+    /// cache, no credentials, network blip). A view renders the
+    /// 5h / 7d bars from this snapshot.
     pub fn usage_for(&self, display_name: &str) -> Option<forge_primitives::usage::UsageSnapshot> {
         self.accounts.usage(display_name)
     }
@@ -3279,11 +3279,9 @@ impl Workspace {
 
     /// Read the last poll-attempt failure for an account, if any.
     /// `None` when the most recent poll succeeded (or no attempt
-    /// has been made yet). A view's bottom panel renders a DIM hint
-    /// next to the `5h` / `7d` label when this is `Some` so the
-    /// user can tell an empty bar from an upstream failure (the
-    /// HTTP 429 case is especially common when multiple forge
-    /// instances poll the same Anthropic account).
+    /// has been made yet). The class is what tells an empty bar apart
+    /// from an upstream failure (the HTTP 429 case is especially common
+    /// when multiple forge instances poll the same Anthropic account).
     pub fn usage_error_for(&self, display_name: &str) -> Option<forge_gateway::UsageFetchStatus> {
         self.accounts.usage_error(display_name)
     }
@@ -7781,14 +7779,14 @@ fn account_budget(
     backend.budget(account, snapshot)
 }
 
-/// Map a failed probe to the renderer-facing
-/// [`forge_gateway::UsageFetchStatus`] bucket. Separates HTTP 429 (the
-/// common multi-instance throttle case) from the auth-related
+/// Map a failed probe to the [`forge_gateway::UsageFetchStatus`]
+/// bucket. Separates HTTP 429 (the common multi-instance throttle
+/// case) from the auth-related
 /// failures (`Expired` / `NoCredentials` / `Unauthorized`) and
-/// transport failures (`Network`), so a view's bottom-panel hint
-/// can tell the user something specific rather than a generic
-/// "fetch error". `Unmappable` never reaches the classifiers - both
-/// callers handle a 200 that maps to nothing before classifying.
+/// transport failures (`Network`), so each class keeps its own
+/// meaning rather than a generic "fetch error". `Unmappable` never
+/// reaches the classifiers - both callers handle a 200 that maps to
+/// nothing before classifying.
 pub(crate) fn classify_oauth_usage_error(
     err: &forge_gateway::ProbeError,
 ) -> forge_gateway::UsageFetchStatus {
@@ -12549,10 +12547,9 @@ provider = "anthropic"
     }
 
     /// `classify_oauth_usage_error` must distinguish HTTP 429 from
-    /// auth-related failures so a view's bottom-panel hint reads
-    /// `rate-limited` (the common case under multiple forge
-    /// instances) rather than collapsing every failure to a single
-    /// generic bucket.
+    /// auth-related failures, keeping the `rate-limited` class (the
+    /// common case under multiple forge instances) rather than
+    /// collapsing every failure to a single generic bucket.
     #[test]
     fn classify_oauth_usage_error_buckets_known_variants() {
         use forge_gateway::ProbeError;
@@ -12592,8 +12589,8 @@ provider = "anthropic"
             UsageFetchStatus::NetworkFailed,
         );
         // Non-429 HTTP errors and decode failures fall through to the
-        // generic `Other` bucket - renderers show "fetch failed" so
-        // the user can tell something's wrong without naming a cause.
+        // generic `Other` bucket, so an unmapped failure keeps its own
+        // class instead of being read as a named cause.
         assert_eq!(
             classify_oauth_usage_error(&fetch(OauthUsageError::HttpStatus(500, String::new()))),
             UsageFetchStatus::Other,
