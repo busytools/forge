@@ -166,9 +166,14 @@ function flash(row: HTMLDetailsElement): void {
   };
   light();
   let landed = false;
+  const doc = row.ownerDocument;
+  const listening = doc != null && typeof doc.addEventListener === 'function';
   const land = () => {
     if (landed) return;
     landed = true;
+    // The flash has landed, and a listener left registered here would ride
+    // the document - holding the row - past the row's life.
+    if (listening) doc.removeEventListener('scrollend', onEnd, { capture: true });
     light();
     const prior = flashTimers.get(row);
     if (prior !== undefined) clearTimeout(prior);
@@ -177,17 +182,15 @@ function flash(row: HTMLDetailsElement): void {
       setTimeout(() => row.classList.remove('sg-hit'), 6100),
     );
   };
-  const doc = row.ownerDocument;
-  if (doc != null && typeof doc.addEventListener === 'function') {
+  const onEnd = (event: Event) => {
+    const target = event.target;
+    if (!(target instanceof Node) || !target.contains(row)) return;
+    land();
+  };
+  if (listening) {
     // Capture, so any descendant scroll is seen - but only the scroller the
     // ROW rides: another scroller's end would re-light this flash early and
     // eat the one-shot.
-    const onEnd = (event: Event) => {
-      const target = event.target;
-      if (!(target instanceof Node) || !target.contains(row)) return;
-      doc.removeEventListener('scrollend', onEnd, { capture: true });
-      land();
-    };
     doc.addEventListener('scrollend', onEnd, { capture: true });
   }
   setTimeout(land, 700);

@@ -787,6 +787,10 @@ mod tests {
             .call(input(serde_json::json!({ "id": "nope", "status": "completed" })))
             .await;
         assert!(out.is_error, "an unknown id is an error, not a no-op");
+        assert!(
+            text_of(&out).contains("nope"),
+            "the refusal names the id it was given, so the caller can see what it sent: {out:?}",
+        );
     }
 
     /// The update result is the record it wrote, so the caller can name
@@ -862,12 +866,14 @@ mod tests {
             .call(input(serde_json::json!({
                 "id": "t-1",
                 "status": "waiting",
+                "detail": "why",
                 "links_add": [{ "target": "x" }]
             })))
             .await;
         assert!(!out.is_error, "update succeeds: {out:?}");
         let patch = &facade.updated.lock()[0].2;
         assert_eq!(patch.status, Some(TaskStatus::Waiting));
+        assert_eq!(patch.detail.as_deref(), Some("why"), "the detail lands with the link");
         assert_eq!(patch.links_add.len(), 1, "the stated link reaches the facade");
         assert_eq!(patch.links_add[0].target, "x");
         assert_eq!(patch.subject, None, "an unstated field is left alone");

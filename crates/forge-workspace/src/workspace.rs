@@ -36,16 +36,6 @@ use crate::views::{AccountLoadingRow, ProjectView, SessionView};
 #[cfg(any(test, feature = "testing"))]
 pub(crate) mod testing;
 
-/// How often the background poller refreshes account usage. A view's
-/// bottom panel and the gateway's account selection both read
-/// from the cache this poll populates. 60 s upper-bounds how stale
-/// the "which account has more headroom" decision can be while
-/// staying clear of the OAuth usage endpoint's 429 throttle under
-/// multi-instance polling - combined with per-account `last_error`
-/// backoff (see `forge_gateway::AccountState`), transient 429s recover
-/// naturally.
-const USAGE_POLL_INTERVAL: Duration = Duration::from_secs(60);
-
 /// How often the claude version probe re-runs after the boot fetch.
 /// Versions change rarely, so a few minutes is ample - the point is only
 /// to recover a transient boot failure, not to track releases tightly.
@@ -423,6 +413,12 @@ pub struct Workspace {
     /// Set the first time [`Self::start_usage_poller`] runs. Subsequent
     /// calls early-return to avoid spawning duplicate poller tasks.
     usage_poller_started: std::sync::atomic::AtomicBool,
+    /// Set the first time [`Self::start_dictate_preflight`] runs, so a
+    /// second call cannot spawn a second prewarm over the same models. Set
+    /// before the `[dictate] enabled` gate: the flag reads "the boot wave
+    /// asked for the prewarm", which is the one call a test can watch
+    /// without a 3 GB fetch (mirrors `usage_poller_started`).
+    dictate_preflight_started: std::sync::atomic::AtomicBool,
     /// The gateway's listener + session bindings. Children are stamped
     /// with a base URL that names this listener, and every spawn
     /// registers here.
@@ -1615,8 +1611,9 @@ impl Workspace {
         // Anthropic's /api/oauth/usage rate-limiter can stall the first
         // live probe for 30 s+; without seed data every account reads as
         // unknown during that window, so nothing is demoted for being at
-        // its cap. The 60 s background poller refreshes these snapshots -
-        // the cache is purely "last known value" seed.
+        // its cap. The background poller refreshes these snapshots on the
+        // configured interval (60 s by default) - the cache is purely
+        // "last known value" seed.
         let state = match &db {
             Some(db) => crate::account_cache::load(db),
             None => crate::account_cache::ForgeState::empty(),
@@ -1696,6 +1693,7 @@ impl Workspace {
             review_origin: Mutex::new(HashMap::new()),
             review_activity: Mutex::new(HashMap::new()),
             usage_poller_started: std::sync::atomic::AtomicBool::new(false),
+            dictate_preflight_started: std::sync::atomic::AtomicBool::new(false),
             cron_scheduler_started: std::sync::atomic::AtomicBool::new(false),
             chase_sweep_started: std::sync::atomic::AtomicBool::new(false),
             kick_dispatcher_tx,
@@ -2667,11 +2665,22 @@ impl Workspace {
     /// run, started beside the account loaders; a no-op when dictation
     /// is switched off.
     ///
+    /// **This is the prewarm the run keeps resident**: the engine it parks
+    /// in the state serves every take, so a press pays no model load, and
+    /// the task it runs on is spawned rather than awaited, so none of the
+    /// fetch, the verify or the load is on the boot path. The one event it
+    /// writes says which of the two ended it.
+    ///
     /// The active models are resolved first - the config key, the runtime
     /// pick, or the compiled pin, per role - and the resolution's failure
     /// is the same stop a failed fetch is, naming the config key that
     /// could not be answered.
     pub fn start_dictate_preflight(self: &Arc<Self>) {
+        // Before the gate below, so the flag reads "the wave asked for the
+        // prewarm" and a second call cannot start a second one.
+        if self.dictate_preflight_started.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            return;
+        }
         let settings = self.config.dictate.clone();
         if !settings.enabled {
             return;
@@ -2682,9 +2691,15 @@ impl Workspace {
         let span = tracing::info_span!("dictate_preflight");
         tokio::spawn(
             async move {
+                let started = std::time::Instant::now();
                 let resolved = match this.resolve_active(&settings).await {
                     Ok(resolved) => resolved,
                     Err(message) => {
+                        tracing::warn!(
+                            event_name = "dictate_prewarm_failed",
+                            failure = %message,
+                            "no dictation model is resident; a take will be refused"
+                        );
                         state.fail(crate::dictate::DictateFailure::Other { message }, None);
                         let models = this.dictate_models();
                         let _ = updates.send(SessionUpdate::DictateModelsChanged { models });
@@ -2704,10 +2719,33 @@ impl Workspace {
                 // only on success, and every failure path ends the run,
                 // so a held engine is the whole availability signal.
                 if state.engine.lock().is_some() {
+                    let files: Vec<&str> =
+                        resolved.iter().map(|(_, model)| model.spec.file.as_str()).collect();
+                    tracing::info!(
+                        event_name = "dictate_prewarm_ready",
+                        elapsed_ms = started.elapsed().as_millis(),
+                        models = ?files,
+                        "the dictation models are resident; a take pays no load"
+                    );
                     // A variant the config resolved from the feed is on
                     // disk now: record it so the page and the bench see it.
                     this.record_resolved_installs(&resolved);
                     let _ = updates.send(SessionUpdate::DictateAvailability);
+                } else if let Some(failure) = &state.snapshot.lock().failure {
+                    // The screen carries this for a view; the log is where a
+                    // headless run reads it.
+                    if failure.is_cancelled() {
+                        tracing::debug!(
+                            event_name = "dictate_prewarm_cancelled",
+                            "the prewarm was stopped before it finished"
+                        );
+                    } else {
+                        tracing::warn!(
+                            event_name = "dictate_prewarm_failed",
+                            failure = ?failure,
+                            "no dictation model is resident; a take will be refused"
+                        );
+                    }
                 }
             }
             .instrument(span),
@@ -2932,7 +2970,8 @@ impl Workspace {
         });
     }
 
-    /// Spawn the 60 s background account-usage poller. Fetches
+    /// Spawn the background account-usage poller on the interval
+    /// `[usage] poll_seconds` resolves to (60 s by default). Fetches
     /// OAuth usage for every `[[accounts]]` entry via the per-
     /// account config-dir's credentials file (no Agent spawn
     /// required), writes each result into `AccountStateMap.by_key`.
@@ -2953,6 +2992,7 @@ impl Workspace {
             return;
         }
         let weak = Arc::downgrade(self);
+        let poll_interval = self.config.usage_poll_interval;
         let span = tracing::info_span!("usage_poller");
         tokio::spawn(
             async move {
@@ -2961,10 +3001,10 @@ impl Workspace {
                 // drove the live probes. Firing again right away would
                 // burn another round of Anthropic-side per-IP rate-
                 // limiter capacity for no gain. First tick of this
-                // interval lands one USAGE_POLL_INTERVAL after boot.
+                // interval lands one poll interval after boot.
                 let mut interval = tokio::time::interval_at(
-                    tokio::time::Instant::now() + USAGE_POLL_INTERVAL,
-                    USAGE_POLL_INTERVAL,
+                    tokio::time::Instant::now() + poll_interval,
+                    poll_interval,
                 );
                 interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 loop {
@@ -2987,7 +3027,7 @@ impl Workspace {
     /// output. Snapshot-mapping errors stay at `debug` because they
     /// indicate a response-shape drift rather than something the
     /// user needs to act on. Public so tests can drive a
-    /// deterministic refresh without waiting for the 30 s tick.
+    /// deterministic refresh without waiting for the poll tick.
     pub async fn refresh_account_usage_once(self: &Arc<Self>) {
         // Skip accounts inside an active backoff window - a recent
         // probe failed and re-probing now would just re-trip the same
@@ -3011,7 +3051,8 @@ impl Workspace {
         // has a per-IP burst limit; parallel spawns trip the limit
         // and produce HTTP 429s even well under the user's own quota.
         // Serial execution staggers requests by per-probe latency
-        // (~hundreds of ms), within the 60 s poll interval.
+        // (~hundreds of ms), within the configured poll interval (60 s
+        // by default).
         let mut any_success = false;
         for (key, provider, env) in entries {
             // The backend owns the probe; an auth failure surfaces and
@@ -7291,17 +7332,50 @@ impl Workspace {
         minted_row: bool,
         config_dir: &std::path::Path,
     ) {
+        let effective_cwd = crate::mcp::workers::types::worker_tag_dir(
+            std::path::Path::new(cwd),
+            label,
+            is_git_repo_at_spawn,
+        );
+        self.apply_worker_tag_or_rollback_with_budget(
+            session_key,
+            session_id,
+            project_key,
+            label,
+            &effective_cwd,
+            needs_tag,
+            minted_row,
+            config_dir,
+            WorkerTagRetryBudget {
+                max_attempts: WORKER_TAG_RETRY_ATTEMPTS,
+                delay: WORKER_TAG_RETRY_DELAY,
+            },
+        );
+    }
+
+    /// [`Self::apply_worker_tag_or_rollback_with_config_dir`] with the
+    /// worktree-aware tag directory and the retry budget both injected,
+    /// so a test can shrink the detached task's wall time and derive its
+    /// own wait from the same numbers the task runs on.
+    pub(crate) fn apply_worker_tag_or_rollback_with_budget(
+        self: &Arc<Self>,
+        session_key: &SessionSlot,
+        session_id: &str,
+        project_key: &ProjectKey,
+        label: &str,
+        effective_cwd: &std::path::Path,
+        needs_tag: bool,
+        minted_row: bool,
+        config_dir: &std::path::Path,
+        budget: WorkerTagRetryBudget,
+    ) {
         use tracing::Instrument;
         let workspace = Arc::clone(self);
         let project_key = project_key.clone();
         let session_key = session_key.clone();
         let session_id = session_id.to_owned();
         let label = label.to_owned();
-        let effective_cwd = crate::mcp::workers::types::worker_tag_dir(
-            std::path::Path::new(cwd),
-            &label,
-            is_git_repo_at_spawn,
-        );
+        let effective_cwd = effective_cwd.to_path_buf();
         let config_dir = config_dir.to_path_buf();
         let span = tracing::info_span!(
             "forge_workspace::worker_tag_write",
@@ -7315,8 +7389,8 @@ impl Workspace {
                 &session_id,
                 &tag,
                 &effective_cwd.to_string_lossy(),
-                WORKER_TAG_RETRY_ATTEMPTS,
-                WORKER_TAG_RETRY_DELAY,
+                budget.max_attempts,
+                budget.delay,
             )
             .await;
             match result {
@@ -7676,7 +7750,7 @@ impl Workspace {
     }
 }
 
-/// The repair line the 60 s poller logs under an auth-classified
+/// The repair line the usage poller logs under an auth-classified
 /// failure, keyed on how the account authenticates. Credentials are
 /// boot-frozen, so both classes point at the flat-key edit on the
 /// account block, never a re-authentication of the shared config dir.
@@ -7823,6 +7897,15 @@ impl Workspace {
             );
         }
     }
+}
+
+/// Retry budget for the detached tag-write: how many attempts
+/// `tag_session_with_retry` gets to find the worker's
+/// `<session_id>.jsonl`, and the delay between them.
+#[derive(Clone, Copy)]
+pub(crate) struct WorkerTagRetryBudget {
+    max_attempts: u32,
+    delay: Duration,
 }
 
 /// Discriminator for how a successful `apply_worker_tag_or_rollback`
@@ -13911,44 +13994,49 @@ mod tag_retry_tests {
         // attempt and the retry will exhaust.
         let _path = jsonl_path_for(cfg.path(), cwd.path(), session_id);
 
-        // Use a tight retry budget so the test completes quickly. The
-        // _with_config_dir entry point spawns the detached tokio task
-        // internally - we override the constants by calling
-        // tag_session_with_retry directly here would be cheating; this
-        // test verifies the wrapper's classification + transition logic.
-        workspace.apply_worker_tag_or_rollback_with_config_dir(
+        // A tight retry budget keeps the detached task fast without
+        // bypassing the wrapper: this test verifies the wrapper's
+        // classification + transition logic, so it must go through the
+        // spawn the production path uses.
+        let retry_budget =
+            WorkerTagRetryBudget { max_attempts: 3, delay: Duration::from_millis(10) };
+        workspace.apply_worker_tag_or_rollback_with_budget(
             &session_key,
             session_id,
             &project_key,
             "idle",
-            &cwd.path().to_string_lossy(),
-            false,
+            cwd.path(),
             true,
             true,
             cfg.path(),
+            retry_budget,
         );
 
-        // The detached task takes ~3s (30 x 100ms) to exhaust against an
-        // absent JSONL. Wait for the StatusChanged that signals it ran
-        // through the deferred-NotFound branch.
-        let status_changed = tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                match rx.recv().await {
-                    Some(SessionUpdate::WorkerStatusChanged { action, status, .. }) => {
-                        if matches!(action, crate::protocol::WorkerStatusAction::StatusChanged) {
-                            return Some(status);
+        // The detached task sleeps once per attempt - after the last one
+        // too - before it can classify the exhaustion, so the wait
+        // derives from the budget handed to it above plus a stall
+        // allowance a loaded machine cannot eat.
+        let task_budget = retry_budget.delay * retry_budget.max_attempts;
+        let status_changed =
+            tokio::time::timeout(task_budget * 10 + Duration::from_secs(5), async {
+                loop {
+                    match rx.recv().await {
+                        Some(SessionUpdate::WorkerStatusChanged { action, status, .. }) => {
+                            if matches!(action, crate::protocol::WorkerStatusAction::StatusChanged)
+                            {
+                                return Some(status);
+                            }
+                            if matches!(action, crate::protocol::WorkerStatusAction::Removed) {
+                                return None;
+                            }
                         }
-                        if matches!(action, crate::protocol::WorkerStatusAction::Removed) {
-                            return None;
-                        }
+                        Some(_) => {}
+                        None => return None,
                     }
-                    Some(_) => {}
-                    None => return None,
                 }
-            }
-        })
-        .await
-        .expect("timed out waiting for StatusChanged");
+            })
+            .await
+            .expect("timed out waiting for StatusChanged");
 
         let status = status_changed.expect("expected StatusChanged, not Removed (rollback)");
         assert_eq!(status.label, "idle");

@@ -4031,6 +4031,26 @@ mod tests_reader_terminal {
             .to_owned()
     }
 
+    /// The one handle on the process-wide mock-binary slot: the cases that
+    /// drive it hold this for their span, so a spawn never reads another
+    /// case's replacement (or its clearing) mid-flight.
+    static MOCK_BINARY: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    async fn mock_binary_guard() -> tokio::sync::MutexGuard<'static, ()> {
+        MOCK_BINARY.lock().await
+    }
+
+    /// How long a case here waits for a spawn's first event: **the SDK's
+    /// own handshake budget plus a settle margin.** The wait covers the
+    /// machine starting the mock and the mock's handshake, and the spawn
+    /// under it is given `INIT_HANDSHAKE_TIMEOUT` - a wait shorter than
+    /// that budget fails a machine that is merely slow (measured
+    /// 2026-10-14: this file's 5 s expired with Connected#1 never
+    /// arriving while a gate ran beside the suite).
+    fn spawn_wait() -> std::time::Duration {
+        forge_sdk::INIT_HANDSHAKE_TIMEOUT + std::time::Duration::from_secs(5)
+    }
+
     async fn mock_client() -> (Client, forge_sdk::ClientEvents) {
         let opts = OptionsBuilder::new().binary(sdk_mock_binary()).build();
         Client::spawn(opts).await.expect("mock client spawns")
@@ -4100,6 +4120,7 @@ mod tests_reader_terminal {
     /// pool mid-swap and disconnect the freshly spawned client).
     #[tokio::test]
     async fn session_swap_does_not_emit_connection_failed() {
+        let _binary = mock_binary_guard().await;
         set_test_sdk_binary(Some(sdk_mock_binary()));
         let dir = tempfile::tempdir().expect("tempdir");
         let bridge = ForgeSdkBridge::new(dir.path().to_owned(), None, Vec::new(), HashMap::new());
@@ -4111,7 +4132,7 @@ mod tests_reader_terminal {
 
         // First spawn: Connected#1. The mock completes its handshake
         // in real time.
-        let first = tokio::time::timeout(std::time::Duration::from_secs(5), events.recv())
+        let first = tokio::time::timeout(spawn_wait(), events.recv())
             .await
             .expect("Connected#1 arrives promptly");
         assert!(
@@ -4127,7 +4148,7 @@ mod tests_reader_terminal {
         bridge
             .new_session(None, "/tmp".to_owned(), crate::client::SessionLaunchSettings::default())
             .expect("dispatch");
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::time::timeout(spawn_wait(), async {
             while let Some(event) = events.recv().await {
                 match event {
                     AgentEvent::Connected { .. } => break,
@@ -4161,6 +4182,61 @@ mod tests_reader_terminal {
         .await
         .expect("drain window completes");
 
+        set_test_sdk_binary(None);
+    }
+
+    /// A mock whose handshake this machine stalls by `delay` before it
+    /// runs: the loaded-machine shape the wait above exists for, on demand.
+    ///
+    /// **The stall spells `/bin/sleep`**: a wrapper that inherits a PATH
+    /// without `sleep` on it (the gh fixture's own bin dir, say) would fail
+    /// to find a bare `sleep` and the stall would silently never happen.
+    fn stalled_mock(dir: &std::path::Path, delay: std::time::Duration) -> String {
+        use std::os::unix::fs::PermissionsExt as _;
+        let real = sdk_mock_binary();
+        let wrapper = dir.join("stalled-mock");
+        std::fs::write(
+            &wrapper,
+            format!(
+                "#!/bin/sh\nif [ \"${{1:-}}\" = \"--version\" ]; then exec {real} \"$@\"; fi\n\
+                 /bin/sleep {}\nexec {real} \"$@\"\n",
+                delay.as_secs_f64(),
+            ),
+        )
+        .expect("the stalled mock");
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).expect("+x");
+        wrapper.to_string_lossy().into_owned()
+    }
+
+    /// **A stalled spawn is waited out to the spawn's own budget.** A mock
+    /// the machine holds back past the 5 s these cases used to allow still
+    /// lands its Connected: the wait derives from `INIT_HANDSHAKE_TIMEOUT`,
+    /// so a stalled child is a slow case rather than a red (measured
+    /// 2026-10-14: the 5 s expired under a loaded gate).
+    #[tokio::test]
+    async fn a_spawn_stalled_past_the_old_wait_still_lands_its_connected() {
+        let _binary = mock_binary_guard().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let stall = std::time::Duration::from_secs(8);
+        set_test_sdk_binary(Some(stalled_mock(dir.path(), stall)));
+        let bridge = ForgeSdkBridge::new(dir.path().to_owned(), None, Vec::new(), HashMap::new());
+        let mut events = bridge.take_events().expect("fresh bridge yields its events receiver");
+        let started = std::time::Instant::now();
+        bridge
+            .new_session(None, "/tmp".to_owned(), crate::client::SessionLaunchSettings::default())
+            .expect("dispatch");
+        let first = tokio::time::timeout(spawn_wait(), events.recv())
+            .await
+            .expect("a stalled handshake still lands its Connected");
+        assert!(
+            matches!(first, Some(AgentEvent::Connected { .. })),
+            "expected Connected, got {first:?}",
+        );
+        assert!(
+            started.elapsed() >= stall,
+            "and the stall was really there: {:?}",
+            started.elapsed(),
+        );
         set_test_sdk_binary(None);
     }
 }

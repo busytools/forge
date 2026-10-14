@@ -754,6 +754,81 @@ mod prod_facade_tests {
         );
     }
 
+    /// A stated id that is a unique PREFIX of the row's own uuid - the
+    /// row's id without its last character - names the row, and a patch
+    /// carrying `detail` and `links_add` together applies both in the one
+    /// call. A prefix is the whole recovery the tools promise; an id
+    /// corrupted inside is not one, and `the_incidents_corrupted_id_names_no_row`
+    /// holds that side.
+    #[test]
+    fn a_stated_prefix_lands_the_combined_update() {
+        let (ws, facade, lead, _worker) = fixture();
+        let id = "2b5387e5-24d6-4ae6-a69f-0f1f86f158f7";
+        ws.seed_test_task(seeded_task(id, "the row"));
+        let stated = &id[..id.len() - 1];
+        assert!(
+            id.starts_with(stated) && stated != id,
+            "the stated id is the row's own prefix, one character shorter",
+        );
+
+        let updated = facade
+            .update_task(
+                &lead,
+                &TaskId::from(stated),
+                TaskPatch {
+                    detail: Some("why".to_owned()),
+                    links_add: vec![TaskLinkDraft {
+                        kind: Some(LinkKind::Pr),
+                        label: Some("PR #2097".to_owned()),
+                        target: "https://example.invalid/pull/2097".to_owned(),
+                    }],
+                    ..TaskPatch::default()
+                },
+            )
+            .expect("update")
+            .expect("a unique prefix of the row's own id still names the row");
+
+        assert_eq!(updated.id, TaskId::from(id), "the prefix resolves to the stored id");
+        assert_eq!(updated.detail.as_deref(), Some("why"), "the detail lands with the link");
+        assert_eq!(updated.links.len(), 1, "the link lands with the detail");
+        assert_eq!(updated.links[0].target, "https://example.invalid/pull/2097");
+    }
+
+    /// The id `tasks__update` was actually refused for: the row's uuid
+    /// with a character dropped from inside it, which is not a prefix of
+    /// the stored id. No prefix resolution can name that row - the id is
+    /// corrupted, not short - so the lookup finds nothing and the row
+    /// keeps its state.
+    #[test]
+    fn the_incidents_corrupted_id_names_no_row() {
+        let (ws, facade, lead, _worker) = fixture();
+        let id = "2b5387e5-24d6-4ae6-a69f-0f1f86f158f7";
+        let stated = "2b5387e5-24d6-4ae6-a69f-0f1f86f1587";
+        ws.seed_test_task(seeded_task(id, "the row"));
+        assert!(!id.starts_with(stated), "the drop is interior, so the stated id is no prefix");
+
+        let updated = facade
+            .update_task(
+                &lead,
+                &TaskId::from(stated),
+                TaskPatch {
+                    detail: Some("why".to_owned()),
+                    links_add: vec![TaskLinkDraft {
+                        kind: Some(LinkKind::Pr),
+                        label: Some("PR #2097".to_owned()),
+                        target: "https://example.invalid/pull/2097".to_owned(),
+                    }],
+                    ..TaskPatch::default()
+                },
+            )
+            .expect("a corrupted id is an answer, not a refusal");
+        assert!(updated.is_none(), "an id with a character dropped from inside names no row");
+
+        let stored = ws.tasks_for_project("myproj");
+        assert_eq!(stored[0].detail, None, "the row's detail is untouched");
+        assert!(stored[0].links.is_empty(), "and no link attaches under a corrupted id");
+    }
+
     /// The delete hands back the tree it removed: the named task as it
     /// stood and how many descendants went with it, so the tool can echo
     /// both rather than a bare id.

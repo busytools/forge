@@ -682,6 +682,7 @@ impl BrowserHost {
                 // The same predicate `show` keeps: the marker alone reads a
                 // window that an X-close already took down.
                 windowed: chromium::windowed(&entry.dir).await,
+                closed: false,
             });
         }
         drop(named);
@@ -714,7 +715,7 @@ impl BrowserHost {
                 // still asked, on the directory itself.
                 let windowed = chromium::windowed(&dir).await;
                 let opened = chromium::ever_opened(&dir);
-                rows.push(ProfileRow { name, owner, running: false, opened, windowed });
+                rows.push(ProfileRow { name, owner, running: false, opened, windowed, closed: true });
             }
         }
         if let Some(seat) = seat {
@@ -1254,6 +1255,11 @@ pub struct ProfileRow {
     /// Whether its browser is up as a WINDOW right now: the strip's button
     /// says hide where it is, and show where it is not.
     pub windowed: bool,
+    /// Whether the host holds no live name entry for it: a closed profile's
+    /// browser is down while its files - the logins - are here. The strip's
+    /// delete-all takes exactly these, and the page cannot work it out for
+    /// itself (a driver that died keeps its entry, and is not closed).
+    pub closed: bool,
 }
 
 /// The named profiles this host holds, for a page's own browser strip.
@@ -2034,6 +2040,36 @@ mod tests {
         assert_eq!(row.owner, "", "a directory with no record is ownerless");
         assert!(!row.running, "and nothing is running behind it");
         assert!(!rows.iter().any(|row| row.name == "stray.txt"), "a file is not a profile",);
+    }
+
+    /// **A closed profile is the one the strip's delete-all takes**: the
+    /// entry is what makes a profile open, and close takes it while the files
+    /// - the logins - stay. An entry that is not running - no driver started,
+    /// or one that died - is not closed, so the bulk door leaves it alone.
+    #[tokio::test]
+    async fn a_closed_profile_lists_as_closed() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = StackPaths {
+            stack: dir.path().join("stack"),
+            user_data: dir.path().join("user-data"),
+            output: dir.path().join("output"),
+            profiles: dir.path().join("profiles"),
+        };
+        let host = BrowserHost::new(paths.clone());
+        let named = Named::open(seat(), "hunt", &paths).expect("the open");
+        host.named.lock().await.insert("hunt".to_owned(), Arc::new(named));
+
+        let rows = host.profiles(None).await;
+        let row = rows.iter().find(|row| row.name == "hunt").expect("the row");
+        assert!(!row.running, "nothing is driving it");
+        assert!(!row.closed, "not running is not closed: the entry is held");
+
+        host.close("hunt").await.expect("the close");
+        let rows = host.profiles(None).await;
+        let row = rows.iter().find(|row| row.name == "hunt").expect("the row");
+        assert!(row.closed, "close takes the entry; the row is closed");
+        assert!(paths.profiles.join("hunt").exists(), "and its files stay for the person to take");
+        assert_eq!(row.owner, seat().to_string(), "a closed row keeps the owner its record names");
     }
 
     /// **A hand-off raises only the asking seat's own profile's window.**

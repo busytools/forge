@@ -76,6 +76,10 @@ struct ForgeToml {
     /// document. Absent section keeps the 10 MiB default.
     #[serde(default)]
     documents: DocumentsSettings,
+    /// Optional `[usage]` section - the background poller's refresh
+    /// interval. Absent section keeps the 60 s default.
+    #[serde(default)]
+    usage: UsageSettings,
     /// Ghost of the renamed `[web]` section: read only so a stale
     /// forge.toml fails the load naming the rename instead of being
     /// refused as an unknown key. Not a warning like the other ghosts, and
@@ -122,6 +126,36 @@ pub const DEFAULT_DOCUMENT_MAX_MIB: u64 = 10;
 /// 190 MiB raw lands at ~253.3 MiB, inside the cap with room for the
 /// answer's other fields.
 pub const DOCUMENT_MAX_MIB_LIMIT: u64 = 190;
+
+/// The interval the background usage poller refreshes on when the
+/// `[usage] poll_seconds` key is absent, in seconds. 60 s stays clear of
+/// the OAuth usage endpoint's 429 throttle under multi-instance polling
+/// while bounding how stale the account-usage cache can be.
+pub const DEFAULT_USAGE_POLL_SECONDS: u64 = 60;
+
+/// One `[usage]` table. Unknown fields are rejected so a mistyped
+/// key fails the load instead of being ignored.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UsageSettings {
+    /// How often the background poller refreshes account usage, in
+    /// seconds. The default is [`DEFAULT_USAGE_POLL_SECONDS`], and the
+    /// key exists for the machine that wants a different one.
+    #[serde(default)]
+    poll_seconds: Option<u64>,
+}
+
+impl UsageSettings {
+    /// The resolved interval. 0 is refused rather than obeyed: a
+    /// zero-second interval would probe continuously.
+    fn resolved_poll_interval(&self, path: &Path) -> Result<Duration, WorkspaceError> {
+        match self.poll_seconds {
+            None => Ok(Duration::from_secs(DEFAULT_USAGE_POLL_SECONDS)),
+            Some(0) => Err(WorkspaceError::UsagePollIntervalInvalid { path: path.to_path_buf() }),
+            Some(seconds) => Ok(Duration::from_secs(seconds)),
+        }
+    }
+}
 
 /// One `[documents]` table. Unknown fields are rejected so a mistyped
 /// key fails the load instead of being ignored.
@@ -432,6 +466,10 @@ pub(crate) struct LoadedConfig {
     /// max_size_mib` resolved, 10 MiB when the key is absent. Read by the
     /// document read, which refuses over it.
     pub document_max_bytes: u64,
+    /// The background usage poller's interval: `[usage] poll_seconds`
+    /// resolved, 60 seconds when the key is absent. Bounds how stale the
+    /// account-usage cache is.
+    pub usage_poll_interval: Duration,
 }
 
 /// The port the gateway's listener binds when `[gateway] port` is
@@ -534,6 +572,7 @@ impl LoadedConfig {
             server: ServerConfig::default(),
             client: ClientConfig::default(),
             document_max_bytes: DEFAULT_DOCUMENT_MAX_MIB * 1024 * 1024,
+            usage_poll_interval: Duration::from_secs(DEFAULT_USAGE_POLL_SECONDS),
         }
     }
 }
@@ -935,6 +974,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
     };
     let server = resolve_server(parsed.server, gateway_port, &path)?;
     let document_max_bytes = parsed.documents.resolved_max_bytes(&path)?;
+    let usage_poll_interval = parsed.usage.resolved_poll_interval(&path)?;
     // A listener that never binds never hands a client its names either, so
     // a stale key there is not worth refusing the boot over - the call the
     // pre-split section made for every key at once.
@@ -964,6 +1004,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         server,
         client,
         document_max_bytes,
+        usage_poll_interval,
     })
 }
 
@@ -1287,6 +1328,48 @@ max_size_mib = 0
         );
         let config = load_from_dir(dir.path()).expect("the limit itself is usable");
         assert_eq!(config.document_max_bytes, DOCUMENT_MAX_MIB_LIMIT * 1024 * 1024);
+    }
+
+    /// The usage poller's interval default, stated where the key lives: an
+    /// absent `[usage]` section means 60 s.
+    #[test]
+    fn usage_poll_interval_defaults_when_the_section_is_absent() {
+        let dir = tempdir().expect("tempdir");
+        write_config(dir.path(), minimal_config());
+        let config = load_from_dir(dir.path()).expect("absent section loads");
+        assert_eq!(config.usage_poll_interval, Duration::from_secs(60), "the 60 s default");
+    }
+
+    #[test]
+    fn usage_poll_interval_parses_from_the_section() {
+        let dir = tempdir().expect("tempdir");
+        write_config(dir.path(), &format!("{}\n[usage]\npoll_seconds = 30\n", minimal_config()));
+        let config = load_from_dir(dir.path()).expect("section loads");
+        assert_eq!(config.usage_poll_interval, Duration::from_secs(30));
+    }
+
+    /// `poll_seconds = 0` is refused at load: a zero interval would probe
+    /// continuously.
+    #[test]
+    fn usage_poll_interval_zero_is_refused_at_load() {
+        let dir = tempdir().expect("tempdir");
+        write_config(dir.path(), &format!("{}\n[usage]\npoll_seconds = 0\n", minimal_config()));
+        let err = load_from_dir(dir.path()).expect_err("0 must not load");
+        assert!(
+            err.to_string().contains("[usage] poll_seconds"),
+            "the error names the unusable key, got: {err}",
+        );
+    }
+
+    #[test]
+    fn usage_section_rejects_an_unknown_key() {
+        let dir = tempdir().expect("tempdir");
+        write_config(dir.path(), &format!("{}\n[usage]\npoll_second = 30\n", minimal_config()));
+        let err = load_from_dir(dir.path()).expect_err("a near-miss key must not load");
+        assert!(
+            err.to_string().contains("poll_second"),
+            "the error names the offending key, got: {err}",
+        );
     }
 
     /// On unless it is turned off, and on loopback: "on by default" must

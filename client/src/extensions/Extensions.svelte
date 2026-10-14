@@ -33,6 +33,17 @@
    */
   let refusal = $state<string | null>(null);
   /**
+   * Which dispatch the next refusal would answer: the add, or any other
+   * action. A refusal frame names no command, so the press that owns it is
+   * what decides whether the add's pending latch may be disposed of by it -
+   * a sibling action's refusal is the sibling's own. Not `$state`: nothing
+   * draws from it.
+   */
+  let refusalFor: 'add' | 'other' | null = null;
+  /** Ticks when the ADD's own dispatch is refused, so the body's pending
+   * latch rides its own answer rather than any refusal on the page. */
+  let addRefused = $state(0);
+  /**
    * The core's own words for an action that ran and failed - an update, an
    * install, a marketplace add or repair - which rides the `Plugins` frames
    * rather than a reply. Without it a failed press returns to its
@@ -55,7 +66,11 @@
     const open = connection;
     if (open === null) return;
     return open.onMessage((message) => {
-      if (message.kind === 'error' && message.what === 'dispatch') refusal = message.why;
+      if (message.kind === 'error' && message.what === 'dispatch') {
+        refusal = message.why;
+        if (refusalFor === 'add') addRefused += 1;
+        refusalFor = null;
+      }
       if (message.kind !== 'update') return;
       const variant =
         typeof message.update === 'string' ? message.update : Object.keys(message.update)[0];
@@ -86,9 +101,13 @@
    * throws before anything is sent, and that belongs in the same line as a
    * refusal.
    */
-  function act(command: Command): void {
+  function act(command: Command, forAdd = false): void {
     const open = connection;
     if (open === null) return;
+    // The press that owns the next refusal: a sibling action's press claims
+    // it, so the add's own pending latch is never disposed of by a refusal
+    // the add never made.
+    refusalFor = forAdd ? 'add' : 'other';
     refusal = null;
     // A fresh press supersedes the last failure's line the way it supersedes
     // a refusal: the reader is acting on it, not reading it.
@@ -97,6 +116,8 @@
       void open.dispatch(command);
     } catch (why) {
       refusal = why instanceof Error ? why.message : String(why);
+      if (forAdd) addRefused += 1;
+      refusalFor = null;
     }
   }
 
@@ -121,7 +142,7 @@
   }
 
   function addmarketplace(source: string): void {
-    act({ marketplace_add: { source } });
+    act({ marketplace_add: { source } }, true);
   }
 </script>
 
@@ -138,6 +159,7 @@
     <ExtensionsBody
       wire={page.read}
       {refusal}
+      {addRefused}
       {failure}
       {settled}
       {projects}

@@ -144,7 +144,8 @@ interface Seat {
  *
  * **Keyed by the connection as well**, because a subscription lives on one
  * socket: a client that moved to another address holds a seat on each, and a
- * record held under the old one is not the new one's to draw.
+ * record held under the old one is not the new one's to draw. A seat goes with
+ * the connection it was made on when that connection closes (`release`).
  */
 const SEATS = new WeakMap<Connection, Map<string, Seat>>();
 
@@ -222,7 +223,7 @@ export function watchSession(
   let seat = visited.get(key);
 
   if (seat === undefined) {
-    seat = createSeat(connection, subject, answering);
+    seat = createSeat(visited, connection, subject, answering);
     visited.set(key, seat);
   } else if (answering && !seat.answering) {
     // **The role only ever rises, and a page that can answer has to say so.**
@@ -248,7 +249,12 @@ function seats(connection: Connection): Map<string, Seat> {
 }
 
 /** One seat, opened: subscribed, listened to, and holding the record an update is applied to. */
-function createSeat(connection: Connection, subject: Subject, answering: boolean): Seat {
+function createSeat(
+  visited: Map<string, Seat>,
+  connection: Connection,
+  subject: Subject,
+  answering: boolean,
+): Seat {
   const key = subjectKey(subject);
 
   /**
@@ -478,19 +484,56 @@ function createSeat(connection: Connection, subject: Subject, answering: boolean
     if (!document.hidden) wake();
   };
 
-  // **The page's own returns**: a suspended window loses the armed paint and
-  // can take its deadline with it, so visibility returning, a bfcache restore
-  // and the window regaining focus each draw the pending publish.
-  //
-  // **These ride the DOCUMENT for the page's life, where the seat's other
-  // listeners ride the connection and die with it** - registered once per
-  // seat, never unregistered, so a seat that is let go leaves its three
-  // behind, and the count grows with address changes (#2136).
-  if (typeof document !== 'undefined' && typeof window !== 'undefined') {
-    document.addEventListener('visibilitychange', visible);
-    window.addEventListener('pageshow', wake);
-    window.addEventListener('focus', wake);
+  /**
+   * The page's own returns, which ride the seat's lifetime.
+   *
+   * A suspended window loses the armed paint and can take its deadline with
+   * it, so visibility returning, a bfcache restore and the window regaining
+   * focus each draw the pending publish.
+   *
+   * **Registered for the seat and taken back with it.** A handler left on the
+   * document closes over this seat and, through it, the connection it was made
+   * on - and the shell replaces the connection when the address changes, so
+   * one left behind pins that connection's whole store for the page's life
+   * (#2136).
+   */
+  const pageReturns =
+    typeof document !== 'undefined' && typeof window !== 'undefined'
+      ? {
+          listen(): void {
+            document.addEventListener('visibilitychange', visible);
+            window.addEventListener('pageshow', wake);
+            window.addEventListener('focus', wake);
+          },
+          release(): void {
+            document.removeEventListener('visibilitychange', visible);
+            window.removeEventListener('pageshow', wake);
+            window.removeEventListener('focus', wake);
+          },
+        }
+      : null;
+
+  /** Whether this seat's lifetime has ended: see `release`. */
+  let released = false;
+
+  /**
+   * End the seat's lifetime.
+   *
+   * **A closed connection is gone for good** - nothing reopens one, and the
+   * shell answers an address change with a new socket rather than with this
+   * one - so the seat stops listening for the page and leaves the registry,
+   * rather than waiting on a return that is never coming.
+   */
+  function release(): void {
+    if (released) return;
+    released = true;
+    pageReturns?.release();
+    visited.delete(key);
   }
+
+  // A seat made on a connection that is already closed never hears the close
+  // that would release it, so it takes no page listener at all.
+  if (connection.status() !== 'closed') pageReturns?.listen();
 
   /**
    * Take a record - and the refusal that goes with it - and write it at once.
@@ -689,6 +732,14 @@ function createSeat(connection: Connection, subject: Subject, answering: boolean
     // showing the seat still leaves the reconnect's snapshot answered as the
     // whole record it is.
     connection.onStatus((next: ConnectionStatus) => {
+      if (next === 'closed') {
+        // **The seat's lifetime ends where its connection's does.** A drop
+        // leaves the same connection reconnecting and this seat drawing what
+        // it holds, so only a close - the shell replacing the socket on an
+        // address change - releases it.
+        release();
+        return;
+      }
       if (next !== 'open') {
         // The ask in flight went with the drop, and the record this seat holds
         // is from before it: the answer the reconnect brings is the whole

@@ -19,9 +19,10 @@
 //!      |<------ event_tx --------+<-----------------------------------|
 //! ```
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 
 use forge_sdk::Client;
 use parking_lot::Mutex;
@@ -125,15 +126,21 @@ pub(crate) struct BridgeInner {
     /// Empty when `Agent::spawn` is called directly without a
     /// workspace (tests, smoke) or when no table declares anything.
     env: HashMap<String, String>,
-    /// Session ids whose context-usage probe is out, added when the ask goes
-    /// and removed when its answer, error or timeout lands.
+    /// Session ids whose context-usage probe is out, each against the instant
+    /// its mark was taken, added when the ask goes and removed when its
+    /// answer, error or timeout lands.
     ///
     /// A probe is answered inline over the CLI's whole transcript, and the
     /// socket asks on every read of a seat that reports no usage, so without
     /// this one unanswered seat parks a probe per read. A probe that times out
     /// emits nothing, so a caller that coalesced only on its own side would
     /// repeat forever.
-    context_probes_in_flight: Mutex<HashSet<String>>,
+    ///
+    /// The instant bounds the mark the way the probe's own timeout cannot:
+    /// every release lives inside the dispatched closure, so a closure that
+    /// never runs leaves a mark nothing will ever clear. Any asker past
+    /// [`ForgeSdkBridge::PROBE_MARK_DEADLINE`] reclaims it instead.
+    context_probes_in_flight: Mutex<HashMap<String, Instant>>,
 }
 
 /// Holds a seat's probe mark while its probe is out, and releases it however
@@ -142,15 +149,22 @@ pub(crate) struct BridgeInner {
 ///
 /// A guard rather than a release at each exit, because the exits multiply - the
 /// timeout returns early, and the closure is dropped uncalled when no client is
-/// bound - and a mark left behind wedges the seat's probe for its whole life.
+/// bound.
+///
+/// It releases only the mark it took: one reclaimed by a later ask belongs to
+/// that ask's probe, and a late drop must not clear the live mark.
 struct ProbeInFlight {
     inner: Arc<BridgeInner>,
     session_id: String,
+    taken_at: Instant,
 }
 
 impl Drop for ProbeInFlight {
     fn drop(&mut self) {
-        self.inner.context_probes_in_flight.lock().remove(&self.session_id);
+        let mut marks = self.inner.context_probes_in_flight.lock();
+        if marks.get(&self.session_id) == Some(&self.taken_at) {
+            marks.remove(&self.session_id);
+        }
     }
 }
 
@@ -183,7 +197,7 @@ impl ForgeSdkBridge {
                 display_name,
                 extra_mcp_servers,
                 env,
-                context_probes_in_flight: Mutex::new(HashSet::new()),
+                context_probes_in_flight: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -499,6 +513,14 @@ impl ForgeSdkBridge {
     /// never took.
     const CONTROL_RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
+    /// How long a seat's context-usage mark may stand before any asker may
+    /// reclaim it. The probe gives up at [`Self::CONTROL_RESPONSE_TIMEOUT`],
+    /// counted from its closure's first poll, so a mark past that bound is
+    /// either already dead or a probe the timeout is about to drop -
+    /// reclaiming costs at worst one overlapping probe, while leaving a dead
+    /// mark costs the seat its reading for the life of the process.
+    const PROBE_MARK_DEADLINE: std::time::Duration = Self::CONTROL_RESPONSE_TIMEOUT;
+
     /// The CLI's own refusal text for a failed `set_permission_mode`.
     /// The SDK wraps it twice (`MessageParse` Display + a
     /// `control failed: ` prefix); strip both so the chat line carries
@@ -722,26 +744,46 @@ impl ForgeSdkBridge {
     }
 
     pub(crate) fn get_context_usage(&self, session_id: String) -> anyhow::Result<()> {
-        if !self.inner.context_probes_in_flight.lock().insert(session_id.clone()) {
-            tracing::debug!(
-                target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                event_name = "context_usage_probe_coalesced",
-                session_id = %session_id,
-                "context usage probe already in flight; this ask is coalesced",
-            );
-            return Ok(());
+        let taken_at = Instant::now();
+        {
+            let mut marks = self.inner.context_probes_in_flight.lock();
+            if let Some(out_since) = marks.get(&session_id) {
+                let age = taken_at.duration_since(*out_since);
+                if age < Self::PROBE_MARK_DEADLINE {
+                    tracing::debug!(
+                        target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                        event_name = "context_usage_probe_coalesced",
+                        session_id = %session_id,
+                        "context usage probe already in flight; this ask is coalesced",
+                    );
+                    return Ok(());
+                }
+                // The mark outlived its probe's own deadline, so the probe is
+                // not coming back for it: this ask takes the seat over.
+                tracing::warn!(
+                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                    event_name = "context_usage_probe_mark_reclaimed",
+                    session_id = %session_id,
+                    age_secs = age.as_secs(),
+                    "a context usage probe outlived its deadline; starting a fresh probe",
+                );
+            }
+            marks.insert(session_id.clone(), taken_at);
         }
-        let probe =
-            ProbeInFlight { inner: Arc::clone(&self.inner), session_id: session_id.clone() };
+        let probe = ProbeInFlight {
+            inner: Arc::clone(&self.inner),
+            session_id: session_id.clone(),
+            taken_at,
+        };
         let event_tx = self.inner.event_tx.clone();
         self.dispatch("get_context_usage", move |client| async move {
             // Refreshes arrive at turn end, session switch, connect
             // and post-compaction; a wedged CLI must cost one
             // timed-out probe, not a parked task per refresh with the
-            // Ctx bar frozen. Accept-and-document: the expiry stays
-            // log-only (no typed event), so the in-flight flag never
-            // clears and later refreshes coalesce behind the dead
-            // probe - the bar wedges rather than flashing an error.
+            // Ctx bar frozen. The expiry below releases the mark; a
+            // probe whose closure never runs at all is the park this
+            // timeout cannot reach, and the mark's own deadline in
+            // `get_context_usage` is what bounds that one.
             let usage = match tokio::time::timeout(
                 Self::CONTROL_RESPONSE_TIMEOUT,
                 client.get_context_usage(),
@@ -1430,6 +1472,71 @@ mod tests {
             subtypes.iter().filter(|subtype| *subtype == "get_context_usage").count(),
             2,
             "a further ask reaches the CLI: {subtypes:?}",
+        );
+    }
+
+    /// A mark left by a probe whose closure never runs is reclaimed by the
+    /// next ask past the deadline.
+    ///
+    /// That closure is the whole of the probe's release machinery: the mark
+    /// is taken before the dispatch, and an answer, an error and the timeout
+    /// all live inside it. So a dispatch whose task never reaches its first
+    /// poll leaves a mark nothing will ever clear, and a seat that coalesces
+    /// behind it stays unprobed for the life of the process. The deadline is
+    /// the only bound that reaches this park, so the ask past it must start a
+    /// fresh probe rather than coalesce.
+    #[tokio::test]
+    async fn a_wedged_probe_mark_is_reclaimed_by_a_later_ask() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let echo = dir.path().join("echo");
+        let (bridge, mut events) = bridge_with_control_mock(&echo).await;
+
+        let wedged_at = Instant::now()
+            .checked_sub(ForgeSdkBridge::PROBE_MARK_DEADLINE * 4)
+            .expect("an instant four deadlines back");
+        bridge.inner.context_probes_in_flight.lock().insert("session-1".to_owned(), wedged_at);
+
+        bridge.get_context_usage("session-1".to_owned()).expect("the ask goes");
+        // Checked before any wait: a wedged mark either turns over now or it
+        // stays the wedged one, and the answered probe's release leaves
+        // `None`, which is not the wedged instant either way.
+        assert_ne!(
+            bridge.inner.context_probes_in_flight.lock().get("session-1").copied(),
+            Some(wedged_at),
+            "the ask after the deadline must reclaim the wedged mark, not coalesce behind it",
+        );
+
+        let subtypes = drain_answers(&bridge, &mut events, &echo).await;
+        assert_eq!(
+            subtypes.iter().filter(|subtype| *subtype == "get_context_usage").count(),
+            1,
+            "the reclaimed ask must reach the CLI as one probe: {subtypes:?}",
+        );
+    }
+
+    /// The guard releases only the mark it took, so a wedged probe's late
+    /// release cannot clear the fresh one a reclaim took over.
+    #[test]
+    fn a_reclaimed_mark_survives_the_wedged_probes_late_release() {
+        let bridge = test_bridge();
+        let wedged_at = Instant::now()
+            .checked_sub(ForgeSdkBridge::PROBE_MARK_DEADLINE * 4)
+            .expect("an instant four deadlines back");
+        let wedged = ProbeInFlight {
+            inner: Arc::clone(&bridge.inner),
+            session_id: "session-1".to_owned(),
+            taken_at: wedged_at,
+        };
+        bridge.inner.context_probes_in_flight.lock().insert("session-1".to_owned(), wedged_at);
+
+        let reclaimed_at = Instant::now();
+        bridge.inner.context_probes_in_flight.lock().insert("session-1".to_owned(), reclaimed_at);
+        drop(wedged);
+
+        assert_eq!(
+            bridge.inner.context_probes_in_flight.lock().get("session-1"),
+            Some(&reclaimed_at),
+            "the wedged probe's late release must leave the reclaimed mark standing",
         );
     }
 

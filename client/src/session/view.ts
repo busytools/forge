@@ -861,9 +861,32 @@ export function railGroups(
 }
 
 /**
+ * Whether the seat's tree has a state its row could state, which is the git
+ * row's own draw condition and the review row's visibility mirror (#2203):
+ * wherever the tree draws, the door to the review page draws with it.
+ *
+ * The default branch with nothing on it has no state a row could state: it
+ * is where work lands, not work. A dirty default branch draws, and so does
+ * a tree that could not be read - the gate line is a state.
+ */
+export function treeShows(record: SessionRecord): boolean {
+  const { branch } = placeOf(record.work);
+  const gate = gateLine(record.work.gate);
+  const view = record.git;
+  const clean = view.worktree === null && view.ahead === null && record.pr === null;
+  // The default arrives as its remote-tracking ref (`origin/main`); compare
+  // the plain name, the way the view this client replaced did on its own row,
+  // so a checked-out `main` in a clone is recognised as the default rather
+  // than as work.
+  const base = view.defaultBranch?.replace(/^origin\//, '') ?? null;
+  const onDefault = gate === null && branch !== null && base !== null && branch === base;
+  return !(onDefault && clean);
+}
+
+/**
  * The seat's tree as the strip's row draws it: the branch and what moved on
  * the toggle, the pull request and the reason the tree could not be read in
- * the list.
+ * the list. `null` is a tree with nothing to state (`treeShows`).
  *
  * The files a diff holds are not here: the socket carries the tree's STATE -
  * the branch and the count - and the heavier scan that lists files and counts
@@ -871,6 +894,7 @@ export function railGroups(
  * rather than drawing an empty list under it.
  */
 export function gitStrip(record: SessionRecord, slot: SessionSlot): GitStrip | null {
+  if (!treeShows(record)) return null;
   const { branch } = placeOf(record.work);
   const gate = gateLine(record.work.gate);
   const view = record.git;
@@ -889,17 +913,6 @@ export function gitStrip(record: SessionRecord, slot: SessionSlot): GitStrip | n
   ]
     .filter((part) => part !== null)
     .join(' \u{b7} ');
-  const clean = uncommitted === null && view.ahead === null && record.pr === null;
-  // The default arrives as its remote-tracking ref (`origin/main`); compare
-  // the plain name, the way the view this client replaced did on its own row,
-  // so a checked-out `main` in a clone is recognised as the default rather
-  // than as work.
-  const base = view.defaultBranch?.replace(/^origin\//, '') ?? null;
-  const onDefault = gate === null && branch !== null && base !== null && branch === base;
-  // The default branch with nothing on it has no state a row could state:
-  // it is where work lands, not work. A dirty default branch still draws -
-  // there is something to see.
-  if (onDefault && clean) return null;
   return {
     label: label === '' ? 'no branch' : label,
     head: headOf(record.state.scan_cwd, slot),
@@ -1446,35 +1459,53 @@ function rowConnectors(project: ProjectWire | null): RowConnectorViews {
  * reason) so the panel shows as much of a server as the wire has.
  *
  * A read that FAILED carries an empty list - and that is a state of its own,
- * not "nothing configured" - so the failure draws as a row naming it.
+ * not "nothing configured" - so the failure draws as a row naming it. A
+ * REFRESH that failed is the other way the section goes wrong: the servers
+ * the last good read gave stay, and the failure leads them, because a list
+ * nothing has refreshed must not be read as current (rule 25).
  */
 export function mcpRows(record: SessionRecord | null): McpRow[] {
-  const servers = record?.mcp ?? null;
-  if (servers === null) return [];
-  if (servers.servers.length === 0) {
-    return servers.error === null
-      ? []
-      : [
-          {
-            name: 'mcp-read',
-            k: 'servers',
-            v: 'failed',
-            tools: [],
-            command: null,
-            reason: servers.error.trim() === '' ? null : servers.error.trim(),
-            synthetic: true,
-          },
-        ];
+  if (record === null) return [];
+  const servers = record.mcp;
+  const rows: McpRow[] = [];
+  const refresh = record.mcp_operation_error;
+  if (refresh !== null) {
+    rows.push({
+      name: 'mcp-refresh',
+      k: refresh.server_name ?? 'servers',
+      v: 'refresh failed',
+      tools: [],
+      command: null,
+      reason: refresh.message,
+      synthetic: true,
+    });
   }
-  return servers.servers.map((server) => ({
-    name: server.name,
-    k: `${server.name} \u{b7} ${scopeLabel(server)}`,
-    v: mcpState(server),
-    tools: mcpTools(server),
-    command: mcpCommand(server),
-    reason: server.error?.trim() ? server.error.trim() : null,
-    synthetic: false,
-  }));
+  if (servers === null) return rows;
+  if (servers.servers.length === 0) {
+    if (servers.error !== null) {
+      rows.push({
+        name: 'mcp-read',
+        k: 'servers',
+        v: 'failed',
+        tools: [],
+        command: null,
+        reason: servers.error.trim() === '' ? null : servers.error.trim(),
+        synthetic: true,
+      });
+    }
+    return rows;
+  }
+  return rows.concat(
+    servers.servers.map((server) => ({
+      name: server.name,
+      k: `${server.name} \u{b7} ${scopeLabel(server)}`,
+      v: mcpState(server),
+      tools: mcpTools(server),
+      command: mcpCommand(server),
+      reason: server.error?.trim() ? server.error.trim() : null,
+      synthetic: false,
+    })),
+  );
 }
 
 /** The tools a server offers, as its status depth names them. */
@@ -1564,22 +1595,42 @@ export interface ReviewStripRow {
   /** Whether the thread is why the row exists: an answer waiting to be
    *  read. */
   waiting: boolean;
+  /**
+   * Whether this row stands for the READ rather than a thread: a threads
+   * read that failed or cannot be named draws as itself, and a toggle must
+   * not count it as a thread the branch has.
+   */
+  synthetic: boolean;
 }
 
 /**
  * The seat's review threads as the strip's row draws them: the ones waiting
  * on the reviewer first, then the rest in the record's own order.
  *
- * `null` is no row at all: a read that has not landed or failed, or a seat
- * with nothing under review - nothing filed, and the branch level with its
- * default. The row is the door to the review page, so it stands on what the
- * page holds. A branch-ahead layer that failed or cannot be named still
- * draws: a read that failed is not a clean branch.
+ * `null` is no row at all: no record, or a tree with nothing to state. The
+ * row's visibility is the git row's own (`treeShows`), so the door draws
+ * wherever the tree draws (#2203) - zero threads draws it with no thread
+ * lines, and a threads read that did not land draws as itself, one row
+ * naming the failure.
  */
 export function reviewRows(record: SessionRecord | null): ReviewStripRow[] | null {
-  if (record === null) return null;
+  if (record === null || !treeShows(record)) return null;
   const held = record.reviews;
-  if (held.threads.outcome !== 'read') return null;
+  if (held.threads.outcome !== 'read') {
+    // The read draws as itself rather than as no lines: an empty panel
+    // would claim nothing is filed exactly when nobody knows.
+    const read = held.threads;
+    return [
+      {
+        id: 'threads-read',
+        state: read.outcome,
+        where: 'the threads read',
+        words: read.outcome === 'failed' ? read.value.trim() : String(read.value),
+        waiting: false,
+        synthetic: true,
+      },
+    ];
+  }
   const rows = held.threads.value.map((thread) => {
     const last = thread.comments[thread.comments.length - 1];
     return {
@@ -1590,9 +1641,9 @@ export function reviewRows(record: SessionRecord | null): ReviewStripRow[] | nul
       // The page's own predicate, not a second copy of it: two surfaces
       // drawing the same loop must not disagree about who waits.
       waiting: awaitsReviewer(thread),
+      synthetic: false,
     };
   });
-  if (rows.length === 0 && record.diff.branchAhead.state === 'clean') return null;
   // Waiting rows first; the sort is stable, so the rest keep their order.
   return [...rows].sort((a, b) => Number(b.waiting) - Number(a.waiting));
 }

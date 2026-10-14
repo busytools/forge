@@ -66,6 +66,15 @@ axes - styling, structure, context - the models each role runs, and the
 input device. The axes are per seat and remembered on this machine, so a
 reload returns what the reader chose rather than the config's value.
 
+**On the desktop the picked input stays open for the client's whole
+run**: the shell takes the hold as the page that takes typing appears and
+again whenever the pick changes, so a press records from the press rather
+than opening a device under it, and a take reuses the held stream instead
+of paying the device's own start-up. The microphone indicator stays lit
+while the hold is on - the accepted cost - and macOS asks for the
+microphone as the page opens rather than at the first press. In a browser
+the capture is the webview's own, opened per take as it always was.
+
 ## The states the surface can be in
 
 | State | Draws |

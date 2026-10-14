@@ -88,6 +88,13 @@ pub enum WorkspaceError {
     DocumentCeilingTooLarge { path: PathBuf, value: u64 },
 
     #[error(
+        "[usage] poll_seconds = 0 in forge.toml at {} is not usable; it must name a positive interval in seconds, so remove the key for the {} second default",
+        path.display(),
+        crate::config::DEFAULT_USAGE_POLL_SECONDS
+    )]
+    UsagePollIntervalInvalid { path: PathBuf },
+
+    #[error(
         "server port 0 in forge.toml at {} is not usable; the socket needs a port a client can be pointed at",
         path.display()
     )]

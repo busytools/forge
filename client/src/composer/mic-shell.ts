@@ -16,7 +16,7 @@
  * the press.
  */
 
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
 import type { MicSource } from './take';
@@ -77,7 +77,7 @@ export class ShellMic implements MicSource {
 
   /**
    * Ask the shell to drain its pipeline, hand over the frames still in it,
-   * and release the device.
+   * and end the take. The device stays held, so the next press is warm.
    *
    * **This waits on the shell's answer, not on the frames.** Frames cross as
    * events and the answer as this invoke's reply, and the two channels are
@@ -90,11 +90,14 @@ export class ShellMic implements MicSource {
     await invoke('client_mic_drain');
   }
 
-  /** Let the device go at once, for a take whose audio is being thrown away. */
+  /**
+   * End the take at once, for audio that is being thrown away. The device
+   * stays held, so the next press is warm.
+   */
   stop(): void {
     this.hearing();
     void invoke('client_mic_stop').catch(() => {
-      // The shell is gone, and the device went with it.
+      // The shell is gone, and the held device went with it.
     });
   }
 }
@@ -102,4 +105,26 @@ export class ShellMic implements MicSource {
 /** The shell's capture, as a take opens it. */
 export function openShellMic(device: string | null): Promise<MicSource> {
   return ShellMic.open(device);
+}
+
+/**
+ * Keep the picked input open and warm in the shell, so the next press
+ * records from the press.
+ *
+ * Called where the input in force becomes known - the surface that takes
+ * typing, as it mounts, and the panel on every pick - and it is the shell
+ * that holds the device from there: a take consumes the held stream without
+ * closing it, and the hold outlives every take until the client exits.
+ *
+ * The cost is the microphone indicator staying lit while the client runs.
+ * A hold that will not open is not drawn: the shell logs it, and the next
+ * press opens the device itself, exactly as it did before there was a hold.
+ */
+export async function holdShellMic(device: string | null): Promise<void> {
+  if (!isTauri()) return;
+  try {
+    await invoke('client_mic_hold', { device });
+  } catch {
+    // The shell's own log carries why; the press falls back to a cold open.
+  }
 }

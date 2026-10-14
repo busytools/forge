@@ -367,6 +367,29 @@ port = {port}
         assert!(workspace.test_usage_poller_started(), "the boot wave starts the usage poller");
     }
 
+    /// The wave starts the dictate prewarm, which is what keeps a take from
+    /// paying the model load: started at boot rather than at the first press,
+    /// on a task of its own so the fetch, the verify and the load are not on
+    /// the boot path. The fixture has dictation switched off, so the guard is
+    /// what the test reads; the prewarm's own fetch and load need the real
+    /// weights and are exercised by forge-dictate's own gates.
+    #[tokio::test]
+    async fn the_boot_wave_starts_the_dictate_prewarm() {
+        let (workspace, _dir) = boot_fixture();
+        assert!(
+            !workspace.test_dictate_preflight_started(),
+            "the fixture starts with the prewarm unstarted, or this test proves nothing",
+        );
+
+        start_subsystems(&workspace);
+
+        assert!(
+            workspace.test_dictate_preflight_started(),
+            "the boot wave asks for the prewarm; dropping the call leaves every take \
+             paying the load",
+        );
+    }
+
     /// The hold gives up at its deadline rather than waiting for ever - the
     /// behaviour a listener that never binds would otherwise hang on. Pinned
     /// against the production bound's VALUE as well, so raising it is a

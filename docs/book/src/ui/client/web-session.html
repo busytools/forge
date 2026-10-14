@@ -2509,8 +2509,13 @@ branch main, nothing to commit</div>
                close, which is how a profile whose owning session is gone
                comes back, and delete, worn apart from it and confirmed in
                the row itself (delete it / keep) because it is the one act
-               that takes the logins. A closed profile is a row too -
-               ownerless, with no close, and delete still the door.
+               that takes the logins. A closed profile is a row too - no
+               live entry behind it, its logins still here, no close - and
+               the closed ones carry the bulk door beside their rows: delete
+               all, which lists every closed profile by name first (a live
+               seat's closed profile among them, its logins going too) and
+               then runs the row's own delete once per name, each row
+               reporting its own state.
                Drawn CLOSED here: the open list is runtime state. -->
           <span class="bz-seg">
             <button type="button" class="bz-tog">
@@ -2568,9 +2573,10 @@ branch main, nothing to commit</div>
           <!-- The MCP row, fifth: this SESSION's servers, the count in the
                toggle. The open list carries the status depth the inspector's
                section used to hold - each server's tools, the command or URL
-               backing it, a failure's reason - and the run-a-command page
-               hangs off these rows later. The inspector has no mcp servers
-               section any more. Drawn CLOSED here, like its siblings. -->
+               backing it, a failure's reason, and a failed refresh of the
+               list itself - and the run-a-command page hangs off these rows
+               later. The inspector has no mcp servers section any more.
+               Drawn CLOSED here, like its siblings. -->
           <span class="sg-seg">
             <button type="button" class="sg-tog">
               <svg class="ic"><use href="#i-mcp"/></svg>
@@ -2597,9 +2603,10 @@ branch main, nothing to commit</div>
                answers waiting to be read on the toggle, the thread count
                otherwise - and the hover panel lists `open review` as its
                door onto the page, then each thread by its file and line with
-               its state. A read that has not landed draws no row at all,
-               which is the same distinction the page keeps. Drawn CLOSED
-               here, like its siblings. -->
+               its state. It draws wherever the tree row draws, with no
+               thread lines when nothing is filed; a threads read that did
+               not land draws as itself. Drawn CLOSED here, like its
+               siblings. -->
           <span class="sg-seg">
             <button type="button" class="sg-tog">
               <svg class="ic"><use href="#i-review"/></svg>

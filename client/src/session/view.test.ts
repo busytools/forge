@@ -8,6 +8,7 @@ import session from '../dev/fixtures/session.json';
 import { PROTOCOL_VERSION } from '../protocol';
 import type { AgentRow, CronEntry, HomeWire, ProjectWire, Task } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
+import { applyUpdate } from './apply';
 import {
   accountChip,
   chipState,
@@ -37,7 +38,7 @@ import {
   taskRows,
   untilOf,
 } from './view';
-import { diffFrom, gitFrom, reviewsFrom, sessionFrom, type SessionRecord } from './wire';
+import { reviewsFrom, sessionFrom, type SessionRecord } from './wire';
 
 const record: SessionRecord = sessionFrom(session);
 
@@ -1465,59 +1466,106 @@ describe('the review rows the strip draws', () => {
   });
 
   /**
-   * The fixture's record with its branch-ahead layer stated, so a case can
-   * take the seat's own changes away: `clean` is a branch level with its
-   * default, anything else the wire's own layer value. Both reads state it -
-   * a clean branch has nothing ahead in the git read either.
+   * The fixture's record with the tree's own state laid over it - the branch
+   * the seat is on and the git read behind the row - which is what the two
+   * rows' visibility is decided on.
    */
-  const withBranch = (branchAhead: unknown): SessionRecord => ({
+  const tree = (
+    work: Partial<SessionRecord['work']>,
+    git: Partial<SessionRecord['git']> = {},
+    over: Partial<SessionRecord> = {},
+  ): SessionRecord => ({
     ...record,
-    diff: diffFrom({ worktree: 'clean', branch_ahead: branchAhead, truncated: false }),
-    git: gitFrom({ default_branch: 'main', worktree: null, ahead: null }),
+    work: { ...record.work, ...work },
+    git: { defaultBranch: 'main', worktree: null, ahead: null, ...git },
+    pr: null,
+    closes: [],
+    ...over,
   });
 
-  it("draws the row only while there is something under review: a thread, or the branch's own changes", () => {
-    // Ved's 1.1.9 report: the row drew on a seat with nothing on it - a
-    // landed read is not the same as something to review. What the row
-    // opens is the review page, so it keys on what that page holds: the
-    // threads, and the branch's own committed changes.
-    expect(
-      reviewRows(withBranch('clean')),
-      'a clean branch with nothing filed has nothing behind the door',
-    ).toBeNull();
-    expect(
-      reviewRows(withBranch('scan_failed')),
-      'a read that failed is not a clean branch: the page draws the failure',
-    ).toEqual([]);
-    expect(
-      reviewRows(withThreads('read', [])),
-      'the fixture branch carries a commit ahead: the door to review it stands',
-    ).toEqual([]);
-    expect(
-      reviewRows({
-        ...withBranch('clean'),
-        reviews: reviewsFrom({
-          threads: {
-            outcome: 'read',
-            value: [thread('answered', 'Addressed', { Agent: { label: 'w1' } }, 7)],
+  it('shows wherever the git row shows: the two rows hide and show together', () => {
+    // #2203, Ved's ruling: the review button is never hidden - it is visible
+    // wherever the git is visible. The coupling is the pin: whatever the
+    // tree's own condition decides, both rows must reach the same answer.
+    const states: [string, SessionRecord][] = [
+      ['a clean default branch', tree({ branch: 'main', changed: 0 })],
+      [
+        'a clone on main with a clean tree',
+        tree({ branch: 'main', changed: 0 }, { defaultBranch: 'origin/main' }),
+      ],
+      [
+        'a default branch holding a pull request',
+        tree(
+          { branch: 'main', changed: 0 },
+          {},
+          { pr: { number: 1203, url: 'https://example.test/pull/1203', draft: false } },
+        ),
+      ],
+      [
+        'a dirty default branch',
+        tree(
+          { branch: 'main', changed: 1 },
+          {
+            worktree: {
+              files: [{ path: 'a.rs', added: 1, removed: 0, status: 'modified' }],
+              totalFiles: 1,
+              totalAdded: 1,
+              totalRemoved: 0,
+            },
           },
-          reviews: { outcome: 'read', value: [] },
-        }),
-      })?.map((row) => row.id),
-      'threads on committed code draw even when the branch itself is clean',
-    ).toEqual(['answered']);
+        ),
+      ],
+      ['a branch of its own', tree({ branch: 'feat/x', changed: 0 })],
+      ['a tree that could not be read', tree({ branch: null, changed: null, gate: 'gone' })],
+    ];
+    for (const [what, held] of states) {
+      expect(
+        reviewRows(held) === null,
+        `${what}: the review row must hide exactly when the git row does`,
+      ).toBe(gitStrip(held, LEAD) === null);
+    }
   });
 
-  it('leads with what waits on the reviewer, and draws nothing for a read that never landed', () => {
-    // The plausible regression is drawing the row for an unreadable or
-    // failed half: the strip would claim the branch is clean exactly when
-    // nobody knows, which a reviewer reads as "nothing to do".
-    expect(reviewRows(null), 'no record at all').toBeNull();
-    expect(reviewRows(withThreads('failed', 'boom')), 'a failed threads read').toBeNull();
+  it('draws the door on a branch with nothing filed, with no thread lines', () => {
+    // The half #2090 got wrong, reversed by #2203: zero threads is not a
+    // reason to hide. What the row then says is the segment's own empty
+    // shape - `review` on the toggle, no lines in the panel.
+    expect(
+      reviewRows(tree({ branch: 'feat/x', changed: 0 })),
+      'a branch of its own with nothing filed drew no door',
+    ).toEqual([]);
+  });
+
+  it('draws a threads read that did not land as itself, and leads with what waits', () => {
+    // A failed or unnameable threads read draws one row naming the read -
+    // never a hide, and never an empty panel claiming nothing is filed.
+    expect(reviewRows(null), 'no record at all: nothing landed, nothing to draw').toBeNull();
+    expect(
+      reviewRows(withThreads('failed', 'boom')),
+      'a failed read draws as itself, the reason on its own line',
+    ).toEqual([
+      {
+        id: 'threads-read',
+        state: 'failed',
+        where: 'the threads read',
+        words: 'boom',
+        waiting: false,
+        synthetic: true,
+      },
+    ]);
     expect(
       reviewRows(withThreads('reticulating', [])),
-      'an outcome this build cannot name',
-    ).toBeNull();
+      "an outcome this build cannot name draws the read's own word",
+    ).toEqual([
+      {
+        id: 'threads-read',
+        state: 'unknown',
+        where: 'the threads read',
+        words: 'reticulating',
+        waiting: false,
+        synthetic: true,
+      },
+    ]);
 
     const rows = reviewRows(
       withThreads('read', [
@@ -1537,6 +1585,7 @@ describe('the review rows the strip draws', () => {
       'answered words',
     );
     expect(rows?.[1]?.waiting, 'a reviewer turn last is not waiting').toBe(false);
+    expect(rows?.[0]?.synthetic, 'a thread row is not the read').toBe(false);
     expect(
       reviewRows(withThreads('read', [])),
       'a branch with neither threads nor failures',
@@ -1621,6 +1670,53 @@ describe('the MCP rows the strip draws', () => {
       reason: 'the CLI refused',
       synthetic: true,
     });
+  });
+
+  /**
+   * **A refresh that failed draws where the rows are.** The operation error
+   * is a live frame - the mcp_status timeout - and a section that dropped it
+   * went on drawing a list nothing had refreshed, silently (rule 25). It
+   * leads the servers the last good read gave, because it is the news the
+   * reader opened the panel for.
+   */
+  it('leads a failed refresh above the servers the last read gave', () => {
+    const held = sessionFrom({
+      ...(session as unknown as Record<string, unknown>),
+      mcp: {
+        error: null,
+        servers: [{ name: 'forge', status: 'connected', tools: [] }],
+      },
+    });
+    const next = applyUpdate(held, {
+      mcp_operation_error: {
+        key: LEAD,
+        error: { server_name: null, operation: 'status', message: 'no response from the CLI' },
+      },
+    });
+
+    const rows = mcpRows(next);
+    expect(rows, 'the servers the read gave, and the failure above them').toHaveLength(2);
+    expect(rows[0], 'the failure leads, plainly, and is no server').toMatchObject({
+      k: 'servers',
+      v: 'refresh failed',
+      reason: 'no response from the CLI',
+      synthetic: true,
+    });
+    expect(rows[1]?.name, 'the server the last good read gave still draws').toBe('forge');
+  });
+
+  /** A failed refresh with nothing else to draw is still a row: the section's own state. */
+  it('draws a failed refresh even when no read ever landed', () => {
+    const next = applyUpdate(record, {
+      mcp_operation_error: {
+        key: LEAD,
+        error: { server_name: null, operation: 'status', message: 'no response from the CLI' },
+      },
+    });
+
+    const rows = mcpRows(next);
+    expect(rows, 'the failure is the whole section').toHaveLength(1);
+    expect(rows[0]?.synthetic, 'and it is no server').toBe(true);
   });
 });
 

@@ -350,6 +350,25 @@ pub async fn scan<S: std::hash::BuildHasher>(
     env: &HashMap<String, String, S>,
     prev: Option<&GitDiffSnapshot>,
 ) -> GitDiffSnapshot {
+    scan_within(cwd, env, prev, COMMAND_TIMEOUT).await
+}
+
+/// [`scan`] with the PR lookup's command budget spelled: the shell gives
+/// a `gh` child the 10 s `COMMAND_TIMEOUT`, and a test gives it one of its own.
+///
+/// **The budget is a bound on the machine, not on the lookup**: it is
+/// spent starting the child (a shell script this machine may stall) and
+/// waiting for `gh`, so a test that inherits the shell's 10 s goes red
+/// over a stall that is no part of what it pins - measured 2026-10-14,
+/// `the_pr_lookup_spawn_carries_the_projects_env` failed twice at 10.5 s
+/// and 10.9 s while a gate ran beside the suite, the budget plus the
+/// child's start, and a `gh` held back 11 s reproduces it on demand.
+async fn scan_within<S: std::hash::BuildHasher>(
+    cwd: &Path,
+    env: &HashMap<String, String, S>,
+    prev: Option<&GitDiffSnapshot>,
+    budget: Duration,
+) -> GitDiffSnapshot {
     let raw_branch = match rev_parse_gate(cwd).await {
         Ok(branch) => branch,
         // Both the not-a-repo and scanner-crash cases collapse to the
@@ -485,7 +504,7 @@ pub async fn scan<S: std::hash::BuildHasher>(
         GitBranch::Named(name) if !on_default => {
             let pushed_sha = resolve_pushed_sha(cwd, PUSHED_SHA_WALK_CAP).await;
             let (pr, closes, pr_fetched_at) =
-                pr_for_head(cwd, env, name, pushed_sha.as_deref(), prev).await;
+                pr_for_head_within(cwd, env, name, pushed_sha.as_deref(), prev, budget).await;
             (pr, closes, pr_fetched_at, pushed_sha)
         }
         _ => (None, Vec::new(), None, None),
@@ -867,12 +886,16 @@ enum PrLookup {
 /// returned attempt time so failed / empty lookups rate-limit too.
 /// A `Failed` lookup keeps `prev`'s PR when branch and sha still
 /// match - a gh blip must not flash the row off.
-async fn pr_for_head<S: std::hash::BuildHasher>(
+///
+/// The `gh` children it spawns are bounded by `budget`; see
+/// [`scan_within`] for why a test spells its own.
+async fn pr_for_head_within<S: std::hash::BuildHasher>(
     cwd: &Path,
     env: &HashMap<String, String, S>,
     branch: &str,
     pushed_sha: Option<&str>,
     prev: Option<&GitDiffSnapshot>,
+    budget: Duration,
 ) -> (Option<GitPrInfo>, Vec<GitIssueRef>, Option<std::time::SystemTime>) {
     let now = std::time::SystemTime::now();
     let cached = match prev {
@@ -882,7 +905,7 @@ async fn pr_for_head<S: std::hash::BuildHasher>(
     if let Some(prev) = cached {
         return (prev.pr.clone(), prev.closes.clone(), prev.pr_fetched_at);
     }
-    match fetch_pr_for_pushed_sha(cwd, env, pushed_sha).await {
+    match fetch_pr_for_pushed_sha(cwd, env, pushed_sha, budget).await {
         PrLookup::Found(pr, closes) => (Some(pr), closes, Some(now)),
         PrLookup::None => (None, Vec::new(), Some(now)),
         PrLookup::Failed => match prev {
@@ -950,12 +973,13 @@ async fn fetch_pr_for_pushed_sha<S: std::hash::BuildHasher>(
     cwd: &Path,
     env: &HashMap<String, String, S>,
     pushed_sha: Option<&str>,
+    budget: Duration,
 ) -> PrLookup {
     let Some(sha) = pushed_sha else {
         return PrLookup::None;
     };
     let endpoint = format!("repos/{{owner}}/{{repo}}/commits/{sha}/pulls");
-    let raw = match run_gh(cwd, env, &["api", &endpoint], GhNotFound::Tolerate).await {
+    let raw = match run_gh(cwd, env, &["api", &endpoint], GhNotFound::Tolerate, budget).await {
         GitOutput::Ok(s) => s,
         GitOutput::Empty => {
             // A completed query with a definitive negative: exit 0
@@ -980,7 +1004,7 @@ async fn fetch_pr_for_pushed_sha<S: std::hash::BuildHasher>(
         }
         Ok(None) => PrLookup::None,
         Ok(Some((number, url, draft))) => {
-            let closes = fetch_closing_issues(cwd, env, number).await;
+            let closes = fetch_closing_issues(cwd, env, number, budget).await;
             PrLookup::Found(GitPrInfo { number, url, draft }, closes)
         }
     }
@@ -1029,6 +1053,7 @@ async fn fetch_closing_issues<S: std::hash::BuildHasher>(
     cwd: &Path,
     env: &HashMap<String, String, S>,
     number: u64,
+    budget: Duration,
 ) -> Vec<GitIssueRef> {
     let number = number.to_string();
     let raw = match run_gh(
@@ -1036,6 +1061,7 @@ async fn fetch_closing_issues<S: std::hash::BuildHasher>(
         env,
         &["pr", "view", &number, "--json", "closingIssuesReferences"],
         GhNotFound::Fail,
+        budget,
     )
     .await
     {
@@ -1210,11 +1236,12 @@ async fn run_gh<S: std::hash::BuildHasher>(
     env: &HashMap<String, String, S>,
     args: &[&str],
     not_found: GhNotFound,
+    budget: Duration,
 ) -> GitOutput {
     let mut command = git_command::gh_tokio_command(env);
     command.current_dir(cwd).args(args).kill_on_drop(true);
     let fut = command.output();
-    let output = match timeout(COMMAND_TIMEOUT, fut).await {
+    let output = match timeout(budget, fut).await {
         Ok(Ok(out)) => out,
         Ok(Err(err)) => {
             tracing::debug!(
@@ -1301,6 +1328,16 @@ mod tests {
     use super::*;
     use std::process::Command as StdCommand;
     use tempfile::TempDir;
+
+    /// The budget the PR-lookup cases give their `gh` child: **not the
+    /// shell's own.** The wait is spent starting that child, and a loaded
+    /// machine can hold a child's first write past the shell's 10 s -
+    /// measured 2026-10-14, `the_pr_lookup_spawn_carries_the_projects_env`
+    /// failed twice at 10.5 s and 10.9 s while a gate ran beside the suite,
+    /// and a `gh` held back 11 s reproduces it on demand. The stall is the
+    /// machine's, and no case here pins how long a `gh` may take, so they
+    /// give the child a budget load cannot eat.
+    const TEST_LOOKUP_BUDGET: Duration = Duration::from_secs(60);
 
     fn init_repo(dir: &TempDir, initial_branch: &str) {
         let path = dir.path();
@@ -1898,8 +1935,8 @@ mod tests {
         );
     }
 
-    /// `pr_for_head` short-circuits the `gh` calls when the cache is
-    /// fresh - even when the `cwd` would make a real `gh` invocation
+    /// `pr_for_head_within` short-circuits the `gh` calls when the cache
+    /// is fresh - even when the `cwd` would make a real `gh` invocation
     /// fail (tempdir has no github remote). The returned `pr` /
     /// `closes` MUST be clones of `prev`'s, proving the cache hit.
     #[tokio::test(flavor = "current_thread")]
@@ -1919,8 +1956,15 @@ mod tests {
             pr_fetched_at: Some(std::time::SystemTime::now()),
         };
 
-        let (got_pr, got_closes, got_at) =
-            pr_for_head(dir.path(), &HashMap::new(), "feat/x", Some("aaaa"), Some(&prev)).await;
+        let (got_pr, got_closes, got_at) = pr_for_head_within(
+            dir.path(),
+            &HashMap::new(),
+            "feat/x",
+            Some("aaaa"),
+            Some(&prev),
+            COMMAND_TIMEOUT,
+        )
+        .await;
         assert_eq!(got_pr, Some(pr));
         assert_eq!(got_closes, closes);
         assert_eq!(got_at, prev.pr_fetched_at);
@@ -1948,8 +1992,15 @@ mod tests {
             pr_fetched_at: Some(stale_at),
         };
 
-        let (got_pr, _got_closes, got_at) =
-            pr_for_head(dir.path(), &HashMap::new(), "feat/x", Some("aaaa"), Some(&prev)).await;
+        let (got_pr, _got_closes, got_at) = pr_for_head_within(
+            dir.path(),
+            &HashMap::new(),
+            "feat/x",
+            Some("aaaa"),
+            Some(&prev),
+            COMMAND_TIMEOUT,
+        )
+        .await;
         assert_eq!(got_pr.as_ref().map(|p| p.number), Some(42), "failed refetch keeps the row");
         let now = std::time::SystemTime::now();
         assert!(
@@ -1979,8 +2030,15 @@ mod tests {
             pr_fetched_at: Some(stale_at),
         };
 
-        let (got_pr, got_closes, got_at) =
-            pr_for_head(dir.path(), &HashMap::new(), "feat/y", Some("aaaa"), Some(&prev)).await;
+        let (got_pr, got_closes, got_at) = pr_for_head_within(
+            dir.path(),
+            &HashMap::new(),
+            "feat/y",
+            Some("aaaa"),
+            Some(&prev),
+            COMMAND_TIMEOUT,
+        )
+        .await;
         assert_eq!(got_pr, None, "a failed lookup must not show another branch's PR");
         assert!(got_closes.is_empty());
         assert!(got_at.is_some());
@@ -1995,6 +2053,48 @@ mod tests {
     /// handed is readable afterwards.
     #[tokio::test(flavor = "current_thread")]
     async fn the_pr_lookup_spawn_carries_the_projects_env() {
+        let recorded = scan_with_own_gh(Duration::ZERO, TEST_LOOKUP_BUDGET)
+            .await
+            .expect("the scan's gh child ran and recorded the identity it was handed");
+        assert_eq!(recorded, "project-token", "the PR lookup spawns gh as the project");
+    }
+
+    /// **The PR lookup's wait is the budget it is given.** A `gh` child held
+    /// back past a small budget is refused - the lookup never lands - and
+    /// the same child is waited out by the budget these cases use, which is
+    /// the seam `the_pr_lookup_spawn_carries_the_projects_env` rests on: the
+    /// wait belongs to the machine, not to the lookup.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_pr_lookup_is_bounded_by_the_budget_it_is_given() {
+        let refused = scan_with_own_gh(Duration::from_secs(3), Duration::from_secs(1)).await;
+        assert!(
+            refused.is_none(),
+            "a budget that runs out before the child answers leaves the lookup unrun: {refused:?}",
+        );
+
+        let waited = scan_with_own_gh(Duration::from_secs(3), TEST_LOOKUP_BUDGET).await;
+        assert_eq!(
+            waited.as_deref(),
+            Some("project-token"),
+            "and the tests' budget waits that child out",
+        );
+        assert!(
+            TEST_LOOKUP_BUDGET >= Duration::from_secs(30),
+            "the tests' budget must stay far past the shell's own 10 s: a loaded machine held a \
+             lookup child back for 10.5 s (measured 2026-10-14), which is the stall this seam \
+             exists to keep out of the suite",
+        );
+    }
+
+    /// The gh-identity fixture: a repo whose tip reads as pushed, and a `gh`
+    /// of our own on the project's PATH that records the identity it was
+    /// handed after holding its answer back `stall`. Returns what the scan
+    /// read from that record (`None` when the child never wrote it).
+    ///
+    /// **The stall spells `/bin/sleep`**: the child's PATH is the fixture's
+    /// own bin directory alone, so a bare `sleep` is not found and the stall
+    /// silently never happens.
+    async fn scan_with_own_gh(stall: Duration, budget: Duration) -> Option<String> {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = tempfile::tempdir().expect("tempdir");
@@ -2016,9 +2116,17 @@ mod tests {
         std::fs::create_dir_all(&bin).expect("bin dir");
         let seen = dir.path().join("gh-seen-identity");
         let gh = bin.join("gh");
+        let hold = if stall.is_zero() {
+            String::new()
+        } else {
+            format!("/bin/sleep {}\n", stall.as_secs_f64())
+        };
         std::fs::write(
             &gh,
-            format!("#!/bin/sh\nprintf '%s' \"$GH_TOKEN\" > {}\nprintf '[]'\n", seen.display()),
+            format!(
+                "#!/bin/sh\n{hold}printf '%s' \"$GH_TOKEN\" > {}\nprintf '[]'\n",
+                seen.display()
+            ),
         )
         .expect("write gh");
         std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).expect("chmod gh");
@@ -2027,14 +2135,11 @@ mod tests {
             ("GH_TOKEN".to_owned(), "project-token".to_owned()),
         ]);
 
-        scan(dir.path(), &env, None).await;
-
-        let recorded = std::fs::read_to_string(&seen)
-            .expect("the scan's gh child ran and recorded the identity it was handed");
-        assert_eq!(recorded, "project-token", "the PR lookup spawns gh as the project");
+        scan_within(dir.path(), &env, None, budget).await;
         // The scan also kicks a throttled background fetch; settle it so
         // the fixture directory is not removed under a live child.
         settle_background_fetches().await;
+        std::fs::read_to_string(&seen).ok()
     }
 
     /// The incident shape: a worktree whose local branch name differs

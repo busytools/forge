@@ -521,6 +521,15 @@ server's, and the socket carries them to a client on connect, so a client
 never reads `forge.toml` for itself and the file stays the one source of
 truth. The server draws none of them: the socket serves no page.
 
+## `[usage]`
+
+How often the background poller refreshes account usage. Absent means
+the default.
+
+| Key            | Type    | Default | Notes                                                                                                                                                                                                                                                                                                             |
+| -------------- | ------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `poll_seconds` | integer | `60`    | The refresh interval, in seconds. The session page draws its 5h/7d utilization from the cache this fills, and the gateway's account selection reads it too, so the interval is an upper bound on how stale a "which account has more headroom" decision can be. `0` fails the load: a zero interval would probe continuously. |
+
 ## Unknown keys
 
 Every table rejects unknown fields, so a mistyped key fails the load

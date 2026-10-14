@@ -12,21 +12,42 @@
  * second suite written under the lowercase name silently replaces it.
  */
 
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+/** The shell's hold, as the pick module reaches it: what it asked to keep. */
+const shell = vi.hoisted(() => {
+  const holds: (string | null)[] = [];
+  return {
+    holds,
+    holdShellMic: (device: string | null): Promise<void> => {
+      holds.push(device);
+      return Promise.resolve();
+    },
+    openShellMic: (): Promise<never> => Promise.reject(new Error('a browser does not open here')),
+  };
+});
+vi.mock('./mic-shell', () => shell);
 
 import { DEFAULT_AXES } from '../session/wire';
 import {
   axesFor,
   defaultDeviceFor,
+  deviceFor,
   DESTINATION,
+  holdDeviceFor,
   keyHint,
   MODES,
   OVERRIDE,
   rememberAxes,
   rememberDefaultDevice,
+  rememberDevice,
   STRUCTURE,
   VOICE,
 } from './dictation';
+
+beforeEach(() => {
+  shell.holds.length = 0;
+});
 
 describe('the axes', () => {
   it('carries the terminal vocabulary, with its own labels', () => {
@@ -88,6 +109,39 @@ describe('the key hint', () => {
     // take is worse than no hint at all.
     expect(keyHint('off', true)).toBeNull();
     expect(keyHint('off', false)).toBeNull();
+  });
+});
+
+describe('the picked input', () => {
+  it('is remembered and held in the same move, so a press never opens a device under itself', () => {
+    const seat = 'session:TestOrg/proj/lead';
+    rememberDevice(seat, 'coreaudio:one');
+    expect(deviceFor(seat), 'the pick is what a press reads').toBe('coreaudio:one');
+    expect(
+      shell.holds,
+      'and the shell holds the same input, or the press pays the device open again',
+    ).toEqual(['coreaudio:one']);
+
+    // Clearing the pick is the system default, which the shell holds just
+    // the same: `null` is its own input, not an absence of one.
+    rememberDevice(seat, null);
+    expect(deviceFor(seat)).toBeNull();
+    expect(shell.holds).toEqual(['coreaudio:one', null]);
+  });
+
+  it('is what a page that takes typing holds, pick or default', () => {
+    const seat = 'session:TestOrg/proj/lead';
+    holdDeviceFor(seat);
+    expect(shell.holds, 'a seat with no pick records from the default').toEqual([null]);
+
+    shell.holds.length = 0;
+    rememberDevice(seat, 'coreaudio:two');
+    shell.holds.length = 0;
+    holdDeviceFor(seat);
+    expect(
+      shell.holds,
+      'the pick already in force is the one the session start holds, so its first press is warm',
+    ).toEqual(['coreaudio:two']);
   });
 });
 
