@@ -111,10 +111,6 @@ pub(crate) struct BridgeInner {
     /// present, read back through the handle's `display_name()` so a
     /// view can render which forge-account the bridge is bound to.
     display_name: Option<String>,
-    /// Where this seat's resume listing is read, set by the workspace from
-    /// the slot the session serves; `None` for a lead, whose listing is
-    /// read from the cwd it launches in.
-    worker_listing: Option<crate::agent::WorkerListing>,
     /// Forge-workspace-supplied in-process MCP servers attached at
     /// every `spawn_session` call. Today this is the per-session
     /// `forge` MCP server, whose tool surface varies by session kind;
@@ -173,7 +169,6 @@ impl ForgeSdkBridge {
         display_name: Option<String>,
         extra_mcp_servers: Vec<(String, forge_sdk::mcp::McpServer)>,
         env: HashMap<String, String>,
-        worker_listing: Option<crate::agent::WorkerListing>,
     ) -> Self {
         let (event_tx, events_rx) = mpsc::unbounded_channel();
         Self {
@@ -188,7 +183,6 @@ impl ForgeSdkBridge {
                 display_name,
                 extra_mcp_servers,
                 env,
-                worker_listing,
                 context_probes_in_flight: Mutex::new(HashSet::new()),
             }),
         }
@@ -363,7 +357,7 @@ impl ForgeSdkBridge {
 #[cfg(any(test, feature = "testing"))]
 impl Default for ForgeSdkBridge {
     fn default() -> Self {
-        Self::new(PathBuf::from(TESTING_STUB_CONFIG_DIR), None, Vec::new(), HashMap::new(), None)
+        Self::new(PathBuf::from(TESTING_STUB_CONFIG_DIR), None, Vec::new(), HashMap::new())
     }
 }
 
@@ -1074,12 +1068,6 @@ impl ForgeSdkBridge {
         self.inner.display_name.clone()
     }
 
-    /// Where this session's seat lists its own sessions from, `None` for a
-    /// lead. Read once per spawn.
-    pub(crate) fn worker_listing(&self) -> Option<crate::agent::WorkerListing> {
-        self.inner.worker_listing.clone()
-    }
-
     /// OS PID of the spawned `claude` child, when a client is bound
     /// and the transport reported one. Used by
     /// [`crate::env::processes`] to anchor an OS-level walk of the
@@ -1205,7 +1193,6 @@ mod tests {
             None,
             Vec::new(),
             HashMap::new(),
-            None,
         )
     }
 

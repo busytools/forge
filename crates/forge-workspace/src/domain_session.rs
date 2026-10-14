@@ -348,17 +348,9 @@ pub struct DomainSession {
     /// Written by the seat's watch loop while a view is showing it, so a
     /// read answers a value rather than paying for a `git` subprocess.
     pub work_snapshot: Option<crate::work::WorkSnapshot>,
-    /// Whether this conversation dispatched a sub-agent, anywhere in it.
-    ///
-    /// Assigned from the history a connect carries and raised by each dispatch
-    /// frame: it is a fact about the whole conversation rather than about a
-    /// window of it, so within one occupant's life it never goes back - but a
-    /// connect reassigns it, and a fresh `/new`, which carries no history,
-    /// leaves it false rather than inheriting the occupant before it.
-    pub has_dispatches: bool,
     /// The session's sub-agent instances, folded a frame at a time as they
     /// arrive. Seeded from the history a connect carries, then driven by
-    /// each frame - the same walk that raises [`Self::has_dispatches`].
+    /// each frame.
     pub card_tracker: crate::subagent_cards::CardTracker,
     /// The instance list the last announcement carried, which a push is
     /// gated on: an announcement is a frame about a change, so the frame
@@ -541,7 +533,6 @@ impl DomainSession {
             monitors: Vec::new(),
             process_snapshot: None,
             work_snapshot: None,
-            has_dispatches: false,
             card_tracker: crate::subagent_cards::CardTracker::default(),
             cards_snapshot: Vec::new(),
             file_index: None,

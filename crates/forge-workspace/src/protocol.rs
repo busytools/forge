@@ -36,9 +36,7 @@ use forge_primitives::plugins::{
 use forge_primitives::question::{QuestionOutcome, QuestionRequest};
 use forge_primitives::review::{ReviewStatus, ReviewThread};
 use forge_primitives::runtime::{AvailableModel, CurrentModel, ModeState, TerminalReason};
-use forge_primitives::{
-    ImageAttachment, McpOperationError, McpServerStatus, Message, SessionId, SessionListEntry,
-};
+use forge_primitives::{ImageAttachment, McpOperationError, McpServerStatus, Message, SessionId};
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use uuid::Uuid;
@@ -1584,17 +1582,6 @@ pub enum SessionUpdate {
         key: SessionSlot,
         subagents: Vec<forge_primitives::runtime::AvailableAgent>,
     },
-    /// The conversation dispatched a sub-agent, and did not before.
-    ///
-    /// **Pushed rather than read.** A dispatch is a call frame the CLI already
-    /// sends, so the fold that sees it announces the raise - the section the
-    /// flag gates appears as the dispatch happens rather than on the next
-    /// read. A connect reassigns the flag from the history it carries and is
-    /// not announced, because the read on that same event answers it.
-    DispatchesChanged {
-        key: SessionSlot,
-        has_dispatches: bool,
-    },
     /// The session's sub-agent instances moved, as the whole list the core
     /// folds from the frames it has seen.
     ///
@@ -1620,15 +1607,6 @@ pub enum SessionUpdate {
     FileIndexChanged {
         key: SessionSlot,
         index: std::sync::Arc<crate::file_index::FileIndex>,
-    },
-    SessionsListed {
-        /// Bucket this session list belongs to. The catalog scan that
-        /// produces `sessions` runs against the spawning session's
-        /// `cwd`, so the listing is project-scoped - routing onto
-        /// the requesting bucket prevents another session's `/resume`
-        /// autocomplete from inheriting a stale project's list.
-        key: SessionSlot,
-        sessions: Vec<SessionListEntry>,
     },
     ServiceStatus {
         severity: ServiceSeverity,
@@ -1812,14 +1790,6 @@ pub enum SessionUpdate {
         key: SessionSlot,
         id: Uuid,
         ending: forge_primitives::browser::HandOffEnding,
-    },
-    /// A workspace-originated prompt (cron fire, peer, gotify or slack
-    /// delivery, kick) landed while the target session's turn was in
-    /// flight. A view counts it into the bucket's queued-send bridge
-    /// so the spinner stays open across the gap; the prompt itself
-    /// rides the usual `Command::Prompt` dispatch.
-    PromptQueuedWhileBusy {
-        key: SessionSlot,
     },
     /// A prompt entered the CLI's queue: the row a view draws as waiting,
     /// with the words and the sender the lifecycle frames do not carry.
@@ -2018,13 +1988,11 @@ impl SessionUpdate {
             | Self::ForgeAccountIdentity { key, .. }
             | Self::DictateOverrides { key, .. }
             | Self::DictateDevicePin { key, .. }
-            | Self::SessionsListed { key, .. }
             | Self::ReviewActivityNotice { key, .. }
             | Self::DictateStarted { key, .. }
             | Self::DictateLevel { key, .. }
             | Self::DictateTranscribing { key, .. }
             | Self::DictateProgress { key, .. }
-            | Self::PromptQueuedWhileBusy { key }
             | Self::PromptQueued { key, .. }
             | Self::PromptLifecycle { key, .. }
             | Self::PromptCancelResolved { key, .. }
@@ -2045,7 +2013,6 @@ impl SessionUpdate {
             | Self::ConnectorSubscriptionsChanged { key, .. }
             | Self::SlashCommandsChanged { key, .. }
             | Self::SubagentsChanged { key, .. }
-            | Self::DispatchesChanged { key, .. }
             | Self::SubagentCardsChanged { key, .. }
             | Self::FileIndexChanged { key, .. }
             | Self::ProcessesChanged { key, .. }
@@ -2196,11 +2163,6 @@ impl std::fmt::Debug for SessionUpdate {
                 .field("key", key)
                 .field("count", &subagents.len())
                 .finish(),
-            Self::DispatchesChanged { key, has_dispatches } => f
-                .debug_struct("DispatchesChanged")
-                .field("key", key)
-                .field("has_dispatches", has_dispatches)
-                .finish(),
             Self::SubagentCardsChanged { key, cards } => f
                 .debug_struct("SubagentCardsChanged")
                 .field("key", key)
@@ -2225,11 +2187,6 @@ impl std::fmt::Debug for SessionUpdate {
                 .debug_struct("BackgroundTasksChanged")
                 .field("key", key)
                 .field("count", &tasks.len())
-                .finish(),
-            Self::SessionsListed { key, sessions } => f
-                .debug_struct("SessionsListed")
-                .field("key", key)
-                .field("count", &sessions.len())
                 .finish(),
             Self::ServiceStatus { .. } => f.debug_struct("ServiceStatus").finish_non_exhaustive(),
             Self::PluginsInventoryUpdated { cwd_raw, .. } => f
@@ -2317,9 +2274,6 @@ impl std::fmt::Debug for SessionUpdate {
                 .field("id", id)
                 .field("ending", ending)
                 .finish(),
-            Self::PromptQueuedWhileBusy { key } => {
-                f.debug_struct("PromptQueuedWhileBusy").field("key", key).finish()
-            }
             Self::PromptQueued { key, uuid, .. } => f
                 .debug_struct("PromptQueued")
                 .field("key", key)
