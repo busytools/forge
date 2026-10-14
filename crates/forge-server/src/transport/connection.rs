@@ -2,6 +2,7 @@
 //! that answers what a client asks for.
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -20,7 +21,7 @@ use forge_workspace::browser::{BrowserRelay, BrowserRequest, Notice};
 use super::PROTOCOL_VERSION;
 use super::TransportState;
 use super::batch::{self, Batch};
-use super::envelope::{ClientMessage, ClientSettings, ServerMessage, Subject};
+use super::envelope::{ClientMessage, ClientSettings, SeatFrameWire, ServerMessage, Subject};
 use super::wire::{conversation_for, encode_subject, page};
 use crate::live::Live;
 use crate::surface::{DictateOutcome, ViewSurface};
@@ -1146,6 +1147,55 @@ async fn handle_client(
             )
             .await
         }
+        // One stretch of a seat's own stream, for a client that read a gap in
+        // the numbers.
+        ClientMessage::SeatRange { slot, epoch, from, to } => {
+            let Some(cwd) = state.surface.roster().cwd_for(&slot) else {
+                return send(
+                    socket,
+                    ServerMessage::Error {
+                        what: "seat_range".to_owned(),
+                        why: format!("forge holds no session for {}", slot.display()),
+                        seat: Some(slot),
+                        dispatch_id: None,
+                    },
+                )
+                .await;
+            };
+            // **The numbers belong to an occupant.** A seat whose occupant has
+            // changed started counting again from one, so a repair across the
+            // two would splice one conversation onto another: the client is
+            // told to read the seat again rather than handed frames that look
+            // like an answer.
+            if state.surface.header(&slot).session_id != epoch {
+                return send(
+                    socket,
+                    ServerMessage::Error {
+                        what: "seat_range".to_owned(),
+                        why: "the seat's occupant has changed since those numbers were minted"
+                            .to_owned(),
+                        seat: Some(slot),
+                        dispatch_id: None,
+                    },
+                )
+                .await;
+            }
+            let frames = match state.surface.seat_oldest_kept_seq(&slot) {
+                // The window still holds the range's front, so it holds all of
+                // it: the frames cross as they were emitted.
+                Some(oldest) if oldest <= from => state
+                    .surface
+                    .seat_frames_between(&slot, from, to)
+                    .into_iter()
+                    .filter_map(|frame| {
+                        Some(SeatFrameWire { seq: frame.seq?, update: frame.update })
+                    })
+                    .collect(),
+                // The window has shed it, so the transcript answers.
+                _ => transcript_frames(state, &slot, &cwd, from, to).await,
+            };
+            send(socket, ServerMessage::SeatFrames { slot, epoch, frames }).await
+        }
         ClientMessage::DocumentRead { session, path, reviewable } => {
             // A file off disk takes as long as it takes, so the read runs in
             // a blocking task rather than inline. Nothing parks on the
@@ -1277,6 +1327,55 @@ async fn handle_client(
 fn mint_connection_id() -> u64 {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The frames a range ask is answered with once the seat's own window has shed
+/// them: the conversation's own rows, numbered to END at the range's end.
+///
+/// **What a frame was numbered is minted in memory and written down nowhere.**
+/// So a range that reaches past the window takes the transcript's newest rows -
+/// the stretch the client is reading, read back off the file - and numbers them
+/// so the last one is the ask's own end: the client resumes exactly where it
+/// was reading rather than asking again for a stretch that can never arrive,
+/// and the numbers it holds stay the numbers of one sequence rather than
+/// restarting at one.
+async fn transcript_frames(
+    state: &TransportState,
+    slot: &SessionSlot,
+    cwd: &Path,
+    from: u64,
+    to: u64,
+) -> Vec<SeatFrameWire> {
+    if to < from {
+        return Vec::new();
+    }
+    let want = (to - from).saturating_add(1);
+    let surface = Arc::clone(&state.surface);
+    let seat = slot.clone();
+    let cwd = cwd.to_owned();
+    // A whole-file read, because the call is the cold path: the seat's window
+    // is what answers a repair until it has shed the frames, and this is what
+    // is left when it has.
+    let Ok(read) = tokio::task::spawn_blocking(move || surface.conversation(&seat, &cwd)).await
+    else {
+        return Vec::new();
+    };
+    let rows = &read.messages;
+    let kept = u64::try_from(rows.len()).unwrap_or(u64::MAX).min(want);
+    let first = to.saturating_add(1).saturating_sub(kept);
+    rows.iter()
+        .skip(rows.len().saturating_sub(usize::try_from(kept).unwrap_or(usize::MAX)))
+        .enumerate()
+        .map(|(at, msg)| SeatFrameWire {
+            seq: first.saturating_add(u64::try_from(at).unwrap_or(u64::MAX)),
+            update: SessionUpdate::ChatAppended {
+                key: slot.clone(),
+                origin: None,
+                source: None,
+                msg: msg.clone(),
+            },
+        })
+        .collect()
 }
 
 /// Whether this connection is one of an update's readers.

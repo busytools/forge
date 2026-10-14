@@ -211,6 +211,20 @@ impl ViewSurface {
         self.workspace.seat_next_seq(slot)
     }
 
+    /// The frames `slot`'s stream emitted under the numbers in `from..=to`,
+    /// oldest first: the answer to a client's range ask while the seat's own
+    /// window holds them.
+    pub fn seat_frames_between(&self, slot: &SessionSlot, from: u64, to: u64) -> Vec<SeatUpdate> {
+        self.workspace.seat_frames_between(slot, from, to)
+    }
+
+    /// The oldest number `slot`'s window still holds, `None` for a seat that
+    /// has emitted nothing: what tells a range answered from memory from one
+    /// that has to be read off the transcript.
+    pub fn seat_oldest_kept_seq(&self, slot: &SessionSlot) -> Option<u64> {
+        self.workspace.seat_oldest_kept_seq(slot)
+    }
+
     /// The live workers, per project.
     pub fn workers(&self) -> Workers {
         Workers::collect(Arc::clone(&self.workspace))

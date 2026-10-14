@@ -190,6 +190,18 @@ conversation, as whole turns. Each turn carries `key` and `messages`, which is
 the same shape the session snapshot's `conversation` carries; the grouping
 inside a turn is the client's to decide.
 
+**`seat_range {slot, epoch, from, to}`** - the frames a seat's stream emitted
+between two numbers, for a client that read a gap in them. Every frame the
+workspace emits for a seat is numbered on that seat's own counter, so a client
+that reads 5 and then 7 knows exactly one frame went missing; the seat's
+`header.seq` says where the stream stands and the occupant's session id beside
+it is the epoch those numbers belong to. The answer is `seat_frames`, and a
+range the seat's own window no longer holds is answered from the session's
+transcript instead. **An `error` naming `seat_range` means read the seat
+again**: a seat forge holds no session for, or one whose occupant has changed
+since those numbers were minted - a repair across two epochs would splice one
+conversation onto another.
+
 **A page that cannot be answered is REFUSED rather than answered empty.** An
 empty page carries `cursor: null`, which a client reads as "nothing above" and
 stops asking on - so an answer the server could not give would make the seat's
@@ -402,6 +414,15 @@ was asked for.
   state rather than as an event: a card left at `0 ready, probing` looks
   like a slow probe rather than like a page that stopped listening.
 - **`page {conversation, turns, cursor}`** - in answer to `more`.
+- **`seat_frames {slot, epoch, frames}`** - in answer to `seat_range`: the
+  frames numbered in `from..=to`, oldest first, each `{seq, update}` with the
+  update in the same shape a live `update` carries - so a repaired frame folds
+  through the same pipeline a live one does. **The range is answered from the
+  seat's own window while it holds the frames, and from the session's
+  transcript below that**: the transcript's own newest rows cross, numbered to
+  END at the range's end, because what a frame was numbered is minted in
+  memory and written down nowhere. The client resumes exactly where it was
+  reading rather than asking again for a stretch that can never arrive.
 - **`document_read {session, path, document_kind, bytes, reviewable,
 content_hash, threads, reviews}`** - in answer to `document_read`: the
   seat it was read for, the resolved absolute path the viewer addresses by,

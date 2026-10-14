@@ -9,6 +9,7 @@
     "Greeting": "greeting",
     "Page": "page",
     "Reply": "reply",
+    "SeatFrames": "seat_frames",
     "Snapshot": "snapshot",
     "Update": "update"
   },
@@ -154,6 +155,7 @@
     "CommitDiff": "commit_diff",
     "DocumentRead": "document_read",
     "More": "more",
+    "SeatRange": "seat_range",
     "Subscribe": "subscribe",
     "Unsubscribe": "unsubscribe"
   },
@@ -642,6 +644,35 @@
         "token_costs"
       ]
     },
+    "SeatFrames": {
+      "": [
+        "epoch",
+        "frames",
+        "kind",
+        "slot"
+      ],
+      "/frames[]": [
+        "seq",
+        "update"
+      ],
+      "/frames[]/update": [
+        "turn_complete"
+      ],
+      "/frames[]/update/turn_complete": [
+        "key",
+        "terminal_reason"
+      ],
+      "/frames[]/update/turn_complete/key": [
+        "label",
+        "org",
+        "project"
+      ],
+      "/slot": [
+        "label",
+        "org",
+        "project"
+      ]
+    },
     "SnapshotExtensions": {
       "": [
         "data",
@@ -889,6 +920,20 @@
         "session"
       ],
       "/session": [
+        "label",
+        "org",
+        "project"
+      ]
+    },
+    "SeatRange": {
+      "": [
+        "epoch",
+        "from",
+        "kind",
+        "slot",
+        "to"
+      ],
+      "/slot": [
         "label",
         "org",
         "project"

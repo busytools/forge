@@ -248,6 +248,7 @@ macro_rules! assert_serde_names {
 census!(ServerMessage,
     [
         Greeting struct, Snapshot struct, Update struct, Page struct,
+        SeatFrames struct,
         CommitDiff struct, Reply struct, BrowserRole struct, Error struct,
         BrowserAsk struct,
         DocumentRead struct,
@@ -327,7 +328,8 @@ census!(Command,
 // command does nothing when it is pressed.
 census!(ClientMessage,
     [
-        Subscribe struct, Unsubscribe struct, Command struct, More struct, CommitDiff struct,
+        Subscribe struct, Unsubscribe struct, Command struct, More struct, SeatRange struct,
+        CommitDiff struct,
         BrowserAnswer struct,
         BrowserTakeRole struct,
         DocumentRead struct,
@@ -852,6 +854,25 @@ fn frames_record() -> Value {
                 messages: vec![json!({ "type": "user" })],
             }],
             cursor: Some("message-1".to_owned()),
+        }),
+    );
+    // **The repair's answer, where the numbers ARE the contract.** A client
+    // resumes its own sequence from the last `seq` it is handed, and a rename
+    // inside this payload - a frame's number, or the update it carries - would
+    // fail no census line while the client read undefined and kept asking for
+    // a stretch that can never arrive.
+    payload_sampled.insert(
+        "SeatFrames".to_owned(),
+        shape_of(&ServerMessage::SeatFrames {
+            slot: seat.clone(),
+            epoch: Some(forge_primitives::SessionId::from("5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45")),
+            frames: vec![forge_server::transport::envelope::SeatFrameWire {
+                seq: 7,
+                update: forge_server::surface::SessionUpdate::TurnComplete {
+                    key: seat.clone(),
+                    terminal_reason: None,
+                },
+            }],
         }),
     );
     // The greeting, because its settings gained the dictate axes a
@@ -1468,6 +1489,17 @@ fn client_sampled() -> BTreeMap<String, BTreeMap<String, Value>> {
             answering: false,
             browser: true,
             declare: false,
+        }),
+    );
+    // The repair ask, for the subscribe's reason: a client writes these fields
+    // by hand, and a rename fails nothing until a gap is never filled.
+    sampled.insert(
+        "SeatRange".to_owned(),
+        sample(ClientMessage::SeatRange {
+            slot: SessionSlot::lead("TestOrg", "proj"),
+            epoch: Some(forge_primitives::SessionId::from("5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45")),
+            from: 1,
+            to: 4,
         }),
     );
     // A document read's ask: the page writes these fields by hand, so a

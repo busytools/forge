@@ -3848,6 +3848,28 @@ impl Workspace {
         self.update_tx.next_seq(key)
     }
 
+    /// The frames `key`'s stream emitted under the numbers in `from..=to`,
+    /// oldest first: the answer to a client's range ask while the seat's own
+    /// window holds them.
+    pub fn seat_frames_between(&self, key: &SessionSlot, from: u64, to: u64) -> Vec<SeatUpdate> {
+        self.update_tx.frames_between(key, from, to)
+    }
+
+    /// The oldest number `key`'s window still holds, `None` for a seat that
+    /// has emitted nothing: what tells a range answered from memory from one
+    /// that has to be read off the transcript.
+    pub fn seat_oldest_kept_seq(&self, key: &SessionSlot) -> Option<u64> {
+        self.update_tx.oldest_kept(key)
+    }
+
+    /// Drive the seat window's cap down. Test-only: it is what lets a fixture
+    /// reach the transcript fallback without emitting a window's worth of
+    /// frames.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn set_seat_ring_cap_for_test(&self, cap: usize) {
+        self.update_tx.set_ring_cap(cap);
+    }
+
     /// Borrow the workspace-side [`DomainSession`] for `key`.
     ///
     /// Returns the [`Arc`]-cloned mutex protecting the domain bucket.

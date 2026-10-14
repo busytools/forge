@@ -2923,6 +2923,31 @@ async fn a_sleeping_seats_snapshot_carries_its_transcripts_turns() {
     );
 }
 
+/// A user frame saying `text`, as a seat's own turn arrives.
+fn a_said_frame(text: &str) -> forge_primitives::Message {
+    serde_json::from_value(serde_json::json!({
+        "type": "user",
+        "message": {"role": "user", "content": [{"type": "text", "text": text}]},
+        "session_id": "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
+    }))
+    .expect("a user frame")
+}
+
+/// Wait until the transport's own fold has attached to the core's stream.
+///
+/// It attaches at boot, one scheduling hop after the server starts; a frame
+/// emitted before it is held for the first client instead, which is the boot
+/// backlog's path rather than any of these tests'.
+async fn wait_for_the_fold(fleet: &Fleet) {
+    for _ in 0..200 {
+        if fleet.subscriber_count() > 0 {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    panic!("the transport's own fold never attached");
+}
+
 /// The thinking tokens the snapshot's turns have spent, summed from the
 /// deltas their frames carry.
 fn thinking_spent(data: &serde_json::Value) -> i64 {
@@ -2954,16 +2979,9 @@ async fn a_seats_reconnect_answer_carries_the_running_turn() {
     // The running turn's own frames, as the task emits them: the window a
     // client reads is the transport's copy of exactly these.
     //
-    // Emitted only once the transport's own fold is attached - it attaches at
-    // boot, one scheduling hop after the server starts - because a frame
-    // emitted before it is held for the first client instead, which is the
-    // boot backlog's path rather than this test's subject.
-    for _ in 0..200 {
-        if fleet.subscriber_count() > 0 {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-    }
+    // Emitted only once the transport's own fold is attached, or the frame is
+    // held for the first client instead of reaching the copy this reads.
+    wait_for_the_fold(&fleet).await;
     fleet.emit(SessionUpdate::ChatAppended {
         key: seat.clone(),
         origin: None,
@@ -3105,6 +3123,130 @@ async fn a_resumed_seats_answer_starts_its_new_epoch_at_one() {
     assert!(
         held,
         "a resumed seat's answer names the new occupant and the epoch's own first number",
+    );
+}
+
+/// A range ask is answered from the window the seat already keeps: the frames
+/// asked for, each carrying the number it was minted under, so a client that
+/// missed a stretch can fold exactly those and carry on.
+#[tokio::test]
+async fn a_range_ask_inside_the_window_answers_exactly_the_asked_frames() {
+    let (url, fleet, _state) = a_server_with_state().await;
+    let seat = lead_seat();
+    wait_for_the_fold(&fleet).await;
+    for at in 1..=3 {
+        fleet.emit(SessionUpdate::ChatAppended {
+            key: seat.clone(),
+            origin: None,
+            source: None,
+            msg: a_said_frame(&format!("frame {at}")),
+        });
+    }
+
+    let mut socket = connect(&url).await;
+    send(&mut socket, ClientMessage::SeatRange { slot: seat.clone(), epoch: None, from: 2, to: 3 })
+        .await;
+
+    let ServerMessage::SeatFrames { slot, epoch, frames } = next_server(&mut socket).await else {
+        panic!("a range ask is answered with the frames it asked for")
+    };
+    assert_eq!(slot, seat, "the answer names the seat it was asked about");
+    assert_eq!(epoch, None, "and the epoch the numbers belong to");
+    assert_eq!(
+        frames.iter().map(|frame| frame.seq).collect::<Vec<_>>(),
+        vec![2, 3],
+        "exactly the asked range, in order",
+    );
+    let asked = serde_json::to_string(&frames[0].update).unwrap_or_default();
+    assert!(asked.contains("frame 2"), "with each frame's own content: {asked}");
+}
+
+/// **A range older than the window falls back to the transcript, and the
+/// frames still carry the range's own numbers.** Re-numbering them from one
+/// would leave the client's sequence looking gapped forever, and dropping them
+/// would leave rows nobody can ask for again.
+#[tokio::test]
+async fn a_range_older_than_the_window_falls_back_to_the_transcript() {
+    let (url, fleet, _state) = a_server_with_state().await;
+    let seat = lead_seat();
+    let rows: Vec<String> = (1..=4)
+        .map(|at| {
+            format!(r#"{{"type":"user","uuid":"u{at}","message":{{"role":"user","content":"row {at}"}}}}"#)
+        })
+        .collect();
+    let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
+    fleet.seed_transcript("TestOrg", "proj", "lead", &borrowed).expect("the transcript seeds");
+    // The window has already shed all but its newest frame, which is what
+    // makes the ask below reach past it.
+    fleet.workspace().set_seat_ring_cap_for_test(1);
+    wait_for_the_fold(&fleet).await;
+    for at in 1..=4 {
+        fleet.emit(SessionUpdate::ChatAppended {
+            key: seat.clone(),
+            origin: None,
+            source: None,
+            msg: a_said_frame(&format!("frame {at}")),
+        });
+    }
+
+    let mut socket = connect(&url).await;
+    send(&mut socket, ClientMessage::SeatRange { slot: seat.clone(), epoch: None, from: 1, to: 4 })
+        .await;
+
+    let ServerMessage::SeatFrames { frames, .. } = next_server(&mut socket).await else {
+        panic!("a range older than the window is answered from the transcript")
+    };
+    assert_eq!(
+        frames.iter().map(|frame| frame.seq).collect::<Vec<_>>(),
+        vec![1, 2, 3, 4],
+        "the repaired frames carry the range's own numbers rather than restarting at one",
+    );
+    let texts: Vec<String> = frames
+        .iter()
+        .map(|frame| serde_json::to_string(&frame.update).unwrap_or_default())
+        .collect();
+    assert!(
+        texts[0].contains("row 1") && texts[3].contains("row 4"),
+        "and their content is the transcript's own rows, not the frames the window shed: {texts:?}",
+    );
+}
+
+/// **A range ask naming an epoch the seat has left is refused.** Those numbers
+/// belong to an occupant that is gone, and repairing across the two would
+/// splice one conversation onto another - so the client is told to read the
+/// seat again rather than handed frames that look like an answer.
+#[tokio::test]
+async fn a_range_ask_from_another_epoch_is_refused() {
+    let (url, fleet, _state) = a_server_with_state().await;
+    let seat = lead_seat();
+    fleet.seed_view_facts(
+        &seat,
+        ViewFacts {
+            session_id: Some(SessionId::from("5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45")),
+            ..Default::default()
+        },
+    );
+
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::SeatRange {
+            slot: seat.clone(),
+            epoch: Some(SessionId::from("6c2d3e4f-5061-4b72-8839-ad1e2f3a4b56")),
+            from: 1,
+            to: 2,
+        },
+    )
+    .await;
+
+    let ServerMessage::Error { what, why, seat: named, .. } = next_server(&mut socket).await else {
+        panic!("a range ask from another epoch is refused rather than answered")
+    };
+    assert_eq!(what, "seat_range", "the refusal names what was asked for");
+    assert_eq!(named, Some(seat), "and the seat it belongs to");
+    assert!(
+        why.contains("occupant"),
+        "and why, so a client knows to read the seat again rather than retry: {why}",
     );
 }
 

@@ -1,6 +1,6 @@
 //! Fan-out for the workspace's [`SessionUpdate`] stream.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -23,6 +23,15 @@ pub struct SeatUpdate {
     pub update: SessionUpdate,
 }
 
+/// How many frames one seat's stream keeps for repair.
+///
+/// **Sized from the window a client is served from**, like the conversation
+/// copy the task holds: it is the stretch a repair is answered from memory,
+/// and what falls past it is the transcript's own read. A ring is shed whole
+/// at an occupant change - the numbers start over, so the frames before one
+/// are unreachable - and at a release.
+const SEAT_RING: usize = crate::conversation_window::CONVERSATION_CAP;
+
 /// What a subscriber can do with what it is sent.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SubscriberRole {
@@ -42,7 +51,6 @@ struct Registration {
     role: SubscriberRole,
 }
 
-#[derive(Default)]
 struct Shared {
     subscribers: Vec<Registration>,
     /// Updates emitted before the first subscriber attached, held for
@@ -59,6 +67,30 @@ struct Shared {
     /// **Per seat, keyed by the frame's own slot**, so a frame for one seat
     /// can neither advance another's counter nor leave a hole in it.
     sequences: HashMap<SessionSlot, u64>,
+    /// The newest frames each seat's stream has emitted, oldest first, for a
+    /// client that read a gap in the numbers and asks for what it missed.
+    ///
+    /// Held here rather than on the session task because here is where every
+    /// frame of the seat crosses, whichever site emitted it - and the number a
+    /// repair hands back is the one minted here.
+    rings: HashMap<SessionSlot, VecDeque<SeatUpdate>>,
+    /// How many frames a ring keeps. [`SEAT_RING`] in production; a test
+    /// drives it down so the transcript fallback is reachable without
+    /// emitting thousands of frames.
+    ring_cap: usize,
+}
+
+impl Default for Shared {
+    fn default() -> Self {
+        Self {
+            subscribers: Vec::new(),
+            pending: Vec::new(),
+            attached: false,
+            sequences: HashMap::new(),
+            rings: HashMap::new(),
+            ring_cap: SEAT_RING,
+        }
+    }
 }
 
 impl Shared {
@@ -71,17 +103,53 @@ impl Shared {
     /// the client learns the occupant from that frame itself and wipes to
     /// expect 1, never a gap.
     fn numbered(&mut self, update: SessionUpdate) -> SeatUpdate {
-        let Some(slot) = update.slot() else {
+        let Some(slot) = update.slot().cloned() else {
             return SeatUpdate { seq: None, update };
         };
-        let seq = self.sequences.get(slot).copied().unwrap_or(0) + 1;
+        if matches!(update, SessionUpdate::Releasing { .. }) {
+            // The seat is being taken down, and its frames are on the far side
+            // of a release: nothing asks for the numbers of a seat that is
+            // going away.
+            self.rings.remove(&slot);
+        }
+        let seq = self.next_seq(&slot);
         if matches!(update, SessionUpdate::Connected { .. } | SessionUpdate::SessionReplaced { .. })
         {
-            self.sequences.remove(slot);
+            self.sequences.remove(&slot);
+            // **A new occupant starts counting again**, so the frames before
+            // it belong to a stream no client holds any more - and a repair
+            // that could reach into them would splice two conversations.
+            self.rings.remove(&slot);
         } else {
             self.sequences.insert(slot.clone(), seq);
         }
-        SeatUpdate { seq: Some(seq), update }
+        let frame = SeatUpdate { seq: Some(seq), update };
+        let ring = self.rings.entry(slot).or_default();
+        ring.push_back(frame.clone());
+        while ring.len() > self.ring_cap {
+            ring.pop_front();
+        }
+        frame
+    }
+
+    /// The frames of `slot`'s ring that carry the numbers in `from..=to`,
+    /// oldest first.
+    fn frames_between(&self, slot: &SessionSlot, from: u64, to: u64) -> Vec<SeatUpdate> {
+        self.rings
+            .get(slot)
+            .map(|ring| {
+                ring.iter()
+                    .filter(|frame| frame.seq.is_some_and(|seq| (from..=to).contains(&seq)))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The oldest number `slot`'s ring still holds, `None` for a seat that
+    /// has emitted nothing.
+    fn oldest_kept(&self, slot: &SessionSlot) -> Option<u64> {
+        self.rings.get(slot).and_then(|ring| ring.front()).and_then(|frame| frame.seq)
     }
 
     /// The number `slot`'s next frame will be minted under.
@@ -159,6 +227,25 @@ impl UpdateFanout {
     /// just read the seat knows exactly what to expect next.
     pub(crate) fn next_seq(&self, slot: &SessionSlot) -> u64 {
         self.shared.lock().next_seq(slot)
+    }
+
+    /// The frames of `slot`'s window numbered in `from..=to`, oldest first,
+    /// for a client that read a gap in them.
+    pub(crate) fn frames_between(&self, slot: &SessionSlot, from: u64, to: u64) -> Vec<SeatUpdate> {
+        self.shared.lock().frames_between(slot, from, to)
+    }
+
+    /// The oldest number `slot`'s window still holds: what tells a range it
+    /// can answer from memory from one it cannot.
+    pub(crate) fn oldest_kept(&self, slot: &SessionSlot) -> Option<u64> {
+        self.shared.lock().oldest_kept(slot)
+    }
+
+    /// Drive the ring's cap down, so a test reaches the transcript fallback
+    /// without emitting a window's worth of frames.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn set_ring_cap(&self, cap: usize) {
+        self.shared.lock().ring_cap = cap;
     }
 
     /// How many subscribers are attached.
