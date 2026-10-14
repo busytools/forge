@@ -352,11 +352,7 @@ impl Mic {
     ) -> Result<Warm, String> {
         let carry = Arc::new(Carry::new(bridge, owner.is_some()));
         let held = (self.opener)(device, Arc::clone(&carry))?;
-        Ok(Warm {
-            requested: device.map(str::to_owned),
-            held,
-            owner: owner.map(str::to_owned),
-        })
+        Ok(Warm { requested: device.map(str::to_owned), held, owner: owner.map(str::to_owned) })
     }
 }
 
@@ -516,7 +512,8 @@ mod tests {
             // serves the next take.
             rig.mic.stop();
             assert_eq!(rig.calls(), vec!["open one"], "the take's end keeps the device open");
-            rig.mic.start(&rig.bridge, Some("one".to_owned()), "page")
+            rig.mic
+                .start(&rig.bridge, Some("one".to_owned()), "page")
                 .expect("the next take is warm");
             assert_eq!(rig.calls(), vec!["open one"], "the second press opens nothing either");
         }
@@ -532,7 +529,9 @@ mod tests {
                 "the new pick opens before the old one is let go"
             );
             // And the new pick is the one a take gets.
-            let held = rig.mic.start(&rig.bridge, Some("two".to_owned()), "page")
+            let held = rig
+                .mic
+                .start(&rig.bridge, Some("two".to_owned()), "page")
                 .expect("the take starts");
             assert_eq!(held.id, "two", "the re-acquired device is the one recorded from");
         }
