@@ -2101,6 +2101,37 @@ describe('the conversation the chat draws', () => {
     expect(after.length, 'the repeated turn is the one already held, not a second row').toBe(1);
   });
 
+  /**
+   * A transcript can carry a block of records twice, and the two copies can
+   * fall either side of a page boundary - so the page below hands back turns
+   * the page above already drew. They draw once because each copy carries the
+   * same `uuid` on its frames, which is what names the turn, and the merge
+   * finds the row it already holds by that name rather than adding a second.
+   * Change the second copy's ids and the row lands twice, which is the count
+   * this pins.
+   */
+  it('draws a duplicated block once when a page boundary splits its two copies', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    // The newest page holds the later copy of `bravo` and `charlie` ...
+    server.send(page([turn(null, 'bravo'), turn(null, 'charlie')], 'cursor-1'));
+    // ... and the page below holds the earlier copy of the same block, under
+    // the same uuids, which a read of the file alone cannot tell is a repeat.
+    chat.older();
+    server.send(page([turn(null, 'alpha'), turn(null, 'bravo'), turn(null, 'charlie')], null));
+
+    const after = get(chat.value).turns;
+    expect(
+      after.filter((row) => JSON.stringify(row.messages).includes('bravo')).length,
+      'the block both pages carry is drawn once',
+    ).toBe(1);
+    expect(
+      after.map((row) => row.key),
+      'the older row stands above the block rather than beside a second copy of it',
+    ).toEqual(['turn-u-alpha', 'turn-u-bravo', 'turn-u-charlie']);
+  });
+
   it('replaces a turn whose opening frame carries no id', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
