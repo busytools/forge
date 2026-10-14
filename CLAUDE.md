@@ -24,11 +24,11 @@ forge-test-harness ─→ primitives + sdk + workspace + server
   the downmix and resampler, and the mono frames a host reads from it.
   A leaf: no forge-* dependency, and no knowledge of a host, a take or
   a wire - so a client's shell captures through it and `forge-dictate`
-  re-exports its device list.
+  takes its sample rate.
 - **`forge-dictate`** - the dictation primitive: audio in, text out.
   Owns its model files, speech recognition and normalization, and takes
   audio as mono frames a host pushes in. Its one forge-* dependency is
-  the capture leaf, for the device list; it knows nothing about a host,
+  the capture leaf, for the sample rate; it knows nothing about a host,
   so it must not grow one, and a doc comment mentioning a keypress, a
   composer or a session is a bug.
 - **`forge-system-one`** - the System One decision-model client: the

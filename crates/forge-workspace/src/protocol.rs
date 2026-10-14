@@ -10,9 +10,8 @@
 //! Cancel, SetMode, …) but serve different boundary layers:
 //!
 //! - **`forge_workspace::protocol::Command`** is the view ↔ workspace
-//!   envelope. SessionSlot routing, App-level variants
-//!   (SpawnProject / SpawnSession / StartDefault), the
-//!   workspace-internal Respond* + MCP cluster.
+//!   envelope. SessionSlot routing, App-level variants (SpawnProject),
+//!   the workspace-internal Respond* cluster.
 //! - **`forge_primitives::AgentCommand`** is the workspace ↔ agent
 //!   envelope. session_id-keyed, raw shapes the AgentHandle
 //!   dispatcher recognises.
@@ -37,9 +36,7 @@ use forge_primitives::plugins::{
 use forge_primitives::question::{QuestionOutcome, QuestionRequest};
 use forge_primitives::review::{ReviewStatus, ReviewThread};
 use forge_primitives::runtime::{AvailableModel, CurrentModel, ModeState, TerminalReason};
-use forge_primitives::{
-    ImageAttachment, McpOperationError, McpServerStatus, Message, SessionId, SessionListEntry,
-};
+use forge_primitives::{ImageAttachment, McpOperationError, McpServerStatus, Message, SessionId};
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use uuid::Uuid;
@@ -385,14 +382,6 @@ pub enum Command {
     ResetDictateOverrides {
         key: SessionSlot,
     },
-    /// Set the `/dictate` input-device pick, or clear it back to the
-    /// configured pin. Workspace state shared by every session, never
-    /// routed to the agent; the echo lands as
-    /// `SessionUpdate::DictateDevicePin`.
-    SetDictateDevice {
-        key: SessionSlot,
-        pick: Option<crate::dictate::DictateDeviceChoice>,
-    },
     /// Check the model catalogue now. App-level command (`key()` returns
     /// `None`); routed inline. Fire-and-forget: the outcome rides
     /// [`SessionUpdate::DictateModelsChanged`], so a client watches its
@@ -465,17 +454,6 @@ pub enum Command {
     DictateUninstall {
         file: String,
     },
-    /// Reconnect a configured MCP server.
-    ReconnectMcpServer {
-        key: SessionSlot,
-        server_name: String,
-    },
-    /// Toggle a configured MCP server on/off.
-    ToggleMcpServer {
-        key: SessionSlot,
-        server_name: String,
-        enabled: bool,
-    },
     // --- Plugins / marketplaces (app-level; the Extensions page) ---
     //
     // These variants carry the work through the command bus so a view
@@ -518,31 +496,6 @@ pub enum Command {
     /// it. This is an App-level Command, not per-session.
     SpawnProject {
         project_name: String,
-        launch_settings: SessionLaunchSettings,
-    },
-    /// User clicked a non-lead session row. Workspace spawns an
-    /// agent for the slot the row names, under the id its row holds,
-    /// and emits `Spawning` then `Connected` on it.
-    ///
-    /// `role` is what the dispatcher knows the row to be. The row is a
-    /// catalog entry, so the spawn cannot tell a worker's session from a
-    /// lead's by anything it holds, and a worker handed a lead's tool
-    /// surface fails silently - so the caller states it.
-    SpawnSession {
-        key: SessionSlot,
-        role: SpawnRole,
-        launch_settings: SessionLaunchSettings,
-    },
-    /// App start. Workspace spawns the default project (or the
-    /// project passed on CLI argv) and emits the spawning + connected
-    /// updates. Dispatched once at startup. `is_fatal_on_failure`
-    /// flags whether a pre-Connected failure should emit
-    /// `SessionUpdate::FatalError` alongside the `ConnectionFailed`;
-    /// startup is fatal (nothing to render), the sleeping-spawn flows
-    /// are not (the user has an active session whose state must
-    /// survive a spawn failure).
-    StartDefault {
-        project_name: Option<String>,
         launch_settings: SessionLaunchSettings,
     },
     /// The user's verdict on a row waiting on their look. App-level (no
@@ -674,14 +627,6 @@ pub enum Command {
         project_key: crate::ProjectKey,
         label: String,
     },
-    /// Open a URL in the system browser. Dispatched by a view's
-    /// Inspector PR-row click. App-level command (`key()` returns
-    /// `None`); the shell-out runs in `forge_agent::env::open_url`
-    /// and a failure surfaces as a
-    /// `SessionUpdate::ServiceStatus` warning.
-    OpenUrl {
-        url: String,
-    },
     /// Despawn the worker identified by `label` in `project_key`:
     /// terminate its agent, drop it from `live_workers`, AND clean up
     /// its git worktree. Dispatched by the
@@ -764,23 +709,6 @@ pub enum Command {
         #[serde(skip)]
         initiator: Option<u64>,
     },
-    /// Overwrite the review-thread set for `(project, branch)`.
-    /// Dispatched by the diff overlay's re-anchor recompute. Fire-and-
-    /// forget: a write failure is warned, not surfaced. App-level
-    /// command (`key()` returns `None`); routed inline in dispatch.
-    SaveReviewThreads {
-        project: String,
-        branch: String,
-        threads: Vec<ReviewThread>,
-    },
-    /// Remove one review thread by id from `(project, branch)`, so a
-    /// deleted comment does not resurrect on the next hydrate.
-    /// App-level command (`key()` returns `None`); routed inline.
-    RemoveReviewThread {
-        project: String,
-        branch: String,
-        thread_id: String,
-    },
     /// Set the status of one review thread by id, bumping its
     /// `updated_at`. App-level command (`key()` returns `None`);
     /// routed inline.
@@ -827,11 +755,10 @@ pub enum Command {
 
 impl Command {
     /// The `SessionSlot` this command routes to, or `None` for
-    /// App-level commands (`SpawnProject`, `SpawnSession`,
-    /// `StartDefault`). `Workspace::dispatch` routes `None` commands
-    /// to its app-level handler (which resolves the id the new session
-    /// will run under and spawns the agent); `Some(key)` commands route
-    /// to the matching SessionTask.
+    /// App-level commands (`SpawnProject`). `Workspace::dispatch`
+    /// routes `None` commands to its app-level handler (which resolves
+    /// the id the new session will run under and spawns the agent);
+    /// `Some(key)` commands route to the matching SessionTask.
     pub fn key(&self) -> Option<&SessionSlot> {
         match self {
             Self::Prompt { key, .. }
@@ -846,14 +773,9 @@ impl Command {
             | Self::ResumeSession { key, .. }
             | Self::RespondPermission { key, .. }
             | Self::RespondQuestion { key, .. }
-            | Self::ReconnectMcpServer { key, .. }
-            | Self::ToggleMcpServer { key, .. }
             | Self::SetDictateOverride { key, .. }
-            | Self::ResetDictateOverrides { key }
-            | Self::SetDictateDevice { key, .. } => Some(key),
+            | Self::ResetDictateOverrides { key } => Some(key),
             Self::SpawnProject { .. }
-            | Self::SpawnSession { .. }
-            | Self::StartDefault { .. }
             | Self::DictateStream { .. }
             | Self::DictateStop { .. }
             | Self::DeliverPeerPrompt { .. }
@@ -874,9 +796,6 @@ impl Command {
             | Self::DictateReadAloudDelete { .. }
             | Self::DictateBenchDelete { .. }
             | Self::DictateUninstall { .. }
-            | Self::OpenUrl { .. }
-            | Self::SaveReviewThreads { .. }
-            | Self::RemoveReviewThread { .. }
             | Self::SetReviewThreadStatus { .. }
             | Self::CloseSession { .. }
             | Self::UpsertReviewThread { .. }
@@ -978,29 +897,8 @@ impl std::fmt::Debug for Command {
             Self::ResetDictateOverrides { key } => {
                 f.debug_struct("ResetDictateOverrides").field("key", key).finish()
             }
-            Self::SetDictateDevice { key, .. } => {
-                f.debug_struct("SetDictateDevice").field("key", key).finish_non_exhaustive()
-            }
-            Self::ReconnectMcpServer { key, server_name } => f
-                .debug_struct("ReconnectMcpServer")
-                .field("key", key)
-                .field("server_name", server_name)
-                .finish(),
-            Self::ToggleMcpServer { key, server_name, enabled } => f
-                .debug_struct("ToggleMcpServer")
-                .field("key", key)
-                .field("server_name", server_name)
-                .field("enabled", enabled)
-                .finish(),
             Self::SpawnProject { project_name, .. } => f
                 .debug_struct("SpawnProject")
-                .field("project_name", project_name)
-                .finish_non_exhaustive(),
-            Self::SpawnSession { key, .. } => {
-                f.debug_struct("SpawnSession").field("key", key).finish_non_exhaustive()
-            }
-            Self::StartDefault { project_name, .. } => f
-                .debug_struct("StartDefault")
                 .field("project_name", project_name)
                 .finish_non_exhaustive(),
             Self::DeliverPeerPrompt { caller, target_project, .. } => f
@@ -1044,7 +942,6 @@ impl std::fmt::Debug for Command {
                 .field("app", &notification.app)
                 .field("priority", &notification.priority)
                 .finish_non_exhaustive(),
-            Self::OpenUrl { url } => f.debug_struct("OpenUrl").field("url", url).finish(),
             Self::DictateCatalogueCheck => f.write_str("DictateCatalogueCheck"),
             Self::DictateInstall { variant } => {
                 f.debug_struct("DictateInstall").field("variant", variant).finish()
@@ -1081,17 +978,6 @@ impl std::fmt::Debug for Command {
             Self::DictateStop { key, submit, .. } => {
                 f.debug_struct("DictateStop").field("key", key).field("submit", submit).finish()
             }
-            Self::SaveReviewThreads { project, branch, .. } => f
-                .debug_struct("SaveReviewThreads")
-                .field("project", project)
-                .field("branch", branch)
-                .finish_non_exhaustive(),
-            Self::RemoveReviewThread { project, branch, thread_id } => f
-                .debug_struct("RemoveReviewThread")
-                .field("project", project)
-                .field("branch", branch)
-                .field("thread_id", thread_id)
-                .finish(),
             Self::SetReviewThreadStatus { project, branch, thread_id, status } => f
                 .debug_struct("SetReviewThreadStatus")
                 .field("project", project)
@@ -1336,8 +1222,7 @@ pub enum NoticeSeverity {
 #[serde(rename_all = "snake_case")]
 pub enum SessionUpdate {
     /// Workspace is spawning a session (in response to
-    /// `Command::SpawnProject` / `Command::SpawnSession` /
-    /// `Command::StartDefault`). A view creates a placeholder
+    /// `Command::SpawnProject`). A view creates a placeholder
     /// under `key` and shows the "Waking {display_name}…" message. The
     /// matching `Connected` lands soon after, under the same key.
     Spawning {
@@ -1563,14 +1448,6 @@ pub enum SessionUpdate {
         key: SessionSlot,
         overrides: crate::dictate::DictateOverrides,
     },
-    /// The input-device pick in force after a `/dictate` device edit
-    /// landed - workspace state shared by every session. Sent after
-    /// every `SetDictateDevice`, and alongside the overrides echo by
-    /// a Reset.
-    DictateDevicePin {
-        key: SessionSlot,
-        pick: Option<crate::dictate::DictateDeviceChoice>,
-    },
     ContextUsageSnapshot {
         key: SessionSlot,
         percentage: Option<u8>,
@@ -1685,17 +1562,6 @@ pub enum SessionUpdate {
         key: SessionSlot,
         subagents: Vec<forge_primitives::runtime::AvailableAgent>,
     },
-    /// The conversation dispatched a sub-agent, and did not before.
-    ///
-    /// **Pushed rather than read.** A dispatch is a call frame the CLI already
-    /// sends, so the fold that sees it announces the raise - the section the
-    /// flag gates appears as the dispatch happens rather than on the next
-    /// read. A connect reassigns the flag from the history it carries and is
-    /// not announced, because the read on that same event answers it.
-    DispatchesChanged {
-        key: SessionSlot,
-        has_dispatches: bool,
-    },
     /// The session's sub-agent instances moved, as the whole list the core
     /// folds from the frames it has seen.
     ///
@@ -1721,15 +1587,6 @@ pub enum SessionUpdate {
     FileIndexChanged {
         key: SessionSlot,
         index: std::sync::Arc<crate::file_index::FileIndex>,
-    },
-    SessionsListed {
-        /// Bucket this session list belongs to. The catalog scan that
-        /// produces `sessions` runs against the spawning session's
-        /// `cwd`, so the listing is project-scoped - routing onto
-        /// the requesting bucket prevents another session's `/resume`
-        /// autocomplete from inheriting a stale project's list.
-        key: SessionSlot,
-        sessions: Vec<SessionListEntry>,
     },
     ServiceStatus {
         severity: ServiceSeverity,
@@ -1913,14 +1770,6 @@ pub enum SessionUpdate {
         key: SessionSlot,
         id: Uuid,
         ending: forge_primitives::browser::HandOffEnding,
-    },
-    /// A workspace-originated prompt (cron fire, peer, gotify or slack
-    /// delivery, kick) landed while the target session's turn was in
-    /// flight. A view counts it into the bucket's queued-send bridge
-    /// so the spinner stays open across the gap; the prompt itself
-    /// rides the usual `Command::Prompt` dispatch.
-    PromptQueuedWhileBusy {
-        key: SessionSlot,
     },
     /// A prompt entered the CLI's queue: the row a view draws as waiting,
     /// with the words and the sender the lifecycle frames do not carry.
@@ -2118,14 +1967,11 @@ impl SessionUpdate {
             | Self::TurnError { key, .. }
             | Self::ForgeAccountIdentity { key, .. }
             | Self::DictateOverrides { key, .. }
-            | Self::DictateDevicePin { key, .. }
-            | Self::SessionsListed { key, .. }
             | Self::ReviewActivityNotice { key, .. }
             | Self::DictateStarted { key, .. }
             | Self::DictateLevel { key, .. }
             | Self::DictateTranscribing { key, .. }
             | Self::DictateProgress { key, .. }
-            | Self::PromptQueuedWhileBusy { key }
             | Self::PromptQueued { key, .. }
             | Self::PromptLifecycle { key, .. }
             | Self::PromptCancelResolved { key, .. }
@@ -2146,7 +1992,6 @@ impl SessionUpdate {
             | Self::ConnectorSubscriptionsChanged { key, .. }
             | Self::SlashCommandsChanged { key, .. }
             | Self::SubagentsChanged { key, .. }
-            | Self::DispatchesChanged { key, .. }
             | Self::SubagentCardsChanged { key, .. }
             | Self::FileIndexChanged { key, .. }
             | Self::ProcessesChanged { key, .. }
@@ -2259,9 +2104,6 @@ impl std::fmt::Debug for SessionUpdate {
             Self::DictateOverrides { key, .. } => {
                 f.debug_struct("DictateOverrides").field("key", key).finish_non_exhaustive()
             }
-            Self::DictateDevicePin { key, .. } => {
-                f.debug_struct("DictateDevicePin").field("key", key).finish_non_exhaustive()
-            }
             Self::ContextUsageSnapshot { key, .. } => {
                 f.debug_struct("ContextUsageSnapshot").field("key", key).finish_non_exhaustive()
             }
@@ -2297,11 +2139,6 @@ impl std::fmt::Debug for SessionUpdate {
                 .field("key", key)
                 .field("count", &subagents.len())
                 .finish(),
-            Self::DispatchesChanged { key, has_dispatches } => f
-                .debug_struct("DispatchesChanged")
-                .field("key", key)
-                .field("has_dispatches", has_dispatches)
-                .finish(),
             Self::SubagentCardsChanged { key, cards } => f
                 .debug_struct("SubagentCardsChanged")
                 .field("key", key)
@@ -2326,11 +2163,6 @@ impl std::fmt::Debug for SessionUpdate {
                 .debug_struct("BackgroundTasksChanged")
                 .field("key", key)
                 .field("count", &tasks.len())
-                .finish(),
-            Self::SessionsListed { key, sessions } => f
-                .debug_struct("SessionsListed")
-                .field("key", key)
-                .field("count", &sessions.len())
                 .finish(),
             Self::ServiceStatus { .. } => f.debug_struct("ServiceStatus").finish_non_exhaustive(),
             Self::PluginsInventoryUpdated { cwd_raw, .. } => f
@@ -2418,9 +2250,6 @@ impl std::fmt::Debug for SessionUpdate {
                 .field("id", id)
                 .field("ending", ending)
                 .finish(),
-            Self::PromptQueuedWhileBusy { key } => {
-                f.debug_struct("PromptQueuedWhileBusy").field("key", key).finish()
-            }
             Self::PromptQueued { key, uuid, .. } => f
                 .debug_struct("PromptQueued")
                 .field("key", key)

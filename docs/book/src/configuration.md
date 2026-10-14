@@ -293,7 +293,6 @@ Optional. Absent means dictation is off, which is also what an explicit
 | `models_dir`          | string  | platform cache dir | Where the model files live. `~` is expanded.                                                                                                                                                                                                    |
 | `transcribe_model`    | string  | none               | The model the transcribing role runs, by the runtime's own variant name. Set, it wins over every runtime pick and refuses an activation for that role; absent leaves the role to the last pick made on this machine, else the compiled default. |
 | `cleanup_model`       | string  | none               | The same for the cleanup role. Inert while `normalizer = false`.                                                                                                                                                                                |
-| `device`              | string  | system default     | Input forge's own machine records from, by device id rather than name. A client that captures its own audio picks on its own machine and never reads this.                                                                                             |
 | `language`            | string  | autodetect         | Spoken language hint.                                                                                                                                                                                                                           |
 | `normalizer`          | boolean | `true`             | Rewrite recognition output into clean text. Off halves the download and skips a pass per utterance.                                                                                                                                             |
 | `max_capture_minutes` | integer | `30`               | Upper bound on one recording. A capture reserves memory eagerly, about 110 MiB at the default.                                                                                                                                                  |
@@ -305,17 +304,17 @@ Optional. Absent means dictation is off, which is also what an explicit
 
 An unrecognised key here fails the load rather than being ignored: a
 mistyped `models_dir` would otherwise fetch three gigabytes to the
-wrong volume with nothing said about it.
+wrong volume with nothing said about it. `device` is the one exception -
+a declared ghost: the microphone is always the reader's, so the key is
+warned about and ignored rather than obeyed, and a config still setting
+it keeps loading.
 
 The models live where forge runs; the microphone is wherever the reader
-is. A server-side capture records from forge's own machine, which is what
-`device`
-names, and a client that captures records from
-its own and streams the audio to forge, where the same pipeline recognises
-it. `styling`, `structure` and `context` are defaults rather than state:
-they reach every client in the greeting, and a client that captures holds
-the values in force itself, per seat, so its panel's reset row returns to
-these.
+is: a client captures on its own machine and streams the audio to forge,
+where the pipeline recognises it. `styling`, `structure` and `context`
+are defaults rather than state: they reach every client in the greeting,
+and a client that captures holds the values in force itself, per seat, so
+its panel's reset row returns to these.
 
 With `enabled = true`, forge fetches, verifies and loads the models on
 the preflight screen before forge hands over. A first run
@@ -533,8 +532,9 @@ fallbacks". That covers the top level, `[[orgs]]`, `[[orgs.projects]]`,
 
 A key forge itself retired is a declared ghost rather than an unknown
 key, so a stale `forge.toml` still boots and warns instead of failing:
-`[workers]`, `[projects.<name>]`, `[selection]` and `[ui]`. In the tables
-above a stray key is a typo and is refused; a ghost is the exception,
+`[workers]`, `[projects.<name>]`, `[selection]`, `[ui]` and `[dictate]
+device`. In the tables above a stray key is a typo and is refused; a
+ghost is the exception,
 because its whole job is to accept what a live config still carries - so
 what a retired section holds is unconstrained and only the section
 itself warns.

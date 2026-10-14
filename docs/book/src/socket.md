@@ -104,13 +104,13 @@ variant's own name rather than on `kind`:
 }
 ```
 
-A command's variant is its name around its field bag - `Command` has 62
-variants, 58 of them struct variants; the four unit variants,
+A command's variant is its name around its field bag - `Command` has 54
+variants, 50 of them struct variants; the four unit variants,
 `dictate_catalogue_check`, `dictate_bench_stop`, `plugin_update_all` and
 `plugin_check_updates`, cross as the name alone. An update is the same
 shape one level in,
 `{"kind": "update", "update": {"chat_appended": {"key": ..., "msg": ...}}}`,
-and 70 of `SessionUpdate`'s 74 variants are struct variants too. The other
+and 66 of `SessionUpdate`'s 70 variants are struct variants too. The other
 four are why the payload is not one shape: they are unit variants and cross
 as the name alone - `"catalog_loaded"`, `"cli_version_changed"`,
 `"dictate_availability"` and `"accounts_changed"`.
@@ -242,16 +242,6 @@ first turn opens on, below it names the row the page stopped at by the byte
 that row starts at, and what either is made of is the server's business.
 `null` means there is nothing above the page it came with, and that is where
 a walk backwards ends.
-
-**`devices`** - the inputs FORGE's machine can record from, and the
-`[dictate] device` pin, for a server-side picker. **Asked on demand
-rather than subscribed**: the walk opens the microphone stack, and a
-subscription is re-read on every reconnect, so watching this would be a
-permission check per connection instead of one per picker. A client that
-captures its own audio does not ask: the inputs that matter are its
-machine's, and it lists them itself, which also means their names are the
-browser's own - blank until the origin has been allowed the microphone
-once.
 
 **`browser_answer {id, parts, error}`** - the host's answer to one
 `browser_ask`, under that ask's own id. `parts` are what the tool returned,
@@ -428,16 +418,6 @@ content_hash, threads, reviews}`** - in answer to `document_read`: the
   under the seat that asked - and so does one whose review store could not
   be read, because an answer with no comments would draw an uncommented
   document.
-- **`devices {devices, configured}`** - in answer to `devices`: every input
-  forge can record from, each with the id a pick sends back, the label a
-  picker draws, and whether the system would pick it. **`configured` is the
-  `forge.toml` pin only, not what is in force**: a pick moves the process's
-  input for the rest of the run and rides the home snapshot's
-  `dictate.device`, so a picker drawing `configured` as the current input is
-  wrong from its first pick onward. A walk that could not enumerate comes
-  back as an `error` naming `devices` instead, and that is what a view
-  renders where the list would have been - the two are the request's only
-  outcomes.
 - **`reply {reply_to, body}`** - in answer to a command that asked for one.
 - **`browser_ask {id, seat, tool, args}`** - one browser tool call, sent to
   the client that holds the browser role. **This is the socket's only
@@ -481,11 +461,9 @@ facts a row is drawn from.
 | `fleet`                                | One glance per project, for the home's own fleet row: how many seats are live against the project's cap, the queue (ready and unowned), the rows waiting on the user, and the project's own misses by name.                                                                                                                                                                                                  |
 | `agents`                               | Every seat's row: slot, label, lifecycle, whether it has background work, what it is waiting on, when it was last active, why it failed if it did, and `work` (branch, changed, gate) read at that seat's OWN directory, which for a worker is its worktree and not its project.                                                                                                                             |
 | `unseen`                               | The seats whose last turn finished while nobody was showing them. A mark is drawn from this, and nothing else can reconstruct it.                                                                                                                                                                                                                                                                            |
-| `accounts`                             | Loading state per account, whether all of them settled, the gateway listener's ready state and port, each account's cached usage snapshot, and the org views with budget and unusable reasons.                                                                                                                                                                                                               |
-| `plugins`                              | Every remembered plugin update, latest write per installed entry.                                                                                                                                                                                                                                                                                                                                            |
-| `workers`                              | The live workers per project, with their charters and slots.                                                                                                                                                                                                                                                                                                                                                 |
+| `accounts`                             | Loading state per account, whether all of them settled, the gateway listener's ready state and port, and each account's cached usage snapshot.                                                                                                                                                                                                                                                              |
 | `connectors`                           | The connector liveness: Gotify's connection, Slack's workspaces and whether the stored subscription set failed to load. **What a project is subscribed to is not here** - those sets are per project and ride the project's own row.                                                                                                                                                                         |
-| `dictate`                              | Whether dictation is on, the per-model fetch and load state, where the models land, and the device a pick has moved to.                                                                                                                                                                                                                                                                                      |
+| `dictate`                              | Whether dictation is on, the per-model fetch and load state, and where the models land.                                                                                                                                                                                                                                                                                                                      |
 | `cli_version`                          | The installed and latest `claude` versions.                                                                                                                                                                                                                                                                                                                                                                  |
 | `forge_version`, `forge_version_short` | Which forge build is serving the socket. A client draws these rather than its own version.                                                                                                                                                                                                                                                                                                                   |
 | `service_status`                       | The statuspage's last answer, `null` for healthy or unreachable.                                                                                                                                                                                                                                                                                                                                             |
@@ -512,7 +490,7 @@ conversation, and what the composer is doing.
 | `pending_ask`                 | The front of `pending_asks` - the prompt a client that draws a single ask waits on, `null` when there is none. Kept beside the list so a client reading only this one still draws the oldest ask.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `reviews`                     | The review threads and the submitted reviews, each read separately so an unreadable one is not reported as empty.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `slash_commands`, `subagents` | What the CLI last advertised: its commands and its agent-type catalogue, pushed as `slash_commands_changed` / `subagents_changed` when a turn's init (or a plugin reload, for the commands) moves them.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `state`                       | The seat's scan cwd, what it dictates with where it has overridden the defaults, and `queue` - the prompts still waiting in the CLI's queue, oldest first, each `{uuid, source, text}`. The queue is a fact about the seat, so it is read here as well as followed on the stream: `prompt_queued` adds a row and `prompt_lifecycle` settles it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `state`                       | The seat's scan cwd and `queue` - the prompts still waiting in the CLI's queue, oldest first, each `{uuid, source, text}`. The queue is a fact about the seat, so it is read here as well as followed on the stream: `prompt_queued` adds a row and `prompt_lifecycle` settles it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `composer`                    | What the composer is doing: whether the session is compacting, a sign-in it is waiting on, and the push-to-talk key and mode `forge.toml` configures. **No take and no notice**: a take belongs to the connection that started it, so its meter, its phases and its words ride that connection's own updates and never the record. The asks it is answering ride `pending_asks` rather than being copied here.                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 
 **`usage`** is the token/cost pool, scanned on the ask.
@@ -672,14 +650,6 @@ one on screen.
   advertises, `/config` among them. Some of those names open a dialog the
   CLI itself draws; the name crosses and the surface does not, so a
   client that offers one is offering a command whose UI it cannot show.
-- **The dictation device catalog as carried state.** What a record carries
-  is the input a pick has already moved FORGE's process to, which is a
-  server-side capture. The list of devices to pick FROM is asked for on
-  demand, one request for one answer (`devices`), because enumerating them
-  is a blocking walk that trips a microphone check - and a record is encoded
-  per request and re-sent on every reconnect, so a field would be a
-  permission check per frame and per connection. A client that captures its
-  own audio lists its own machine's inputs and asks for none of this.
 - **Any rendering.** Glyphs, colours, weights, spacing, the order of a
   list and the label a row is spelled with are the client's. The test is
   whether removing a thing changes what the data IS or only how it is

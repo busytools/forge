@@ -27,7 +27,6 @@ function untouched(): Connection {
     refresh: refuse,
     dispatch: refuse,
     more: refuse,
-    devices: refuse,
     commitDiff: refuse,
     readDocument: refuse,
     frame: refuse,

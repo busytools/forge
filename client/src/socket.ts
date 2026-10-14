@@ -113,14 +113,6 @@ export interface Connection {
    */
   more(conversation: SessionSlot, before?: string | null, turns?: number): boolean;
   /**
-   * Ask for the inputs forge can record from.
-   *
-   * One ask for one walk, answered by a `devices` message on `onMessage` or an
-   * `error` naming it. `false` means the socket was not open and no answer is
-   * coming.
-   */
-  devices(): boolean;
-  /**
    * Ask for one commit's own diff, for a review page's commit scopes.
    *
    * Answered by a `commit_diff` message on `onMessage` or an `error` naming
@@ -464,11 +456,9 @@ export function connect(url: string): Connection {
         if (message.what === 'subscribe') refuse(message.why);
         else report(`the server refused a ${message.what}`, message.why);
         return;
-      // `page` is the conversation's, `devices` the picker's and
-      // `commit_diff` the review canvas': a surface that draws one reads it
-      // from `onMessage`.
+      // `page` is the conversation's and `commit_diff` the review canvas': a
+      // surface that draws one reads it from `onMessage`.
       case 'page':
-      case 'devices':
       case 'commit_diff':
         return;
       // An ask is answered here rather than handed to a page: the handler is
@@ -744,11 +734,6 @@ export function connect(url: string): Connection {
     more(conversation, before = null, turns = MORE_TURNS) {
       if (!isOpen()) return false;
       sendNow({ kind: 'more', conversation, before, turns });
-      return true;
-    },
-    devices() {
-      if (!isOpen()) return false;
-      sendNow({ kind: 'devices' });
       return true;
     },
     commitDiff(session, sha) {

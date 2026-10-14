@@ -378,7 +378,6 @@ impl Workspace {
             pricing_fetcher: crate::workspace::default_pricing_fetcher(),
             #[cfg(any(test, feature = "testing"))]
             test_spawn_handle: Mutex::new(None),
-            test_spawn_listing: Mutex::new(crate::workspace::RecordedListing::None),
             test_spawn_server: Mutex::new(None),
             accounts,
             gateway,
@@ -394,7 +393,6 @@ impl Workspace {
             gateway_bind_error: Mutex::new(None),
             dictate: Arc::new(crate::dictate::DictateState::new(&config_dictate)),
             dictate_runtime: Mutex::new(crate::dictate::DictateRuntime::default()),
-            dictate_device_pick: Mutex::new(None),
             browser: Arc::new(crate::browser::BrowserRelay::new()),
             attached_clients: std::sync::atomic::AtomicUsize::new(0),
             document_handoffs: parking_lot::Mutex::new(HashMap::new()),
@@ -567,14 +565,6 @@ impl Workspace {
     /// The installed stand-in, taken so one spawn cannot use it twice.
     pub(crate) fn take_test_spawn_handle(&self) -> Option<forge_agent::AgentHandle> {
         self.test_spawn_handle.lock().take()
-    }
-
-    /// The worker listing the last spawn handed `Agent::spawn`. Test-only: a
-    /// stand-in replaces the call, so this is the only way a test sees what
-    /// the real spawn was given.
-    #[cfg(any(test, feature = "testing"))]
-    pub fn test_spawn_listing(&self) -> crate::workspace::RecordedListing {
-        self.test_spawn_listing.lock().clone()
     }
 
     /// The `forge` MCP server the last spawn composed, so a test can drive a

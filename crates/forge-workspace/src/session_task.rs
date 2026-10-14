@@ -220,12 +220,6 @@ impl SessionTask {
                     subagents: guard.available_agents.clone(),
                 });
             }
-            if moved.dispatches {
-                self.emit(SessionUpdate::DispatchesChanged {
-                    key: self.key.clone(),
-                    has_dispatches: guard.has_dispatches,
-                });
-            }
             if moved.cards {
                 self.emit(SessionUpdate::SubagentCardsChanged {
                     key: self.key.clone(),
@@ -689,9 +683,6 @@ impl SessionTask {
                     class: Some(class),
                     terminal_reason: None,
                 });
-            }
-            AgentEvent::SessionsListed { sessions } => {
-                self.emit(SessionUpdate::SessionsListed { key: self.key.clone(), sessions });
             }
             AgentEvent::ContextUsage { percentage, max_tokens, .. } => {
                 self.emit(SessionUpdate::ContextUsageSnapshot {
@@ -1601,18 +1592,6 @@ pub(crate) fn execute_command_via_handle(
         Command::ResumeSession { key: _, session_id, cwd, launch_settings } => {
             handle.resume_session(session_id, cwd, launch_settings)
         }
-        Command::ReconnectMcpServer { key: _, server_name } => {
-            let Some(sid) = session_id else {
-                return Err(warn_no_session(key, "ReconnectMcpServer"));
-            };
-            handle.reconnect_mcp_server(sid.to_owned(), server_name)
-        }
-        Command::ToggleMcpServer { key: _, server_name, enabled } => {
-            let Some(sid) = session_id else {
-                return Err(warn_no_session(key, "ToggleMcpServer"));
-            };
-            handle.toggle_mcp_server(sid.to_owned(), server_name, enabled)
-        }
         Command::RespondPermission { .. } | Command::RespondQuestion { .. } => {
             tracing::error!(
                 target: "forge_workspace::session_task",
@@ -1627,12 +1606,9 @@ pub(crate) fn execute_command_via_handle(
         // Handled inline in `Workspace::dispatch`; never agent traffic.
         misrouted @ (Command::SetDictateOverride { .. }
         | Command::ResetDictateOverrides { .. }
-        | Command::SetDictateDevice { .. }
         | Command::DictateStream { .. }
         | Command::DictateStop { .. }
         | Command::SpawnProject { .. }
-        | Command::SpawnSession { .. }
-        | Command::StartDefault { .. }
         | Command::DeliverPeerPrompt { .. }
         | Command::SpawnWorker { .. }
         | Command::CloseWorker { .. }
@@ -1654,9 +1630,6 @@ pub(crate) fn execute_command_via_handle(
         | Command::DictateReadAloudDelete { .. }
         | Command::DictateBenchDelete { .. }
         | Command::DictateUninstall { .. }
-        | Command::OpenUrl { .. }
-        | Command::SaveReviewThreads { .. }
-        | Command::RemoveReviewThread { .. }
         | Command::SetReviewThreadStatus { .. }
         | Command::CloseSession { .. }
         | Command::UpsertReviewThread { .. }
@@ -1727,7 +1700,6 @@ pub(crate) struct Moved {
     pub processes: bool,
     pub commands: bool,
     pub agents: bool,
-    pub dispatches: bool,
     pub cards: bool,
     /// A failed turn armed the continuation, which the caller fires the
     /// moment this fold returns.
@@ -1751,7 +1723,6 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
     let held_walk = domain.process_snapshot.is_some();
     let held_commands = domain.available_commands.clone();
     let held_agents = domain.available_agents.clone();
-    let held_dispatches = domain.has_dispatches;
     let held_cards = domain.cards_snapshot.clone();
     let mut nudge = false;
     hold_view_facts(domain, event);
@@ -2045,15 +2016,6 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
     {
         domain.agents_emitted_this_turn = false;
     }
-    // A frame that dispatches a sub-agent raises the flag, and it never goes
-    // back: the section its flag gates lists every dispatch the conversation
-    // holds, so a later frame that narrates no dispatch says nothing about
-    // the ones already made.
-    if let AgentEvent::SdkMessage { msg, .. } = event
-        && is_dispatch(msg)
-    {
-        domain.has_dispatches = true;
-    }
     // The instance list folds frame by frame, in this same walk: the frames
     // that open and settle a card are matched here either way, so the join
     // costs a lookup rather than a second pass over the conversation. The
@@ -2072,40 +2034,12 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
         processes: held_walk && domain.process_snapshot.is_none(),
         commands: domain.available_commands != held_commands,
         agents: domain.available_agents != held_agents,
-        // Only a FRAME raises news. A connect assigns the flag from the
-        // history it carries, and the read on that same event already answers
-        // it - announcing it would be a frame about a record the page is
-        // being handed anyway.
-        dispatches: !held_dispatches
-            && domain.has_dispatches
-            && matches!(event, AgentEvent::SdkMessage { .. }),
-        // Live news only, same as the flag above: a connect seeds the list
-        // from the history it carries and the read on that event answers it.
+        // Live news only: a connect seeds the list from the history it
+        // carries and the read on that event answers it.
         cards: domain.cards_snapshot != held_cards
             && matches!(event, AgentEvent::SdkMessage { .. }),
         nudge,
     }
-}
-
-/// Whether one frame dispatches a sub-agent: an assistant frame that is not a
-/// sub-agent's own, carrying a `Task` or `Agent` call.
-///
-/// **Moved here from `forge-server`'s conversation, where the record's flag
-/// was computed.** The fold that can announce the raise is this one, so the
-/// rule lives where the flag does rather than being mirrored a crate away -
-/// same predicate, same seed over the connect's history, same raise on a
-/// frame, so a record's flag and this fold's cannot disagree.
-fn is_dispatch(message: &forge_primitives::Message) -> bool {
-    let forge_primitives::Message::Assistant { message, parent_tool_use_id, .. } = message else {
-        return false;
-    };
-    if forge_primitives::names_a_dispatch(parent_tool_use_id.as_deref()) {
-        return false;
-    }
-    message.content.iter().any(|block| {
-        matches!(block, forge_primitives::ContentBlock::ToolUse { name, .. }
-            if name == "Task" || name == "Agent")
-    })
 }
 
 /// Drop every fact that describes one run of a session: the hook's mode
@@ -2142,18 +2076,8 @@ fn hold_view_facts(domain: &mut DomainSession, event: &AgentEvent) {
         clear_runtime_identity(domain);
         domain.current_model = Some(current_model.clone());
         domain.available_models.clone_from(available_models);
-        // **The dispatch flag is ASSIGNED on every connect, history or not.**
-        // The history a connect carries IS the conversation it replaces - so a
-        // seat resumed after dispatching keeps the section its flag gates - and
-        // a fresh `/new` carries none, which is a conversation that dispatched
-        // nothing. A flag left standing there would draw the subagents section
-        // over an empty conversation. Assigned rather than raised: the read on
-        // this same event already carries it.
-        domain.has_dispatches =
-            history_updates.as_ref().is_some_and(|history| history.iter().any(is_dispatch));
-        // The instance fold is seeded from the same history, so a resumed
-        // seat answers the card list its history holds. Assigned like the
-        // flag above, and for the same reason.
+        // The instance fold is seeded from the history the connect carries,
+        // so a resumed seat answers the card list its history holds.
         domain.card_tracker = crate::subagent_cards::CardTracker::default();
         if let Some(history) = history_updates.as_ref() {
             for message in history {
@@ -2703,10 +2627,10 @@ mod tests {
         workspace.install_db_for_test(
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
-        workspace.save_review_threads(
+        workspace.upsert_review_thread(
             "forge",
             "feat",
-            &[ReviewThread {
+            ReviewThread {
                 id: "a".to_owned(),
                 anchor: ReviewAnchor {
                     path: "src/x.rs".to_owned(),
@@ -2726,7 +2650,7 @@ mod tests {
                 created_at: "t".to_owned(),
                 updated_at: "t".to_owned(),
                 commit: None,
-            }],
+            },
         );
         let reviewer = SessionSlot::from_str_for_test("reviewer");
         let worker = SessionSlot::from_str_for_test("worker");
@@ -4599,42 +4523,6 @@ provider = "anthropic"
         assistant_tool_use("Task", parent_tool_use_id)
     }
 
-    /// **The dispatch rule, as it was computed and as this fold computes it.**
-    /// It was `forge-server`'s, over the conversation it held; the fold that
-    /// can announce the raise is this one, so the rule moved here with the
-    /// flag - same predicate over the same field, so the flag a record reads
-    /// and the flag this fold raises cannot disagree.
-    ///
-    /// The rule: an assistant frame whose `parent_tool_use_id` is absent or
-    /// blank - `names_a_dispatch`'s non-empty-string guard - carrying a `Task`
-    /// or `Agent` call. A sub-agent's own calls are the sub-agent's and do not
-    /// count for the session that dispatched it.
-    #[test]
-    fn a_dispatch_is_an_assistant_frame_calling_task_or_agent() {
-        assert!(is_dispatch(&assistant_tool_use("Task", None)), "a Task call is a dispatch");
-        assert!(is_dispatch(&assistant_tool_use("Agent", None)), "and so is an Agent call");
-        assert!(!is_dispatch(&assistant_tool_use("Bash", None)), "a Bash call is not one");
-        assert!(
-            !is_dispatch(&assistant_tool_use("Task", Some("tu-parent"))),
-            "and a sub-agent's own Task call is the sub-agent's, not this session's",
-        );
-        assert!(
-            is_dispatch(&assistant_tool_use("Task", Some("  "))),
-            "a blank parent is not a dispatch's, so the call is this session's",
-        );
-    }
-
-    /// The dispatch answers these updates announced, in the order they went out.
-    fn announced_dispatches(updates: &mut mpsc::UnboundedReceiver<SessionUpdate>) -> Vec<bool> {
-        let mut announced = Vec::new();
-        while let Ok(update) = updates.try_recv() {
-            if let SessionUpdate::DispatchesChanged { has_dispatches, .. } = update {
-                announced.push(has_dispatches);
-            }
-        }
-        announced
-    }
-
     /// The card lists a task announced, in order.
     fn announced_cards(
         updates: &mut mpsc::UnboundedReceiver<SessionUpdate>,
@@ -4747,98 +4635,6 @@ provider = "anthropic"
 
         assert!(task.domain.lock().cards_snapshot.is_empty(), "a fresh /new leaves none");
         assert!(announced_cards(&mut updates).is_empty(), "and the clear is not announced");
-    }
-
-    /// **A dispatch made in front of a viewer is news, and one whose card the
-    /// sub-agents section already lists is not.** The flag gates a section the
-    /// record carries, so the frame that raises it is what turns that section
-    /// on without a read - and a conversation that dispatched cannot stop
-    /// having dispatched, so a later dispatch frame says nothing.
-    #[test]
-    fn a_dispatch_frame_raises_the_flag_and_announces_it_once() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let (workspace, _rx) =
-            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
-        let slot = SessionSlot::lead("TestOrg", "forge");
-        let (mut task, _agent_rx) = command_task_for(&workspace, &slot);
-        let mut updates = task.update_tx.subscribe(SubscriberRole::Answering);
-        assert!(!task.domain.lock().has_dispatches, "the seat starts with none");
-
-        task.translate_event(sdk_message(dispatch_frame(None)));
-        assert!(task.domain.lock().has_dispatches, "the dispatch raises the flag");
-        assert_eq!(
-            announced_dispatches(&mut updates),
-            vec![true],
-            "and the raise is announced once",
-        );
-
-        task.translate_event(sdk_message(dispatch_frame(None)));
-        assert!(
-            announced_dispatches(&mut updates).is_empty(),
-            "a second dispatch is not a move, so nothing is announced",
-        );
-
-        // A sub-agent's OWN frame names a parent, so it is not a dispatch of
-        // this conversation - and it must not raise a flag that is already up
-        // in a way a test could not tell.
-        task.translate_event(sdk_message(dispatch_frame(Some("tu-parent"))));
-        assert!(
-            announced_dispatches(&mut updates).is_empty(),
-            "a sub-agent's own frame is not a dispatch",
-        );
-    }
-
-    /// **A connect assigns the flag from the history it carries, and
-    /// announces nothing** - the page's own read on that same event carries
-    /// it. A seat resumed after dispatching keeps the section its flag gates,
-    /// which is what the assignment is for; a fresh `/new` carries NO history
-    /// (the producer only sends one for a non-empty resume), which is a
-    /// conversation that dispatched nothing - and the flag goes with the
-    /// occupant that raised it.
-    #[test]
-    fn a_connect_assigns_the_flag_from_its_history_and_announces_nothing() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let (workspace, _rx) =
-            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
-        let slot = SessionSlot::lead("TestOrg", "forge");
-        let (mut task, _agent_rx) = command_task_for(&workspace, &slot);
-        let mut updates = task.update_tx.subscribe(SubscriberRole::Answering);
-
-        task.translate_event(AgentEvent::Connected {
-            session_id: "resumed-uuid".to_owned(),
-            cwd: "/proj".to_owned(),
-            current_model: forge_primitives::CurrentModel::new("claude-opus-5", "Opus", "Claude"),
-            available_models: Vec::new(),
-            mode: None,
-            history_updates: Some(vec![dispatch_frame(None)]),
-            compaction_count: 0,
-        });
-
-        assert!(task.domain.lock().has_dispatches, "a history that dispatched seeds the flag true");
-        assert!(
-            announced_dispatches(&mut updates).is_empty(),
-            "and the seed is not announced: the read on this event answers it",
-        );
-
-        // `/new`: the connect carries no history at all, and that is the
-        // conversation this seat now has. The transition is not announced
-        // either, for the same reason - and a flag left standing here would
-        // draw the subagents section over an empty conversation.
-        task.translate_event(AgentEvent::Connected {
-            session_id: "new-uuid".to_owned(),
-            cwd: "/proj".to_owned(),
-            current_model: forge_primitives::CurrentModel::new("claude-opus-5", "Opus", "Claude"),
-            available_models: Vec::new(),
-            mode: None,
-            history_updates: None,
-            compaction_count: 0,
-        });
-
-        assert!(!task.domain.lock().has_dispatches, "a fresh /new leaves no dispatch standing");
-        assert!(
-            announced_dispatches(&mut updates).is_empty(),
-            "and the clear is not announced either",
-        );
     }
 
     /// The command catalogues these updates announced, in the order they went out.
@@ -6227,17 +6023,13 @@ provider = "anthropic"
     /// The replaced identity's `/dictate` override axes die with it:
     /// a view mints a blank bucket for the new session, so an axis
     /// left on the domain would style a session that no longer exists.
-    /// The device pick is workspace state shared by every session, so
-    /// the replacement must leave it - and echo nothing.
     #[tokio::test]
-    async fn a_replaced_identity_drops_its_overrides_but_not_the_device_pick() {
+    async fn a_replaced_identity_drops_its_overrides() {
         let (workspace, mut update_rx) = crate::Workspace::testing_stub();
         let session_key = SessionSlot::from_str_for_test("dictate-rekey-uuid");
         let domain =
             Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
         domain.lock().dictate_overrides.styling = Some(forge_dictate::normalize::Styling::Formal);
-        *workspace.dictate_device_pick.lock() =
-            Some(crate::dictate::DictateDeviceChoice::Device("shure-id".into()));
 
         let (handle, _agent_cmd_rx) = Agent::testing_stub();
         let (_cmd_tx, command_rx) =
@@ -6275,17 +6067,9 @@ provider = "anthropic"
         });
 
         assert_eq!(domain.lock().dictate_overrides, crate::dictate::DictateOverrides::default());
-        assert_eq!(
-            *workspace.dictate_device_pick.lock(),
-            Some(crate::dictate::DictateDeviceChoice::Device("shure-id".into())),
-            "the pick is workspace state: a session replacement must not clear it"
-        );
 
         let mut replaced_seen = false;
         while let Ok(u) = update_rx.try_recv() {
-            if let SessionUpdate::DictateDevicePin { .. } = u {
-                panic!("a replacement must not echo a device-pin clear: {u:?}");
-            }
             replaced_seen |= matches!(u, SessionUpdate::SessionReplaced { .. });
         }
         assert!(
@@ -7621,29 +7405,6 @@ provider = "anthropic"
                 assert_eq!(mode, PermissionMode::Plan);
             }
             other => panic!("expected SetMode, got {other:?}"),
-        }
-    }
-
-    /// `Command::ReconnectMcpServer` reaches the bridge with the
-    /// server name carried through.
-    #[test]
-    fn execute_reconnect_mcp_server_forwards() {
-        let (handle, mut rx) = stub_handle_with_rx();
-        let key = SessionSlot::from_str_for_test("sess");
-        execute_command_via_handle(
-            &handle,
-            &key,
-            Some("sess-1"),
-            None,
-            Command::ReconnectMcpServer { key: key.clone(), server_name: "fs".into() },
-        )
-        .expect("dispatch succeeds");
-        let cmd = rx.try_recv().expect("command queued");
-        match cmd {
-            forge_primitives::AgentCommand::ReconnectMcpServer { server_name, .. } => {
-                assert_eq!(server_name, "fs");
-            }
-            other => panic!("expected ReconnectMcpServer, got {other:?}"),
         }
     }
 

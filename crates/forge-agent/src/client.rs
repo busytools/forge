@@ -151,9 +151,6 @@ pub enum AgentEvent {
         model: String,
         message: String,
     },
-    SessionsListed {
-        sessions: Vec<types::SessionListEntry>,
-    },
     ContextUsage {
         session_id: String,
         percentage: Option<u8>,

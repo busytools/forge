@@ -237,23 +237,6 @@ pub(crate) type ParkedBrowserHandOff = (
     tokio::sync::oneshot::Sender<forge_primitives::browser::HandOffEnding>,
 );
 
-/// What the last spawn handed `Agent::spawn` as its listing.
-///
-/// Three cases, because a lead's listing and a spawn that never ran are
-/// different answers and one option would merge them. Test-only: a
-/// stand-in replaces the spawn call outright, so this is the only way a
-/// test sees what the real spawn was given.
-#[cfg(any(test, feature = "testing"))]
-#[derive(Debug, Clone)]
-pub enum RecordedListing {
-    /// No spawn has run since the workspace was built.
-    None,
-    /// A spawn ran and handed no listing: a lead's own case.
-    NoListing,
-    /// A spawn ran and handed this worker's listing.
-    Listed(forge_agent::WorkerListing),
-}
-
 /// spawned [`forge_agent::Agent`] handles, one per active session.
 ///
 /// Construct via [`Workspace::new`]; consume via
@@ -302,15 +285,9 @@ pub struct Workspace {
     /// spawn runs always.
     #[cfg(any(test, feature = "testing"))]
     pub(crate) test_spawn_handle: Mutex<Option<forge_agent::AgentHandle>>,
-    /// The worker listing the last spawn handed `Agent::spawn`, written by
-    /// the spawn and read by a test that cannot see the call: a stand-in
-    /// replaces `Agent::spawn` entirely, so its argument is otherwise
-    /// unobservable.
-    #[cfg(any(test, feature = "testing"))]
-    pub(crate) test_spawn_listing: Mutex<RecordedListing>,
-    /// The `forge` MCP server the last spawn built, for the same reason the
-    /// listing above is kept: a stand-in replaces `Agent::spawn`, so the
-    /// server it would have been handed is otherwise dropped unobserved -
+    /// The `forge` MCP server the last spawn built, kept because a stand-in
+    /// replaces `Agent::spawn`, so the server it would have been handed is
+    /// otherwise dropped unobserved -
     /// and a test that has to drive a tool through the spawn's OWN
     /// composition (which facade it was built with) needs it.
     #[cfg(any(test, feature = "testing"))]
@@ -329,12 +306,6 @@ pub struct Workspace {
     /// takes still awaiting a transcript. Driven by
     /// `Command::DictateStream` / `Command::DictateStop`.
     pub(crate) dictate_runtime: Mutex<crate::dictate::DictateRuntime>,
-    /// The `/dictate` overlay's input-device pick, shared by every
-    /// session: `None` until one lands, then it overrides the
-    /// `forge.toml` `[dictate] device` pin for every capture until the
-    /// process ends. Set by `Command::SetDictateDevice`; a Reset
-    /// clears it. Volatile, never persisted.
-    pub(crate) dictate_device_pick: Mutex<Option<crate::dictate::DictateDeviceChoice>>,
     /// The browser relay: the one client connection that drives the browser.
     /// The workspace owns it because both halves need the same one - the
     /// tools in `mcp::browser` ask through it, and the transport registers
@@ -1686,8 +1657,6 @@ impl Workspace {
             #[cfg(any(test, feature = "testing"))]
             test_spawn_handle: Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]
-            test_spawn_listing: Mutex::new(RecordedListing::None),
-            #[cfg(any(test, feature = "testing"))]
             test_spawn_server: Mutex::new(None),
             accounts,
             gateway,
@@ -1697,7 +1666,6 @@ impl Workspace {
             gateway_bind_error: Mutex::new(None),
             dictate: Arc::new(crate::dictate::DictateState::new(&config_dictate)),
             dictate_runtime: Mutex::new(crate::dictate::DictateRuntime::default()),
-            dictate_device_pick: Mutex::new(None),
             browser: Arc::new(crate::browser::BrowserRelay::new()),
             attached_clients: std::sync::atomic::AtomicUsize::new(0),
             document_handoffs: parking_lot::Mutex::new(HashMap::new()),
@@ -2327,18 +2295,11 @@ impl Workspace {
             )
         };
 
-        // Derived once, so what a test records is the very value the spawn is
-        // handed rather than a second reading of the slot.
-        let worker_listing = self.worker_listing_for(&session_slot);
         #[cfg(any(test, feature = "testing"))]
         {
-            *self.test_spawn_listing.lock() = match &worker_listing {
-                Some(listing) => RecordedListing::Listed(listing.clone()),
-                None => RecordedListing::NoListing,
-            };
-            // Kept beside the listing: the stand-in below replaces the call
-            // the server would have been handed to, so this is the only way a
-            // test sees the one the spawn composed.
+            // The stand-in below replaces the call the server would have been
+            // handed to, so this is the only way a test sees the one the spawn
+            // composed.
             *self.test_spawn_server.lock() = Some(forge_server.clone());
         }
         let spawn_agent = || {
@@ -2347,7 +2308,6 @@ impl Workspace {
                 Some(account_key.0.clone()),
                 vec![("forge".to_owned(), forge_server)],
                 session_env,
-                worker_listing,
             )
         };
         // A test that installed a stand-in reads the settings this spawn
@@ -2693,32 +2653,6 @@ impl Workspace {
     pub fn dictate_push(&self, key: &SessionSlot, samples: &[f32], initiator: Option<u64>) -> bool {
         let runtime = self.dictate_runtime.lock();
         runtime.frame_sink_for(key, initiator).is_some_and(|sink| sink.push_mono(samples))
-    }
-
-    /// The device this process records from, once a `/dictate` pick moved it.
-    ///
-    /// Volatile and process-wide rather than per session: a pick overrides the
-    /// `[dictate] device` pin for every session until forge restarts, which is
-    /// why it rides the dictate read rather than a session's state.
-    pub fn dictate_device_pick(&self) -> Option<crate::dictate::DictateDeviceChoice> {
-        self.dictate_device_pick.lock().clone()
-    }
-
-    /// The inputs a `/dictate` device pick can offer, plus the configured
-    /// pin. Blocking (the cpal device walk), so a view calls it from a
-    /// spawned task, never its render thread, and the socket answers its
-    /// `devices` request with it off the connection's task.
-    ///
-    /// # Errors
-    ///
-    /// When the audio stack cannot be enumerated at all; the overlay
-    /// renders the message in place of a list.
-    pub fn dictate_device_catalog(&self) -> Result<crate::dictate::DictateDeviceCatalog, String> {
-        let devices = forge_dictate::devices().map_err(|error| error.to_string())?;
-        Ok(crate::dictate::DictateDeviceCatalog {
-            devices,
-            configured: self.config.dictate.device.clone(),
-        })
     }
 
     /// Stop the in-flight model fetch. Whatever reached the disk stays
@@ -3951,40 +3885,17 @@ impl Workspace {
             }
             crate::dictate::DictateOverrideUpdate::Reset => {
                 domain.lock().dictate_overrides = crate::dictate::DictateOverrides::default();
-                *self.dictate_device_pick.lock() = None;
             }
         }
         let overrides = domain.lock().dictate_overrides;
-        let pick = self.dictate_device_pick.lock().clone();
         let _ = self
             .update_sender()
             .send(SessionUpdate::DictateOverrides { key: key.clone(), overrides });
-        let _ =
-            self.update_sender().send(SessionUpdate::DictateDevicePin { key: key.clone(), pick });
-        Ok(())
-    }
-
-    /// Apply a `/dictate` device pick (or its clear) and echo it. The
-    /// pick is workspace state shared by every session - it overrides
-    /// the configured pin for every capture until the process ends.
-    fn apply_dictate_device(
-        self: &Arc<Self>,
-        key: &SessionSlot,
-        pick: Option<crate::dictate::DictateDeviceChoice>,
-    ) -> Result<(), DispatchError> {
-        if self.domain_session_for(key).is_none() {
-            return Err(DispatchError::UnknownSession(key.clone()));
-        }
-        (*self.dictate_device_pick.lock()).clone_from(&pick);
-        let _ =
-            self.update_sender().send(SessionUpdate::DictateDevicePin { key: key.clone(), pick });
         Ok(())
     }
 
     /// Dispatch a workspace-originated plain prompt (cron fire, peer,
-    /// gotify or slack delivery, kick, notices), signalling
-    /// `PromptQueuedWhileBusy` first when the target's turn is in
-    /// flight so a view bridges the spinner across the gap.
+    /// gotify or slack delivery, kick, notices).
     ///
     /// **A delivery drawn in a view needs an update here, paired with an arm
     /// in `forge-server`'s `delivery_turn`.** This path emits no frame of its
@@ -4030,29 +3941,15 @@ impl Workspace {
         source: PromptSource,
         uuid: String,
     ) -> Result<(), DispatchError> {
-        // Busy is captured before the dispatch: dispatching first would
-        // read the turn_pending stamp the dispatch itself just set.
-        // Signalling only on success keeps a failed dispatch (the
-        // log-only failure sites never emit a TurnError) from
-        // stranding a count nothing clears. Whether the re-open-gap
-        // residual signals at all depends on a session_state_changed
-        // mirror being present, so it is CLI-version-dependent.
-        let busy = self.domain_session_for(key).is_some_and(|d| d.lock().turn_in_flight());
         // `route` rather than `dispatch`: the delivery's frame is the
         // envelope one its own update forges, not a bare user turn.
-        let result = self.route(Command::PromptUnder {
+        self.route(Command::PromptUnder {
             key: key.clone(),
             text,
             attachments: Vec::new(),
             uuid,
             source,
-        });
-        if busy && result.is_ok() {
-            let _ = self
-                .update_sender()
-                .send(SessionUpdate::PromptQueuedWhileBusy { key: key.clone() });
-        }
-        result
+        })
     }
 
     /// Fire the continuation for a seat whose turn just failed: one prompt
@@ -4174,9 +4071,8 @@ impl Workspace {
 
     /// Route a [`Command`]. Per-session commands (`cmd.key() ==
     /// Some(key)`) fan out to the matching `SessionTask`. App-level
-    /// commands (`cmd.key() == None` - `SpawnProject`,
-    /// `SpawnSession`, `StartDefault`) route to the workspace's own
-    /// handler.
+    /// commands (`cmd.key() == None` - `SpawnProject`) route to the
+    /// workspace's own handler.
     ///
     /// Test fallback: when no `SessionTask` is registered for `key`
     /// but a `DomainSession` carries a stub `AgentHandle` (e.g., the
@@ -4577,9 +4473,6 @@ impl Workspace {
                         crate::dictate::DictateOverrideUpdate::Reset,
                     );
                 }
-                Command::SetDictateDevice { key, pick } => {
-                    return self.apply_dictate_device(&key, pick);
-                }
                 _ => {}
             }
             let key = key.clone();
@@ -4733,22 +4626,6 @@ impl Workspace {
                     );
                     let _enter = span.enter();
                     spawn::handle_spawn_project(self, &project_name, launch_settings);
-                }
-                Command::SpawnSession { key, role, launch_settings } => {
-                    let span = tracing::info_span!(
-                        "spawn_session",
-                        slot = %key.display(),
-                    );
-                    let _enter = span.enter();
-                    spawn::handle_spawn_session(self, &key, &role, launch_settings);
-                }
-                Command::StartDefault { project_name, launch_settings } => {
-                    let span = tracing::info_span!(
-                        "start_default",
-                        project = ?project_name,
-                    );
-                    let _enter = span.enter();
-                    spawn::handle_start_default(self, project_name, launch_settings);
                 }
                 Command::DeliverPeerPrompt { caller, target_project, wrapped } => {
                     let span = tracing::info_span!(
@@ -4926,11 +4803,6 @@ impl Workspace {
                         });
                     }
                 }
-                Command::OpenUrl { url } => {
-                    let span = tracing::info_span!("open_url", url = %url);
-                    let _enter = span.enter();
-                    spawn::handle_open_url(self, url);
-                }
                 Command::DictateCatalogueCheck => {
                     return self.check_dictate_catalogue();
                 }
@@ -5040,25 +4912,6 @@ impl Workspace {
                 // bus. Synchronous inline handlers - the writes are
                 // local redb operations, and the view has already
                 // applied its optimistic state.
-                Command::SaveReviewThreads { project, branch, threads } => {
-                    let span = tracing::info_span!(
-                        "save_review_threads",
-                        project = %project,
-                        branch = %branch,
-                    );
-                    let _enter = span.enter();
-                    self.save_review_threads(&project, &branch, &threads);
-                }
-                Command::RemoveReviewThread { project, branch, thread_id } => {
-                    let span = tracing::info_span!(
-                        "remove_review_thread",
-                        project = %project,
-                        branch = %branch,
-                        thread_id = %thread_id,
-                    );
-                    let _enter = span.enter();
-                    self.remove_review_thread(&project, &branch, &thread_id);
-                }
                 Command::SetReviewThreadStatus { project, branch, thread_id, status } => {
                     let span = tracing::info_span!(
                         "set_review_thread_status",
@@ -7033,23 +6886,6 @@ impl Workspace {
                 .to_string_lossy()
                 .into_owned(),
         )
-    }
-
-    /// Where a worker seat lists its own sessions from, or `None` for a
-    /// lead.
-    ///
-    /// The directory is [`Self::cwd_for_session`]'s: a worker's worktree,
-    /// composed from the live registry. The launching cwd is the wrong
-    /// answer for a fresh git worker - it launches in the project root
-    /// with `--worktree <label>`, so its transcripts land in the
-    /// worktree's project dir and a listing read from the root finds none
-    /// of them.
-    fn worker_listing_for(&self, slot: &SessionSlot) -> Option<forge_agent::WorkerListing> {
-        if slot.is_lead() {
-            return None;
-        }
-        let dir = self.cwd_for_session(slot)?;
-        Some(forge_agent::WorkerListing { label: slot.label().to_owned(), dir: dir.into() })
     }
 
     /// The cwd to pass `claude --resume` for the session at
@@ -10341,51 +10177,6 @@ provider = "anthropic"
         );
     }
 
-    /// `dispatch_workspace_prompt` is the queue-signal discriminator:
-    /// an idle session receives the plain prompt and no
-    /// `PromptQueuedWhileBusy`; a session with a turn in flight gets
-    /// the signal carrying its key ahead of the same dispatch. The
-    /// intercept buffers before real routing stamps `turn_pending`,
-    /// so the idle fire does not self-arm - the explicit stamp is the
-    /// discriminator.
-    #[test]
-    fn dispatch_workspace_prompt_signals_only_when_turn_in_flight() {
-        let dir = tempdir().expect("tempdir");
-        let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
-        ws.seed_test_project("qkey", "/tmp/q-dispatch");
-        let cwd = project_expanded_path(&ws, "qkey");
-        ws.record_connected_session(&cwd, "q-uuid", None);
-        let key = SessionSlot::from_str_for_test("q-uuid");
-        let (handle, _agent_rx) = Workspace::testing_stub_handle();
-        ws.pool.lock().insert(
-            key.clone(),
-            PooledAgent {
-                handle: Arc::new(handle),
-                account: AccountKey("test".to_owned()),
-                permission_mode: None,
-                registration: None,
-                session_id: "pooled-session".to_owned(),
-            },
-        );
-        ws.mark_session_connected_for_test(&key, "q-uuid");
-        ws.enable_test_dispatch_intercept();
-
-        ws.dispatch_workspace_prompt(&key, "idle".to_owned()).expect("idle dispatch");
-        assert!(
-            !drain_updates(&mut rx)
-                .iter()
-                .any(|u| matches!(u, SessionUpdate::PromptQueuedWhileBusy { .. })),
-            "an idle dispatch must not signal PromptQueuedWhileBusy",
-        );
-
-        ws.domain_session_for(&key).expect("domain").lock().turn_pending = true;
-        ws.dispatch_workspace_prompt(&key, "queued".to_owned()).expect("busy dispatch");
-        let signalled = drain_updates(&mut rx)
-            .into_iter()
-            .any(|u| matches!(u, SessionUpdate::PromptQueuedWhileBusy { key: k } if k == key));
-        assert!(signalled, "a turn-in-flight dispatch signals PromptQueuedWhileBusy with the key");
-    }
-
     /// A prompt forge wrote itself and no view drew - a worker kick, an
     /// auto-continue - draws as the words the model received: the CLI does
     /// not echo a prompt back, and nothing else carries them. The delivery
@@ -10440,51 +10231,6 @@ provider = "anthropic"
         assert!(
             !drain_updates(&mut rx).iter().any(|u| matches!(u, SessionUpdate::ChatAppended { .. })),
             "a delivery's words are drawn by its own envelope update, so this path forges no frame",
-        );
-    }
-
-    /// A busy forged prompt signals the queue before it draws.
-    ///
-    /// The frame follows a dispatch that landed, and the signal comes off that
-    /// same dispatch, so the order a view reads is "queued" and then the
-    /// words - the reverse would draw a turn for a prompt still on its way.
-    #[test]
-    fn a_busy_forged_prompt_signals_before_it_draws() {
-        let dir = tempdir().expect("tempdir");
-        let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
-        ws.seed_test_project("bkey", "/tmp/b-forged-prompt");
-        let cwd = project_expanded_path(&ws, "bkey");
-        ws.record_connected_session(&cwd, "b-uuid", None);
-        let key = SessionSlot::from_str_for_test("b-uuid");
-        let (handle, _agent_rx) = Workspace::testing_stub_handle();
-        ws.pool.lock().insert(
-            key.clone(),
-            PooledAgent {
-                handle: Arc::new(handle),
-                account: AccountKey("test".to_owned()),
-                permission_mode: None,
-                registration: None,
-                session_id: "pooled-session".to_owned(),
-            },
-        );
-        ws.mark_session_connected_for_test(&key, "b-uuid");
-        ws.enable_test_dispatch_intercept();
-        ws.domain_session_for(&key).expect("domain").lock().turn_pending = true;
-
-        ws.dispatch_forged_prompt(&key, "get on with it".to_owned()).expect("busy dispatch");
-
-        let order: Vec<&str> = drain_updates(&mut rx)
-            .iter()
-            .filter_map(|u| match u {
-                SessionUpdate::PromptQueuedWhileBusy { .. } => Some("signal"),
-                SessionUpdate::ChatAppended { .. } => Some("frame"),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(
-            order,
-            ["signal", "frame"],
-            "the queue signal precedes the frame the words draw as",
         );
     }
 
@@ -10681,11 +10427,10 @@ already completed."
         );
     }
 
-    /// The cron delivery path rides the helper: a cron fired into a
-    /// mid-turn lead signals `PromptQueuedWhileBusy` on top of the
-    /// `CronPromptAppended` echo; an idle fire stays silent.
+    /// The cron delivery path rides the helper: a cron fired into a lead
+    /// draws its `CronPromptAppended` echo and lands, idle or mid-turn.
     #[test]
-    fn cron_fired_mid_turn_signals_prompt_queued_while_busy() {
+    fn a_cron_fire_into_a_lead_draws_its_echo() {
         let dir = tempdir().expect("tempdir");
         let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
         ws.seed_test_project("cronlead", "/tmp/cron-lead-queued");
@@ -10710,49 +10455,29 @@ already completed."
             crate::spawn::deliver_cron_prompt(&ws, &test_cron("c1", "cronlead", "morning"), false);
         assert!(matches!(outcome, crate::spawn::CronFireOutcome::Delivered));
         assert!(
-            !drain_updates(&mut rx)
+            drain_updates(&mut rx)
                 .iter()
-                .any(|u| matches!(u, SessionUpdate::PromptQueuedWhileBusy { .. })),
-            "an idle cron fire must not signal PromptQueuedWhileBusy",
+                .any(|u| matches!(u, SessionUpdate::CronPromptAppended { .. })),
+            "an idle cron fire draws its echo",
         );
 
         ws.domain_session_for(&lead_key).expect("domain").lock().turn_pending = true;
         let outcome =
             crate::spawn::deliver_cron_prompt(&ws, &test_cron("c2", "cronlead", "again"), false);
         assert!(matches!(outcome, crate::spawn::CronFireOutcome::Delivered));
-        let signalled = drain_updates(&mut rx)
-            .into_iter()
-            .any(|u| matches!(u, SessionUpdate::PromptQueuedWhileBusy { key: k } if k == lead_key));
-        assert!(signalled, "a cron fired mid-turn signals PromptQueuedWhileBusy");
-    }
-
-    /// A failed dispatch must not strand a queue signal: the log-only
-    /// failure sites (kick, notices, drains) never emit a TurnError,
-    /// so a signal sent despite the failure would survive on a live
-    /// bucket with nothing to clear it.
-    #[test]
-    fn failed_dispatch_does_not_signal_queued_while_busy() {
-        let dir = tempdir().expect("tempdir");
-        let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
-        let key = SessionSlot::from_str_for_test("doomed-uuid");
-        ws.mark_session_connected_for_test(&key, "doomed-uuid");
-        ws.domain_session_for(&key).expect("domain").lock().turn_pending = true;
-
-        let result = ws.dispatch_workspace_prompt(&key, "lost".to_owned());
-        assert!(result.is_err(), "no SessionTask and no stub conn: the dispatch fails");
         assert!(
-            !drain_updates(&mut rx)
+            drain_updates(&mut rx)
                 .iter()
-                .any(|u| matches!(u, SessionUpdate::PromptQueuedWhileBusy { .. })),
-            "a failed dispatch must not signal PromptQueuedWhileBusy",
+                .any(|u| matches!(u, SessionUpdate::CronPromptAppended { .. })),
+            "and so does one fired mid-turn",
         );
     }
 
-    /// The gotify running-lead delivery rides the helper too - a
-    /// second family (after cron) through a different entry path:
-    /// idle fire silent, turn in flight then the signal.
+    /// The gotify running-lead delivery rides the helper too - a second
+    /// family (after cron) through a different entry path, and its echo
+    /// draws idle or mid-turn.
     #[test]
-    fn gotify_delivered_mid_turn_signals_prompt_queued_while_busy() {
+    fn a_gotify_delivery_into_a_lead_draws_its_echo() {
         let dir = tempdir().expect("tempdir");
         let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
         ws.seed_test_project("glead", "/tmp/gotify-lead-queued");
@@ -10776,18 +10501,20 @@ already completed."
 
         crate::spawn::deliver_gotify_message(&ws, "glead", None, notif.clone());
         assert!(
-            !drain_updates(&mut rx)
+            drain_updates(&mut rx)
                 .iter()
-                .any(|u| matches!(u, SessionUpdate::PromptQueuedWhileBusy { .. })),
-            "an idle gotify fire must not signal PromptQueuedWhileBusy",
+                .any(|u| matches!(u, SessionUpdate::GotifyNotificationAppended { .. })),
+            "an idle gotify fire draws its echo",
         );
 
         ws.domain_session_for(&lead_key).expect("domain").lock().turn_pending = true;
         crate::spawn::deliver_gotify_message(&ws, "glead", None, notif);
-        let signalled = drain_updates(&mut rx)
-            .into_iter()
-            .any(|u| matches!(u, SessionUpdate::PromptQueuedWhileBusy { key: k } if k == lead_key));
-        assert!(signalled, "a gotify delivered mid-turn signals PromptQueuedWhileBusy");
+        assert!(
+            drain_updates(&mut rx)
+                .iter()
+                .any(|u| matches!(u, SessionUpdate::GotifyNotificationAppended { .. })),
+            "and so does one delivered mid-turn",
+        );
     }
 
     fn slack_message_for(text: &str) -> forge_primitives::slack::SlackMessage {
@@ -12196,11 +11923,10 @@ provider = "anthropic"
         );
     }
 
-    /// The review/close store writes route through the command
-    /// bus: a `SaveReviewThreads` dispatch lands in the redb store
-    /// (observable via the query-side load), and an `UpsertReviewThread`
-    /// dispatch carries its confirmation back on the responder - the
-    /// overlay's at-risk flag depends on it.
+    /// The review store write routes through the command bus: an
+    /// `UpsertReviewThread` dispatch lands in the redb store (observable
+    /// via the query-side load) and carries its confirmation back on the
+    /// responder - the overlay's at-risk flag depends on it.
     #[test]
     fn dispatch_buses_the_review_and_spinner_writes() {
         use forge_primitives::review::{ReviewAnchor, ReviewSide, ReviewStatus, ReviewThread};
@@ -12226,16 +11952,6 @@ provider = "anthropic"
             commit: None,
         };
 
-        workspace
-            .dispatch(Command::SaveReviewThreads {
-                project: "forge".to_owned(),
-                branch: "feat".to_owned(),
-                threads: vec![thread.clone()],
-            })
-            .expect("dispatch");
-        let loaded = workspace.load_review_threads("forge", "feat").expect("load");
-        assert_eq!(loaded.len(), 1, "the bus-routed save landed in the store");
-
         let (respond_tx, mut respond_rx) = tokio::sync::oneshot::channel();
         workspace
             .dispatch(Command::UpsertReviewThread {
@@ -12249,6 +11965,8 @@ provider = "anthropic"
             respond_rx.try_recv().expect("response present"),
             "an open store confirms the upsert on the responder"
         );
+        let loaded = workspace.load_review_threads("forge", "feat").expect("load");
+        assert_eq!(loaded.len(), 1, "the bus-routed upsert landed in the store");
     }
 
     /// `/new` and `/resume` re-spawn on the already-pooled handle, where
@@ -17243,80 +16961,6 @@ mod git_scan_cwd_tests {
     // git root (the bug documented in #245).
     // ---------------------------------------------------------------
 
-    /// A worker's listing is read from its worktree, and a lead has none of
-    /// its own. A fresh git worker launches in the project root while its
-    /// transcripts land in the worktree's project dir, so a listing read
-    /// from the launching cwd finds none of the worker's own sessions.
-    ///
-    /// **The project is loaded from a forge.toml fixture, not the test
-    /// overlay**, which is what makes the lead half bite: the overlay is
-    /// consulted by `project_for_key` and not by the cwd lookup, so a lead
-    /// seeded there resolves to nothing and the `is_lead` guard could be
-    /// deleted with the assertion still passing. Loaded, the lead resolves
-    /// to its project root and only the guard answers `None`.
-    #[test]
-    fn worker_listing_is_the_workers_worktree_and_a_lead_has_none() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let root = dir.path().join("listing-proj");
-        std::fs::create_dir_all(&root).expect("mkdir");
-        std::fs::write(
-            forge_toml_path(dir.path()),
-            format!(
-                r#"
-[[orgs]]
-name = "Default"
-accounts = ["Stargate"]
-
-[[orgs.projects]]
-name = "listing-proj"
-path = "{}"
-auto_start = true
-model = "claude-sonnet-5"
-
-[[accounts]]
-display_name = "Stargate"
-token = "t"
-models = ["claude-sonnet-5"]
-provider = "anthropic"
-"#,
-                root.display()
-            ),
-        )
-        .expect("write forge.toml");
-        let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
-        let view = ws
-            .list_projects()
-            .into_iter()
-            .find(|view| view.name == "listing-proj")
-            .expect("fixture project");
-        let lead = SessionSlot::lead(&view.org, &view.name);
-        assert_eq!(
-            ws.cwd_for_session(&lead).as_deref(),
-            view.path.to_str(),
-            "the fixture's lead must resolve, or its half of this test proves nothing",
-        );
-        assert!(
-            ws.worker_listing_for(&lead).is_none(),
-            "a lead lists from the cwd it launches in, so it has no listing to carry",
-        );
-
-        // The slot's label is the worker's label, which is what its tag
-        // carries: the two are one string in production.
-        let worker = SessionSlot::worker(&view.org, &view.name, "reviewer");
-        ws.insert_live_worker(&view.key, worker_entry("reviewer", &worker, true));
-
-        let listing = ws.worker_listing_for(&worker).expect("a worker has a listing of its own");
-        assert_eq!(
-            listing.label, "reviewer",
-            "the listing carries the label the worker's transcripts do",
-        );
-        assert_eq!(
-            listing.dir,
-            view.path.join(".claude/worktrees/reviewer"),
-            "the listing must be read from the worker's worktree, not the cwd it launches in",
-        );
-    }
-
     #[test]
     fn resume_cwd_for_slot_returns_worktree_for_git_worker_with_no_catalog_cwd() {
         // Git-repo worker (the data-modules babysitter / librarian
@@ -18714,8 +18358,8 @@ provider = "anthropic"
         assert!(!workspace.catalog_ready(), "new_for_test leaves the scan unstarted");
 
         workspace
-            .dispatch(Command::StartDefault {
-                project_name: Some("proj".to_owned()),
+            .dispatch(Command::SpawnProject {
+                project_name: "proj".to_owned(),
                 launch_settings: SessionLaunchSettings::default(),
             })
             .expect("dispatch");
@@ -18779,8 +18423,8 @@ provider = "anthropic"
         assert!(!workspace.catalog_ready(), "the scan has not landed yet");
 
         workspace
-            .dispatch(Command::StartDefault {
-                project_name: Some("proj".to_owned()),
+            .dispatch(Command::SpawnProject {
+                project_name: "proj".to_owned(),
                 launch_settings: SessionLaunchSettings::default(),
             })
             .expect("dispatch");

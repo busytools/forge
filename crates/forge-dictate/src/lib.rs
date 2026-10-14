@@ -49,9 +49,6 @@ mod gates;
 pub mod normalize;
 
 pub use audio::{AudioSource, SAMPLE_RATE, Samples};
-// The device and its list are `forge-capture`'s types: this crate opens the
-// same device a client's shell does, so the shapes cross as re-exports rather
-// than as a second copy.
 pub use config::{Config, ConfigBuilder, ModelFacts, ModelSpec, spec_for_download};
 pub use engine::{
     Capture, CaptureMeter, Engine, FrameSink, Outcome, Stages, StreamCapture, Ticket, Transcript,
@@ -59,7 +56,6 @@ pub use engine::{
 };
 pub use error::Error;
 pub use fetch::{Progress, prepare};
-pub use forge_capture::{Device, devices};
 pub use normalize::{NormalizeError, NormalizeOptions, Normalizer};
 pub use transcribe_cpp::CancelToken;
 

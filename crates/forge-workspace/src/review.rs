@@ -54,23 +54,6 @@ impl Workspace {
         })
     }
 
-    /// Overwrite the review-thread set for `(project, branch)`. Best-effort:
-    /// a write failure is logged, not surfaced, since the diff overlay has
-    /// no recovery path.
-    pub fn save_review_threads(&self, project: &str, branch: &str, threads: &[ReviewThread]) {
-        if let Some(db) = self.db.lock().as_ref()
-            && let Err(error) = crate::store::review::save(db, project, branch, threads)
-        {
-            tracing::warn!(
-                target: "forge_workspace::review",
-                %error,
-                project = %project,
-                branch = %branch,
-                "saving review threads failed",
-            );
-        }
-    }
-
     /// Insert or replace one review thread by id in `(project, branch)`.
     /// Returns whether the write was confirmed - `false` when the store
     /// isn't open or the write failed, so the caller can leave the
@@ -89,30 +72,6 @@ impl Workspace {
                     project = %project,
                     branch = %branch,
                     "upserting a review thread failed",
-                );
-                false
-            }
-        }
-    }
-
-    /// Remove one review thread by id from `(project, branch)`, so a
-    /// deleted comment does not resurrect on the next hydrate. Returns
-    /// whether the removal was confirmed.
-    pub fn remove_review_thread(&self, project: &str, branch: &str, id: &str) -> bool {
-        let guard = self.db.lock();
-        let Some(db) = guard.as_ref() else {
-            return false;
-        };
-        match crate::store::review::remove_thread(db, project, branch, id) {
-            Ok(removed) => removed,
-            Err(error) => {
-                tracing::warn!(
-                    target: "forge_workspace::review",
-                    %error,
-                    project = %project,
-                    branch = %branch,
-                    id = %id,
-                    "removing a review thread failed",
                 );
                 false
             }
@@ -729,6 +688,15 @@ mod tests {
 
     use tempfile::tempdir;
 
+    /// Seed a branch's thread set straight into the store, timestamps and
+    /// all - the per-thread write path stamps `updated_at` to now, which
+    /// several of these tests read back.
+    fn seed(ws: &Workspace, project: &str, branch: &str, threads: &[ReviewThread]) {
+        let db = ws.db.lock();
+        crate::store::review::save(db.as_ref().expect("test db present"), project, branch, threads)
+            .expect("seed threads");
+    }
+
     #[test]
     fn review_thread_crud_round_trips_through_the_workspace() {
         use forge_primitives::review::{
@@ -774,7 +742,7 @@ mod tests {
         assert_eq!(loaded.iter().find(|t| t.id == "b").expect("b").status, ReviewStatus::Open);
 
         // A different (project, branch) is scoped separately.
-        ws.save_review_threads("forge", "other", &[make("c", 30)]);
+        seed(&ws, "forge", "other", &[make("c", 30)]);
         assert_eq!(
             ws.load_review_threads("forge", "feat").expect("load").len(),
             2,
@@ -843,7 +811,8 @@ mod tests {
         );
         assert!(ws.review_replies_waiting("forge", "feat").is_none(), "no rows, no signal");
 
-        ws.save_review_threads(
+        seed(
+            &ws,
             "forge",
             "feat",
             &[
@@ -971,12 +940,12 @@ mod tests {
         for branch in
             ["feat/live", "feat/second", "feat/third", "feat/pushed", "feat/merged", "fix"]
         {
-            ws.save_review_threads("myproj", branch, &[sweep_thread("a")]);
+            seed(&ws, "myproj", branch, &[sweep_thread("a")]);
             ws.submit_review("myproj", branch, None, &["a".to_owned()], reviewer.clone())
                 .expect("submit");
         }
         // Threads drafted but never submitted: no reviews row at all.
-        ws.save_review_threads("myproj", "feat/drafts", &[sweep_thread("d")]);
+        seed(&ws, "myproj", "feat/drafts", &[sweep_thread("d")]);
 
         assert_eq!(ws.sweep_dead_review_branches(), 3, "feat/merged, fix and feat/drafts");
 
@@ -999,7 +968,7 @@ mod tests {
         std::fs::create_dir_all(&root).expect("mkdir");
 
         let (ws, _rx) = sweep_ws(dir.path(), "plainproj", &root);
-        ws.save_review_threads("plainproj", "feat/x", &[sweep_thread("a")]);
+        seed(&ws, "plainproj", "feat/x", &[sweep_thread("a")]);
 
         assert_eq!(ws.sweep_dead_review_branches(), 0, "nothing to verify, nothing to clear");
         assert!(sweep_has_state(&ws, "plainproj", "feat/x"));
@@ -1020,7 +989,7 @@ mod tests {
 
         let (ws, _rx) = sweep_ws(dir.path(), "recloned", &root);
         for branch in ["feat/a", "feat/b", "feat/c"] {
-            ws.save_review_threads("recloned", branch, &[sweep_thread("a")]);
+            seed(&ws, "recloned", branch, &[sweep_thread("a")]);
         }
 
         assert_eq!(ws.sweep_dead_review_branches(), 0, "refused, not swept");
@@ -1045,10 +1014,10 @@ mod tests {
 
         let (ws, _rx) = sweep_ws(dir.path(), "docproj", &root);
         for branch in ["feat/live", "feat/second", "feat/third"] {
-            ws.save_review_threads("docproj", branch, &[sweep_thread("a")]);
+            seed(&ws, "docproj", branch, &[sweep_thread("a")]);
         }
         let doc_scope = forge_primitives::review::doc_scope_ref("/Users/me/proj/docs/plan.md");
-        ws.save_review_threads("docproj", &doc_scope, &[sweep_thread("d")]);
+        seed(&ws, "docproj", &doc_scope, &[sweep_thread("d")]);
 
         assert_eq!(
             ws.sweep_dead_review_branches(),
@@ -1079,9 +1048,9 @@ mod tests {
         // Eight long-merged branches against one live one: the ratio is
         // lopsided, the repo is not.
         for n in 0..8 {
-            ws.save_review_threads("busy", &format!("feat/merged-{n}"), &[sweep_thread("a")]);
+            seed(&ws, "busy", &format!("feat/merged-{n}"), &[sweep_thread("a")]);
         }
-        ws.save_review_threads("busy", "feat/live", &[sweep_thread("b")]);
+        seed(&ws, "busy", "feat/live", &[sweep_thread("b")]);
 
         assert_eq!(ws.sweep_dead_review_branches(), 8, "the backlog is what this is for");
         assert!(sweep_has_state(&ws, "busy", "feat/live"));
@@ -1100,8 +1069,8 @@ mod tests {
         sweep_symref_head(&root, "main");
 
         let (ws, _rx) = sweep_ws(dir.path(), "small", &root);
-        ws.save_review_threads("small", "main", &[sweep_thread("a")]);
-        ws.save_review_threads("small", "feat/merged", &[sweep_thread("b")]);
+        seed(&ws, "small", "main", &[sweep_thread("a")]);
+        seed(&ws, "small", "feat/merged", &[sweep_thread("b")]);
 
         assert_eq!(ws.sweep_dead_review_branches(), 1, "one of two dead is not a majority");
         assert!(sweep_has_state(&ws, "small", "main"), "the live branch keeps its state");
@@ -1126,7 +1095,7 @@ mod tests {
             }
             let (ws, _rx) = sweep_ws(dir.path(), name, &root);
             for branch in ["feat/a", "feat/b"] {
-                ws.save_review_threads(name, branch, &[sweep_thread("a")]);
+                seed(&ws, name, branch, &[sweep_thread("a")]);
             }
             (dir, ws.sweep_dead_review_branches())
         };
@@ -1162,7 +1131,7 @@ mod tests {
             sweep_symref_head(&root, default);
             let (ws, _rx) = sweep_ws(dir.path(), name, &root);
             for branch in ["feat/a", "feat/b"] {
-                ws.save_review_threads(name, branch, &[sweep_thread("a")]);
+                seed(&ws, name, branch, &[sweep_thread("a")]);
             }
             (dir, ws.sweep_dead_review_branches())
         };
@@ -1201,7 +1170,7 @@ mod tests {
                 kick: None,
             },
         );
-        ws.save_review_threads("myproj", "worktree-reviewer", &[sweep_thread("a")]);
+        seed(&ws, "myproj", "worktree-reviewer", &[sweep_thread("a")]);
 
         assert_eq!(ws.sweep_dead_review_branches(), 0, "its worktree is still being created");
         assert!(sweep_has_state(&ws, "myproj", "worktree-reviewer"));
@@ -1241,7 +1210,7 @@ mod tests {
         );
 
         assert!(ws.load_reviews("forge", "feat").expect("load").is_empty(), "empty on miss");
-        ws.save_review_threads("forge", "feat", &[make("a"), make("b"), make("c")]);
+        seed(&ws, "forge", "feat", &[make("a"), make("b"), make("c")]);
 
         let filed = |id: &str| {
             ws.load_review_threads("forge", "feat")
@@ -1308,7 +1277,7 @@ mod tests {
         ws.install_db_for_test(
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
-        ws.save_review_threads("forge", "feat", &[make("a"), make("b")]);
+        seed(&ws, "forge", "feat", &[make("a"), make("b")]);
         let caller = SessionSlot::from_str_for_test("worker");
         let r1 = ws
             .submit_review(
@@ -1406,7 +1375,8 @@ mod tests {
         ws.install_db_for_test(
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
-        ws.save_review_threads(
+        seed(
+            &ws,
             "forge",
             "feat",
             &[
@@ -1433,7 +1403,7 @@ mod tests {
             at: "2026-07-24T10:00:00Z".to_owned(),
             review_id: None,
         });
-        ws.save_review_threads("forge", "feat", &threads);
+        seed(&ws, "forge", "feat", &threads);
         ws.submit_review("forge", "feat", None, &["c-71".to_owned()], reviewer.clone())
             .expect("second round");
         ws.submit_review("forge", "feat", None, &["c-1".to_owned()], reviewer)
@@ -1475,7 +1445,8 @@ mod tests {
         ws.install_db_for_test(
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
-        ws.save_review_threads(
+        seed(
+            &ws,
             "forge",
             "feat",
             &[ReviewThread {
@@ -1546,7 +1517,8 @@ mod tests {
         ws.install_db_for_test(
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
-        ws.save_review_threads(
+        seed(
+            &ws,
             "forge",
             "feat",
             &[ReviewThread {
@@ -1613,7 +1585,7 @@ mod tests {
         ws.install_db_for_test(
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
-        ws.save_review_threads("forge", "feat", &[make("a"), make("b"), make("c")]);
+        seed(&ws, "forge", "feat", &[make("a"), make("b"), make("c")]);
         let reviewer = SessionSlot::from_str_for_test("reviewer");
         let worker = SessionSlot::from_str_for_test("worker");
         ws.submit_review(
@@ -1695,7 +1667,7 @@ mod tests {
         ws.install_db_for_test(
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
-        ws.save_review_threads("forge", "feat", &[thread]);
+        seed(&ws, "forge", "feat", &[thread]);
         let reviewer = SessionSlot::worker("TestOrg", "test-project", "reviewer");
         let worker = SessionSlot::worker("TestOrg", "test-project", "worker");
         ws.submit_review("forge", "feat", None, &["a".to_owned()], reviewer.clone())
@@ -1807,7 +1779,7 @@ mod tests {
         ws.install_db_for_test(
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
-        ws.save_review_threads("forge", "feat", &[make("a"), make("b"), make("c")]);
+        seed(&ws, "forge", "feat", &[make("a"), make("b"), make("c")]);
         let reviewer = SessionSlot::from_str_for_test("reviewer");
         let worker = SessionSlot::from_str_for_test("worker");
         ws.submit_review(

@@ -212,11 +212,6 @@ mod commands {
         .map_err(|error| error.to_string())?
     }
 
-    #[tauri::command]
-    pub fn client_devices(bridge: tauri::State<'_, Arc<Bridge>>) -> bool {
-        bridge.devices()
-    }
-
     /// One commit's own diff; false means no socket is open and no answer is
     /// coming.
     #[tauri::command]
@@ -303,7 +298,6 @@ pub fn run() {
             commands::client_mic_drain,
             commands::client_mic_stop,
             commands::client_mic_devices,
-            commands::client_devices,
             commands::client_read_document,
             commands::client_commit_diff,
             commands::client_take_role,
@@ -350,7 +344,6 @@ pub fn run() {
             commands::client_mic_drain,
             commands::client_mic_stop,
             commands::client_mic_devices,
-            commands::client_devices,
             commands::client_read_document,
             commands::client_commit_diff,
             commands::client_take_role,

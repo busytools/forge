@@ -4,7 +4,6 @@
     "BrowserRole": "browser_role",
     "BrowserSeats": "browser_seats",
     "CommitDiff": "commit_diff",
-    "Devices": "devices",
     "DocumentRead": "document_read",
     "Error": "error",
     "Greeting": "greeting",
@@ -30,7 +29,6 @@
     "CronPromptAppended": "cron_prompt_appended",
     "CronSchedulesChanged": "cron_schedules_changed",
     "DictateAvailability": "dictate_availability",
-    "DictateDevicePin": "dictate_device_pin",
     "DictateEnded": "dictate_ended",
     "DictateLevel": "dictate_level",
     "DictateModelsChanged": "dictate_models_changed",
@@ -38,7 +36,6 @@
     "DictateProgress": "dictate_progress",
     "DictateStarted": "dictate_started",
     "DictateTranscribing": "dictate_transcribing",
-    "DispatchesChanged": "dispatches_changed",
     "DocumentHandOffPending": "document_hand_off_pending",
     "DocumentHandOffResolved": "document_hand_off_resolved",
     "FatalError": "fatal_error",
@@ -66,13 +63,11 @@
     "PromptCancelResolved": "prompt_cancel_resolved",
     "PromptLifecycle": "prompt_lifecycle",
     "PromptQueued": "prompt_queued",
-    "PromptQueuedWhileBusy": "prompt_queued_while_busy",
     "QuestionRequest": "question_request",
     "Releasing": "releasing",
     "ReviewActivityNotice": "review_activity_notice",
     "ServiceStatus": "service_status",
     "SessionReplaced": "session_replaced",
-    "SessionsListed": "sessions_listed",
     "SetModeFailed": "set_mode_failed",
     "SetModelFailed": "set_model_failed",
     "SlackDraftResolved": "slack_draft_resolved",
@@ -123,7 +118,6 @@
     "MarketplaceAdd": "marketplace_add",
     "MarketplaceRepair": "marketplace_repair",
     "NewSession": "new_session",
-    "OpenUrl": "open_url",
     "PluginCheckUpdates": "plugin_check_updates",
     "PluginInstall": "plugin_install",
     "PluginUpdate": "plugin_update",
@@ -131,8 +125,6 @@
     "Prompt": "prompt",
     "PromptUnder": "prompt_under",
     "ReadCallOutput": "read_call_output",
-    "ReconnectMcpServer": "reconnect_mcp_server",
-    "RemoveReviewThread": "remove_review_thread",
     "ReplayConversation": "replay_conversation",
     "ResetDictateOverrides": "reset_dictate_overrides",
     "RespondBrowserHandOff": "respond_browser_hand_off",
@@ -140,16 +132,12 @@
     "RespondQuestion": "respond_question",
     "RespondSlackPost": "respond_slack_post",
     "ResumeSession": "resume_session",
-    "SaveReviewThreads": "save_review_threads",
-    "SetDictateDevice": "set_dictate_device",
     "SetDictateOverride": "set_dictate_override",
     "SetMode": "set_mode",
     "SetModel": "set_model",
     "SetReviewThreadStatus": "set_review_thread_status",
     "SpawnProject": "spawn_project",
-    "SpawnSession": "spawn_session",
     "SpawnWorker": "spawn_worker",
-    "StartDefault": "start_default",
     "SubmitReview": "submit_review",
     "TaskAnswer": "task_answer",
     "TaskAssign": "task_assign",
@@ -157,7 +145,6 @@
     "TaskMove": "task_move",
     "TaskRank": "task_rank",
     "TaskVerdict": "task_verdict",
-    "ToggleMcpServer": "toggle_mcp_server",
     "UpsertReviewThread": "upsert_review_thread"
   },
   "client_message": {
@@ -165,7 +152,6 @@
     "BrowserTakeRole": "browser_take_role",
     "Command": "command",
     "CommitDiff": "commit_diff",
-    "Devices": "devices",
     "DocumentRead": "document_read",
     "More": "more",
     "Subscribe": "subscribe",
@@ -277,18 +263,6 @@
         "new_line",
         "old_line",
         "text"
-      ]
-    },
-    "Devices": {
-      "": [
-        "configured",
-        "devices",
-        "kind"
-      ],
-      "/devices[]": [
-        "id",
-        "is_default",
-        "name"
       ]
     },
     "DictateModelsChanged": {
@@ -732,17 +706,14 @@
         "fleet",
         "forge_version",
         "forge_version_short",
-        "plugins",
         "projects",
         "service_status",
-        "unseen",
-        "workers"
+        "unseen"
       ],
       "/data/accounts": [
         "all_loaded",
         "gateway",
         "loading",
-        "orgs",
         "usage"
       ],
       "/data/accounts/gateway": [
@@ -756,26 +727,6 @@
         "last_error",
         "retry_after",
         "state"
-      ],
-      "/data/accounts/orgs[]": [
-        "accounts",
-        "fallback_accounts",
-        "org",
-        "rows"
-      ],
-      "/data/accounts/orgs[]/rows[]": [
-        "budget",
-        "display_name",
-        "fallback",
-        "loading",
-        "provider",
-        "unusable"
-      ],
-      "/data/accounts/orgs[]/rows[]/budget": [
-        "unknown"
-      ],
-      "/data/accounts/orgs[]/rows[]/budget/unknown": [
-        "spend_billed"
       ],
       "/data/accounts/usage[]": [
         "display_name",
@@ -819,7 +770,6 @@
         "load_failed"
       ],
       "/data/dictate": [
-        "device",
         "enabled",
         "models_dir",
         "snapshot"
@@ -843,9 +793,6 @@
       ],
       "/data/fleet[]/misses[]": [
         "unaccounted_worker"
-      ],
-      "/data/plugins": [
-        "update_records"
       ],
       "/data/projects[]": [
         "chip",
@@ -875,34 +822,6 @@
         "branch",
         "changed",
         "gate"
-      ],
-      "/data/workers[]": [
-        "project",
-        "workers"
-      ],
-      "/data/workers[]/workers[]": [
-        "charter",
-        "is_git_repo_at_spawn",
-        "label",
-        "needs_tag",
-        "session_id",
-        "slot",
-        "spawned_at",
-        "spawned_by"
-      ],
-      "/data/workers[]/workers[]/slot": [
-        "label",
-        "org",
-        "project"
-      ],
-      "/data/workers[]/workers[]/spawned_at": [
-        "nanos_since_epoch",
-        "secs_since_epoch"
-      ],
-      "/data/workers[]/workers[]/spawned_by": [
-        "label",
-        "org",
-        "project"
       ]
     }
   },

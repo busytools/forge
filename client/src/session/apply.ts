@@ -421,7 +421,6 @@ export const IGNORED: readonly string[] = [
   'cli_version_changed',
   'cron_prompt_appended',
   'dictate_availability',
-  'dictate_device_pin',
   // The models page reads the catalogue through its own subject; a
   // session page has nothing of it to draw.
   'dictate_models_changed',
@@ -429,9 +428,6 @@ export const IGNORED: readonly string[] = [
   // replaced; this client holds its axes itself, so the echo reaches nothing
   // here.
   'dictate_overrides',
-  // Nothing on this client draws the flag, and the record no longer carries
-  // it: the update reaches nothing here.
-  'dispatches_changed',
   'fatal_error',
   'forge_account_identity',
   'gotify_notification_appended',
@@ -445,14 +441,12 @@ export const IGNORED: readonly string[] = [
   'plugins_rollback_succeeded',
   'plugins_update_run_finished',
   'plugins_update_run_progress',
-  'prompt_queued_while_busy',
   // The seat is being released: the record has no field for it, and what a
   // release draws - the row's going-to-sleep mark and the reader's landing -
   // belongs to `session/close.ts`, fed off the same stream.
   'releasing',
   'review_activity_notice',
   'service_status',
-  'sessions_listed',
   'set_mode_failed',
   'set_model_failed',
   /**

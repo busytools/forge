@@ -309,14 +309,6 @@ class RustConnection implements Connection {
     return true;
   }
 
-  devices(): boolean {
-    if (this.state !== 'open') return false;
-    void invoke('client_devices').catch((why: unknown) => {
-      report('the device walk could not reach the shell', why);
-    });
-    return true;
-  }
-
   commitDiff(session: SessionSlot, sha: string): boolean {
     if (this.state !== 'open') return false;
     void invoke('client_commit_diff', { session, sha }).catch((why: unknown) => {

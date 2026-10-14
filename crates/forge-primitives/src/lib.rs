@@ -39,7 +39,7 @@
 //!   [`permissions`]).
 //! - [`question`] - `AskUserQuestion` request/response shapes.
 //! - [`mcp_ui_sync`] - MCP UI events (`McpOperationError`).
-//! - [`session_meta`] - `SessionListEntry`, `PromptChunk`.
+//! - [`session_meta`] - `PromptChunk`.
 //! - [`project_key`] - `ProjectKey`, the canonical on-disk project
 //!   identity.
 //!
@@ -143,7 +143,7 @@ pub use runtime::{
     SessionTurnState, SettingsParseErrorUpdate, TerminalReason,
 };
 pub use server::{DEFAULT_SERVER_PORT, ServerConfig};
-pub use session_meta::{PromptChunk, SessionListEntry};
+pub use session_meta::PromptChunk;
 pub use session_slot::SessionSlot;
 pub use session_update::{
     BashOutputMetadata, ChunkContent, TaskMetadata, ToolCall, ToolCallContent, ToolCallLocation,

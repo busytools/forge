@@ -204,15 +204,12 @@ export interface Wire {
   sent: Sent[];
   /** Every binary frame a take sent, in the order the take sent it. */
   frames: Uint8Array[];
-  /** How many times a panel asked for the device list, which one walk each. */
-  asked: number;
   /** Whether the socket takes frames: `false` holds them, as a socket that is down does. */
   takes: boolean;
   connection: Pick<
     Connection,
     | 'dispatch'
     | 'onMessage'
-    | 'devices'
     | 'store'
     | 'status'
     | 'onStatus'
@@ -252,16 +249,11 @@ export function wire(settings: ClientSettings = DEFAULT_SETTINGS): Wire {
   const held: Wire = {
     sent,
     frames,
-    asked: 0,
     takes: true,
     connection: {
       dispatch(command: Record<string, Record<string, unknown>>) {
         sent.push({ command });
         return null;
-      },
-      devices() {
-        held.asked += 1;
-        return true;
       },
       onMessage(fn: (message: ServerMessage) => void) {
         listeners.add(fn);

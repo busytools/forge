@@ -1,4 +1,4 @@
-//! `dictate()`: devices, models and preflight state.
+//! `dictate()`: models and preflight state.
 
 use std::path::PathBuf;
 
@@ -8,11 +8,6 @@ use forge_workspace::DictateSnapshot;
 use super::ViewSurface;
 
 /// Dictation's preflight state: what the preflight screen draws.
-///
-/// The device catalog is deliberately absent. Enumerating devices is a
-/// blocking cpal walk that also trips a microphone check, so it is
-/// reached on demand from a spawned task rather than read per frame
-/// along with this.
 pub struct DictateView {
     /// Whether `[dictate] enabled` is set. **Carried rather than inferred
     /// from an empty `models` list**: the list is empty for a switched-off
@@ -25,13 +20,6 @@ pub struct DictateView {
     /// Where the dictation models land. `None` when the platform has no
     /// usable cache directory and none was configured.
     pub models_dir: Option<PathBuf>,
-    /// The input a pick has moved this process to, over the configured pin.
-    ///
-    /// The read path for it, as `SessionState::dictate_overrides` is for the
-    /// session's axes: a client that did not watch the pick being made (a cold
-    /// load, a reconnect) gets where it moved to here. `None` means the pin
-    /// stands.
-    pub device: Option<forge_workspace::DictateDeviceChoice>,
 }
 
 impl ViewSurface {
@@ -76,7 +64,6 @@ impl ViewSurface {
             enabled: self.workspace.dictate_enabled(),
             snapshot: self.workspace.dictate_snapshot(),
             models_dir: self.workspace.dictate_models_dir(),
-            device: self.workspace.dictate_device_pick(),
         }
     }
 
@@ -100,14 +87,6 @@ impl ViewSurface {
     /// How a press maps onto a take, as `forge.toml` declares it.
     pub fn dictate_mode(&self) -> forge_workspace::DictateMode {
         self.workspace.dictate_mode()
-    }
-
-    /// Every input forge can record from, and the configured pin.
-    ///
-    /// A blocking walk that opens the microphone stack, so a caller runs it
-    /// off its own thread: the socket answers an on-demand request with it.
-    pub fn dictate_device_catalog(&self) -> Result<forge_workspace::DictateDeviceCatalog, String> {
-        self.workspace.dictate_device_catalog()
     }
 }
 

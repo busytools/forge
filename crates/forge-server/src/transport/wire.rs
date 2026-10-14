@@ -27,9 +27,7 @@ use forge_workspace::env::git_diff::resolver::{
     AnchorPlacement, OutdatedReason, place_anchor_in_content,
 };
 use forge_workspace::env::processes::ProcessSnapshot;
-use forge_workspace::{
-    AccountLoadingRow, Command, GatewayOrgView, McpServers, ProjectView, WorkerEntry,
-};
+use forge_workspace::{AccountLoadingRow, Command, McpServers, ProjectView};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -92,8 +90,6 @@ pub struct HomeWire {
     /// reading only the records would draw every row as settled.
     pub unseen: Vec<SessionSlot>,
     pub accounts: AccountsWire,
-    pub plugins: PluginsWire,
-    pub workers: Vec<WorkersWire>,
     pub connectors: ConnectorsWire,
     pub dictate: DictateWire,
     /// The claude CLI versions the core holds, as the core's own snapshot
@@ -247,50 +243,6 @@ impl From<&AgentRow> for AgentWire {
     }
 }
 
-/// The plugin inventory and its update records.
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub struct PluginsWire {
-    pub update_records: Vec<Value>,
-}
-
-/// One project's live workers, keyed by the project they belong to.
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub struct WorkersWire {
-    pub project: String,
-    pub workers: Vec<WorkerWire>,
-}
-
-/// One live worker, minus the handles a client can never use.
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub struct WorkerWire {
-    pub label: String,
-    pub charter: String,
-    pub slot: SessionSlot,
-    pub session_id: Option<forge_primitives::SessionId>,
-    pub spawned_at: std::time::SystemTime,
-    pub spawned_by: SessionSlot,
-    pub needs_tag: bool,
-    pub is_git_repo_at_spawn: bool,
-}
-
-impl From<&WorkerEntry> for WorkerWire {
-    fn from(entry: &WorkerEntry) -> Self {
-        Self {
-            label: entry.label.clone(),
-            charter: entry.charter.clone(),
-            slot: entry.slot.clone(),
-            session_id: entry.session_id.clone(),
-            spawned_at: entry.spawned_at,
-            spawned_by: entry.spawned_by.clone(),
-            needs_tag: entry.needs_tag,
-            is_git_repo_at_spawn: entry.is_git_repo_at_spawn,
-        }
-    }
-}
-
 /// The account pool's state.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -299,7 +251,6 @@ pub struct AccountsWire {
     pub all_loaded: bool,
     pub gateway: GatewayWire,
     pub usage: Vec<AccountUsageWire>,
-    pub orgs: Vec<GatewayOrgView>,
 }
 
 /// The inference listener's bind state.
@@ -357,14 +308,6 @@ pub struct ProjectConnectorsWire {
 }
 
 /// Dictation's preflight state.
-///
-/// **The device catalog is not a field here, and asking for it is its own
-/// read.** Enumerating devices is a blocking walk on the machine running
-/// forge, which trips a microphone check, and a record is encoded per request
-/// and re-sent on every reconnect - so a field would be a permission check per
-/// frame and per connection. What crosses here is the input a pick has already
-/// moved this process to, in `device` below; the list to pick FROM is asked
-/// for on demand and answered by the socket's `devices` message.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct DictateWire {
@@ -376,23 +319,6 @@ pub struct DictateWire {
     pub enabled: bool,
     pub snapshot: Value,
     pub models_dir: Option<std::path::PathBuf>,
-    /// The input a pick has moved this process to, over the configured pin.
-    /// `None` means the pin stands.
-    pub device: Option<forge_workspace::DictateDeviceChoice>,
-}
-
-/// One input forge can record from, as a picker draws it.
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub struct DeviceWire {
-    /// The stable identity, which is what a pick sends back: names collide
-    /// between two identical interfaces and change when a user renames one.
-    pub id: String,
-    /// Human label for a picker. Not an identity.
-    pub name: String,
-    /// Whether the system would pick this one when asked for no particular
-    /// device.
-    pub is_default: bool,
 }
 
 /// One session, as a client sees it: every read a session-scoped view makes.
@@ -485,8 +411,6 @@ pub struct SessionWire {
 pub struct SessionStateWire {
     pub slot: SessionSlot,
     pub scan_cwd: std::path::PathBuf,
-    /// What this session dictates with, where it has overridden the defaults.
-    pub dictate_overrides: forge_workspace::DictateOverrides,
     /// The prompts still waiting in the CLI's queue, oldest first.
     ///
     /// The read path for the pile: `prompt_queued` and `prompt_lifecycle`
@@ -1210,7 +1134,6 @@ async fn home(state: &TransportState, surface: &ViewSurface) -> HomeWire {
     let agents = surface.agents();
     let connectors = surface.connectors(None);
     let dictate = surface.dictate();
-    let workers = surface.workers();
     let encode = |value: Option<Value>| value;
 
     let mut projects = Vec::with_capacity(roster.projects.len());
@@ -1252,14 +1175,6 @@ async fn home(state: &TransportState, surface: &ViewSurface) -> HomeWire {
 
     HomeWire {
         fleet: surface.fleet(),
-        workers: roster
-            .projects
-            .iter()
-            .map(|project| WorkersWire {
-                project: project.name.clone(),
-                workers: workers.for_project(&project.key).iter().map(WorkerWire::from).collect(),
-            })
-            .collect(),
         accounts: AccountsWire {
             loading: accounts.loading,
             all_loaded: accounts.all_loaded,
@@ -1276,15 +1191,6 @@ async fn home(state: &TransportState, surface: &ViewSurface) -> HomeWire {
                     snapshot: row.snapshot.and_then(|snapshot| serde_json::to_value(snapshot).ok()),
                 })
                 .collect(),
-            orgs: accounts.orgs,
-        },
-        plugins: PluginsWire {
-            update_records: surface
-                .plugins()
-                .update_records
-                .iter()
-                .filter_map(|record| serde_json::to_value(record).ok())
-                .collect(),
         },
         connectors: ConnectorsWire {
             gotify: GotifyWire { connected: connectors.gotify.connected },
@@ -1297,7 +1203,6 @@ async fn home(state: &TransportState, surface: &ViewSurface) -> HomeWire {
             enabled: dictate.enabled,
             snapshot: serde_json::to_value(dictate.snapshot).unwrap_or(Value::Null),
             models_dir: dictate.models_dir,
-            device: dictate.device,
         },
         cli_version: surface.cli_version().and_then(|version| serde_json::to_value(version).ok()),
         forge_version: crate::FORGE_VERSION.to_owned(),
@@ -1448,7 +1353,6 @@ async fn session(
         state: SessionStateWire {
             slot: state_at.slot,
             scan_cwd: state_at.scan_cwd,
-            dictate_overrides: state_at.dictate_overrides,
             queue: state_at.queue,
         },
         composer: {
@@ -2929,58 +2833,6 @@ mod tests {
             empty.len(),
             empty.iter().cloned().collect::<Vec<_>>().join(", "),
         );
-    }
-
-    /// A client could set a session's dictation and move the process's input,
-    /// and no record carried either back: three commands crossed the wire and
-    /// nothing read what they had set.
-    #[tokio::test]
-    async fn the_dictation_a_client_set_comes_back() {
-        let fleet =
-            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
-        let seat = fixture_seat();
-        // A session has to exist for the override to land on, which is why
-        // this is a seat with a live agent rather than a bare project.
-        fleet.install_agent("TestOrg", "proj", "lead");
-        let surface = fleet.surface();
-        let cwd = surface.roster().cwd_for(&seat).expect("the seat has a directory");
-
-        surface
-            .dispatch(crate::Command::SetDictateOverride {
-                key: seat.clone(),
-                update: forge_workspace::DictateOverrideUpdate::Styling(
-                    forge_dictate::normalize::Styling::SemiFormal,
-                ),
-            })
-            .expect("the session's override is applied");
-        surface
-            .dispatch(crate::Command::SetDictateDevice {
-                key: seat.clone(),
-                pick: Some(forge_workspace::DictateDeviceChoice::Device("a-mic".to_owned())),
-            })
-            .expect("the device pick is applied");
-
-        let state = TransportState {
-            surface: Arc::clone(&surface),
-            work: Arc::new(WorkCache::new()),
-            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
-            live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
-            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
-        };
-
-        let session = encode_subject(&state, &Subject::Session(seat)).await.expect("encode");
-        assert_eq!(
-            session["state"]["dictate_overrides"]["styling"], "semi_formal",
-            "the override the client set is the override it reads back: {session}",
-        );
-
-        let home = encode_subject(&state, &Subject::Home).await.expect("encode");
-        assert_eq!(
-            home["dictate"]["device"]["device"], "a-mic",
-            "and the device it moved to is on the dictate read: {home}",
-        );
-        let _ = cwd;
     }
 
     /// The push-to-talk key and its press mapping reach the composer's record.

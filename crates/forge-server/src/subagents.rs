@@ -3,12 +3,12 @@
 //!
 //! **The fold moved to `forge-workspace`** (`subagent_cards`), because the
 //! session task is the one that can announce the list moving: it folds a
-//! frame at a time in the walk that already raises `DispatchesChanged`, and
-//! it is that fold's list a record reads - the same list the task pushes as
-//! it moves, not a second fold driven here over the copy the transport
-//! holds, which stops at the window that copy is kept in. Two folds would
-//! have been the drift this module's own docs warn about one level down, so
-//! this file is now the wire's import path and nothing else.
+//! frame at a time in the walk that already folds the conversation's
+//! frames, and it is that fold's list a record reads - the same list the
+//! task pushes as it moves, not a second fold driven here over the copy the
+//! transport holds, which stops at the window that copy is kept in. Two
+//! folds would have been the drift this module's own docs warn about one
+//! level down, so this file is now the wire's import path and nothing else.
 
 pub use forge_primitives::runtime::SubagentCard;
 pub use forge_workspace::subagent_cards::{TAIL_CAP, subagent_cards};

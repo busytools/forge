@@ -186,7 +186,6 @@ export function fakePage(read: ExtensionsRead): FakePage {
     },
     status: () => 'open',
     more: refused,
-    devices: refused,
     frame: refused,
     onBrowserAsk: refused,
     browserRole: refused,

@@ -9,7 +9,6 @@ import { dictationOffered, type ComposerConnection, type ComposerProps } from '.
 /** Nothing is dispatched here: the check is the assignment, not a render. */
 const idle = {
   dispatch: () => null,
-  devices: () => true,
   commitDiff: () => true,
   onMessage: () => () => {},
   store: () => undefined,

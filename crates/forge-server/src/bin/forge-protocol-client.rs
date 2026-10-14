@@ -139,7 +139,6 @@ fn parse_line(line: &str, reply_to: &mut u64) -> anyhow::Result<ClientMessage> {
             let turns = parts.next().map_or(Ok(10), str::parse)?;
             Ok(ClientMessage::More { conversation, before: None, turns })
         }
-        "devices" => Ok(ClientMessage::Devices),
         "commit_diff" => {
             let mut parts = rest.split_whitespace();
             let Some(seat) = parts.next() else {

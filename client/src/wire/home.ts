@@ -310,7 +310,6 @@ export interface AccountsWire {
   all_loaded: boolean;
   gateway: GatewayWire;
   usage: { display_name: string; snapshot: unknown }[];
-  orgs: unknown[];
 }
 
 export interface DictateModel {
@@ -337,8 +336,6 @@ export interface HomeWire {
    */
   unseen: SessionSlot[];
   accounts: AccountsWire;
-  plugins: { update_records: unknown[] };
-  workers: { project: string; workers: unknown[] }[];
   connectors: unknown;
   dictate: DictateWire;
   cli_version: { installed: string | null; latest: string | null } | null;

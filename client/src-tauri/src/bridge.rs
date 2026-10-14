@@ -23,8 +23,8 @@
 //! and live emission stops, so a parked page cannot grow an unbounded event
 //! backlog. Nothing is lost with it: **every suppressed frame except a
 //! seat's chat is HELD in a bounded ring** - a released seat, a dock's
-//! ending, a dictation's close, a prompt's queued row, an error, a devices
-//! answer - and the first heartbeat after the spell answers with the ring
+//! ending, a dictation's close, a prompt's queued row, an error - and the
+//! first heartbeat after the spell answers with the ring
 //! itself, in order, and then with the records: a snapshot per seat, which
 //! is what a record is, and that seat's newest page, which is the answer
 //! its `more` with no `before` would have carried. Only `chat_appended`
@@ -109,7 +109,7 @@ struct State {
     /// while it was presumed parked. **Every suppressed frame except a
     /// seat's chat is HELD, not dropped** (rule 25): the ring carries a
     /// released seat, a dock's ending, a dictation's close, a prompt's
-    /// queued row, an error and a devices answer across the spell, and the
+    /// queued row and an error across the spell, and the
     /// reconcile flushes it first. Only `chat_appended` updates are left
     /// out, because the record's conversation rebuilds those.
     last_beat: Option<Instant>,
@@ -324,18 +324,6 @@ impl Bridge {
         }
         if let Some(socket) = &state.socket {
             socket.send_binary(bytes);
-        }
-        true
-    }
-
-    /// Ask for the inputs forge can record from.
-    pub fn devices(&self) -> bool {
-        let state = self.lock();
-        if state.status != "open" {
-            return false;
-        }
-        if let Some(socket) = &state.socket {
-            socket.devices();
         }
         true
     }
@@ -571,8 +559,8 @@ impl Bridge {
     /// A parked spell's frames are not lost wholesale: the ones the records
     /// rebuild (a seat's chat, in the record's conversation) are only
     /// counted, and every other frame is HELD in the ring for the reconcile
-    /// to flush - a released seat, a dock's ending, a dictation's close, an
-    /// error, a devices answer are frames no record carries.
+    /// to flush - a released seat, a dock's ending, a dictation's close and
+    /// an error are frames no record carries.
     fn forward(&self, message: &Value) {
         let mut state = self.lock();
         let fresh =
