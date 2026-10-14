@@ -2966,6 +2966,45 @@ describe('the conversation the chat draws', () => {
       'the exchange row still opens on its own frame',
     ).toEqual(typed('mine'));
   });
+
+  /**
+   * **A repaired stretch folds into the turn it belongs to.**
+   *
+   * A range ask is answered with the frames the seat emitted in the gap, and
+   * they arrive after the frames that came in while the reader was away - so
+   * the fold takes each into the turn that was open when it was written,
+   * through the same path a live frame takes, rather than opening turns of
+   * its own at the foot.
+   */
+  it('folds a repaired stretch into the turn it belongs to', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'the settled turn')], null));
+    // The turn in flight, as the live stream writes it.
+    server.update({ chat_appended: { key: LEAD, source: 'you', msg: typed('go') } });
+    server.update({ chat_appended: { key: LEAD, msg: said('first words') } });
+    const opened = get(chat.value).turns.length;
+
+    // The stretch that crossed while the reader was away, arriving after the
+    // newest frame did - the newest-first order a repair has.
+    server.send({
+      kind: 'seat_frames',
+      slot: LEAD,
+      epoch: null,
+      frames: [
+        { seq: 2, update: { chat_appended: { key: LEAD, msg: said('the missed middle') } } },
+      ],
+    });
+
+    const turns = get(chat.value).turns;
+    expect(turns, 'the repair opened no turn of its own').toHaveLength(opened);
+    expect(
+      JSON.stringify(turns.at(-1)),
+      'and the missed words joined the turn they were written in',
+    ).toContain('the missed middle');
+    stop();
+  });
 });
 
 describe('the chat holds a queued prompt until the CLI takes it', () => {

@@ -1287,6 +1287,17 @@ export class Chat {
         // what the bounded window had itself already dropped.
         this.takeUpdate(message.update);
         return;
+      case 'seat_frames':
+        // **A repaired stretch folds through the same path a live frame
+        // does.** The server answers a range ask with the frames numbered in
+        // it, oldest first, and each is taken as the frame it is - its turn,
+        // its row, its own identity - so a gap fills underneath the reader
+        // rather than arriving as a second kind of drawing. Marked as a
+        // repair, so a row the reader wrote before they were away does not
+        // bring them to the foot.
+        if (subjectKey({ session: message.slot }) !== this.key) return;
+        for (const frame of message.frames) this.takeUpdate(frame.update, true);
+        return;
       default:
         return;
     }
@@ -1756,8 +1767,16 @@ export class Chat {
     this.ask(null);
   }
 
-  /** One frame, folded into the turn it belongs to. */
-  private takeUpdate(update: SessionUpdate): void {
+  /**
+   * One frame, folded into the turn it belongs to.
+   *
+   * `repaired` says the frame is one this seat ASKED for - a stretch of the
+   * seat's own sequence that crossed while the reader was away - and it is not
+   * a send: the words may be the reader's own and still must not carry them to
+   * the foot, because they were written before the reader left and the repair
+   * is a filling-in, not news.
+   */
+  private takeUpdate(update: SessionUpdate, repaired = false): void {
     // An update naming a seat that is not this one is another conversation's.
     // **A KEYLESS update is everyone's** - the service report and the fatal
     // are app-level and arrive on the connection's home read, which the shell
@@ -1840,7 +1859,7 @@ export class Chat {
       // follow's arm reads: forge's own machinery forges prose as the reader's
       // own row on this same frame, and only a person's send may carry them to
       // the foot (#1614, #2198).
-      this.append(message, textIn(update, 'chat_appended', 'source') === 'you');
+      this.append(message, !repaired && textIn(update, 'chat_appended', 'source') === 'you');
       return;
     }
     // The seat changed occupant under this column - a `/new`, a `/resume`, a
