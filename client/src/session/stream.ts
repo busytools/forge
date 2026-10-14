@@ -239,6 +239,11 @@ export class StreamGate {
           this.open(state, { from: state.seenThrough + 1, to: seq - 1 }, slot);
         }
         state.seenThrough = Math.max(state.seenThrough, reach);
+        // **Its own numbers are seen, so they are not missing** - a frame
+        // arriving out of order can fill a range without any repair, and a
+        // missing-set left holding them would block the next answer's
+        // adoption and arm a deadline for nothing.
+        filled(state.missing, seq, reach);
         if (state.waiting.length >= HELD_CAP) {
           this.release(state);
           return [];
@@ -258,6 +263,11 @@ export class StreamGate {
           const carried = frame as { seq: number; span?: unknown };
           const span = typeof carried.span === 'number' && carried.span > 0 ? carried.span : 1;
           filled(state.missing, frame.seq, frame.seq + span - 1);
+          // A repair for numbers already delivered - a range answered twice,
+          // which the gate and the store can both ask for - has nowhere to
+          // land; keeping it would hand the readers the same frame again on
+          // release.
+          if (frame.seq + span - 1 < state.expecting) continue;
           state.repairs.push({ seq: frame.seq, span, update: frame.update });
         }
         const out = this.drain(state);
@@ -368,14 +378,9 @@ export class StreamGate {
       state.asked.length = 0;
       return;
     }
-    // Anything a released prefix did not cover needs its own ask.
-    if (state.origin !== null && state.missing.length > 0) {
-      for (const range of [...state.missing]) {
-        if (covers(state.asked, range)) continue;
-        cover(state.asked, range);
-        this.deps.ask(state.origin.slot, state.epoch, range.from, range.to);
-      }
-    }
+    // Every missing range has already been asked for (`missing` only grows
+    // through `open`, which asks in the same breath), so the wait below is
+    // for answers in flight rather than a pending ask.
     state.deadline = setTimeout(() => this.release(state), HELD_DEADLINE_MS);
   }
 

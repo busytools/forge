@@ -50,6 +50,14 @@ function repaired(...seqs: number[]): ServerMessage {
   } as unknown as ServerMessage;
 }
 
+function snap(occupant: string, seq: number): ServerMessage {
+  return {
+    kind: 'snapshot',
+    subject: { session: LEAD },
+    data: { header: { session_id: occupant, seq } },
+  } as unknown as ServerMessage;
+}
+
 function aGate(): {
   gate: StreamGate;
   asked: { from: number; to: number }[];
@@ -112,6 +120,41 @@ describe('the stream gate', () => {
     );
     expect(repairedSeqs, 'the repaired stretch lands in sequence').toEqual([4, 5]);
     expect((second[1] as { seq: number }).seq, 'and the held frame follows it').toBe(6);
+  });
+
+  it('frames that filled a hole leave nothing missing behind them', () => {
+    const { gate } = aGate();
+    gate.inbound(snap('occ', 1));
+    gate.inbound(update(1));
+    gate.inbound(update(4)); // the hole [2,3] opens
+    gate.inbound(update(2)); // out of order: drains through the update path
+    gate.inbound(update(3));
+    // The answer says the stream restarted at 1; adopting it needs nothing
+    // left missing, which the two frames above already filled.
+    gate.inbound(snap('occ', 1));
+    expect(gate.inbound(update(1)), 'the restarted run counts from one').toHaveLength(1);
+    expect(gate.inbound(update(3)), 'and a hole in it is held').toHaveLength(0);
+  });
+
+  it('a repair for numbers already delivered is not queued again', () => {
+    vi.useFakeTimers();
+    const { gate, emitted } = aGate();
+    gate.inbound(update(1));
+    gate.inbound(update(4)); // the hole [2,3] opens
+    const first = gate.inbound(repaired(2));
+    expect((first[0] as { kind: string }).kind).toBe('seat_frames');
+    const again = gate.inbound(repaired(2)); // the range answered twice
+    expect(again, 'the duplicate repair has nothing to drain').toHaveLength(0);
+    vi.advanceTimersByTime(5001);
+    for (const batch of emitted) {
+      for (const message of batch) {
+        expect(
+          (message as { seq?: number }).seq,
+          'the duplicate repair was never handed out',
+        ).not.toBe(2);
+      }
+    }
+    vi.useRealTimers();
   });
 
   it('a frame behind the newest number still passes (the readers dedupe)', () => {
