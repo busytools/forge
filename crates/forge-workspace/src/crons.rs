@@ -373,6 +373,7 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SeatUpdate;
 
     use tempfile::tempdir;
 
@@ -463,11 +464,11 @@ mod tests {
 
     /// Drain every currently-queued `SessionUpdate` from the test rx.
     fn drain_updates(
-        rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::protocol::SessionUpdate>,
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::SeatUpdate>,
     ) -> Vec<crate::protocol::SessionUpdate> {
         let mut out = Vec::new();
-        while let Ok(u) = rx.try_recv() {
-            out.push(u);
+        while let Ok(frame) = rx.try_recv() {
+            out.push(frame.update);
         }
         out
     }
@@ -520,10 +521,12 @@ mod tests {
     /// The one `CronSchedulesChanged` on a test's update stream, as its key
     /// and the set it announces.
     fn next_crons_changed(
-        rx: &mut tokio::sync::mpsc::UnboundedReceiver<SessionUpdate>,
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::SeatUpdate>,
     ) -> (SessionSlot, Vec<forge_primitives::cron::CronEntry>) {
         match rx.try_recv() {
-            Ok(SessionUpdate::CronSchedulesChanged { key, crons }) => (key, crons),
+            Ok(SeatUpdate {
+                update: SessionUpdate::CronSchedulesChanged { key, crons }, ..
+            }) => (key, crons),
             other => panic!("expected a CronSchedulesChanged on the stream, got {other:?}"),
         }
     }

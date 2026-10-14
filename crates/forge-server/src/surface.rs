@@ -60,6 +60,7 @@ pub struct ViewSurface {
 /// The update the core emits, re-exported: it is the workspace-to-view
 /// protocol already, so a view subscribes to it rather than to a second
 /// vocabulary this crate would have to keep in step.
+pub use forge_workspace::SeatUpdate;
 pub use forge_workspace::SessionUpdate;
 
 /// The wire shape a turn that finished arrives as. A view marking a
@@ -147,7 +148,7 @@ impl ViewSurface {
     ///
     /// A consumer that reads the stream and renders no prompt takes
     /// [`Self::subscribe_mirror`] instead.
-    pub fn subscribe(&self) -> tokio::sync::mpsc::UnboundedReceiver<SessionUpdate> {
+    pub fn subscribe(&self) -> tokio::sync::mpsc::UnboundedReceiver<SeatUpdate> {
         self.workspace.subscribe()
     }
 
@@ -163,7 +164,7 @@ impl ViewSurface {
     /// first, and a fold is not the view that draws it.
     ///
     /// A view with a dock to answer from takes [`Self::subscribe`].
-    pub fn subscribe_mirror(&self) -> tokio::sync::mpsc::UnboundedReceiver<SessionUpdate> {
+    pub fn subscribe_mirror(&self) -> tokio::sync::mpsc::UnboundedReceiver<SeatUpdate> {
         self.workspace.subscribe_mirror()
     }
 
@@ -182,7 +183,7 @@ impl ViewSurface {
     pub fn subscribe_client(
         &self,
         answering: bool,
-    ) -> tokio::sync::mpsc::UnboundedReceiver<SessionUpdate> {
+    ) -> tokio::sync::mpsc::UnboundedReceiver<SeatUpdate> {
         if answering {
             self.workspace.subscribe_answerer()
         } else {
@@ -200,6 +201,36 @@ impl ViewSurface {
     /// cwd for the session, which a git worker's worktree overrides.
     pub fn session(&self, slot: &SessionSlot, cwd_raw: &Path) -> SessionState {
         SessionState::collect(&self.workspace, slot, cwd_raw)
+    }
+
+    /// The number `slot`'s next frame will be minted under: the read a
+    /// client makes when it attaches. It belongs to the epoch its occupant
+    /// names - a seat whose occupant changed starts over at 1 - so the two
+    /// are read together.
+    pub fn seat_next_seq(&self, slot: &SessionSlot) -> u64 {
+        self.workspace.seat_next_seq(slot)
+    }
+
+    /// The frames `slot`'s stream emitted under the numbers in `from..=to`,
+    /// oldest first: the answer to a client's range ask while the seat's own
+    /// window holds them.
+    pub fn seat_frames_between(&self, slot: &SessionSlot, from: u64, to: u64) -> Vec<SeatUpdate> {
+        self.workspace.seat_frames_between(slot, from, to)
+    }
+
+    /// The oldest number `slot`'s window still holds, `None` for a seat that
+    /// has emitted nothing: what tells a range answered from memory from one
+    /// that has to be read off the transcript.
+    pub fn seat_oldest_kept_seq(&self, slot: &SessionSlot) -> Option<u64> {
+        self.workspace.seat_oldest_kept_seq(slot)
+    }
+
+    /// How many of the numbers in `from..=to` on `slot`'s stream no window
+    /// holds: the frames that close an epoch are numbered but kept out of the
+    /// ring, so a reader measuring whether a copy covers a stretch leaves them
+    /// out of what it must account for.
+    pub fn seat_unringed_between(&self, slot: &SessionSlot, from: u64, to: u64) -> u64 {
+        self.workspace.seat_unringed_between(slot, from, to)
     }
 
     /// The live workers, per project.
@@ -383,7 +414,7 @@ mod tests {
     use forge_primitives::SessionSlot;
     use forge_workspace::Workspace;
 
-    use super::{SessionUpdate, ViewSurface};
+    use super::{SeatUpdate, SessionUpdate, ViewSurface};
     use crate::test_support::logged;
 
     /// The claude versions are facts about the world rather than about a
@@ -433,7 +464,10 @@ mod tests {
 
         let mut subscribed = surface.subscribe();
         assert!(
-            matches!(subscribed.try_recv(), Ok(SessionUpdate::CatalogLoaded)),
+            matches!(
+                subscribed.try_recv(),
+                Ok(SeatUpdate { update: SessionUpdate::CatalogLoaded, .. })
+            ),
             "a view attaching through this verb takes the stream whole, held notice included",
         );
     }
@@ -458,7 +492,10 @@ mod tests {
 
         let mut answering = workspace.subscribe();
         assert!(
-            matches!(answering.try_recv(), Ok(SessionUpdate::CatalogLoaded)),
+            matches!(
+                answering.try_recv(),
+                Ok(SeatUpdate { update: SessionUpdate::CatalogLoaded, .. })
+            ),
             "the held notice is still there for the subscriber that renders prompts",
         );
     }

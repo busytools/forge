@@ -107,7 +107,10 @@ pub use protocol::{
     SessionUpdate, TurnErrorClass,
 };
 pub use target::{ProjectKey, SessionSlot, SessionTarget};
+pub use update_fanout::SeatUpdate;
 pub use views::{AccountLoadingRow, GatewayOrgView, ProjectView};
+#[cfg(any(test, feature = "testing"))]
+pub use workspace::testing::set_seat_ring_cap;
 pub use workspace::{
     PendingInteractionKind, PricingFetch, PricingFetcher, SessionChipInfo, SessionChipState,
     Workspace,

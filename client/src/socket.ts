@@ -11,6 +11,7 @@
  */
 
 import { refused } from './refusals';
+import { StreamGate } from './session/stream';
 import {
   MORE_TURNS,
   skewOf,
@@ -128,6 +129,17 @@ export interface Connection {
    * open and no answer is coming.
    */
   readDocument(session: SessionSlot, path: string, reviewable: boolean): boolean;
+  /**
+   * Ask a seat for the frames its stream emitted between two numbers.
+   *
+   * The repair a client runs on a gap it read in the sequence, and silent in
+   * both directions: nothing on a page announces it, and the answer's frames
+   * fold through the same path a live frame does. `false` means the socket was
+   * not open and no answer is coming - which costs nothing, because the frames
+   * a reconnect's snapshot carries are the whole record and say where the
+   * stream stands.
+   */
+  seatRange(slot: SessionSlot, epoch: string | null, from: number, to: number): boolean;
   /**
    * Send one binary frame: dictation audio, and nothing else the socket
    * carries.
@@ -461,6 +473,13 @@ export function connect(url: string): Connection {
       case 'page':
       case 'commit_diff':
         return;
+      // `seat_frames` is the conversation's too, and the same way: a repaired
+      // stretch folds through the chat's own listener, so this switch knows
+      // the frame and draws nothing of it. Reported as unknown it would read
+      // as a frame the client could not draw - which is exactly what the
+      // report below is for.
+      case 'seat_frames':
+        return;
       // An ask is answered here rather than handed to a page: the handler is
       // the shell's, and the answer has to go back under the ask's own id.
       case 'browser_ask':
@@ -570,19 +589,11 @@ export function connect(url: string): Connection {
       }
     };
 
-    next.onmessage = (event) => {
-      if (next !== socket) return;
-      let message: ServerMessage;
-      try {
-        // The boundary: a frame is narrowed once, here, rather than by each
-        // reader. A frame this client cannot read is reported rather than
-        // thrown, because a throw out of this handler would take every frame
-        // after it as well.
-        message = JSON.parse(String(event.data)) as ServerMessage;
-      } catch (why) {
-        report('the server sent a frame this client could not read', why);
-        return;
-      }
+    // **The ordering gate, and what it feeds.** Every consumer of this
+    // connection reads through `deliver`, so a frame held above a hole is
+    // held for all of them at once - the connection's own handling and the
+    // pages' listeners alike (`session/stream`).
+    const deliver = (message: ServerMessage): void => {
       try {
         handle(message);
       } catch (why) {
@@ -600,10 +611,46 @@ export function connect(url: string): Connection {
         }
       }
     };
+    const gate = new StreamGate({
+      ask: (slot, epoch, from, to) => {
+        if (!isOpen()) return false;
+        sendNow({ kind: 'seat_range', slot, epoch, from, to });
+        return true;
+      },
+      emit: (messages) => {
+        for (const message of messages) deliver(message);
+      },
+    });
+
+    next.onmessage = (event) => {
+      if (next !== socket) return;
+      let message: ServerMessage;
+      try {
+        // The boundary: a frame is narrowed once, here, rather than by each
+        // reader. A frame this client cannot read is reported rather than
+        // thrown, because a throw out of this handler would take every frame
+        // after it as well.
+        message = JSON.parse(String(event.data)) as ServerMessage;
+      } catch (why) {
+        report('the server sent a frame this client could not read', why);
+        return;
+      }
+      // **One ordered stream, for every reader.** The seat store, the chat
+      // fold and this connection's own bookkeeping all consume the frames,
+      // so the ordering lives here rather than in any one of them: a hole
+      // holds the frames above it until its repair lands, and every reader
+      // sees the same sequence (`session/stream`).
+      for (const ordered of gate.inbound(message)) {
+        deliver(ordered);
+      }
+    };
 
     next.onclose = () => {
       if (next !== socket) return;
       socket = null;
+      // A dropped socket's holds die with it: the reconnect's answer is the
+      // whole record, and the numbers start wherever it says.
+      gate.reset();
       // **The role dies with the connection it belonged to.** The relay keeps
       // the role for the CONNECTION id, not for the page, so a reconnected
       // client is a new one - and a strip that went on saying "this client
@@ -744,6 +791,11 @@ export function connect(url: string): Connection {
     readDocument(session, path, reviewable) {
       if (!isOpen()) return false;
       sendNow({ kind: 'document_read', session, path, reviewable });
+      return true;
+    },
+    seatRange(slot, epoch, from, to) {
+      if (!isOpen()) return false;
+      sendNow({ kind: 'seat_range', slot, epoch, from, to });
       return true;
     },
     frame(bytes) {

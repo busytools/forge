@@ -1137,7 +1137,7 @@ pub(crate) mod tests_catalogue_view {
     /// `pub(crate)` for the install tests, which drive the same stub and
     /// the same loopback server rather than carrying a second copy.
     pub(crate) fn enabled_stub()
-    -> (Arc<Workspace>, tokio::sync::mpsc::UnboundedReceiver<SessionUpdate>, tempfile::TempDir)
+    -> (Arc<Workspace>, tokio::sync::mpsc::UnboundedReceiver<crate::SeatUpdate>, tempfile::TempDir)
     {
         let config_dir = tempfile::tempdir().expect("a config dir");
         let models = tempfile::tempdir().expect("a models dir");
@@ -1364,7 +1364,7 @@ pub(crate) mod tests_catalogue_view {
 
         let landed = tokio::time::timeout(std::time::Duration::from_secs(15), async {
             loop {
-                match updates.recv().await {
+                match updates.recv().await.map(|frame| frame.update) {
                     Some(SessionUpdate::DictateModelsChanged { models }) => break models,
                     Some(_) => {}
                     None => panic!("the subscription must stay attached"),

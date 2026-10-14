@@ -46,6 +46,7 @@ function untouched(): Connection {
     more: refuse,
     commitDiff: refuse,
     readDocument: refuse,
+    seatRange: refuse,
     frame: refuse,
     onBrowserAsk: refuse,
     browserRole: refuse,

@@ -702,6 +702,7 @@ mod tests {
     use forge_primitives::git_diff::{LayerState, RepoGate};
 
     use super::*;
+    use crate::SeatUpdate;
 
     fn seat() -> SessionSlot {
         SessionSlot::lead("TestOrg", "forge")
@@ -716,8 +717,7 @@ mod tests {
     /// most of these tests begin from.
     fn a_declared_project(
         repo: &Path,
-    ) -> (Arc<Workspace>, tokio::sync::mpsc::UnboundedReceiver<SessionUpdate>, tempfile::TempDir)
-    {
+    ) -> (Arc<Workspace>, tokio::sync::mpsc::UnboundedReceiver<SeatUpdate>, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");
         let forge = dir.path().join("forge");
         std::fs::create_dir_all(&forge).expect("forge dir");
@@ -754,8 +754,7 @@ provider = "anthropic"
     /// needs: the store rides the seat's own record.
     fn a_workspace(
         repo: &Path,
-    ) -> (Arc<Workspace>, tokio::sync::mpsc::UnboundedReceiver<SessionUpdate>, tempfile::TempDir)
-    {
+    ) -> (Arc<Workspace>, tokio::sync::mpsc::UnboundedReceiver<SeatUpdate>, tempfile::TempDir) {
         let (workspace, updates, dir) = a_declared_project(repo);
         workspace.register_domain_session(seat(), None);
         (workspace, updates, dir)
@@ -866,7 +865,7 @@ provider = "anthropic"
             else {
                 continue;
             };
-            let SessionUpdate::WorkChanged { key, work, .. } = moved else {
+            let SessionUpdate::WorkChanged { key, work, .. } = moved.update else {
                 panic!("a moved tree announces the row, got {moved:?}");
             };
             assert_eq!(key, seat, "and it is addressed to the seat that was held");
@@ -908,7 +907,7 @@ provider = "anthropic"
             };
             // Other variants ride the same stream - the file index announces
             // too - and the row under test is the work one.
-            let SessionUpdate::WorkChanged { key, work, .. } = moved else {
+            let SessionUpdate::WorkChanged { key, work, .. } = moved.update else {
                 continue;
             };
             assert_eq!(key, seat, "and it is addressed to the seat that was held");
@@ -1124,7 +1123,7 @@ provider = "anthropic"
         else {
             panic!("a walk the terminal moved never reached the seat's viewers");
         };
-        let SessionUpdate::ProcessesChanged { key, snapshot } = moved else {
+        let SessionUpdate::ProcessesChanged { key, snapshot } = moved.update else {
             panic!("a moved walk announces the walk, got {moved:?}");
         };
         assert_eq!(key, seat, "and it is addressed to the seat that was held");
@@ -1163,7 +1162,7 @@ provider = "anthropic"
             let Ok(Some(moved)) = tokio::time::timeout_at(deadline, updates.recv()).await else {
                 panic!("a process arriving under the seat was never announced");
             };
-            let SessionUpdate::ProcessesChanged { key, snapshot } = moved else {
+            let SessionUpdate::ProcessesChanged { key, snapshot } = moved.update else {
                 continue;
             };
             assert_eq!(key, seat);
@@ -1251,7 +1250,7 @@ provider = "anthropic"
             let Ok(Some(moved)) = tokio::time::timeout_at(deadline, updates.recv()).await else {
                 panic!("a file written into the seat's tree was never announced");
             };
-            let SessionUpdate::FileIndexChanged { key, index } = moved else {
+            let SessionUpdate::FileIndexChanged { key, index } = moved.update else {
                 continue;
             };
             assert_eq!(key, seat);
@@ -1281,7 +1280,7 @@ provider = "anthropic"
             let Ok(Some(moved)) = tokio::time::timeout_at(deadline, updates.recv()).await else {
                 panic!("the writes were never announced");
             };
-            if let SessionUpdate::FileIndexChanged { index, .. } = moved {
+            if let SessionUpdate::FileIndexChanged { index, .. } = moved.update {
                 break index;
             }
         };
@@ -1296,7 +1295,7 @@ provider = "anthropic"
         // And nothing follows: one mark, one walk, one frame.
         let quiet = tokio::time::Instant::now() + Duration::from_secs(2);
         while let Ok(Some(moved)) = tokio::time::timeout_at(quiet, updates.recv()).await {
-            if matches!(moved, SessionUpdate::FileIndexChanged { .. }) {
+            if matches!(moved.update, SessionUpdate::FileIndexChanged { .. }) {
                 panic!("a second frame followed one poke's writes");
             }
         }
@@ -1332,7 +1331,7 @@ provider = "anthropic"
                 "the seat walks its index again inside the deadline"
             );
             match tokio::time::timeout(Duration::from_millis(50), updates.recv()).await {
-                Ok(Some(update)) => announce_failure(&update, &held.index),
+                Ok(Some(update)) => announce_failure(&update.update, &held.index),
                 Ok(None) => panic!("the updates channel closed"),
                 Err(_) => {}
             }
@@ -1342,7 +1341,7 @@ provider = "anthropic"
         // through: the walk and the comparison are one body, and a frame this
         // tree never earned is due in neither.
         match tokio::time::timeout(Duration::from_secs(2), updates.recv()).await {
-            Ok(Some(update)) => announce_failure(&update, &held.index),
+            Ok(Some(update)) => announce_failure(&update.update, &held.index),
             Ok(None) => panic!("the updates channel closed"),
             Err(_) => {}
         }
@@ -1502,7 +1501,7 @@ provider = "anthropic"
             .expect("the release announces itself")
             .expect("a live channel");
         assert!(
-            matches!(released, SessionUpdate::Releasing { .. }),
+            matches!(released.update, SessionUpdate::Releasing { .. }),
             "the release's own frame is what opens this window: {released:?}",
         );
 

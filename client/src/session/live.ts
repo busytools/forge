@@ -29,7 +29,7 @@ import { writable, type Readable, type Writable } from 'svelte/store';
 import { canHost } from '../browser/host';
 import { cronNames } from '../chat/cron-names.svelte';
 import { cannotPaint } from '../paint';
-import { slotOf, subjectKey, type Subject } from '../protocol';
+import { slotOf, subjectKey, type SessionUpdate, type Subject } from '../protocol';
 import type { Connection, ConnectionStatus } from '../socket';
 import type { Store } from '../stores';
 import type { SessionSlot } from '../wire/types';
@@ -105,22 +105,61 @@ interface Seat {
    * occupant.
    */
   asking: boolean;
-  replaceWanted: boolean;
   /**
-   * How many of this seat's frames have been applied to the record.
+   * The occupant whose frames this seat's record is built from: the epoch its
+   * sequence belongs to.
    *
-   * **An answer older than a frame cannot be adopted whole**, and this is how
-   * that is known: an ask records the count it was issued at, and an answer
-   * landing after the count moved is refused and asked for again rather than
-   * replacing a record the frames have already carried past it.
-   *
-   * A turn's own end is the case that keeps it: `turn_complete` settles the
-   * turn as a frame, and an answer from before it puts a running turn back -
-   * so the box refuses a send the turn has already taken.
+   * **Every frame of a seat's stream is numbered on that seat's own counter,
+   * and an occupant change starts the count again at 1.** So the id is what
+   * tells a frame from another epoch - which the client must wipe rather than
+   * merge - from a gap in this one, which is repair it can ask for.
    */
-  frames: number;
-  /** The frame count the ask in flight was issued at. */
+  epoch: string | null;
+  /**
+   * The newest number this seat has applied.
+   *
+   * **One number where a count and a baseline used to be.** A frame whose
+   * number is the successor applies; one ahead of it is a gap to ask for;
+   * one behind it is a frame already drawn. And a whole-read answer carries
+   * the number its own stream had reached, so an answer older than the
+   * frames already applied is refused rather than walking the record back.
+   */
+  lastSeq: number;
+  /**
+   * The newest number this seat has SEEN, applied or held above a hole.
+   *
+   * **What tells an answer the stream has outrun.** A frame held above a hole
+   * has not been applied, so it moves `lastSeq` only when its repair lands -
+   * and an answer encoded before it would read as current against `lastSeq`
+   * alone. This is the sighting, not the drawing.
+   */
+  seen: number;
+  /**
+   * `lastSeq` as it stood when the ask in flight went out.
+   *
+   * **What tells a stale answer from a counter that started over.** An answer
+   * whose number is behind what the record holds is stale when frames arrived
+   * after the ask - the answer was encoded before them, and asking again
+   * converges on one encoded after. When NO frame arrived since the ask, the
+   * same shape means the seat's stream restarted under it (a resume, a server
+   * restart: the same occupant, the count from 1 again) - and that answer is
+   * the truth about where the stream stands, so re-asking would never
+   * converge on anything else.
+   */
   askedAt: number;
+  /**
+   * The first number the repair in flight is asking for, `null` when none is.
+   */
+  repairFrom: number | null;
+  /**
+   * Frames that arrived above a hole while its repair was on the way.
+   *
+   * **Held rather than drawn.** A repaired user row applied after the
+   * assistant frames that streamed past it opens a turn of its own at the
+   * foot, so the frames above a hole wait for the hole and draw in sequence
+   * with it.
+   */
+  repairHeld: { seq: number; span: number; update: SessionUpdate }[];
   /** Hold the seat's subscription open, answering the release: see `hold`. */
   hold: () => () => void;
   /**
@@ -164,6 +203,16 @@ const SEATS = new WeakMap<Connection, Map<string, Seat>>();
  * the page flushes with no update at all (`wake`).
  */
 const PAINT_WATCHDOG_MS = 250;
+
+/**
+ * How many frames one seat holds above a hole before it draws them unordered.
+ *
+ * The hold is the repair's round trip, so it is a handful of frames in every
+ * ordinary case; the cap is what keeps a repair whose answer never comes - or
+ * a burst far larger than the hole - from growing without bound, and its
+ * fallback is the arrival order the hold replaced.
+ */
+const REPAIR_HELD_CAP = 256;
 
 /**
  * Watch one seat.
@@ -256,6 +305,9 @@ function createSeat(
   answering: boolean,
 ): Seat {
   const key = subjectKey(subject);
+  // The seat this factory is for, for the asks that address one: every caller
+  // builds it for a session subject.
+  const held = typeof subject === 'object' ? subject.session : null;
 
   /**
    * A page is showing this seat: nothing is asked for it.
@@ -360,9 +412,12 @@ function createSeat(
     holders: 0,
     answering,
     asking: false,
-    replaceWanted: true,
-    frames: 0,
+    epoch: null,
+    lastSeq: 0,
+    seen: 0,
     askedAt: 0,
+    repairFrom: null,
+    repairHeld: [],
     hold,
     open,
   };
@@ -586,8 +641,9 @@ function createSeat(
   function reread(): void {
     if (seat.asking || seat.opened === 0) return;
     seat.asking = true;
-    seat.replaceWanted = false;
-    seat.askedAt = seat.frames;
+    // Where the stream stood when the ask left, so the answer can be read
+    // against what has arrived since.
+    seat.askedAt = seat.seen;
     connection.refresh(subject);
   }
 
@@ -609,8 +665,7 @@ function createSeat(
     });
     seat.opened += 1;
     seat.asking = true;
-    seat.replaceWanted = false;
-    seat.askedAt = seat.frames;
+    seat.askedAt = seat.seen;
   }
 
   /**
@@ -624,6 +679,170 @@ function createSeat(
    * Nothing unregisters them: a seat lives on its connection, so its
    * listeners go with the connection when the client lets it go.
    */
+  /**
+   * Ask the seat for the frames between two numbers.
+   *
+   * **Silent, and never blocking.** The frames above the hole are held while
+   * the answer is on its way, and the repaired stretch draws in sequence with
+   * them - so a gap fills underneath the reader, in order, rather than the
+   * reader watching a repaired row land below the frames that followed it. A
+   * socket that is not open cannot ask, and nothing is kept for later: the
+   * frames the reconnect's snapshot carries are the whole record, and the
+   * numbers it stands at are where the reading resumes.
+   */
+  function askRange(from: number, to: number): boolean {
+    if (to < from || held === null) return false;
+    return connection.seatRange(held, seat.epoch, from, to);
+  }
+
+  /**
+   * Draw the frames held while a repair was in flight, oldest first.
+   *
+   * A seal among them is a new occupant and takes its own path (a wipe and a
+   * fresh read), which is why they go back through [`applyFrame`] rather than
+   * straight to the record.
+   */
+  function flushRepaired(): void {
+    const waiting = seat.repairHeld.splice(0).sort((a, b) => a.seq - b.seq);
+    seat.repairFrom = null;
+    for (const frame of waiting) applyFrame(frame, true);
+  }
+
+  /**
+   * Apply one frame's update to the record and publish it.
+   *
+   * Nothing reaches a seat whose first read has not landed: the read answers
+   * the frames to come as well, and drawing before it would double every row
+   * it carries.
+   */
+  function draw(update: SessionUpdate): void {
+    if (seat.wire === null) return;
+    const next = applyUpdate(seat.wire, update);
+    // An update this record has nothing to do with: publishing it would
+    // redraw every reader of the page for no change at all.
+    if (next === seat.wire) return;
+    seat.wire = next;
+    soon();
+  }
+
+  /**
+   * One frame of the seat's stream, live or repaired: the sequence decides.
+   *
+   * **Every frame the workspace emits for a seat is numbered on that seat's
+   * own counter**, and the number is what says what the frame IS to this
+   * record: the successor of what it holds applies, one ahead of it is a gap
+   * to ask for, and one behind it is a frame already drawn - a replay, a
+   * repeat, or a reorder, none of which is a hole. A frame that carries no
+   * number throws nothing (a delivery the server forged for this connection
+   * is drawn as the turn it reaches the model as, and stands in no sequence).
+   */
+  function applyFrame(
+    frame: {
+      seq?: unknown;
+      span?: unknown;
+      update: SessionUpdate;
+    },
+    /**
+     * Whether this frame is one this seat ASKED for.
+     *
+     * **A repaired frame is applied even where the number rule would skip
+     * it.** The reader keeps reading what arrives while the repair is on its
+     * way, so a frame ahead of the hole has usually landed by the time the
+     * answer does - and the repaired frames come back numbered BELOW it,
+     * which as live frames would read as already drawn. They are not: they
+     * were never applied, and the sequence check exists to skip repeats, not
+     * to drop the answer to an ask.
+     */
+    repaired = false,
+  ): void {
+    const [name, payload] = variantOf(frame.update);
+
+    // The three variants that REPLACE the record rather than patching it: a
+    // seat waking up, connecting, or taking a new occupant. What they carry
+    // is not a record - the seat's own session facts, and no transcript (the
+    // wire empties it; a seat's history arrives as a page, never as an update
+    // payload) - so only a read answers them.
+    if (name !== null && REPLACES.includes(name)) {
+      // **A new occupant is a new epoch, and the count starts again at 1.**
+      // Learned from the frame itself, so an answer still in flight from the
+      // old stream is refused by its epoch rather than adopted.
+      const occupant = payload['session_id'];
+      if (typeof occupant === 'string' && occupant !== seat.epoch) {
+        seat.epoch = occupant;
+        seat.lastSeq = 0;
+        seat.seen = 0;
+        // Frames held under the old epoch are not the new one's to draw.
+        seat.repairHeld.length = 0;
+        seat.repairFrom = null;
+      }
+      reread();
+      return;
+    }
+
+    // A fired cron's schedule reaches no field of this record: the row's
+    // prose carries the prompt, and the pairing lives on the frame alone.
+    // Kept before the record's own early return, because this update is one
+    // the record has nothing to say about.
+    if (name === 'cron_prompt_appended') {
+      cronNames.remember(payload['uuid'], payload['description']);
+    }
+
+    const seq = typeof frame.seq === 'number' ? frame.seq : null;
+    const span = typeof frame.span === 'number' && frame.span > 0 ? frame.span : 1;
+    if (seq !== null) {
+      // The frame stands for `span` of the seat's numbers - a run of token
+      // appends crosses as the one frame they draw as - and it carries the
+      // OLDEST of them.
+      const reach = seq + span - 1;
+      seat.seen = Math.max(seat.seen, reach);
+      if (!repaired) {
+        // A frame behind the newest number this record holds is one it has
+        // already drawn: a repeat, a replay or a reorder, and never a hole.
+        if (reach <= seat.lastSeq) return;
+        // **A hole holds everything above it until its repair lands.** Drawn
+        // at once, a repaired user row would land below the assistant frames
+        // that streamed past it and open a turn of its own at the foot; held,
+        // the stretch draws in sequence - the hole, then what crossed it.
+        if (seat.repairFrom !== null) {
+          seat.repairHeld.push({ seq, span, update: frame.update });
+          if (seat.repairHeld.length >= REPAIR_HELD_CAP) flushRepaired();
+          return;
+        }
+        if (seq > seat.lastSeq + 1) {
+          seat.repairFrom = seat.lastSeq + 1;
+          seat.repairHeld.push({ seq, span, update: frame.update });
+          if (!askRange(seat.repairFrom, seq - 1)) {
+            // A socket that is not open cannot ask, so nothing is coming:
+            // the held frames draw rather than waiting forever.
+            flushRepaired();
+          }
+          return;
+        }
+      }
+      // A repaired stretch can arrive either side of the frame that opened
+      // the hole, so the record's number is the newest it has seen.
+      seat.lastSeq = Math.max(seat.lastSeq, reach);
+    }
+
+    draw(frame.update);
+  }
+
+  /**
+   * The epoch and the stream's reach, off the whole-read answer that carries
+   * them.
+   *
+   * `seq` is the number the seat's next frame will bear, so the newest number
+   * the answer covers is one less. Both are `null` from a server older than
+   * the fields, which leaves the record's rule to the frames alone.
+   */
+  function reachOf(data: unknown): { epoch: string | null; seq: number | null } {
+    const header = (data as { header?: { session_id?: unknown; seq?: unknown } } | null)?.header;
+    return {
+      epoch: typeof header?.session_id === 'string' ? header.session_id : null,
+      seq: typeof header?.seq === 'number' ? header.seq : null,
+    };
+  }
+
   function watch(): void {
     connection.onMessage((message) => {
       if (message.kind === 'error') {
@@ -647,6 +866,19 @@ function createSeat(
           // A refusal is the seat's own answer and a page draws why from it,
           // rather than keeping the record it read before the refusal.
           read();
+          return;
+        }
+        // **A refused repair means read the seat again.** The numbers the
+        // client holds came from a seat whose occupant has moved on: nothing
+        // in this epoch can answer for them, and the whole record is what
+        // tells it where the new one stands.
+        if (message.what === 'seat_range' && message.seat !== undefined) {
+          if (subjectKey({ session: message.seat }) !== key) return;
+          // The frames held above the hole belong to the epoch the refusal
+          // just ended; the whole read that follows answers for the new one.
+          seat.repairHeld.length = 0;
+          seat.repairFrom = null;
+          reread();
         }
         return;
       }
@@ -655,30 +887,52 @@ function createSeat(
         // the one the server answers with is a different object saying the same
         // thing, so `===` never matches it.
         if (subjectKey(message.subject) !== key) return;
-        // What this answer is: the ask records whether one was ours, and an
-        // answer to no ask - the subscription's own, or a reconnect's - is the
-        // whole record this seat needs.
-        const ours = seat.asking;
-        // A whole record wanted while an ask was out cannot be answered by that
-        // ask's answer, whatever it was.
-        const stale = ours && seat.replaceWanted;
-        // And the other way an answer is older than what is held: a frame
-        // landed after the ask went out, so the record has been carried past
-        // where this answer was encoded.
-        const moved = ours && seat.frames !== seat.askedAt;
         seat.asking = false;
-        // **An answer the frames have outrun is not taken.** A read is the
-        // whole record now, so applying one encoded before a frame that has
-        // already landed would walk the record back: the want is set and asked
-        // again rather than spent, and the fresh answer lands on the first
-        // clean window.
-        if ((stale || moved) && seat.wire !== null) {
-          seat.replaceWanted = true;
+        const reach = reachOf(message.data);
+        // **An occupant change is a wipe, not a merge.** A `/new` or a
+        // `/resume` starts the seat's count again at 1, so a frame this record
+        // holds numbers belongs to a stream that is gone - and the answer is
+        // read afresh rather than reconciled with it.
+        if (reach.epoch !== seat.epoch) {
+          seat.epoch = reach.epoch;
+          seat.lastSeq = reach.seq === null ? 0 : reach.seq - 1;
+          seat.seen = seat.lastSeq;
+          read();
+          return;
+        }
+        // **An answer the frames have outrun is not taken - but only when the
+        // frames got there first.** A number behind what the record holds is
+        // stale when frames arrived after the ask: the answer was encoded
+        // before them, and asking again converges on one encoded after.
+        //
+        // With no frame since the ask, the same shape is a stream that
+        // RESTARTED under the client - a resume or a server restart, the same
+        // occupant with the count from 1 again - and that answer is the truth
+        // about where the stream stands. Refusing it would ask forever for an
+        // answer that never comes, so it is taken: never a merge, and never a
+        // loop.
+        const moved = seat.seen !== seat.askedAt;
+        if (reach.seq !== null && reach.seq - 1 < seat.lastSeq && moved && seat.wire !== null) {
           reread();
           return;
         }
-        seat.replaceWanted = false;
+        if (reach.seq !== null) {
+          seat.lastSeq = reach.seq - 1;
+          seat.seen = Math.max(seat.seen, seat.lastSeq);
+        }
         read();
+        return;
+      }
+      // A repaired stretch, in answer to a range ask this seat made: the
+      // frames fold through the SAME path a live frame does - the sequence
+      // decides where each one lands - so the gap fills underneath the reader
+      // rather than arriving as a second kind of drawing.
+      if (message.kind === 'seat_frames') {
+        if (subjectKey({ session: message.slot }) !== key) return;
+        for (const frame of message.frames) applyFrame(frame, true);
+        // The hole is filled, so what crossed it draws now - in sequence,
+        // which is the order the hold was for.
+        flushRepaired();
         return;
       }
       if (message.kind !== 'update') return;
@@ -691,40 +945,7 @@ function createSeat(
       // page's record.
       const at = slotOf(message.update);
       if (at === null || subjectKey({ session: at }) !== key) return;
-      // A frame for this seat is the world moving under any answer in flight,
-      // counted before the ask such a frame may itself issue so that the ask's
-      // own baseline includes it.
-      seat.frames += 1;
-
-      // The three variants that REPLACE the record rather than patching it: a
-      // seat waking up, connecting, or taking a new occupant. What they carry
-      // is not a record - the seat's own session facts, and no transcript
-      // (the wire empties it; a seat's history arrives as a page, never as an
-      // update payload) - so only a read answers them.
-      const [name, payload] = variantOf(message.update);
-      if (name !== null && REPLACES.includes(name)) {
-        seat.replaceWanted = true;
-        reread();
-        return;
-      }
-
-      // A fired cron's schedule reaches no field of this record: the row's
-      // prose carries the prompt, and the pairing lives on the frame alone.
-      // Kept before the record's own early return, because this update is one
-      // the record has nothing to say about.
-      if (name === 'cron_prompt_appended') {
-        cronNames.remember(payload['uuid'], payload['description']);
-      }
-
-      // Nothing to apply to yet: the first read has not landed, and the frames
-      // to come are answered by it.
-      if (seat.wire === null) return;
-      const next = applyUpdate(seat.wire, message.update);
-      // An update this record has nothing to do with: publishing it would
-      // redraw every reader of the page for no change at all.
-      if (next === seat.wire) return;
-      seat.wire = next;
-      soon();
+      applyFrame(message);
     });
     // A drop takes any read in flight with it, and the reconnect answers with a
     // snapshot of its own - so the pacing must not stay stuck waiting on an
@@ -745,7 +966,6 @@ function createSeat(
         // is from before it: the answer the reconnect brings is the whole
         // record, so one is wanted.
         seat.asking = false;
-        seat.replaceWanted = true;
         // The take goes with the socket: the core drops a take whose reader
         // went away, so the fold's own claim dies here - left standing, the
         // record draws a recording that is over (#1880).

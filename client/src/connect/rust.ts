@@ -43,6 +43,7 @@ import {
   type Subject,
 } from '../protocol';
 import { refused } from '../refusals';
+import { StreamGate } from '../session/stream';
 import { report, type Connection, type ConnectionStatus } from '../socket';
 import { Stores, type Store } from '../stores';
 import { coversHome } from '../wire/fleet';
@@ -169,6 +170,9 @@ class RustConnection implements Connection {
   private move(next: ConnectionStatus): void {
     if (this.state === next) return;
     this.state = next;
+    // A closed connection's holds die with it: the reconnect's answer is the
+    // whole record, and the numbers start wherever it says.
+    if (next === 'closed') this.gate.reset();
     for (const fn of this.statuses) fn(next);
   }
 
@@ -205,7 +209,26 @@ class RustConnection implements Connection {
    * `socket.ts` keeps, so a listener that reads a store sees the frame it is
    * being told about.
    */
+  /**
+   * The ordering gate, and what it feeds.
+   *
+   * **The page folds two independent readers off this stream** - the seat
+   * store and the chat - so the ordering lives ahead of both: a frame above
+   * a hole is held for every reader until its repair lands (`session/stream`),
+   * and the desktop gets the same rule the websocket does.
+   */
+  private readonly gate = new StreamGate({
+    ask: (slot, epoch, from, to) => this.seatRange(slot, epoch, from, to),
+    emit: (messages) => {
+      for (const message of messages) this.deliver(message);
+    },
+  });
+
   private heard(message: ServerMessage): void {
+    for (const ordered of this.gate.inbound(message)) this.deliver(ordered);
+  }
+
+  private deliver(message: ServerMessage): void {
     switch (message.kind) {
       case 'greeting': {
         this.heldSettings = settingsFrom(message.settings);
@@ -305,6 +328,14 @@ class RustConnection implements Connection {
     if (this.state !== 'open') return false;
     void invoke('client_more', { conversation, before, turns }).catch((why: unknown) => {
       report('an ask for older turns could not reach the shell', why);
+    });
+    return true;
+  }
+
+  seatRange(slot: SessionSlot, epoch: string | null, from: number, to: number): boolean {
+    if (this.state !== 'open') return false;
+    void invoke('client_seat_range', { slot, epoch, from, to }).catch((why: unknown) => {
+      report('a repair ask could not reach the shell', why);
     });
     return true;
   }

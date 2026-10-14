@@ -178,9 +178,59 @@ pub async fn serve(state: Arc<TransportState>, listener: TcpListener) -> anyhow:
 async fn fold_the_stream(state: Arc<TransportState>) {
     let mut updates = state.surface.subscribe_mirror();
     let mut probes = probe::ContextProbe::default();
-    while let Some(update) = updates.recv().await {
+    while let Some(frame) = updates.recv().await {
+        // A test's hold, so an encode's catch-up is driven rather than raced.
+        #[cfg(any(test, feature = "testing"))]
+        while state.conversations.fold_is_held() {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let seq = frame.seq;
+        let update = frame.update;
+        // **One fill at a time per seat.** An encode's catch-up applies from
+        // the window when this loop cannot reach in time, and this loop
+        // receives those same frames afterwards: the seat's own lock is what
+        // makes the watermark check, the apply and the mark one step, so a
+        // frame crosses exactly once whichever path got there first.
+        let fill = update.slot().map(|slot| state.conversations.fill_lock(slot));
+        let filling = fill
+            .as_ref()
+            .map(|lock| lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+        // **A frame an encode has already folded into the copy is not folded
+        // again** - except a sealing one. A seal re-mints from 1, so its number
+        // can equal the first new frame's, and a watermark that has taken that
+        // frame must not take the seal's history away with it: the reseed it
+        // carries is the only path the new epoch's rows have into the copy.
+        let epoch_frame = matches!(
+            update,
+            crate::SessionUpdate::Connected { .. } | crate::SessionUpdate::SessionReplaced { .. }
+        );
+        if !epoch_frame
+            && let (Some(seq), Some(slot)) = (seq, update.slot())
+            && seq <= state.conversations.consumed_for(slot)
+        {
+            continue;
+        }
         crate::live::Live::lock(&state.live).apply(&update);
         state.conversations.apply(&update);
+        // **The watermark an answer is measured against.** Marked after the
+        // apply, and only where there is a copy to take it: a seat nothing has
+        // connected on yet holds no frames, so a number marked there would say
+        // a copy has something it has not.
+        //
+        // **An epoch frame RESETS it instead of marking.** That frame is
+        // numbered on the run it ends and the next run counts from 1 again, so
+        // a watermark left standing would skip the new run's first frames -
+        // exactly the numbers it reuses.
+        if let Some(slot) = update.slot() {
+            if epoch_frame {
+                state.conversations.consumed(slot, 0);
+            } else if let Some(seq) = seq
+                && state.conversations.get(slot).is_some()
+            {
+                state.conversations.consumed(slot, seq);
+            }
+        }
+        drop(filling);
         request_context_usage(&state, &mut probes, &update);
     }
 }

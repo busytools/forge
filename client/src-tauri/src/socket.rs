@@ -170,6 +170,15 @@ enum Outbound {
         before: Option<String>,
         turns: u64,
     },
+    /// One stretch of a seat's own stream: the epoch the numbers belong to,
+    /// and the range asked for. Answered by a `seat_frames` frame or an
+    /// `error` naming `seat_range`, so this half forwards and forgets.
+    SeatRange {
+        slot: Value,
+        epoch: Option<String>,
+        from: u64,
+        to: u64,
+    },
     CommitDiff {
         session: Value,
         sha: String,
@@ -244,6 +253,11 @@ impl Socket {
     /// Ask for more turns of a conversation.
     pub fn more(&self, conversation: Value, before: Option<String>, turns: u64) {
         let _ = self.tx.send(Outbound::More { conversation, before, turns });
+    }
+
+    /// Ask a seat for the frames its stream emitted between two numbers.
+    pub fn seat_range(&self, slot: Value, epoch: Option<String>, from: u64, to: u64) {
+        let _ = self.tx.send(Outbound::SeatRange { slot, epoch, from, to });
     }
 
     /// One commit's own diff, answered by a `commit_diff` frame.
@@ -366,6 +380,7 @@ fn apply_offline(next: Outbound, held: &mut Vec<Held>, awaiting: &mut Vec<String
         }
         Outbound::More { .. }
         | Outbound::CommitDiff { .. }
+        | Outbound::SeatRange { .. }
         | Outbound::DocumentRead { .. }
         | Outbound::Answer { .. }
         | Outbound::TakeRole
@@ -519,6 +534,15 @@ async fn run(
                             let _ = writer
                                 .send(Message::Text(
                                     json!({ "kind": "more", "conversation": conversation, "before": before, "turns": turns })
+                                        .to_string()
+                                        .into(),
+                                ))
+                                .await;
+                        }
+                        Outbound::SeatRange { slot, epoch, from, to } => {
+                            let _ = writer
+                                .send(Message::Text(
+                                    json!({ "kind": "seat_range", "slot": slot, "epoch": epoch, "from": from, "to": to })
                                         .to_string()
                                         .into(),
                                 ))

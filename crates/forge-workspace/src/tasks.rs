@@ -872,6 +872,7 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SeatUpdate;
     use crate::{SessionSlot, SessionUpdate};
     use forge_primitives::tasks::{By, Task, TaskId, TaskStatus, Waiting, WaitingKind};
     use tempfile::tempdir;
@@ -922,10 +923,12 @@ mod tests {
     /// The one `TasksChanged` on a test's update stream, as its key and the
     /// set it announces.
     fn next_tasks_changed(
-        rx: &mut tokio::sync::mpsc::UnboundedReceiver<SessionUpdate>,
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<SeatUpdate>,
     ) -> (SessionSlot, Vec<Task>) {
         match rx.try_recv() {
-            Ok(SessionUpdate::TasksChanged { key, tasks }) => (key, tasks),
+            Ok(SeatUpdate { update: SessionUpdate::TasksChanged { key, tasks }, .. }) => {
+                (key, tasks)
+            }
             other => panic!("expected a TasksChanged on the stream, got {other:?}"),
         }
     }

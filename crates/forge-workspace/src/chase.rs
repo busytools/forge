@@ -849,7 +849,8 @@ mod tests {
             }
             other => panic!("the delivery wires one prompt; got {other:?}"),
         };
-        let drawn: Vec<SessionUpdate> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        let drawn: Vec<SessionUpdate> =
+            std::iter::from_fn(|| rx.try_recv().ok()).map(|frame| frame.update).collect();
         let frame = drawn.iter().find_map(|update| match update {
             SessionUpdate::ChatAppended { msg, origin, .. } => Some((msg, origin)),
             _ => None,

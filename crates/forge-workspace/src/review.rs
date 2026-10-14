@@ -901,7 +901,7 @@ mod tests {
         dir: &std::path::Path,
         name: &str,
         root: &std::path::Path,
-    ) -> (Arc<Workspace>, tokio::sync::mpsc::UnboundedReceiver<crate::SessionUpdate>) {
+    ) -> (Arc<Workspace>, tokio::sync::mpsc::UnboundedReceiver<crate::SeatUpdate>) {
         let (ws, rx) = Workspace::testing_stub_with_config_dir(dir.to_owned());
         ws.install_db_for_test(crate::store::Db::open(&dir.join("db.redb")).expect("open db"));
         ws.seed_test_project(name, &root.to_string_lossy());

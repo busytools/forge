@@ -135,6 +135,20 @@ mod commands {
         bridge.more(&conversation, before, turns.unwrap_or(20))
     }
 
+    /// One repair ask: the frames a seat's stream emitted between two numbers.
+    /// False means no socket is open and no answer is coming, which costs
+    /// nothing - the reconnect's snapshot is the whole record.
+    #[tauri::command]
+    pub fn client_seat_range(
+        bridge: tauri::State<'_, Arc<Bridge>>,
+        slot: Value,
+        epoch: Option<String>,
+        from: u64,
+        to: u64,
+    ) -> bool {
+        bridge.seat_range(&slot, epoch, from, to)
+    }
+
     #[tauri::command]
     pub async fn client_dispatch(
         bridge: tauri::State<'_, Arc<Bridge>>,
@@ -341,6 +355,7 @@ pub fn run() {
             commands::client_unsubscribe,
             commands::client_refresh,
             commands::client_more,
+            commands::client_seat_range,
             commands::client_dispatch,
             commands::client_frame,
             commands::client_mic_hold,
@@ -388,6 +403,7 @@ pub fn run() {
             commands::client_unsubscribe,
             commands::client_refresh,
             commands::client_more,
+            commands::client_seat_range,
             commands::client_dispatch,
             commands::client_frame,
             commands::client_mic_hold,

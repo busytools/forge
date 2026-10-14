@@ -2966,6 +2966,115 @@ describe('the conversation the chat draws', () => {
       'the exchange row still opens on its own frame',
     ).toEqual(typed('mine'));
   });
+
+  /**
+   * **A repaired frame whose row is already drawn draws once.** A repair
+   * answers with the frames the client asked for, and one of them can be a
+   * row the page already carried - the fold's own identity is what says the
+   * two are one, rather than a second copy of the same words under the
+   * first.
+   */
+  it('draws a repaired frame whose row is already there only once', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'the same words')], null));
+    const repeated = {
+      chat_appended: {
+        key: LEAD,
+        msg: {
+          type: 'user',
+          uuid: 'u-the same words',
+          message: { role: 'user', content: [{ type: 'text', text: 'the same words' }] },
+        },
+      },
+    };
+
+    server.send({
+      kind: 'seat_frames',
+      slot: LEAD,
+      epoch: null,
+      frames: [{ seq: 5, update: repeated }],
+    });
+
+    const drawn = words(chat).split('"u-the same words"').length - 1;
+    expect(drawn, 'the same row drew twice, so the repair copied a row the page already held').toBe(
+      1,
+    );
+    stop();
+  });
+
+  /**
+   * **A live frame repeating a row the page carries draws it once.**
+   *
+   * A replayed or re-delivered row crosses the live path the same way it
+   * crosses a repair - a reconnect can deliver again what a page already
+   * carried - and one row told twice is the same defect on either path. The
+   * fold's identity is the row's id.
+   */
+  it('draws a live repeat of a row the page carries only once', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'the same words')], null));
+
+    server.send({
+      kind: 'update',
+      update: {
+        chat_appended: {
+          key: LEAD,
+          msg: {
+            type: 'user',
+            uuid: 'u-the same words',
+            message: { role: 'user', content: [{ type: 'text', text: 'the same words' }] },
+          },
+        },
+      },
+    });
+
+    const drawn = words(chat).split('"u-the same words"').length - 1;
+    expect(drawn, 'a live repeat of a carried row drew it twice').toBe(1);
+    stop();
+  });
+
+  /**
+   * **A repaired stretch folds into the turn it belongs to.**
+   *
+   * A range ask is answered with the frames the seat emitted in the gap, and
+   * they arrive after the frames that came in while the reader was away - so
+   * the fold takes each into the turn that was open when it was written,
+   * through the same path a live frame takes, rather than opening turns of
+   * its own at the foot.
+   */
+  it('folds a repaired stretch into the turn it belongs to', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'the settled turn')], null));
+    // The turn in flight, as the live stream writes it.
+    server.update({ chat_appended: { key: LEAD, source: 'you', msg: typed('go') } });
+    server.update({ chat_appended: { key: LEAD, msg: said('first words') } });
+    const opened = get(chat.value).turns.length;
+
+    // The stretch that crossed while the reader was away, arriving after the
+    // newest frame did - the newest-first order a repair has.
+    server.send({
+      kind: 'seat_frames',
+      slot: LEAD,
+      epoch: null,
+      frames: [
+        { seq: 2, update: { chat_appended: { key: LEAD, msg: said('the missed middle') } } },
+      ],
+    });
+
+    const turns = get(chat.value).turns;
+    expect(turns, 'the repair opened no turn of its own').toHaveLength(opened);
+    expect(
+      JSON.stringify(turns.at(-1)),
+      'and the missed words joined the turn they were written in',
+    ).toContain('the missed middle');
+    stop();
+  });
 });
 
 describe('the chat holds a queued prompt until the CLI takes it', () => {

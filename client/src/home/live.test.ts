@@ -64,6 +64,7 @@ function fakeConnection() {
     more: () => false,
     commitDiff: () => false,
     readDocument: () => false,
+    seatRange: () => false,
     frame: () => false,
     store: () => undefined,
     settings: () => null,

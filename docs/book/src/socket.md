@@ -190,6 +190,18 @@ conversation, as whole turns. Each turn carries `key` and `messages`, which is
 the same shape the session snapshot's `conversation` carries; the grouping
 inside a turn is the client's to decide.
 
+**`seat_range {slot, epoch, from, to}`** - the frames a seat's stream emitted
+between two numbers, for a client that read a gap in them. Every frame the
+workspace emits for a seat is numbered on that seat's own counter, so a client
+that reads 5 and then 7 knows exactly one frame went missing; the seat's
+`header.seq` says where the stream stands and the occupant's session id beside
+it is the epoch those numbers belong to. The answer is `seat_frames`, and a
+range the seat's own window no longer holds is answered from the session's
+transcript instead. **An `error` naming `seat_range` means read the seat
+again**: a seat forge holds no session for, or one whose occupant has changed
+since those numbers were minted - a repair across two epochs would splice one
+conversation onto another.
+
 **A page that cannot be answered is REFUSED rather than answered empty.** An
 empty page carries `cursor: null`, which a client reads as "nothing above" and
 stops asking on - so an answer the server could not give would make the seat's
@@ -391,17 +403,38 @@ was asked for.
 
 - **`snapshot {subject, data}`** - a subject in full, in answer to a
   `subscribe`.
-- **`update {update}`** - one `SessionUpdate`, for whichever subjects the
-  client is subscribed to. The subject decides, and a home subscription has
-  **two** arms rather than one: an update a home row draws something of, and
-  an update belonging to no seat at all - the service status, the fatal
-  error, the plugin records, the account pool - which is a field of the
-  home's own snapshot and which only a home subscription could have carried.
-  Read the second arm as absent and a page keeps what it read at subscribe
-  for the life of the connection. The pool is the one that reads as a live
-  state rather than as an event: a card left at `0 ready, probing` looks
-  like a slow probe rather than like a page that stopped listening.
+- **`update {update, seq, span}`** - one `SessionUpdate`, for whichever
+  subjects the client is subscribed to. The subject decides, and a home
+  subscription has **two** arms rather than one: an update a home row draws
+  something of, and an update belonging to no seat at all - the service
+  status, the fatal error, the plugin records, the account pool - which is a
+  field of the home's own snapshot and which only a home subscription could
+  have carried. Read the second arm as absent and a page keeps what it read
+  at subscribe for the life of the connection. The pool is the one that reads
+  as a live state rather than as an event: a card left at `0 ready, probing`
+  looks like a slow probe rather than like a page that stopped listening.
+
+  **`seq` and `span` are the frame's place in its seat's own sequence.**
+  Every frame the workspace emits for a seat is numbered on that seat's
+  counter, and the number is what lets a client see what it missed: a client
+  that reads 5 and then 7 knows exactly one frame went missing and asks for
+  it (`seat_range`), where a snapshot's `header.seq` says where a fresh
+  reader joins. `seq` is the number the frame's OLDEST update was minted
+  under and `span` how many of the seat's numbers it stands for - 1 for a
+  frame that is one update, and n for a run of token appends the batch folded
+  into the one frame they draw as. Both are absent from a frame belonging to
+  no seat, and from a server older than the fields, which leaves a client
+  with the frames alone.
 - **`page {conversation, turns, cursor}`** - in answer to `more`.
+- **`seat_frames {slot, epoch, frames}`** - in answer to `seat_range`: the
+  frames numbered in `from..=to`, oldest first, each `{seq, update}` with the
+  update in the same shape a live `update` carries - so a repaired frame folds
+  through the same pipeline a live one does. **The range is answered from the
+  seat's own window while it holds the frames, and from the session's
+  transcript below that**: the transcript's own newest rows cross, numbered to
+  END at the range's end, because what a frame was numbered is minted in
+  memory and written down nowhere. The client resumes exactly where it was
+  reading rather than asking again for a stretch that can never arrive.
 - **`document_read {session, path, document_kind, bytes, reviewable,
 content_hash, threads, reviews}`** - in answer to `document_read`: the
   seat it was read for, the resolved absolute path the viewer addresses by,
@@ -478,7 +511,7 @@ conversation, and what the composer is doing.
 | Field                         | What it is                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `slot`                        | The seat itself.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `header`                      | The occupant's session id - the one a copy control hands out, and `null` when there is no occupant to name (nothing started, nothing connected yet, or one dropped after a sign-in or a failed connection) - the resolved model and the catalogue a picker draws from, the effort level, the permission mode, context usage, asked for on the reads that encode a subject when the seat has none, again when a turn finishes on a seat a page holds, and again when a compaction settles, a page or not (the socket issues the ask whether or not an agent is behind the seat, so where there is none it is refused and nothing reaches the CLI; the answer lands as a `context_usage_snapshot` update only where there is one) and whether a turn is in flight.                                                                                                                           |
+| `header`                      | The occupant's session id - the one a copy control hands out, and `null` when there is no occupant to name (nothing started, nothing connected yet, or one dropped after a sign-in or a failed connection) - the resolved model and the catalogue a picker draws from, the effort level, the permission mode, context usage, asked for on the reads that encode a subject when the seat has none, again when a turn finishes on a seat a page holds, and again when a compaction settles, a page or not (the socket issues the ask whether or not an agent is behind the seat, so where there is none it is refused and nothing reaches the CLI; the answer lands as a `context_usage_snapshot` update only where there is one) and whether a turn is in flight. `seq` is the number the seat's next frame will carry, and the occupant's session id beside it is the epoch that number belongs to: a client that attaches mid-stream reads where the stream stands, so the frames it hears from here continue the count it holds rather than looking like a gap.                                                   |
 | `conversation`                | The NEWEST turns, in order, with the compaction count - the same twenty `more` answers a page with, so a client that wants more asks for it the way it already does. Each turn carries `key` and `messages`, the frames the turn ran as. The live `update` stream carries those too, and differs in ways a client sees: a run of consecutive token appends inside one flush arrives there as ONE frame carrying the summed `estimated_tokens_delta`, and a frame the server forged carries no `uuid` where one the CLI sent does. A page differs the other way as well - it carries an ending for a backgrounded task's call as a frame of its own, which the stream never sends - so read these as the ones this row states rather than as the whole list.                                                                                                                                |
 | `work`                        | The working tree as state: branch, how much changed, and whether git runs here.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `git`                         | The tree behind the row's depth, all three from the same scan: `default_branch` (which branch the tree is measured against), `worktree` (the uncommitted files, each with its path, added and removed counts and its `status` - `modified` / `added` / `deleted` / `renamed` / `copied` / `typechange` / `unmerged` / `untracked`), and `ahead` (the branch's `commit_count`, the chain itself - each commit a short `sha`, `subject`, its own `stats` and the instant it was committed in unix seconds - and the range's own `stats`). Every `stats` block carries the full totals and the busiest files up to the scan's cap of seven, each classified with the same statuses the uncommitted layer speaks; the chain is capped at the scan's walk. `null` layers are nothing to state - a clean tree, an unscanned one - and it moves with `work_changed` frames like the row above it. |

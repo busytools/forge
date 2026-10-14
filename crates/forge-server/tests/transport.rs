@@ -218,7 +218,7 @@ async fn snapshot_answering(
     let mut passed = Vec::new();
     loop {
         match next_server(socket).await {
-            ServerMessage::Update { update } => passed.push(*update),
+            ServerMessage::Update { update, .. } => passed.push(*update),
             ServerMessage::Snapshot { subject, data } => return (subject, data, passed),
             other => panic!("a subscribe is answered with a snapshot, not {other:?}"),
         }
@@ -241,7 +241,7 @@ async fn update_until(
         // Split rather than a `let-else`, so a message that arrived and was not
         // an update is not reported as silence.
         let update = match next_server_within(socket, 5_000).await {
-            Some(ServerMessage::Update { update }) => *update,
+            Some(ServerMessage::Update { update, .. }) => *update,
             Some(other) => {
                 panic!("waited for {want}, and a message that is not an update arrived: {other:?}")
             }
@@ -573,7 +573,7 @@ async fn a_take_is_heard_by_its_own_connection_and_no_other() {
     // it, so a take update that was going to arrive would have.
     loop {
         match next_server_within(&mut other, 5_000).await {
-            Some(ServerMessage::Update { update }) => {
+            Some(ServerMessage::Update { update, .. }) => {
                 assert!(
                     !matches!(
                         *update,
@@ -816,7 +816,7 @@ async fn a_refused_clients_frames_never_land_in_the_holders_take() {
     let mut peaks: Vec<f32> = Vec::new();
     for _ in 0..48 {
         match next_server_within(&mut holder, 5_000).await {
-            Some(ServerMessage::Update { update }) => {
+            Some(ServerMessage::Update { update, .. }) => {
                 if let SessionUpdate::DictateLevel { peak_db, .. } = *update {
                     peaks.push(peak_db);
                     if (peak_db + 12.04).abs() < 0.5 {
@@ -1251,7 +1251,7 @@ async fn a_take_ending_reaches_its_connection_with_the_seat_unsubscribed() {
     // news is not.
     loop {
         match next_server_within(&mut client, 5_000).await {
-            Some(ServerMessage::Update { update }) => match *update {
+            Some(ServerMessage::Update { update, .. }) => match *update {
                 SessionUpdate::DictateEnded { .. } => break,
                 SessionUpdate::ForgeAccountIdentity { .. } => panic!(
                     "a non-take update for an unwatched seat arrived: the exemption is too wide"
@@ -1412,7 +1412,7 @@ async fn take_after_take_on_one_seat_leaves_it_free_for_the_next_client() {
 async fn next_start_or_refusal(socket: &mut Client, want: &str) -> SessionUpdate {
     for _ in 0..64 {
         let update = match next_server_within(socket, 5_000).await {
-            Some(ServerMessage::Update { update }) => *update,
+            Some(ServerMessage::Update { update, .. }) => *update,
             Some(_) => continue,
             None => panic!("waited for {want}, and heard nothing"),
         };
@@ -2923,6 +2923,777 @@ async fn a_sleeping_seats_snapshot_carries_its_transcripts_turns() {
     );
 }
 
+/// A user frame saying `text`, as a seat's own turn arrives.
+fn a_said_frame(text: &str) -> forge_primitives::Message {
+    serde_json::from_value(serde_json::json!({
+        "type": "user",
+        "message": {"role": "user", "content": [{"type": "text", "text": text}]},
+        "session_id": "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
+    }))
+    .expect("a user frame")
+}
+
+/// Wait until the transport's own fold has attached to the core's stream.
+///
+/// It attaches at boot, one scheduling hop after the server starts; a frame
+/// emitted before it is held for the first client instead, which is the boot
+/// backlog's path rather than any of these tests'.
+async fn wait_for_the_fold(fleet: &Fleet) {
+    for _ in 0..200 {
+        if fleet.subscriber_count() > 0 {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    panic!("the transport's own fold never attached");
+}
+
+/// How many times the answer's conversation carries a row saying `text` - the
+/// count a duplicate hides behind a substring check.
+fn says_times(data: &serde_json::Value, text: &str) -> usize {
+    serde_json::to_string(&data["conversation"]).unwrap_or_default().matches(text).count()
+}
+
+/// The thinking tokens the snapshot's turns have spent, summed from the
+/// deltas their frames carry.
+fn thinking_spent(data: &serde_json::Value) -> i64 {
+    data["conversation"]["turns"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|turn| turn["messages"].as_array().into_iter().flatten())
+        .filter(|msg| msg["subtype"] == "thinking_tokens")
+        .filter_map(|msg| msg["estimated_tokens_delta"].as_i64())
+        .sum()
+}
+
+/// A client attaching to a seat MID-TURN is handed the turn it is on: the
+/// running state, and the thinking the running turn has already spent.
+///
+/// No frame it hears repeats either - the stream announces a turn once and
+/// retains nothing - so a reconnect that dropped them would draw a seat
+/// sitting idle on a turn that is running.
+#[tokio::test]
+async fn a_seats_reconnect_answer_carries_the_running_turn() {
+    let (url, fleet, state) = a_server_with_state().await;
+    let seat = lead_seat();
+    let rows = [r#"{"type":"user","uuid":"u1","message":{"role":"user","content":"go"}}"#];
+    fleet.seed_transcript("TestOrg", "proj", "lead", &rows).expect("the transcript seeds");
+    fleet
+        .hold_conversation(&state, "TestOrg", "proj", "lead")
+        .expect("the seat's conversation is held");
+    // The running turn's own frames, as the task emits them: the window a
+    // client reads is the transport's copy of exactly these.
+    //
+    // Emitted only once the transport's own fold is attached, or the frame is
+    // held for the first client instead of reaching the copy this reads.
+    wait_for_the_fold(&fleet).await;
+    fleet.emit(SessionUpdate::ChatAppended {
+        key: seat.clone(),
+        origin: None,
+        source: None,
+        msg: forge_primitives::Message::ThinkingTokens {
+            estimated_tokens: 24,
+            estimated_tokens_delta: 24,
+            uuid: "t1".to_owned(),
+            session_id: "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45".to_owned(),
+            extras: serde_json::Map::new(),
+        },
+    });
+    fleet.seed_view_facts(&seat, ViewFacts::default());
+    fleet
+        .workspace()
+        .domain_session_for(&seat)
+        .expect("the seat is registered")
+        .lock()
+        .turn_pending = true;
+
+    let mut socket = connect(&url).await;
+    let running = snapshot_until(&mut socket, Subject::Session(seat.clone()), |data| {
+        data["header"]["turn_in_flight"] == true
+    })
+    .await;
+    assert!(
+        running,
+        "a client attaching mid-turn reads the turn it is on, not a seat that looks idle",
+    );
+
+    let spent = snapshot_until(&mut socket, Subject::Session(seat.clone()), |data| {
+        thinking_spent(data) > 0
+    })
+    .await;
+    assert!(
+        spent,
+        "and reads the thinking the running turn has spent, which no frame it hears repeats",
+    );
+}
+
+/// A seat's answer carries the epoch its sequence belongs to and the number
+/// the NEXT frame will bear, so a client that has just read the seat knows
+/// what to expect rather than guessing - and knows what it did not miss.
+///
+/// **The number is the successor, not the last one minted.** A client that
+/// read the last one would expect a frame it has already drawn and ask for a
+/// range that is not missing.
+#[tokio::test]
+async fn a_seats_answer_carries_its_epoch_and_the_number_the_next_frame_will_bear() {
+    let (url, fleet) = a_server().await;
+    let seat = lead_seat();
+    fleet.seed_view_facts(
+        &seat,
+        ViewFacts {
+            session_id: Some(SessionId::from("5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45")),
+            ..Default::default()
+        },
+    );
+    fleet.emit(SessionUpdate::TurnComplete { key: seat.clone(), terminal_reason: None });
+
+    let mut socket = connect(&url).await;
+    let held = snapshot_until(&mut socket, Subject::Session(seat.clone()), |data| {
+        data["header"]["session_id"] == "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45"
+            && data["header"]["seq"] == 2
+    })
+    .await;
+    assert!(
+        held,
+        "a client attaching after one frame reads the epoch and the number its next frame will bear",
+    );
+
+    // Another seat's traffic must not move this one's number, and this one's
+    // own frame must: the counter is the seat's.
+    let other = SessionSlot::worker("TestOrg", "proj", "reviewer");
+    fleet.emit(SessionUpdate::TurnComplete { key: other.clone(), terminal_reason: None });
+    fleet.emit(SessionUpdate::TurnComplete { key: seat.clone(), terminal_reason: None });
+    let held = snapshot_until(&mut socket, Subject::Session(seat.clone()), |data| {
+        data["header"]["seq"] == 3
+    })
+    .await;
+    assert!(held, "the seat's own frame is what moves its number");
+}
+
+/// **A seat nobody has attached to yet is still at a number a client can
+/// continue from.** The boot backlog is emitted before any subscriber exists;
+/// a read that reported the last number, or zero, would have the first client
+/// ask for frames it never missed or expect one that already went out.
+#[tokio::test]
+async fn a_seat_with_no_subscriber_yet_answers_with_the_next_number() {
+    let (url, fleet) = a_server().await;
+    let seat = lead_seat();
+    for _ in 0..3 {
+        fleet.emit(SessionUpdate::TurnComplete { key: seat.clone(), terminal_reason: None });
+    }
+
+    let mut socket = connect(&url).await;
+    let held = snapshot_until(&mut socket, Subject::Session(seat.clone()), |data| {
+        data["header"]["seq"] == 4
+    })
+    .await;
+    assert!(held, "the first subscriber reads the number the seat's next frame will bear");
+}
+
+/// **A `/resume` opens a new epoch, and its sequence starts at 1.** The
+/// transcript the new occupant replays is old, and none of it is a frame this
+/// epoch missed: a client that read the counter as continuing would ask for a
+/// range that can never arrive.
+#[tokio::test]
+async fn a_resumed_seats_answer_starts_its_new_epoch_at_one() {
+    let (url, fleet) = a_server().await;
+    let seat = lead_seat();
+    fleet.emit(SessionUpdate::TurnComplete { key: seat.clone(), terminal_reason: None });
+    fleet.emit(SessionUpdate::TurnComplete { key: seat.clone(), terminal_reason: None });
+    fleet.emit(SessionUpdate::SessionReplaced {
+        key: seat.clone(),
+        session_id: SessionId::from("6c2d3e4f-5061-4b72-8839-ad1e2f3a4b56"),
+        cwd: "/tmp".to_owned(),
+        current_model: a_current_model(),
+        available_models: Vec::new(),
+        mode: None,
+        history: Vec::new(),
+        dropped: 0,
+        compaction_count: 0,
+    });
+    fleet.seed_view_facts(
+        &seat,
+        ViewFacts {
+            session_id: Some(SessionId::from("6c2d3e4f-5061-4b72-8839-ad1e2f3a4b56")),
+            ..Default::default()
+        },
+    );
+
+    let mut socket = connect(&url).await;
+    let held = snapshot_until(&mut socket, Subject::Session(seat.clone()), |data| {
+        data["header"]["session_id"] == "6c2d3e4f-5061-4b72-8839-ad1e2f3a4b56"
+            && data["header"]["seq"] == 1
+    })
+    .await;
+    assert!(
+        held,
+        "a resumed seat's answer names the new occupant and the epoch's own first number",
+    );
+}
+
+/// **The answer's copy covers every frame below the number it carries.**
+///
+/// The copy is filled by the transport's fold loop consuming the same stream
+/// in a task of its own, so a frame minted before the answer's number is read
+/// can reach the copy after it - and a client that adopts `seq - 1` then skips
+/// the frame's live delivery as already drawn. A row lost in silence, on the
+/// one path this cut exists for.
+///
+/// The fold is held to make the window deterministic rather than raced: the
+/// frame below cannot reach the copy on its own, so only the answer's own
+/// catch-up can put it there.
+///
+/// Two mutations die here, one per window:
+/// - removing the catch-up leaves the row absent (the fold never took it);
+/// - reading the answer's number AFTER the copy - the order this fixes -
+///   catches up the copy but reads the turns before it, so the row is absent
+///   again.
+#[tokio::test]
+async fn a_reconnect_answer_covers_every_frame_below_its_number() {
+    let (url, fleet, state) = a_server_with_state().await;
+    let seat = lead_seat();
+    wait_for_the_fold(&fleet).await;
+
+    state.conversations.hold_the_fold(true);
+    fleet.emit(SessionUpdate::ChatAppended {
+        key: seat.clone(),
+        origin: None,
+        source: None,
+        msg: a_said_frame("the frame the fold has not taken yet"),
+    });
+
+    // **The FIRST answer, not a poll.** Every subscribe tops the copy up, so a
+    // second attempt would carry the row whatever the order was - the window
+    // is only open for the answer that finds it.
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+    let (_, data, _) = snapshot_answering(&mut socket).await;
+    state.conversations.hold_the_fold(false);
+
+    let times = says_times(&data, "the frame the fold has not taken yet");
+    assert_eq!(
+        times, 1,
+        "the row must cross exactly once: absent means the answer carries a number its copy \
+         cannot cover and the client skips its live delivery, and twice means the catch-up \
+         applied a frame the copy already had",
+    );
+
+    // **And the fold does not fold it again.** Releasing it lets it consume the
+    // frame the catch-up already applied - which its own watermark must skip,
+    // or the row lands in the copy a second time.
+    state.conversations.hold_the_fold(false);
+    for _ in 0..200 {
+        if state.conversations.consumed_for(&seat) >= 1 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+    let (_, after, _) = snapshot_answering(&mut socket).await;
+    assert_eq!(
+        says_times(&after, "the frame the fold has not taken yet"),
+        1,
+        "the fold applied a frame the catch-up had already put in the copy",
+    );
+}
+
+/// **A caught-up copy is never refused.** A seat that has emitted more than a
+/// window's worth of frames has a ring that shed its oldest, so the fallback's
+/// coverage guard cannot reach back - and a watermark that never advanced
+/// sends every such reconnect down that guard and refuses an ordinary long
+/// seat. Here the fold is NOT held: the copy is caught up, so the answer is
+/// simply the record.
+#[tokio::test]
+async fn a_caught_up_seat_answers_a_reconnect_with_a_shed_window() {
+    let (url, fleet, state) = a_server_with_state().await;
+    let seat = lead_seat();
+    wait_for_the_fold(&fleet).await;
+    // One frame's worth of window, and more frames than it can hold. The seat
+    // connects first, so the copy the fold fills is a real one - a seat with
+    // no copy takes no frames at all, and this is about the copy being behind.
+    forge_workspace::set_seat_ring_cap(&fleet.workspace(), 1);
+    fleet.emit(SessionUpdate::Connected {
+        key: seat.clone(),
+        session_id: SessionId::from("5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45"),
+        cwd: "/tmp".to_owned(),
+        current_model: a_current_model(),
+        available_models: Vec::new(),
+        mode: None,
+        history: Vec::new(),
+        dropped: 0,
+        compaction_count: 0,
+    });
+    for at in 1..=3 {
+        fleet.emit(SessionUpdate::ChatAppended {
+            key: seat.clone(),
+            origin: None,
+            source: None,
+            msg: a_said_frame(&format!("frame {at}")),
+        });
+    }
+    for _ in 0..200 {
+        if state.conversations.consumed_for(&seat) >= 3 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+    let message = next_server(&mut socket).await;
+
+    let ServerMessage::Snapshot { data, .. } = message else {
+        panic!("a caught-up copy is answered with the record, not refused: {message:?}")
+    };
+    for at in 1..=3 {
+        assert_eq!(
+            says_times(&data, &format!("frame {at}")),
+            1,
+            "the copy is the fold's own, and every frame of it crosses once",
+        );
+    }
+}
+
+/// **A copy no window can cover is refused, not answered with a hole.**
+///
+/// The fold is stuck and the seat's own window has shed the frames below the
+/// number an answer would carry, so the only honest answer is none: the read
+/// names the seat and the reason, and the client reads it as ask-again rather
+/// than as a record with a row silently missing from it.
+#[tokio::test]
+async fn a_copy_no_window_can_cover_is_refused_rather_than_answered() {
+    let (url, fleet, state) = a_server_with_state().await;
+    let seat = lead_seat();
+    wait_for_the_fold(&fleet).await;
+    // One frame's worth of window, so the stretch below cannot all be in it.
+    forge_workspace::set_seat_ring_cap(&fleet.workspace(), 1);
+
+    state.conversations.hold_the_fold(true);
+    for at in 1..=2 {
+        fleet.emit(SessionUpdate::ChatAppended {
+            key: seat.clone(),
+            origin: None,
+            source: None,
+            msg: a_said_frame(&format!("frame {at}")),
+        });
+    }
+
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+    let message = next_server(&mut socket).await;
+    state.conversations.hold_the_fold(false);
+
+    let ServerMessage::Error { what, why, .. } = message else {
+        panic!("an answer whose copy cannot be covered was answered anyway: {message:?}")
+    };
+    assert_eq!(what, "subscribe", "the refusal names what was asked for");
+    assert!(
+        why.contains(&seat.display()) && why.contains("has not settled"),
+        "and names the seat and the reason, so a stuck fold is forge's problem and not a row \
+         lost in silence: {why}",
+    );
+}
+
+/// **A seal the watermark has jumped past still applies its history.**
+///
+/// A seal's number can equal the first frame of the run it opens - the fresh
+/// seat mints 1, then counts from 1 again - so a fill that took that frame
+/// leaves a watermark the seal's own number is not above. A skip-guard blind
+/// to that drops the seal, and the reseed it carries - the only path the new
+/// run's history has into the copy - never runs: the rows are gone for good.
+#[tokio::test]
+async fn a_seal_the_watermark_jumped_past_still_applies_its_history() {
+    let (url, fleet, state) = a_server_with_state().await;
+    let seat = lead_seat();
+    wait_for_the_fold(&fleet).await;
+    let session = SessionId::from("9d4e5f60-6172-4a83-c940-a1b2c3d4e5f6");
+    fleet.seed_view_facts(
+        &seat,
+        ViewFacts { session_id: Some(session.clone()), ..Default::default() },
+    );
+
+    state.conversations.hold_the_fold(true);
+    fleet.emit(SessionUpdate::Connected {
+        key: seat.clone(),
+        session_id: session,
+        cwd: "/tmp".to_owned(),
+        current_model: a_current_model(),
+        available_models: Vec::new(),
+        mode: None,
+        history: vec![a_said_frame("the history row")],
+        dropped: 0,
+        compaction_count: 0,
+    });
+    fleet.emit(SessionUpdate::ChatAppended {
+        key: seat.clone(),
+        origin: None,
+        source: None,
+        msg: a_said_frame("the live row"),
+    });
+
+    // The first answer fills from the window: the live row lands and the
+    // watermark is moved to its number - the seal's own.
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+    let _ = snapshot_answering(&mut socket).await;
+
+    // The fold now takes both frames. The seal must apply despite the
+    // watermark, or the history it carries never reaches the copy - so the
+    // read is repeated until it does, bounded: an answer that never carries
+    // it exhausts the loop and fails below.
+    state.conversations.hold_the_fold(false);
+    let mut conversation = String::new();
+    let mut data = serde_json::Value::Null;
+    for _ in 0..40 {
+        let mut socket = connect(&url).await;
+        send(
+            &mut socket,
+            ClientMessage::Subscribe {
+                what: Subject::Session(seat.clone()),
+                answering: true,
+                browser: false,
+                declare: false,
+            },
+        )
+        .await;
+        let read = snapshot_answering(&mut socket).await;
+        conversation = serde_json::to_string(&read.1["conversation"]).unwrap_or_default();
+        data = read.1;
+        if says_times(&data, "the history row") >= 1 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+
+    assert_eq!(
+        says_times(&data, "the history row"),
+        1,
+        "the seal's history must cross exactly once: absent means the skip-guard took the seal \
+         and the new run's rows are gone from the record for good; the answer carried \
+         {conversation}",
+    );
+    assert_eq!(says_times(&data, "the live row"), 1, "and the live row exactly once");
+}
+
+/// **An answer inside the seal's window is the new epoch's, not the previous
+/// run's.**
+///
+/// A seal is minted by the fanout and applied by the fold, and the counter
+/// restarts at the mint while the copy reseeds at the apply. A read landing
+/// between the two pairs the restarted count with the previous run's rows
+/// unless the copy carries its occupant - and one that is not the seat's is
+/// no copy at all.
+#[tokio::test]
+async fn an_answer_inside_the_seal_window_is_not_the_previous_runs_conversation() {
+    let (url, fleet, state) = a_server_with_state().await;
+    let seat = lead_seat();
+    wait_for_the_fold(&fleet).await;
+    let old = SessionId::from("1f2e3d4c-5b6a-4978-8801-1234567890ab");
+    let new = SessionId::from("2a3b4c5d-6e7f-4809-9a1b-234567890abc");
+
+    fleet.seed_view_facts(&seat, ViewFacts { session_id: Some(old.clone()), ..Default::default() });
+    fleet.emit(SessionUpdate::Connected {
+        key: seat.clone(),
+        session_id: old,
+        cwd: "/tmp".to_owned(),
+        current_model: a_current_model(),
+        available_models: Vec::new(),
+        mode: None,
+        history: vec![a_said_frame("the old run's row")],
+        dropped: 0,
+        compaction_count: 0,
+    });
+    for _ in 0..200 {
+        if state.conversations.consumed_for(&seat) >= 1 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+
+    // The seal is minted but held short of the fold, and the header already
+    // names the new occupant - the window the read must not be fooled in.
+    state.conversations.hold_the_fold(true);
+    fleet.emit(SessionUpdate::SessionReplaced {
+        key: seat.clone(),
+        session_id: new.clone(),
+        cwd: "/tmp".to_owned(),
+        current_model: a_current_model(),
+        available_models: Vec::new(),
+        mode: None,
+        history: Vec::new(),
+        dropped: 0,
+        compaction_count: 0,
+    });
+    fleet.seed_view_facts(&seat, ViewFacts { session_id: Some(new.clone()), ..Default::default() });
+
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+    let (_, data, _) = snapshot_answering(&mut socket).await;
+    state.conversations.hold_the_fold(false);
+
+    assert_eq!(
+        data["header"]["session_id"], "2a3b4c5d-6e7f-4809-9a1b-234567890abc",
+        "the answer names the new occupant",
+    );
+    assert_eq!(
+        says_times(&data, "the old run's row"),
+        0,
+        "an answer must never carry the previous run's rows under the new epoch's count",
+    );
+}
+
+/// **A range ask after an occupant change reaches the new epoch's frames.**
+///
+/// The frame that OPENS an epoch is numbered on the run it ends and is not
+/// ringed, so the new run's window starts at 1 - and the first thing a client
+/// that missed the change asks for is frame 1. A ring that kept the opening
+/// frame reports a front of 2, and the ask falls through to a transcript that
+/// holds nothing of the new run: the repair is dead for the whole epoch.
+#[tokio::test]
+async fn a_range_ask_after_an_occupant_change_reaches_the_new_epoch() {
+    let (url, fleet, _state) = a_server_with_state().await;
+    let seat = lead_seat();
+    wait_for_the_fold(&fleet).await;
+    fleet.emit(SessionUpdate::TurnComplete { key: seat.clone(), terminal_reason: None });
+    fleet.emit(SessionUpdate::SessionReplaced {
+        key: seat.clone(),
+        session_id: SessionId::from("6c2d3e4f-5061-4b72-8839-ad1e2f3a4b56"),
+        cwd: "/tmp".to_owned(),
+        current_model: a_current_model(),
+        available_models: Vec::new(),
+        mode: None,
+        history: Vec::new(),
+        dropped: 0,
+        compaction_count: 0,
+    });
+    fleet.emit(SessionUpdate::ChatAppended {
+        key: seat.clone(),
+        origin: None,
+        source: None,
+        msg: a_said_frame("the new epoch's first"),
+    });
+
+    let mut socket = connect(&url).await;
+    send(&mut socket, ClientMessage::SeatRange { slot: seat.clone(), epoch: None, from: 1, to: 1 })
+        .await;
+
+    let ServerMessage::SeatFrames { frames, .. } = next_server(&mut socket).await else {
+        panic!("a range ask is answered with the frames it asked for")
+    };
+    assert_eq!(frames.len(), 1, "the new epoch's first frame is the one frame the range holds");
+    assert_eq!(frames[0].seq, 1, "numbered where the new run starts");
+    let body = serde_json::to_string(&frames[0].update).unwrap_or_default();
+    assert!(body.contains("the new epoch's first"), "and it is that frame: {body}");
+}
+
+/// **A repaired frame crosses with no history on it.** The ring holds what the
+/// fanout emitted, and a frame carrying the history an epoch hands over must
+/// not ride a client frame (#2157) nor lean on the socket's size bound - so
+/// the repair path goes through the same stripper as every other path to a
+/// client. A `HistoryReplayed` is the shape that proves it: it is a frame with
+/// a conversation in it, and the ring keeps it.
+#[tokio::test]
+async fn a_repair_answer_carries_no_history() {
+    let (url, fleet, _state) = a_server_with_state().await;
+    let seat = lead_seat();
+    wait_for_the_fold(&fleet).await;
+    fleet.emit(SessionUpdate::HistoryReplayed {
+        key: seat.clone(),
+        history: vec![a_said_frame("the replayed words")],
+        compaction_count: 0,
+    });
+
+    let mut socket = connect(&url).await;
+    send(&mut socket, ClientMessage::SeatRange { slot: seat.clone(), epoch: None, from: 1, to: 1 })
+        .await;
+
+    let ServerMessage::SeatFrames { frames, .. } = next_server(&mut socket).await else {
+        panic!("a range ask is answered with the frames it asked for")
+    };
+    assert_eq!(frames.len(), 1, "the replay is the frame the ring holds");
+    let body = serde_json::to_string(&frames[0].update).unwrap_or_default();
+    assert!(!body.contains("the replayed words"), "the history crossed on a repair: {body}");
+}
+
+/// A range ask is answered from the window the seat already keeps: the frames
+/// asked for, each carrying the number it was minted under, so a client that
+/// missed a stretch can fold exactly those and carry on.
+#[tokio::test]
+async fn a_range_ask_inside_the_window_answers_exactly_the_asked_frames() {
+    let (url, fleet, _state) = a_server_with_state().await;
+    let seat = lead_seat();
+    wait_for_the_fold(&fleet).await;
+    for at in 1..=3 {
+        fleet.emit(SessionUpdate::ChatAppended {
+            key: seat.clone(),
+            origin: None,
+            source: None,
+            msg: a_said_frame(&format!("frame {at}")),
+        });
+    }
+
+    let mut socket = connect(&url).await;
+    send(&mut socket, ClientMessage::SeatRange { slot: seat.clone(), epoch: None, from: 2, to: 3 })
+        .await;
+
+    let ServerMessage::SeatFrames { slot, epoch, frames } = next_server(&mut socket).await else {
+        panic!("a range ask is answered with the frames it asked for")
+    };
+    assert_eq!(slot, seat, "the answer names the seat it was asked about");
+    assert_eq!(epoch, None, "and the epoch the numbers belong to");
+    assert_eq!(
+        frames.iter().map(|frame| frame.seq).collect::<Vec<_>>(),
+        vec![2, 3],
+        "exactly the asked range, in order",
+    );
+    let asked = serde_json::to_string(&frames[0].update).unwrap_or_default();
+    assert!(asked.contains("frame 2"), "with each frame's own content: {asked}");
+}
+
+/// **A range older than the window falls back to the transcript, and the
+/// frames still carry the range's own numbers.** Re-numbering them from one
+/// would leave the client's sequence looking gapped forever, and dropping them
+/// would leave rows nobody can ask for again.
+#[tokio::test]
+async fn a_range_older_than_the_window_falls_back_to_the_transcript() {
+    let (url, fleet, _state) = a_server_with_state().await;
+    let seat = lead_seat();
+    let rows: Vec<String> = (1..=4)
+        .map(|at| {
+            format!(r#"{{"type":"user","uuid":"u{at}","message":{{"role":"user","content":"row {at}"}}}}"#)
+        })
+        .collect();
+    let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
+    fleet.seed_transcript("TestOrg", "proj", "lead", &borrowed).expect("the transcript seeds");
+    // The window has already shed all but its newest frame, which is what
+    // makes the ask below reach past it.
+    forge_workspace::set_seat_ring_cap(&fleet.workspace(), 1);
+    wait_for_the_fold(&fleet).await;
+    for at in 1..=4 {
+        fleet.emit(SessionUpdate::ChatAppended {
+            key: seat.clone(),
+            origin: None,
+            source: None,
+            msg: a_said_frame(&format!("frame {at}")),
+        });
+    }
+
+    let mut socket = connect(&url).await;
+    send(&mut socket, ClientMessage::SeatRange { slot: seat.clone(), epoch: None, from: 1, to: 4 })
+        .await;
+
+    let ServerMessage::SeatFrames { frames, .. } = next_server(&mut socket).await else {
+        panic!("a range older than the window is answered from the transcript")
+    };
+    assert_eq!(
+        frames.iter().map(|frame| frame.seq).collect::<Vec<_>>(),
+        vec![1, 2, 3, 4],
+        "the repaired frames carry the range's own numbers rather than restarting at one",
+    );
+    let texts: Vec<String> = frames
+        .iter()
+        .map(|frame| serde_json::to_string(&frame.update).unwrap_or_default())
+        .collect();
+    assert!(
+        texts[0].contains("row 1") && texts[3].contains("row 4"),
+        "and their content is the transcript's own rows, not the frames the window shed: {texts:?}",
+    );
+}
+
+/// **A range ask naming an epoch the seat has left is refused.** Those numbers
+/// belong to an occupant that is gone, and repairing across the two would
+/// splice one conversation onto another - so the client is told to read the
+/// seat again rather than handed frames that look like an answer.
+#[tokio::test]
+async fn a_range_ask_from_another_epoch_is_refused() {
+    let (url, fleet, _state) = a_server_with_state().await;
+    let seat = lead_seat();
+    fleet.seed_view_facts(
+        &seat,
+        ViewFacts {
+            session_id: Some(SessionId::from("5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45")),
+            ..Default::default()
+        },
+    );
+
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::SeatRange {
+            slot: seat.clone(),
+            epoch: Some(SessionId::from("6c2d3e4f-5061-4b72-8839-ad1e2f3a4b56")),
+            from: 1,
+            to: 2,
+        },
+    )
+    .await;
+
+    let ServerMessage::Error { what, why, seat: named, .. } = next_server(&mut socket).await else {
+        panic!("a range ask from another epoch is refused rather than answered")
+    };
+    assert_eq!(what, "seat_range", "the refusal names what was asked for");
+    assert_eq!(named, Some(seat), "and the seat it belongs to");
+    assert!(
+        why.contains("occupant"),
+        "and why, so a client knows to read the seat again rather than retry: {why}",
+    );
+}
+
 /// A page that cannot be answered is REFUSED, because an empty one lies.
 ///
 /// **An empty page carries `cursor: null`, and a client reads that as "nothing
@@ -3000,7 +3771,9 @@ async fn a_held_seats_moved_tree_reaches_the_client() {
     let mut moved = None;
     for edit in 1..12 {
         std::fs::write(repo.join("kept.txt"), "x".repeat(edit)).expect("write");
-        if let Some(ServerMessage::Update { update }) = next_server_within(&mut socket, 700).await {
+        if let Some(ServerMessage::Update { update, .. }) =
+            next_server_within(&mut socket, 700).await
+        {
             let SessionUpdate::WorkChanged { key, work, git, pr, closes } = *update else {
                 continue;
             };
@@ -3138,7 +3911,7 @@ async fn a_refused_subscribe_leaves_another_connections_hold_alone() {
     fleet.start("TestOrg", "proj").expect("the project starts again");
     for edit in 1..12 {
         std::fs::write(repo.join("kept.txt"), "x".repeat(edit)).expect("write");
-        if let Some(ServerMessage::Update { update }) = next_server_within(&mut a, 700).await
+        if let Some(ServerMessage::Update { update, .. }) = next_server_within(&mut a, 700).await
             && matches!(*update, SessionUpdate::WorkChanged { .. })
         {
             return;
@@ -3705,7 +4478,7 @@ async fn one_unsubscribe_leaves_the_seats_other_subscription() {
 
     let msg = next_server(&mut socket).await;
     assert!(
-        matches!(&msg, ServerMessage::Update { update } if matches!(**update, SessionUpdate::TurnCancelled { .. })),
+        matches!(&msg, ServerMessage::Update { update, .. } if matches!(**update, SessionUpdate::TurnCancelled { .. })),
         "the subscription the client still holds hears the seat it is showing: {msg:?}",
     );
 }
@@ -3782,7 +4555,7 @@ async fn a_delivery_is_sent_as_a_frame_and_then_as_its_typed_update() {
         description: Some("Morning summary".to_owned()),
     });
 
-    let ServerMessage::Update { update } = next_server(&mut socket).await else {
+    let ServerMessage::Update { update, .. } = next_server(&mut socket).await else {
         panic!("a delivery a view draws as a turn has to reach the client drawing it")
     };
     let SessionUpdate::ChatAppended { key, msg, .. } = *update else {
@@ -3801,7 +4574,7 @@ async fn a_delivery_is_sent_as_a_frame_and_then_as_its_typed_update() {
          forged turn rather than some other user frame: {text}",
     );
 
-    let ServerMessage::Update { update } = next_server(&mut socket).await else {
+    let ServerMessage::Update { update, .. } = next_server(&mut socket).await else {
         panic!("the typed update still goes out beside the frame")
     };
     assert!(
@@ -3848,7 +4621,7 @@ async fn a_delivery_to_another_seat_draws_nothing_on_this_one() {
 
     let msg = next_server(&mut socket).await;
     assert!(
-        matches!(&msg, ServerMessage::Update { update } if matches!(**update, SessionUpdate::TurnCancelled { .. })),
+        matches!(&msg, ServerMessage::Update { update, .. } if matches!(**update, SessionUpdate::TurnCancelled { .. })),
         "a delivery for another seat must not draw on this one: {msg:?}",
     );
 }
@@ -3940,7 +4713,7 @@ async fn a_prompt_a_client_sends_draws_for_every_client_on_that_seat() {
     fleet.emit(SessionUpdate::TurnCancelled { key: lead_seat() });
     let msg = next_server(&mut onlooker).await;
     assert!(
-        matches!(&msg, ServerMessage::Update { update } if matches!(**update, SessionUpdate::TurnCancelled { .. })),
+        matches!(&msg, ServerMessage::Update { update, .. } if matches!(**update, SessionUpdate::TurnCancelled { .. })),
         "one send draws one frame per view: {msg:?}",
     );
 }
@@ -4159,7 +4932,7 @@ async fn a_thinking_turn_reaches_a_client_watching_its_seat_frame_for_frame() {
     let mut heard: i64 = 0;
     loop {
         match next_server(&mut watched).await {
-            ServerMessage::Update { update } => match *update {
+            ServerMessage::Update { update, .. } => match *update {
                 SessionUpdate::ChatAppended { key, msg, .. } => {
                     assert_eq!(key, lead_seat(), "another seat's frame reached this one");
                     if let forge_primitives::Message::ThinkingTokens {
@@ -4209,7 +4982,7 @@ async fn a_thinking_turn_reaches_a_client_watching_its_seat_frame_for_frame() {
     let mut leaked: Vec<String> = Vec::new();
     loop {
         match next_server(&mut home_only).await {
-            ServerMessage::Update { update } => match *update {
+            ServerMessage::Update { update, .. } => match *update {
                 SessionUpdate::ChatAppended { msg, .. } => leaked.push(frame_name(&msg)),
                 SessionUpdate::TurnCancelled { .. } => break,
                 _ => {}
@@ -4275,7 +5048,7 @@ async fn a_prompt_the_core_refuses_draws_nothing() {
     let mut drawn = false;
     loop {
         match next_server_within(&mut sender, 5_000).await {
-            Some(ServerMessage::Update { update }) => {
+            Some(ServerMessage::Update { update, .. }) => {
                 drawn |= matches!(&*update, SessionUpdate::ChatAppended { msg, .. }
                     if user_text(msg).as_deref() == Some("hello there"));
             }
@@ -4291,7 +5064,7 @@ async fn a_prompt_the_core_refuses_draws_nothing() {
     fleet.emit(SessionUpdate::TurnCancelled { key: lead_seat() });
     loop {
         match next_server(&mut sender).await {
-            ServerMessage::Update { update } => {
+            ServerMessage::Update { update, .. } => {
                 drawn |= matches!(&*update, SessionUpdate::ChatAppended { msg, .. }
                     if user_text(msg).as_deref() == Some("hello there"));
                 if matches!(*update, SessionUpdate::TurnCancelled { .. }) {
@@ -5574,7 +6347,7 @@ async fn frame_until(
         let text = next_text_within(socket, 5_000)
             .await
             .unwrap_or_else(|| panic!("waited for {what}, and the server said nothing"));
-        let Ok(ServerMessage::Update { update }) = serde_json::from_str::<ServerMessage>(&text)
+        let Ok(ServerMessage::Update { update, .. }) = serde_json::from_str::<ServerMessage>(&text)
         else {
             continue;
         };
@@ -5748,7 +6521,8 @@ fn assert_transcript_free(frame: &str, what: &str) {
          its 256MiB cap",
         frame.len(),
     );
-    let Ok(ServerMessage::Update { update }) = serde_json::from_str::<ServerMessage>(frame) else {
+    let Ok(ServerMessage::Update { update, .. }) = serde_json::from_str::<ServerMessage>(frame)
+    else {
         panic!("the {what} crosses as an update");
     };
     let carried = match &*update {

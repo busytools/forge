@@ -328,6 +328,20 @@ impl Bridge {
         true
     }
 
+    /// One repair ask: the frames a seat's stream emitted between two numbers.
+    /// False means no socket is open and no answer is coming; the answer lands
+    /// on the page's own `onMessage`, and costs nothing if it never comes.
+    pub fn seat_range(&self, slot: &Value, epoch: Option<String>, from: u64, to: u64) -> bool {
+        let state = self.lock();
+        if state.status != "open" {
+            return false;
+        }
+        if let Some(socket) = &state.socket {
+            socket.seat_range(slot.clone(), epoch, from, to);
+        }
+        true
+    }
+
     /// One commit's own diff. False means no socket is open and no answer is
     /// coming; the answer lands on the page's own `onMessage`.
     pub fn commit_diff(&self, session: &Value, sha: &str) -> bool {

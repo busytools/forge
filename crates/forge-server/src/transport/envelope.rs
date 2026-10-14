@@ -178,6 +178,21 @@ pub enum ClientMessage {
         before: Option<String>,
         turns: u32,
     },
+    /// The frames a seat's stream emitted between two numbers, for a client
+    /// that read a gap in them.
+    ///
+    /// **The numbers are the seat's own**, minted as each frame crossed, so a
+    /// repair folds into the client's stream exactly where the frames fell
+    /// rather than reading as a second conversation. `epoch` is the occupant
+    /// those numbers belong to: a seat whose occupant has changed has started
+    /// counting again, and a repair across the two is refused rather than
+    /// answered.
+    SeatRange {
+        slot: SessionSlot,
+        epoch: Option<forge_primitives::SessionId>,
+        from: u64,
+        to: u64,
+    },
     /// One commit's own diff, for the review canvas' commit scopes.
     ///
     /// Asked on demand rather than carried on the record: a branch can
@@ -247,6 +262,21 @@ pub enum ServerMessage {
     /// thing on this wire and every other variant is small beside it.
     Update {
         update: Box<SessionUpdate>,
+        /// The number the frame's oldest update was minted under, `None` for
+        /// a frame belonging to no seat.
+        ///
+        /// **A client reads the numbers to see what it missed.** Every frame
+        /// the workspace emits for a seat is numbered on that seat's counter,
+        /// so a client that reads 5 and then 7 knows exactly one frame went
+        /// missing and asks the seat for it (`seat_range`); the snapshot's
+        /// `header.seq` says where a fresh reader joins.
+        seq: Option<u64>,
+        /// How many of the seat's numbers this frame stands for: 1 for a
+        /// frame that is one update, and n for a run the batch folded into
+        /// one - a run of token appends crosses as the single frame they
+        /// draw as, and its span is what keeps the client from reading the
+        /// numbers it already drew as a gap. 0 on a frame that has no number.
+        span: u64,
     },
     /// A page of one conversation, in answer to `more`: whole turns, each with
     /// the key the server named it by and the messages it ran as. Grouping a
@@ -256,6 +286,20 @@ pub enum ServerMessage {
         conversation: SessionSlot,
         turns: Vec<crate::transport::wire::TurnWire>,
         cursor: Option<String>,
+    },
+    /// The answer to `seat_range`: the frames numbered in `from..=to`, each
+    /// with the number it was minted under, oldest first.
+    ///
+    /// **Answered from the seat's own window while it holds them, and from the
+    /// transcript below that.** A range the window has shed comes back as the
+    /// conversation's own rows numbered to END at the range's end, so a client
+    /// resumes where it was reading instead of asking again for a stretch that
+    /// cannot arrive. A range from another epoch, or one forge holds no seat
+    /// for, is an `error` naming `seat_range`.
+    SeatFrames {
+        slot: SessionSlot,
+        epoch: Option<forge_primitives::SessionId>,
+        frames: Vec<SeatFrameWire>,
     },
     /// The answer to `commit_diff`: one commit's own bounded diff, in the
     /// same layer shape the record's content read carries, so a client
@@ -364,6 +408,18 @@ pub enum ServerMessage {
     BrowserSeats {
         seats: Vec<SessionSlot>,
     },
+}
+
+/// One repaired frame: the number the seat minted for it, and the update
+/// itself in the same shape a live `update` carries.
+///
+/// **The same shape is the point.** A repaired frame folds through the same
+/// pipeline a live one does, so a client has one path for a conversation's
+/// frames rather than a second one for the frames it had to ask for.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SeatFrameWire {
+    pub seq: u64,
+    pub update: SessionUpdate,
 }
 
 /// What the client draws with, from `forge.toml` by way of the server.

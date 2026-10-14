@@ -255,6 +255,31 @@ function stub() {
         },
       });
     },
+    /**
+     * A repaired stretch, in answer to a range ask: the frames the seat
+     * emitted while the reader was away, numbered as they were.
+     */
+    repaired(...texts: string[]): void {
+      send({
+        kind: 'seat_frames',
+        slot: LEAD,
+        epoch: null,
+        frames: texts.map((text, at) => ({
+          seq: at + 1,
+          update: {
+            chat_appended: {
+              key: LEAD,
+              source: 'you',
+              msg: {
+                type: 'user',
+                uuid: `repaired-${text}`,
+                message: { role: 'user', content: [{ type: 'text', text }] },
+              },
+            },
+          },
+        })),
+      });
+    },
     /** The CLI took the queued prompt: the drain draws its held row. */
     started(): void {
       send({
@@ -524,6 +549,55 @@ describe('whether the column follows the newest end', () => {
     expect(pinned(), 'the corrected foot is pinned once the hold is measured').toEqual([
       { asked: foot, landed: foot - VIEWPORT },
     ]);
+  });
+
+  /**
+   * **A repaired stretch fills in underneath, and moves nobody.**
+   *
+   * A gap the client read in the seat's sequence is repaired silently: the
+   * frames fold through the same path a live one does - into their turns -
+   * while the reader stays where they were standing. A repair that pinned the
+   * foot would drag a reader who scrolled up away from the row they were
+   * reading, for frames written before they left.
+   */
+  it('folds a repaired stretch in without moving a parked reader', async () => {
+    const server = stub();
+    await draw(server);
+    readerAt(0);
+    await settle();
+    clear();
+    const anchored = element.offset;
+
+    server.repaired('said before the gap', 'and answered, too');
+    await settle();
+
+    expect(document.body.textContent ?? '', 'the repaired stretch draws its rows').toContain(
+      'said before the gap',
+    );
+    expect(
+      element.offset,
+      '**and the anchor holds**: the repair lands under the reader rather than moving them',
+    ).toBe(anchored);
+    expect(pinned(), 'and the follow is not armed by a repair').toEqual([]);
+  });
+
+  /**
+   * **A repaired frame the READER wrote is not a send.** The source on the
+   * frame says whose words it carries, and a live frame with `you` arms the
+   * follow - but a repaired one was written before the reader left, so the
+   * arm would carry a parked reader to the foot for their own old words.
+   */
+  it('does not arm the follow on a repaired frame the reader wrote', async () => {
+    const server = stub();
+    await draw(server);
+    readerAt(0);
+    await settle();
+    clear();
+
+    server.repaired('what is this');
+    await settle();
+
+    expect(pinned(), 'a repair is not news, whatever it carries').toEqual([]);
   });
 
   it('does not move a reader who has scrolled up', async () => {

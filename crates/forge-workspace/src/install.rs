@@ -945,7 +945,7 @@ mod tests_install {
     /// silently skipped there and a read-back test would pass vacuously.
     struct Fixture {
         ws: Arc<Workspace>,
-        updates: tokio::sync::mpsc::UnboundedReceiver<SessionUpdate>,
+        updates: tokio::sync::mpsc::UnboundedReceiver<crate::SeatUpdate>,
         _models: tempfile::TempDir,
         _store: tempfile::TempDir,
     }
@@ -1042,8 +1042,8 @@ mod tests_install {
         assert_eq!(rows[0].file, "ruling-Q4_K_M.gguf");
         let last = {
             let mut last = None;
-            while let Ok(update) = updates.try_recv() {
-                if let SessionUpdate::DictateModelsChanged { models } = update {
+            while let Ok(frame) = updates.try_recv() {
+                if let SessionUpdate::DictateModelsChanged { models } = frame.update {
                     last = Some(models);
                 }
             }
@@ -1335,12 +1335,15 @@ mod tests_install {
     /// finished (`idle`) or stopped (`failed`). The progress frames in
     /// between are the page's, and a test that wants them collects its own.
     async fn await_models(
-        updates: &mut tokio::sync::mpsc::UnboundedReceiver<SessionUpdate>,
+        updates: &mut tokio::sync::mpsc::UnboundedReceiver<crate::SeatUpdate>,
     ) -> DictateModelsSnapshot {
         tokio::time::timeout(std::time::Duration::from_secs(15), async {
             loop {
                 match updates.recv().await {
-                    Some(SessionUpdate::DictateModelsChanged { models }) => {
+                    Some(crate::SeatUpdate {
+                        update: SessionUpdate::DictateModelsChanged { models },
+                        ..
+                    }) => {
                         let running = matches!(models.install, InstallState::Downloading { .. })
                             || matches!(models.activate, ActivateState::Activating { .. });
                         if !running {
@@ -1714,8 +1717,8 @@ mod tests_install {
         let mut moved = false;
         let mut finished = false;
         tokio::time::timeout(std::time::Duration::from_secs(15), async {
-            while let Some(update) = fixture.updates.recv().await {
-                let SessionUpdate::DictateModelsChanged { models } = update else { continue };
+            while let Some(frame) = fixture.updates.recv().await {
+                let SessionUpdate::DictateModelsChanged { models } = frame.update else { continue };
                 match &models.install {
                     InstallState::Downloading { file: seen, got, .. } => {
                         downloading = true;

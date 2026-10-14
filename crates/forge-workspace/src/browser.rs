@@ -777,8 +777,9 @@ mod tests {
         let (_id, _answer) = ws.register_browser_hand_off(&caller, handoff("solve the CAPTCHA"));
 
         let mut addressed = Vec::new();
-        while let Ok(update) = rx.try_recv() {
-            if let crate::protocol::SessionUpdate::BrowserHandOffPending { key, .. } = update {
+        while let Ok(frame) = rx.try_recv() {
+            if let crate::protocol::SessionUpdate::BrowserHandOffPending { key, .. } = frame.update
+            {
                 addressed.push(key);
             }
         }
@@ -835,7 +836,7 @@ mod tests {
         );
         let resolved = rx.try_recv().expect("the views hear it left the registry");
         let crate::protocol::SessionUpdate::BrowserHandOffResolved { key, id: seen, ending } =
-            resolved
+            resolved.update
         else {
             panic!("the update is the resolved one");
         };

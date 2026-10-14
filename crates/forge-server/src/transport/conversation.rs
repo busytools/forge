@@ -132,6 +132,13 @@ pub struct Conversation {
     /// one the file never wrote answers the read nothing - which reads as the
     /// end of the history.
     forged: std::collections::HashSet<String>,
+    /// The occupant this copy was last seeded for.
+    ///
+    /// **What tells a copy of the previous run from the current one.** A seal
+    /// is minted by the fanout and applied by the fold, and a read landing
+    /// between the two would otherwise pair the new epoch's count with the old
+    /// run's rows: a copy whose occupant is not the seat's is no copy at all.
+    occupant: Option<forge_primitives::SessionId>,
 }
 
 impl Conversation {
@@ -160,12 +167,23 @@ impl Conversation {
             dirty: true,
             folding: false,
             forged: std::collections::HashSet::new(),
+            occupant: None,
         }
     }
 
     /// The conversation a seat with nothing behind it answers as.
     pub fn empty() -> Self {
         Self::new(Vec::new(), 0, 0)
+    }
+
+    /// The occupant this copy was last seeded for.
+    pub fn occupant(&self) -> Option<&forge_primitives::SessionId> {
+        self.occupant.as_ref()
+    }
+
+    /// Say which occupant this copy is for.
+    pub fn set_occupant(&mut self, occupant: Option<forge_primitives::SessionId>) {
+        self.occupant = occupant;
     }
 
     /// Replace the whole conversation, which is what a connect, a resume or a
@@ -395,6 +413,18 @@ impl Held {
         Self { conversation: Mutex::new(conversation), folded: Condvar::new() }
     }
 
+    /// Whether this copy belongs to the seat's current occupant.
+    ///
+    /// **A copy with no occupant matches anything**, so a copy the transcript
+    /// seeded - or one built before an occupant was set - is never discarded
+    /// for lacking a fact nothing ever recorded.
+    pub fn holds_occupant(&self, occupant: Option<&forge_primitives::SessionId>) -> bool {
+        match (self.lock().occupant.as_ref(), occupant) {
+            (Some(held), Some(current)) => held == current,
+            _ => true,
+        }
+    }
+
     /// The conversation, waiting out a fold that is running over it.
     pub fn lock(&self) -> std::sync::MutexGuard<'_, Conversation> {
         let mut conversation = self.conversation.lock().unwrap_or_else(PoisonError::into_inner);
@@ -525,11 +555,110 @@ pub struct Conversations {
     /// Fires when a seat is first held, so a request that had to ask for a
     /// replay knows when its answer has landed.
     seeded: tokio::sync::Notify,
+    /// The newest number the fold loop has consumed for each seat, in a watch
+    /// so an encode can wait on it.
+    ///
+    /// **What an answer's copy is measured against.** A subscribe's answer
+    /// carries the number its seat's stream will continue from, and every
+    /// frame numbered below that must be inside the copy it carries - because
+    /// the client adopts `seq - 1` and treats a later delivery of anything at
+    /// or below it as already drawn. The copy is filled by the fold loop,
+    /// which consumes the fanout in a task of its own, so "the frame was
+    /// emitted before the counter was read" does not yet mean "the copy has
+    /// it": this is where that is known.
+    consumed: Mutex<HashMap<SessionSlot, tokio::sync::watch::Sender<u64>>>,
+    /// The lock a seat's fill runs under.
+    ///
+    /// **What makes "applied once" a fact rather than a hope.** The fold loop
+    /// and an encode's catch-up can both apply the same frames, and the
+    /// watermark between them is read and written by both; the lock spans each
+    /// side's check, applies and mark, so a frame crosses exactly once
+    /// whichever path got there first.
+    fills: Mutex<HashMap<SessionSlot, Arc<std::sync::Mutex<()>>>>,
+    /// A test's hold on the fold loop, so the window above can be driven
+    /// rather than raced: while it is set, the loop does not consume.
+    #[cfg(any(test, feature = "testing"))]
+    fold_held: std::sync::atomic::AtomicBool,
 }
 
 impl Conversations {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The newest number the fold loop has consumed for `slot`.
+    pub fn consumed_for(&self, slot: &SessionSlot) -> u64 {
+        self.consumed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(slot)
+            .map_or(0, |watch| *watch.borrow())
+    }
+
+    /// Say the fold loop has consumed `seq` for `slot`.
+    ///
+    /// **`send_replace`, not `send`.** The watch is created with its receiver
+    /// dropped, so `consumed_for` can read the watermark with nobody waiting -
+    /// and `send` is a no-op when a channel has no receivers, which would leave
+    /// the watermark at 0 forever and make every read of it wrong.
+    pub fn consumed(&self, slot: &SessionSlot, seq: u64) {
+        let mut watches = self.consumed.lock().unwrap_or_else(PoisonError::into_inner);
+        let watch = watches.entry(slot.clone()).or_insert_with(|| {
+            let (tx, _rx) = tokio::sync::watch::channel(0);
+            tx
+        });
+        watch.send_replace(seq);
+    }
+
+    /// Wait, up to `within`, for the fold to have consumed `want` for `slot`,
+    /// answering whether it did.
+    ///
+    /// **Bounded, because the caller has a fallback and a stuck fold must not
+    /// become a stall**: the caller fills the gap from the seat's own window
+    /// and refuses only if that cannot reach either.
+    pub async fn await_consumed(
+        &self,
+        slot: &SessionSlot,
+        want: u64,
+        within: std::time::Duration,
+    ) -> bool {
+        let mut watch = {
+            let mut watches = self.consumed.lock().unwrap_or_else(PoisonError::into_inner);
+            watches
+                .entry(slot.clone())
+                .or_insert_with(|| {
+                    let (tx, _rx) = tokio::sync::watch::channel(0);
+                    tx
+                })
+                .subscribe()
+        };
+        if *watch.borrow() >= want {
+            return true;
+        }
+        tokio::time::timeout(within, watch.wait_for(|seen| *seen >= want))
+            .await
+            .is_ok_and(|seen| seen.is_ok())
+    }
+
+    /// The lock one seat's fill runs under: taken by the fold loop and by an
+    /// encode's catch-up, so their watermark checks and applies cannot
+    /// interleave.
+    pub fn fill_lock(&self, slot: &SessionSlot) -> Arc<std::sync::Mutex<()>> {
+        let mut fills = self.fills.lock().unwrap_or_else(PoisonError::into_inner);
+        Arc::clone(fills.entry(slot.clone()).or_default())
+    }
+
+    /// Hold the fold loop, or let it go. Test-only: it is the seam that makes
+    /// the copy's lag deterministic instead of a race.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn hold_the_fold(&self, held: bool) {
+        self.fold_held.store(held, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Whether a test is holding the fold loop.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn fold_is_held(&self) -> bool {
+        self.fold_held.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// The seat's conversation if one is held.
@@ -544,6 +673,21 @@ impl Conversations {
             Arc::clone(
                 held.entry(slot.clone()).or_insert_with(|| Arc::new(Held::new(conversation))),
             )
+        };
+        self.seeded.notify_waiters();
+        held
+    }
+
+    /// Replace a seat's copy outright.
+    ///
+    /// **What a mismatched copy needs**: `insert` keeps what is there, and a
+    /// copy of the previous run must not survive as the new run's record.
+    pub fn replace(&self, slot: &SessionSlot, conversation: Conversation) -> Arc<Held> {
+        let held = {
+            let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+            let fresh = Arc::new(Held::new(conversation));
+            held.insert(slot.clone(), Arc::clone(&fresh));
+            fresh
         };
         self.seeded.notify_waiters();
         held
@@ -574,14 +718,27 @@ impl Conversations {
             // **Which of them it is decides whether the page numbering
             // survives the reseed**, so the two routes are named apart even
             // though the work is one: see [`Reseed`].
-            SessionUpdate::Connected { history, compaction_count, dropped, .. }
-            | SessionUpdate::SessionReplaced { history, compaction_count, dropped, .. } => {
-                self.reseed(slot, history, *compaction_count, Reseed::Fresh, *dropped);
+            SessionUpdate::Connected { history, compaction_count, dropped, session_id, .. }
+            | SessionUpdate::SessionReplaced {
+                history,
+                compaction_count,
+                dropped,
+                session_id,
+                ..
+            } => {
+                self.reseed(
+                    slot,
+                    history,
+                    *compaction_count,
+                    Reseed::Fresh,
+                    *dropped,
+                    Some(session_id),
+                );
             }
             SessionUpdate::HistoryReplayed { history, compaction_count, .. } => {
                 // No carried floor: a replay hands over the task's own window,
                 // which is where the seat's numbering is already measured from.
-                self.reseed(slot, history, *compaction_count, Reseed::Replay, 0);
+                self.reseed(slot, history, *compaction_count, Reseed::Replay, 0, None);
             }
             SessionUpdate::ChatAppended { msg, .. } => {
                 // **A compaction boundary is a frame like any other.** It
@@ -627,12 +784,22 @@ impl Conversations {
         compaction_count: u32,
         route: Reseed,
         carried: usize,
+        occupant: Option<&forge_primitives::SessionId>,
     ) {
-        match self.get(slot) {
-            Some(held) => held.lock().seed(history.to_vec(), compaction_count, route, carried),
-            None => {
-                self.insert(slot, Conversation::new(history.to_vec(), compaction_count, carried));
+        if let Some(held) = self.get(slot) {
+            let mut conversation = held.lock();
+            conversation.seed(history.to_vec(), compaction_count, route, carried);
+            // A replay restates no occupant, so it leaves whatever the copy
+            // already says; a seal names its own.
+            if let Some(occupant) = occupant {
+                conversation.set_occupant(Some(occupant.clone()));
             }
+        } else {
+            let mut conversation = Conversation::new(history.to_vec(), compaction_count, carried);
+            if let Some(occupant) = occupant {
+                conversation.set_occupant(Some(occupant.clone()));
+            }
+            self.insert(slot, conversation);
         }
     }
 
@@ -654,6 +821,27 @@ mod tests {
 
     fn a_seat() -> SessionSlot {
         SessionSlot::lead("TestOrg", "proj")
+    }
+
+    /// **A copy with no occupant answers for any occupant.** The arm is
+    /// load-bearing, not defensive: a transcript-seeded copy carries no
+    /// occupant, and reading it as "not the seat's" would drop the history of
+    /// every sleeping seat a client opens.
+    #[test]
+    fn a_copy_with_no_occupant_matches_any_occupant() {
+        let bare = Held::new(Conversation::empty());
+        assert!(
+            bare.holds_occupant(Some(&SessionId::from("6c2d3e4f-5061-4b72-8839-ad1e2f3a4b56"))),
+            "an occupant-less copy must match a live header, or a sleeping seat answers empty",
+        );
+
+        let mut seeded = Conversation::empty();
+        let old = SessionId::from("1f2e3d4c-5b6a-4978-8801-1234567890ab");
+        let new = SessionId::from("2a3b4c5d-6e7f-4809-9a1b-234567890abc");
+        seeded.set_occupant(Some(old.clone()));
+        let seeded = Held::new(seeded);
+        assert!(seeded.holds_occupant(Some(&old)), "a copy of the current occupant is the seat's");
+        assert!(!seeded.holds_occupant(Some(&new)), "a copy of another occupant is no copy");
     }
 
     fn a_model() -> forge_primitives::runtime::CurrentModel {

@@ -2471,6 +2471,7 @@ pub(crate) fn handle_deliver_worker_prompt_to_lead(
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::SeatUpdate;
     use crate::Workspace;
     use std::fs;
     use tempfile::tempdir;
@@ -2622,7 +2623,8 @@ provider = "anthropic"
         assert!(
             matches!(
                 rx.try_recv(),
-                Ok(SessionUpdate::ServiceStatus { message, .. }) if message.contains("no-such-project")
+                Ok(SeatUpdate { update: SessionUpdate::ServiceStatus { message, .. }, .. })
+                    if message.contains("no-such-project")
             ),
             "unknown project surfaces a ServiceStatus notice"
         );
@@ -2643,7 +2645,7 @@ provider = "anthropic"
         handle_spawn_project(&workspace, "forge", SessionLaunchSettings::default());
 
         let update = rx.try_recv().expect("Spawning emit");
-        match update {
+        match update.update {
             SessionUpdate::Spawning { key, project_name, .. } => {
                 assert_eq!(
                     key,
@@ -2675,10 +2677,10 @@ provider = "anthropic"
         handle_spawn_project(&workspace, "forge", SessionLaunchSettings::default());
 
         assert!(
-            matches!(rx.try_recv(), Ok(SessionUpdate::Spawning { .. })),
+            matches!(rx.try_recv(), Ok(SeatUpdate { update: SessionUpdate::Spawning { .. }, .. })),
             "the spawn is announced before the handle is built",
         );
-        let key = match rx.try_recv().expect("ConnectionFailed emit") {
+        let key = match rx.try_recv().expect("ConnectionFailed emit").update {
             SessionUpdate::ConnectionFailed { key, .. } => key,
             other => panic!("expected ConnectionFailed; got {other:?}"),
         };
@@ -2722,9 +2724,9 @@ provider = "anthropic"
             fixture_wrapped(),
         );
 
-        while let Ok(update) = rx.try_recv() {
+        while let Ok(frame) = rx.try_recv() {
             assert!(
-                !matches!(update, SessionUpdate::FatalError { .. }),
+                !matches!(frame.update, SessionUpdate::FatalError { .. }),
                 "unknown target must not emit FatalError"
             );
         }
@@ -2889,9 +2891,9 @@ provider = "anthropic"
         );
 
         let mut echoed = false;
-        while let Ok(u) = update_rx.try_recv() {
+        while let Ok(frame) = update_rx.try_recv() {
             if matches!(
-                u,
+                frame.update,
                 crate::protocol::SessionUpdate::SlackMessageAppended { key, prose, .. }
                     if key == worker_key
                         && prose.starts_with("[Slack")
@@ -3695,8 +3697,9 @@ provider = "anthropic"
             deliver_slack_message(&ws, "forge", Some("tester"), vec![slack_msg("hello")]);
 
         assert!(!delivered, "a failed dispatch tells the sweep to re-run the message");
-        let echoed = std::iter::from_fn(|| update_rx.try_recv().ok())
-            .any(|u| matches!(u, crate::protocol::SessionUpdate::SlackMessageAppended { .. }));
+        let echoed = std::iter::from_fn(|| update_rx.try_recv().ok()).any(|frame| {
+            matches!(frame.update, crate::protocol::SessionUpdate::SlackMessageAppended { .. })
+        });
         assert!(!echoed, "a failed worker dispatch must not echo a SlackMessageAppended");
     }
 
@@ -4679,8 +4682,8 @@ provider = "anthropic"
 
         assert!(workspace.list_live_workers(&project).is_empty());
         let mut frames: Vec<(&str, SessionSlot)> = Vec::new();
-        while let Ok(update) = rx.try_recv() {
-            match update {
+        while let Ok(frame) = rx.try_recv() {
+            match frame.update {
                 SessionUpdate::Releasing { key } => frames.push(("releasing", key)),
                 SessionUpdate::WorkerStatusChanged {
                     action: WorkerStatusAction::Removed,
@@ -4717,8 +4720,8 @@ provider = "anthropic"
         let _ = resp_rx.await.expect("despawn result");
 
         let mut frames: Vec<(&str, SessionSlot)> = Vec::new();
-        while let Ok(update) = rx.try_recv() {
-            match update {
+        while let Ok(frame) = rx.try_recv() {
+            match frame.update {
                 SessionUpdate::Releasing { key } => frames.push(("releasing", key)),
                 SessionUpdate::WorkerStatusChanged {
                     action: WorkerStatusAction::Removed,
@@ -4870,8 +4873,8 @@ provider = "anthropic"
 
         // Exactly one Removed event for worker-b.
         let mut removed_labels: Vec<String> = Vec::new();
-        while let Ok(update) = rx.try_recv() {
-            if let SessionUpdate::WorkerStatusChanged { action, status, .. } = update
+        while let Ok(frame) = rx.try_recv() {
+            if let SessionUpdate::WorkerStatusChanged { action, status, .. } = frame.update
                 && action == WorkerStatusAction::Removed
             {
                 removed_labels.push(status.label);
@@ -4973,7 +4976,7 @@ provider = "anthropic"
     struct StoreBackedStub {
         workspace: Arc<Workspace>,
         project: ProjectKey,
-        rx: tokio::sync::mpsc::UnboundedReceiver<SessionUpdate>,
+        rx: tokio::sync::mpsc::UnboundedReceiver<SeatUpdate>,
         /// Held so the store outlives the test.
         _dir: tempfile::TempDir,
     }
@@ -5784,11 +5787,11 @@ provider = "anthropic"
     /// Every `Removed` event's worktree disposition, in order, so a
     /// caller can pin the count as well as the value.
     fn drain_removed_dispositions(
-        rx: &mut tokio::sync::mpsc::UnboundedReceiver<SessionUpdate>,
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<SeatUpdate>,
     ) -> Vec<WorktreeDisposition> {
         let mut seen = Vec::new();
-        while let Ok(update) = rx.try_recv() {
-            if let SessionUpdate::WorkerStatusChanged { action, worktree, .. } = update
+        while let Ok(frame) = rx.try_recv() {
+            if let SessionUpdate::WorkerStatusChanged { action, worktree, .. } = frame.update
                 && action == WorkerStatusAction::Removed
             {
                 seen.push(worktree);

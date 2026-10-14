@@ -13,9 +13,17 @@ use crate::config::LoadedConfig;
 use crate::domain_session::PendingInteractions;
 use crate::protocol::SessionUpdate;
 use crate::target::{ProjectKey, SessionSlot};
-use crate::update_fanout::{SubscriberRole, UpdateFanout};
+use crate::update_fanout::{SeatUpdate, SubscriberRole, UpdateFanout};
 use crate::workspace::{KickRequest, PendingInteractionKind, PooledAgent, Workspace};
 use forge_gateway::AccountKey;
+
+/// Drive a seat's frame window down, so a fixture reaches the transcript
+/// fallback without emitting a window's worth of frames. The window is
+/// otherwise the constant it ships as, and the module this sits in is the
+/// gate that keeps it out of production.
+pub fn set_seat_ring_cap(workspace: &Workspace, cap: usize) {
+    workspace.update_tx.set_ring_cap(cap);
+}
 
 /// The tool id a parked test prompt answers to, so a test addresses the one
 /// it seeded rather than a key it has to know how the fixture built.
@@ -286,11 +294,11 @@ impl Workspace {
     /// session via [`Self::register_domain_session`] before
     /// exercising any code path that needs one.
     ///
-    /// Returns the workspace alongside the `SessionUpdate` receiver
+    /// Returns the workspace alongside the `SeatUpdate` receiver
     /// this constructor subscribed. The workspace's `subscribe()` slot
     /// is `None`, so a later `subscribe()` mints a stream of its own
     /// rather than handing back this one.
-    pub fn testing_stub() -> (Arc<Self>, mpsc::UnboundedReceiver<SessionUpdate>) {
+    pub fn testing_stub() -> (Arc<Self>, mpsc::UnboundedReceiver<SeatUpdate>) {
         Self::testing_stub_with_config_dir(PathBuf::from("/tmp/forge-testing-stub"))
     }
 
@@ -299,7 +307,7 @@ impl Workspace {
     /// can point the stub at a tempdir of their own.
     pub fn testing_stub_with_config_dir(
         config_dir: PathBuf,
-    ) -> (Arc<Self>, mpsc::UnboundedReceiver<SessionUpdate>) {
+    ) -> (Arc<Self>, mpsc::UnboundedReceiver<SeatUpdate>) {
         // `empty_for_test` carries no `[[slack]]` entries, so there is
         // nothing here for `from_config` to check.
         Self::testing_stub_with_slack(
@@ -333,7 +341,7 @@ impl Workspace {
     pub(crate) fn testing_stub_with_config(
         config_dir: PathBuf,
         config: LoadedConfig,
-    ) -> Result<(Arc<Self>, mpsc::UnboundedReceiver<SessionUpdate>), String> {
+    ) -> Result<(Arc<Self>, mpsc::UnboundedReceiver<SeatUpdate>), String> {
         let slack =
             crate::slack::SlackWorkspaces::from_config(&config.slack, &reqwest::Client::new())?;
         let systemone = crate::systemone::client_for(
@@ -354,7 +362,7 @@ impl Workspace {
         config: LoadedConfig,
         slack: Arc<crate::slack::SlackWorkspaces>,
         systemone: Option<Arc<forge_system_one::SystemOneClient>>,
-    ) -> (Arc<Self>, mpsc::UnboundedReceiver<SessionUpdate>) {
+    ) -> (Arc<Self>, mpsc::UnboundedReceiver<SeatUpdate>) {
         // Mirror the boot-time `ensure_forge_data_dir`: stub-based tests
         // that exercise the cron / state stores expect `forge/` present.
         let _ = crate::config::ensure_forge_data_dir(&config_dir);
@@ -668,8 +676,7 @@ impl Workspace {
     /// cross-crate test exercises the key handler's enabled path
     /// without a model download. Test-only.
     #[cfg(any(test, feature = "testing"))]
-    pub fn testing_stub_with_dictate_enabled() -> (Arc<Self>, mpsc::UnboundedReceiver<SessionUpdate>)
-    {
+    pub fn testing_stub_with_dictate_enabled() -> (Arc<Self>, mpsc::UnboundedReceiver<SeatUpdate>) {
         let mut config = LoadedConfig::empty_for_test();
         config.dictate.enabled = true;
         Self::testing_stub_with_slack(

@@ -30,7 +30,7 @@ use crate::protocol::{
 use crate::session_task::SessionTask;
 use crate::spawn;
 use crate::target::{ProjectKey, SessionSlot, SessionTarget};
-use crate::update_fanout::{SubscriberRole, UpdateFanout};
+use crate::update_fanout::{SeatUpdate, SubscriberRole, UpdateFanout};
 use crate::views::{AccountLoadingRow, ProjectView, SessionView};
 
 #[cfg(any(test, feature = "testing"))]
@@ -3775,7 +3775,10 @@ impl Workspace {
     /// question request delivered here keeps its turn alive waiting for
     /// the reply. A consumer that only reads the stream takes
     /// [`Self::subscribe_observer`] instead.
-    pub fn subscribe(&self) -> mpsc::UnboundedReceiver<SessionUpdate> {
+    ///
+    /// Every frame arrives as a [`SeatUpdate`], carrying the number its
+    /// seat minted for it.
+    pub fn subscribe(&self) -> mpsc::UnboundedReceiver<SeatUpdate> {
         self.update_tx.subscribe(SubscriberRole::Answering)
     }
 
@@ -3805,7 +3808,7 @@ impl Workspace {
     /// This exists so a consumer that reads without rendering a prompt
     /// can say so instead of parking a turn by claiming a capability it
     /// lacks.
-    pub fn subscribe_observer(&self) -> mpsc::UnboundedReceiver<SessionUpdate> {
+    pub fn subscribe_observer(&self) -> mpsc::UnboundedReceiver<SeatUpdate> {
         self.update_tx.subscribe(SubscriberRole::Observing)
     }
 
@@ -3816,7 +3819,7 @@ impl Workspace {
     /// boot must not take it - the view that renders prompts would lose
     /// the boot notice. A mirror reads the rest of what it needs from the
     /// read surface when it is asked, so it has nothing to replay.
-    pub fn subscribe_mirror(&self) -> mpsc::UnboundedReceiver<SessionUpdate> {
+    pub fn subscribe_mirror(&self) -> mpsc::UnboundedReceiver<SeatUpdate> {
         self.update_tx.subscribe_without_backlog(SubscriberRole::Observing)
     }
 
@@ -3826,7 +3829,7 @@ impl Workspace {
     /// renders prompts and attaches beside another view: it can answer, and
     /// the backlog still belongs to whoever was there first, because that is
     /// the view drawing the boot notice.
-    pub fn subscribe_answerer(&self) -> mpsc::UnboundedReceiver<SessionUpdate> {
+    pub fn subscribe_answerer(&self) -> mpsc::UnboundedReceiver<SeatUpdate> {
         self.update_tx.subscribe_without_backlog(SubscriberRole::Answering)
     }
 
@@ -3836,6 +3839,35 @@ impl Workspace {
     /// frontend.
     pub(crate) fn update_sender(&self) -> UpdateFanout {
         self.update_tx.clone()
+    }
+
+    /// The number `key`'s next frame will be minted under: what a client
+    /// reading the seat expects next, beside the occupant that names the
+    /// epoch it belongs to.
+    pub fn seat_next_seq(&self, key: &SessionSlot) -> u64 {
+        self.update_tx.next_seq(key)
+    }
+
+    /// The frames `key`'s stream emitted under the numbers in `from..=to`,
+    /// oldest first: the answer to a client's range ask while the seat's own
+    /// window holds them.
+    pub fn seat_frames_between(&self, key: &SessionSlot, from: u64, to: u64) -> Vec<SeatUpdate> {
+        self.update_tx.frames_between(key, from, to)
+    }
+
+    /// The oldest number `key`'s window still holds, `None` for a seat that
+    /// has emitted nothing: what tells a range answered from memory from one
+    /// that has to be read off the transcript.
+    pub fn seat_oldest_kept_seq(&self, key: &SessionSlot) -> Option<u64> {
+        self.update_tx.oldest_kept(key)
+    }
+
+    /// How many of the numbers in `from..=to` on `key`'s stream no window
+    /// holds: the frames that close an epoch are numbered but kept out of the
+    /// ring, so a reader measuring whether a copy covers a stretch leaves them
+    /// out of what it must account for.
+    pub fn seat_unringed_between(&self, key: &SessionSlot, from: u64, to: u64) -> u64 {
+        self.update_tx.unringed_between(key, from, to)
     }
 
     /// Borrow the workspace-side [`DomainSession`] for `key`.
@@ -8276,7 +8308,7 @@ mod tests {
         let event = tokio::time::timeout(Duration::from_secs(5), woken.recv()).await;
 
         assert!(
-            matches!(event, Ok(Some(SessionUpdate::CliVersionChanged))),
+            matches!(event, Ok(Some(SeatUpdate { update: SessionUpdate::CliVersionChanged, .. }))),
             "the constructor's launch probed and woke the views; without that launch the core reads no version for the life of the process",
         );
         assert_eq!(
@@ -8307,7 +8339,7 @@ mod tests {
         let mut woken = workspace.subscribe();
         let event = tokio::time::timeout(Duration::from_secs(5), woken.recv()).await;
         assert!(
-            matches!(event, Ok(Some(SessionUpdate::CliVersionChanged))),
+            matches!(event, Ok(Some(SeatUpdate { update: SessionUpdate::CliVersionChanged, .. }))),
             "the first start probed and woke the views",
         );
 
@@ -8394,7 +8426,10 @@ mod tests {
 
         store_cli_version(&store, &update_tx, first.clone());
         assert!(
-            matches!(woken.try_recv(), Ok(SessionUpdate::CliVersionChanged)),
+            matches!(
+                woken.try_recv(),
+                Ok(SeatUpdate { update: SessionUpdate::CliVersionChanged, .. })
+            ),
             "the first probe is a change from none",
         );
 
@@ -8410,7 +8445,10 @@ mod tests {
             },
         );
         assert!(
-            matches!(woken.try_recv(), Ok(SessionUpdate::CliVersionChanged)),
+            matches!(
+                woken.try_recv(),
+                Ok(SeatUpdate { update: SessionUpdate::CliVersionChanged, .. })
+            ),
             "a latest that appears where there was none is news",
         );
         assert_eq!(
@@ -8863,8 +8901,8 @@ mod tests {
         })
         .expect("accepted");
         let mut refused = false;
-        while let Ok(update) = rx.try_recv() {
-            if let crate::protocol::SessionUpdate::ServiceStatus { message, .. } = update
+        while let Ok(frame) = rx.try_recv() {
+            if let crate::protocol::SessionUpdate::ServiceStatus { message, .. } = frame.update
                 && message.contains("refused a verdict")
             {
                 refused = true;
@@ -8924,8 +8962,8 @@ mod tests {
         ] {
             ws.dispatch(command).expect("app-level commands are accepted");
             let mut said = false;
-            while let Ok(update) = rx.try_recv() {
-                if let crate::protocol::SessionUpdate::ServiceStatus { message, .. } = update
+            while let Ok(frame) = rx.try_recv() {
+                if let crate::protocol::SessionUpdate::ServiceStatus { message, .. } = frame.update
                     && message.contains(named)
                 {
                     said = true;
@@ -9002,9 +9040,7 @@ mod tests {
 
     /// Every `ChatAppended` frame the stub's stream carries, each with the
     /// seat it is addressed to.
-    fn told(
-        rx: &mut mpsc::UnboundedReceiver<crate::protocol::SessionUpdate>,
-    ) -> Vec<(SessionSlot, String)> {
+    fn told(rx: &mut mpsc::UnboundedReceiver<SeatUpdate>) -> Vec<(SessionSlot, String)> {
         drain_updates(rx)
             .into_iter()
             .filter_map(|update| match update {
@@ -9017,9 +9053,7 @@ mod tests {
     }
 
     /// The single frame a dispatch drew, or a failure naming what arrived.
-    fn told_one(
-        rx: &mut mpsc::UnboundedReceiver<crate::protocol::SessionUpdate>,
-    ) -> (SessionSlot, String) {
+    fn told_one(rx: &mut mpsc::UnboundedReceiver<SeatUpdate>) -> (SessionSlot, String) {
         let mut frames = told(rx);
         assert_eq!(frames.len(), 1, "exactly one frame: {frames:?}");
         frames.pop().expect("one frame")
@@ -10229,11 +10263,11 @@ provider = "anthropic"
 
     /// Drain every currently-queued `SessionUpdate` from the test rx.
     fn drain_updates(
-        rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::protocol::SessionUpdate>,
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<SeatUpdate>,
     ) -> Vec<crate::protocol::SessionUpdate> {
         let mut out = Vec::new();
-        while let Ok(u) = rx.try_recv() {
-            out.push(u);
+        while let Ok(frame) = rx.try_recv() {
+            out.push(frame.update);
         }
         out
     }
@@ -10255,11 +10289,14 @@ provider = "anthropic"
         );
 
         assert!(
-            matches!(first.try_recv(), Ok(SessionUpdate::CatalogLoaded)),
+            matches!(first.try_recv(), Ok(SeatUpdate { update: SessionUpdate::CatalogLoaded, .. })),
             "the first subscriber receives the update",
         );
         assert!(
-            matches!(second.try_recv(), Ok(SessionUpdate::CatalogLoaded)),
+            matches!(
+                second.try_recv(),
+                Ok(SeatUpdate { update: SessionUpdate::CatalogLoaded, .. })
+            ),
             "the second subscriber receives the same update",
         );
     }
@@ -10354,7 +10391,7 @@ provider = "anthropic"
     fn nudge_seat(
         dir: &tempfile::TempDir,
         label: &str,
-    ) -> (Arc<Workspace>, SessionSlot, tokio::sync::mpsc::UnboundedReceiver<SessionUpdate>) {
+    ) -> (Arc<Workspace>, SessionSlot, tokio::sync::mpsc::UnboundedReceiver<SeatUpdate>) {
         let (ws, rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
         let key = SessionSlot::from_str_for_test(label);
         ws.mark_session_connected_for_test(&key, label);
@@ -12458,8 +12495,7 @@ provider = "anthropic"
     /// `session_id` the retire gate reads. The returned `TempDir`
     /// guards the config dir for the caller's lifetime.
     fn stub_with_connected_lead()
-    -> (Arc<Workspace>, mpsc::UnboundedReceiver<SessionUpdate>, SessionSlot, tempfile::TempDir)
-    {
+    -> (Arc<Workspace>, mpsc::UnboundedReceiver<SeatUpdate>, SessionSlot, tempfile::TempDir) {
         let dir = tempdir().expect("tempdir");
         let root = dir.path().join("companies");
         fs::create_dir_all(&root).expect("project root");
@@ -12511,10 +12547,10 @@ provider = "anthropic"
     }
 
     /// Every `Spawning` key an update stream carried, in order.
-    fn spawning_keys(update_rx: &mut mpsc::UnboundedReceiver<SessionUpdate>) -> Vec<SessionSlot> {
+    fn spawning_keys(update_rx: &mut mpsc::UnboundedReceiver<SeatUpdate>) -> Vec<SessionSlot> {
         let mut keys: Vec<SessionSlot> = Vec::new();
-        while let Ok(update) = update_rx.try_recv() {
-            if let SessionUpdate::Spawning { key, .. } = update {
+        while let Ok(frame) = update_rx.try_recv() {
+            if let SessionUpdate::Spawning { key, .. } = frame.update {
                 keys.push(key);
             }
         }
@@ -12728,8 +12764,8 @@ provider = "anthropic"
         ws.notice_undelivered_message(&sender, &target, PeerFailureReason::TargetConnectionFailed);
 
         let mut echo = None;
-        while let Ok(update) = rx.try_recv() {
-            if let SessionUpdate::PeerEnvelopeAppended { key, wrapped, .. } = update {
+        while let Ok(frame) = rx.try_recv() {
+            if let SessionUpdate::PeerEnvelopeAppended { key, wrapped, .. } = frame.update {
                 echo = Some((key, wrapped));
             }
         }
@@ -13202,7 +13238,10 @@ mod worker_activity_tests {
             "the answer the probe found is the answer the read hands back",
         );
         assert!(
-            matches!(rx.try_recv(), Ok(SessionUpdate::ServiceStatus { .. })),
+            matches!(
+                rx.try_recv(),
+                Ok(SeatUpdate { update: SessionUpdate::ServiceStatus { .. }, .. })
+            ),
             "and the one update that carried it still goes out",
         );
     }
@@ -13690,8 +13729,8 @@ provider = "anthropic"
         // Drain the channel and confirm we saw a Removed
         // WorkerStatusChanged for each worker.
         let mut removed_count = 0;
-        while let Ok(update) = rx.try_recv() {
-            if let SessionUpdate::WorkerStatusChanged { action, .. } = update
+        while let Ok(frame) = rx.try_recv() {
+            if let SessionUpdate::WorkerStatusChanged { action, .. } = frame.update
                 && action == crate::protocol::WorkerStatusAction::Removed
             {
                 removed_count += 1;
@@ -13718,7 +13757,8 @@ provider = "anthropic"
 
         workspace.release_session_with_cascade(&lead_key);
 
-        let announced: Vec<SessionUpdate> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        let announced: Vec<SessionUpdate> =
+            std::iter::from_fn(|| rx.try_recv().ok()).map(|frame| frame.update).collect();
         let first = announced.first().expect("the release announces something");
         assert!(
             matches!(first, SessionUpdate::Releasing { key } if key == &lead_key),
@@ -14031,7 +14071,7 @@ mod tag_retry_tests {
         let status_changed =
             tokio::time::timeout(task_budget * 10 + Duration::from_secs(5), async {
                 loop {
-                    match rx.recv().await {
+                    match rx.recv().await.map(|frame| frame.update) {
                         Some(SessionUpdate::WorkerStatusChanged { action, status, .. }) => {
                             if matches!(action, crate::protocol::WorkerStatusAction::StatusChanged)
                             {
@@ -14118,8 +14158,8 @@ mod tag_retry_tests {
         );
 
         loop {
-            let update = rx.recv().await.expect("the rollback emits an update");
-            if let SessionUpdate::WorkerStatusChanged { action, status, .. } = update
+            let frame = rx.recv().await.expect("the rollback emits an update");
+            if let SessionUpdate::WorkerStatusChanged { action, status, .. } = frame.update
                 && action == crate::protocol::WorkerStatusAction::Removed
             {
                 assert_eq!(status.label, "crashed", "the rolled-back worker is the one removed");
@@ -14206,8 +14246,8 @@ mod tag_retry_tests {
 
         // Wait for the StatusChanged emit.
         tokio::time::timeout(Duration::from_secs(2), async {
-            while let Some(update) = rx.recv().await {
-                if let SessionUpdate::WorkerStatusChanged { action, .. } = update
+            while let Some(frame) = rx.recv().await {
+                if let SessionUpdate::WorkerStatusChanged { action, .. } = frame.update
                     && matches!(action, crate::protocol::WorkerStatusAction::StatusChanged)
                 {
                     break;
@@ -14257,8 +14297,8 @@ mod tag_retry_tests {
         );
 
         tokio::time::timeout(Duration::from_secs(2), async {
-            while let Some(update) = rx.recv().await {
-                if let SessionUpdate::WorkerStatusChanged { action, .. } = update
+            while let Some(frame) = rx.recv().await {
+                if let SessionUpdate::WorkerStatusChanged { action, .. } = frame.update
                     && matches!(action, crate::protocol::WorkerStatusAction::StatusChanged)
                 {
                     break;
@@ -14320,8 +14360,8 @@ mod tag_retry_tests {
             cfg.path(),
         );
         tokio::time::timeout(Duration::from_secs(2), async {
-            while let Some(update) = rx.recv().await {
-                if let SessionUpdate::WorkerStatusChanged { action, .. } = update
+            while let Some(frame) = rx.recv().await {
+                if let SessionUpdate::WorkerStatusChanged { action, .. } = frame.update
                     && matches!(action, crate::protocol::WorkerStatusAction::StatusChanged)
                 {
                     break;
@@ -14367,8 +14407,8 @@ mod tag_retry_tests {
             cfg.path(),
         );
         tokio::time::timeout(Duration::from_secs(2), async {
-            while let Some(update) = rx.recv().await {
-                if let SessionUpdate::WorkerStatusChanged { action, .. } = update
+            while let Some(frame) = rx.recv().await {
+                if let SessionUpdate::WorkerStatusChanged { action, .. } = frame.update
                     && matches!(action, crate::protocol::WorkerStatusAction::StatusChanged)
                 {
                     break;
@@ -14448,8 +14488,8 @@ mod tag_retry_tests {
         );
 
         tokio::time::timeout(Duration::from_secs(2), async {
-            while let Some(update) = rx.recv().await {
-                if let SessionUpdate::WorkerStatusChanged { action, .. } = update
+            while let Some(frame) = rx.recv().await {
+                if let SessionUpdate::WorkerStatusChanged { action, .. } = frame.update
                     && matches!(action, crate::protocol::WorkerStatusAction::StatusChanged)
                 {
                     break;
@@ -14508,8 +14548,8 @@ mod tag_retry_tests {
         );
 
         tokio::time::timeout(Duration::from_secs(2), async {
-            while let Some(update) = rx.recv().await {
-                if let SessionUpdate::WorkerStatusChanged { action, .. } = update
+            while let Some(frame) = rx.recv().await {
+                if let SessionUpdate::WorkerStatusChanged { action, .. } = frame.update
                     && matches!(action, crate::protocol::WorkerStatusAction::StatusChanged)
                 {
                     break;
@@ -16429,9 +16469,9 @@ mod async_worker_spawn_failure_tests {
         }
         // And the echo a view draws: the CLI does not paint a prompt it was
         // handed on stdin, so without this the page shows nothing at all.
-        let echoed = std::iter::from_fn(|| update_rx.try_recv().ok()).any(|update| {
+        let echoed = std::iter::from_fn(|| update_rx.try_recv().ok()).any(|frame| {
             matches!(
-                update,
+                frame.update,
                 SessionUpdate::PeerEnvelopeAppended { key, wrapped, .. }
                     if key == lead_key
                         && matches!(wrapped.kind, WrappedKind::WorkerSpawnFailedNotice)
@@ -16685,8 +16725,8 @@ mod async_worker_spawn_failure_tests {
         ));
 
         let mut dispositions = Vec::new();
-        while let Ok(update) = update_rx.try_recv() {
-            if let SessionUpdate::WorkerStatusChanged { action, worktree, .. } = update
+        while let Ok(frame) = update_rx.try_recv() {
+            if let SessionUpdate::WorkerStatusChanged { action, worktree, .. } = frame.update
                 && action == crate::protocol::WorkerStatusAction::Removed
             {
                 dispositions.push(worktree);
@@ -16832,8 +16872,8 @@ mod async_worker_spawn_failure_tests {
         );
 
         let mut echo = None;
-        while let Ok(update) = update_rx.try_recv() {
-            if let SessionUpdate::PeerEnvelopeAppended { key, wrapped, .. } = update {
+        while let Ok(frame) = update_rx.try_recv() {
+            if let SessionUpdate::PeerEnvelopeAppended { key, wrapped, .. } = frame.update {
                 echo = Some((key, wrapped));
             }
         }
@@ -17170,7 +17210,7 @@ mod git_scan_cwd_tests {
         // The ask crosses, carrying the id the answer will name.
         let ask = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
-                match updates.recv().await {
+                match updates.recv().await.map(|frame| frame.update) {
                     Some(SessionUpdate::DocumentHandOffPending {
                         id, path, reviewable, ..
                     }) => {
@@ -17196,8 +17236,8 @@ mod git_scan_cwd_tests {
         assert_eq!(resolved, expected.to_string_lossy(), "answered with the resolved path");
         assert_eq!(ending, DocumentHandOffEnding::Done { review_id: Some("r-1".to_owned()) });
         assert!(
-            std::iter::from_fn(|| updates.try_recv().ok()).any(|update| matches!(
-                update,
+            std::iter::from_fn(|| updates.try_recv().ok()).any(|frame| matches!(
+                frame.update,
                 SessionUpdate::DocumentHandOffResolved { id, .. } if id == ask.0
             )),
             "and the resolution crosses, so a view that did not answer closes its ask",
@@ -17230,7 +17270,7 @@ mod git_scan_cwd_tests {
         assert!(refused.contains("no document at"), "{refused}");
         assert!(
             std::iter::from_fn(|| updates.try_recv().ok())
-                .all(|update| !matches!(update, SessionUpdate::DocumentHandOffPending { .. })),
+                .all(|frame| !matches!(frame.update, SessionUpdate::DocumentHandOffPending { .. })),
             "a refusal is not a hand-off",
         );
     }
@@ -17265,7 +17305,7 @@ mod git_scan_cwd_tests {
         assert_eq!(refused, crate::documents::NO_VIEWER_CLIENT, "the refusal is the named one");
         assert!(
             std::iter::from_fn(|| updates.try_recv().ok())
-                .all(|update| !matches!(update, SessionUpdate::DocumentHandOffPending { .. })),
+                .all(|frame| !matches!(frame.update, SessionUpdate::DocumentHandOffPending { .. })),
             "and nothing was asked of the terminal",
         );
 
@@ -17277,7 +17317,7 @@ mod git_scan_cwd_tests {
         };
         let ask = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
-                match updates.recv().await {
+                match updates.recv().await.map(|frame| frame.update) {
                     Some(SessionUpdate::DocumentHandOffPending { id, .. }) => break id,
                     Some(_) => {}
                     None => panic!("the stream ended before the ask"),
@@ -17824,7 +17864,7 @@ provider = "anthropic"
         workspace.record_usage_success(&AccountKey("Stargate".to_owned()), usage_at(10.0));
 
         let announced = std::iter::from_fn(|| updates.try_recv().ok())
-            .any(|update| matches!(update, SessionUpdate::AccountsChanged));
+            .any(|frame| matches!(frame.update, SessionUpdate::AccountsChanged));
         assert!(announced, "a probe that wrote the pool announced nothing");
     }
 
@@ -18220,14 +18260,16 @@ mod kick_dispatcher_tests {
         tokio::task::yield_now().await;
         tokio::task::yield_now().await;
 
-        let mut frame = None;
-        while let Ok(update) = update_rx.try_recv() {
-            if let crate::protocol::SessionUpdate::ChatAppended { key: addressed, msg, .. } = update
+        let mut echoed = None;
+        while let Ok(frame) = update_rx.try_recv() {
+            if let crate::protocol::SessionUpdate::ChatAppended { key: addressed, msg, .. } =
+                frame.update
                 && addressed == key
             {
-                frame = Some(msg);
+                echoed = Some(msg);
             }
         }
+        let frame = echoed;
         let Some(Message::User { message, .. }) = frame else {
             panic!("a drained kick draws the words the worker received")
         };
@@ -18495,7 +18537,7 @@ provider = "anthropic"
             .expect("scan finishes")
             .expect("channel open");
         assert!(
-            matches!(update, SessionUpdate::CatalogLoaded),
+            matches!(update, SeatUpdate { update: SessionUpdate::CatalogLoaded, .. }),
             "expected CatalogLoaded, got {update:?}"
         );
         assert!(workspace.catalog_ready());
@@ -18809,7 +18851,7 @@ mod prompt_frame_origin_tests {
     /// crate's own way of saying "the core took it" without standing up a real
     /// subprocess - the stub alone leaves the seat with no command sender, so
     /// every dispatch is refused for a reason the fixture invented.
-    fn a_fleet() -> (Arc<Workspace>, mpsc::UnboundedReceiver<SessionUpdate>, SessionSlot) {
+    fn a_fleet() -> (Arc<Workspace>, mpsc::UnboundedReceiver<SeatUpdate>, SessionSlot) {
         let (ws, rx) = Workspace::testing_stub();
         ws.seed_test_project("proj", "/tmp/prompt-frame-origin");
         let seat = SessionSlot::lead("TestOrg", "proj");
@@ -18828,10 +18870,13 @@ mod prompt_frame_origin_tests {
         assert!(
             matches!(
                 rx.try_recv(),
-                Ok(SessionUpdate::ChatAppended {
-                    origin: Some(PromptOrigin::Ui),
-                    source: Some(PromptSource::You),
-                    key,
+                Ok(SeatUpdate {
+                    update: SessionUpdate::ChatAppended {
+                        origin: Some(PromptOrigin::Ui),
+                        source: Some(PromptSource::You),
+                        key,
+                        ..
+                    },
                     ..
                 }) if key == seat
             ),
@@ -18864,11 +18909,11 @@ mod prompt_frame_origin_tests {
         assert!(!wired_id.is_empty(), "and a real one, not a blank");
 
         let mut frame_id: Option<String> = None;
-        while let Ok(update) = rx.try_recv() {
+        while let Ok(frame) = rx.try_recv() {
             if let SessionUpdate::ChatAppended {
                 msg: forge_primitives::Message::User { uuid, .. },
                 ..
-            } = update
+            } = frame.update
             {
                 frame_id = uuid;
             }
@@ -18995,7 +19040,7 @@ mod prompt_frame_origin_tests {
         // what this case is about (its ORDER is the case above, which does not
         // need the words' text).
         let notices: Vec<(NoticeSeverity, String)> = std::iter::from_fn(|| rx.try_recv().ok())
-            .filter_map(|update| match update {
+            .filter_map(|frame| match frame.update {
                 SessionUpdate::Notice { severity, text, .. } => Some((severity, text)),
                 _ => None,
             })
@@ -19029,13 +19074,13 @@ mod prompt_frame_origin_tests {
 
         let first = rx.try_recv().expect("the echo is the first update on the stream");
         assert!(
-            matches!(&first, SessionUpdate::ChatAppended { key, .. } if key == &seat),
+            matches!(&first.update, SessionUpdate::ChatAppended { key, .. } if key == &seat),
             "the reader's own words are echoed before the answer: {first:?}",
         );
         let second = rx.try_recv().expect("the answer follows the echo");
         assert!(
             matches!(
-                &second,
+                &second.update,
                 SessionUpdate::Notice { severity: NoticeSeverity::Error, text, .. }
                     if text == "Unknown mode: sideways"
             ),
@@ -19068,7 +19113,7 @@ mod prompt_frame_origin_tests {
         .expect("the document parses");
         assert_eq!(written["effortLevel"], serde_json::json!("high"));
         let notices: Vec<(NoticeSeverity, String)> = std::iter::from_fn(|| rx.try_recv().ok())
-            .filter_map(|update| match update {
+            .filter_map(|frame| match frame.update {
                 SessionUpdate::Notice { severity, text, .. } => Some((severity, text)),
                 _ => None,
             })
@@ -19108,7 +19153,7 @@ mod prompt_frame_origin_tests {
         assert!(dispatched.is_ok(), "the core takes it: {dispatched:?}");
         let notices: Vec<(SessionSlot, NoticeSeverity, String)> =
             std::iter::from_fn(|| rx.try_recv().ok())
-                .filter_map(|update| match update {
+                .filter_map(|frame| match frame.update {
                     SessionUpdate::Notice { key, severity, text } => Some((key, severity, text)),
                     _ => None,
                 })
@@ -19148,7 +19193,7 @@ mod prompt_frame_origin_tests {
         // The refusal is answered after the echo of the words, so the two are
         // read off the stream together (the order is the case above).
         let notices: Vec<(NoticeSeverity, String)> = std::iter::from_fn(|| rx.try_recv().ok())
-            .filter_map(|update| match update {
+            .filter_map(|frame| match frame.update {
                 SessionUpdate::Notice { severity, text, .. } => Some((severity, text)),
                 _ => None,
             })
@@ -19204,7 +19249,7 @@ mod prompt_frame_origin_tests {
                 // is about.
                 let notices: Vec<(NoticeSeverity, String)> =
                     std::iter::from_fn(|| rx.try_recv().ok())
-                        .filter_map(|update| match update {
+                        .filter_map(|frame| match frame.update {
                             SessionUpdate::Notice { severity, text, .. } => Some((severity, text)),
                             _ => None,
                         })
@@ -19252,7 +19297,7 @@ mod prompt_frame_origin_tests {
         let document: serde_json::Value = serde_json::from_str(&written).expect("it parses");
         assert_eq!(document["effortLevel"], serde_json::json!("low"));
         let notices: Vec<(NoticeSeverity, String)> = std::iter::from_fn(|| rx.try_recv().ok())
-            .filter_map(|update| match update {
+            .filter_map(|frame| match frame.update {
                 SessionUpdate::Notice { severity, text, .. } => Some((severity, text)),
                 _ => None,
             })
@@ -19405,10 +19450,13 @@ mod prompt_frame_origin_tests {
         assert!(
             matches!(
                 rx.try_recv(),
-                Ok(SessionUpdate::ChatAppended {
-                    origin: Some(PromptOrigin::View),
-                    source: Some(PromptSource::You),
-                    key,
+                Ok(SeatUpdate {
+                    update: SessionUpdate::ChatAppended {
+                        origin: Some(PromptOrigin::View),
+                        source: Some(PromptSource::You),
+                        key,
+                        ..
+                    },
                     ..
                 }) if key == seat
             ),

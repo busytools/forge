@@ -2,6 +2,7 @@
 //! that answers what a client asks for.
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -20,11 +21,11 @@ use forge_workspace::browser::{BrowserRelay, BrowserRequest, Notice};
 use super::PROTOCOL_VERSION;
 use super::TransportState;
 use super::batch::{self, Batch};
-use super::envelope::{ClientMessage, ClientSettings, ServerMessage, Subject};
+use super::envelope::{ClientMessage, ClientSettings, SeatFrameWire, ServerMessage, Subject};
 use super::wire::{conversation_for, encode_subject, page};
 use crate::live::Live;
 use crate::surface::{DictateOutcome, ViewSurface};
-use crate::{Command, DispatchError, SessionUpdate};
+use crate::{Command, DispatchError, SeatUpdate, SessionUpdate};
 
 /// The seats this connection is holding, each given back when this drops.
 ///
@@ -251,7 +252,7 @@ async fn drive(socket: &mut WebSocket, state: &Arc<TransportState>) -> anyhow::R
     // as answering before a client says so would count one that cannot show a
     // prompt as able to answer it, and the core parks a turn on that reply
     // rather than failing it.
-    let mut updates: Option<(mpsc::UnboundedReceiver<SessionUpdate>, bool)> = None;
+    let mut updates: Option<(mpsc::UnboundedReceiver<SeatUpdate>, bool)> = None;
     // None until a subscribe declares the browser capability and the role is
     // free. Dropping it hands the role back.
     let mut hosting: Option<Hosting> = None;
@@ -384,7 +385,7 @@ async fn run_connection(
     state: &Arc<TransportState>,
     watched: &mut Vec<Subject>,
     holds: &mut Holds<'_>,
-    updates: &mut Option<(mpsc::UnboundedReceiver<SessionUpdate>, bool)>,
+    updates: &mut Option<(mpsc::UnboundedReceiver<SeatUpdate>, bool)>,
     dictate: &mut Streaming,
     hosting: &mut Option<Hosting>,
     me: u64,
@@ -407,7 +408,8 @@ async fn run_connection(
             // DISABLES its branch in `select!` rather than ending the loop, so a closed channel
             // would silently stop delivering while the socket stayed open.
             heard = next_update(updates) => {
-                let Some(update) = heard else { break };
+                let Some(frame) = heard else { break };
+                let update = frame.update;
                 // A take of this connection's that ends takes its seat back
                 // out: with the take gone, the seat has no stream a frame
                 // could belong to. Only the claim that take NAMES is retired
@@ -446,7 +448,10 @@ async fn run_connection(
                     // still waiting out its window when the process drops dies
                     // with it. Everything else can wait the interval.
                     let fatal = matches!(update, SessionUpdate::FatalError { .. });
-                    held.push(Instant::now(), for_a_client(update));
+                    held.push(
+                        Instant::now(),
+                        SeatUpdate { seq: frame.seq, update: for_a_client(update) },
+                    );
                     if fatal {
                         batch::flush(socket, held.take()).await?;
                     }
@@ -552,16 +557,16 @@ async fn run_connection(
 /// subscribed subject forwards no update anyway.
 fn open_stream(
     state: &TransportState,
-    updates: &mut Option<(mpsc::UnboundedReceiver<SessionUpdate>, bool)>,
+    updates: &mut Option<(mpsc::UnboundedReceiver<SeatUpdate>, bool)>,
     answering: bool,
-) -> Vec<SessionUpdate> {
+) -> Vec<SeatUpdate> {
     if updates.as_ref().is_some_and(|(_, held)| *held >= answering) {
         return Vec::new();
     }
     let queued = updates.take().map_or_else(Vec::new, |(mut receiver, _)| {
         let mut queued = Vec::new();
-        while let Ok(update) = receiver.try_recv() {
-            queued.push(update);
+        while let Ok(frame) = receiver.try_recv() {
+            queued.push(frame);
         }
         queued
     });
@@ -573,8 +578,8 @@ fn open_stream(
 /// none - which is what keeps the branch out of the way until the client has
 /// subscribed and the role is known.
 async fn next_update(
-    updates: &mut Option<(mpsc::UnboundedReceiver<SessionUpdate>, bool)>,
-) -> Option<SessionUpdate> {
+    updates: &mut Option<(mpsc::UnboundedReceiver<SeatUpdate>, bool)>,
+) -> Option<SeatUpdate> {
     match updates.as_mut() {
         Some((updates, _)) => updates.recv().await,
         None => std::future::pending().await,
@@ -645,7 +650,7 @@ async fn handle_client(
     state: &Arc<TransportState>,
     watched: &mut Vec<Subject>,
     holds: &mut Holds<'_>,
-    updates: &mut Option<(mpsc::UnboundedReceiver<SessionUpdate>, bool)>,
+    updates: &mut Option<(mpsc::UnboundedReceiver<SeatUpdate>, bool)>,
     dictate: &mut Streaming,
     hosting: &mut Option<Hosting>,
     me: u64,
@@ -731,9 +736,9 @@ async fn handle_client(
             // Forwarded before the snapshot: they were emitted before it was
             // taken, and the client reads them in the order it receives them.
             let mut queued = Vec::new();
-            for update in open_stream(state, updates, answering) {
-                if forwards(&update, watched, me) {
-                    queued.push(for_a_client(update));
+            for frame in open_stream(state, updates, answering) {
+                if forwards(&frame.update, watched, me) {
+                    queued.push(SeatUpdate { seq: frame.seq, update: for_a_client(frame.update) });
                 }
             }
             // **A seat is held BEFORE its snapshot is encoded.** The hold is
@@ -1145,6 +1150,62 @@ async fn handle_client(
             )
             .await
         }
+        // One stretch of a seat's own stream, for a client that read a gap in
+        // the numbers.
+        ClientMessage::SeatRange { slot, epoch, from, to } => {
+            let Some(cwd) = state.surface.roster().cwd_for(&slot) else {
+                return send(
+                    socket,
+                    ServerMessage::Error {
+                        what: "seat_range".to_owned(),
+                        why: format!("forge holds no session for {}", slot.display()),
+                        seat: Some(slot),
+                        dispatch_id: None,
+                    },
+                )
+                .await;
+            };
+            // **The numbers belong to an occupant.** A seat whose occupant has
+            // changed started counting again from one, so a repair across the
+            // two would splice one conversation onto another: the client is
+            // told to read the seat again rather than handed frames that look
+            // like an answer.
+            if state.surface.header(&slot).session_id != epoch {
+                return send(
+                    socket,
+                    ServerMessage::Error {
+                        what: "seat_range".to_owned(),
+                        why: "the seat's occupant has changed since those numbers were minted"
+                            .to_owned(),
+                        seat: Some(slot),
+                        dispatch_id: None,
+                    },
+                )
+                .await;
+            }
+            let frames = match state.surface.seat_oldest_kept_seq(&slot) {
+                // The window still holds the range's front, so it holds all of
+                // it: the frames cross as they were emitted.
+                Some(oldest) if oldest <= from => state
+                    .surface
+                    .seat_frames_between(&slot, from, to)
+                    .into_iter()
+                    .filter_map(|frame| {
+                        // **The same stripper every other path to a client goes
+                        // through.** The ring holds what the fanout emitted,
+                        // and a frame that carries the history an epoch hands
+                        // over must not ride a client frame (#2157) - nor lean
+                        // on the socket's size bound. The transcript branch
+                        // builds only `ChatAppended`, so this is the branch
+                        // that can hold one.
+                        Some(SeatFrameWire { seq: frame.seq?, update: for_a_client(frame.update) })
+                    })
+                    .collect(),
+                // The window has shed it, so the transcript answers.
+                _ => transcript_frames(state, &slot, &cwd, from, to).await,
+            };
+            send(socket, ServerMessage::SeatFrames { slot, epoch, frames }).await
+        }
         ClientMessage::DocumentRead { session, path, reviewable } => {
             // A file off disk takes as long as it takes, so the read runs in
             // a blocking task rather than inline. Nothing parks on the
@@ -1276,6 +1337,55 @@ async fn handle_client(
 fn mint_connection_id() -> u64 {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The frames a range ask is answered with once the seat's own window has shed
+/// them: the conversation's own rows, numbered to END at the range's end.
+///
+/// **What a frame was numbered is minted in memory and written down nowhere.**
+/// So a range that reaches past the window takes the transcript's newest rows -
+/// the stretch the client is reading, read back off the file - and numbers them
+/// so the last one is the ask's own end: the client resumes exactly where it
+/// was reading rather than asking again for a stretch that can never arrive,
+/// and the numbers it holds stay the numbers of one sequence rather than
+/// restarting at one.
+async fn transcript_frames(
+    state: &TransportState,
+    slot: &SessionSlot,
+    cwd: &Path,
+    from: u64,
+    to: u64,
+) -> Vec<SeatFrameWire> {
+    if to < from {
+        return Vec::new();
+    }
+    let want = (to - from).saturating_add(1);
+    let surface = Arc::clone(&state.surface);
+    let seat = slot.clone();
+    let cwd = cwd.to_owned();
+    // A whole-file read, because the call is the cold path: the seat's window
+    // is what answers a repair until it has shed the frames, and this is what
+    // is left when it has.
+    let Ok(read) = tokio::task::spawn_blocking(move || surface.conversation(&seat, &cwd)).await
+    else {
+        return Vec::new();
+    };
+    let rows = &read.messages;
+    let kept = u64::try_from(rows.len()).unwrap_or(u64::MAX).min(want);
+    let first = to.saturating_add(1).saturating_sub(kept);
+    rows.iter()
+        .skip(rows.len().saturating_sub(usize::try_from(kept).unwrap_or(usize::MAX)))
+        .enumerate()
+        .map(|(at, msg)| SeatFrameWire {
+            seq: first.saturating_add(u64::try_from(at).unwrap_or(u64::MAX)),
+            update: SessionUpdate::ChatAppended {
+                key: slot.clone(),
+                origin: None,
+                source: None,
+                msg: msg.clone(),
+            },
+        })
+        .collect()
 }
 
 /// Whether this connection is one of an update's readers.
@@ -2016,7 +2126,7 @@ mod tests {
         };
         let id = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
-                match updates.recv().await {
+                match updates.recv().await.map(|frame| frame.update) {
                     Some(SessionUpdate::DocumentHandOffPending { id, .. }) => break id,
                     Some(_) => {}
                     None => panic!("the stream ended before the ask"),
