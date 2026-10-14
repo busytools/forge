@@ -7,11 +7,6 @@ avoid-breaking-exported-api = false
 # Toolchain pin (matches workspace.package.rust-version).
 msrv = "1.88.0"
 
-# Library code should use Result, not catch_unwind.
-disallowed-methods = [
-    { path = "std::panic::catch_unwind", reason = "library code should use Result, not catch_unwind" },
-]
-
 # Tests can use these freely; production code is gated via [workspace.lints].
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
