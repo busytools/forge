@@ -262,9 +262,11 @@ impl Workspace {
     /// transition into `completed` on a verify=user row lands in
     /// `waiting` (the verify gate); a completion of a row already waiting
     /// on the user's look is refused by name; a move off `waiting` drops
-    /// the wait the row was holding; and completing a ROOT row closes it -
-    /// the whole tree moves to the archive, refused while any child is
-    /// still open.
+    /// the wait the row was holding, so a completion of any other waiting
+    /// row applies and clears - a verify=user one is taken by the gate
+    /// and lands on the look instead, its own wait gone; and completing a
+    /// ROOT row closes it - the whole tree moves to the archive, refused
+    /// while any child is still open.
     pub(crate) fn update_task(
         &self,
         project_name: &str,
@@ -1714,8 +1716,11 @@ mod tests {
                 },
             )
             .expect_err("the user's look is what completes a verification wait");
-        let said = refused.to_string();
-        assert!(said.contains("look"), "the refusal names the wait it is on: {said}");
+        assert_eq!(
+            refused,
+            MoveError::WaitingOnLook,
+            "the look's own refusal, not one that merely mentions a look",
+        );
 
         let stored = ws.tasks_for_project("proj");
         assert_eq!(stored[0].status, TaskStatus::Waiting, "and the row keeps waiting for the look");

@@ -1021,7 +1021,10 @@ mod prod_facade_tests {
             },
         ) {
             Err(TasksError::Refused(said)) => {
-                assert!(said.contains("look"), "the refusal names the wait it sits on: {said}");
+                assert!(
+                    said.contains("waiting on the user's look"),
+                    "the refusal names the look, not another move error's words: {said}",
+                );
             }
             other => panic!(
                 "the lead's completion of a row waiting on the look is refused, got {other:?}"
