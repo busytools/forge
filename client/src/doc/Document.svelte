@@ -243,12 +243,13 @@
    */
   $effect(() => {
     const words = landing.place(boxKey(slot), composer.take !== null, composer.notice);
-    if (words === null) return;
+    // A take this page never began (a second dictating client on the seat)
+    // places nothing - and must not touch the box the reader has open.
+    if (words === null || takeIn === null) return;
     // The words were submitted: a box closed or moved between the release
     // and the landing is opened again at the row that began the take, where
     // the reader sees them, rather than the drop being silent.
     if (composing !== takeIn) composing = takeIn;
-    if (composing === null) return;
     commentText = joined(commentText, words);
     field?.focus();
   });
@@ -261,7 +262,10 @@
    */
   $effect(() => {
     if (takeIn === null || composing === takeIn) return;
-    if (dictate.take !== null || dictate.opening) dictate.act('cancel');
+    // A take already SUBMITTED is not this effect's to cancel: the server
+    // would read the stop as an abandon and drop words the reader kept.
+    const live = dictate.take;
+    if (dictate.opening || (live !== null && !live.submitted)) dictate.act('cancel');
   });
 
   // The line a take owes - this page's own about the attempt, or the record's

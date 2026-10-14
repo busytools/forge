@@ -497,18 +497,32 @@ describe("a take's end", () => {
     await opened();
     push({ wire: record(TAKE), refused: null });
     flushSync();
-    // The finish: the page's own take ends, the record goes on transcribing.
+    // The finish: the release submits, and the capture drains before the
+    // stop goes - the window the close below lands in.
     micIn('.rv-thread.comment').click();
-    push({ wire: record(TRANSCRIBING), refused: null });
-    flushSync();
+    sent = [];
 
     const cancel = [
       ...document.querySelectorAll<HTMLButtonElement>('.rv-thread.comment .rv-acts button'),
     ].find((button) => button.textContent?.trim() === 'cancel');
     if (cancel === undefined) throw new Error('the comment box drew no cancel');
     cancel.click();
-    flushSync();
+    await settle(() => document.querySelector('.rv-thread.comment') === null);
 
+    // The drain runs on real timers: the stop that lands must be the
+    // SUBMIT the reader chose, never the abandon a close would send.
+    await vi.waitFor(
+      () => {
+        expect(wire(), 'the submitted take never reached the wire').toContain('"submit":true');
+        expect(wire(), 'the close sent an abandon for a submitted take').not.toContain(
+          '"submit":false',
+        );
+      },
+      { timeout: 2000 },
+    );
+
+    push({ wire: record(TRANSCRIBING), refused: null });
+    flushSync();
     push({ wire: record(LANDED), refused: null });
     flushSync();
     await settle(() => document.querySelector('.rv-thread.comment .rv-txarea') !== null);
@@ -516,6 +530,49 @@ describe("a take's end", () => {
     expect(
       document.querySelector<HTMLTextAreaElement>('.rv-thread.comment .rv-txarea')?.value,
       'the words landed after the box closed and went nowhere the reader can see',
+    ).toBe('this read is the whole input');
+  });
+
+  /**
+   * **The reply reopens too, on the thread the take began on.** The comment
+   * box's reopen is one branch of the same effect; a reply closed between
+   * the release and the landing must come back on ITS thread, not another's
+   * and not nowhere.
+   */
+  it('opens the reply box again on its thread when the words land after it closed', async () => {
+    await draw([THREAD]);
+    await openComment();
+    await openReply();
+
+    micIn('.rv-reply').click();
+    await opened();
+    push({ wire: record(TAKE, [THREAD]), refused: null });
+    flushSync();
+    micIn('.rv-reply').click();
+    sent = [];
+
+    const cancel = [
+      ...document.querySelectorAll<HTMLButtonElement>('.rv-reply .rv-acts button'),
+    ].find((button) => button.textContent?.trim() === 'cancel');
+    if (cancel === undefined) throw new Error('the reply box drew no cancel');
+    cancel.click();
+    await settle(() => document.querySelector('.rv-reply') === null);
+    await vi.waitFor(
+      () => {
+        expect(wire(), 'the submitted take never reached the wire').toContain('"submit":true');
+      },
+      { timeout: 2000 },
+    );
+
+    push({ wire: record(TRANSCRIBING, [THREAD]), refused: null });
+    flushSync();
+    push({ wire: record(LANDED, [THREAD]), refused: null });
+    flushSync();
+    await settle(() => document.querySelector('.rv-reply .rv-txarea') !== null);
+
+    expect(
+      document.querySelector<HTMLTextAreaElement>('.rv-reply .rv-txarea')?.value,
+      'the words landed after the reply box closed and went nowhere the reader can see',
     ).toBe('this read is the whole input');
   });
 
@@ -558,6 +615,10 @@ describe("a take's end", () => {
     if (second === undefined) throw new Error('the canvas drew no second respond');
     second.click();
     flushSync();
+    expect(
+      document.querySelector('.rv-reply'),
+      'the click closed the box rather than moving it, so nothing was tested',
+    ).not.toBeNull();
 
     expect(sent, 'the take survived the move and would file under the wrong thread').toEqual([
       { dictate_stop: { key: SLOT, submit: false } },

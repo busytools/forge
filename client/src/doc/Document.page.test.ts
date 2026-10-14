@@ -841,6 +841,9 @@ describe("the block's own take", () => {
     notice: { kind: 'landed', text: 'the second line reads well', truncated: false },
   };
 
+  /** The record while the server transcribes a take the page let go. */
+  const TRANSCRIBING = { ...TAKE, take: { ...TAKE.take, phase: 'transcribing' } };
+
   /** The viewer with the dictation offer on, which every mic is gated by. */
   function drawWithDictation(): ReturnType<typeof fakeDoc> {
     const page = fakeDoc({
@@ -946,6 +949,54 @@ describe("the block's own take", () => {
     expect(page.sent, 'a take outlived the box that closed').toEqual([
       { dictate_stop: { key: SLOT, submit: false } },
     ]);
+  });
+
+  /**
+   * **A submitted take's words are never dropped silently here either.** The
+   * reader finishes in the block's box, closes it while the record still
+   * transcribes, and the words land afterwards: the box is opened again at
+   * the row that began the take rather than the words going nowhere.
+   */
+  it('opens the box again when the words land after it closed', async () => {
+    drawWithDictation();
+    push(seatRecord(IDLE));
+    blockTarget('line two').click();
+    flushSync();
+
+    composeMic().click();
+    await vi.waitFor(
+      () => {
+        expect(
+          document.querySelector('.doc-compose .takeline'),
+          "the take's bar, in the box's own line",
+        ).not.toBeNull();
+      },
+      { timeout: 2000 },
+    );
+    push(seatRecord(TAKE));
+    flushSync();
+    composeMic().click();
+    push(seatRecord(TRANSCRIBING));
+    flushSync();
+
+    const cancel = [
+      ...document.querySelectorAll<HTMLButtonElement>('.doc-compose-acts button'),
+    ].find((button) => button.textContent?.trim() === 'cancel');
+    if (cancel === undefined) throw new Error("the block's box drew no cancel");
+    cancel.click();
+    flushSync();
+
+    push(seatRecord(LANDED));
+    flushSync();
+    await vi.waitFor(
+      () => {
+        expect(
+          document.querySelector<HTMLTextAreaElement>('.doc-compose textarea')?.value,
+          'the words landed after the box closed and went nowhere the reader can see',
+        ).toBe('the second line reads well');
+      },
+      { timeout: 2000 },
+    );
   });
 });
 

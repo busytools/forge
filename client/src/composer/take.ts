@@ -279,6 +279,18 @@ export class LocalTake {
     return this.draining;
   }
 
+  /**
+   * Whether this take's end is a SUBMIT already under way - draining the
+   * capture, or waiting for a connection to carry the stop. **A cancel on
+   * either spends words the reader chose to keep**: the server takes a
+   * `submit:false` as an abandon and drops the capture, and the submit that
+   * was coming never goes. Surfaces that end a take when its box goes must
+   * ask this before reaching for a cancel.
+   */
+  get submitted(): boolean {
+    return this.draining || this.pendingStop === true;
+  }
+
   /** The take is over: by the server's word, or by a drop. Idempotent. */
   release(): void {
     if (this.ended) return;

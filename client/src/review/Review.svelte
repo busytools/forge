@@ -403,7 +403,11 @@
         : takeIn === 'comment'
           ? box.spot === null || !sameSpot(box.spot, takeSpot) || tab !== 'files'
           : !replyDrawn() || reply.thread !== takeThread;
-    if (gone && (dictate.take !== null || dictate.opening)) dictate.act('cancel');
+    // A take already SUBMITTED - draining the capture, or waiting on a
+    // connection to send its stop - is not this effect's to cancel: the
+    // server would read it as an abandon and drop words the reader kept.
+    const live = dictate.take;
+    if (gone && (dictate.opening || (live !== null && !live.submitted))) dictate.act('cancel');
   });
 
   /** Whether two spots are the same place, by value: the object identity of a
