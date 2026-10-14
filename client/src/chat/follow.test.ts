@@ -262,6 +262,35 @@ async function settle(): Promise<void> {
   flushSync();
 }
 
+/**
+ * Wait until the landing's passes have stopped landing.
+ *
+ * **`settle`'s pumps are a race with the machine.** The page's publish, the
+ * pin it lands and the pass that re-measures it each take a paint, and a slow
+ * first transform - a cold cache, a loaded box - can push the last of them
+ * past the fixed pumps, where it lands after a test's `clear()` and reads as
+ * the change under test: a spurious foot pin (#2174's flake, one file over).
+ * So the landing is drained by CONDITION instead: wait for its pin, then pump
+ * until no further pass lands.
+ */
+async function drained(): Promise<void> {
+  for (let i = 0; i < 100 && pinned().length === 0; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+    flushSync();
+  }
+  let stable = 0;
+  let seen = -1;
+  for (let i = 0; i < 10 && stable < 2; i += 1) {
+    const now = pinned().length;
+    stable = now === seen ? stable + 1 : 0;
+    seen = now;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+    flushSync();
+  }
+}
+
 let app: Record<string, unknown> | null = null;
 
 /** Where the reader is, which is what the follow is a decision about. */
@@ -297,6 +326,9 @@ async function draw(server: ReturnType<typeof stub>): Promise<void> {
   flushSync();
   server.page([turn('t1'), turn('t2')]);
   await settle();
+  // The landing is drained before any test measures: a pass still on its way
+  // would otherwise land inside the window a test is reading.
+  await drained();
   expect(list(), 'the list is mounted once there are turns to draw').not.toBeNull();
 }
 
