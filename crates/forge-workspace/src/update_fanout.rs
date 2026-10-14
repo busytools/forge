@@ -83,6 +83,15 @@ impl Shared {
         }
         SeatUpdate { seq: Some(seq), update }
     }
+
+    /// The number `slot`'s next frame will be minted under.
+    ///
+    /// A seat that has emitted nothing - and one whose last frame opened a new
+    /// epoch - is at 1, so this never answers 0: a client reads it as the
+    /// number to expect, and 0 would have it expect a frame that cannot exist.
+    fn next_seq(&self, slot: &SessionSlot) -> u64 {
+        self.sequences.get(slot).copied().unwrap_or(0) + 1
+    }
 }
 
 /// Cloneable sender half of the workspace's fan-out to its subscribers.
@@ -141,6 +150,15 @@ impl UpdateFanout {
     /// the update, which is also where a dead one leaves.
     pub(crate) fn send(&self, update: SessionUpdate) -> bool {
         self.deliver(update, None)
+    }
+
+    /// The number `slot`'s next frame will be minted under.
+    ///
+    /// The read behind a seat's reconnect answer: the occupant names the
+    /// epoch and this names where its stream stands, so a client that has
+    /// just read the seat knows exactly what to expect next.
+    pub(crate) fn next_seq(&self, slot: &SessionSlot) -> u64 {
+        self.shared.lock().next_seq(slot)
     }
 
     /// How many subscribers are attached.

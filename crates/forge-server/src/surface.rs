@@ -203,6 +203,14 @@ impl ViewSurface {
         SessionState::collect(&self.workspace, slot, cwd_raw)
     }
 
+    /// The number `slot`'s next frame will be minted under: the read a
+    /// client makes when it attaches. It belongs to the epoch its occupant
+    /// names - a seat whose occupant changed starts over at 1 - so the two
+    /// are read together.
+    pub fn seat_next_seq(&self, slot: &SessionSlot) -> u64 {
+        self.workspace.seat_next_seq(slot)
+    }
+
     /// The live workers, per project.
     pub fn workers(&self) -> Workers {
         Workers::collect(Arc::clone(&self.workspace))

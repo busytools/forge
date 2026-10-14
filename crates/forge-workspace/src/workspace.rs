@@ -3841,6 +3841,13 @@ impl Workspace {
         self.update_tx.clone()
     }
 
+    /// The number `key`'s next frame will be minted under: what a client
+    /// reading the seat expects next, beside the occupant that names the
+    /// epoch it belongs to.
+    pub fn seat_next_seq(&self, key: &SessionSlot) -> u64 {
+        self.update_tx.next_seq(key)
+    }
+
     /// Borrow the workspace-side [`DomainSession`] for `key`.
     ///
     /// Returns the [`Arc`]-cloned mutex protecting the domain bucket.

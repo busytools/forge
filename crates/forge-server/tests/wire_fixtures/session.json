@@ -21,6 +21,7 @@
   },
   "header": {
     "session_id": null,
+    "seq": 1,
     "model": null,
     "effort": "max",
     "permission_mode": null,

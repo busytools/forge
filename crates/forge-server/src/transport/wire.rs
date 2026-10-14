@@ -456,7 +456,19 @@ pub struct ComposerWire {
 pub struct SessionHeaderWire {
     /// The occupant's id, or `None` when there is no occupant to name:
     /// nothing started, nothing connected yet, or an id dropped since.
+    ///
+    /// **This is the epoch [`Self::seq`] belongs to.** Every frame the seat's
+    /// stream carries is numbered, and a change of occupant starts the count
+    /// over at 1 - so a client that reads this id with the number below knows
+    /// which frames it missed and which it never had.
     pub session_id: Option<forge_primitives::SessionId>,
+    /// The number the seat's next frame will carry.
+    ///
+    /// A client that attaches mid-stream reads where the stream stands, so
+    /// the frames it hears from here continue the count it holds rather than
+    /// looking like a gap. It is the successor - never 0, never the last
+    /// number minted.
+    pub seq: u64,
     pub model: Option<Value>,
     pub effort: Value,
     pub permission_mode: Option<Value>,
@@ -1330,6 +1342,7 @@ async fn session(
         conversation: ConversationWire { turns, compaction_count },
         header: SessionHeaderWire {
             session_id: header.session_id.clone(),
+            seq: surface.seat_next_seq(slot),
             model: header.model.as_ref().and_then(|model| serde_json::to_value(model).ok()),
             effort: serde_json::to_value(header.effort).unwrap_or(Value::Null),
             permission_mode: header

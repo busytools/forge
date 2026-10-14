@@ -2923,6 +2923,191 @@ async fn a_sleeping_seats_snapshot_carries_its_transcripts_turns() {
     );
 }
 
+/// The thinking tokens the snapshot's turns have spent, summed from the
+/// deltas their frames carry.
+fn thinking_spent(data: &serde_json::Value) -> i64 {
+    data["conversation"]["turns"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|turn| turn["messages"].as_array().into_iter().flatten())
+        .filter(|msg| msg["subtype"] == "thinking_tokens")
+        .filter_map(|msg| msg["estimated_tokens_delta"].as_i64())
+        .sum()
+}
+
+/// A client attaching to a seat MID-TURN is handed the turn it is on: the
+/// running state, and the thinking the running turn has already spent.
+///
+/// No frame it hears repeats either - the stream announces a turn once and
+/// retains nothing - so a reconnect that dropped them would draw a seat
+/// sitting idle on a turn that is running.
+#[tokio::test]
+async fn a_seats_reconnect_answer_carries_the_running_turn() {
+    let (url, fleet, state) = a_server_with_state().await;
+    let seat = lead_seat();
+    let rows = [r#"{"type":"user","uuid":"u1","message":{"role":"user","content":"go"}}"#];
+    fleet.seed_transcript("TestOrg", "proj", "lead", &rows).expect("the transcript seeds");
+    fleet
+        .hold_conversation(&state, "TestOrg", "proj", "lead")
+        .expect("the seat's conversation is held");
+    // The running turn's own frames, as the task emits them: the window a
+    // client reads is the transport's copy of exactly these.
+    //
+    // Emitted only once the transport's own fold is attached - it attaches at
+    // boot, one scheduling hop after the server starts - because a frame
+    // emitted before it is held for the first client instead, which is the
+    // boot backlog's path rather than this test's subject.
+    for _ in 0..200 {
+        if fleet.subscriber_count() > 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    fleet.emit(SessionUpdate::ChatAppended {
+        key: seat.clone(),
+        origin: None,
+        source: None,
+        msg: forge_primitives::Message::ThinkingTokens {
+            estimated_tokens: 24,
+            estimated_tokens_delta: 24,
+            uuid: "t1".to_owned(),
+            session_id: "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45".to_owned(),
+            extras: serde_json::Map::new(),
+        },
+    });
+    fleet.seed_view_facts(&seat, ViewFacts::default());
+    fleet
+        .workspace()
+        .domain_session_for(&seat)
+        .expect("the seat is registered")
+        .lock()
+        .turn_pending = true;
+
+    let mut socket = connect(&url).await;
+    let running = snapshot_until(&mut socket, Subject::Session(seat.clone()), |data| {
+        data["header"]["turn_in_flight"] == true
+    })
+    .await;
+    assert!(
+        running,
+        "a client attaching mid-turn reads the turn it is on, not a seat that looks idle",
+    );
+
+    let spent = snapshot_until(&mut socket, Subject::Session(seat.clone()), |data| {
+        thinking_spent(data) > 0
+    })
+    .await;
+    assert!(
+        spent,
+        "and reads the thinking the running turn has spent, which no frame it hears repeats",
+    );
+}
+
+/// A seat's answer carries the epoch its sequence belongs to and the number
+/// the NEXT frame will bear, so a client that has just read the seat knows
+/// what to expect rather than guessing - and knows what it did not miss.
+///
+/// **The number is the successor, not the last one minted.** A client that
+/// read the last one would expect a frame it has already drawn and ask for a
+/// range that is not missing.
+#[tokio::test]
+async fn a_seats_answer_carries_its_epoch_and_the_number_the_next_frame_will_bear() {
+    let (url, fleet) = a_server().await;
+    let seat = lead_seat();
+    fleet.seed_view_facts(
+        &seat,
+        ViewFacts {
+            session_id: Some(SessionId::from("5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45")),
+            ..Default::default()
+        },
+    );
+    fleet.emit(SessionUpdate::TurnComplete { key: seat.clone(), terminal_reason: None });
+
+    let mut socket = connect(&url).await;
+    let held = snapshot_until(&mut socket, Subject::Session(seat.clone()), |data| {
+        data["header"]["session_id"] == "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45"
+            && data["header"]["seq"] == 2
+    })
+    .await;
+    assert!(
+        held,
+        "a client attaching after one frame reads the epoch and the number its next frame will bear",
+    );
+
+    // Another seat's traffic must not move this one's number, and this one's
+    // own frame must: the counter is the seat's.
+    let other = SessionSlot::worker("TestOrg", "proj", "reviewer");
+    fleet.emit(SessionUpdate::TurnComplete { key: other.clone(), terminal_reason: None });
+    fleet.emit(SessionUpdate::TurnComplete { key: seat.clone(), terminal_reason: None });
+    let held = snapshot_until(&mut socket, Subject::Session(seat.clone()), |data| {
+        data["header"]["seq"] == 3
+    })
+    .await;
+    assert!(held, "the seat's own frame is what moves its number");
+}
+
+/// **A seat nobody has attached to yet is still at a number a client can
+/// continue from.** The boot backlog is emitted before any subscriber exists;
+/// a read that reported the last number, or zero, would have the first client
+/// ask for frames it never missed or expect one that already went out.
+#[tokio::test]
+async fn a_seat_with_no_subscriber_yet_answers_with_the_next_number() {
+    let (url, fleet) = a_server().await;
+    let seat = lead_seat();
+    for _ in 0..3 {
+        fleet.emit(SessionUpdate::TurnComplete { key: seat.clone(), terminal_reason: None });
+    }
+
+    let mut socket = connect(&url).await;
+    let held = snapshot_until(&mut socket, Subject::Session(seat.clone()), |data| {
+        data["header"]["seq"] == 4
+    })
+    .await;
+    assert!(held, "the first subscriber reads the number the seat's next frame will bear");
+}
+
+/// **A `/resume` opens a new epoch, and its sequence starts at 1.** The
+/// transcript the new occupant replays is old, and none of it is a frame this
+/// epoch missed: a client that read the counter as continuing would ask for a
+/// range that can never arrive.
+#[tokio::test]
+async fn a_resumed_seats_answer_starts_its_new_epoch_at_one() {
+    let (url, fleet) = a_server().await;
+    let seat = lead_seat();
+    fleet.emit(SessionUpdate::TurnComplete { key: seat.clone(), terminal_reason: None });
+    fleet.emit(SessionUpdate::TurnComplete { key: seat.clone(), terminal_reason: None });
+    fleet.emit(SessionUpdate::SessionReplaced {
+        key: seat.clone(),
+        session_id: SessionId::from("6c2d3e4f-5061-4b72-8839-ad1e2f3a4b56"),
+        cwd: "/tmp".to_owned(),
+        current_model: a_current_model(),
+        available_models: Vec::new(),
+        mode: None,
+        history: Vec::new(),
+        dropped: 0,
+        compaction_count: 0,
+    });
+    fleet.seed_view_facts(
+        &seat,
+        ViewFacts {
+            session_id: Some(SessionId::from("6c2d3e4f-5061-4b72-8839-ad1e2f3a4b56")),
+            ..Default::default()
+        },
+    );
+
+    let mut socket = connect(&url).await;
+    let held = snapshot_until(&mut socket, Subject::Session(seat.clone()), |data| {
+        data["header"]["session_id"] == "6c2d3e4f-5061-4b72-8839-ad1e2f3a4b56"
+            && data["header"]["seq"] == 1
+    })
+    .await;
+    assert!(
+        held,
+        "a resumed seat's answer names the new occupant and the epoch's own first number",
+    );
+}
+
 /// A page that cannot be answered is REFUSED, because an empty one lies.
 ///
 /// **An empty page carries `cursor: null`, and a client reads that as "nothing
