@@ -31,14 +31,23 @@ describe('the server a launch names', () => {
    * address it replaced would outrank the live one at the next launch.
    */
   it('moves the server parameter to an address that took', () => {
+    const moved = movedParameter('?server=127.0.0.1:8791', '127.0.0.1:8803');
+    expect(moved, 'the parameter did not follow the connection').not.toBeNull();
     expect(
-      movedParameter('?server=127.0.0.1:8791', '127.0.0.1:8803'),
-      'the parameter did not follow the connection',
-    ).toBe('?server=127.0.0.1%3A8803');
+      serverParameter(moved ?? ''),
+      'reading the moved parameter back did not yield the address that took',
+    ).toBe('127.0.0.1:8803');
+
+    const withAnother = movedParameter('?a=1&server=dead:1', 'live:2');
     expect(
-      movedParameter('?a=1&server=dead:1', 'live:2'),
+      serverParameter(withAnother ?? ''),
+      'the moved parameter does not read back as the address that took',
+    ).toBe('live:2');
+    expect(
+      new URLSearchParams(withAnother ?? '').get('a'),
       'another parameter was dropped in the move',
-    ).toBe('?a=1&server=live%3A2');
+    ).toBe('1');
+
     expect(
       movedParameter('?server=127.0.0.1:8803', '127.0.0.1:8803'),
       'a URL already naming the connection was rewritten',

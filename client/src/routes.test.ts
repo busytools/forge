@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { get } from 'svelte/store';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   currentRoute,
@@ -11,6 +11,15 @@ import {
   titleFor,
   type Route,
 } from './routes';
+
+/**
+ * The jsdom location is one per file: `goTo` pushes and the parameter test
+ * seeds a search, so the next test would inherit both rather than start
+ * clean.
+ */
+afterEach(() => {
+  history.replaceState(null, '', '/');
+});
 
 describe('the URLs the server serves', () => {
   it('resolves the home at the root', () => {
