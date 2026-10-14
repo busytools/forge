@@ -485,7 +485,7 @@ describe('the shell at launch', () => {
     // Back to the door with the connection still held: a submit replaces it.
     history.replaceState(null, '', '/connect');
     dispatchEvent(new PopStateEvent('popstate'));
-    await crossed();
+    await until(() => document.querySelector('#address') !== null);
     submit(second.address);
     await until(() => second.homeReads() >= 1);
 
