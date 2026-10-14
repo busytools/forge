@@ -154,6 +154,20 @@ history is the record.
      the LIVE forge, and no in-app door leads back to the connect screen.
      (The built bundle is also the client that does not collide when another
      stack already holds the ports.)
+     **Point a scratch shell at the stack with a `--config` override, not by
+     typing in its connect screen**: the window url may carry the address,
+     and the shell dials it at launch (`serverParameter` outranks the
+     remembered one), which is one less thing for the maintainer to do and
+     lands the look straight in a session -
+     `{"identifier":"dev.vedhavyas.forge.<name>","bundle":{"createUpdaterArtifacts":false},"app":{"windows":[{"title":"forge <name>","width":1440,"height":900,"url":"/?server=127.0.0.1:<port>"}]}}`
+     written to a file and passed as `--config <path>`. Two details that cost
+     a look: **the url is `/?server=...`, never `index.html?server=...`** -
+     the router parses the pathname, and the document's own name is not a
+     route (it landed the window on the not-a-page screen) - and
+     `createUpdaterArtifacts: false` keeps the build off the updater signing
+     key. A fresh identifier also holds no microphone grant, so a
+     capture feature's first take raises its own TCC prompt; say so before
+     the look rather than letting him read it as a bug.
    - The stack takes browser WebSockets as they come - a raw handshake with an
      Origin header answers 101 plus the greeting; no CORS step exists.
 6. **Drive headlessly when useful**: `forge-protocol-client --url
