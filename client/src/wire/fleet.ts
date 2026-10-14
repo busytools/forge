@@ -167,6 +167,21 @@ export interface ServiceReport {
 }
 
 /**
+ * One service report, narrowed where it enters - off an update's payload or
+ * off the home snapshot's own `service_status`, which carry the same shape.
+ *
+ * A report with nothing wordable is no report: `error` is the only severity
+ * that escalates, anything else is the warning every producer defaults to,
+ * and a blank message would draw a line saying nothing.
+ */
+export function reportFrom(value: unknown): ServiceReport | null {
+  const report = value as { severity?: unknown; message?: unknown } | null | undefined;
+  const message = report?.message;
+  if (typeof message !== 'string' || message === '') return null;
+  return { severity: report?.severity === 'error' ? 'error' : 'warning', message };
+}
+
+/**
  * The core's service line, when this update is one.
  *
  * The report is keyless on the wire, so every home subscriber is sent it. The
@@ -176,11 +191,7 @@ export interface ServiceReport {
  */
 export function serviceReport(update: SessionUpdate): ServiceReport | null {
   if (typeof update === 'string') return null;
-  const report = (update as { service_status?: { severity?: unknown; message?: unknown } })
-    .service_status;
-  const message = report?.message;
-  if (typeof message !== 'string' || message === '') return null;
-  return { severity: report?.severity === 'error' ? 'error' : 'warning', message };
+  return reportFrom((update as { service_status?: unknown }).service_status);
 }
 
 /**

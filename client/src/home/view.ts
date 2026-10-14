@@ -19,6 +19,7 @@ import { displayAddress } from '../connect/attempt';
 import { railCounts, stalePlugins } from '../extensions/view';
 import { hrefFor, hrefForSlot } from '../routes';
 import type { ExtensionsRead } from '../wire/extensions';
+import type { ServiceReport } from '../wire/fleet';
 import type {
   AgentRow,
   Gate,
@@ -124,6 +125,13 @@ interface Header {
 
 interface HomeView {
   header: Header;
+  /**
+   * The core's held service status, which the banner above the band draws -
+   * `null` when the core holds none. It comes off the snapshot rather than
+   * the update stream, so a client attaching after the report was raised
+   * still draws it.
+   */
+  upstream: ServiceReport | null;
   band: BandCard[];
   /**
    * The fleet: one row per project and nothing mixed, so the home is a
@@ -834,6 +842,7 @@ export function projectRows(wire: HomeWire, row: ProjectWire): ProjectRows {
 /** Read the snapshot into the shape the markup wants. */
 export function homeView(wire: HomeWire, address: string): HomeView {
   return {
+    upstream: wire.service_status,
     fleet: fleetRows(wire),
     header: {
       liveAgents: wire.agents.length,

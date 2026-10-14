@@ -75,6 +75,47 @@ describe('the home page as it draws', () => {
   });
 
   /**
+   * **The core's held service status draws, and the snapshot is what carries
+   * it** (the wire's own rule: a subject's snapshot must cover every update
+   * the subject receives). The status-page probe fires once, before a client
+   * attaches, so a page that only ever took the report off an update drew
+   * nothing for an outage that was already up. It sits above the band, and
+   * only when there is something to say.
+   */
+  it('draws the held service status above the band, and nothing when there is none', () => {
+    const upstream = draw({
+      wire: {
+        ...homeWire,
+        service_status: {
+          severity: 'warning',
+          message: 'Elevated error rates on the Messages API. Sessions may fail and retry.',
+        },
+      },
+    });
+    expect(upstream, "the status line's own words are drawn").toContain(
+      'Elevated error rates on the Messages API. Sessions may fail and retry.',
+    );
+    const at = upstream.indexOf('class="upstream');
+    expect(at, 'above the band, which is where the banner sits').toBeGreaterThan(-1);
+    expect(at, 'and below the header').toBeGreaterThan(upstream.indexOf('class="top"'));
+    expect(at, 'which leaves it above the band').toBeLessThan(upstream.indexOf('class="band"'));
+    expect(draw(), 'nothing held, no banner').not.toContain('class="upstream');
+  });
+
+  /** The severity the report carries is the banner's tone, the way a band card's is. */
+  it('tones the banner by the severity the report carries', () => {
+    const bad = draw({
+      wire: { ...homeWire, service_status: { severity: 'error', message: 'a major outage' } },
+    });
+    expect(bad, 'an error report reads in the bad tone').toContain('class="upstream bad"');
+    const warn = draw({
+      wire: { ...homeWire, service_status: { severity: 'warning', message: 'a partial outage' } },
+    });
+    expect(warn, 'a warning keeps the warn tone').toContain('class="upstream"');
+    expect(warn, 'and never the bad one').not.toContain('class="upstream bad"');
+  });
+
+  /**
    * The mark on the page is the one the server sent. A prop the component
    * does not declare is dropped without a word, so the page would fall back
    * to the built-in and still look right.

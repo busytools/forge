@@ -35,11 +35,13 @@ export interface HomeRead {
   /** The server's own words for turning the subscription down, or `null`. */
   refused: string | null;
   /**
-   * The core's last service report, or `null`. It is carried rather than
-   * folded into the read because the snapshot holds no such field: the
-   * report reaches a subscriber as an UPDATE, and a page that only re-read
-   * on it would drop the words - which is where a refused board edit says
-   * why it did not land.
+   * The core's last service report, or `null`.
+   *
+   * **It is carried rather than read off the snapshot**, because the reports
+   * it passes on are moments the snapshot never holds: a refused board edit
+   * says here why it did not land, and a page that only re-read on the
+   * update would drop the words. The status-page issue the core HOLDS is the
+   * snapshot's own `service_status`, which the home's banner draws.
    */
   report: ServiceReport | null;
 }
