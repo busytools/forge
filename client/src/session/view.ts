@@ -1446,35 +1446,53 @@ function rowConnectors(project: ProjectWire | null): RowConnectorViews {
  * reason) so the panel shows as much of a server as the wire has.
  *
  * A read that FAILED carries an empty list - and that is a state of its own,
- * not "nothing configured" - so the failure draws as a row naming it.
+ * not "nothing configured" - so the failure draws as a row naming it. A
+ * REFRESH that failed is the other way the section goes wrong: the servers
+ * the last good read gave stay, and the failure leads them, because a list
+ * nothing has refreshed must not be read as current (rule 25).
  */
 export function mcpRows(record: SessionRecord | null): McpRow[] {
-  const servers = record?.mcp ?? null;
-  if (servers === null) return [];
-  if (servers.servers.length === 0) {
-    return servers.error === null
-      ? []
-      : [
-          {
-            name: 'mcp-read',
-            k: 'servers',
-            v: 'failed',
-            tools: [],
-            command: null,
-            reason: servers.error.trim() === '' ? null : servers.error.trim(),
-            synthetic: true,
-          },
-        ];
+  if (record === null) return [];
+  const servers = record.mcp;
+  const rows: McpRow[] = [];
+  const refresh = record.mcp_operation_error;
+  if (refresh !== null) {
+    rows.push({
+      name: 'mcp-refresh',
+      k: refresh.server_name ?? 'servers',
+      v: 'refresh failed',
+      tools: [],
+      command: null,
+      reason: refresh.message,
+      synthetic: true,
+    });
   }
-  return servers.servers.map((server) => ({
-    name: server.name,
-    k: `${server.name} \u{b7} ${scopeLabel(server)}`,
-    v: mcpState(server),
-    tools: mcpTools(server),
-    command: mcpCommand(server),
-    reason: server.error?.trim() ? server.error.trim() : null,
-    synthetic: false,
-  }));
+  if (servers === null) return rows;
+  if (servers.servers.length === 0) {
+    if (servers.error !== null) {
+      rows.push({
+        name: 'mcp-read',
+        k: 'servers',
+        v: 'failed',
+        tools: [],
+        command: null,
+        reason: servers.error.trim() === '' ? null : servers.error.trim(),
+        synthetic: true,
+      });
+    }
+    return rows;
+  }
+  return rows.concat(
+    servers.servers.map((server) => ({
+      name: server.name,
+      k: `${server.name} \u{b7} ${scopeLabel(server)}`,
+      v: mcpState(server),
+      tools: mcpTools(server),
+      command: mcpCommand(server),
+      reason: server.error?.trim() ? server.error.trim() : null,
+      synthetic: false,
+    })),
+  );
 }
 
 /** The tools a server offers, as its status depth names them. */

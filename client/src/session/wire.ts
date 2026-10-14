@@ -107,6 +107,16 @@ export interface McpServers {
   error: string | null;
 }
 
+/**
+ * One MCP operation that failed, as `SessionUpdate::McpOperationError`
+ * carries it: the servers it was about, and the core's words for it.
+ */
+export interface McpOperationFailure {
+  server_name: string | null;
+  operation: string;
+  message: string;
+}
+
 /** One process the walk found, flat: the tree's shape is `parent_pid`. */
 export interface ProcessEntry {
   pid: number;
@@ -300,6 +310,12 @@ export interface SessionRecord {
   composer: ComposerState;
   /** The prompts still waiting in the CLI's queue, oldest first: the pile. */
   queue: QueuedPromptRow[];
+  /**
+   * The MCP refresh that failed last, which the section draws so a list
+   * nothing has refreshed is not read as current. Not on the wire: the read
+   * carries the servers, and this is what this view watched fail since.
+   */
+  mcp_operation_error: McpOperationFailure | null;
   /**
    * The last row that left by discard or refusal, which the pile says in one
    * line where the card was. Not on the wire: the read carries what is
@@ -535,6 +551,9 @@ export function sessionFrom(data: unknown): SessionRecord {
       turn_in_flight: header['turn_in_flight'] === true,
     },
     mcp: mcpFrom(held['mcp']),
+    // A failed refresh is a moment this view watched, not a fact a read
+    // carries: a seat read starts with none.
+    mcp_operation_error: null,
     processes: processesFrom(held['processes']),
     monitors: list(held['monitors']).map(monitorFrom),
     background_tasks: list(held['background_tasks']).flatMap(backgroundTaskFrom),
