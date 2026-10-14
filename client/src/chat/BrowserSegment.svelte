@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tick } from 'svelte';
-  import { SvelteSet } from 'svelte/reactivity';
+  import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import Icon from '../components/Icon.svelte';
   import {
     browserUsed,
@@ -63,6 +63,13 @@
   /** This seat's own key, in the shell's own join, for the empty line. */
   const mine = $derived(slot === null ? null : `${slot.org}/${slot.project}/${slot.label}`);
   /**
+   * The closed profiles this read answered: no live entry behind them, their
+   * files - the logins - still here. **The bulk door's set**, and the page
+   * takes the shell's word for what closed means rather than guessing at it
+   * from the other flags.
+   */
+  const closed = $derived(profiles.filter((row) => row.closed));
+  /**
    * The row whose delete is confirming, and the row a delete is running for:
    * Shape A - the confirm happens in the row itself (Ved's pick, 2026-10-11).
    * One at a time, and the confirm clears on every door that closes the list.
@@ -78,6 +85,18 @@
    * be read as news about a later state.
    */
   let outcome = $state<string | null>(null);
+  /**
+   * The bulk confirm's own list, snapshotted when it armed: the list the
+   * person read is the list that goes, even if the host sweeps a row out
+   * from under the panel in between. Empty means nothing is confirming.
+   */
+  let bulkRows = $state<ProfileRow[]>([]);
+  /**
+   * The bulk delete's failures, by name, drawn on the row that stayed: a
+   * sibling's re-read clears the panel's own reason line when it lands, so
+   * a refusal's words must not live there.
+   */
+  let bulkFailed = new SvelteMap<string, string>();
   /** Whether the SHARED browser is up as a window: its row's button says hide
    *  where it is, and the collapsed row marks it without opening. */
   let sharedUp = $state(false);
@@ -202,16 +221,20 @@
     leaving = null;
     open = true;
     outcome = null;
+    bulkFailed.clear();
     void readProfiles();
   }
 
-  /** Every door that closes the list takes an unconfirmed delete with it: a
-   *  confirm left armed behind a closed panel is a click waiting to happen -
-   *  and a delete's outcome with it, so a reopening starts clean. */
+  /** Every door that closes the list takes an unconfirmed delete with it -
+   *  the row's confirm or the bulk's, a click waiting to happen behind a
+   *  closed panel - and a delete's outcome with it, so a reopening starts
+   *  clean. */
   function shut(): void {
     open = false;
     armed = null;
+    bulkRows = [];
     outcome = null;
+    bulkFailed.clear();
   }
 
   function arm(): void {
@@ -362,8 +385,12 @@
    * to the body, where Escape reaches nothing. */
   function esc(event: KeyboardEvent): void {
     if (event.key !== 'Escape') return;
-    // Escape inside the confirm keeps the list: the reader is backing out of
+    // Escape inside a confirm keeps the list: the reader is backing out of
     // the delete, not out of the panel, and the focus is kept - see backOut.
+    if (bulkRows.length > 0) {
+      backOutBulk();
+      return;
+    }
     if (armed !== null) {
       backOut();
       return;
@@ -423,9 +450,11 @@
   /**
    * Arm the confirm, and put focus on its Keep: the verb that armed it
    * unmounts, so without this a keyboard reader's next Escape lands on the
-   * body, where nothing listens.
+   * body, where nothing listens. One confirm at a time: the bulk's steps
+   * aside for the row's.
    */
   function armDelete(row: ProfileRow): void {
+    bulkRows = [];
     armed = row.name;
     void tick().then(() => {
       // The confirm lives in the panel, which is PORTALED to the body - so
@@ -442,48 +471,128 @@
   }
 
   /**
-   * The person's delete, after the row's own confirmation: the browser goes,
-   * the name goes, and the files go with them.
-   *
-   * The row says it is deleting while the shell works - a delete waits out a
-   * call in flight rather than refusing - and the outcome line says what
-   * happened: the deleted profile by name, or the shell's own words for a
-   * refusal. Either way the click draws its status; the panel does not just
-   * close on it.
+   * Arm the bulk confirm: the closed set is snapshotted so its names become
+   * the list, the row confirm steps aside - one confirm at a time - and the
+   * focus goes on its Keep for the same reason the row's does.
    */
-  function del(row: ProfileRow): void {
-    // **Focus goes back to the toggle BEFORE the confirm unmounts.** The
-    // confirm holds focus as the delete starts, and a webview that fires
-    // focusout when the focused element is removed (Chromium, WebView2,
-    // Android WebView - macOS WKWebView does not) would otherwise read the
-    // reader as having left the panel: `release` arms the close, and ~120ms
-    // later `shut()` takes the outcome line - or a refusal's words - off
-    // the screen before they are read. jsdom fires no blur on removal, so
-    // no test can see that webview behaviour; what is pinned is this
-    // function's own contract: the toggle holds focus by the time `armed`
-    // clears.
-    //
-    // `pointed` takes the focus as a press settling rather than a reader
-    // opening the panel: `focusIn`'s open would start a re-read whose
-    // landing clears `why`, wiping a refusal's line this same call is about
-    // to draw.
-    pointed = true;
-    toToggle();
+  function armBulk(): void {
     armed = null;
     outcome = null;
+    bulkRows = closed;
+    void tick().then(() => {
+      panelEl?.querySelector<HTMLElement>('[data-keep-bulk]')?.focus();
+    });
+  }
+
+  /** Back out of the bulk confirm with the focus kept, like the row's own. */
+  function backOutBulk(): void {
+    toToggle();
+    bulkRows = [];
+  }
+
+  /**
+   * Focus goes back to the toggle BEFORE a confirm unmounts.
+   *
+   * The confirm holds focus as the delete starts, and a webview that fires
+   * focusout when the focused element is removed (Chromium, WebView2,
+   * Android WebView - macOS WKWebView does not) would otherwise read the
+   * reader as having left the panel: `release` arms the close, and ~120ms
+   * later `shut()` takes the outcome line - or a refusal's words - off
+   * the screen before they are read. jsdom fires no blur on removal, so
+   * no test can see that webview behaviour; what is pinned is this
+   * function's own contract: the toggle holds focus by the time the confirm
+   * clears.
+   *
+   * `pointed` takes the focus as a press settling rather than a reader
+   * opening the panel: `focusIn`'s open would start a re-read whose
+   * landing clears `why`, wiping a refusal's line this same call is about
+   * to draw.
+   */
+  function detachConfirm(): void {
+    pointed = true;
+    toToggle();
+  }
+
+  /**
+   * One delete, run the row's way: the shell call, the row's own mark while
+   * it runs - a delete waits out a call in flight rather than refusing - the
+   * re-read that takes the row away with its files, and `done` with the
+   * shell's words when it refused. A failure leaves the profile standing;
+   * where its reason is drawn is the caller's.
+   */
+  function runDelete(row: ProfileRow, done: (error: string | null) => void): void {
+    bulkFailed.delete(row.name);
     deleting.add(row.name);
     void deleteProfile(row.name).then(
       () => {
         deleting.delete(row.name);
-        outcome = `deleted the '${row.name}' profile and its saved logins`;
         void readProfiles();
+        done(null);
       },
       (error: unknown) => {
         deleting.delete(row.name);
-        read = 'failed';
-        why = whyText(error);
+        done(whyText(error));
       },
     );
+  }
+
+  /**
+   * The person's delete, after the row's own confirmation: the browser goes,
+   * the name goes, and the files go with them.
+   *
+   * The row says it is deleting while the shell works, and the outcome line
+   * says what happened: the deleted profile by name, or the shell's own
+   * words for a refusal. Either way the click draws its status; the panel
+   * does not just close on it.
+   */
+  function del(row: ProfileRow): void {
+    detachConfirm();
+    armed = null;
+    outcome = null;
+    runDelete(row, (error) => {
+      if (error === null) {
+        outcome = `deleted the '${row.name}' profile and its saved logins`;
+        return;
+      }
+      read = 'failed';
+      why = error;
+    });
+  }
+
+  /**
+   * The bulk delete: the row's own machinery, once per name on the list the
+   * confirm showed - one delete per profile, never a verb of its own. Each
+   * row carries its own mark and its own outcome, and the summary line says
+   * what went once every one of them has settled.
+   */
+  function delClosed(): void {
+    detachConfirm();
+    const rows = bulkRows;
+    bulkRows = [];
+    outcome = null;
+    let left = rows.length;
+    let gone = 0;
+    const settled = (row: ProfileRow, error: string | null): void => {
+      if (error === null) {
+        gone += 1;
+      } else {
+        // **The reason goes on the row that stayed, not on the panel's own
+        // line**: a sibling's re-read clears `why` when it lands, so a
+        // refusal drawn there would be wiped by whichever delete finishes
+        // next.
+        bulkFailed.set(row.name, error);
+      }
+      left -= 1;
+      if (left > 0) return;
+      if (gone === 1) {
+        outcome = 'deleted 1 closed profile and its saved logins';
+      } else if (gone > 0) {
+        outcome = `deleted ${gone} closed profiles and their saved logins`;
+      }
+    };
+    for (const row of rows) {
+      runDelete(row, (error) => settled(row, error));
+    }
   }
 </script>
 
@@ -585,6 +694,59 @@
         {/if}
       </div>
 
+      <!-- **The closed ones carry a door together**, right where the rows
+           they take begin: the pile that reads as noise is exactly the
+           closed profiles, a live seat's among them. -->
+      {#if bulkRows.length > 0}
+        <div class="bz-bulk">
+          <div class="bz-it">
+            <span class="tx warn">their logins and cookies go with them</span>
+          </div>
+          {#each bulkRows as row (row.name)}
+            <div class="bz-it">
+              <span class="nm">{row.name}</span>
+              <span class="tx">{row.owner === '' ? 'no owner' : row.owner}</span>
+            </div>
+          {/each}
+          <div class="bz-it">
+            <button
+              type="button"
+              class="bz-take bz-del confirm"
+              aria-label="delete the closed profiles and their logins"
+              onclick={delClosed}
+              onkeydown={esc}
+            >
+              delete them
+            </button>
+            <button
+              type="button"
+              class="bz-take"
+              data-keep-bulk
+              aria-label="keep the closed profiles"
+              onclick={backOutBulk}
+              onkeydown={esc}
+            >
+              keep
+            </button>
+          </div>
+        </div>
+      {:else if closed.length > 0 && deleting.size === 0}
+        <div class="bz-it">
+          <span class="tx">{closed.length} closed</span>
+          <!-- The door waits while any delete is running: a second arming
+               would list rows already on their way out. -->
+          <button
+            type="button"
+            class="bz-take bz-del bz-del-all"
+            aria-label="delete all closed profiles and their logins"
+            onclick={armBulk}
+            onkeydown={esc}
+          >
+            delete all
+          </button>
+        </div>
+      {/if}
+
       {#each profiles as row (row.name)}
         {#if armed === row.name}
           <!-- **The confirm happens in the row itself** (Ved's pick,
@@ -629,17 +791,23 @@
               <Icon name="x" class="bad" />
             {/if}
             <span class="nm">{row.name}</span>
-            <!-- A closed profile - a directory with no entry - says so in
-                 place of the owner it has none of: its logins are here and
-                 this row is where they go. -->
-            <span class="tx">
-              {row.owner === '' ? 'closed · its logins are still here' : row.owner}
-              {row.running || row.owner === ''
-                ? ''
-                : row.opened
-                  ? ' · its driver is gone'
-                  : ' · not opened yet'}
-            </span>
+            {#if bulkFailed.has(row.name)}
+              <!-- A bulk delete the shell refused, in its own words, on the
+                   row that stayed. -->
+              <span class="tx bad">{bulkFailed.get(row.name) ?? ''}</span>
+            {:else}
+              <!-- A closed profile - a directory with no entry - says so in
+                   place of the owner it has none of: its logins are here and
+                   this row is where they go. -->
+              <span class="tx">
+                {row.owner === '' ? 'closed · its logins are still here' : row.owner}
+                {row.running || row.owner === ''
+                  ? ''
+                  : row.opened
+                    ? ' · its driver is gone'
+                    : ' · not opened yet'}
+              </span>
+            {/if}
             <!-- **The row's own door to its own browser**, the shared row's
                  show one level down: this profile's window over this
                  profile's browser, on this profile's page. -->

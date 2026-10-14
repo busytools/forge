@@ -2509,8 +2509,13 @@ branch main, nothing to commit</div>
                close, which is how a profile whose owning session is gone
                comes back, and delete, worn apart from it and confirmed in
                the row itself (delete it / keep) because it is the one act
-               that takes the logins. A closed profile is a row too -
-               ownerless, with no close, and delete still the door.
+               that takes the logins. A closed profile is a row too - no
+               live entry behind it, its logins still here, no close - and
+               the closed ones carry the bulk door beside their rows: delete
+               all, which lists every closed profile by name first (a live
+               seat's closed profile among them, its logins going too) and
+               then runs the row's own delete once per name, each row
+               reporting its own state.
                Drawn CLOSED here: the open list is runtime state. -->
           <span class="bz-seg">
             <button type="button" class="bz-tog">

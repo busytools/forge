@@ -256,6 +256,10 @@ export interface ProfileRow {
   /** Whether its browser is up as a WINDOW right now: the row's button says
    *  hide where it is, and show where it is not. */
   windowed: boolean;
+  /** Whether the shell holds no live entry for it: its browser is down while
+   *  its files - the logins - are here. The strip's delete-all takes exactly
+   *  these. */
+  closed: boolean;
 }
 
 /**
