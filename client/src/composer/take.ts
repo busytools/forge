@@ -293,11 +293,14 @@ export class LocalTake {
   }
 
   /**
-   * Let go of the microphone, once.
+   * End this side's take on the microphone, once. The device itself stays
+   * held for the next press; what stops here is the reading.
    *
-   * Both halves matter: the device is released, and the frames stop being
-   * read - a frame posted after the take is over would be pushed into a
-   * released ring and sent, which is audio for a take that has ended.
+   * Both halves matter: the frames stop being read - a frame posted after
+   * the take is over would be pushed into a released ring and sent, which
+   * is audio for a take that has ended - and the source is told the take
+   * is over, which is what stops the browser's graph or ends the shell's
+   * recording without closing the device.
    */
   private stopMic(): void {
     if (this.micStopped) return;

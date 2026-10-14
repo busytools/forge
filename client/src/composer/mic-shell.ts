@@ -77,7 +77,7 @@ export class ShellMic implements MicSource {
 
   /**
    * Ask the shell to drain its pipeline, hand over the frames still in it,
-   * and release the device.
+   * and end the take. The device stays held, so the next press is warm.
    *
    * **This waits on the shell's answer, not on the frames.** Frames cross as
    * events and the answer as this invoke's reply, and the two channels are
@@ -90,11 +90,14 @@ export class ShellMic implements MicSource {
     await invoke('client_mic_drain');
   }
 
-  /** Let the device go at once, for a take whose audio is being thrown away. */
+  /**
+   * End the take at once, for audio that is being thrown away. The device
+   * stays held, so the next press is warm.
+   */
   stop(): void {
     this.hearing();
     void invoke('client_mic_stop').catch(() => {
-      // The shell is gone, and the device went with it.
+      // The shell is gone, and the held device went with it.
     });
   }
 }
