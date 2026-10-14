@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AddressInfo, RawData, WebSocket } from 'ws';
 
 import { DEFAULT_ADDRESS } from '../connect/attempt';
-import { rememberAddress } from '../connect/remembered';
+import { rememberAddress, serverParameter } from '../connect/remembered';
 import { homeWire } from '../dev/fixture.data';
 import { PROTOCOL_VERSION } from '../protocol';
 import { closeSeat, closingSeat } from '../session/close';
@@ -354,6 +354,48 @@ describe('the shell at launch', () => {
       'is not an address',
     );
     expect(fieldAddress(), 'the door did not carry the address it tried').toBe('::::');
+  });
+
+  /**
+   * **A parameter is this launch's own instruction, and the tab keeps it.**
+   * A tab opened at `?server=` opens on that forge and the URL goes on
+   * naming it, so a reload re-dials the stack the tab was pointed at rather
+   * than the remembered address - which may be a dead one from earlier work.
+   */
+  it('opens on the server the parameter names and keeps it in the URL', async () => {
+    const forge = await stubForge({ mark: null, theme: null, font: null });
+    forges.push(forge);
+    await openAt(`/?server=${forge.address}`, null);
+    await crossed();
+
+    expect(location.pathname, 'a launch from the root did not land on the home').toBe('/');
+    expect(location.search, 'the launch dropped its own parameter').toBe(
+      `?server=${forge.address}`,
+    );
+    expect(
+      document.querySelector('#address'),
+      'the launch did not connect, so the door is what drew',
+    ).toBeNull();
+  });
+
+  /**
+   * **The parameter names where this tab IS, not where it was tried.** A
+   * person who corrects a stale parameter at the door has moved the tab, so
+   * the URL moves with the connection - otherwise the next launch would dial
+   * the dead address they just replaced.
+   */
+  it('moves the server parameter to the address a submit takes', async () => {
+    const forge = await stubForge({ mark: null, theme: null, font: null });
+    forges.push(forge);
+    await openAt('/?server=::::', null);
+
+    submit(forge.address);
+    await crossed();
+
+    expect(
+      serverParameter(location.search),
+      'the parameter still names the address the person replaced',
+    ).toBe(forge.address);
   });
 
   /**

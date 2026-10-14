@@ -4,7 +4,7 @@
   import Sprite from '../components/Sprite.svelte';
   import { DEFAULT_ADDRESS, displayAddress, type Attempt } from '../connect/attempt';
   import { boot } from '../connect/boot';
-  import { rememberedAddress, serverParameter } from '../connect/remembered';
+  import { movedParameter, rememberedAddress, serverParameter } from '../connect/remembered';
   import { watchHome, type HomeRead } from '../home/live';
   import { skewMessage, subjectKey, type Skew } from '../protocol';
   import { currentRoute, goTo, hrefFor, parseRoute, type Route } from '../routes';
@@ -251,6 +251,12 @@
     // As the person wrote it rather than the socket URL: this is what a field
     // shows them if they come back to the door.
     address = connected.address;
+    // **The parameter names where this tab IS, not where it was tried.** A
+    // submit that corrects a stale `?server=` has moved the tab, so the URL
+    // moves with it - otherwise the replaced parameter would outrank this
+    // connection at the next launch and dial the dead address again.
+    const search = movedParameter(location.search, connected.address);
+    if (search !== null) history.replaceState(null, '', `${location.pathname}${search}`);
     connection = connected.connection;
     // The reason belonged to the launch that produced it. Left standing, the
     // door a Back lands on accuses a forge that has just answered.

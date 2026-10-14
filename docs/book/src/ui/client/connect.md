@@ -39,8 +39,10 @@ that is the one the reader is about to correct.
 `host:port`, or a full `ws://` URL - pre-fills the field and is tried at
 launch, which is how a client is opened already pointed at one forge: a
 scratch stack, a second machine. It outranks the remembered address, and
-the URL keeps the parameter - moving it to `/connect` would drop the one
-thing a reload re-prefills from.
+the parameter stays in the URL through every move the app makes - a tab
+that has been navigated still opens on the forge it was launched at when
+it reloads. A connection taken on another address moves the parameter with
+it, so the URL always names the forge the tab is actually on.
 
 **A launch moves the page only from the root**, so a deep link is the one
 place it takes the connection and leaves the route alone. That makes this

@@ -149,6 +149,24 @@ describe('what the app opens on', () => {
   });
 
   /**
+   * **A launch that answered is what the app opens on next time.** A
+   * `?server=` launch is how a scratch stack is met, and a memory that only
+   * moved on door submits stayed on a dead stack while the live one went
+   * unrecorded - so a later tab at the same origin came back to the dead
+   * address.
+   */
+  it('remembers the address a launch landed on', async () => {
+    const server = await stubServer();
+    servers.push(server);
+
+    const launched = await boot({ name: 'home' }, server.address);
+
+    expect(launched.connected, 'the launch did not connect').not.toBeNull();
+    expect(rememberedAddress(), 'a launch that answered was not remembered').toBe(server.address);
+    launched.connected?.connection.close();
+  });
+
+  /**
    * What is kept is the last address that WORKED, so connecting somewhere
    * else has to replace it rather than sit beside it.
    */

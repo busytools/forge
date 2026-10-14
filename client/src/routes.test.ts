@@ -162,6 +162,21 @@ describe('moving the app in place', () => {
     expect(location.pathname).toBe('/session/TestOrg/proj/w1');
   });
 
+  /**
+   * **The launch's own instruction rides every move.** `?server=` names the
+   * forge this tab is pointed at and outranks the remembered address at the
+   * next launch - so a move that dropped it left a reloaded tab opening on
+   * whatever was remembered instead, which may be a dead scratch stack.
+   */
+  it('carries the server parameter through a move', () => {
+    history.replaceState(null, '', '/?server=127.0.0.1:8795');
+
+    goTo({ name: 'session', slot: { org: 'TestOrg', project: 'proj', label: 'w1' } });
+
+    expect(location.pathname, 'the move did not land on the seat').toBe('/session/TestOrg/proj/w1');
+    expect(location.search, 'the move dropped the server parameter').toBe('?server=127.0.0.1:8795');
+  });
+
   /** **A hand-off's own fields cross whole.** `reviewable` and the parked
    *  call's id ride the ask's Open into the route, and the address carries
    *  neither - the store is what keeps them. */

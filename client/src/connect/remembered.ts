@@ -38,6 +38,25 @@ export function serverParameter(search: string): string | null {
 }
 
 /**
+ * The search that names `address`, when the URL's parameter names another
+ * server; `null` when the URL names no server, or already names this one.
+ *
+ * A connection taken on another address has MOVED the tab a `?server=`
+ * launch pointed at, so the parameter follows it - otherwise the address it
+ * replaced would outrank the connection at the next launch and dial it
+ * again. A URL naming no server is left alone: the address that just took
+ * is remembered, and inventing a parameter would write this launch's guess
+ * into the address bar.
+ */
+export function movedParameter(current: string, address: string): string | null {
+  const named = serverParameter(current);
+  if (named === null || named === address) return null;
+  const search = new URLSearchParams(current);
+  search.set(PARAM, address);
+  return `?${search.toString()}`;
+}
+
+/**
  * The webview's own store, or `null` where there is not one.
  *
  * Reaching the store is its own step and the one most likely to be refused:

@@ -113,7 +113,13 @@ export async function attempt(
   connect: (input: string) => Promise<Attempt> = connectTo,
 ): Promise<Attempt> {
   try {
-    return await connect(input);
+    const answer = await connect(input);
+    // **A connection that took is what the app opens on next time**,
+    // whichever path took it: a `?server=` launch is how a scratch stack is
+    // met, and a memory that only moved on door submits stayed on a dead
+    // stack while the live one went unrecorded (measured 2026-10-14).
+    if (answer.ok) rememberAddress(answer.address);
+    return answer;
   } catch (error) {
     const why = error instanceof Error ? error.message : String(error);
     return {
@@ -144,19 +150,16 @@ interface Submit {
  * connection, thrown or answered, is one of these two shapes. That is what
  * lets the caller write `busy` from the answer rather than from a `finally`.
  *
- * The address that just took is remembered here rather than by the component,
- * for the same reason the transition is: what the app opens on next time is
- * the last submit that worked, and that is a fact a test can check.
+ * What the app opens on next time is what `attempt` remembers: this is a
+ * door's transition, and remembering belongs to the connection rather than
+ * to the screen that asked for one.
  */
 export async function submitAttempt(
   address: string,
   connect: (input: string) => Promise<Attempt> = connectTo,
 ): Promise<Submit> {
   const answer = await attempt(address, connect);
-  if (answer.ok) {
-    rememberAddress(address.trim());
-    return { busy: false, failure: null, connected: answer };
-  }
+  if (answer.ok) return { busy: false, failure: null, connected: answer };
   return { busy: false, failure: answer, connected: null };
 }
 
