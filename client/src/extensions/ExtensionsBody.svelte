@@ -31,6 +31,7 @@
   let {
     wire,
     refusal,
+    addRefused = 0,
     failure = null,
     settled = 0,
     projects,
@@ -45,6 +46,10 @@
     wire: ExtensionsRead;
     /** A refused dispatch, in the core's own words. */
     refusal: string | null;
+    /** Ticks when the ADD's OWN dispatch is refused - the page's attribution
+     * of the refusal to its press. A sibling action's refusal is the
+     * sibling's, and never disposes of the add's pending latch. */
+    addRefused?: number;
     /** A failed action or refresh, in the core's own words, from the live
      * stream: a failed update, install, add or repair reaches the page this
      * way, and a press with nothing said back reads as a press that did
@@ -155,25 +160,27 @@
     checked = false;
   });
 
-  /** The draft of an add whose outcome has not landed: kept so a rejected
+  /** The draft of an add whose dispatch has not answered: kept so a rejected
    * source is reopened with its words rather than silently discarded; the
-   * frame count it was submitted at, so only a frame that lands AFTER it
-   * counts as its outcome. */
+   * frame and add-refusal counts it was submitted at, so only an answer that
+   * landed AFTER the submission counts as its own. */
   let pendingSource = $state<string | null>(null);
   let pendingFrom = $state(0);
+  let refusedFrom = $state(0);
 
-  // The reopen rides the add's OWN outcome, which is a plugin frame (`settled`)
-  // or the refusal of its dispatch - a refusal lands with no frame at all; a
-  // SUCCESSFUL add lands with no failure at all. A source left pending past
-  // either would ride some LATER, unrelated frame: reopening the input under a
-  // line about something else, or being dropped silently. The frame must be
-  // one that landed since the submission: without that, the effect's own
-  // dependency on `pendingSource` would clear the draft the moment it is set.
+  // The reopen rides the add's OWN outcome, a plugin frame (`settled`) or the
+  // refusal of its dispatch - a refusal lands with no frame at all, a
+  // SUCCESSFUL add lands with no failure at all. The refusal is the add's own
+  // only when the press that owns it is the add's (`addRefused`: a refusal
+  // frame names no command, and a sibling action's refusal is the sibling's),
+  // and either answer must have landed since the submission - without that
+  // guard, the effect's own dependency on `pendingSource` would dispose of
+  // the draft the moment it is set.
   $effect(() => {
     const tick = settled;
     if (pendingSource === null) return;
-    if (tick === pendingFrom && refusal === null) return;
-    if (refusal === null && failure === null) {
+    if (tick === pendingFrom && addRefused === refusedFrom) return;
+    if (addRefused === refusedFrom && failure === null) {
       pendingSource = null;
       return;
     }
@@ -225,11 +232,13 @@
   function submitAdd(): void {
     const source = draft.trim();
     if (source === '') return;
+    // The counts are read BEFORE the dispatch: a refusal that lands with it
+    // (the socket closed under the press) is still this add's own answer.
+    pendingFrom = settled;
+    refusedFrom = addRefused;
     addmarketplace(source);
     // The draft is kept until the outcome lands: a rejected source reopens
     // the input with its words rather than vanishing (see the effect above).
-    // The frame it is measured from is this submission's own.
-    pendingFrom = settled;
     pendingSource = source;
     adding = false;
     draft = '';

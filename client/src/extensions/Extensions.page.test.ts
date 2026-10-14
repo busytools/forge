@@ -164,6 +164,49 @@ describe('the extensions page over a live connection', () => {
     expect(kept?.value).toBe('owner/refused');
   });
 
+  it("does not let a sibling action's refusal reopen the add input", () => {
+    const page = draw();
+    openMarketplaces();
+    buttonByText('add marketplace').click();
+    flushSync();
+    const field = document.querySelector<HTMLInputElement>('.ext-add-in');
+    if (field === null) throw new Error('no add field');
+    field.value = 'owner/in-flight';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    buttonByText('add').click();
+    flushSync();
+
+    // The add is in flight (the core accepted it; the CLI runs for seconds).
+    // A sibling action pressed in that window is refused by the core, and
+    // that refusal is the sibling's own: the add's latch must not ride it.
+    buttonByText('repair').click();
+    flushSync();
+    page.say({ kind: 'error', what: 'dispatch', why: 'a plugin action is already running' });
+    flushSync();
+    expect(document.body.textContent, "the sibling's refusal names its own reason").toContain(
+      'a plugin action is already running',
+    );
+    expect(
+      document.querySelector('.ext-add-in'),
+      "a sibling's refusal does not reopen the add input",
+    ).toBeNull();
+
+    // The add's own success then lands - the input stays closed, with no
+    // draft left open for a duplicate re-submit.
+    page.emit({
+      plugins_cli_action_succeeded: {
+        cwd_raw: '/tmp/proj',
+        result: { snapshot: null, message: 'added', claude_path: '/usr/bin/claude' },
+      },
+    });
+    flushSync();
+    expect(
+      document.querySelector('.ext-add-in'),
+      "the add's own success leaves the input closed",
+    ).toBeNull();
+  });
+
   it('does not reopen a settled add on some later failure', () => {
     const page = draw();
     openMarketplaces();
