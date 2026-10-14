@@ -63,7 +63,8 @@ captures:
   drawing of the words: the row is held until this frame;
 - `completed` says the turn that carried it ended.
 
-A cancel dispatches `cancel_async_message`; the CLI answers
+A cancel dispatches the client's own `cancel_queued_prompt`, which the
+core carries to the CLI's `cancel_async_message` control; the CLI answers
 `{"cancelled":true}`, and a cancel landing after `started` answers false -
 the card has usually drained by then.
 
