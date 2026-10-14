@@ -9,6 +9,7 @@ import type { ClientMessage, ServerMessage, SessionUpdate } from '../protocol';
 import type { Connection, ConnectionStatus } from '../socket';
 import type { SessionSlot } from '../wire/types';
 import { Chat, Frames, type PageTurn } from './conversation';
+import type { ToolLeaf } from './leaves';
 import { echoes } from './echoes.svelte';
 import { outputs } from './outputs.svelte';
 import { refused } from '../refusals';
@@ -103,6 +104,52 @@ const monitoring = (): unknown => ({
     model: 'claude-opus-5',
     content: [{ type: 'tool_use', id: 'mon-1', name: 'Monitor', input: {} }],
   },
+});
+
+/** A forge call frame: the despawn whose result is the record below. */
+const despawn = (id: string): unknown => ({
+  type: 'assistant',
+  uuid: 'a-despawn',
+  message: {
+    role: 'assistant',
+    model: 'claude-opus-5',
+    content: [
+      {
+        type: 'tool_use',
+        id,
+        name: 'mcp__forge__agents__despawn',
+        input: { label: 'residue-cut' },
+      },
+    ],
+  },
+});
+
+/** The success its call came back with, warning and all. */
+const answered = (id: string): unknown => ({
+  type: 'user',
+  uuid: 'u-answered',
+  message: {
+    role: 'user',
+    content: [
+      {
+        type: 'tool_result',
+        tool_use_id: id,
+        content: [
+          {
+            type: 'text',
+            text: '{\n  "status": "despawned",\n  "branch_cleanup_warning": "branch \'worktree-residue-cut\' kept: 10 commits reachable from no other ref."\n}',
+          },
+        ],
+      },
+    ],
+  },
+});
+
+/** A frame that draws: a peer message delivered while a call is out. */
+const delivered = (text: string): unknown => ({
+  type: 'user',
+  uuid: `c-${text}`,
+  message: { role: 'user', content: [{ type: 'text', text }] },
 });
 
 /** A dispatched agent's frame, whose words belong to the SUBAGENTS surface. */
@@ -1883,6 +1930,62 @@ describe('the conversation the chat draws', () => {
       after[after.length - 1]?.messages,
       'and both are held in the turn they arrived in',
     ).toEqual([...turn('t2', 'second').messages, result('call-1'), dispatched()]);
+  });
+
+  /**
+   * **A result belongs to the turn that holds the call it answers**, even
+   * where a frame that draws landed between them.
+   *
+   * A call is out for seconds, and a delivery arriving in that window opens a
+   * turn of its own. The result was then joined to the NEWEST turn - not the
+   * one holding its call - so the call's own turn never saw an answer and
+   * drew `failed: no result` for a call that came back cleanly, with the card
+   * that reads its warning never built (Ved, 2026-10-14, #2201).
+   */
+  it('gives a result back to the turn holding the call it answers', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    // The call lands in a turn that has already ended (a late call joins the
+    // turn it was made in, which stays live), the turn's own result frame is
+    // in it, and a delivery - which draws - opens the next turn while the
+    // call is still out. The result that follows must come back HERE.
+    server.update({ chat_appended: { key: LEAD, msg: ended() } });
+    server.update({ chat_appended: { key: LEAD, msg: despawn('call-1') } });
+    server.update({ chat_appended: { key: LEAD, msg: delivered('a message mid-call') } });
+    server.update({ chat_appended: { key: LEAD, msg: answered('call-1') } });
+
+    const leaves = (messages: readonly unknown[]): ToolLeaf[] =>
+      fold(messages).flatMap((unit) =>
+        unit.kind === 'leaves'
+          ? unit.rows.flatMap((row) => (row.tag === 'call' ? [row.leaf] : []))
+          : [],
+      );
+    const turns = get(chat.value).turns;
+    const drawnIn = turns
+      .map((held, at) => ({ at, leaf: leaves(held.messages).find((leaf) => leaf.id === 'call-1') }))
+      .find((held) => held.leaf !== undefined);
+
+    expect(drawnIn?.at, 'the call draws in the turn it was made in').toBe(1);
+    expect(
+      drawnIn?.leaf?.forge?.title,
+      'and the card its own result built is on that row, not a missing answer',
+    ).toBe("closed worker 'residue-cut'");
+    expect(
+      drawnIn?.leaf?.forge?.pieces,
+      'with the warning the result carried said in its body',
+    ).toEqual([
+      {
+        kind: 'warnline',
+        label: 'branch',
+        text: "branch 'worktree-residue-cut' kept: 10 commits reachable from no other ref.",
+      },
+    ]);
+    expect(drawnIn?.leaf?.body, 'and the row is no longer left with nothing to open').not.toEqual(
+      [],
+    );
   });
 
   it('opens a row for a monitor call, which draws one now', () => {
