@@ -1,24 +1,6 @@
 /**
- * What dictation means to the review page: the box a landed take's words go
- * in, and nothing else.
- *
- * The take itself is the page's own `Dictation`, the same one the composer
- * wears - so what is left here is the review's own half of the bargain: where
- * a landing goes, and which landings are this page's to place at all.
- */
-
-import type { Notice } from '../composer/wire';
-
-/** Where the comment box is open, which is what a landing is addressed to. */
-export interface ReviewSpot {
-  path: string;
-  side: 'old' | 'new';
-  line: number;
-}
-
-/**
- * The page's own memory of a seat's takes: which take it watched, and what it
- * has already placed.
+ * The memory a page keeps of a seat's takes: which take it watched, and what
+ * it has already placed.
  *
  * **A notice about a take this page never watched is not its own.** A landed
  * notice is per-seat server state that outlives its take, so a page that
@@ -26,7 +8,14 @@ export interface ReviewSpot {
  * take this page watched may put words in the reader's box. The memory is the
  * SEAT's: the record in hand can be another seat's between two reads, and a
  * notice it holds is one this page never watched.
+ *
+ * Shared rather than one per page, because the bargain is the same on every
+ * surface that dictates: what a page differs in is only which of its boxes
+ * the words go into.
  */
+
+import type { Notice } from './wire';
+
 export class Landing {
   #seat: string | null = null;
   #watched = false;
