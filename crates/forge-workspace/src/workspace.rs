@@ -423,6 +423,12 @@ pub struct Workspace {
     /// Set the first time [`Self::start_usage_poller`] runs. Subsequent
     /// calls early-return to avoid spawning duplicate poller tasks.
     usage_poller_started: std::sync::atomic::AtomicBool,
+    /// Set the first time [`Self::start_dictate_preflight`] runs, so a
+    /// second call cannot spawn a second prewarm over the same models. Set
+    /// before the `[dictate] enabled` gate: the flag reads "the boot wave
+    /// asked for the prewarm", which is the one call a test can watch
+    /// without a 3 GB fetch (mirrors `usage_poller_started`).
+    dictate_preflight_started: std::sync::atomic::AtomicBool,
     /// The gateway's listener + session bindings. Children are stamped
     /// with a base URL that names this listener, and every spawn
     /// registers here.
@@ -1696,6 +1702,7 @@ impl Workspace {
             review_origin: Mutex::new(HashMap::new()),
             review_activity: Mutex::new(HashMap::new()),
             usage_poller_started: std::sync::atomic::AtomicBool::new(false),
+            dictate_preflight_started: std::sync::atomic::AtomicBool::new(false),
             cron_scheduler_started: std::sync::atomic::AtomicBool::new(false),
             chase_sweep_started: std::sync::atomic::AtomicBool::new(false),
             kick_dispatcher_tx,
@@ -2667,11 +2674,22 @@ impl Workspace {
     /// run, started beside the account loaders; a no-op when dictation
     /// is switched off.
     ///
+    /// **This is the prewarm the run keeps resident**: the engine it parks
+    /// in the state serves every take, so a press pays no model load, and
+    /// the task it runs on is spawned rather than awaited, so none of the
+    /// fetch, the verify or the load is on the boot path. The one event it
+    /// writes says which of the two ended it.
+    ///
     /// The active models are resolved first - the config key, the runtime
     /// pick, or the compiled pin, per role - and the resolution's failure
     /// is the same stop a failed fetch is, naming the config key that
     /// could not be answered.
     pub fn start_dictate_preflight(self: &Arc<Self>) {
+        // Before the gate below, so the flag reads "the wave asked for the
+        // prewarm" and a second call cannot start a second one.
+        if self.dictate_preflight_started.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            return;
+        }
         let settings = self.config.dictate.clone();
         if !settings.enabled {
             return;
@@ -2682,9 +2700,15 @@ impl Workspace {
         let span = tracing::info_span!("dictate_preflight");
         tokio::spawn(
             async move {
+                let started = std::time::Instant::now();
                 let resolved = match this.resolve_active(&settings).await {
                     Ok(resolved) => resolved,
                     Err(message) => {
+                        tracing::warn!(
+                            event_name = "dictate_prewarm_failed",
+                            failure = %message,
+                            "no dictation model is resident; a take will be refused"
+                        );
                         state.fail(crate::dictate::DictateFailure::Other { message }, None);
                         let models = this.dictate_models();
                         let _ = updates.send(SessionUpdate::DictateModelsChanged { models });
@@ -2704,10 +2728,33 @@ impl Workspace {
                 // only on success, and every failure path ends the run,
                 // so a held engine is the whole availability signal.
                 if state.engine.lock().is_some() {
+                    let files: Vec<&str> =
+                        resolved.iter().map(|(_, model)| model.spec.file.as_str()).collect();
+                    tracing::info!(
+                        event_name = "dictate_prewarm_ready",
+                        elapsed_ms = started.elapsed().as_millis(),
+                        models = ?files,
+                        "the dictation models are resident; a take pays no load"
+                    );
                     // A variant the config resolved from the feed is on
                     // disk now: record it so the page and the bench see it.
                     this.record_resolved_installs(&resolved);
                     let _ = updates.send(SessionUpdate::DictateAvailability);
+                } else if let Some(failure) = &state.snapshot.lock().failure {
+                    // The screen carries this for a view; the log is where a
+                    // headless run reads it.
+                    if failure.is_cancelled() {
+                        tracing::debug!(
+                            event_name = "dictate_prewarm_cancelled",
+                            "the prewarm was stopped before it finished"
+                        );
+                    } else {
+                        tracing::warn!(
+                            event_name = "dictate_prewarm_failed",
+                            failure = ?failure,
+                            "no dictation model is resident; a take will be refused"
+                        );
+                    }
                 }
             }
             .instrument(span),

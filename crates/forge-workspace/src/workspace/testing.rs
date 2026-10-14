@@ -213,6 +213,14 @@ impl Workspace {
         self.usage_poller_started.load(std::sync::atomic::Ordering::Acquire)
     }
 
+    /// Whether the dictate prewarm's start has run. Test-only: the start
+    /// reaches the network for models this fixture has none of, so a
+    /// cross-crate boot test reads the guard rather than watching it fetch.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn test_dictate_preflight_started(&self) -> bool {
+        self.dictate_preflight_started.load(std::sync::atomic::Ordering::Acquire)
+    }
+
     /// Hold a claude version snapshot, so a cross-crate test can render the
     /// version line without a real `claude --version` and npm probe.
     /// Test-only.
@@ -423,6 +431,7 @@ impl Workspace {
             review_origin: Mutex::new(HashMap::new()),
             review_activity: Mutex::new(HashMap::new()),
             usage_poller_started: std::sync::atomic::AtomicBool::new(false),
+            dictate_preflight_started: std::sync::atomic::AtomicBool::new(false),
             cron_scheduler_started: std::sync::atomic::AtomicBool::new(false),
             chase_sweep_started: std::sync::atomic::AtomicBool::new(false),
             kick_dispatcher_tx,
