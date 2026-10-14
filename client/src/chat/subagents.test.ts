@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest';
 
 import type { SubagentCard } from '../session/wire';
@@ -214,6 +215,70 @@ describe('revealing the row a dispatch drew', () => {
       expect(state.hit, 'and the restarted window still ends').toBe(false);
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  /**
+   * The listeners the document holds now: every registration counted against
+   * every removal, as the DOM would.
+   *
+   * **A listener left on the document pins whatever it closes over**, and the
+   * flash's closes over the row - so a row the listener outlives stays held
+   * for the page's life.
+   */
+  function documentListeners(): () => string[] {
+    const spies = [
+      { drop: false, spy: vi.spyOn(document, 'addEventListener') },
+      { drop: true, spy: vi.spyOn(document, 'removeEventListener') },
+    ];
+    return () => {
+      const held = new Map<string, number>();
+      for (const { drop, spy } of spies) {
+        for (const call of spy.mock.calls) {
+          const type = String(call[0]);
+          held.set(type, (held.get(type) ?? 0) + (drop ? -1 : 1));
+        }
+      }
+      return [...held]
+        .filter(([, count]) => count > 0)
+        .map(([type, count]) => (count > 1 ? `${type} x${count}` : type));
+    };
+  }
+
+  /**
+   * **The scroll listener rides the flash, not the document.**
+   *
+   * Its whole job is the scroll that would land the reveal, so once the
+   * flash's own timer has landed, a listener left registered holds the row -
+   * and a row that left the page sits inside no scroller, so no later
+   * scrollend could reach the release.
+   */
+  it('takes its scroll listener down when the flash lands with no scroll', () => {
+    vi.useFakeTimers();
+    // jsdom performs no layout: scrollIntoView is a browser call the reveal
+    // still makes.
+    Object.defineProperty(Element.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: () => {},
+    });
+    const held = documentListeners();
+    try {
+      const row = document.createElement('details');
+      row.dataset.sg = 'toolu_flash';
+      document.body.appendChild(row);
+
+      expect(reveal('toolu_flash'), 'the reveal found the mounted row').toBe(true);
+      expect(held(), 'precondition: the flash is waiting for its scrollend').toEqual(['scrollend']);
+
+      // No scroll ever comes: the row leaves the page first.
+      row.remove();
+      vi.advanceTimersByTime(700);
+
+      expect(held(), 'a listener outlived the flash and held the row').toEqual([]);
+    } finally {
+      vi.useRealTimers();
+      Reflect.deleteProperty(Element.prototype, 'scrollIntoView');
+      vi.restoreAllMocks();
     }
   });
 
