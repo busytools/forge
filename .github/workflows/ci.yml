@@ -27,6 +27,9 @@ jobs:
         with:
           components: rustfmt
       - run: cargo fmt --check
+      # The client shell is a workspace root of its own, so the check above
+      # does not reach its crate; this is the invocation that does.
+      - run: cargo fmt --manifest-path client/src-tauri/Cargo.toml --check
 
   unicode-punct:
     name: unicode punctuation gate

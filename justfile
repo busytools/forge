@@ -235,6 +235,14 @@ doc:
 check-release:
     RUSTFLAGS="-D warnings" cargo check --release --workspace --all-targets --all-features
 
+# The shell's own rustfmt check. client/src-tauri is a workspace root of its
+# own, so neither `fmt-check` above nor CI's root `cargo fmt --check` reaches
+# its crate, and its formatting drifts silently until someone runs one there.
+#
+# A red is fixed with `cargo fmt --manifest-path client/src-tauri/Cargo.toml`.
+client-tauri-fmt:
+    cargo fmt --manifest-path client/src-tauri/Cargo.toml --check
+
 # The client's four steps, cheapest first, so a red never means two things at
 # once. They are inside the gate rather than beside it: the client's build,
 # typecheck and tests used to be a CI job alone, and a gate that does not run
@@ -913,7 +921,7 @@ check:
     #!/usr/bin/env bash
     set -euo pipefail
 
-    steps=(fmt-check unicode-punct-check script-tests client-format client-lint client-typecheck client-test client-android-warnings clippy test-all doctest doc)
+    steps=(fmt-check unicode-punct-check script-tests client-tauri-fmt client-format client-lint client-typecheck client-test client-android-warnings clippy test-all doctest doc)
     verdict=""
 
     on_exit() {
