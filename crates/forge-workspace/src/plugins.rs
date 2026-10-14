@@ -589,6 +589,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::SeatUpdate;
     use crate::protocol::Command;
     use crate::workspace::Workspace;
 
@@ -712,12 +713,13 @@ mod tests {
 
     /// Wait for the update a dispatched action emits.
     async fn next_update(
-        rx: &mut tokio::sync::mpsc::UnboundedReceiver<SessionUpdate>,
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<SeatUpdate>,
     ) -> SessionUpdate {
         tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
             .await
             .expect("an update lands")
             .expect("the stream is open")
+            .update
     }
 
     /// The home directory every user-scope call runs in.

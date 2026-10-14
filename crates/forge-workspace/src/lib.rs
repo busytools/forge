@@ -107,6 +107,7 @@ pub use protocol::{
     SessionUpdate, TurnErrorClass,
 };
 pub use target::{ProjectKey, SessionSlot, SessionTarget};
+pub use update_fanout::SeatUpdate;
 pub use views::{AccountLoadingRow, GatewayOrgView, ProjectView};
 pub use workspace::{
     PendingInteractionKind, PricingFetch, PricingFetcher, SessionChipInfo, SessionChipState,

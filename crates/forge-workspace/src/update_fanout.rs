@@ -1,11 +1,27 @@
 //! Fan-out for the workspace's [`SessionUpdate`] stream.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 
+use crate::SessionSlot;
 use crate::protocol::SessionUpdate;
+
+/// One frame on the stream: the update, and the number the seat's own
+/// counter minted for it.
+///
+/// **The number is what makes a miss detectable.** Every frame the workspace
+/// emits for a seat is numbered on that seat's counter - whichever site
+/// emitted it - so a client that reads 5 and then 7 knows exactly one frame
+/// went missing and can ask for it. `seq` is `None` for a frame belonging to
+/// no seat, which rides the stream without joining any sequence.
+#[derive(Clone, Debug)]
+pub struct SeatUpdate {
+    pub seq: Option<u64>,
+    pub update: SessionUpdate,
+}
 
 /// What a subscriber can do with what it is sent.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -22,7 +38,7 @@ pub(crate) enum SubscriberRole {
 
 /// One subscriber's end of the fan-out.
 struct Registration {
-    tx: mpsc::UnboundedSender<SessionUpdate>,
+    tx: mpsc::UnboundedSender<SeatUpdate>,
     role: SubscriberRole,
 }
 
@@ -31,11 +47,42 @@ struct Shared {
     subscribers: Vec<Registration>,
     /// Updates emitted before the first subscriber attached, held for
     /// whoever attaches first so a notice raised during boot is not lost.
-    pending: Vec<SessionUpdate>,
+    pending: Vec<SeatUpdate>,
     /// Set by the first [`UpdateFanout::subscribe`]. After that a send
     /// that reaches nobody is dropped rather than held, so a subscriber
     /// attaching later inherits no backlog.
     attached: bool,
+    /// Where each seat's stream has got to: the number its newest frame was
+    /// minted under. Absent for a seat that has not emitted yet, and for one
+    /// whose last frame opened a new epoch.
+    ///
+    /// **Per seat, keyed by the frame's own slot**, so a frame for one seat
+    /// can neither advance another's counter nor leave a hole in it.
+    sequences: HashMap<SessionSlot, u64>,
+}
+
+impl Shared {
+    /// Number `update` on its seat's counter, or leave it unnumbered when it
+    /// belongs to no seat.
+    ///
+    /// **An occupant change closes its epoch.** `Connected` and
+    /// `SessionReplaced` are numbered on the run they end and the seat's
+    /// counter starts over, so the frame after one opens the new epoch at 1:
+    /// the client learns the occupant from that frame itself and wipes to
+    /// expect 1, never a gap.
+    fn numbered(&mut self, update: SessionUpdate) -> SeatUpdate {
+        let Some(slot) = update.slot() else {
+            return SeatUpdate { seq: None, update };
+        };
+        let seq = self.sequences.get(slot).copied().unwrap_or(0) + 1;
+        if matches!(update, SessionUpdate::Connected { .. } | SessionUpdate::SessionReplaced { .. })
+        {
+            self.sequences.remove(slot);
+        } else {
+            self.sequences.insert(slot.clone(), seq);
+        }
+        SeatUpdate { seq: Some(seq), update }
+    }
 }
 
 /// Cloneable sender half of the workspace's fan-out to its subscribers.
@@ -53,7 +100,7 @@ impl UpdateFanout {
     /// it. The first caller also takes whatever was emitted before it
     /// attached, whichever role it declares; every later one carries
     /// what is emitted after its own call and nothing before it.
-    pub(crate) fn subscribe(&self, role: SubscriberRole) -> mpsc::UnboundedReceiver<SessionUpdate> {
+    pub(crate) fn subscribe(&self, role: SubscriberRole) -> mpsc::UnboundedReceiver<SeatUpdate> {
         let (tx, rx) = mpsc::unbounded_channel();
         let mut shared = self.shared.lock();
         for held in std::mem::take(&mut shared.pending) {
@@ -76,7 +123,7 @@ impl UpdateFanout {
     pub(crate) fn subscribe_without_backlog(
         &self,
         role: SubscriberRole,
-    ) -> mpsc::UnboundedReceiver<SessionUpdate> {
+    ) -> mpsc::UnboundedReceiver<SeatUpdate> {
         let (tx, rx) = mpsc::unbounded_channel();
         self.shared.lock().subscribers.push(Registration { tx, role });
         rx
@@ -136,6 +183,7 @@ impl UpdateFanout {
 
     fn deliver(&self, update: SessionUpdate, required: Option<SubscriberRole>) -> bool {
         let mut shared = self.shared.lock();
+        let update = shared.numbered(update);
         let Some(tail) = shared.subscribers.pop() else {
             // Hold what was emitted before anything attached, so a boot
             // notice is not lost. A role-gated update is not held,
@@ -164,9 +212,12 @@ impl UpdateFanout {
 
 #[cfg(test)]
 mod tests {
+    use forge_primitives::SessionId;
     use forge_primitives::cloud::service_status::ServiceSeverity;
+    use forge_primitives::runtime::CurrentModel;
 
     use super::*;
+    use crate::SessionSlot;
 
     fn status(message: &str) -> SessionUpdate {
         SessionUpdate::ServiceStatus {
@@ -175,12 +226,52 @@ mod tests {
         }
     }
 
-    fn next(rx: &mut mpsc::UnboundedReceiver<SessionUpdate>, who: &str) -> String {
-        match rx.try_recv() {
-            Ok(SessionUpdate::ServiceStatus { message, .. }) => message,
-            Ok(_) => panic!("expected the ServiceStatus envelope this test sends to {who}"),
-            Err(err) => panic!("expected an update on the {who} subscriber's stream: {err}"),
+    fn seat(label: &str) -> SessionSlot {
+        SessionSlot::from_str_for_test(label)
+    }
+
+    /// A frame the seat emits. Any of them will do, and this one is the
+    /// cheapest to build.
+    fn a_turn_ends(key: &SessionSlot) -> SessionUpdate {
+        SessionUpdate::TurnComplete { key: key.clone(), terminal_reason: None }
+    }
+
+    /// The seat's occupant changing, which is the frame an epoch turns on.
+    fn occupant_change(key: &SessionSlot) -> SessionUpdate {
+        SessionUpdate::SessionReplaced {
+            key: key.clone(),
+            session_id: SessionId("a-new-occupant".to_owned()),
+            cwd: "/tmp".to_owned(),
+            current_model: CurrentModel::new("m", "m", "m"),
+            available_models: Vec::new(),
+            mode: None,
+            history: Vec::new(),
+            dropped: 0,
+            compaction_count: 0,
         }
+    }
+
+    /// The next frame on `who`'s stream, unread.
+    fn frame(rx: &mut mpsc::UnboundedReceiver<SeatUpdate>, who: &str) -> SeatUpdate {
+        rx.try_recv().unwrap_or_else(|err| {
+            panic!("expected an update on the {who} subscriber's stream: {err}")
+        })
+    }
+
+    /// The next frame's number, for the tests that read a seat's sequence.
+    fn next_seq(rx: &mut mpsc::UnboundedReceiver<SeatUpdate>, who: &str) -> Option<u64> {
+        frame(rx, who).seq
+    }
+
+    fn said(frame: SeatUpdate) -> String {
+        match frame.update {
+            SessionUpdate::ServiceStatus { message, .. } => message,
+            other => panic!("expected the ServiceStatus envelope this test sends, got {other:?}"),
+        }
+    }
+
+    fn next(rx: &mut mpsc::UnboundedReceiver<SeatUpdate>, who: &str) -> String {
+        said(frame(rx, who))
     }
 
     /// Catches `send` delivering to only the first subscriber, which is
@@ -344,5 +435,155 @@ mod tests {
         let fanout = UpdateFanout::default();
 
         assert!(!fanout.send(status("one")), "an unsubscribed fan-out delivers to nobody");
+    }
+
+    /// A seat's frames are numbered on that seat's own counter, 1 then 2.
+    #[test]
+    fn a_seats_frames_carry_their_own_numbers() {
+        let fanout = UpdateFanout::default();
+        let mut rx = fanout.subscribe(SubscriberRole::Answering);
+        let seat = seat("lead");
+
+        assert!(fanout.send(a_turn_ends(&seat)), "a subscribed fan-out delivers");
+        assert!(fanout.send(a_turn_ends(&seat)), "a subscribed fan-out delivers");
+
+        assert_eq!(next_seq(&mut rx, "seat"), Some(1), "the seat's first frame is number 1");
+        assert_eq!(next_seq(&mut rx, "seat"), Some(2), "and its next is the successor");
+    }
+
+    /// An occupant change ends its epoch: the frame itself is the last of
+    /// the run it closes, and the next frame opens the new epoch at 1.
+    ///
+    /// Catches resetting before the frame is numbered, which leaves the
+    /// occupant frame carrying a number from the new epoch it opens.
+    #[test]
+    fn an_occupant_change_restarts_the_seats_numbers() {
+        let fanout = UpdateFanout::default();
+        let mut rx = fanout.subscribe(SubscriberRole::Answering);
+        let seat = seat("lead");
+
+        assert!(fanout.send(a_turn_ends(&seat)), "a subscribed fan-out delivers");
+        assert!(fanout.send(a_turn_ends(&seat)), "a subscribed fan-out delivers");
+        assert!(fanout.send(occupant_change(&seat)), "a subscribed fan-out delivers");
+
+        assert_eq!(next_seq(&mut rx, "seat"), Some(1), "the seat's first frame is number 1");
+        assert_eq!(next_seq(&mut rx, "seat"), Some(2), "and its next is the successor");
+        assert_eq!(
+            next_seq(&mut rx, "seat"),
+            Some(3),
+            "the occupant frame is numbered on the counter it ends",
+        );
+
+        assert!(fanout.send(a_turn_ends(&seat)), "a subscribed fan-out delivers");
+        assert_eq!(
+            next_seq(&mut rx, "seat"),
+            Some(1),
+            "and the frame after it opens the new epoch at 1",
+        );
+    }
+
+    /// The first `Connected` of a fresh seat is the same rule: the seat had
+    /// no occupant to number against, so the frame closes a run of one and
+    /// the epoch it opens starts at 1.
+    #[test]
+    fn a_fresh_connect_opens_its_epoch_at_one() {
+        let fanout = UpdateFanout::default();
+        let mut rx = fanout.subscribe(SubscriberRole::Answering);
+        let seat = seat("lead");
+
+        assert!(
+            fanout.send(SessionUpdate::Connected {
+                key: seat.clone(),
+                session_id: SessionId("the-first-occupant".to_owned()),
+                cwd: "/tmp".to_owned(),
+                current_model: CurrentModel::new("m", "m", "m"),
+                available_models: Vec::new(),
+                mode: None,
+                history: Vec::new(),
+                dropped: 0,
+                compaction_count: 0,
+            }),
+            "a subscribed fan-out delivers",
+        );
+
+        assert_eq!(next_seq(&mut rx, "seat"), Some(1), "the connect is the seat's first frame");
+
+        assert!(fanout.send(a_turn_ends(&seat)), "a subscribed fan-out delivers");
+        assert_eq!(
+            next_seq(&mut rx, "seat"),
+            Some(1),
+            "and the epoch it opens starts at 1, so the client wiping on it expects 1",
+        );
+    }
+
+    /// A frame that belongs to no seat rides unnumbered, and numbering it
+    /// would put a hole in every seat's sequence at once.
+    #[test]
+    fn a_frame_for_no_seat_rides_unnumbered() {
+        let fanout = UpdateFanout::default();
+        let mut rx = fanout.subscribe(SubscriberRole::Answering);
+        let seat = seat("lead");
+
+        assert!(fanout.send(status("boot")), "a subscribed fan-out delivers");
+        assert!(fanout.send(a_turn_ends(&seat)), "a subscribed fan-out delivers");
+
+        assert_eq!(
+            next_seq(&mut rx, "app-level"),
+            None,
+            "a workspace-level frame carries no number",
+        );
+        assert_eq!(
+            next_seq(&mut rx, "seat"),
+            Some(1),
+            "and it does not advance any seat's counter",
+        );
+    }
+
+    /// Two seats interleaved keep independent counters: a frame for another
+    /// seat must not advance this one's.
+    ///
+    /// Catches one counter for the whole fan-out, which is the reading that
+    /// makes a second seat's traffic look like a hole in the first's.
+    #[test]
+    fn two_seats_keep_independent_counters() {
+        let fanout = UpdateFanout::default();
+        let mut rx = fanout.subscribe(SubscriberRole::Answering);
+        let lead = seat("lead");
+        let worker = seat("worker");
+
+        assert!(fanout.send(a_turn_ends(&lead)), "a subscribed fan-out delivers");
+        assert!(fanout.send(a_turn_ends(&worker)), "a subscribed fan-out delivers");
+        assert!(fanout.send(a_turn_ends(&lead)), "a subscribed fan-out delivers");
+        assert!(fanout.send(a_turn_ends(&worker)), "a subscribed fan-out delivers");
+
+        assert_eq!(next_seq(&mut rx, "lead"), Some(1), "the lead's first frame is number 1");
+        assert_eq!(
+            next_seq(&mut rx, "worker"),
+            Some(1),
+            "the worker's own run opens at 1 rather than continuing the lead's",
+        );
+        assert_eq!(next_seq(&mut rx, "lead"), Some(2), "the lead's next is the successor");
+        assert_eq!(next_seq(&mut rx, "worker"), Some(2), "and so is the worker's");
+    }
+
+    /// The boot backlog keeps the numbers its frames were minted with, so a
+    /// client joining at the first subscribe has no hole at the join.
+    #[test]
+    fn the_backlog_keeps_the_numbers_its_frames_were_minted_with() {
+        let fanout = UpdateFanout::default();
+        let seat = seat("lead");
+        assert!(!fanout.send(a_turn_ends(&seat)), "nothing has attached to take it");
+        assert!(!fanout.send(a_turn_ends(&seat)), "nothing has attached to take it");
+
+        let mut first = fanout.subscribe(SubscriberRole::Answering);
+        assert!(fanout.send(a_turn_ends(&seat)), "the subscriber is attached");
+
+        assert_eq!(next_seq(&mut first, "first"), Some(1), "the held frame keeps its number");
+        assert_eq!(next_seq(&mut first, "first"), Some(2), "and so does the one after it");
+        assert_eq!(
+            next_seq(&mut first, "first"),
+            Some(3),
+            "with the live frame continuing from the backlog rather than restarting",
+        );
     }
 }

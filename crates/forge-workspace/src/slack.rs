@@ -1292,11 +1292,8 @@ mod tests {
     /// is returned so it outlives the workspace it names.
     fn workspace_with_one_slack_workspace(
         label: &str,
-    ) -> (
-        Arc<Workspace>,
-        tempfile::TempDir,
-        tokio::sync::mpsc::UnboundedReceiver<crate::protocol::SessionUpdate>,
-    ) {
+    ) -> (Arc<Workspace>, tempfile::TempDir, tokio::sync::mpsc::UnboundedReceiver<crate::SeatUpdate>)
+    {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut config = crate::config::LoadedConfig::empty_for_test();
         config.slack = vec![cfg(label, "xoxp-test")];
@@ -1334,8 +1331,8 @@ mod tests {
         let (_id, _decision) = ws.register_slack_draft(&caller, draft("acme", "C1"));
 
         let mut addressed = Vec::new();
-        while let Ok(update) = rx.try_recv() {
-            if let crate::protocol::SessionUpdate::SlackPostPending { key, .. } = update {
+        while let Ok(frame) = rx.try_recv() {
+            if let crate::protocol::SessionUpdate::SlackPostPending { key, .. } = frame.update {
                 addressed.push(key);
             }
         }
@@ -1390,7 +1387,10 @@ mod tests {
         assert!(
             matches!(
                 observer.try_recv(),
-                Ok(crate::protocol::SessionUpdate::SlackPostPending { .. })
+                Ok(crate::SeatUpdate {
+                    update: crate::protocol::SessionUpdate::SlackPostPending { .. },
+                    ..
+                })
             ),
             "the observer is still delivered the draft it cannot answer",
         );
@@ -1421,8 +1421,10 @@ mod tests {
         assert!(ws.resolve_slack_draft(id, &caller, answered(true)), "the draft was waiting");
 
         let mut resolved = Vec::new();
-        while let Ok(update) = rx.try_recv() {
-            if let crate::protocol::SessionUpdate::SlackDraftResolved { key, id, ending } = update {
+        while let Ok(frame) = rx.try_recv() {
+            if let crate::protocol::SessionUpdate::SlackDraftResolved { key, id, ending } =
+                frame.update
+            {
                 resolved.push((key, id, ending));
             }
         }
@@ -2032,8 +2034,10 @@ mod tests {
 
         let mut delivered = None;
         for _ in 0..600 {
-            while let Ok(update) = update_rx.try_recv() {
-                if let crate::protocol::SessionUpdate::SlackMessageAppended { prose, .. } = update {
+            while let Ok(frame) = update_rx.try_recv() {
+                if let crate::protocol::SessionUpdate::SlackMessageAppended { prose, .. } =
+                    frame.update
+                {
                     delivered = Some(prose);
                 }
             }
@@ -2516,13 +2520,13 @@ mod tests {
     /// The one `ConnectorSubscriptionsChanged` on a test's update stream, as
     /// its key and the two sets it announces.
     fn next_connectors_changed(
-        rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::protocol::SessionUpdate>,
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::SeatUpdate>,
     ) -> (SessionSlot, Vec<forge_primitives::GotifySubscription>, Vec<SlackSubscription>) {
         match rx.try_recv() {
-            Ok(crate::protocol::SessionUpdate::ConnectorSubscriptionsChanged {
-                key,
-                gotify,
-                slack,
+            Ok(crate::SeatUpdate {
+                update:
+                    crate::protocol::SessionUpdate::ConnectorSubscriptionsChanged { key, gotify, slack },
+                ..
             }) => (key, gotify, slack),
             other => {
                 panic!("expected a ConnectorSubscriptionsChanged on the stream, got {other:?}")

@@ -60,6 +60,7 @@ pub struct ViewSurface {
 /// The update the core emits, re-exported: it is the workspace-to-view
 /// protocol already, so a view subscribes to it rather than to a second
 /// vocabulary this crate would have to keep in step.
+pub use forge_workspace::SeatUpdate;
 pub use forge_workspace::SessionUpdate;
 
 /// The wire shape a turn that finished arrives as. A view marking a
@@ -147,7 +148,7 @@ impl ViewSurface {
     ///
     /// A consumer that reads the stream and renders no prompt takes
     /// [`Self::subscribe_mirror`] instead.
-    pub fn subscribe(&self) -> tokio::sync::mpsc::UnboundedReceiver<SessionUpdate> {
+    pub fn subscribe(&self) -> tokio::sync::mpsc::UnboundedReceiver<SeatUpdate> {
         self.workspace.subscribe()
     }
 
@@ -163,7 +164,7 @@ impl ViewSurface {
     /// first, and a fold is not the view that draws it.
     ///
     /// A view with a dock to answer from takes [`Self::subscribe`].
-    pub fn subscribe_mirror(&self) -> tokio::sync::mpsc::UnboundedReceiver<SessionUpdate> {
+    pub fn subscribe_mirror(&self) -> tokio::sync::mpsc::UnboundedReceiver<SeatUpdate> {
         self.workspace.subscribe_mirror()
     }
 
@@ -182,7 +183,7 @@ impl ViewSurface {
     pub fn subscribe_client(
         &self,
         answering: bool,
-    ) -> tokio::sync::mpsc::UnboundedReceiver<SessionUpdate> {
+    ) -> tokio::sync::mpsc::UnboundedReceiver<SeatUpdate> {
         if answering {
             self.workspace.subscribe_answerer()
         } else {
@@ -383,7 +384,7 @@ mod tests {
     use forge_primitives::SessionSlot;
     use forge_workspace::Workspace;
 
-    use super::{SessionUpdate, ViewSurface};
+    use super::{SeatUpdate, SessionUpdate, ViewSurface};
     use crate::test_support::logged;
 
     /// The claude versions are facts about the world rather than about a
@@ -433,7 +434,10 @@ mod tests {
 
         let mut subscribed = surface.subscribe();
         assert!(
-            matches!(subscribed.try_recv(), Ok(SessionUpdate::CatalogLoaded)),
+            matches!(
+                subscribed.try_recv(),
+                Ok(SeatUpdate { update: SessionUpdate::CatalogLoaded, .. })
+            ),
             "a view attaching through this verb takes the stream whole, held notice included",
         );
     }
@@ -458,7 +462,10 @@ mod tests {
 
         let mut answering = workspace.subscribe();
         assert!(
-            matches!(answering.try_recv(), Ok(SessionUpdate::CatalogLoaded)),
+            matches!(
+                answering.try_recv(),
+                Ok(SeatUpdate { update: SessionUpdate::CatalogLoaded, .. })
+            ),
             "the held notice is still there for the subscriber that renders prompts",
         );
     }

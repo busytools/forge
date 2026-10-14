@@ -24,7 +24,7 @@ use super::envelope::{ClientMessage, ClientSettings, ServerMessage, Subject};
 use super::wire::{conversation_for, encode_subject, page};
 use crate::live::Live;
 use crate::surface::{DictateOutcome, ViewSurface};
-use crate::{Command, DispatchError, SessionUpdate};
+use crate::{Command, DispatchError, SeatUpdate, SessionUpdate};
 
 /// The seats this connection is holding, each given back when this drops.
 ///
@@ -251,7 +251,7 @@ async fn drive(socket: &mut WebSocket, state: &Arc<TransportState>) -> anyhow::R
     // as answering before a client says so would count one that cannot show a
     // prompt as able to answer it, and the core parks a turn on that reply
     // rather than failing it.
-    let mut updates: Option<(mpsc::UnboundedReceiver<SessionUpdate>, bool)> = None;
+    let mut updates: Option<(mpsc::UnboundedReceiver<SeatUpdate>, bool)> = None;
     // None until a subscribe declares the browser capability and the role is
     // free. Dropping it hands the role back.
     let mut hosting: Option<Hosting> = None;
@@ -384,7 +384,7 @@ async fn run_connection(
     state: &Arc<TransportState>,
     watched: &mut Vec<Subject>,
     holds: &mut Holds<'_>,
-    updates: &mut Option<(mpsc::UnboundedReceiver<SessionUpdate>, bool)>,
+    updates: &mut Option<(mpsc::UnboundedReceiver<SeatUpdate>, bool)>,
     dictate: &mut Streaming,
     hosting: &mut Option<Hosting>,
     me: u64,
@@ -407,7 +407,8 @@ async fn run_connection(
             // DISABLES its branch in `select!` rather than ending the loop, so a closed channel
             // would silently stop delivering while the socket stayed open.
             heard = next_update(updates) => {
-                let Some(update) = heard else { break };
+                let Some(frame) = heard else { break };
+                let update = frame.update;
                 // A take of this connection's that ends takes its seat back
                 // out: with the take gone, the seat has no stream a frame
                 // could belong to. Only the claim that take NAMES is retired
@@ -552,7 +553,7 @@ async fn run_connection(
 /// subscribed subject forwards no update anyway.
 fn open_stream(
     state: &TransportState,
-    updates: &mut Option<(mpsc::UnboundedReceiver<SessionUpdate>, bool)>,
+    updates: &mut Option<(mpsc::UnboundedReceiver<SeatUpdate>, bool)>,
     answering: bool,
 ) -> Vec<SessionUpdate> {
     if updates.as_ref().is_some_and(|(_, held)| *held >= answering) {
@@ -560,8 +561,8 @@ fn open_stream(
     }
     let queued = updates.take().map_or_else(Vec::new, |(mut receiver, _)| {
         let mut queued = Vec::new();
-        while let Ok(update) = receiver.try_recv() {
-            queued.push(update);
+        while let Ok(frame) = receiver.try_recv() {
+            queued.push(frame.update);
         }
         queued
     });
@@ -573,8 +574,8 @@ fn open_stream(
 /// none - which is what keeps the branch out of the way until the client has
 /// subscribed and the role is known.
 async fn next_update(
-    updates: &mut Option<(mpsc::UnboundedReceiver<SessionUpdate>, bool)>,
-) -> Option<SessionUpdate> {
+    updates: &mut Option<(mpsc::UnboundedReceiver<SeatUpdate>, bool)>,
+) -> Option<SeatUpdate> {
     match updates.as_mut() {
         Some((updates, _)) => updates.recv().await,
         None => std::future::pending().await,
@@ -645,7 +646,7 @@ async fn handle_client(
     state: &Arc<TransportState>,
     watched: &mut Vec<Subject>,
     holds: &mut Holds<'_>,
-    updates: &mut Option<(mpsc::UnboundedReceiver<SessionUpdate>, bool)>,
+    updates: &mut Option<(mpsc::UnboundedReceiver<SeatUpdate>, bool)>,
     dictate: &mut Streaming,
     hosting: &mut Option<Hosting>,
     me: u64,
@@ -2016,7 +2017,7 @@ mod tests {
         };
         let id = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
-                match updates.recv().await {
+                match updates.recv().await.map(|frame| frame.update) {
                     Some(SessionUpdate::DocumentHandOffPending { id, .. }) => break id,
                     Some(_) => {}
                     None => panic!("the stream ended before the ask"),

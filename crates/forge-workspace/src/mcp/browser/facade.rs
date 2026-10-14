@@ -233,8 +233,10 @@ mod tests {
         let _ = task.await;
 
         let mut resolved = Vec::new();
-        while let Ok(update) = rx.try_recv() {
-            if let crate::protocol::SessionUpdate::BrowserHandOffResolved { ending, .. } = update {
+        while let Ok(frame) = rx.try_recv() {
+            if let crate::protocol::SessionUpdate::BrowserHandOffResolved { ending, .. } =
+                frame.update
+            {
                 resolved.push(ending);
             }
         }

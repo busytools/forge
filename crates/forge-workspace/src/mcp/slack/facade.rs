@@ -1293,7 +1293,7 @@ mod tests {
         Arc<dyn SlackFacade>,
         Arc<Workspace>,
         Arc<RecordingApi>,
-        tokio::sync::mpsc::UnboundedReceiver<crate::protocol::SessionUpdate>,
+        tokio::sync::mpsc::UnboundedReceiver<crate::SeatUpdate>,
     ) {
         let dir = tempdir().expect("tempdir");
         let mut config = LoadedConfig::empty_for_test();
@@ -1519,8 +1519,9 @@ mod tests {
 
         let mut seen = None;
         for _ in 0..200 {
-            while let Ok(update) = rx.try_recv() {
-                if let crate::protocol::SessionUpdate::SlackPostPending { draft, .. } = update {
+            while let Ok(frame) = rx.try_recv() {
+                if let crate::protocol::SessionUpdate::SlackPostPending { draft, .. } = frame.update
+                {
                     seen = Some(draft.conversation_label);
                 }
             }
@@ -1581,8 +1582,9 @@ mod tests {
 
         let mut seen = None;
         for _ in 0..200 {
-            while let Ok(update) = rx.try_recv() {
-                if let crate::protocol::SessionUpdate::SlackPostPending { draft, .. } = update {
+            while let Ok(frame) = rx.try_recv() {
+                if let crate::protocol::SessionUpdate::SlackPostPending { draft, .. } = frame.update
+                {
                     seen = Some(draft.text);
                 }
             }
@@ -1656,8 +1658,9 @@ mod tests {
         let _ = task.await;
 
         let mut resolved = Vec::new();
-        while let Ok(update) = rx.try_recv() {
-            if let crate::protocol::SessionUpdate::SlackDraftResolved { ending, .. } = update {
+        while let Ok(frame) = rx.try_recv() {
+            if let crate::protocol::SessionUpdate::SlackDraftResolved { ending, .. } = frame.update
+            {
                 resolved.push(ending);
             }
         }
@@ -1726,8 +1729,10 @@ mod tests {
         assert!(ws.slack_drafts.lock().is_empty(), "the expiry also clears the registry entry");
 
         let mut resolved = Vec::new();
-        while let Ok(update) = rx.try_recv() {
-            if let crate::protocol::SessionUpdate::SlackDraftResolved { key, id, ending } = update {
+        while let Ok(frame) = rx.try_recv() {
+            if let crate::protocol::SessionUpdate::SlackDraftResolved { key, id, ending } =
+                frame.update
+            {
                 resolved.push((key, id, ending));
             }
         }

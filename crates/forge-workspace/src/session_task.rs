@@ -2437,7 +2437,7 @@ fn spawn_question_response_forwarder(
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use crate::update_fanout::SubscriberRole;
+    use crate::update_fanout::{SeatUpdate, SubscriberRole};
     use forge_agent::Agent;
     use forge_agent::client::SpawnFailureKind;
     // For the write! macros the output-file fixtures build their lines with.
@@ -2555,8 +2555,9 @@ mod tests {
         // The rollback runs in a detached task, so wait for the Removed
         // event that says it ran rather than for a wall clock.
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while let Some(update) = update_rx.recv().await {
-                if let crate::protocol::SessionUpdate::WorkerStatusChanged { action, .. } = update
+            while let Some(frame) = update_rx.recv().await {
+                if let crate::protocol::SessionUpdate::WorkerStatusChanged { action, .. } =
+                    frame.update
                     && action == crate::protocol::WorkerStatusAction::Removed
                 {
                     return;
@@ -2666,7 +2667,7 @@ mod tests {
     fn review_task_for(
         workspace: &Arc<crate::Workspace>,
         key: &SessionSlot,
-    ) -> (SessionTask, mpsc::UnboundedReceiver<SessionUpdate>) {
+    ) -> (SessionTask, mpsc::UnboundedReceiver<SeatUpdate>) {
         let (handle, _cmds) = Agent::testing_stub();
         let handle = Arc::new(handle);
         let (_cmd_tx, command_rx) = mpsc::unbounded_channel();
@@ -3068,9 +3069,9 @@ mod tests {
         );
 
         let mut echoed = false;
-        while let Ok(u) = update_rx.try_recv() {
+        while let Ok(frame) = update_rx.try_recv() {
             if matches!(
-                u,
+                frame.update,
                 SessionUpdate::SlackMessageAppended { key, prose, .. }
                     if key == session_key &&prose.contains("the buffered text")
             ) {
@@ -3128,8 +3129,8 @@ mod tests {
 
         let mut connected = false;
         let mut echo_after_connected = false;
-        while let Ok(u) = update_rx.try_recv() {
-            match u {
+        while let Ok(frame) = update_rx.try_recv() {
+            match frame.update {
                 SessionUpdate::Connected { .. } => connected = true,
                 SessionUpdate::SlackMessageAppended { key, .. } if key == slot => {
                     assert!(
@@ -3146,11 +3147,13 @@ mod tests {
 
     /// The review-activity notice a task emitted, if any.
     fn drained_notice(
-        update_rx: &mut mpsc::UnboundedReceiver<SessionUpdate>,
+        update_rx: &mut mpsc::UnboundedReceiver<SeatUpdate>,
     ) -> Option<(SessionSlot, String, usize, String)> {
         let mut notice = None;
-        while let Ok(update) = update_rx.try_recv() {
-            if let SessionUpdate::ReviewActivityNotice { key, branch, waiting, message } = update {
+        while let Ok(frame) = update_rx.try_recv() {
+            if let SessionUpdate::ReviewActivityNotice { key, branch, waiting, message } =
+                frame.update
+            {
                 notice = Some((key, branch, waiting, message));
             }
         }
@@ -3407,7 +3410,7 @@ mod tests {
         key: &SessionSlot,
     ) -> (
         SessionTask,
-        mpsc::UnboundedReceiver<SessionUpdate>,
+        mpsc::UnboundedReceiver<SeatUpdate>,
         mpsc::UnboundedReceiver<forge_primitives::AgentCommand>,
     ) {
         workspace.enable_test_dispatch_intercept();
@@ -3525,10 +3528,10 @@ mod tests {
     }
 
     /// Everything `updates` holds right now.
-    fn drain_updates(rx: &mut mpsc::UnboundedReceiver<SessionUpdate>) -> Vec<SessionUpdate> {
+    fn drain_updates(rx: &mut mpsc::UnboundedReceiver<SeatUpdate>) -> Vec<SessionUpdate> {
         let mut seen = Vec::new();
-        while let Ok(update) = rx.try_recv() {
-            seen.push(update);
+        while let Ok(frame) = rx.try_recv() {
+            seen.push(frame.update);
         }
         seen
     }
@@ -3809,7 +3812,7 @@ mod tests {
         let update = update_rx.try_recv().expect("an update emits");
         assert!(
             matches!(
-                update,
+                update.update,
                 SessionUpdate::ConnectionFailed { key: ref emitted, .. } if *emitted == key
             ),
             "the ConnectionFailed envelope still goes out"
@@ -4017,7 +4020,8 @@ mod tests {
         assert!(
             matches!(
                 observer.try_recv(),
-                Ok(SessionUpdate::PermissionRequest { tool_id, .. }) if tool_id == "tu-obs"
+                Ok(SeatUpdate { update: SessionUpdate::PermissionRequest { tool_id, .. }, .. })
+                    if tool_id == "tu-obs"
             ),
             "the observer is still delivered the request it cannot answer",
         );
@@ -4063,7 +4067,8 @@ mod tests {
         assert!(
             matches!(
                 observer.try_recv(),
-                Ok(SessionUpdate::QuestionRequest { tool_id, .. }) if tool_id == "tu-q-obs"
+                Ok(SeatUpdate { update: SessionUpdate::QuestionRequest { tool_id, .. }, .. })
+                    if tool_id == "tu-q-obs"
             ),
             "the observer is still delivered the question it cannot answer",
         );
@@ -4156,8 +4161,8 @@ mod tests {
         });
 
         let mut resolved = None;
-        while let Ok(update) = observer.try_recv() {
-            if let SessionUpdate::PendingInteractionResolved { question_index, .. } = update {
+        while let Ok(frame) = observer.try_recv() {
+            if let SessionUpdate::PendingInteractionResolved { question_index, .. } = frame.update {
                 resolved = Some(question_index);
             }
         }
@@ -4227,8 +4232,10 @@ mod tests {
         assert!(
             matches!(
                 update_rx.try_recv(),
-                Ok(SessionUpdate::SetModelFailed { model, message, .. })
-                    if model == "claude-attempted" && message == "not available"
+                Ok(SeatUpdate {
+                    update: SessionUpdate::SetModelFailed { model, message, .. },
+                    ..
+                }) if model == "claude-attempted" && message == "not available"
             ),
             "SetModelFailed keeps model + message for the rollback reducer"
         );
@@ -4241,7 +4248,8 @@ mod tests {
         assert!(
             matches!(
                 update_rx.try_recv(),
-                Ok(SessionUpdate::TurnError { message, .. }) if message == "stdin write failed"
+                Ok(SeatUpdate { update: SessionUpdate::TurnError { message, .. }, .. })
+                    if message == "stdin write failed"
             ),
             "TurnError carries the failure text so the spinner unwinds"
         );
@@ -4268,7 +4276,10 @@ mod tests {
             assert!(
                 matches!(
                     update_rx.try_recv(),
-                    Ok(SessionUpdate::TurnError { class: Some(on_wire), .. }) if on_wire == class
+                    Ok(SeatUpdate {
+                        update: SessionUpdate::TurnError { class: Some(on_wire), .. },
+                        ..
+                    }) if on_wire == class
                 ),
                 "the class has to reach the stream as {class:?}, not as None a reader must guess past",
             );
@@ -4471,11 +4482,11 @@ provider = "anthropic"
 
     /// The monitor sets these updates announced, in the order they went out.
     fn announced_monitors(
-        updates: &mut mpsc::UnboundedReceiver<SessionUpdate>,
+        updates: &mut mpsc::UnboundedReceiver<SeatUpdate>,
     ) -> Vec<Vec<forge_primitives::MonitorRecord>> {
         let mut announced = Vec::new();
-        while let Ok(update) = updates.try_recv() {
-            if let SessionUpdate::MonitorsChanged { monitors, .. } = update {
+        while let Ok(frame) = updates.try_recv() {
+            if let SessionUpdate::MonitorsChanged { monitors, .. } = frame.update {
                 announced.push(monitors);
             }
         }
@@ -4484,11 +4495,11 @@ provider = "anthropic"
 
     /// The task sets these updates announced, in the order they went out.
     fn announced_tasks(
-        updates: &mut mpsc::UnboundedReceiver<SessionUpdate>,
+        updates: &mut mpsc::UnboundedReceiver<SeatUpdate>,
     ) -> Vec<Vec<forge_workspace::BackgroundTask>> {
         let mut announced = Vec::new();
-        while let Ok(update) = updates.try_recv() {
-            if let SessionUpdate::BackgroundTasksChanged { tasks, .. } = update {
+        while let Ok(frame) = updates.try_recv() {
+            if let SessionUpdate::BackgroundTasksChanged { tasks, .. } = frame.update {
                 announced.push(tasks);
             }
         }
@@ -4526,11 +4537,11 @@ provider = "anthropic"
 
     /// The card lists a task announced, in order.
     fn announced_cards(
-        updates: &mut mpsc::UnboundedReceiver<SessionUpdate>,
+        updates: &mut mpsc::UnboundedReceiver<SeatUpdate>,
     ) -> Vec<Vec<forge_primitives::runtime::SubagentCard>> {
         let mut announced = Vec::new();
-        while let Ok(update) = updates.try_recv() {
-            if let SessionUpdate::SubagentCardsChanged { cards, .. } = update {
+        while let Ok(frame) = updates.try_recv() {
+            if let SessionUpdate::SubagentCardsChanged { cards, .. } = frame.update {
                 announced.push(cards);
             }
         }
@@ -4640,11 +4651,11 @@ provider = "anthropic"
 
     /// The command catalogues these updates announced, in the order they went out.
     fn announced_commands(
-        updates: &mut mpsc::UnboundedReceiver<SessionUpdate>,
+        updates: &mut mpsc::UnboundedReceiver<SeatUpdate>,
     ) -> Vec<Vec<forge_primitives::runtime::AvailableCommand>> {
         let mut announced = Vec::new();
-        while let Ok(update) = updates.try_recv() {
-            if let SessionUpdate::SlashCommandsChanged { commands, .. } = update {
+        while let Ok(frame) = updates.try_recv() {
+            if let SessionUpdate::SlashCommandsChanged { commands, .. } = frame.update {
                 announced.push(commands);
             }
         }
@@ -4653,11 +4664,11 @@ provider = "anthropic"
 
     /// The agent catalogues these updates announced, in the order they went out.
     fn announced_agents(
-        updates: &mut mpsc::UnboundedReceiver<SessionUpdate>,
+        updates: &mut mpsc::UnboundedReceiver<SeatUpdate>,
     ) -> Vec<Vec<forge_primitives::runtime::AvailableAgent>> {
         let mut announced = Vec::new();
-        while let Ok(update) = updates.try_recv() {
-            if let SessionUpdate::SubagentsChanged { subagents, .. } = update {
+        while let Ok(frame) = updates.try_recv() {
+            if let SessionUpdate::SubagentsChanged { subagents, .. } = frame.update {
                 announced.push(subagents);
             }
         }
@@ -4848,11 +4859,11 @@ provider = "anthropic"
 
     /// The walks these updates announced, in the order they went out.
     fn announced_walks(
-        updates: &mut mpsc::UnboundedReceiver<SessionUpdate>,
+        updates: &mut mpsc::UnboundedReceiver<SeatUpdate>,
     ) -> Vec<forge_agent::env::processes::ProcessSnapshot> {
         let mut announced = Vec::new();
-        while let Ok(update) = updates.try_recv() {
-            if let SessionUpdate::ProcessesChanged { snapshot, .. } = update {
+        while let Ok(frame) = updates.try_recv() {
+            if let SessionUpdate::ProcessesChanged { snapshot, .. } = frame.update {
                 announced.push(snapshot);
             }
         }
@@ -5062,7 +5073,7 @@ provider = "anthropic"
         // it folded keeps offering a prompt the core has let go, and every
         // click on it reaches nothing.
         let announced: Vec<String> = std::iter::from_fn(|| update_rx.try_recv().ok())
-            .filter_map(|update| match update {
+            .filter_map(|frame| match frame.update {
                 SessionUpdate::PendingInteractionResolved { key, tool_id, .. } => {
                     assert_eq!(key, SessionSlot::from_str_for_test("old-uuid"));
                     Some(tool_id)
@@ -5305,8 +5316,9 @@ provider = "anthropic"
         // the entry the parked fire came from - the bucket is the only place
         // that identity survives an asleep fire.
         let mut echoed = None;
-        while let Ok(u) = update_rx.try_recv() {
-            if let SessionUpdate::CronPromptAppended { key, text, cron_id, description, .. } = u
+        while let Ok(frame) = update_rx.try_recv() {
+            if let SessionUpdate::CronPromptAppended { key, text, cron_id, description, .. } =
+                frame.update
                 && key == session_key
                 && text == "morning reminder"
             {
@@ -5419,8 +5431,9 @@ provider = "anthropic"
         task.translate_event(connected_event(&session_key.display(), "/tmp/cron-drain"));
 
         let mut heard: Vec<(String, String, Option<String>)> = Vec::new();
-        while let Ok(u) = update_rx.try_recv() {
-            if let SessionUpdate::CronPromptAppended { key, text, cron_id, description, .. } = u
+        while let Ok(frame) = update_rx.try_recv() {
+            if let SessionUpdate::CronPromptAppended { key, text, cron_id, description, .. } =
+                frame.update
                 && key == session_key
             {
                 heard.push((text, cron_id, description));
@@ -5514,8 +5527,8 @@ provider = "anthropic"
             key: session_key.clone(),
         });
         let mut replayed = None;
-        while let Ok(update) = update_rx.try_recv() {
-            if let SessionUpdate::HistoryReplayed { history, .. } = update {
+        while let Ok(frame) = update_rx.try_recv() {
+            if let SessionUpdate::HistoryReplayed { history, .. } = frame.update {
                 replayed = Some(history);
             }
         }
@@ -5598,8 +5611,8 @@ provider = "anthropic"
             task.translate_event(event);
 
             let mut handed = None;
-            while let Ok(update) = update_rx.try_recv() {
-                match update {
+            while let Ok(frame) = update_rx.try_recv() {
+                match frame.update {
                     SessionUpdate::Connected { history, dropped, .. }
                     | SessionUpdate::SessionReplaced { history, dropped, .. } => {
                         handed = Some((history, dropped));
@@ -5692,8 +5705,8 @@ provider = "anthropic"
         });
 
         let mut answered = None;
-        while let Ok(update) = update_rx.try_recv() {
-            if let SessionUpdate::CallOutput { key, call_id, output } = update {
+        while let Ok(frame) = update_rx.try_recv() {
+            if let SessionUpdate::CallOutput { key, call_id, output } = frame.update {
                 answered = Some((key, call_id, output));
             }
         }
@@ -5780,8 +5793,8 @@ provider = "anthropic"
         }
 
         let mut answers = Vec::new();
-        while let Ok(update) = update_rx.try_recv() {
-            if let SessionUpdate::CallOutput { key, call_id, output } = update {
+        while let Ok(frame) = update_rx.try_recv() {
+            if let SessionUpdate::CallOutput { key, call_id, output } = frame.update {
                 answers.push((key, call_id, output));
             }
         }
@@ -5835,8 +5848,8 @@ provider = "anthropic"
             task.translate_event(event);
 
             let mut seen = None;
-            while let Ok(u) = update_rx.try_recv() {
-                match u {
+            while let Ok(frame) = update_rx.try_recv() {
+                match frame.update {
                     SessionUpdate::Connected { compaction_count, .. }
                     | SessionUpdate::SessionReplaced { compaction_count, .. } => {
                         seen = Some(compaction_count);
@@ -5920,8 +5933,8 @@ provider = "anthropic"
         });
 
         let mut replayed = None;
-        while let Ok(update) = update_rx.try_recv() {
-            if let SessionUpdate::HistoryReplayed { history, compaction_count, .. } = update {
+        while let Ok(frame) = update_rx.try_recv() {
+            if let SessionUpdate::HistoryReplayed { history, compaction_count, .. } = frame.update {
                 replayed = Some((history, compaction_count));
             }
         }
@@ -6000,8 +6013,8 @@ provider = "anthropic"
 
         let mut replaced_history_len = None;
         let mut saw_plain_connected = false;
-        while let Ok(u) = update_rx.try_recv() {
-            match u {
+        while let Ok(frame) = update_rx.try_recv() {
+            match frame.update {
                 SessionUpdate::SessionReplaced { key, history, .. } => {
                     assert_eq!(key, session_key, "SessionReplaced targets the re-spawned session");
                     replaced_history_len = Some(history.len());
@@ -6070,8 +6083,8 @@ provider = "anthropic"
         assert_eq!(domain.lock().dictate_overrides, crate::dictate::DictateOverrides::default());
 
         let mut replaced_seen = false;
-        while let Ok(u) = update_rx.try_recv() {
-            replaced_seen |= matches!(u, SessionUpdate::SessionReplaced { .. });
+        while let Ok(frame) = update_rx.try_recv() {
+            replaced_seen |= matches!(frame.update, SessionUpdate::SessionReplaced { .. });
         }
         assert!(
             replaced_seen,
@@ -7026,8 +7039,8 @@ provider = "anthropic"
         });
 
         let mut saw_nonfatal = false;
-        while let Ok(update) = update_rx.try_recv() {
-            if let SessionUpdate::ConnectionFailed { key: failed_key, fatal, .. } = update {
+        while let Ok(frame) = update_rx.try_recv() {
+            if let SessionUpdate::ConnectionFailed { key: failed_key, fatal, .. } = frame.update {
                 assert!(!fatal, "a failed re-spawn is recoverable, not fatal");
                 assert_eq!(failed_key, key);
                 saw_nonfatal = true;
@@ -7205,7 +7218,7 @@ provider = "anthropic"
         );
 
         let announced: Vec<crate::protocol::SessionUpdate> =
-            std::iter::from_fn(|| updates.try_recv().ok()).collect();
+            std::iter::from_fn(|| updates.try_recv().ok()).map(|frame| frame.update).collect();
         assert!(
             announced.iter().any(|update| matches!(
                 update,
@@ -7270,7 +7283,7 @@ provider = "anthropic"
             "the prompt itself still reaches the agent: the pile is a view, not the send",
         );
         let announced: Vec<crate::protocol::SessionUpdate> =
-            std::iter::from_fn(|| updates.try_recv().ok()).collect();
+            std::iter::from_fn(|| updates.try_recv().ok()).map(|frame| frame.update).collect();
         assert!(
             !announced.iter().any(|update| matches!(
                 update,
@@ -7354,7 +7367,7 @@ provider = "anthropic"
             "and a row is kept for a CLI that can settle it",
         );
         let announced: Vec<crate::protocol::SessionUpdate> =
-            std::iter::from_fn(|| updates.try_recv().ok()).collect();
+            std::iter::from_fn(|| updates.try_recv().ok()).map(|frame| frame.update).collect();
         assert!(
             announced.iter().any(|update| matches!(
                 update,

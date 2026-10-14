@@ -67,6 +67,7 @@ pub const FORGE_CARGO_LOCK_DIGEST: &str = env!("FORGE_CARGO_LOCK_DIGEST");
 
 /// The core's update protocol, as a view reads it. It is the same type the
 /// same call hands a view, so nothing here wraps or renames it.
+pub use surface::SeatUpdate;
 pub use surface::SessionUpdate;
 
 /// The core's write protocol, re-exported for the same reason the update

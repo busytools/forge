@@ -263,8 +263,8 @@ mod tests {
         ws.expire_parked_for_slot(&slot(None), PeerFailureReason::TargetConnectionFailed);
 
         let mut echo = None;
-        while let Ok(update) = rx.try_recv() {
-            if let SessionUpdate::PeerEnvelopeAppended { key, wrapped, .. } = update {
+        while let Ok(frame) = rx.try_recv() {
+            if let SessionUpdate::PeerEnvelopeAppended { key, wrapped, .. } = frame.update {
                 echo = Some((key, wrapped));
             }
         }

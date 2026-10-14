@@ -537,6 +537,7 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SeatUpdate;
 
     /// A file present on disk, so the target rules are about the rules.
     fn present(dir: &Path, file: &str) {
@@ -743,11 +744,11 @@ mod tests {
 
     /// The last models frame queued so far, draining what came before it.
     fn drained_models(
-        updates: &mut tokio::sync::mpsc::UnboundedReceiver<crate::SessionUpdate>,
+        updates: &mut tokio::sync::mpsc::UnboundedReceiver<SeatUpdate>,
     ) -> Option<crate::catalogue::DictateModelsSnapshot> {
         let mut found = None;
-        while let Ok(update) = updates.try_recv() {
-            if let crate::SessionUpdate::DictateModelsChanged { models } = update {
+        while let Ok(frame) = updates.try_recv() {
+            if let crate::SessionUpdate::DictateModelsChanged { models } = frame.update {
                 found = Some(models);
             }
         }
@@ -779,12 +780,15 @@ mod tests {
     /// the write runs off the runtime thread, so the stop's own frame lands
     /// before it and this is the one that says the bytes are on disk.
     async fn await_recorded(
-        updates: &mut tokio::sync::mpsc::UnboundedReceiver<crate::SessionUpdate>,
+        updates: &mut tokio::sync::mpsc::UnboundedReceiver<SeatUpdate>,
     ) -> crate::catalogue::DictateModelsSnapshot {
         tokio::time::timeout(std::time::Duration::from_secs(15), async {
             loop {
                 match updates.recv().await {
-                    Some(crate::SessionUpdate::DictateModelsChanged { models }) => {
+                    Some(SeatUpdate {
+                        update: crate::SessionUpdate::DictateModelsChanged { models },
+                        ..
+                    }) => {
                         if !models.read_aloud.recordings.is_empty() {
                             break models;
                         }

@@ -1593,7 +1593,7 @@ mod tests {
         assert_eq!(b_binding.lock().dictate_overrides, DictateOverrides::default());
 
         let echo = updates.try_recv().expect("an echo for the session that set it");
-        match echo {
+        match echo.update {
             SessionUpdate::DictateOverrides { key, overrides } => {
                 assert_eq!(key, a);
                 assert_eq!(overrides.styling, Some(forge_dictate::normalize::Styling::Formal));
@@ -1623,10 +1623,10 @@ mod tests {
 
         let mut echoes = 0;
         let mut last = None;
-        while let Ok(update) = updates.try_recv() {
-            if matches!(update, SessionUpdate::DictateOverrides { .. }) {
+        while let Ok(frame) = updates.try_recv() {
+            if matches!(frame.update, SessionUpdate::DictateOverrides { .. }) {
                 echoes += 1;
-                last = Some(update);
+                last = Some(frame.update);
             }
         }
         assert_eq!(echoes, 3, "each set echoes, and the reset does too");
@@ -1877,7 +1877,7 @@ mod dictate_lifecycle_tests {
 
         let started = updates.recv().await.expect("the start echoes");
         assert!(
-            matches!(started, SessionUpdate::DictateStarted { initiator: Some(1), .. }),
+            matches!(started.update, SessionUpdate::DictateStarted { initiator: Some(1), .. }),
             "the start echo carries the connection the take belongs to, got {started:?}"
         );
 
@@ -1886,7 +1886,7 @@ mod dictate_lifecycle_tests {
             .await
             .expect("a level must arrive while the take is live")
             .expect("the stream stays open");
-        match level {
+        match level.update {
             SessionUpdate::DictateLevel { peak_db, .. } => assert!(
                 (peak_db + 6.02).abs() < 0.5,
                 "the meter must read the pushed samples, got {peak_db} dB"
@@ -1904,7 +1904,7 @@ mod dictate_lifecycle_tests {
         .expect("dispatch");
         let ended = tokio::time::timeout(Duration::from_secs(10), async {
             loop {
-                match updates.recv().await {
+                match updates.recv().await.map(|frame| frame.update) {
                     Some(SessionUpdate::DictateEnded { outcome, .. }) => break outcome,
                     Some(_) => {}
                     None => panic!("the update stream closed before the take resolved"),
@@ -1996,7 +1996,7 @@ mod dictate_lifecycle_tests {
 
         let ended = tokio::time::timeout(Duration::from_secs(10), async {
             loop {
-                match updates.recv().await {
+                match updates.recv().await.map(|frame| frame.update) {
                     Some(SessionUpdate::DictateEnded { outcome, .. }) => break outcome,
                     Some(_) => {}
                     None => panic!("the update stream closed before the take resolved"),
@@ -2057,11 +2057,11 @@ mod dictate_lifecycle_tests {
 
         let first = updates.recv().await.expect("the first start echoes");
         assert!(
-            matches!(first, SessionUpdate::DictateStarted { initiator: Some(1), .. }),
+            matches!(first.update, SessionUpdate::DictateStarted { initiator: Some(1), .. }),
             "got {first:?}"
         );
         let second = updates.recv().await.expect("the refusal echoes");
-        match second {
+        match second.update {
             SessionUpdate::DictateEnded {
                 outcome: DictateOutcome::Refused { message },
                 initiator,
@@ -2143,11 +2143,11 @@ mod dictate_lifecycle_tests {
 
         let started = updates.recv().await.expect("the first start echoes");
         assert!(
-            matches!(started, SessionUpdate::DictateStarted { initiator: Some(1), .. }),
+            matches!(started.update, SessionUpdate::DictateStarted { initiator: Some(1), .. }),
             "got {started:?}"
         );
         let refusal = updates.recv().await.expect("the refusal echoes");
-        match refusal {
+        match refusal.update {
             SessionUpdate::DictateEnded {
                 outcome: DictateOutcome::Refused { message },
                 initiator,
@@ -2221,7 +2221,7 @@ mod dictate_lifecycle_tests {
         .expect("dispatch");
 
         let ended = updates.recv().await.expect("the refusal echoes");
-        match ended {
+        match ended.update {
             SessionUpdate::DictateEnded {
                 outcome: DictateOutcome::Refused { message }, ..
             } => {
@@ -2255,7 +2255,7 @@ mod dictate_lifecycle_tests {
         .expect("dispatch");
 
         let ended = updates.recv().await.expect("the refusal echoes");
-        match ended {
+        match ended.update {
             SessionUpdate::DictateEnded {
                 outcome: DictateOutcome::Refused { message }, ..
             } => {
@@ -2302,7 +2302,7 @@ mod dictate_lifecycle_tests {
         // Nothing else stops it: no release, no drop, no further frame.
         let ended = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
-                match updates.recv().await {
+                match updates.recv().await.map(|frame| frame.update) {
                     Some(SessionUpdate::DictateEnded { .. }) => break true,
                     Some(_) => {}
                     None => break false,
@@ -2357,7 +2357,7 @@ mod dictate_lifecycle_tests {
         // the drop this path exists for.
         let resolved = tokio::time::timeout(Duration::from_secs(3), async {
             loop {
-                match updates.recv().await {
+                match updates.recv().await.map(|frame| frame.update) {
                     Some(SessionUpdate::DictateEnded { outcome, .. }) => break Some(outcome),
                     Some(_) => {}
                     None => break None,
@@ -2694,7 +2694,7 @@ mod dictate_lifecycle_tests {
         assert_eq!(ws.dictate_runtime.lock().stop_pending, None);
         let ended = updates.recv().await.expect("the refusal echo");
         assert!(matches!(
-            ended,
+            ended.update,
             SessionUpdate::DictateEnded { outcome: DictateOutcome::Refused { .. }, .. }
         ));
     }

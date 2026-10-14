@@ -420,11 +420,11 @@ mod tests {
 
     /// Drain every currently-queued `SessionUpdate` from the test rx.
     fn drain_updates(
-        rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::protocol::SessionUpdate>,
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::SeatUpdate>,
     ) -> Vec<crate::protocol::SessionUpdate> {
         let mut out = Vec::new();
-        while let Ok(u) = rx.try_recv() {
-            out.push(u);
+        while let Ok(frame) = rx.try_recv() {
+            out.push(frame.update);
         }
         out
     }
@@ -827,9 +827,9 @@ mod tests {
 
         // The delivery ALSO echoes the notification block into the worker's
         // chat so the user sees what arrived (mirrors the peer echo).
-        let echoed = drain_updates(&mut rx).into_iter().any(|u| {
+        let echoed = drain_updates(&mut rx).into_iter().any(|update| {
             matches!(
-                u,
+                update,
                 crate::protocol::SessionUpdate::GotifyNotificationAppended {
                     key,
                     notification,
@@ -909,17 +909,17 @@ mod tests {
     /// The one `ConnectorSubscriptionsChanged` on a test's update stream, as
     /// its key and the two sets it announces.
     fn next_connectors_changed(
-        rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::protocol::SessionUpdate>,
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::SeatUpdate>,
     ) -> (
         SessionSlot,
         Vec<forge_primitives::GotifySubscription>,
         Vec<forge_primitives::slack::SlackSubscription>,
     ) {
         match rx.try_recv() {
-            Ok(crate::protocol::SessionUpdate::ConnectorSubscriptionsChanged {
-                key,
-                gotify,
-                slack,
+            Ok(crate::SeatUpdate {
+                update:
+                    crate::protocol::SessionUpdate::ConnectorSubscriptionsChanged { key, gotify, slack },
+                ..
             }) => (key, gotify, slack),
             other => {
                 panic!("expected a ConnectorSubscriptionsChanged on the stream, got {other:?}")

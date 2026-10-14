@@ -178,7 +178,8 @@ pub async fn serve(state: Arc<TransportState>, listener: TcpListener) -> anyhow:
 async fn fold_the_stream(state: Arc<TransportState>) {
     let mut updates = state.surface.subscribe_mirror();
     let mut probes = probe::ContextProbe::default();
-    while let Some(update) = updates.recv().await {
+    while let Some(frame) = updates.recv().await {
+        let update = frame.update;
         crate::live::Live::lock(&state.live).apply(&update);
         state.conversations.apply(&update);
         request_context_usage(&state, &mut probes, &update);
