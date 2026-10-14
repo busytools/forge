@@ -126,6 +126,15 @@ interface Seat {
    */
   lastSeq: number;
   /**
+   * The newest number this seat has SEEN, applied or held above a hole.
+   *
+   * **What tells an answer the stream has outrun.** A frame held above a hole
+   * has not been applied, so it moves `lastSeq` only when its repair lands -
+   * and an answer encoded before it would read as current against `lastSeq`
+   * alone. This is the sighting, not the drawing.
+   */
+  seen: number;
+  /**
    * `lastSeq` as it stood when the ask in flight went out.
    *
    * **What tells a stale answer from a counter that started over.** An answer
@@ -138,6 +147,19 @@ interface Seat {
    * converge on anything else.
    */
   askedAt: number;
+  /**
+   * The first number the repair in flight is asking for, `null` when none is.
+   */
+  repairFrom: number | null;
+  /**
+   * Frames that arrived above a hole while its repair was on the way.
+   *
+   * **Held rather than drawn.** A repaired user row applied after the
+   * assistant frames that streamed past it opens a turn of its own at the
+   * foot, so the frames above a hole wait for the hole and draw in sequence
+   * with it.
+   */
+  repairHeld: { seq: number; span: number; update: SessionUpdate }[];
   /** Hold the seat's subscription open, answering the release: see `hold`. */
   hold: () => () => void;
   /**
@@ -181,6 +203,16 @@ const SEATS = new WeakMap<Connection, Map<string, Seat>>();
  * the page flushes with no update at all (`wake`).
  */
 const PAINT_WATCHDOG_MS = 250;
+
+/**
+ * How many frames one seat holds above a hole before it draws them unordered.
+ *
+ * The hold is the repair's round trip, so it is a handful of frames in every
+ * ordinary case; the cap is what keeps a repair whose answer never comes - or
+ * a burst far larger than the hole - from growing without bound, and its
+ * fallback is the arrival order the hold replaced.
+ */
+const REPAIR_HELD_CAP = 256;
 
 /**
  * Watch one seat.
@@ -382,7 +414,10 @@ function createSeat(
     asking: false,
     epoch: null,
     lastSeq: 0,
+    seen: 0,
     askedAt: 0,
+    repairFrom: null,
+    repairHeld: [],
     hold,
     open,
   };
@@ -608,7 +643,7 @@ function createSeat(
     seat.asking = true;
     // Where the stream stood when the ask left, so the answer can be read
     // against what has arrived since.
-    seat.askedAt = seat.lastSeq;
+    seat.askedAt = seat.seen;
     connection.refresh(subject);
   }
 
@@ -630,7 +665,7 @@ function createSeat(
     });
     seat.opened += 1;
     seat.asking = true;
-    seat.askedAt = seat.lastSeq;
+    seat.askedAt = seat.seen;
   }
 
   /**
@@ -647,17 +682,47 @@ function createSeat(
   /**
    * Ask the seat for the frames between two numbers.
    *
-   * **Silent, and never blocking.** The reader keeps reading what has already
-   * arrived while the answer is on its way, and the repaired frames fold where
-   * they fell - into their turns - so the gap fills underneath rather than
-   * holding the page at the hole. A socket that is not open cannot ask, and
-   * nothing is kept for later: the frames the reconnect's snapshot carries are
-   * the whole record, and the numbers it stands at are where the reading
-   * resumes.
+   * **Silent, and never blocking.** The frames above the hole are held while
+   * the answer is on its way, and the repaired stretch draws in sequence with
+   * them - so a gap fills underneath the reader, in order, rather than the
+   * reader watching a repaired row land below the frames that followed it. A
+   * socket that is not open cannot ask, and nothing is kept for later: the
+   * frames the reconnect's snapshot carries are the whole record, and the
+   * numbers it stands at are where the reading resumes.
    */
-  function askRange(from: number, to: number): void {
-    if (to < from || held === null) return;
-    connection.seatRange(held, seat.epoch, from, to);
+  function askRange(from: number, to: number): boolean {
+    if (to < from || held === null) return false;
+    return connection.seatRange(held, seat.epoch, from, to);
+  }
+
+  /**
+   * Draw the frames held while a repair was in flight, oldest first.
+   *
+   * A seal among them is a new occupant and takes its own path (a wipe and a
+   * fresh read), which is why they go back through [`applyFrame`] rather than
+   * straight to the record.
+   */
+  function flushRepaired(): void {
+    const waiting = seat.repairHeld.splice(0).sort((a, b) => a.seq - b.seq);
+    seat.repairFrom = null;
+    for (const frame of waiting) applyFrame(frame, true);
+  }
+
+  /**
+   * Apply one frame's update to the record and publish it.
+   *
+   * Nothing reaches a seat whose first read has not landed: the read answers
+   * the frames to come as well, and drawing before it would double every row
+   * it carries.
+   */
+  function draw(update: SessionUpdate): void {
+    if (seat.wire === null) return;
+    const next = applyUpdate(seat.wire, update);
+    // An update this record has nothing to do with: publishing it would
+    // redraw every reader of the page for no change at all.
+    if (next === seat.wire) return;
+    seat.wire = next;
+    soon();
   }
 
   /**
@@ -705,6 +770,10 @@ function createSeat(
       if (typeof occupant === 'string' && occupant !== seat.epoch) {
         seat.epoch = occupant;
         seat.lastSeq = 0;
+        seat.seen = 0;
+        // Frames held under the old epoch are not the new one's to draw.
+        seat.repairHeld.length = 0;
+        seat.repairFrom = null;
       }
       reread();
       return;
@@ -725,12 +794,29 @@ function createSeat(
       // appends crosses as the one frame they draw as - and it carries the
       // OLDEST of them.
       const reach = seq + span - 1;
+      seat.seen = Math.max(seat.seen, reach);
       if (!repaired) {
         // A frame behind the newest number this record holds is one it has
         // already drawn: a repeat, a replay or a reorder, and never a hole.
         if (reach <= seat.lastSeq) return;
+        // **A hole holds everything above it until its repair lands.** Drawn
+        // at once, a repaired user row would land below the assistant frames
+        // that streamed past it and open a turn of its own at the foot; held,
+        // the stretch draws in sequence - the hole, then what crossed it.
+        if (seat.repairFrom !== null) {
+          seat.repairHeld.push({ seq, span, update: frame.update });
+          if (seat.repairHeld.length >= REPAIR_HELD_CAP) flushRepaired();
+          return;
+        }
         if (seq > seat.lastSeq + 1) {
-          askRange(seat.lastSeq + 1, seq - 1);
+          seat.repairFrom = seat.lastSeq + 1;
+          seat.repairHeld.push({ seq, span, update: frame.update });
+          if (!askRange(seat.repairFrom, seq - 1)) {
+            // A socket that is not open cannot ask, so nothing is coming:
+            // the held frames draw rather than waiting forever.
+            flushRepaired();
+          }
+          return;
         }
       }
       // A repaired stretch can arrive either side of the frame that opened
@@ -738,15 +824,7 @@ function createSeat(
       seat.lastSeq = Math.max(seat.lastSeq, reach);
     }
 
-    // Nothing to apply to yet: the first read has not landed, and the frames
-    // to come are answered by it.
-    if (seat.wire === null) return;
-    const next = applyUpdate(seat.wire, frame.update);
-    // An update this record has nothing to do with: publishing it would
-    // redraw every reader of the page for no change at all.
-    if (next === seat.wire) return;
-    seat.wire = next;
-    soon();
+    draw(frame.update);
   }
 
   /**
@@ -796,6 +874,10 @@ function createSeat(
         // tells it where the new one stands.
         if (message.what === 'seat_range' && message.seat !== undefined) {
           if (subjectKey({ session: message.seat }) !== key) return;
+          // The frames held above the hole belong to the epoch the refusal
+          // just ended; the whole read that follows answers for the new one.
+          seat.repairHeld.length = 0;
+          seat.repairFrom = null;
           reread();
         }
         return;
@@ -814,6 +896,7 @@ function createSeat(
         if (reach.epoch !== seat.epoch) {
           seat.epoch = reach.epoch;
           seat.lastSeq = reach.seq === null ? 0 : reach.seq - 1;
+          seat.seen = seat.lastSeq;
           read();
           return;
         }
@@ -828,12 +911,15 @@ function createSeat(
         // about where the stream stands. Refusing it would ask forever for an
         // answer that never comes, so it is taken: never a merge, and never a
         // loop.
-        const moved = seat.lastSeq !== seat.askedAt;
+        const moved = seat.seen !== seat.askedAt;
         if (reach.seq !== null && reach.seq - 1 < seat.lastSeq && moved && seat.wire !== null) {
           reread();
           return;
         }
-        if (reach.seq !== null) seat.lastSeq = reach.seq - 1;
+        if (reach.seq !== null) {
+          seat.lastSeq = reach.seq - 1;
+          seat.seen = Math.max(seat.seen, seat.lastSeq);
+        }
         read();
         return;
       }
@@ -844,6 +930,9 @@ function createSeat(
       if (message.kind === 'seat_frames') {
         if (subjectKey({ session: message.slot }) !== key) return;
         for (const frame of message.frames) applyFrame(frame, true);
+        // The hole is filled, so what crossed it draws now - in sequence,
+        // which is the order the hold was for.
+        flushRepaired();
         return;
       }
       if (message.kind !== 'update') return;

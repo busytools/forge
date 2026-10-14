@@ -186,12 +186,26 @@ async fn fold_the_stream(state: Arc<TransportState>) {
         }
         let seq = frame.seq;
         let update = frame.update;
+        // **One fill at a time per seat.** An encode's catch-up applies from
+        // the window when this loop cannot reach in time, and this loop
+        // receives those same frames afterwards: the seat's own lock is what
+        // makes the watermark check, the apply and the mark one step, so a
+        // frame crosses exactly once whichever path got there first.
+        let fill = update.slot().map(|slot| state.conversations.fill_lock(slot));
+        let filling = fill
+            .as_ref()
+            .map(|lock| lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
         // **A frame an encode has already folded into the copy is not folded
-        // again.** The catch-up fills from the seat's window when this loop
-        // cannot reach in time, and this loop still receives those same frames
-        // afterwards - so the watermark it keeps doubles as its own skip
-        // guard, and the row crosses once whichever path got there first.
-        if let (Some(seq), Some(slot)) = (seq, update.slot())
+        // again** - except a sealing one. A seal re-mints from 1, so its number
+        // can equal the first new frame's, and a watermark that has taken that
+        // frame must not take the seal's history away with it: the reseed it
+        // carries is the only path the new epoch's rows have into the copy.
+        let epoch_frame = matches!(
+            update,
+            crate::SessionUpdate::Connected { .. } | crate::SessionUpdate::SessionReplaced { .. }
+        );
+        if !epoch_frame
+            && let (Some(seq), Some(slot)) = (seq, update.slot())
             && seq <= state.conversations.consumed_for(slot)
         {
             continue;
@@ -208,11 +222,6 @@ async fn fold_the_stream(state: Arc<TransportState>) {
         // a watermark left standing would skip the new run's first frames -
         // exactly the numbers it reuses.
         if let Some(slot) = update.slot() {
-            let epoch_frame = matches!(
-                update,
-                crate::SessionUpdate::Connected { .. }
-                    | crate::SessionUpdate::SessionReplaced { .. }
-            );
             if epoch_frame {
                 state.conversations.consumed(slot, 0);
             } else if let Some(seq) = seq
@@ -221,6 +230,7 @@ async fn fold_the_stream(state: Arc<TransportState>) {
                 state.conversations.consumed(slot, seq);
             }
         }
+        drop(filling);
         request_context_usage(&state, &mut probes, &update);
     }
 }

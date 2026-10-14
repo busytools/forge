@@ -929,10 +929,18 @@ const REPLAY_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
 /// serialise: each waits on its own seat's arrival, and the notice only says
 /// that some seat was seeded.
 pub async fn conversation_for(state: &TransportState, slot: &SessionSlot) -> Option<Arc<Held>> {
-    if let Some(held) = state.conversations.get(slot) {
+    // **A copy of another occupant is no copy.** A seal the fold has not
+    // applied yet leaves the previous run's conversation standing, and
+    // answering with it would pair the new epoch's count with rows it never
+    // wrote; the read falls through to the paths a seat with no copy takes.
+    let occupant = state.surface.header(slot).session_id;
+    let current = |held: &Arc<Held>| held.holds_occupant(occupant.as_ref());
+    if let Some(held) = state.conversations.get(slot).filter(current) {
         return Some(held);
     }
-    if let Some(held) = seed_from_transcript(state, slot).await {
+    if state.conversations.get(slot).is_none()
+        && let Some(held) = seed_from_transcript(state, slot).await
+    {
         // **A live session's window is the truer copy** and this is how it
         // lands: the task answers `HistoryReplayed` with the frames it holds,
         // which reseeds the seat over what the file seeded. A seat with
@@ -956,14 +964,14 @@ pub async fn conversation_for(state: &TransportState, slot: &SessionSlot) -> Opt
         let seeded = state.conversations.seeded_notice();
         tokio::pin!(seeded);
         seeded.as_mut().enable();
-        if let Some(held) = state.conversations.get(slot) {
+        if let Some(held) = state.conversations.get(slot).filter(current) {
             return Some(held);
         }
         if tokio::time::timeout(left, seeded).await.is_err() {
             break;
         }
     }
-    let held = state.conversations.get(slot);
+    let held = state.conversations.get(slot).filter(current);
     if held.is_none() {
         tracing::warn!(
             event_name = "conversation_replay_timed_out",
@@ -1262,6 +1270,15 @@ async fn catch_up(state: &TransportState, slot: &SessionSlot, want: u64) -> bool
     if state.conversations.await_consumed(slot, want, CATCH_UP_WAIT).await {
         return true;
     }
+    // **The fill runs under the seat's lock, and re-reads the watermark.**
+    // The fold may have caught up while the wait ran, and it applies the same
+    // frames if it did: the check, the applies and the mark are one step, so
+    // a frame crosses exactly once whichever path got there first.
+    let fill = state.conversations.fill_lock(slot);
+    let _filling = fill.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if state.conversations.consumed_for(slot) >= want {
+        return true;
+    }
     let from = state.conversations.consumed_for(slot).saturating_add(1);
     let frames = state.surface.seat_frames_between(slot, from, want);
     // **A stretch holding only a seal is not a stretch the copy is behind on.**
@@ -1284,17 +1301,21 @@ async fn catch_up(state: &TransportState, slot: &SessionSlot, want: u64) -> bool
         );
         return false;
     }
-    // **A seat with no copy gets one from the frames themselves.** The fold
-    // holds nothing for a seat nothing has connected on, which is right for a
-    // passive stream - but an encode that owes this seat a record cannot
-    // answer "no copy" and then name a number, so the stretch materialises it,
-    // seeded EMPTY and built by the applies below: one place a row may enter,
-    // so nothing doubles. The fold, receiving the same frames afterwards,
-    // skips them by the watermark this marks last.
-    if state.conversations.get(slot).is_none() {
-        state
-            .conversations
-            .insert(slot, crate::transport::conversation::Conversation::new(Vec::new(), 0, 0));
+    // **A seat with no copy gets one from the frames themselves, and a copy of
+    // another occupant is no copy.** The fold holds nothing for a seat nothing
+    // has connected on, and a seal the fold has not applied yet leaves the
+    // previous run's copy standing: neither may answer for the number this
+    // call carries. The stretch materialises a copy - seeded EMPTY, built by
+    // the applies below, one place a row may enter so nothing doubles - tagged
+    // with the occupant it is for, and the fold skips these frames afterwards
+    // by the watermark this marks last.
+    let occupant = state.surface.header(slot).session_id;
+    let matching =
+        state.conversations.get(slot).is_some_and(|held| held.holds_occupant(occupant.as_ref()));
+    if !matching {
+        let mut conversation = crate::transport::conversation::Conversation::empty();
+        conversation.set_occupant(occupant);
+        state.conversations.replace(slot, conversation);
     }
     for frame in &frames {
         state.conversations.apply(&frame.update);

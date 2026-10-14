@@ -3005,6 +3005,39 @@ describe('the conversation the chat draws', () => {
   });
 
   /**
+   * **A live frame repeating a row the page carries draws it once.**
+   *
+   * A replayed or re-delivered row crosses the live path the same way it
+   * crosses a repair - a reconnect can deliver again what a page already
+   * carried - and one row told twice is the same defect on either path. The
+   * fold's identity is the row's id.
+   */
+  it('draws a live repeat of a row the page carries only once', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'the same words')], null));
+
+    server.send({
+      kind: 'update',
+      update: {
+        chat_appended: {
+          key: LEAD,
+          msg: {
+            type: 'user',
+            uuid: 'u-the same words',
+            message: { role: 'user', content: [{ type: 'text', text: 'the same words' }] },
+          },
+        },
+      },
+    });
+
+    const drawn = words(chat).split('"u-the same words"').length - 1;
+    expect(drawn, 'a live repeat of a carried row drew it twice').toBe(1);
+    stop();
+  });
+
+  /**
    * **A repaired stretch folds into the turn it belongs to.**
    *
    * A range ask is answered with the frames the seat emitted in the gap, and

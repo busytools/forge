@@ -2060,9 +2060,10 @@ describe('the read, and the answer a frame has outrun', () => {
     page.land(frameOf(occupant('new'), 2));
     const asked = page.reads();
 
-    // A frame lands while that answer is in flight, so the record has been
-    // carried past where the answer was encoded.
-    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('more', 'u3') } }, 3));
+    // A frame lands while that answer is in flight - the new epoch's first,
+    // the successor of where the wipe left the record - so the record has
+    // been carried past where the answer was encoded.
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('more', 'u3') } }, 1));
     paint();
 
     // The answer lands: the seat as it was BEFORE that frame, standing where
@@ -2071,7 +2072,7 @@ describe('the read, and the answer a frame has outrun', () => {
       snapshotOf(
         LEAD,
         { conversation: { turns: [], compaction_count: 0 } },
-        { seq: 3, epoch: 'new' },
+        { seq: 1, epoch: 'new' },
       ),
     );
 
@@ -2152,15 +2153,16 @@ describe('the read, and the answer a frame has outrun', () => {
     page.land(frameOf(occupant('new'), 2));
     const asked = page.reads();
 
-    // The turn settles while that answer is in flight - a frame, and an
-    // answer from before it would put the running turn back.
-    page.land(frameOf({ turn_complete: { key: LEAD } }, 3));
+    // The turn settles while that answer is in flight - the new epoch's
+    // first frame - and an answer from before it would put the running turn
+    // back.
+    page.land(frameOf({ turn_complete: { key: LEAD } }, 1));
     paint();
 
     // The answer lands: the seat as it was BEFORE the settle, standing where
     // its stream stood before it. Adopted whole it puts the running turn back,
     // and the box refuses a send the turn has already taken.
-    page.land(snapshotOf(LEAD, { header: { turn_in_flight: true } }, { seq: 3, epoch: 'new' }));
+    page.land(snapshotOf(LEAD, { header: { turn_in_flight: true } }, { seq: 1, epoch: 'new' }));
 
     expect(
       page.read().wire?.header.turn_in_flight,
@@ -2320,18 +2322,25 @@ describe('the seat sequence', () => {
     expect(spoken(page), 'the successor applies').toContain('one');
     expect(connection.ranges, 'and nothing is asked for').toHaveLength(0);
 
-    // Two ahead: the frame between is a hole. The ask is silent and does not
-    // hold the reader - the frame itself still lands.
+    // Two ahead: the frame between is a hole. The ask is silent, and the
+    // frame above the hole is HELD - drawn at once, a repaired user row would
+    // land below it and open a turn of its own at the foot.
     page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('three', 'u3') } }, 3));
     paint();
-    expect(spoken(page), 'the frame ahead still lands').toContain('three');
+    expect(spoken(page), 'a frame above a hole waits for the hole').not.toContain('three');
     expect(connection.ranges, 'and the hole is asked for').toEqual([
       { slot: LEAD, epoch: null, from: 2, to: 2 },
     ]);
 
     page.land(repaired({ seq: 2, text: 'two' }));
     paint();
-    expect(spoken(page), 'the repaired frame folds in underneath').toContain('two');
+    const landed = spoken(page);
+    expect(landed, 'the repaired frame folds in underneath').toContain('two');
+    expect(landed, 'and the frame that crossed the hole lands with it').toContain('three');
+    expect(
+      landed.indexOf('two') < landed.indexOf('three'),
+      'in sequence: the repaired row above the frame that followed it',
+    ).toBe(true);
     expect(connection.ranges, 'and nothing is asked for twice').toHaveLength(1);
     page.stop();
   });

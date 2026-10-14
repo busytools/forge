@@ -1871,6 +1871,11 @@ export class Chat {
         // same row by id rather than a second one.
         if (this.plainDrawn.delete(id)) return;
       }
+      // **A row the conversation already carries is not drawn again.** A
+      // replayed or re-delivered frame names a row the column has - the same
+      // identity a repaired stretch is gated on - and drawing it again is one
+      // row told twice, on the live path this time.
+      if (this.carries(update)) return;
       // Stepped BEFORE the row is written, so a row that opens or grows answers
       // from the new state rather than the one before the frame.
       this.turnRunning = inFlightOf(this.turnRunning, message);

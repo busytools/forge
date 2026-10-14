@@ -132,6 +132,13 @@ pub struct Conversation {
     /// one the file never wrote answers the read nothing - which reads as the
     /// end of the history.
     forged: std::collections::HashSet<String>,
+    /// The occupant this copy was last seeded for.
+    ///
+    /// **What tells a copy of the previous run from the current one.** A seal
+    /// is minted by the fanout and applied by the fold, and a read landing
+    /// between the two would otherwise pair the new epoch's count with the old
+    /// run's rows: a copy whose occupant is not the seat's is no copy at all.
+    occupant: Option<forge_primitives::SessionId>,
 }
 
 impl Conversation {
@@ -160,12 +167,23 @@ impl Conversation {
             dirty: true,
             folding: false,
             forged: std::collections::HashSet::new(),
+            occupant: None,
         }
     }
 
     /// The conversation a seat with nothing behind it answers as.
     pub fn empty() -> Self {
         Self::new(Vec::new(), 0, 0)
+    }
+
+    /// The occupant this copy was last seeded for.
+    pub fn occupant(&self) -> Option<&forge_primitives::SessionId> {
+        self.occupant.as_ref()
+    }
+
+    /// Say which occupant this copy is for.
+    pub fn set_occupant(&mut self, occupant: Option<forge_primitives::SessionId>) {
+        self.occupant = occupant;
     }
 
     /// Replace the whole conversation, which is what a connect, a resume or a
@@ -395,6 +413,18 @@ impl Held {
         Self { conversation: Mutex::new(conversation), folded: Condvar::new() }
     }
 
+    /// Whether this copy belongs to the seat's current occupant.
+    ///
+    /// **A copy with no occupant matches anything**, so a copy the transcript
+    /// seeded - or one built before an occupant was set - is never discarded
+    /// for lacking a fact nothing ever recorded.
+    pub fn holds_occupant(&self, occupant: Option<&forge_primitives::SessionId>) -> bool {
+        match (self.lock().occupant.as_ref(), occupant) {
+            (Some(held), Some(current)) => held == current,
+            _ => true,
+        }
+    }
+
     /// The conversation, waiting out a fold that is running over it.
     pub fn lock(&self) -> std::sync::MutexGuard<'_, Conversation> {
         let mut conversation = self.conversation.lock().unwrap_or_else(PoisonError::into_inner);
@@ -537,6 +567,14 @@ pub struct Conversations {
     /// emitted before the counter was read" does not yet mean "the copy has
     /// it": this is where that is known.
     consumed: Mutex<HashMap<SessionSlot, tokio::sync::watch::Sender<u64>>>,
+    /// The lock a seat's fill runs under.
+    ///
+    /// **What makes "applied once" a fact rather than a hope.** The fold loop
+    /// and an encode's catch-up can both apply the same frames, and the
+    /// watermark between them is read and written by both; the lock spans each
+    /// side's check, applies and mark, so a frame crosses exactly once
+    /// whichever path got there first.
+    fills: Mutex<HashMap<SessionSlot, Arc<std::sync::Mutex<()>>>>,
     /// A test's hold on the fold loop, so the window above can be driven
     /// rather than raced: while it is set, the loop does not consume.
     #[cfg(any(test, feature = "testing"))]
@@ -602,6 +640,14 @@ impl Conversations {
             .is_ok_and(|seen| seen.is_ok())
     }
 
+    /// The lock one seat's fill runs under: taken by the fold loop and by an
+    /// encode's catch-up, so their watermark checks and applies cannot
+    /// interleave.
+    pub fn fill_lock(&self, slot: &SessionSlot) -> Arc<std::sync::Mutex<()>> {
+        let mut fills = self.fills.lock().unwrap_or_else(PoisonError::into_inner);
+        Arc::clone(fills.entry(slot.clone()).or_default())
+    }
+
     /// Hold the fold loop, or let it go. Test-only: it is the seam that makes
     /// the copy's lag deterministic instead of a race.
     #[cfg(any(test, feature = "testing"))]
@@ -632,6 +678,21 @@ impl Conversations {
         held
     }
 
+    /// Replace a seat's copy outright.
+    ///
+    /// **What a mismatched copy needs**: `insert` keeps what is there, and a
+    /// copy of the previous run must not survive as the new run's record.
+    pub fn replace(&self, slot: &SessionSlot, conversation: Conversation) -> Arc<Held> {
+        let held = {
+            let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+            let fresh = Arc::new(Held::new(conversation));
+            held.insert(slot.clone(), Arc::clone(&fresh));
+            fresh
+        };
+        self.seeded.notify_waiters();
+        held
+    }
+
     /// A future that resolves when some seat is newly held.
     ///
     /// **Enable it before looking the seat up**, or a seat seeded between the
@@ -657,14 +718,27 @@ impl Conversations {
             // **Which of them it is decides whether the page numbering
             // survives the reseed**, so the two routes are named apart even
             // though the work is one: see [`Reseed`].
-            SessionUpdate::Connected { history, compaction_count, dropped, .. }
-            | SessionUpdate::SessionReplaced { history, compaction_count, dropped, .. } => {
-                self.reseed(slot, history, *compaction_count, Reseed::Fresh, *dropped);
+            SessionUpdate::Connected { history, compaction_count, dropped, session_id, .. }
+            | SessionUpdate::SessionReplaced {
+                history,
+                compaction_count,
+                dropped,
+                session_id,
+                ..
+            } => {
+                self.reseed(
+                    slot,
+                    history,
+                    *compaction_count,
+                    Reseed::Fresh,
+                    *dropped,
+                    Some(session_id),
+                );
             }
             SessionUpdate::HistoryReplayed { history, compaction_count, .. } => {
                 // No carried floor: a replay hands over the task's own window,
                 // which is where the seat's numbering is already measured from.
-                self.reseed(slot, history, *compaction_count, Reseed::Replay, 0);
+                self.reseed(slot, history, *compaction_count, Reseed::Replay, 0, None);
             }
             SessionUpdate::ChatAppended { msg, .. } => {
                 // **A compaction boundary is a frame like any other.** It
@@ -710,12 +784,22 @@ impl Conversations {
         compaction_count: u32,
         route: Reseed,
         carried: usize,
+        occupant: Option<&forge_primitives::SessionId>,
     ) {
-        match self.get(slot) {
-            Some(held) => held.lock().seed(history.to_vec(), compaction_count, route, carried),
-            None => {
-                self.insert(slot, Conversation::new(history.to_vec(), compaction_count, carried));
+        if let Some(held) = self.get(slot) {
+            let mut conversation = held.lock();
+            conversation.seed(history.to_vec(), compaction_count, route, carried);
+            // A replay restates no occupant, so it leaves whatever the copy
+            // already says; a seal names its own.
+            if let Some(occupant) = occupant {
+                conversation.set_occupant(Some(occupant.clone()));
             }
+        } else {
+            let mut conversation = Conversation::new(history.to_vec(), compaction_count, carried);
+            if let Some(occupant) = occupant {
+                conversation.set_occupant(Some(occupant.clone()));
+            }
+            self.insert(slot, conversation);
         }
     }
 

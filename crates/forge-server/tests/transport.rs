@@ -3331,6 +3331,172 @@ async fn a_copy_no_window_can_cover_is_refused_rather_than_answered() {
     );
 }
 
+/// **A seal the watermark has jumped past still applies its history.**
+///
+/// A seal's number can equal the first frame of the run it opens - the fresh
+/// seat mints 1, then counts from 1 again - so a fill that took that frame
+/// leaves a watermark the seal's own number is not above. A skip-guard blind
+/// to that drops the seal, and the reseed it carries - the only path the new
+/// run's history has into the copy - never runs: the rows are gone for good.
+#[tokio::test]
+async fn a_seal_the_watermark_jumped_past_still_applies_its_history() {
+    let (url, fleet, state) = a_server_with_state().await;
+    let seat = lead_seat();
+    wait_for_the_fold(&fleet).await;
+    let session = SessionId::from("9d4e5f60-6172-4a83-c940-a1b2c3d4e5f6");
+    fleet.seed_view_facts(
+        &seat,
+        ViewFacts { session_id: Some(session.clone()), ..Default::default() },
+    );
+
+    state.conversations.hold_the_fold(true);
+    fleet.emit(SessionUpdate::Connected {
+        key: seat.clone(),
+        session_id: session,
+        cwd: "/tmp".to_owned(),
+        current_model: a_current_model(),
+        available_models: Vec::new(),
+        mode: None,
+        history: vec![a_said_frame("the history row")],
+        dropped: 0,
+        compaction_count: 0,
+    });
+    fleet.emit(SessionUpdate::ChatAppended {
+        key: seat.clone(),
+        origin: None,
+        source: None,
+        msg: a_said_frame("the live row"),
+    });
+
+    // The first answer fills from the window: the live row lands and the
+    // watermark is moved to its number - the seal's own.
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+    let _ = snapshot_answering(&mut socket).await;
+
+    // The fold now takes both frames. The seal must apply despite the
+    // watermark, or the history it carries never reaches the copy - so the
+    // read is repeated until it does, bounded: an answer that never carries
+    // it exhausts the loop and fails below.
+    state.conversations.hold_the_fold(false);
+    let mut conversation = String::new();
+    let mut data = serde_json::Value::Null;
+    for _ in 0..40 {
+        let mut socket = connect(&url).await;
+        send(
+            &mut socket,
+            ClientMessage::Subscribe {
+                what: Subject::Session(seat.clone()),
+                answering: true,
+                browser: false,
+                declare: false,
+            },
+        )
+        .await;
+        let read = snapshot_answering(&mut socket).await;
+        conversation = serde_json::to_string(&read.1["conversation"]).unwrap_or_default();
+        data = read.1;
+        if says_times(&data, "the history row") >= 1 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+
+    assert_eq!(
+        says_times(&data, "the history row"),
+        1,
+        "the seal's history must cross exactly once: absent means the skip-guard took the seal \
+         and the new run's rows are gone from the record for good; the answer carried \
+         {conversation}",
+    );
+    assert_eq!(says_times(&data, "the live row"), 1, "and the live row exactly once");
+}
+
+/// **An answer inside the seal's window is the new epoch's, not the previous
+/// run's.**
+///
+/// A seal is minted by the fanout and applied by the fold, and the counter
+/// restarts at the mint while the copy reseeds at the apply. A read landing
+/// between the two pairs the restarted count with the previous run's rows
+/// unless the copy carries its occupant - and one that is not the seat's is
+/// no copy at all.
+#[tokio::test]
+async fn an_answer_inside_the_seal_window_is_not_the_previous_runs_conversation() {
+    let (url, fleet, state) = a_server_with_state().await;
+    let seat = lead_seat();
+    wait_for_the_fold(&fleet).await;
+    let old = SessionId::from("1f2e3d4c-5b6a-4978-8801-1234567890ab");
+    let new = SessionId::from("2a3b4c5d-6e7f-4809-9a1b-234567890abc");
+
+    fleet.seed_view_facts(&seat, ViewFacts { session_id: Some(old.clone()), ..Default::default() });
+    fleet.emit(SessionUpdate::Connected {
+        key: seat.clone(),
+        session_id: old,
+        cwd: "/tmp".to_owned(),
+        current_model: a_current_model(),
+        available_models: Vec::new(),
+        mode: None,
+        history: vec![a_said_frame("the old run's row")],
+        dropped: 0,
+        compaction_count: 0,
+    });
+    for _ in 0..200 {
+        if state.conversations.consumed_for(&seat) >= 1 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+
+    // The seal is minted but held short of the fold, and the header already
+    // names the new occupant - the window the read must not be fooled in.
+    state.conversations.hold_the_fold(true);
+    fleet.emit(SessionUpdate::SessionReplaced {
+        key: seat.clone(),
+        session_id: new.clone(),
+        cwd: "/tmp".to_owned(),
+        current_model: a_current_model(),
+        available_models: Vec::new(),
+        mode: None,
+        history: Vec::new(),
+        dropped: 0,
+        compaction_count: 0,
+    });
+    fleet.seed_view_facts(&seat, ViewFacts { session_id: Some(new.clone()), ..Default::default() });
+
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+    let (_, data, _) = snapshot_answering(&mut socket).await;
+    state.conversations.hold_the_fold(false);
+
+    assert_eq!(
+        data["header"]["session_id"], "2a3b4c5d-6e7f-4809-9a1b-234567890abc",
+        "the answer names the new occupant",
+    );
+    assert_eq!(
+        says_times(&data, "the old run's row"),
+        0,
+        "an answer must never carry the previous run's rows under the new epoch's count",
+    );
+}
+
 /// **A range ask after an occupant change reaches the new epoch's frames.**
 ///
 /// The frame that OPENS an epoch is numbered on the run it ends and is not
