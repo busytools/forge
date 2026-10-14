@@ -35,6 +35,7 @@ import { outputs } from './outputs.svelte';
 import { fold, headingNameOf, namesSkill, queuedWords, skillBody } from './units';
 import { onRefusal } from '../refusals';
 import { callOutputOf } from '../wire/call-output';
+import { reportFrom } from '../wire/fleet';
 
 /** One turn as a page carries it: the fold's name, and the CLI's messages. */
 export interface PageTurn {
@@ -1917,15 +1918,13 @@ export class Chat {
     // this client replaced pushed it - one line per report, and a repeat is
     // one row.
     if (variant === 'service_status') {
-      const report = (update as { service_status?: { severity?: unknown; message?: unknown } })
-        .service_status;
-      const said = report?.message;
-      if (typeof said === 'string' && said !== '') {
+      const report = reportFrom((update as { service_status?: unknown }).service_status);
+      if (report !== null) {
         this.appendOnce({
           type: 'system',
           subtype: 'forge_notice',
-          severity: report?.severity === 'error' ? 'error' : 'warning',
-          text: said,
+          severity: report.severity,
+          text: report.message,
         });
       }
       return;
