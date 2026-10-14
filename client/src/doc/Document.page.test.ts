@@ -3,6 +3,44 @@ import { flushSync, mount, unmount } from 'svelte';
 import { get } from 'svelte/store';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+/** The seat's read, as the page subscribes it for the take's own words: real
+ *  enough to carry a record in, which is all this page takes one for. */
+const seat = vi.hoisted(() => ({ listeners: new Set<(read: unknown) => void>() }));
+
+vi.mock('../session/live', () => ({
+  watchSession: () => ({
+    subscribe: (fn: (read: unknown) => void) => {
+      seat.listeners.add(fn);
+      return () => {
+        seat.listeners.delete(fn);
+      };
+    },
+    hold: () => () => {},
+  }),
+}));
+
+/** Hand the page the record it would have folded out of a frame. */
+function push(read: unknown): void {
+  for (const fn of [...seat.listeners]) fn(read);
+}
+
+const mic = vi.hoisted(() => ({
+  open: (): Promise<unknown> =>
+    Promise.resolve({
+      onFrame: null as ((bytes: Uint8Array) => void) | null,
+      resolved: undefined,
+      flush: () => null,
+      flushWorklet: () => undefined,
+      stop: () => undefined,
+    }),
+}));
+
+vi.mock('../composer/mic', () => ({
+  Microphone: { open: mic.open },
+  inputs: vi.fn((): Promise<unknown[]> => Promise.resolve([])),
+  inputLine: (): string => 'the inputs could not be listed \u{b7} try again',
+}));
+
 import { currentRoute } from '../routes';
 import { addDraft, clearDrafts, docScope, draftsFor } from './comments';
 import { fakeDoc, SLOT, type DocAnswer } from './testing';
@@ -764,6 +802,112 @@ describe('the reviewable document', () => {
     drawReviewable();
 
     expect(document.querySelector('.doc-draft')?.textContent).toContain('unsent');
+  });
+});
+
+/**
+ * **The block's box dictates the way the composer's does.** A landed take's
+ * words go into the box that was open when it settled, and the take's bar
+ * takes that box's own line while it runs - the same bargain the review page
+ * strikes, over this page's one box.
+ */
+describe("the block's own take", () => {
+  /** The seat's record, of which this page reads the composer alone. */
+  function seatRecord(composer: unknown): unknown {
+    return { wire: { composer }, refused: null };
+  }
+
+  const IDLE = {
+    take: null,
+    notice: null,
+    compacting: false,
+    signIn: null,
+    bind: 'right_cmd',
+    mode: 'auto',
+  };
+  const TAKE = {
+    ...IDLE,
+    take: {
+      phase: 'recording',
+      levels: [],
+      peakDb: -50,
+      progress: { done: 0, total: null },
+      elapsedMs: 900,
+      floorDb: -50,
+    },
+  };
+  const LANDED = {
+    ...IDLE,
+    notice: { kind: 'landed', text: 'the second line reads well', truncated: false },
+  };
+
+  /** The viewer with the dictation offer on, which every mic is gated by. */
+  function drawWithDictation(): void {
+    const page = fakeDoc({
+      kind: 'landed',
+      document_kind: 'markdown',
+      bytes: enc('# hi\nline two\nline three'),
+      reviewable: true,
+      content_hash: '42',
+    });
+    app = mount(Document, {
+      target: document.body,
+      props: {
+        slot: SLOT,
+        path: PATH,
+        reviewable: true,
+        handoff: 'h-1',
+        connection: page.connection,
+        dictation: true,
+      },
+    });
+    flushSync();
+  }
+
+  function composeMic(): HTMLButtonElement {
+    const found = document.querySelector<HTMLButtonElement>('.doc-compose .mic');
+    if (found === null) throw new Error("the block's box drew no mic");
+    return found;
+  }
+
+  it('lands the words in the box that was open, with the bar taking its line', async () => {
+    drawWithDictation();
+    push(seatRecord(IDLE));
+    blockTarget('line two').click();
+    flushSync();
+
+    composeMic().click();
+    await vi.waitFor(
+      () => {
+        expect(
+          document.querySelector('.doc-compose .takeline'),
+          "the take's bar, in the box's own line",
+        ).not.toBeNull();
+        expect(document.querySelector('.doc-compose textarea'), 'and not the field').toBeNull();
+      },
+      { timeout: 2000 },
+    );
+
+    // The server registers the take where the record can see it, then the
+    // release lands the words - the order the frames really arrive in.
+    push(seatRecord(TAKE));
+    flushSync();
+    push(seatRecord(LANDED));
+    flushSync();
+
+    // The reader's release: the take ends and the field comes back with the
+    // words in it.
+    composeMic().click();
+    await vi.waitFor(
+      () => {
+        expect(document.querySelector('.doc-compose .takeline'), 'the bar goes').toBeNull();
+      },
+      { timeout: 2000 },
+    );
+    expect(
+      document.querySelector<HTMLTextAreaElement>('.doc-compose textarea')?.value,
+      'the words, at the end of the box that was open',
+    ).toBe('the second line reads well');
   });
 });
 

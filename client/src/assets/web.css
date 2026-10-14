@@ -3753,14 +3753,21 @@ details[open] > summary .arw { opacity: 1; }
    the review page's `.rv-turn .prose` carries its turn's. */
 .doc .doc-note .prose { color: var(--text); }
 .doc .doc-cc { color: var(--warn); font-size: var(--fs-label); font-family: var(--mono); }
-/* The composer, under the block it opened on. */
+/* The composer, under the block it opened on. The take's settings panel hangs
+   off it - the box that drew the mic is the box the panel anchors to. */
 .doc .doc-compose { margin: 4px 0 10px 2.2rem; display: flex; flex-direction: column;
-  gap: 8px; }
+  gap: 8px; position: relative; }
 .doc .doc-compose textarea { width: 100%; min-height: 64px; resize: vertical;
   background: var(--bg); color: var(--text); border: 1px solid var(--line);
   border-radius: var(--r); padding: 8px 10px; font-family: var(--ui);
   font-size: var(--fs-base); }
 .doc .doc-compose-acts { display: flex; gap: 8px; justify-content: flex-end; }
+/* The mic sits where the composer's does: at the far end of the controls. */
+.doc .doc-compose-acts .mic { margin-left: auto; }
+/* What became of a take the box could not start, in the composer's own tones. */
+.doc .doc-dictateline { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+.doc .doc-dictateline.bad { color: var(--bad); }
+.doc .doc-dictateline.warn { color: var(--warn); }
 .doc .doc-comment-btn, .doc .doc-cancel-btn, .doc .doc-finish-btn {
   font-family: var(--mono); font-size: var(--fs-label); border-radius: 9px;
   padding: 6px 12px; cursor: pointer; border: 1px solid var(--line);

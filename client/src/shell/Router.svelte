@@ -94,7 +94,7 @@
    */
   $effect(() => {
     if (!dictate) return;
-    if (route.name !== 'session' && route.name !== 'review') return;
+    if (route.name !== 'session' && route.name !== 'review' && route.name !== 'doc') return;
     holdDeviceFor(boxKey(route.slot));
   });
 </script>
@@ -240,6 +240,7 @@
       reviewable={route.reviewable}
       handoff={route.handoff ?? null}
       {connection}
+      dictation={dictate}
     />
   {:else}
     <Connect {settings} initialAddress={address} launchFailure={failure} {notice} {onconnect} />

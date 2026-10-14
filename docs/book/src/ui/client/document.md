@@ -98,6 +98,21 @@ module-wide, so a second hand-off that raises another document does not take
 the first's unsent comments with it - they wait in their own scope until
 their done files them.
 
+**The block's box dictates, the way the composer's does.** It wears the
+composer's own mic control - a press starts a take, a hold opens what
+dictation is set to - over the page's own take, addressed to the seat this
+document belongs to, and the take's bar takes the box's own line while it
+runs: the row the words would be typed into is the row they arrive on. The
+words land at the end of the box that was open when the take settled, read
+off the seat's record - the page subscribes it as an observer for exactly
+that, since the words a take leaves reach a page only through the record's
+notice. A box the reader closed has nowhere to put them, so the words are
+dropped rather than written where the reader is not, and a notice about a
+take this page never watched (a viewer that attached or reloaded on the
+previous take's words) is not placed at all. The push-to-talk key is
+honoured while the box is open, the same press and release the composer's
+box reads.
+
 **The done is the review-left event and the hand-off's answer.** `done (n)`
 submits the drafted threads as one round through the same command a code
 review uses, under the document's scope (`doc:<path>`), stamped with the
@@ -130,8 +145,11 @@ the refusal's words are what the page draws.
   its drafts under theirs - a cold open included, which draws the same door a
   hand-off's Open does.
 - **A comment being written**: the composer opens under the block, with its
-  own comment and cancel pair; a written comment draws as `drafted` until
-  the done files it.
+  own comment and cancel pair and its mic; a written comment draws as
+  `drafted` until the done files it.
+- **A take running**: the take's bar takes the box's own line - the
+  composer's own reading, `ready`, `recording` and `transcribing` - and the
+  words land at the end of the box when the take settles.
 - **A refused done**: the core's own words beside the button, and the drafts
   stay exactly where they were - a refusal that cleared them would take the
   reviewer's words with it.
@@ -167,6 +185,10 @@ draws markdown, PDFs and text.` - and a name with no extension says that
   `submitCommand` and `statusCommand` from `review/write`, and `authorName`
   from `review/view` - one writer, one vocabulary, so a doc comment and a
   code comment are one kind of thing on the wire.
+- The dictation pieces are the composer's own: the `Dictation` take, the
+  `DictateControl` mic, the `TakeCard` bar, the `DictationPanel` and the
+  `Landing` memory, all under `composer/` - one microphone, one take, one
+  reading of what a take is doing, shared with every box that takes typing.
 - The ask's card is the dock's own machinery: the same `pending_asks` read,
   the same parked/resolved pair, and the same command-bus answer a browser
   hand-off rides.

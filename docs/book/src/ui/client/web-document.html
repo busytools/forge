@@ -383,6 +383,80 @@
         gap: 8px;
         justify-content: flex-end;
       }
+      /* The box's dictation: the composer's own mic at the far end of the
+         acts, and the take's bar in the field's own line while it runs. */
+      .strip .mic {
+        width: 24px;
+        height: 24px;
+        margin-left: auto;
+        display: grid;
+        place-items: center;
+        color: var(--dim);
+      }
+      .strip .ic {
+        width: 15px;
+        height: 15px;
+        flex: 0 0 15px;
+        display: block;
+      }
+      .strip .line {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .strip .tc {
+        align-self: center;
+        margin: 0;
+        border: 0;
+        background: none;
+        padding: 0;
+        flex: 1 1 auto;
+        min-width: 0;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-family: var(--mono);
+        font-size: var(--fs-label);
+        white-space: nowrap;
+      }
+      .strip .tc .dot {
+        width: 7px;
+        height: 7px;
+        flex: none;
+        border-radius: 50%;
+        background: var(--accent);
+      }
+      .strip .tc .clock {
+        color: var(--text);
+      }
+      .strip .tc .ready {
+        color: var(--muted);
+      }
+      .strip .tc .fr,
+      .strip .tc .kb,
+      .strip .tc .pace {
+        color: var(--dim);
+      }
+      .strip .tc .pace {
+        color: var(--ok);
+      }
+      .strip .tc .x {
+        color: var(--dim);
+      }
+      .strip .tc .wave {
+        flex: 1 1 auto;
+        min-width: 0;
+        height: 26px;
+        align-self: center;
+      }
+      .strip .tc .wave .area {
+        fill: var(--accent);
+      }
+      .strip .tc .wave .edge {
+        fill: none;
+        stroke: var(--hot);
+        stroke-width: 1.5px;
+      }
       .strip .doc-comment-btn,
       .strip .doc-cancel-btn,
       .strip .doc-finish-btn {
@@ -440,6 +514,20 @@
     </style>
   </head>
   <body>
+    <!-- The mic the composer wears, which this page's box wears too. -->
+    <svg width="0" height="0" style="position: absolute" aria-hidden="true">
+      <symbol
+        id="i-mic"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        ><rect width="10" height="12" x="7" y="3" rx="5" /><path d="M5 11a7 7 0 0 0 14 0" /><path
+          d="M12 18v3" /></symbol
+      >
+    </svg>
     <main class="wrap doc">
       <article class="doc-body">
         <div class="doc-blocks">
@@ -586,10 +674,41 @@ max_size_mib = 10</pre>
               </p>
             </div>
             <div class="doc-compose">
-              <div class="box">comment on this part...</div>
+              <div class="line">
+                <div class="box">comment on this part...</div>
+              </div>
               <div class="doc-compose-acts">
                 <button class="doc-cancel-btn">cancel</button>
                 <button class="doc-comment-btn">comment</button>
+                <span class="mic"><svg class="ic"><use href="#i-mic" /></svg></span>
+              </div>
+            </div>
+            <!-- The same box mid-take: the bar takes the field's own line. -->
+            <div class="doc-compose">
+              <div class="line">
+                <span class="tc"
+                  ><span class="dot"></span><span class="clock">0:05</span>
+                  <svg class="wave" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+                    <path
+                      class="area"
+                      d="M 0 78 C 10 78, 14 54, 22 54 C 30 54, 36 16, 46 16 C 56 16, 58 62, 67 62 C 76 62, 80 34, 88 34 C 96 34, 97 50, 100 50 L 100 100 L 0 100 Z"
+                    ></path>
+                    <path
+                      class="edge"
+                      d="M 0 78 C 10 78, 14 54, 22 54 C 30 54, 36 16, 46 16 C 56 16, 58 62, 67 62 C 76 62, 80 34, 88 34 C 96 34, 97 50, 100 50"
+                    ></path>
+                  </svg>
+                  <span class="ready">1 ready</span>
+                  <span class="fr">204 fr</span>
+                  <span class="kb">124.5 KB</span>
+                  <span class="pace">28 KB/s</span>
+                  <span class="x">&#10005;</span></span
+                >
+              </div>
+              <div class="doc-compose-acts">
+                <button class="doc-cancel-btn">cancel</button>
+                <button class="doc-comment-btn">comment</button>
+                <span class="mic"><svg class="ic"><use href="#i-mic" /></svg></span>
               </div>
             </div>
             <div class="doc-block">
