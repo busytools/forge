@@ -180,6 +180,8 @@
     "BrowserHandOffPending": {
       "": [
         "kind",
+        "seq",
+        "span",
         "update"
       ],
       "/update": [
@@ -209,6 +211,8 @@
     "ChatAppended": {
       "": [
         "kind",
+        "seq",
+        "span",
         "update"
       ],
       "/update": [
@@ -271,6 +275,8 @@
     "DictateModelsChanged": {
       "": [
         "kind",
+        "seq",
+        "span",
         "update"
       ],
       "/update": [
@@ -474,6 +480,8 @@
     "DocumentHandOffPending": {
       "": [
         "kind",
+        "seq",
+        "span",
         "update"
       ],
       "/update": [
@@ -494,6 +502,8 @@
     "DocumentHandOffResolved": {
       "": [
         "kind",
+        "seq",
+        "span",
         "update"
       ],
       "/update": [
@@ -606,6 +616,8 @@
     "PluginsCliActionFailed": {
       "": [
         "kind",
+        "seq",
+        "span",
         "update"
       ],
       "/update": [
@@ -620,6 +632,8 @@
     "PluginsCliActionSucceeded": {
       "": [
         "kind",
+        "seq",
+        "span",
         "update"
       ],
       "/update": [

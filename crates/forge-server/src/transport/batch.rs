@@ -11,9 +11,9 @@ use std::time::{Duration, Instant};
 use axum::extract::ws::Message;
 use futures_util::SinkExt;
 
-use crate::SessionUpdate;
 use crate::delivery::delivery_turn;
 use crate::transport::envelope::ServerMessage;
+use crate::{SeatUpdate, SessionUpdate};
 
 /// How long a batch waits for the updates behind it before it goes out.
 ///
@@ -30,7 +30,7 @@ pub const FLUSH_CEILING: Duration = Duration::from_millis(100);
 /// The updates waiting for one write, and when they have waited long enough.
 #[derive(Default)]
 pub struct Batch {
-    held: Vec<SessionUpdate>,
+    held: Vec<SeatUpdate>,
     /// When the first held update landed, which the ceiling counts from.
     opened: Option<Instant>,
     /// When the window the last arrival opened closes.
@@ -39,12 +39,16 @@ pub struct Batch {
 
 impl Batch {
     /// Hold one update, and hold the window open from its arrival.
-    pub fn push(&mut self, at: Instant, update: SessionUpdate) {
+    ///
+    /// The frame carries the number its seat minted, so what the client reads
+    /// off the wire says which frames of the seat's stream this write stands
+    /// for.
+    pub fn push(&mut self, at: Instant, frame: SeatUpdate) {
         if self.held.is_empty() {
             self.opened = Some(at);
         }
         self.quiet = Some(at + FLUSH_INTERVAL);
-        self.held.push(update);
+        self.held.push(frame);
     }
 
     /// When the held updates go out: the window the last arrival opened,
@@ -59,32 +63,20 @@ impl Batch {
     }
 
     /// Take what is held, leaving the batch empty.
-    pub fn take(&mut self) -> Vec<SessionUpdate> {
+    pub fn take(&mut self) -> Vec<SeatUpdate> {
         self.opened = None;
         self.quiet = None;
         std::mem::take(&mut self.held)
     }
 }
 
-/// Fold a run of token appends into the one frame they draw as, leaving every
-/// other update where it is.
+/// Fold `update` into `last` when the two are consecutive token appends for
+/// one seat, and answer whether it did.
 ///
 /// Both views draw a turn's estimate as the SUM of the deltas, because
 /// `estimated_tokens` restarts at each thinking block and the running value is
 /// not a turn total - so one frame carrying the sum draws exactly what the run
 /// drew, and the run itself is what a storm is made of.
-fn coalesce(updates: Vec<SessionUpdate>) -> Vec<SessionUpdate> {
-    let mut run: Vec<SessionUpdate> = Vec::with_capacity(updates.len());
-    for update in updates {
-        if !run.last_mut().is_some_and(|last| merge(last, &update)) {
-            run.push(update);
-        }
-    }
-    run
-}
-
-/// Fold `update` into `last` when the two are consecutive token appends for
-/// one seat, and answer whether it did.
 ///
 /// Everything but the growth is the arrival being folded in: the running
 /// value, the id and the session are that frame's own, and only the counter is
@@ -144,19 +136,26 @@ fn merge(last: &mut SessionUpdate, update: &SessionUpdate) -> bool {
 /// A run is a batch drained by its deadline, or the backlog a subscribe is
 /// handed before its snapshot. Nothing held is nothing to write, which the
 /// caller relies on when it clears the way for an answer.
-pub async fn flush<S>(socket: &mut S, updates: Vec<SessionUpdate>) -> anyhow::Result<()>
+pub async fn flush<S>(socket: &mut S, frames: Vec<SeatUpdate>) -> anyhow::Result<()>
 where
     S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
 {
-    if updates.is_empty() {
+    if frames.is_empty() {
         return Ok(());
     }
-    for update in coalesce(updates) {
+    for (frame, span) in folded(frames) {
+        let update = frame.update;
         // A delivery is drawn as the turn it reaches the model as, and the
         // CLI echoes no prompt back: a client drawing only frames would show
         // the assistant answering something nobody saw. The frame carries the
         // delivery's own kind, so a reader's follow can tell it from a
         // person's send (#2198).
+        //
+        // **The forged turn carries no number.** It is this connection's own
+        // re-shaping of the frame below it, which carries the delivery's own
+        // - so a client advancing its sequence on both would read one frame
+        // twice, and one it missed is repaired from the ring as the envelope
+        // it is.
         if let Some(key) = update.slot().cloned()
             && let Some((msg, source)) = delivery_turn(&update, &key)
         {
@@ -169,14 +168,42 @@ where
                         origin: None,
                         source: Some(source),
                     }),
+                    seq: None,
+                    span: 0,
                 },
             )
             .await?;
         }
-        feed(socket, ServerMessage::Update { update: Box::new(update) }).await?;
+        feed(socket, ServerMessage::Update { update: Box::new(update), seq: frame.seq, span })
+            .await?;
     }
     socket.flush().await?;
     Ok(())
+}
+
+/// The run of frames as the client reads them: the token appends folded into
+/// the one frame they draw as, each survivor carrying how many of the seat's
+/// numbers it stands for.
+///
+/// **The span is what keeps a folded run from reading as a gap.** The numbers
+/// of the frames the fold took are still consumed - nothing re-numbers a
+/// stream - so a client told only the survivor's own would ask for frames it
+/// had already drawn.
+fn folded(frames: Vec<SeatUpdate>) -> Vec<(SeatUpdate, u64)> {
+    let mut run: Vec<(SeatUpdate, u64)> = Vec::with_capacity(frames.len());
+    for frame in frames {
+        if let Some((last, span)) = run.last_mut()
+            && merge(&mut last.update, &frame.update)
+        {
+            // The survivor keeps the OLDEST frame's number and counts the
+            // rest: a client's sequence advances over the run exactly as it
+            // does over one frame.
+            *span = span.saturating_add(1);
+            continue;
+        }
+        run.push((frame, 1));
+    }
+    run
 }
 
 /// Put one message in the socket's buffer, where the batch's flush picks it
@@ -212,11 +239,17 @@ mod tests {
         }
     }
 
-    /// What a run of updates carries, in the order it was given.
-    fn names(updates: &[SessionUpdate]) -> Vec<&str> {
-        updates
+    /// One frame of the stream: the update, with the number a seat would have
+    /// minted for it.
+    fn frame(update: SessionUpdate) -> SeatUpdate {
+        SeatUpdate { seq: Some(1), update }
+    }
+
+    /// What a run of frames carries, in the order it was given.
+    fn names(frames: &[SeatUpdate]) -> Vec<&str> {
+        frames
             .iter()
-            .map(|update| match update {
+            .map(|frame| match &frame.update {
                 SessionUpdate::ServiceStatus { message, .. } => message.as_str(),
                 other => panic!("a batch carries what was put in it, and this is {other:?}"),
             })
@@ -259,19 +292,19 @@ mod tests {
     }
 
     /// What each fed frame carries, read through the shape a client reads.
-    fn frames(sink: &Recording) -> Vec<SessionUpdate> {
+    fn sent(sink: &Recording) -> Vec<SeatUpdate> {
         sink.fed
             .iter()
             .map(|frame| {
                 let Message::Text(text) = frame else {
                     panic!("the stream crosses as text, and this is {frame:?}")
                 };
-                let ServerMessage::Update { update } =
+                let ServerMessage::Update { update, seq, .. } =
                     serde_json::from_str(text.as_str()).expect("a frame a client decodes")
                 else {
                     panic!("every frame a batch writes is an update");
                 };
-                *update
+                SeatUpdate { seq, update: *update }
             })
             .collect()
     }
@@ -283,7 +316,7 @@ mod tests {
         let base = Instant::now();
         let mut batch = Batch::default();
 
-        batch.push(base, status("one"));
+        batch.push(base, frame(status("one")));
         assert_eq!(
             batch.due(),
             Some(base + FLUSH_INTERVAL),
@@ -291,7 +324,7 @@ mod tests {
         );
 
         let later = base + Duration::from_millis(5);
-        batch.push(later, status("two"));
+        batch.push(later, frame(status("two")));
         assert_eq!(
             batch.due(),
             Some(later + FLUSH_INTERVAL),
@@ -309,7 +342,7 @@ mod tests {
 
         let mut at = base;
         for step in 0..=20 {
-            batch.push(at, status(&format!("frame {step}")));
+            batch.push(at, frame(status(&format!("frame {step}"))));
             at += Duration::from_millis(5);
         }
 
@@ -327,7 +360,7 @@ mod tests {
         let base = Instant::now();
         let mut batch = Batch::default();
         for name in ["one", "two", "three"] {
-            batch.push(base, status(name));
+            batch.push(base, frame(status(name)));
         }
 
         let taken = batch.take();
@@ -351,7 +384,7 @@ mod tests {
         let base = Instant::now();
         let mut batch = Batch::default();
         for name in ["one", "two", "three"] {
-            batch.push(base, status(name));
+            batch.push(base, frame(status(name)));
         }
         let mut sink = Recording::default();
 
@@ -359,7 +392,7 @@ mod tests {
 
         assert_eq!(sink.flushes, 1, "a batch is one flush on the socket, not one per update");
         assert_eq!(
-            names(&frames(&sink)),
+            names(&sent(&sink)),
             ["one", "two", "three"],
             "and every update crosses as its own frame, in the order it was emitted",
         );
@@ -453,24 +486,31 @@ mod tests {
         {
             extras.insert("carried".to_owned(), serde_json::json!(true));
         }
-        flush(&mut sink, vec![token(&seat, 200, 200, "a"), token(&seat, 250, 50, "b"), last])
-            .await
-            .expect("the batch writes");
+        flush(
+            &mut sink,
+            vec![
+                frame(token(&seat, 200, 200, "a")),
+                frame(token(&seat, 250, 50, "b")),
+                frame(last),
+            ],
+        )
+        .await
+        .expect("the batch writes");
 
         assert_eq!(sink.flushes, 1, "the run is one flush, as any batch is");
         assert_eq!(sink.fed.len(), 1, "and one frame where the CLI sent three");
         assert_eq!(
-            describe(&frames(&sink)[0]),
+            describe(&sent(&sink)[0].update),
             "lead: 30 running, 280 grown",
             "carrying the last arrival's running value and the deltas summed",
         );
         assert_eq!(
-            naming(&frames(&sink)[0]),
+            naming(&sent(&sink)[0].update),
             ("c", "s"),
             "and the id of the arrival the run ended on, which is the one the frame stands for",
         );
         assert_eq!(
-            carried(&frames(&sink)[0]),
+            carried(&sent(&sink)[0].update),
             Some(&serde_json::json!(true)),
             "and a fact the surviving arrival carried must survive the fold's rebuild",
         );
@@ -491,17 +531,17 @@ mod tests {
         flush(
             &mut sink,
             vec![
-                token(&seat, 200, 200, "a"),
-                SessionUpdate::TurnCancelled { key: seat.clone() },
-                token(&seat, 250, 50, "b"),
-                token(&seat, 30, 30, "c"),
-                token(&elsewhere, 10, 10, "d"),
+                frame(token(&seat, 200, 200, "a")),
+                frame(SessionUpdate::TurnCancelled { key: seat.clone() }),
+                frame(token(&seat, 250, 50, "b")),
+                frame(token(&seat, 30, 30, "c")),
+                frame(token(&elsewhere, 10, 10, "d")),
             ],
         )
         .await
         .expect("the batch writes");
 
-        let said: Vec<String> = frames(&sink).iter().map(describe).collect();
+        let said: Vec<String> = sent(&sink).iter().map(|frame| describe(&frame.update)).collect();
         assert_eq!(
             said,
             [

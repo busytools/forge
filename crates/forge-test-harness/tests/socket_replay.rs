@@ -714,7 +714,11 @@ fn frames_record() -> Value {
             },
         },
         ServerMessage::Snapshot { subject: Subject::Home, data: Value::Null },
-        ServerMessage::Update { update: Box::new(SessionUpdate::CatalogLoaded) },
+        ServerMessage::Update {
+            update: Box::new(SessionUpdate::CatalogLoaded),
+            seq: None,
+            span: 0,
+        },
         ServerMessage::Page { conversation: seat.clone(), turns: Vec::new(), cursor: None },
         ServerMessage::Reply { reply_to: 1, body: Value::Null },
         ServerMessage::Error {
@@ -841,10 +845,7 @@ fn frames_record() -> Value {
     );
 
     let mut payload_sampled: BTreeMap<String, BTreeMap<String, Value>> = BTreeMap::new();
-    payload_sampled.insert(
-        "ChatAppended".to_owned(),
-        shape_of(&ServerMessage::Update { update: Box::new(update_sample) }),
-    );
+    payload_sampled.insert("ChatAppended".to_owned(), shape_of(&an_update(update_sample)));
     payload_sampled.insert(
         "Page".to_owned(),
         shape_of(&ServerMessage::Page {
@@ -1007,16 +1008,14 @@ fn frames_record() -> Value {
     // what makes the next such rename a record change.
     payload_sampled.insert(
         "BrowserHandOffPending".to_owned(),
-        shape_of(&ServerMessage::Update {
-            update: Box::new(SessionUpdate::BrowserHandOffPending {
-                key: seat.clone(),
-                handoff: forge_primitives::browser::HandOff {
-                    id: uuid::Uuid::from_u128(7),
-                    reason: "solve the CAPTCHA".to_owned(),
-                    profile: Some("job-hunt".to_owned()),
-                },
-            }),
-        }),
+        shape_of(&an_update(SessionUpdate::BrowserHandOffPending {
+            key: seat.clone(),
+            handoff: forge_primitives::browser::HandOff {
+                id: uuid::Uuid::from_u128(7),
+                reason: "solve the CAPTCHA".to_owned(),
+                profile: Some("job-hunt".to_owned()),
+            },
+        })),
     );
     // **The document hand-off's ask, whose fields a viewer opens by and
     // answers by.** A rename here - the id an answer names, the path a
@@ -1025,28 +1024,24 @@ fn frames_record() -> Value {
     // sample is what makes the next such rename a record change.
     payload_sampled.insert(
         "DocumentHandOffPending".to_owned(),
-        shape_of(&ServerMessage::Update {
-            update: Box::new(SessionUpdate::DocumentHandOffPending {
-                key: seat.clone(),
-                id: uuid::Uuid::new_v4(),
-                path: "/proj/docs/readme.md".to_owned(),
-                reviewable: true,
-            }),
-        }),
+        shape_of(&an_update(SessionUpdate::DocumentHandOffPending {
+            key: seat.clone(),
+            id: uuid::Uuid::new_v4(),
+            path: "/proj/docs/readme.md".to_owned(),
+            reviewable: true,
+        })),
     );
     // The ask's resolution: a view that did not answer it closes on the id,
     // and the ending says what happened, so both ride the sample.
     payload_sampled.insert(
         "DocumentHandOffResolved".to_owned(),
-        shape_of(&ServerMessage::Update {
-            update: Box::new(SessionUpdate::DocumentHandOffResolved {
-                key: seat.clone(),
-                id: uuid::Uuid::new_v4(),
-                ending: forge_primitives::document::DocumentHandOffEnding::Done {
-                    review_id: Some("r-1".to_owned()),
-                },
-            }),
-        }),
+        shape_of(&an_update(SessionUpdate::DocumentHandOffResolved {
+            key: seat.clone(),
+            id: uuid::Uuid::new_v4(),
+            ending: forge_primitives::document::DocumentHandOffEnding::Done {
+                review_id: Some("r-1".to_owned()),
+            },
+        })),
     );
     // **The models read, whose payload the whole page is drawn from.** The
     // census covers its variant name and nothing inside it: a rename among
@@ -1056,122 +1051,116 @@ fn frames_record() -> Value {
     // rows it would carry.
     payload_sampled.insert(
         "DictateModelsChanged".to_owned(),
-        shape_of(&ServerMessage::Update {
-            update: Box::new(SessionUpdate::DictateModelsChanged {
-                models: DictateModelsSnapshot {
-                    enabled: true,
-                    models_dir: Some(PathBuf::from("/tmp/models")),
-                    in_use: vec![InUseModel {
-                        role: forge_workspace::DictateRole::Transcribing,
-                        file: "cohere-transcribe-03-2026-Q4_K_M.gguf".to_owned(),
-                        size: 1_558_162_944,
-                        sha256: Some("0ea5".to_owned()),
-                        state: DictateModelState::Ready,
-                        facts: ModelFacts {
-                            quant: Some("Q4_K_M".to_owned()),
-                            params: Some(2_049_026_832),
-                            license: Some("Apache-2.0".to_owned()),
-                            runtime: Some("transcribe.cpp".to_owned()),
-                        },
-                        catalogue: Some(CatalogueJoin {
-                            variant: "cohere-transcribe-03-2026".to_owned(),
-                            display_name: "Cohere Transcribe".to_owned(),
-                            size_bytes: 1_558_162_944,
-                            streaming: false,
-                            languages: vec!["en".to_owned()],
-                            speed: Some(SpeedFact {
-                                machine: "m4-max".to_owned(),
-                                backend: "metal".to_owned(),
-                                quant: "Q8_0".to_owned(),
-                                xrt_wall: 72.9,
-                            }),
+        shape_of(&an_update(SessionUpdate::DictateModelsChanged {
+            models: DictateModelsSnapshot {
+                enabled: true,
+                models_dir: Some(PathBuf::from("/tmp/models")),
+                in_use: vec![InUseModel {
+                    role: forge_workspace::DictateRole::Transcribing,
+                    file: "cohere-transcribe-03-2026-Q4_K_M.gguf".to_owned(),
+                    size: 1_558_162_944,
+                    sha256: Some("0ea5".to_owned()),
+                    state: DictateModelState::Ready,
+                    facts: ModelFacts {
+                        quant: Some("Q4_K_M".to_owned()),
+                        params: Some(2_049_026_832),
+                        license: Some("Apache-2.0".to_owned()),
+                        runtime: Some("transcribe.cpp".to_owned()),
+                    },
+                    catalogue: Some(CatalogueJoin {
+                        variant: "cohere-transcribe-03-2026".to_owned(),
+                        display_name: "Cohere Transcribe".to_owned(),
+                        size_bytes: 1_558_162_944,
+                        streaming: false,
+                        languages: vec!["en".to_owned()],
+                        speed: Some(SpeedFact {
+                            machine: "m4-max".to_owned(),
+                            backend: "metal".to_owned(),
+                            quant: "Q8_0".to_owned(),
+                            xrt_wall: 72.9,
                         }),
-                        from: ActiveFrom::Pin,
-                        at: None,
-                    }],
-                    check: CatalogueCheck::Fresh {
-                        at: "2026-10-06T06:12:00Z".to_owned(),
-                        release: Some("v0.3.1".to_owned()),
-                        skipped: 0,
-                    },
-                    updates: vec![ModelUpdate {
-                        role: forge_workspace::DictateRole::Transcribing,
-                        file: "cohere-transcribe-03-2026-Q4_K_M.gguf".to_owned(),
-                        current: CurrentFacts { speed_x: 72.9, fleurs_en_wer: 5.08 },
-                        candidates: vec![CandidateRow {
-                            row: sample_row(),
-                            verdict: UpdateVerdict::Recommended,
-                        }],
-                    }],
-                    rows: vec![sample_row()],
-                    install: InstallState::Downloading {
-                        file: "granite-Q4_K_M.gguf".to_owned(),
-                        got: 1,
-                        total: 6,
-                    },
-                    activate: ActivateState::Idle,
-                    installed: vec![InstalledModel {
-                        variant: "granite".to_owned(),
-                        file: "granite-Q4_K_M.gguf".to_owned(),
-                        url: "https://example.invalid/granite".to_owned(),
-                        size: 6,
-                        facts: ModelFacts {
-                            quant: Some("Q4_K_M".to_owned()),
-                            ..ModelFacts::default()
-                        },
-                        at: "2026-10-06T09:00:00Z".to_owned(),
-                    }],
-                    bench: BenchState::Running {
-                        target: sample_target("granite-Q4_K_M.gguf"),
-                        tier: Tier::Consensus,
-                        clip: 1,
-                        clips: 12,
-                        so_far: Some(0.5),
-                    },
-                    results: vec![BenchResult {
-                        target: sample_target("granite-Q4_K_M.gguf"),
-                        tier: Tier::ReadAloud,
-                        metrics: Metrics {
-                            clips: 12,
-                            audio_seconds: 320.0,
-                            wall_seconds: 210.0,
-                            xrt_wall: 30.0,
-                            term_accuracy: Some(0.88),
-                            wer: Some(0.061),
-                            matched: None,
-                            stages_ms: StageTotals {
-                                model_load_ms: 1200,
-                                resample_ms: 10,
-                                mel_ms: 20,
-                                encode_ms: 30,
-                                decode_ms: 40,
-                                normalize_ms: 50,
-                            },
-                        },
-                        at: "2026-10-06T19:11:38Z".to_owned(),
-                        corpus: CorpusId {
-                            clips: 12,
-                            audio_seconds: 320,
-                            sha256: "a414db2a".to_owned(),
-                        },
-                    }],
-                    read_aloud: ReadAloudState {
-                        recordings: vec![ReadAloudRecording {
-                            id: "take-1791363000000".to_owned(),
-                            duration_ms: 41_000,
-                            bytes: 1_312_000,
-                            sha256: "980227df".to_owned(),
-                            at: "2026-10-06T06:04:23Z".to_owned(),
-                        }],
-                        recording: false,
-                        error: None,
-                        passage: "I want the forge session to pick up where it left off."
-                            .to_owned(),
-                        terms: vec!["forge".to_owned()],
-                    },
+                    }),
+                    from: ActiveFrom::Pin,
+                    at: None,
+                }],
+                check: CatalogueCheck::Fresh {
+                    at: "2026-10-06T06:12:00Z".to_owned(),
+                    release: Some("v0.3.1".to_owned()),
+                    skipped: 0,
                 },
-            }),
-        }),
+                updates: vec![ModelUpdate {
+                    role: forge_workspace::DictateRole::Transcribing,
+                    file: "cohere-transcribe-03-2026-Q4_K_M.gguf".to_owned(),
+                    current: CurrentFacts { speed_x: 72.9, fleurs_en_wer: 5.08 },
+                    candidates: vec![CandidateRow {
+                        row: sample_row(),
+                        verdict: UpdateVerdict::Recommended,
+                    }],
+                }],
+                rows: vec![sample_row()],
+                install: InstallState::Downloading {
+                    file: "granite-Q4_K_M.gguf".to_owned(),
+                    got: 1,
+                    total: 6,
+                },
+                activate: ActivateState::Idle,
+                installed: vec![InstalledModel {
+                    variant: "granite".to_owned(),
+                    file: "granite-Q4_K_M.gguf".to_owned(),
+                    url: "https://example.invalid/granite".to_owned(),
+                    size: 6,
+                    facts: ModelFacts { quant: Some("Q4_K_M".to_owned()), ..ModelFacts::default() },
+                    at: "2026-10-06T09:00:00Z".to_owned(),
+                }],
+                bench: BenchState::Running {
+                    target: sample_target("granite-Q4_K_M.gguf"),
+                    tier: Tier::Consensus,
+                    clip: 1,
+                    clips: 12,
+                    so_far: Some(0.5),
+                },
+                results: vec![BenchResult {
+                    target: sample_target("granite-Q4_K_M.gguf"),
+                    tier: Tier::ReadAloud,
+                    metrics: Metrics {
+                        clips: 12,
+                        audio_seconds: 320.0,
+                        wall_seconds: 210.0,
+                        xrt_wall: 30.0,
+                        term_accuracy: Some(0.88),
+                        wer: Some(0.061),
+                        matched: None,
+                        stages_ms: StageTotals {
+                            model_load_ms: 1200,
+                            resample_ms: 10,
+                            mel_ms: 20,
+                            encode_ms: 30,
+                            decode_ms: 40,
+                            normalize_ms: 50,
+                        },
+                    },
+                    at: "2026-10-06T19:11:38Z".to_owned(),
+                    corpus: CorpusId {
+                        clips: 12,
+                        audio_seconds: 320,
+                        sha256: "a414db2a".to_owned(),
+                    },
+                }],
+                read_aloud: ReadAloudState {
+                    recordings: vec![ReadAloudRecording {
+                        id: "take-1791363000000".to_owned(),
+                        duration_ms: 41_000,
+                        bytes: 1_312_000,
+                        sha256: "980227df".to_owned(),
+                        at: "2026-10-06T06:04:23Z".to_owned(),
+                    }],
+                    recording: false,
+                    error: None,
+                    passage: "I want the forge session to pick up where it left off.".to_owned(),
+                    terms: vec!["forge".to_owned()],
+                },
+            },
+        })),
     );
     // **The home snapshot's own shape, which nothing sampled before v8.** The
     // board renamed a project's `tasks` to `rows` and every census line stayed
@@ -1285,27 +1274,23 @@ fn frames_record() -> Value {
     // that answers it not at all, with every suite green.
     payload_sampled.insert(
         "PluginsCliActionSucceeded".to_owned(),
-        shape_of(&ServerMessage::Update {
-            update: Box::new(SessionUpdate::PluginsCliActionSucceeded {
-                cwd_raw: "/tmp/proj".to_owned(),
-                result: PluginsCliActionSuccess {
-                    snapshot: PluginsInventorySnapshot::default(),
-                    message: "Added marketplace owner/repo".to_owned(),
-                    claude_path: PathBuf::from("/usr/local/bin/claude"),
-                },
-                dispatch_id: Some(1),
-            }),
-        }),
+        shape_of(&an_update(SessionUpdate::PluginsCliActionSucceeded {
+            cwd_raw: "/tmp/proj".to_owned(),
+            result: PluginsCliActionSuccess {
+                snapshot: PluginsInventorySnapshot::default(),
+                message: "Added marketplace owner/repo".to_owned(),
+                claude_path: PathBuf::from("/usr/local/bin/claude"),
+            },
+            dispatch_id: Some(1),
+        })),
     );
     payload_sampled.insert(
         "PluginsCliActionFailed".to_owned(),
-        shape_of(&ServerMessage::Update {
-            update: Box::new(SessionUpdate::PluginsCliActionFailed {
-                cwd_raw: "/tmp/proj".to_owned(),
-                message: "the marketplace refused it".to_owned(),
-                dispatch_id: Some(1),
-            }),
-        }),
+        shape_of(&an_update(SessionUpdate::PluginsCliActionFailed {
+            cwd_raw: "/tmp/proj".to_owned(),
+            message: "the marketplace refused it".to_owned(),
+            dispatch_id: Some(1),
+        })),
     );
 
     json!({
@@ -1520,6 +1505,12 @@ fn client_sampled() -> BTreeMap<String, BTreeMap<String, Value>> {
 /// An enum's variants, each against the wire name it encodes as.
 fn named(variants: &[&str]) -> BTreeMap<String, String> {
     variants.iter().map(|rust_name| ((*rust_name).to_owned(), wire_name(rust_name))).collect()
+}
+
+/// One update as the wire's frame carries it, numbered like a seat's frame:
+/// the shape every payload sample below is taken through.
+fn an_update(update: SessionUpdate) -> ServerMessage {
+    ServerMessage::Update { update: Box::new(update), seq: Some(1), span: 1 }
 }
 
 /// One sample frame's path-and-key shape, as the record writes it.

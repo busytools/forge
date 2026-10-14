@@ -309,6 +309,14 @@ class RustConnection implements Connection {
     return true;
   }
 
+  seatRange(slot: SessionSlot, epoch: string | null, from: number, to: number): boolean {
+    if (this.state !== 'open') return false;
+    void invoke('client_seat_range', { slot, epoch, from, to }).catch((why: unknown) => {
+      report('a repair ask could not reach the shell', why);
+    });
+    return true;
+  }
+
   commitDiff(session: SessionSlot, sha: string): boolean {
     if (this.state !== 'open') return false;
     void invoke('client_commit_diff', { session, sha }).catch((why: unknown) => {

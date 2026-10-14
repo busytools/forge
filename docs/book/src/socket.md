@@ -403,16 +403,28 @@ was asked for.
 
 - **`snapshot {subject, data}`** - a subject in full, in answer to a
   `subscribe`.
-- **`update {update}`** - one `SessionUpdate`, for whichever subjects the
-  client is subscribed to. The subject decides, and a home subscription has
-  **two** arms rather than one: an update a home row draws something of, and
-  an update belonging to no seat at all - the service status, the fatal
-  error, the plugin records, the account pool - which is a field of the
-  home's own snapshot and which only a home subscription could have carried.
-  Read the second arm as absent and a page keeps what it read at subscribe
-  for the life of the connection. The pool is the one that reads as a live
-  state rather than as an event: a card left at `0 ready, probing` looks
-  like a slow probe rather than like a page that stopped listening.
+- **`update {update, seq, span}`** - one `SessionUpdate`, for whichever
+  subjects the client is subscribed to. The subject decides, and a home
+  subscription has **two** arms rather than one: an update a home row draws
+  something of, and an update belonging to no seat at all - the service
+  status, the fatal error, the plugin records, the account pool - which is a
+  field of the home's own snapshot and which only a home subscription could
+  have carried. Read the second arm as absent and a page keeps what it read
+  at subscribe for the life of the connection. The pool is the one that reads
+  as a live state rather than as an event: a card left at `0 ready, probing`
+  looks like a slow probe rather than like a page that stopped listening.
+
+  **`seq` and `span` are the frame's place in its seat's own sequence.**
+  Every frame the workspace emits for a seat is numbered on that seat's
+  counter, and the number is what lets a client see what it missed: a client
+  that reads 5 and then 7 knows exactly one frame went missing and asks for
+  it (`seat_range`), where a snapshot's `header.seq` says where a fresh
+  reader joins. `seq` is the number the frame's OLDEST update was minted
+  under and `span` how many of the seat's numbers it stands for - 1 for a
+  frame that is one update, and n for a run of token appends the batch folded
+  into the one frame they draw as. Both are absent from a frame belonging to
+  no seat, and from a server older than the fields, which leaves a client
+  with the frames alone.
 - **`page {conversation, turns, cursor}`** - in answer to `more`.
 - **`seat_frames {slot, epoch, frames}`** - in answer to `seat_range`: the
   frames numbered in `from..=to`, oldest first, each `{seq, update}` with the

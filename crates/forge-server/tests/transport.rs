@@ -218,7 +218,7 @@ async fn snapshot_answering(
     let mut passed = Vec::new();
     loop {
         match next_server(socket).await {
-            ServerMessage::Update { update } => passed.push(*update),
+            ServerMessage::Update { update, .. } => passed.push(*update),
             ServerMessage::Snapshot { subject, data } => return (subject, data, passed),
             other => panic!("a subscribe is answered with a snapshot, not {other:?}"),
         }
@@ -241,7 +241,7 @@ async fn update_until(
         // Split rather than a `let-else`, so a message that arrived and was not
         // an update is not reported as silence.
         let update = match next_server_within(socket, 5_000).await {
-            Some(ServerMessage::Update { update }) => *update,
+            Some(ServerMessage::Update { update, .. }) => *update,
             Some(other) => {
                 panic!("waited for {want}, and a message that is not an update arrived: {other:?}")
             }
@@ -573,7 +573,7 @@ async fn a_take_is_heard_by_its_own_connection_and_no_other() {
     // it, so a take update that was going to arrive would have.
     loop {
         match next_server_within(&mut other, 5_000).await {
-            Some(ServerMessage::Update { update }) => {
+            Some(ServerMessage::Update { update, .. }) => {
                 assert!(
                     !matches!(
                         *update,
@@ -816,7 +816,7 @@ async fn a_refused_clients_frames_never_land_in_the_holders_take() {
     let mut peaks: Vec<f32> = Vec::new();
     for _ in 0..48 {
         match next_server_within(&mut holder, 5_000).await {
-            Some(ServerMessage::Update { update }) => {
+            Some(ServerMessage::Update { update, .. }) => {
                 if let SessionUpdate::DictateLevel { peak_db, .. } = *update {
                     peaks.push(peak_db);
                     if (peak_db + 12.04).abs() < 0.5 {
@@ -1251,7 +1251,7 @@ async fn a_take_ending_reaches_its_connection_with_the_seat_unsubscribed() {
     // news is not.
     loop {
         match next_server_within(&mut client, 5_000).await {
-            Some(ServerMessage::Update { update }) => match *update {
+            Some(ServerMessage::Update { update, .. }) => match *update {
                 SessionUpdate::DictateEnded { .. } => break,
                 SessionUpdate::ForgeAccountIdentity { .. } => panic!(
                     "a non-take update for an unwatched seat arrived: the exemption is too wide"
@@ -1412,7 +1412,7 @@ async fn take_after_take_on_one_seat_leaves_it_free_for_the_next_client() {
 async fn next_start_or_refusal(socket: &mut Client, want: &str) -> SessionUpdate {
     for _ in 0..64 {
         let update = match next_server_within(socket, 5_000).await {
-            Some(ServerMessage::Update { update }) => *update,
+            Some(ServerMessage::Update { update, .. }) => *update,
             Some(_) => continue,
             None => panic!("waited for {want}, and heard nothing"),
         };
@@ -3327,7 +3327,9 @@ async fn a_held_seats_moved_tree_reaches_the_client() {
     let mut moved = None;
     for edit in 1..12 {
         std::fs::write(repo.join("kept.txt"), "x".repeat(edit)).expect("write");
-        if let Some(ServerMessage::Update { update }) = next_server_within(&mut socket, 700).await {
+        if let Some(ServerMessage::Update { update, .. }) =
+            next_server_within(&mut socket, 700).await
+        {
             let SessionUpdate::WorkChanged { key, work, git, pr, closes } = *update else {
                 continue;
             };
@@ -3465,7 +3467,7 @@ async fn a_refused_subscribe_leaves_another_connections_hold_alone() {
     fleet.start("TestOrg", "proj").expect("the project starts again");
     for edit in 1..12 {
         std::fs::write(repo.join("kept.txt"), "x".repeat(edit)).expect("write");
-        if let Some(ServerMessage::Update { update }) = next_server_within(&mut a, 700).await
+        if let Some(ServerMessage::Update { update, .. }) = next_server_within(&mut a, 700).await
             && matches!(*update, SessionUpdate::WorkChanged { .. })
         {
             return;
@@ -4032,7 +4034,7 @@ async fn one_unsubscribe_leaves_the_seats_other_subscription() {
 
     let msg = next_server(&mut socket).await;
     assert!(
-        matches!(&msg, ServerMessage::Update { update } if matches!(**update, SessionUpdate::TurnCancelled { .. })),
+        matches!(&msg, ServerMessage::Update { update, .. } if matches!(**update, SessionUpdate::TurnCancelled { .. })),
         "the subscription the client still holds hears the seat it is showing: {msg:?}",
     );
 }
@@ -4109,7 +4111,7 @@ async fn a_delivery_is_sent_as_a_frame_and_then_as_its_typed_update() {
         description: Some("Morning summary".to_owned()),
     });
 
-    let ServerMessage::Update { update } = next_server(&mut socket).await else {
+    let ServerMessage::Update { update, .. } = next_server(&mut socket).await else {
         panic!("a delivery a view draws as a turn has to reach the client drawing it")
     };
     let SessionUpdate::ChatAppended { key, msg, .. } = *update else {
@@ -4128,7 +4130,7 @@ async fn a_delivery_is_sent_as_a_frame_and_then_as_its_typed_update() {
          forged turn rather than some other user frame: {text}",
     );
 
-    let ServerMessage::Update { update } = next_server(&mut socket).await else {
+    let ServerMessage::Update { update, .. } = next_server(&mut socket).await else {
         panic!("the typed update still goes out beside the frame")
     };
     assert!(
@@ -4175,7 +4177,7 @@ async fn a_delivery_to_another_seat_draws_nothing_on_this_one() {
 
     let msg = next_server(&mut socket).await;
     assert!(
-        matches!(&msg, ServerMessage::Update { update } if matches!(**update, SessionUpdate::TurnCancelled { .. })),
+        matches!(&msg, ServerMessage::Update { update, .. } if matches!(**update, SessionUpdate::TurnCancelled { .. })),
         "a delivery for another seat must not draw on this one: {msg:?}",
     );
 }
@@ -4267,7 +4269,7 @@ async fn a_prompt_a_client_sends_draws_for_every_client_on_that_seat() {
     fleet.emit(SessionUpdate::TurnCancelled { key: lead_seat() });
     let msg = next_server(&mut onlooker).await;
     assert!(
-        matches!(&msg, ServerMessage::Update { update } if matches!(**update, SessionUpdate::TurnCancelled { .. })),
+        matches!(&msg, ServerMessage::Update { update, .. } if matches!(**update, SessionUpdate::TurnCancelled { .. })),
         "one send draws one frame per view: {msg:?}",
     );
 }
@@ -4486,7 +4488,7 @@ async fn a_thinking_turn_reaches_a_client_watching_its_seat_frame_for_frame() {
     let mut heard: i64 = 0;
     loop {
         match next_server(&mut watched).await {
-            ServerMessage::Update { update } => match *update {
+            ServerMessage::Update { update, .. } => match *update {
                 SessionUpdate::ChatAppended { key, msg, .. } => {
                     assert_eq!(key, lead_seat(), "another seat's frame reached this one");
                     if let forge_primitives::Message::ThinkingTokens {
@@ -4536,7 +4538,7 @@ async fn a_thinking_turn_reaches_a_client_watching_its_seat_frame_for_frame() {
     let mut leaked: Vec<String> = Vec::new();
     loop {
         match next_server(&mut home_only).await {
-            ServerMessage::Update { update } => match *update {
+            ServerMessage::Update { update, .. } => match *update {
                 SessionUpdate::ChatAppended { msg, .. } => leaked.push(frame_name(&msg)),
                 SessionUpdate::TurnCancelled { .. } => break,
                 _ => {}
@@ -4602,7 +4604,7 @@ async fn a_prompt_the_core_refuses_draws_nothing() {
     let mut drawn = false;
     loop {
         match next_server_within(&mut sender, 5_000).await {
-            Some(ServerMessage::Update { update }) => {
+            Some(ServerMessage::Update { update, .. }) => {
                 drawn |= matches!(&*update, SessionUpdate::ChatAppended { msg, .. }
                     if user_text(msg).as_deref() == Some("hello there"));
             }
@@ -4618,7 +4620,7 @@ async fn a_prompt_the_core_refuses_draws_nothing() {
     fleet.emit(SessionUpdate::TurnCancelled { key: lead_seat() });
     loop {
         match next_server(&mut sender).await {
-            ServerMessage::Update { update } => {
+            ServerMessage::Update { update, .. } => {
                 drawn |= matches!(&*update, SessionUpdate::ChatAppended { msg, .. }
                     if user_text(msg).as_deref() == Some("hello there"));
                 if matches!(*update, SessionUpdate::TurnCancelled { .. }) {
@@ -5901,7 +5903,7 @@ async fn frame_until(
         let text = next_text_within(socket, 5_000)
             .await
             .unwrap_or_else(|| panic!("waited for {what}, and the server said nothing"));
-        let Ok(ServerMessage::Update { update }) = serde_json::from_str::<ServerMessage>(&text)
+        let Ok(ServerMessage::Update { update, .. }) = serde_json::from_str::<ServerMessage>(&text)
         else {
             continue;
         };
@@ -6075,7 +6077,8 @@ fn assert_transcript_free(frame: &str, what: &str) {
          its 256MiB cap",
         frame.len(),
     );
-    let Ok(ServerMessage::Update { update }) = serde_json::from_str::<ServerMessage>(frame) else {
+    let Ok(ServerMessage::Update { update, .. }) = serde_json::from_str::<ServerMessage>(frame)
+    else {
         panic!("the {what} crosses as an update");
     };
     let carried = match &*update {

@@ -73,6 +73,15 @@ export interface SessionHeader {
    * the seat's.
    */
   session_id: string | null;
+  /**
+   * The number the seat's next frame will bear.
+   *
+   * The point in the seat's own sequence this record stands at, so a client
+   * that attaches mid-stream knows which frames it did not miss. The read
+   * beside it - `session_id` - is the epoch those numbers belong to: an
+   * occupant change starts the count again at 1.
+   */
+  seq: number;
   model: ModelFacts | null;
   effort: Effort;
   permission_mode: PermissionMode | null;
@@ -531,6 +540,7 @@ export function sessionFrom(data: unknown): SessionRecord {
     queue_ended: null,
     header: {
       session_id: text(header['session_id']),
+      seq: number(header['seq']) ?? 1,
       model:
         typeof raw['resolved_id'] === 'string'
           ? {

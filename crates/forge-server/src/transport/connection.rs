@@ -448,7 +448,10 @@ async fn run_connection(
                     // still waiting out its window when the process drops dies
                     // with it. Everything else can wait the interval.
                     let fatal = matches!(update, SessionUpdate::FatalError { .. });
-                    held.push(Instant::now(), for_a_client(update));
+                    held.push(
+                        Instant::now(),
+                        SeatUpdate { seq: frame.seq, update: for_a_client(update) },
+                    );
                     if fatal {
                         batch::flush(socket, held.take()).await?;
                     }
@@ -556,14 +559,14 @@ fn open_stream(
     state: &TransportState,
     updates: &mut Option<(mpsc::UnboundedReceiver<SeatUpdate>, bool)>,
     answering: bool,
-) -> Vec<SessionUpdate> {
+) -> Vec<SeatUpdate> {
     if updates.as_ref().is_some_and(|(_, held)| *held >= answering) {
         return Vec::new();
     }
     let queued = updates.take().map_or_else(Vec::new, |(mut receiver, _)| {
         let mut queued = Vec::new();
         while let Ok(frame) = receiver.try_recv() {
-            queued.push(frame.update);
+            queued.push(frame);
         }
         queued
     });
@@ -733,9 +736,9 @@ async fn handle_client(
             // Forwarded before the snapshot: they were emitted before it was
             // taken, and the client reads them in the order it receives them.
             let mut queued = Vec::new();
-            for update in open_stream(state, updates, answering) {
-                if forwards(&update, watched, me) {
-                    queued.push(for_a_client(update));
+            for frame in open_stream(state, updates, answering) {
+                if forwards(&frame.update, watched, me) {
+                    queued.push(SeatUpdate { seq: frame.seq, update: for_a_client(frame.update) });
                 }
             }
             // **A seat is held BEFORE its snapshot is encoded.** The hold is

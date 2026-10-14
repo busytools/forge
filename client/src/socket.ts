@@ -129,6 +129,17 @@ export interface Connection {
    */
   readDocument(session: SessionSlot, path: string, reviewable: boolean): boolean;
   /**
+   * Ask a seat for the frames its stream emitted between two numbers.
+   *
+   * The repair a client runs on a gap it read in the sequence, and silent in
+   * both directions: nothing on a page announces it, and the answer's frames
+   * fold through the same path a live frame does. `false` means the socket was
+   * not open and no answer is coming - which costs nothing, because the frames
+   * a reconnect's snapshot carries are the whole record and say where the
+   * stream stands.
+   */
+  seatRange(slot: SessionSlot, epoch: string | null, from: number, to: number): boolean;
+  /**
    * Send one binary frame: dictation audio, and nothing else the socket
    * carries.
    *
@@ -744,6 +755,11 @@ export function connect(url: string): Connection {
     readDocument(session, path, reviewable) {
       if (!isOpen()) return false;
       sendNow({ kind: 'document_read', session, path, reviewable });
+      return true;
+    },
+    seatRange(slot, epoch, from, to) {
+      if (!isOpen()) return false;
+      sendNow({ kind: 'seat_range', slot, epoch, from, to });
       return true;
     },
     frame(bytes) {

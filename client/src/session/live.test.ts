@@ -1115,6 +1115,8 @@ interface Driveable extends Omit<Connection, 'status'> {
   /** The seat's session appears, so a later read answers with a record. */
   ready(): void;
   status(): ConnectionStatus;
+  /** Every range ask the seat made, in order. */
+  ranges: { slot: SessionSlot; epoch: string | null; from: number; to: number }[];
 }
 
 /** A seat the server holds no session for, worded as it words the refusal. */
@@ -1129,6 +1131,7 @@ function drivable(refusedAtFirst = false): Driveable {
   let unsubscribed = 0;
   let refused = refusedAtFirst;
   let status: ConnectionStatus = 'open';
+  const ranges: { slot: SessionSlot; epoch: string | null; from: number; to: number }[] = [];
 
   const seatState = (): StoreState =>
     refused ? { kind: 'refused', why: NO_SESSION } : { kind: 'ready' };
@@ -1173,6 +1176,10 @@ function drivable(refusedAtFirst = false): Driveable {
     more: () => false,
     commitDiff: () => false,
     readDocument: () => false,
+    seatRange: (slot, epoch, from, to) => {
+      ranges.push({ slot, epoch, from, to });
+      return true;
+    },
     frame: () => false,
     onBrowserAsk: () => () => {},
     browserRole: () => false,
@@ -1211,21 +1218,50 @@ function drivable(refusedAtFirst = false): Driveable {
     ready: () => {
       refused = false;
     },
+    ranges,
   };
 }
 
-/** The seat's own answer, with whatever a case wants carried on it. */
-function snapshotOf(slot: SessionSlot, extra: Record<string, unknown> = {}): ServerMessage {
+/**
+ * The seat's own answer, with whatever a case wants carried on it.
+ *
+ * `reach` is the (epoch, seq) pair every record carries: the occupant whose
+ * numbers the seat's stream is on, and the number its next frame will bear.
+ * One is a live seat's first frame; a record from before the fields answers
+ * with neither, which is the default a case that does not care gets.
+ */
+function snapshotOf(
+  slot: SessionSlot,
+  extra: Record<string, unknown> = {},
+  reach: { epoch?: string | null; seq?: number } = {},
+): ServerMessage {
   return {
     kind: 'snapshot',
     subject: { session: slot },
-    data: { slot, state: { scan_cwd: '/tmp' }, ...extra },
+    data: {
+      slot,
+      state: { scan_cwd: '/tmp' },
+      ...extra,
+      // Merged INTO whatever header facts the case carries, so a case about
+      // one of them does not lose the epoch and the number beside it.
+      header: {
+        ...(extra['header'] as Record<string, unknown> | undefined),
+        session_id: reach.epoch ?? null,
+        seq: reach.seq ?? 1,
+      },
+    },
   };
 }
 
 /** One update, as the server sends it. */
 function updateOf(update: SessionUpdate): ServerMessage {
   return { kind: 'update', update };
+}
+
+/** One numbered frame, as the server sends a seat's: the number minted for
+ * it, and how many of the seat's numbers it stands for. */
+function frameOf(update: SessionUpdate, seq: number | null, span = 1): ServerMessage {
+  return { kind: 'update', update, seq, span };
 }
 
 /** The seat taking a new occupant, which is a read rather than a patch. */
@@ -2015,23 +2051,29 @@ describe('the read, and the answer a frame has outrun', () => {
   it('refuses an answer the frames have outrun, and asks again', () => {
     const connection = drivable();
     const page = watch(connection);
-    page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }));
-    page.land(updateOf({ chat_appended: { key: LEAD, msg: spoke('hello') } }));
+    page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }, { seq: 1 }));
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('hello') } }, 1));
     paint();
     expect(page.read().wire?.conversation.turns, 'precondition: the frame landed').toHaveLength(1);
 
     // The seat takes a new occupant: the page asks for the whole record.
-    page.land(updateOf(occupant('new')));
+    page.land(frameOf(occupant('new'), 2));
     const asked = page.reads();
 
     // A frame lands while that answer is in flight, so the record has been
     // carried past where the answer was encoded.
-    page.land(updateOf({ chat_appended: { key: LEAD, msg: spoke('more') } }));
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('more', 'u3') } }, 3));
     paint();
 
-    // The answer lands: the seat as it was BEFORE that frame, with the
-    // previous occupant's empty conversation in it.
-    page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }));
+    // The answer lands: the seat as it was BEFORE that frame, standing where
+    // its stream stood before it.
+    page.land(
+      snapshotOf(
+        LEAD,
+        { conversation: { turns: [], compaction_count: 0 } },
+        { seq: 3, epoch: 'new' },
+      ),
+    );
 
     expect(
       page.read().wire?.conversation.turns,
@@ -2040,7 +2082,13 @@ describe('the read, and the answer a frame has outrun', () => {
     expect(page.reads(), 'the outrun answer was never asked for again').toBe(asked + 1);
 
     // And the fresh ask converges: its clean answer is taken whole.
-    page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 }, work: null }));
+    page.land(
+      snapshotOf(
+        LEAD,
+        { conversation: { turns: [], compaction_count: 0 }, work: null },
+        { seq: 4, epoch: 'new' },
+      ),
+    );
     expect(page.read().wire?.conversation.turns, 'the fresh answer was not taken').toHaveLength(0);
     page.stop();
   });
@@ -2097,22 +2145,22 @@ describe('the read, and the answer a frame has outrun', () => {
     const connection = drivable();
     const page = watch(connection);
     // The seat's record says a turn is running.
-    page.land(snapshotOf(LEAD, { header: { turn_in_flight: true } }));
+    page.land(snapshotOf(LEAD, { header: { turn_in_flight: true } }, { seq: 1 }));
 
     // A frame that replaces the record asks for a whole one, which is what a
     // reconnect or a swap does.
-    page.land(updateOf(occupant('new')));
+    page.land(frameOf(occupant('new'), 2));
     const asked = page.reads();
 
     // The turn settles while that answer is in flight - a frame, and an
     // answer from before it would put the running turn back.
-    page.land(updateOf({ turn_complete: { key: LEAD } }));
+    page.land(frameOf({ turn_complete: { key: LEAD } }, 3));
     paint();
 
-    // The answer lands: the seat as it was BEFORE the settle. Adopted whole
-    // it puts the running turn back, and the box refuses a send the turn has
-    // already taken.
-    page.land(snapshotOf(LEAD, { header: { turn_in_flight: true } }));
+    // The answer lands: the seat as it was BEFORE the settle, standing where
+    // its stream stood before it. Adopted whole it puts the running turn back,
+    // and the box refuses a send the turn has already taken.
+    page.land(snapshotOf(LEAD, { header: { turn_in_flight: true } }, { seq: 3, epoch: 'new' }));
 
     expect(
       page.read().wire?.header.turn_in_flight,
@@ -2121,13 +2169,19 @@ describe('the read, and the answer a frame has outrun', () => {
 
     // **The whole record is still WANTED.** Refusing the outrun answer keeps
     // the frame-fed record, which is the fix above, but the conversation and
-    // the header this answer was asked for are still owed - so the want is kept
-    // and asked again. Without this the old occupant stands until a later
+    // the header this answer was asked for are still owed - so the want is
+    // kept and asked again. Without this the old occupant stands until a later
     // REPLACES frame with a clean window or a socket drop.
     expect(page.reads(), 'the whole record was not asked for again').toBe(asked + 1);
 
     // And the fresh ask converges: its clean answer is adopted whole.
-    page.land(snapshotOf(LEAD, { header: { turn_in_flight: false }, work: { branch: 'new' } }));
+    page.land(
+      snapshotOf(
+        LEAD,
+        { header: { turn_in_flight: false }, work: { branch: 'new' } },
+        { seq: 4, epoch: 'new' },
+      ),
+    );
     expect(page.read().wire?.work.branch, 'the fresh answer was not taken').toBe('new');
     page.stop();
 
@@ -2136,10 +2190,16 @@ describe('the read, and the answer a frame has outrun', () => {
     // over-broad guard re-asks here and fails this.
     const control = drivable();
     const other = watch(control);
-    other.land(snapshotOf(LEAD, { header: { turn_in_flight: true } }));
-    other.land(updateOf(occupant('new')));
+    other.land(snapshotOf(LEAD, { header: { turn_in_flight: true } }, { seq: 1 }));
+    other.land(frameOf(occupant('new'), 2));
     const askedOnce = other.reads();
-    other.land(snapshotOf(LEAD, { header: { turn_in_flight: true }, work: { branch: 'new' } }));
+    other.land(
+      snapshotOf(
+        LEAD,
+        { header: { turn_in_flight: true }, work: { branch: 'new' } },
+        { seq: 2, epoch: 'new' },
+      ),
+    );
 
     expect(other.read().wire?.work.branch, 'the control took the record').toBe('new');
     expect(other.reads(), 'a clean answer was asked for again').toBe(askedOnce);
@@ -2222,6 +2282,148 @@ describe('the read, and the answer a frame has outrun', () => {
       page.read().wire?.composer.take,
       'a dropped socket left a phantom recording on the record',
     ).toBeNull();
+    page.stop();
+  });
+});
+
+/**
+ * **The seat's frames are numbered, and the numbers are the rule.**
+ *
+ * Every frame the workspace emits for a seat is numbered on that seat's own
+ * counter, and the number is what says what a frame IS to the record: the
+ * successor of what it holds applies, one ahead of it is a hole to ask for,
+ * and one behind it is a frame already drawn. A hole is repaired silently -
+ * the reader keeps reading what arrived while the answer is on its way, and
+ * the repaired frames fold through the same path a live frame does.
+ */
+describe('the seat sequence', () => {
+  /** One repaired stretch, as the server answers a range ask. */
+  function repaired(...frames: { seq: number; text: string }[]): ServerMessage {
+    return {
+      kind: 'seat_frames',
+      slot: LEAD,
+      epoch: null,
+      frames: frames.map((frame) => ({
+        seq: frame.seq,
+        update: { chat_appended: { key: LEAD, msg: spoke(frame.text, `u${frame.seq}`) } },
+      })),
+    };
+  }
+
+  it('applies the successor, asks for a hole, and folds the answer into it', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD, {}, { seq: 1 }));
+
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('one') } }, 1));
+    paint();
+    expect(spoken(page), 'the successor applies').toContain('one');
+    expect(connection.ranges, 'and nothing is asked for').toHaveLength(0);
+
+    // Two ahead: the frame between is a hole. The ask is silent and does not
+    // hold the reader - the frame itself still lands.
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('three', 'u3') } }, 3));
+    paint();
+    expect(spoken(page), 'the frame ahead still lands').toContain('three');
+    expect(connection.ranges, 'and the hole is asked for').toEqual([
+      { slot: LEAD, epoch: null, from: 2, to: 2 },
+    ]);
+
+    page.land(repaired({ seq: 2, text: 'two' }));
+    paint();
+    expect(spoken(page), 'the repaired frame folds in underneath').toContain('two');
+    expect(connection.ranges, 'and nothing is asked for twice').toHaveLength(1);
+    page.stop();
+  });
+
+  /**
+   * **A frame the record already has is not a hole.** A repeat, a replay or a
+   * reorder that lands behind the newest number is a frame already drawn -
+   * asking for it would be a range ask for frames nobody missed, which is a
+   * loop rather than a repair.
+   */
+  it('does not ask for a frame it already drew', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD, {}, { seq: 1 }));
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('one') } }, 1));
+    paint();
+
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('one again', 'u1x') } }, 1));
+    paint();
+
+    expect(connection.ranges, 'nothing is asked for a frame already in hand').toHaveLength(0);
+    page.stop();
+  });
+
+  /**
+   * **An occupant change is a new epoch, and the count starts again at 1.**
+   * A `/new` or a `/resume` replays an old transcript under a new occupant, so
+   * every number the record holds belongs to a stream that is gone: the record
+   * is read afresh and numbered 1 is what applies next - never a merge, and
+   * never a gap.
+   */
+  it('wipes on an occupant change and expects one again', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD, {}, { seq: 5 }));
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('the old occupant') } }, 5));
+    paint();
+    const reads = connection.reads();
+
+    page.land(frameOf(occupant('a-new-occupant'), 6));
+    paint();
+    expect(connection.reads(), 'the new occupant is read afresh').toBeGreaterThan(reads);
+
+    // The answer for the new occupant stands at 1, and the frame numbered 1
+    // applies: a record still holding the old numbers would drop it.
+    page.land(snapshotOf(LEAD, {}, { seq: 1, epoch: 'a-new-occupant' }));
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('the new one', 'n1') } }, 1));
+    paint();
+    expect(spoken(page), 'the new epoch counts from one').toContain('the new one');
+    page.stop();
+  });
+
+  /**
+   * **A folded run is not a hole.** A storm of token appends crosses as the
+   * single frame they draw as, and the frame's span is what says how many of
+   * the seat's numbers it stands for - so a client that counted only its own
+   * number would ask for numbers it had already drawn.
+   */
+  it('advances over every number a folded run stands for', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD, {}, { seq: 1 }));
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('a run, folded') } }, 1, 3));
+    paint();
+
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('after the run', 'u4') } }, 4));
+    paint();
+
+    expect(connection.ranges, 'a folded run is not a gap').toHaveLength(0);
+    page.stop();
+  });
+
+  /**
+   * **A refused repair means read the seat again.** The numbers the client
+   * holds came from a seat whose occupant has moved on, so nothing in this
+   * epoch can answer for them - and a client that retried the same range
+   * forever would never learn where the new stream stands.
+   */
+  it('reads the seat again when a repair is refused', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD, {}, { seq: 1 }));
+    const reads = connection.reads();
+
+    page.land({
+      kind: 'error',
+      what: 'seat_range',
+      why: "the seat's occupant has changed since those numbers were minted",
+      seat: LEAD,
+    });
+
+    expect(connection.reads(), 'the whole record is asked for again').toBeGreaterThan(reads);
     page.stop();
   });
 });

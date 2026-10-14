@@ -178,6 +178,12 @@ export type Command = string | Record<string, Record<string, unknown>>;
  */
 export type SessionUpdate = string | { [variant: string]: unknown };
 
+/** One frame of a repaired stretch: the number the seat minted for it, and the update itself. */
+export interface SeatFrame {
+  seq: number;
+  update: SessionUpdate;
+}
+
 /**
  * The seat an update is addressed to, or `null` for one addressed to no seat.
  *
@@ -257,6 +263,17 @@ export type ClientMessage =
   | { kind: 'command'; command: Command; reply_to: number | null }
   | { kind: 'more'; conversation: SessionSlot; before: string | null; turns: number }
   /**
+   * Ask for the frames a seat's stream emitted between two numbers.
+   *
+   * **Every frame the workspace emits for a seat is numbered on that seat's
+   * own counter**, so a client that reads 5 and then 7 knows exactly one frame
+   * went missing. `epoch` is the occupant those numbers belong to: a seat
+   * whose occupant has changed has started counting again at 1, and a repair
+   * across the two is refused rather than answered - so an `error` naming
+   * `seat_range` means read the seat again.
+   */
+  | { kind: 'seat_range'; slot: SessionSlot; epoch: string | null; from: number; to: number }
+  /**
    * One commit's own diff, for a review page's commit scopes.
    *
    * On demand rather than carried on the record: a branch can hold dozens of
@@ -305,7 +322,23 @@ export type ServerMessage =
       settings: ClientSettings;
     }
   | { kind: 'snapshot'; subject: Subject; data: unknown }
-  | { kind: 'update'; update: SessionUpdate }
+  /**
+   * One frame of a seat's stream.
+   *
+   * `seq` is the number its OLDEST update was minted under, and `span` how
+   * many of the seat's numbers the frame stands for: a run of token appends
+   * crosses as the single frame they draw as, and counting only its oldest
+   * would leave the client asking for numbers it had already drawn. Both are
+   * absent from a frame belonging to no seat, and from a server older than the
+   * fields.
+   */
+  | { kind: 'update'; update: SessionUpdate; seq?: number | null; span?: number }
+  /**
+   * A repaired stretch, in answer to `seat_range`: the frames numbered in
+   * `from..=to`, oldest first, each carrying the number it was minted under
+   * and the update in the same shape a live `update` carries.
+   */
+  | { kind: 'seat_frames'; slot: SessionSlot; epoch: string | null; frames: SeatFrame[] }
   /**
    * A page of one conversation, in answer to `more`, with the cursor for the
    * next.

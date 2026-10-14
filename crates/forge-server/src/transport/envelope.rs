@@ -262,6 +262,21 @@ pub enum ServerMessage {
     /// thing on this wire and every other variant is small beside it.
     Update {
         update: Box<SessionUpdate>,
+        /// The number the frame's oldest update was minted under, `None` for
+        /// a frame belonging to no seat.
+        ///
+        /// **A client reads the numbers to see what it missed.** Every frame
+        /// the workspace emits for a seat is numbered on that seat's counter,
+        /// so a client that reads 5 and then 7 knows exactly one frame went
+        /// missing and asks the seat for it (`seat_range`); the snapshot's
+        /// `header.seq` says where a fresh reader joins.
+        seq: Option<u64>,
+        /// How many of the seat's numbers this frame stands for: 1 for a
+        /// frame that is one update, and n for a run the batch folded into
+        /// one - a run of token appends crosses as the single frame they
+        /// draw as, and its span is what keeps the client from reading the
+        /// numbers it already drew as a gap. 0 on a frame that has no number.
+        span: u64,
     },
     /// A page of one conversation, in answer to `more`: whole turns, each with
     /// the key the server named it by and the messages it ran as. Grouping a
