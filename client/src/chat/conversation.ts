@@ -1753,7 +1753,14 @@ export class Chat {
         // (Ved, 2026-10-11: "the chat does not scroll to my message"). The same
         // rule as a folded user frame: their own message arriving puts the foot
         // under their eyes, and here the pile's card IS that message's row.
-        this.following(true);
+        //
+        // **But the same frame announces prompts that are nobody's send**: a
+        // cron fire, a peer message, a gotify or slack delivery, forge's own
+        // continuation. Those arrive while the reader is mid-read, and arming
+        // on one carries them to the bottom on the next pass (#1614). Only a
+        // person's own send may - `source` says who sent it, and the wire
+        // carries it on every queued row.
+        if (textIn(update, 'prompt_queued', 'source') === 'you') this.following(true);
         this.retract(uuid);
       }
       return;

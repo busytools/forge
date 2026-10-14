@@ -226,11 +226,17 @@ function stub() {
         },
       });
     },
-    /** The core saying that prompt is waiting in the CLI's queue, which retracts its row into the hold. */
-    queued(): void {
+    /**
+     * The core saying that prompt is waiting in the CLI's queue, which retracts
+     * its row into the hold. `source` rides every queued row on the wire and
+     * says who sent it: the reader's own send is `you`, and a cron fire, a
+     * peer message, a delivery or forge's own continuation each carry their
+     * own.
+     */
+    queued(source = 'you'): void {
       send({
         kind: 'update',
-        update: { prompt_queued: { key: LEAD, uuid: 'said-once', text: 'what is this' } },
+        update: { prompt_queued: { key: LEAD, uuid: 'said-once', source, text: 'what is this' } },
       });
     },
   };
@@ -254,6 +260,35 @@ async function settle(): Promise<void> {
   // the pin's second measure, the observer's restore - are the next paint's.
   await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
   flushSync();
+}
+
+/**
+ * Wait until the landing's passes have stopped landing.
+ *
+ * **`settle`'s pumps are a race with the machine.** The page's publish, the
+ * pin it lands and the pass that re-measures it each take a paint, and a slow
+ * first transform - a cold cache, a loaded box - can push the last of them
+ * past the fixed pumps, where it lands after a test's `clear()` and reads as
+ * the change under test: a spurious foot pin (#2174's flake, one file over).
+ * So the landing is drained by CONDITION instead: wait for its pin, then pump
+ * until no further pass lands.
+ */
+async function drained(): Promise<void> {
+  for (let i = 0; i < 100 && pinned().length === 0; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+    flushSync();
+  }
+  let stable = 0;
+  let seen = -1;
+  for (let i = 0; i < 10 && stable < 2; i += 1) {
+    const now = pinned().length;
+    stable = now === seen ? stable + 1 : 0;
+    seen = now;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+    flushSync();
+  }
 }
 
 let app: Record<string, unknown> | null = null;
@@ -291,6 +326,9 @@ async function draw(server: ReturnType<typeof stub>): Promise<void> {
   flushSync();
   server.page([turn('t1'), turn('t2')]);
   await settle();
+  // The landing is drained before any test measures: a pass still on its way
+  // would otherwise land inside the window a test is reading.
+  await drained();
   expect(list(), 'the list is mounted once there are turns to draw').not.toBeNull();
 }
 
@@ -1446,6 +1484,41 @@ describe('whether the column follows the newest end', () => {
     await settle();
 
     expect(pinned(), 'a prompt is where the reader wants to be, wherever they were').toEqual([PIN]);
+  });
+
+  it('brings the reader back for their own send the CLI queued', async () => {
+    // A prompt the CLI queues never folds as a user unit, so a mid-turn send
+    // is announced by the queue alone - and the pile's card IS that message's
+    // row, so their own words still put the foot under their eyes.
+    const server = stub();
+    await draw(server);
+    readerAt(0);
+    await settle();
+    clear();
+
+    server.queued('you');
+    await settle();
+
+    expect(pinned(), 'their own queued send still comes back to the foot').toEqual([PIN]);
+  });
+
+  it('does not bring a parked reader back for a prompt that is not theirs', async () => {
+    // **The #1614 snap, named by its arm.** The same `prompt_queued` frame
+    // announces a cron fire, a peer message, a delivery and forge's own
+    // continuation - none of them the reader's words - and a re-arm for one
+    // of them carries a reader parked above the foot to the bottom on the
+    // next pass (measured live: a cron-sourced queue frame moved the reader
+    // 6268 -> 9208 mid-stream). Only `source` tells the two apart.
+    const server = stub();
+    await draw(server);
+    readerAt(0);
+    await settle();
+    clear();
+
+    server.queued('cron');
+    await settle();
+
+    expect(pinned(), 'a cron fire is not the reader words and may not carry them').toEqual([]);
   });
 
   it('re-pins when the content changes size under a reader at the foot', async () => {
