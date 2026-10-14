@@ -223,14 +223,15 @@ reviewed on this branch yet.`; threads drafted with no round filed says how
 ## The strip's row
 
 The seat's own page carries the door: the strip above its composer draws a
-review row while there is something to review - a thread, or the branch's
-own changes against its base - labelled `N to read` while any thread waits
-on the reviewer, the thread count otherwise, and `review` on a branch with
-nothing filed. Its hover panel lists `open review`, then each thread by its
-file and line with its state and the turn a reader would be reading. A read
-that has not landed draws no row at all, and neither does a seat with
-nothing filed and nothing changed: the row is the door to the page, so it
-stands on what the page holds.
+review row wherever the tree row draws - a branch of its own, a dirty tree,
+a pull request, a tree that could not be read - labelled `N to read` while
+any thread waits on the reviewer, the thread count otherwise, and `review`
+when nothing is filed. Its hover panel lists `open review`, then each
+thread by its file and line with its state and the turn a reader would be
+reading; a branch with nothing filed draws the row with no thread lines,
+and a threads read that did not land draws as itself, one row naming the
+failure. Neither row draws on a clean default branch, which has no tree
+state to state.
 
 ## The two widths
 

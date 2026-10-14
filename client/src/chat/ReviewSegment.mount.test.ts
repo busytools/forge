@@ -10,9 +10,9 @@ import { review } from './review.svelte';
 
 /**
  * The review row's draw condition, at the component: the door to the review
- * page stands only while the page has something behind it. Ved reported the
- * row drawing on 1.1.9 with nothing on the seat. The store is fed through
- * the page's own derivation here, so the strip and the page cannot drift.
+ * page stands wherever the tree row stands (#2203). The store is fed
+ * through the page's own derivation here, so the strip and the page cannot
+ * drift.
  */
 const record: SessionRecord = sessionFrom(session);
 
@@ -81,9 +81,16 @@ function draw(held: SessionRecord, href: string | null = null): void {
 const toggle = () => document.querySelector<HTMLButtonElement>('.sg-tog');
 
 describe("the review row's draw", () => {
-  it('draws no row on a seat with nothing under review', () => {
-    draw(withBranch('clean'));
-    expect(toggle(), 'a clean branch with nothing filed has nothing behind the door').toBeNull();
+  it('draws no row where the tree row draws none', () => {
+    // #2203 reverses the #2090 rule: nothing filed no longer hides the
+    // door. The one seat that draws neither row is the clean default
+    // branch, which has no tree state to state.
+    draw({
+      ...withBranch('clean'),
+      work: { branch: 'main', changed: 0, gate: 'in_repo' },
+      pr: null,
+    });
+    expect(toggle(), 'a clean default branch draws neither row').toBeNull();
   });
 
   it('keeps the door while the branch carries changes of its own', () => {

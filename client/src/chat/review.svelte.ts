@@ -2,9 +2,9 @@
  * The seat's review threads, as the strip's row draws them.
  *
  * Held as the record is: one seat is on screen, so the rows are replaced
- * whole when the record moves. `null` is no row to draw at all - a read
- * that has not landed, or a seat with nothing under review - rather than a
- * row claiming the branch is clean.
+ * whole when the record moves. `null` is no row to draw at all - no record
+ * yet, or a tree with nothing to state - because the row's visibility is
+ * the git row's own (#2203).
  */
 import type { ReviewStripRow } from '../session/view';
 
