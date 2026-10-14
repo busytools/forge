@@ -120,6 +120,15 @@ html::-webkit-scrollbar-thumb:active,
   --fs-prose: 15.5px; --fs-base: 15.5px; --fs-group: 15.5px;
   --fs-data: 14px; --fs-label: 12.5px; --fs-title: 18px;
   --ins: 10px;
+  /* What the system bars take out of the window, so nothing a finger needs
+     lands under the status bar or the gesture bar. The page draws under them
+     on Android, and the shell measures them and writes the four on the root
+     element; `env()` is the same four for any host that reports them itself,
+     and zero wherever the window is not edge-to-edge. */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
   /* one line per entity: state | name | where | what | when.
      no action column - the whole row is the target.
      name and where are capped because their content is short; the surplus
@@ -146,7 +155,7 @@ body {
 
 /* The full width, not a centred measure: the row's columns carry real
    content and a browser has the room a terminal does not. */
-.wrap { padding: 30px 40px 64px; }
+.wrap { padding: calc(30px + var(--safe-top)) calc(40px + var(--safe-right)) calc(64px + var(--safe-bottom)) calc(40px + var(--safe-left)); }
 
 /* ---------- header ---------- */
 
@@ -564,7 +573,8 @@ button.b-epic-pill { cursor: pointer; }
 .dr {
   /* Full-bleed once the window is narrower than the panel: a phone's drawer
      is the screen, not a strip of it. */
-  position: fixed; top: 0; right: 0; bottom: 0; width: min(520px, 100%);
+  position: fixed; width: min(520px, 100%);
+  inset: var(--safe-top) var(--safe-right) var(--safe-bottom) auto;
   background: var(--s1); border-left: 1px solid var(--line);
   box-shadow: -18px 0 40px rgba(0,0,0,.4); z-index: 41;
   display: flex; flex-direction: column;
@@ -957,7 +967,10 @@ details[open] > summary .arw { transform: rotate(90deg); }
    to `vh` is taller than the window it is in whenever the bar is showing. */
 .app {
   display: grid; grid-template-columns: minmax(0,1fr);
-  gap: var(--ins); padding: var(--ins); height: 100dvh; overflow: hidden;
+  gap: var(--ins);
+  padding: calc(var(--ins) + var(--safe-top)) calc(var(--ins) + var(--safe-right))
+    calc(var(--ins) + var(--safe-bottom)) calc(var(--ins) + var(--safe-left));
+  height: 100dvh; overflow: hidden;
   font-size: var(--fs-prose);
 }
 /* The SUMMONED rail: off-canvas over a scrim, so a hover-mode or closed rail
@@ -965,7 +978,9 @@ details[open] > summary .arw { transform: rotate(90deg); }
    in the hover mode (the peek - no scrim under a mouse that only crossed the
    chip); Cmd+Left and the palette open it to stay (scrim, history, Esc). */
 .app .rail.left {
-  position: fixed; inset: 10px auto 10px 10px; width: 340px; z-index: 55;
+  position: fixed; z-index: 55; width: 340px;
+  inset: calc(10px + var(--safe-top)) auto calc(10px + var(--safe-bottom))
+    calc(10px + var(--safe-left));
   transform: translateX(calc(-100% - 24px)); visibility: hidden;
   transition: transform .2s ease, visibility 0s .2s;
 }
@@ -1288,7 +1303,8 @@ details.sfold div.wk:hover { background: none; }
 
 @media (max-width: 760px) {
   :root { --pad: 14px; }
-  .wrap { padding: 18px 16px 56px; }
+  .wrap { padding: calc(18px + var(--safe-top)) calc(16px + var(--safe-right))
+    calc(56px + var(--safe-bottom)) calc(16px + var(--safe-left)); }
   header.top { flex-wrap: wrap; gap: 8px 12px; }
   .totals { margin-left: 0; width: 100%; }
   .band { grid-template-columns: repeat(2, minmax(0, 1fr)); }

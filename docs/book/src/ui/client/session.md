@@ -123,3 +123,10 @@ the client runs on Android, so every control a finger reaches takes a 44px
 target under a coarse pointer, and the rail's close chip is the one
 affordance hover uncovers - a touch screen keeps it shown and a keyboard
 focus reveals it, so it is reachable either way.
+
+**The system bars are the page's own edges.** The Android window draws
+edge-to-edge, so the shell measures the status bar and the gesture bar and
+writes the four lengths as `--safe-*`; the header row, the chat's foot and
+the summoned rail are each padded by them. A tap in the status bar's band
+goes to the system before the page sees it, so the chip and the palette's
+magnifier - the touch door to the rail - have to sit clear of it.

@@ -23,6 +23,14 @@ function captures(text: string, pattern: RegExp): string[] {
   return found;
 }
 
+/** Every rule body the sheet writes for this exact selector, whitespace-normalised. */
+function rulesFor(selector: string): string[] {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return [...sheet.matchAll(new RegExp(`^\\s*${escaped}\\s*\\{([^}]*)\\}`, 'gm'))].map((match) =>
+    (match[1] ?? '').replace(/\s+/g, ' ').trim(),
+  );
+}
+
 /** A root that records what was hung on it, so no DOM is needed. */
 function stubRoot() {
   const set = new Map<string, string>();
@@ -54,6 +62,12 @@ describe('the palette', () => {
       '--fs-label',
       '--fs-title',
       '--ins',
+      // The window's own edges, declared at root with an `env()` fallback and
+      // written by the Android shell where the platform reports none.
+      '--safe-top',
+      '--safe-right',
+      '--safe-bottom',
+      '--safe-left',
       '--d',
       // The band's open clock, declared on the load rule rather than at root.
       '--arrive',
@@ -92,6 +106,38 @@ describe('the palette', () => {
     const tokens = rootTokens(THEME_NAMES[0]);
     for (const token of ['--syn-key', '--syn-str', '--syn-fn', '--add-bg', '--del-bg']) {
       expect(tokens, `${token} belongs to the server's renderer`).not.toHaveProperty(token);
+    }
+  });
+});
+
+describe('the system bars', () => {
+  /**
+   * **The window's own bands, spent where the page draws.** Android's window
+   * is edge-to-edge and a tap in the status bar's band belongs to the system,
+   * so every page root - and the overlay each of them opens - pads itself by
+   * the four lengths the shell writes onto the root element. A `calc` that
+   * loses one of them, while a padding is being edited for any other reason,
+   * is invisible on the desktop and a dead control on the phone.
+   */
+  it('pads every page root and the pane by the bands the shell measures', () => {
+    for (const [what, selector] of [
+      ['the session page', '.app'],
+      ['the projects rail', '.app .rail.left'],
+      ['the board drawer', '.dr'],
+    ] as const) {
+      // Every rule for the selector, as one: a box's padding may be spelled
+      // in a rule of its own, and the later ones here carry other properties.
+      const rules = rulesFor(selector);
+      expect(rules.length, `${what} spells no rule at all`).toBeGreaterThan(0);
+      expect(rules.join(' '), `${what} drops the top band`).toContain('var(--safe-top)');
+      expect(rules.join(' '), `${what} drops the bottom band`).toContain('var(--safe-bottom)');
+    }
+    // Every tier, not one: the phone's own `.wrap` rule overrides the padding
+    // below 760px, and a tier left without the terms is the page under the bar.
+    const wraps = rulesFor('.wrap');
+    expect(wraps.length, 'the sheet spells .wrap at more than one width').toBeGreaterThan(1);
+    for (const rule of wraps) {
+      expect(rule, 'a .wrap tier drops the top band').toContain('var(--safe-top)');
     }
   });
 });

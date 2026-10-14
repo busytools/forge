@@ -56,6 +56,13 @@
     --fs-prose: 15.5px; --fs-base: 15.5px; --fs-group: 15.5px;
     --fs-data: 14px; --fs-label: 12.5px; --fs-title: 18px;
     --ins: 10px;
+    /* The system bars' own thickness, zero on every surface this drawing is
+       looked at on: the Android shell writes the measured four onto the
+       root element, and web.css carries the same block. */
+    --safe-top: env(safe-area-inset-top, 0px);
+    --safe-right: env(safe-area-inset-right, 0px);
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+    --safe-left: env(safe-area-inset-left, 0px);
   }
 
   html, body { height: 100%; }
@@ -147,7 +154,9 @@
      `.rail-static`, below; these two `.app` rules mirror web.css rule for
      rule. */
   .app .rail.left {
-    position: fixed; inset: 10px auto 10px 10px; width: 340px; z-index: 55;
+    position: fixed; z-index: 55; width: 340px;
+    inset: calc(10px + var(--safe-top)) auto calc(10px + var(--safe-bottom))
+      calc(10px + var(--safe-left));
     transform: translateX(calc(-100% - 24px)); visibility: hidden;
     transition: transform .2s ease, visibility 0s .2s;
   }
