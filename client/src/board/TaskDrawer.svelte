@@ -47,6 +47,9 @@
   const task = $derived(row.task);
   const seatHref = $derived(task.owner === null ? null : hrefForSlot(task.owner));
 
+  /** How many moves the row's own carry withholds, from its whole count. */
+  const withheld = $derived(Math.max(0, row.history_total - row.history.length));
+
   /** Words for the state a transition moved TO. */
   function movedWords(to: TaskStatus): string {
     switch (to) {
@@ -286,6 +289,12 @@
     {/if}
 
     <h3>History</h3>
+    {#if withheld > 0}
+      <!-- What the row's own carry withholds, said rather than silent: the
+           board read caps a row's transitions so the whole trail does not
+           ride every encode. -->
+      <p class="dim">showing the last {row.history.length} of {row.history_total}</p>
+    {/if}
     {#if row.history.length === 0}
       <p class="dr-none">no moves recorded</p>
     {:else}

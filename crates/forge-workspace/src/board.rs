@@ -17,6 +17,14 @@ use crate::workspace::Workspace;
 /// The no-estimate no-movement window when `forge.toml` says nothing.
 pub const DEFAULT_STALE_SECS: u64 = 4 * 3600;
 
+/// How many of a row's own transitions a board row carries.
+///
+/// The newest this many, at a measured ~250 bytes per transition - so a
+/// capped row weighs ~5 KiB and a row has to move more than twenty times
+/// before anything is withheld. The whole count rides beside the tail in
+/// `history_total`, so what the cap withholds is stated rather than silent.
+pub const HISTORY_CAP: usize = 20;
+
 /// A duration as the board's words: `3h`, `12m`, `45s`.
 pub(crate) fn fmt_secs(secs: u64) -> String {
     if secs >= 3_600 {
@@ -62,14 +70,13 @@ pub struct BoardRow {
     pub rollup: Option<(usize, usize)>,
     /// A child's parent subject.
     pub parent_subject: Option<String>,
-    /// The row's own transitions, in time order - what the detail drawer
-    /// reads as its history. The walk below already groups them for the
-    /// worked time, so building one costs a clone per transition, and
-    /// carrying it costs every `board_rows` caller and every home encode
-    /// that weight. Measured: ~190-245 bytes per transition, 66-164 KiB
-    /// fleet-wide against a 448 KB home, ~2 MiB a year at 30 moves a day per
-    /// fleet; the store is append-only with no prune and a project's read is
-    /// a full scan. The bound is its own piece (#1981).
+    /// The row's own transitions, in time order - the newest
+    /// [`HISTORY_CAP`] of them, which is what the detail drawer draws when
+    /// it opens. The tail beyond the cap is stated by `history_total` rather
+    /// than carried: the walk below already groups the transitions for the
+    /// worked time, and carrying the whole trail costs every `board_rows`
+    /// caller - every home read and every `tasks__list` - the record's full
+    /// weight.
     ///
     /// `default` is backward compatibility with older records, and nothing
     /// more: no server-side pin decodes a `BoardRow`, so nothing in the tree
@@ -77,6 +84,11 @@ pub struct BoardRow {
     /// wherever one is.
     #[serde(default)]
     pub history: Vec<TaskTransition>,
+    /// How many transitions the row has in all - never fewer than
+    /// `history.len()`. The drawer words its `showing the last N of M` from
+    /// it, so a capped tail is stated rather than silent.
+    #[serde(default)]
+    pub history_total: usize,
 }
 
 /// One named miss on a project's fleet row.
@@ -127,6 +139,14 @@ fn worked_secs(mine: &[&TaskTransition], now: SystemTime) -> u64 {
         total += now.duration_since(since).map_or(0, |d| d.as_secs());
     }
     total
+}
+
+/// The tail of a row's transitions a board row carries: the newest
+/// [`HISTORY_CAP`], in time order. `mine` is that one row's transitions,
+/// already sorted.
+fn capped_history(mine: &[&TaskTransition]) -> Vec<TaskTransition> {
+    let start = mine.len().saturating_sub(HISTORY_CAP);
+    mine.get(start..).unwrap_or(mine).iter().map(|t| (*t).clone()).collect()
 }
 
 fn secs_ago(at: SystemTime, now: SystemTime) -> u64 {
@@ -201,7 +221,8 @@ impl Workspace {
                     parent_subject: task.parent.as_ref().and_then(|id| {
                         tasks.iter().find(|p| p.id == *id).map(|p| p.subject.clone())
                     }),
-                    history: mine.iter().map(|t| (*t).clone()).collect(),
+                    history: capped_history(mine),
+                    history_total: mine.len(),
                 }
             })
             .collect()
@@ -424,6 +445,72 @@ mod tests {
             10,
             "the second row is measured from its own transitions, not its neighbour's",
         );
+    }
+
+    /// A row past the cap carries its newest [`HISTORY_CAP`] transitions with
+    /// its true count beside them - and what the row DERIVES still reads the
+    /// whole trail: the worked time is measured before the cap bites, so a
+    /// cap applied to the walk's own list would lose the earliest interval.
+    #[test]
+    fn a_row_past_the_cap_carries_its_newest_and_its_true_count() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let mut running = task("t-1", TaskStatus::Pending);
+        running.updated_at = epoch(1_000);
+        ws.seed_test_task(running);
+        // Thirty moves at ten-second beats, in progress on the even ones and
+        // settled on the odd: fifteen ten-second intervals, the first of them
+        // outside the newest twenty.
+        let moves: Vec<TaskTransition> = (0..30)
+            .map(|i| {
+                let (from, to) = if i % 2 == 0 {
+                    (TaskStatus::Pending, TaskStatus::InProgress)
+                } else {
+                    (TaskStatus::InProgress, TaskStatus::Pending)
+                };
+                transition("t-1", from, to, (i + 1) * 10)
+            })
+            .collect();
+        {
+            let db = ws.db.lock();
+            crate::store::task_history::append(db.as_ref().expect("db"), &moves).expect("history");
+        }
+
+        let rows = ws.board_rows(PROJECT, epoch(1_000), WINDOW);
+        let row = row(&rows, "t-1");
+        assert_eq!(row.history_total, 30, "the count is the row's whole trail");
+        assert_eq!(row.history.len(), HISTORY_CAP, "the carry is the newest {HISTORY_CAP}");
+        assert_eq!(
+            row.history.first().map(|t| t.at),
+            Some(epoch(110)),
+            "the newest {HISTORY_CAP} start at the eleventh move, not the first",
+        );
+        assert_eq!(row.worked_secs, 150, "the cap does not change what the row derives");
+    }
+
+    /// A row under the cap is untouched: every transition rides, and the
+    /// count is the list's own length.
+    #[test]
+    fn a_short_history_rides_whole() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        ws.seed_test_task(task("t-1", TaskStatus::Pending));
+        {
+            let db = ws.db.lock();
+            crate::store::task_history::append(
+                db.as_ref().expect("db"),
+                &[
+                    transition("t-1", TaskStatus::Pending, TaskStatus::InProgress, 10),
+                    transition("t-1", TaskStatus::InProgress, TaskStatus::Completed, 20),
+                ],
+            )
+            .expect("history");
+        }
+
+        let rows = ws.board_rows(PROJECT, epoch(100), WINDOW);
+        let row = row(&rows, "t-1");
+        assert_eq!(row.history.len(), 2, "a short trail rides whole");
+        assert_eq!(row.history_total, 2, "and its count is the list's own length");
     }
 
     /// A fresh update does not clear an overrun: the clock is worked

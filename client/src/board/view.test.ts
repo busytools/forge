@@ -49,6 +49,7 @@ function row(task: Task, over: Partial<BoardRow> = {}): BoardRow {
     rollup: null,
     parent_subject: null,
     history: [],
+    history_total: 0,
     ...over,
   };
 }

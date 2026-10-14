@@ -174,6 +174,7 @@ function boardRow(task: Task): BoardRow {
     rollup: null,
     parent_subject: null,
     history: [],
+    history_total: 0,
   };
 }
 
@@ -993,6 +994,37 @@ describe('what a row says', () => {
     const unknown = { ...FLEET, agents: [{ ...FLEET_AGENT, lifecycle: 'Resting' as never }] };
     const lead = rowsOf(homeFrom(unknown)).lead;
     expect(lead?.state).toEqual({ kind: 'lifecycle', lifecycle: 'Idle' });
+  });
+
+  /**
+   * A server older than the field states no count, and the whole trail is
+   * what it sent: the list's own length is the total then, which is what a
+   * drawer reads as nothing withheld.
+   */
+  it('reads a row with no stated count as carrying its whole trail', () => {
+    const base = homeWire.projects[0];
+    if (base === undefined) throw new Error('the fixture holds no project');
+    const raw = {
+      ...homeWire,
+      projects: [
+        {
+          ...base,
+          rows: [
+            {
+              history: [
+                {
+                  to: 'pending',
+                  at: { secs_since_epoch: 5, nanos_since_epoch: 0 },
+                  by: 'system',
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    } as unknown as HomeWire;
+    const row = homeFrom(raw).projects[0]?.rows[0];
+    expect(row?.history_total, 'no stated count reads as the trail it sent').toBe(1);
   });
 
   it("narrows a seat's tree gate it does not know", () => {
