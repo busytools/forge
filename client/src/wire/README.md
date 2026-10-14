@@ -90,6 +90,11 @@ an arriving frame costs the inspector. Two things about it are deliberate:
   exactly what the session carried; the tool results and thinking text are cut
   to stubs, because the cost being measured is a function of counts. A fixture
   trimmed any other way would measure a conversation nobody had.
+- **Identity is stubbed with the payloads.** The home paths the captured text
+  carries are `<redacted-home>`, the wire baselines' own placeholder for one,
+  and the model and provider every assistant frame names are
+  `<redacted-model>` and `<redacted-provider>`. A counter reads none of them;
+  a conversation column would.
 - **`session_id` carries `TestOrg` rather than a session's uuid.** No client
   reads it off a frame, and `dev/fixture.test.ts` fails the build if the
   marker reaches the bundle - so the file has to carry the marker to be
