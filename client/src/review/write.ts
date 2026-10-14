@@ -169,7 +169,7 @@ function authorPayload(author: ReviewThreadRecord['comments'][number]['author'])
  *  the view this client replaced sent. */
 export function newThread(comment: NewComment): ThreadPayload {
   return {
-    id: crypto.randomUUID(),
+    id: mintPromptId(),
     anchor: {
       path: comment.path,
       side: comment.side === 'old' ? 'Old' : 'New',

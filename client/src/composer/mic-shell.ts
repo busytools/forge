@@ -19,6 +19,7 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
+import { mintPromptId } from '../wire/ids';
 import type { MicSource } from './take';
 
 /**
@@ -29,8 +30,12 @@ import type { MicSource } from './take';
  * one no live page owns, and the shell ends it rather than keeping it. One id
  * per call would make each call a new page, and a page's own pick change
  * mid-take would end its own recording.
+ *
+ * Minted through the guarded helper, because `crypto.randomUUID` is
+ * secure-context-only and the web half is served over plain http: a raw call
+ * at module scope throws before the app draws anything.
  */
-const page = crypto.randomUUID();
+const page = mintPromptId();
 
 /** One live capture in the shell, as this side sees it. */
 export class ShellMic implements MicSource {
