@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AddressInfo, RawData, WebSocket } from 'ws';
 
 import { DEFAULT_ADDRESS } from '../connect/attempt';
-import { rememberAddress } from '../connect/remembered';
+import { rememberedAddress, rememberAddress, serverParameter } from '../connect/remembered';
 import { homeWire } from '../dev/fixture.data';
 import { PROTOCOL_VERSION } from '../protocol';
 import { closeSeat, closingSeat } from '../session/close';
@@ -114,6 +114,9 @@ async function stubForge(
     server.once('connection', resolve);
   });
 
+  /** Home reads seen, which is what says a connection was taken. */
+  let homeReads = 0;
+
   const greet = (socket: WebSocket): void => {
     socket.send(
       JSON.stringify({
@@ -130,6 +133,7 @@ async function stubForge(
       const message: unknown = JSON.parse(frameText(raw));
       const asked = message as { kind?: unknown; what?: unknown };
       if (asked.kind === 'subscribe' && asked.what === 'home') {
+        homeReads += 1;
         socket.send(JSON.stringify({ kind: 'snapshot', subject: 'home', data: homeWire }));
       }
     });
@@ -140,6 +144,15 @@ async function stubForge(
     address: `127.0.0.1:${port}`,
     /** How many clients it still has on the end of it. */
     live: () => server.clients.size,
+    /**
+     * How many home reads a client has made on it.
+     *
+     * **The signal that a connection was TAKEN, not merely accepted.** The
+     * shell subscribes the home once it holds the connection, so this flips
+     * only after the address was kept - waiting on `live()` alone raced the
+     * greeting on CI (the accept is one frame earlier than the take).
+     */
+    homeReads: () => homeReads,
     attached,
     /** Let the greeting go, which is what lands a held launch. */
     greet(again: number = version) {
@@ -232,24 +245,32 @@ async function crossed(): Promise<void> {
 }
 
 /**
- * Wait for the page to arrive at a path, rather than for a fixed count of
- * turns.
+ * Wait for a condition, rather than for a fixed count of turns.
  *
  * **`crossed` is a race under load**: ten 5ms turns is about 50ms of wall
  * clock whatever else the machine is doing - so with the machine busy a
- * removal crossing a real socket can land after it and the assertion fails on
- * a page that was merely slow (measured twice in one day, both times green on
- * the standalone re-run). Waiting on the condition removes the race and keeps
- * the assertion's own message for the case where the page genuinely never
- * arrives; the deadline only stops a broken page from hanging the suite.
+ * frame crossing a real socket can land after it and the assertion fails on
+ * a page that was merely slow (measured twice in one day, both times green
+ * on the standalone re-run). Waiting on the condition removes the race and
+ * keeps the assertion's own message for the case where the page genuinely
+ * never arrives; the deadline only stops a broken page from hanging the
+ * suite.
  */
-async function landed(path: string): Promise<void> {
+async function until(what: () => boolean): Promise<void> {
   const deadline = Date.now() + 2_000;
-  while (location.pathname !== path && Date.now() < deadline) {
+  for (;;) {
+    // Flush BEFORE the check, so a condition reading rendered state sees the
+    // frame it is waiting on rather than the one before it.
     flushSync();
+    if (what() || Date.now() > deadline) break;
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   flushSync();
+}
+
+/** Wait for the page to arrive at a path. */
+async function landed(path: string): Promise<void> {
+  await until(() => location.pathname === path);
 }
 
 /** The font stack the page is drawing with, which is what a greeting put there. */
@@ -357,6 +378,126 @@ describe('the shell at launch', () => {
   });
 
   /**
+   * **A parameter is this launch's own instruction, and the tab keeps it.**
+   * A tab opened at `?server=` opens on that forge and the URL goes on
+   * naming it, so a reload re-dials the stack the tab was pointed at rather
+   * than the remembered address - which may be a dead one from earlier work.
+   */
+  it('opens on the server the parameter names and keeps it in the URL', async () => {
+    const forge = await stubForge({ mark: null, theme: null, font: null });
+    forges.push(forge);
+    await openAt(`/?server=${forge.address}`, null);
+    await until(() => forge.homeReads() >= 1);
+
+    expect(location.pathname, 'a launch from the root did not land on the home').toBe('/');
+    expect(location.search, 'the launch dropped its own parameter').toBe(
+      `?server=${forge.address}`,
+    );
+    expect(
+      forge.homeReads(),
+      'the launch never landed, so nothing about it can be drawn',
+    ).toBeGreaterThan(0);
+    expect(document.querySelector('#address'), 'the door drew for a launch that landed').toBeNull();
+  });
+
+  /**
+   * **The parameter outranks the remembered address**, which is the whole
+   * point of it: a tab opened at one forge must open there even when another
+   * tab at the same origin remembered a different one.
+   */
+  it('opens on the parameter even when another address is remembered', async () => {
+    const remembered = await stubForge({ mark: null, theme: null, font: null });
+    const named = await stubForge({ mark: null, theme: null, font: null });
+    forges.push(remembered, named);
+    await openAt(`/?server=${named.address}`, remembered.address);
+    await until(() => named.homeReads() >= 1);
+
+    expect(named.live(), 'the launch did not dial the parameter').toBe(1);
+    expect(remembered.live(), 'the launch dialed the remembered address instead').toBe(0);
+  });
+
+  /**
+   * **A launch that landed is what the app opens on next time.** A
+   * `?server=` launch is how a scratch stack is met, and a memory that only
+   * moved on door submits stayed on a dead stack while the live one went
+   * unrecorded.
+   */
+  it('remembers the forge a launch landed on', async () => {
+    const forge = await stubForge({ mark: null, theme: null, font: null });
+    forges.push(forge);
+    await openAt(`/?server=${forge.address}`, null);
+    await until(() => forge.homeReads() >= 1);
+
+    expect(rememberedAddress(), 'a launch that landed was not remembered').toBe(forge.address);
+  });
+
+  /**
+   * **The parameter names where this tab IS, not where it was tried.** A
+   * person who corrects a stale parameter at the door has moved the tab, so
+   * the URL moves with the connection - otherwise the next launch would dial
+   * the dead address they just replaced.
+   */
+  it('moves the server parameter to the address a submit takes', async () => {
+    const forge = await stubForge({ mark: null, theme: null, font: null });
+    forges.push(forge);
+    await openAt('/?server=::::', null);
+
+    submit(forge.address);
+    await until(() => serverParameter(location.search) === forge.address);
+
+    expect(
+      serverParameter(location.search),
+      'the parameter still names the address the person replaced',
+    ).toBe(forge.address);
+  });
+
+  /**
+   * **A launch that fails does not touch the memory.** The write lives in the
+   * shell, so the pin does too: a tab pointed at a dead address goes on
+   * opening on the forge it had.
+   */
+  it('leaves the remembered address alone when a launch fails', async () => {
+    const good = await stubForge({ mark: null, theme: null, font: null });
+    forges.push(good);
+    await openAt('/?server=::::', good.address);
+
+    // The test's own premise: the launch really failed rather than, say,
+    // silently falling back to the remembered forge.
+    expect(good.live(), 'the remembered forge was dialled, so nothing failed').toBe(0);
+    expect(rememberedAddress(), 'a failed launch clobbered the address the app had').toBe(
+      good.address,
+    );
+  });
+
+  /**
+   * **What is kept is the connection the app TOOK**, so a door submit that
+   * replaces the connection replaces the memory with it rather than sitting
+   * beside it.
+   */
+  it('replaces the remembered address when the door takes another one', async () => {
+    const first = await stubForge({ mark: null, theme: null, font: null });
+    const second = await stubForge({ mark: null, theme: null, font: null });
+    forges.push(first, second);
+    await openAt('/', first.address);
+    // The wait IS the landing: a home read happens only after the launch was
+    // taken, so what follows runs against a finished launch. (An assertion
+    // here on the store would be pre-satisfied - `openAt` remembers the
+    // address itself.)
+    await until(() => first.homeReads() >= 1);
+
+    // Back to the door with the connection still held: a submit replaces it.
+    history.replaceState(null, '', '/connect');
+    dispatchEvent(new PopStateEvent('popstate'));
+    await until(() => document.querySelector('#address') !== null);
+    submit(second.address);
+    await until(() => second.homeReads() >= 1);
+
+    expect(rememberedAddress(), 'editing the address left the old one remembered').toBe(
+      second.address,
+    );
+  });
+
+  /**
    * A submit is a person acting on what is in front of them; a launch is the
    * app guessing. So a launch that lands after a submit has taken a connection
    * yields, rather than taking the page over: without that it closes the
@@ -387,6 +528,10 @@ describe('the shell at launch', () => {
     expect(appliedFont(), 'the launch rewrote the settings the submit had taken').toBe(
       fontStack('system')?.ui,
     );
+    expect(
+      rememberedAddress(),
+      'a launch the app discarded still overwrote the address the person chose',
+    ).toBe(asked.address);
   });
 });
 

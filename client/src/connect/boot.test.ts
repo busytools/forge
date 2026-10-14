@@ -2,7 +2,7 @@ import { type AddressInfo, WebSocketServer } from 'ws';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { PROTOCOL_VERSION } from '../protocol';
-import { connectTo, submitAttempt } from './attempt';
+import { connectTo } from './attempt';
 import { boot } from './boot';
 import { rememberedAddress, rememberAddress } from './remembered';
 
@@ -149,27 +149,32 @@ describe('what the app opens on', () => {
   });
 
   /**
-   * What is kept is the last address that WORKED, so connecting somewhere
-   * else has to replace it rather than sit beside it.
+   * **A launch that did not answer leaves the memory alone.** What is kept
+   * is the address the app can come back to, so a launch at a mistyped or
+   * dead address must not discard the working one - the door is already
+   * about to hand the reader the address to correct.
    */
-  it('replaces what it remembers when the address is edited and connects', async () => {
-    const first = await stubServer();
-    const second = await stubServer();
-    servers.push(first, second);
+  it('leaves the remembered address alone when the launch does not answer', async () => {
+    const good = await stubServer();
+    servers.push(good);
+    rememberAddress(good.address);
 
-    const was = await submitAttempt(first.address, (input) => connectTo(input));
-    expect(
-      was.connected,
-      'the first address did not connect, so there is nothing to replace',
-    ).not.toBeNull();
-    expect(rememberedAddress(), 'a connection that took was not remembered').toBe(first.address);
-    was.connected?.connection.close();
+    const silent = new WebSocketServer({ port: 0 });
+    await new Promise((resolve) => silent.once('listening', resolve));
+    const { port } = silent.address() as AddressInfo;
+    try {
+      const launched = await boot({ name: 'home' }, `127.0.0.1:${port}`, (input) =>
+        connectTo(input, 20),
+      );
 
-    const now = await submitAttempt(second.address, (input) => connectTo(input));
-    expect(now.connected).not.toBeNull();
-    expect(rememberedAddress(), 'editing the address left the old one remembered').toBe(
-      second.address,
-    );
-    now.connected?.connection.close();
+      expect(launched.connected, 'the silent address connected, so nothing failed').toBeNull();
+      expect(
+        rememberedAddress(),
+        'a launch that answered nothing clobbered the address the app had',
+      ).toBe(good.address);
+    } finally {
+      for (const client of silent.clients) client.terminate();
+      await new Promise((resolve) => silent.close(resolve));
+    }
   });
 });

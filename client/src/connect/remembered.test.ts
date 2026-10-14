@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { rememberedAddress, rememberAddress, serverParameter } from './remembered';
+import { movedParameter, rememberedAddress, rememberAddress, serverParameter } from './remembered';
 
 describe('the server a launch names', () => {
   /**
@@ -23,6 +23,40 @@ describe('the server a launch names', () => {
     expect(serverParameter('?other=1'), 'another parameter is not this one').toBeNull();
     expect(serverParameter('?server='), 'an empty value names nothing').toBeNull();
     expect(serverParameter('?server=   '), 'blank whitespace names nothing too').toBeNull();
+  });
+
+  /**
+   * **The parameter follows the connection the tab took.** A submit that
+   * corrects a stale parameter has moved the tab, and a URL left naming the
+   * address it replaced would outrank the live one at the next launch.
+   */
+  it('moves the server parameter to an address that took', () => {
+    const moved = movedParameter('?server=127.0.0.1:8791', '127.0.0.1:8803');
+    expect(moved, 'the parameter did not follow the connection').not.toBeNull();
+    expect(moved?.[0], 'the moved search lost its leading ?').toBe('?');
+    expect(
+      serverParameter(moved ?? ''),
+      'reading the moved parameter back did not yield the address that took',
+    ).toBe('127.0.0.1:8803');
+
+    const withAnother = movedParameter('?a=1&server=dead:1', 'live:2');
+    expect(
+      serverParameter(withAnother ?? ''),
+      'the moved parameter does not read back as the address that took',
+    ).toBe('live:2');
+    expect(
+      new URLSearchParams(withAnother ?? '').get('a'),
+      'another parameter was dropped in the move',
+    ).toBe('1');
+
+    expect(
+      movedParameter('?server=127.0.0.1:8803', '127.0.0.1:8803'),
+      'a URL already naming the connection was rewritten',
+    ).toBeNull();
+    expect(
+      movedParameter('', '127.0.0.1:8803'),
+      'a URL naming no server grew a parameter',
+    ).toBeNull();
   });
 });
 

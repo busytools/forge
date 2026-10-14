@@ -138,8 +138,9 @@ history is the record.
      reload, the maintainer's own browser. Point it at the stack through its
      own connect screen: type `127.0.0.1:8791` (a bare `host:port`; the field opens on the
      live forge's address, so the scratch one is a deliberate edit). The client
-     keeps the last address that ANSWERED (`localStorage forge.address`,
-     written only on a successful connect) and attempts it next open: stack
+     keeps the last address a connection was KEPT on (`localStorage
+     forge.address`, written by the shell when it takes a connection) and
+     attempts it next open: stack
      up, straight to the home; stack dead, the door opens with the address
      preset and the failure drawn; a dead address reports in about 5 seconds
      (the greeting deadline), not a hang. Point it back at `127.0.0.1:8790`
