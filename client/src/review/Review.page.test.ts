@@ -60,6 +60,7 @@ function push(read: unknown): void {
 }
 
 import { installResizeObserver } from '../chat/testing/viewport';
+import { TAP_MS } from '../composer/dictate-key';
 import type { Connection } from '../socket';
 import type { SessionRecord } from '../session/wire';
 import type { SessionSlot } from '../wire/types';
@@ -209,6 +210,12 @@ const LANDED = {
 /** One filed round, so the conversation half draws its thread and its reply. */
 const ROUND = { id: 'r1', number: 1, summary: null, created_at: 'x' };
 
+/** A second thread on the same line, for the box-moves-mid-take case. */
+const SECOND = { ...THREAD, id: 't2' };
+
+/** The record while the server transcribes a take the page let go. */
+const TRANSCRIBING = { ...TAKE, take: { ...TAKE.take, phase: 'transcribing' } };
+
 /** The thread as a round carries it: its opening turn belongs to ROUND. */
 const HELD_THREAD = {
   ...THREAD,
@@ -236,11 +243,15 @@ function connection(): Connection {
 
 /** The page over a seat whose record the test drives, drawn to the point its
  *  diff's own doors are on screen. */
-async function draw(threads: unknown[] = [], reviews: unknown[] = []): Promise<void> {
+async function draw(
+  threads: unknown[] = [],
+  reviews: unknown[] = [],
+  dictation = true,
+): Promise<void> {
   sent = [];
   app = mount(Review, {
     target: document.body,
-    props: { connection: connection(), slot: SLOT, dictation: true },
+    props: { connection: connection(), slot: SLOT, dictation },
   });
   flushSync();
   push({ wire: record(IDLE, threads, reviews), refused: null });
@@ -440,7 +451,117 @@ describe("a take's end", () => {
     cancel.click();
     flushSync();
 
-    expect(wire(), 'a take outlived the box that began it').toContain('"submit":false');
+    expect(sent, 'a take outlived the box that began it').toEqual([
+      { dictate_stop: { key: SLOT, submit: false } },
+    ]);
+  });
+
+  /**
+   * **The summary's box is the conversation half's, so the files tab ends a
+   * summary take too.** The box goes with the tab, and a take that kept
+   * capturing would draw its bar nowhere and land its words out of sight.
+   */
+  it('ends a summary take when the conversation half goes', async () => {
+    await draw();
+    await openConversation();
+
+    micIn('.rv-finishrow').click();
+    await opened();
+    push({ wire: record(TAKE), refused: null });
+    flushSync();
+    sent = [];
+
+    const filesTab = [...document.querySelectorAll<HTMLButtonElement>('.rv-tabs > button')].find(
+      (button) => button.textContent?.trim().startsWith('Files changed') === true,
+    );
+    if (filesTab === undefined) throw new Error('the page drew no Files tab');
+    filesTab.click();
+    flushSync();
+
+    expect(sent, 'a summary take outlived the half that draws it').toEqual([
+      { dictate_stop: { key: SLOT, submit: false } },
+    ]);
+  });
+
+  /**
+   * **A submitted take's words are never dropped silently.** With the record
+   * transcribing, the reader closes the box; the words land afterwards, and
+   * the box is opened again at the spot it began at so the reader sees them
+   * instead of losing them silently.
+   */
+  it('opens the box again when the words land after it closed', async () => {
+    await draw();
+    await openComment();
+
+    micIn('.rv-thread.comment').click();
+    await opened();
+    push({ wire: record(TAKE), refused: null });
+    flushSync();
+    // The finish: the page's own take ends, the record goes on transcribing.
+    micIn('.rv-thread.comment').click();
+    push({ wire: record(TRANSCRIBING), refused: null });
+    flushSync();
+
+    const cancel = [
+      ...document.querySelectorAll<HTMLButtonElement>('.rv-thread.comment .rv-acts button'),
+    ].find((button) => button.textContent?.trim() === 'cancel');
+    if (cancel === undefined) throw new Error('the comment box drew no cancel');
+    cancel.click();
+    flushSync();
+
+    push({ wire: record(LANDED), refused: null });
+    flushSync();
+    await settle(() => document.querySelector('.rv-thread.comment .rv-txarea') !== null);
+
+    expect(
+      document.querySelector<HTMLTextAreaElement>('.rv-thread.comment .rv-txarea')?.value,
+      'the words landed after the box closed and went nowhere the reader can see',
+    ).toBe('this read is the whole input');
+  });
+
+  /** An install without dictation starts nothing from the key, either: the
+   *  gate exists so a parked engine is never sent a take. */
+  it('offers no key take when dictation is off', async () => {
+    await draw([], [], false);
+    await openConversation();
+
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', { code: 'ControlRight', bubbles: true, cancelable: true }),
+    );
+    await opened();
+
+    expect(wire(), 'a parked engine was sent a take').not.toContain('dictate_stream');
+  });
+
+  /**
+   * **A MOVED box is not the take's box either.** Moving the reply to
+   * another thread mid-take would file the words as an answer to a thread
+   * the reader never dictated on, so the take ends with the move - the
+   * document page's rule, on this page.
+   */
+  it('ends the take when its box moves to another thread', async () => {
+    await draw([THREAD, SECOND]);
+    await openComment();
+    await openReply();
+
+    micIn('.rv-reply').click();
+    await opened();
+    push({ wire: record(TAKE, [THREAD, SECOND]), refused: null });
+    flushSync();
+    sent = [];
+
+    // The second thread's own respond: the box moves to it.
+    const responds = [
+      ...document.querySelectorAll<HTMLButtonElement>('tr.rv-insert button'),
+    ].filter((button) => button.textContent?.trim() === 'respond');
+    const second = responds[1];
+    if (second === undefined) throw new Error('the canvas drew no second respond');
+    second.click();
+    flushSync();
+
+    expect(sent, 'the take survived the move and would file under the wrong thread').toEqual([
+      { dictate_stop: { key: SLOT, submit: false } },
+    ]);
   });
 
   /** Escape is the other door out of a live take, wherever the focus is. */
@@ -459,7 +580,9 @@ describe("a take's end", () => {
     );
     flushSync();
 
-    expect(wire(), 'Escape left the take running').toContain('"submit":false');
+    expect(sent, 'Escape left the take running').toEqual([
+      { dictate_stop: { key: SLOT, submit: false } },
+    ]);
   });
 });
 
@@ -510,6 +633,45 @@ describe("the key's box", () => {
    * the files tab; the take it would have claimed is the summary's, whose box
    * is on screen - never one the reader cannot see.
    */
+  it('gives the key take to the drawn summary, not a reply the half does not draw', async () => {
+    // The reply is open on an UNFILED thread: the files half draws it, the
+    // conversation half draws no box for it at all.
+    await draw([THREAD]);
+    await openComment();
+    await openReply();
+    await openConversation();
+
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', { code: 'ControlRight', bubbles: true, cancelable: true }),
+    );
+    await opened();
+
+    push({ wire: record(TAKE), refused: null });
+    flushSync();
+    push({ wire: record(LANDED), refused: null });
+    flushSync();
+    expect(wire(), 'the key began no take at all').toContain('dictate_stream');
+
+    await new Promise((resolve) => setTimeout(resolve, TAP_MS + 100));
+    window.dispatchEvent(
+      new KeyboardEvent('keyup', { code: 'ControlRight', bubbles: true, cancelable: true }),
+    );
+    await vi.waitFor(
+      () => {
+        expect(
+          document.querySelector('.rv-finishrow .takeline'),
+          'the bar goes with the take',
+        ).toBeNull();
+      },
+      { timeout: 2000 },
+    );
+
+    expect(
+      document.querySelector<HTMLInputElement>('.rv-summary')?.value,
+      'the key take went into a reply box the half does not draw',
+    ).toBe('this read is the whole input');
+  });
+
   it('gives the key take to the drawn summary, not a stale comment spot', async () => {
     await draw();
     await openComment();
@@ -530,7 +692,7 @@ describe("the key's box", () => {
     // real timers (#2159), which is what puts the field back in the
     // summary's line for the assertion to read. The hold has to clear
     // TAP_MS, or the release is a tap and means nothing.
-    await new Promise((resolve) => setTimeout(resolve, 400));
+    await new Promise((resolve) => setTimeout(resolve, TAP_MS + 100));
     window.dispatchEvent(
       new KeyboardEvent('keyup', { code: 'ControlRight', bubbles: true, cancelable: true }),
     );

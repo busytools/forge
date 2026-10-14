@@ -939,13 +939,13 @@ describe("the block's own take", () => {
       ...document.querySelectorAll<HTMLButtonElement>('.doc-compose-acts button'),
     ].find((button) => button.textContent?.trim() === 'cancel');
     if (cancel === undefined) throw new Error("the block's box drew no cancel");
+    page.sent.length = 0;
     cancel.click();
     flushSync();
 
-    expect(
-      page.sent.map((command) => JSON.stringify(command)).join(' '),
-      'a take outlived the box that closed',
-    ).toContain('"submit":false');
+    expect(page.sent, 'a take outlived the box that closed').toEqual([
+      { dictate_stop: { key: SLOT, submit: false } },
+    ]);
   });
 });
 

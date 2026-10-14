@@ -124,6 +124,24 @@
     closeBox();
   });
 
+  /**
+   * **A box goes with the row that drew it.** Folding the file, or a scope
+   * that drops the thread, releases the row while the box's own state stayed
+   * set - a take, or a key press, would then target a box nothing draws, and
+   * the words would land where the reader cannot see them.
+   */
+  $effect(() => {
+    if (box.spot !== null && closedFiles.has(box.spot.path)) closeBox();
+    // A thread the RECORD no longer holds: the reply box has nothing left to
+    // open on. A thread merely out of the current SCOPE keeps its state -
+    // the conversation half may draw it, and a typed draft is not the
+    // scope's to discard.
+    if (reply.thread !== null && !threads.some((thread) => thread.id === reply.thread)) {
+      reply.thread = null;
+      reply.draft = '';
+    }
+  });
+
   const scopeLayer = $derived(scopeCommit === null ? layer : (fetched.get(scopeCommit) ?? null));
   const scopeFiles = $derived(scopeLayer === null ? [] : filesOf(scopeLayer));
   const tree = $derived(treeRows(scopeFiles, closedDirs));

@@ -172,6 +172,11 @@
    * landing that belongs to where that take began.
    */
   let takeIn = $state<BoxName | null>(null);
+  /** The spot and thread the take's box held when it began: a box that has
+   *  MOVED since is no longer the box the take belongs to, the same way a
+   *  closed one is not. */
+  let takeSpot = $state<CommentBox['spot']>(null);
+  let takeThread = $state<string | null>(null);
   /** Where the last mic was pressed, or the last key begun a take: the box a
    *  refusal, or a take's own line, is owed to. */
   let pressedIn = $state<BoxName | null>(null);
@@ -246,9 +251,11 @@
     onStart: () => {
       // A take is being attempted: whatever line the last attempt left is
       // stale, so a retry does not open under it - and the take belongs to
-      // the box the press named.
+      // the box the press named, AT the spot it held then.
       takeIn = pressedIn;
       lineIn = pressedIn;
+      takeSpot = box.spot;
+      takeThread = reply.thread;
       dictateLine = null;
     },
     onLine: (line) => {
@@ -336,19 +343,24 @@
   /**
    * A landed take puts its words in the box that began it, once.
    *
-   * **A box that has gone has nowhere to put them** - the reader closed it, or
-   * the notice is one this page never watched (which the memory refuses) - and
-   * the words are dropped rather than written where the reader is not. The box
-   * takes the keyboard with them, the rule the composer's own landing keeps:
-   * an immediate Enter sends what just landed.
+   * **A box that has gone is opened again rather than losing them.** The
+   * words were submitted - the reader pressed finish, or the key went up -
+   * so a box closed or moved between the release and the landing gets its
+   * spot (or its thread) back and takes the words where the reader sees
+   * them, instead of the drop being silent. A notice this page never watched
+   * is still refused by the memory. The box takes the keyboard with them,
+   * the rule the composer's own landing keeps: an immediate Enter sends what
+   * just landed.
    */
   $effect(() => {
     const words = landing.place(boxKey(slot), composer.take !== null, composer.notice);
     if (words === null || takeIn === null) return;
     if (takeIn === 'comment') {
+      if (!sameSpot(box.spot, takeSpot)) box.spot = takeSpot;
       if (box.spot === null) return;
       box.draft = joined(box.draft, words);
     } else if (takeIn === 'reply') {
+      if (reply.thread === null || reply.thread !== takeThread) reply.thread = takeThread;
       if (reply.thread === null) return;
       reply.draft = joined(reply.draft, words);
     } else {
@@ -375,21 +387,50 @@
   });
 
   /**
-   * **A take goes with its box.** The box that began a take ending - the
-   * reader's cancel, a scope change, the canvas going with the tab - ends
-   * the take with it: leaving the microphone capturing into a box nothing
-   * draws is a take whose words land where the reader cannot see them, and
-   * whose bar is drawn nowhere. The summary is exempt only in name - its
-   * box is the conversation half's, which is always drawn.
+   * **A take goes with its box.** The box that began a LIVE take going -
+   * the reader's cancel, a move to another spot or thread, a scope change,
+   * the canvas going with the tab - ends the take with it: leaving the
+   * microphone capturing into a box nothing draws is a take whose bar is
+   * drawn nowhere. Only a live take is cancelled here; one already submitted
+   * carries its words to the landing, which opens the box again rather than
+   * spending them.
    */
   $effect(() => {
-    if (takeIn === null || takeIn === 'summary') return;
-    // The comment box is the canvas's alone, so the files tab is part of
-    // whether it is drawn; the reply box is drawn by whichever half is up.
+    if (takeIn === null) return;
     const gone =
-      takeIn === 'comment' ? box.spot === null || tab !== 'files' : reply.thread === null;
+      takeIn === 'summary'
+        ? tab !== 'conversation'
+        : takeIn === 'comment'
+          ? box.spot === null || !sameSpot(box.spot, takeSpot) || tab !== 'files'
+          : !replyDrawn() || reply.thread !== takeThread;
     if (gone && (dictate.take !== null || dictate.opening)) dictate.act('cancel');
   });
+
+  /** Whether two spots are the same place, by value: the object identity of a
+   *  rebuilt row is not this test's business. */
+  function sameSpot(at: CommentBox['spot'], held: CommentBox['spot']): boolean {
+    return (
+      at !== null &&
+      held !== null &&
+      at.path === held.path &&
+      at.side === held.side &&
+      at.line === held.line
+    );
+  }
+
+  /**
+   * Whether the reply box's thread is drawn by the half that is up: on the
+   * files half the canvas closes the box when its row goes, and on the
+   * conversation half a thread is drawn only while a round holds it - a
+   * drafted thread is in no round, so no box exists for it there.
+   */
+  function replyDrawn(): boolean {
+    if (reply.thread === null) return false;
+    if (tab === 'files') return true;
+    return rounds.some((round) =>
+      threadsInRound(threads, round.id).some((thread) => thread.id === reply.thread),
+    );
+  }
 
   /**
    * The box a key-begun take belongs to: the one the reader is in, else the
@@ -408,7 +449,7 @@
       }
     }
     if (tab === 'files' && box.spot !== null) return 'comment';
-    if (reply.thread !== null) return 'reply';
+    if (replyDrawn()) return 'reply';
     return tab === 'conversation' ? 'summary' : null;
   }
 

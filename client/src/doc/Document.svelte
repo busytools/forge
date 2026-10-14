@@ -243,7 +243,12 @@
    */
   $effect(() => {
     const words = landing.place(boxKey(slot), composer.take !== null, composer.notice);
-    if (words === null || composing === null || composing !== takeIn) return;
+    if (words === null) return;
+    // The words were submitted: a box closed or moved between the release
+    // and the landing is opened again at the row that began the take, where
+    // the reader sees them, rather than the drop being silent.
+    if (composing !== takeIn) composing = takeIn;
+    if (composing === null) return;
     commentText = joined(commentText, words);
     field?.focus();
   });
