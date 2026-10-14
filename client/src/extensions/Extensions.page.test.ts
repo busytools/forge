@@ -109,6 +109,104 @@ describe('the extensions page over a live connection', () => {
     expect(document.body.textContent).toContain('no such repository');
   });
 
+  it('reopens the add input with its source when the dispatch is refused', () => {
+    const page = draw();
+    openMarketplaces();
+    buttonByText('add marketplace').click();
+    flushSync();
+    const field = document.querySelector<HTMLInputElement>('.ext-add-in');
+    if (field === null) throw new Error('no add field');
+    field.value = 'owner/refused';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    buttonByText('add').click();
+    flushSync();
+    expect(document.querySelector('.ext-add-in'), 'the submit closes the input').toBeNull();
+
+    // A refusal produces no plugin frame, so the refusal IS the add's whole
+    // outcome: the source comes back under the core's own words, at once.
+    page.say({ kind: 'error', what: 'dispatch', why: 'a second plugin action is running' });
+    flushSync();
+
+    const reopened = document.querySelector<HTMLInputElement>('.ext-add-in');
+    expect(reopened, 'the refused source reopens its input').not.toBeNull();
+    expect(reopened?.value).toBe('owner/refused');
+    expect(document.body.textContent).toContain('a second plugin action is running');
+  });
+
+  it("does not drop a refused add's source on some later success", () => {
+    const page = draw();
+    openMarketplaces();
+    buttonByText('add marketplace').click();
+    flushSync();
+    const field = document.querySelector<HTMLInputElement>('.ext-add-in');
+    if (field === null) throw new Error('no add field');
+    field.value = 'owner/refused';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    buttonByText('add').click();
+    flushSync();
+    page.say({ kind: 'error', what: 'dispatch', why: 'a second plugin action is running' });
+    flushSync();
+
+    // An unrelated action's success must not be what disposes of the source:
+    // the refusal already answered for it, and the words stay in the input.
+    page.emit({
+      plugins_cli_action_succeeded: {
+        cwd_raw: '/tmp/proj',
+        result: { snapshot: null, message: 'checked', claude_path: '/usr/bin/claude' },
+      },
+    });
+    flushSync();
+
+    const kept = document.querySelector<HTMLInputElement>('.ext-add-in');
+    expect(kept, 'the refused source survives a later success').not.toBeNull();
+    expect(kept?.value).toBe('owner/refused');
+  });
+
+  it("does not let a sibling action's refusal reopen the add input", () => {
+    const page = draw();
+    openMarketplaces();
+    buttonByText('add marketplace').click();
+    flushSync();
+    const field = document.querySelector<HTMLInputElement>('.ext-add-in');
+    if (field === null) throw new Error('no add field');
+    field.value = 'owner/in-flight';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    buttonByText('add').click();
+    flushSync();
+
+    // The add is in flight (the core accepted it; the CLI runs for seconds).
+    // A sibling action pressed in that window is refused by the core, and
+    // that refusal is the sibling's own: the add's latch must not ride it.
+    buttonByText('repair').click();
+    flushSync();
+    page.say({ kind: 'error', what: 'dispatch', why: 'a plugin action is already running' });
+    flushSync();
+    expect(document.body.textContent, "the sibling's refusal names its own reason").toContain(
+      'a plugin action is already running',
+    );
+    expect(
+      document.querySelector('.ext-add-in'),
+      "a sibling's refusal does not reopen the add input",
+    ).toBeNull();
+
+    // The add's own success then lands - the input stays closed, with no
+    // draft left open for a duplicate re-submit.
+    page.emit({
+      plugins_cli_action_succeeded: {
+        cwd_raw: '/tmp/proj',
+        result: { snapshot: null, message: 'added', claude_path: '/usr/bin/claude' },
+      },
+    });
+    flushSync();
+    expect(
+      document.querySelector('.ext-add-in'),
+      "the add's own success leaves the input closed",
+    ).toBeNull();
+  });
+
   it('does not reopen a settled add on some later failure', () => {
     const page = draw();
     openMarketplaces();

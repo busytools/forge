@@ -113,7 +113,9 @@ because of a query.
   Back closes what it opened.
 - **A refused action**: the core's own words above the page, straight off
   the dispatch - a second action while one runs, a project-scoped install
-  with no project named, a project `forge.toml` does not declare.
+  with no project named, a project `forge.toml` does not declare. An add
+  among them reopens its input with the draft kept, because a refused
+  dispatch is that add's whole outcome and no plugin frame follows it.
 - **An action that ran and failed**: the core's own words above the page -
   a failed update, install, marketplace add or repair, a plugin the registry
   does not hold in that scope, or a scan with no root to walk, all of which
