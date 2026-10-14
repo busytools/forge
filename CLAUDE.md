@@ -688,10 +688,10 @@ inspected.
       changes is the presentation, not the content.
 
 22. **The client is gated like the Rust side, and it is a shell.** `just
-    check` runs the client's steps too - Prettier, ESLint on
+    check` runs the client's steps too - the shell crate's rustfmt check
+    (`client-tauri-fmt`), Prettier, ESLint on
     typescript-eslint's type-checked configs, `svelte-check`, `tsc
-    --noEmit`, then vitest, then the shell crate's rustfmt check
-    (`client-tauri-fmt`) and its android warnings check
+    --noEmit`, then vitest, then the shell's android warnings check
     (`client-android-warnings`:
     `cargo check --target aarch64-linux-android` with warnings
     denied, the thing that catches desktop-only code going dead on

@@ -309,10 +309,10 @@ change as the surface.
 
 The client under `client/` is a Svelte app that connects to a running
 forge and draws it. It is gated like the Rust side rather than beside
-it: `just check` runs Prettier, ESLint on typescript-eslint's
+it: `just check` runs the shell crate's rustfmt check
+(`client-tauri-fmt`), Prettier, ESLint on typescript-eslint's
 type-checked configs, `svelte-check`, `tsc --noEmit`, then vitest, then
-the shell crate's rustfmt check (`client-tauri-fmt`) and its android
-warnings check (`client-android-warnings`: the
+the shell's android warnings check (`client-android-warnings`: the
 crate compiled for `aarch64-linux-android` with warnings denied, which is
 what catches desktop-only code going dead on Android),
 so one command decides both stacks and its verdict line names the first
