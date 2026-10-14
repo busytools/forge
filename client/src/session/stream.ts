@@ -125,14 +125,16 @@ function replacer(update: SessionUpdate): Record<string, unknown> | null {
 /** Merge `range` into a sorted, merged list. */
 function cover(ranges: Range[], range: Range): void {
   let at = 0;
-  while (at < ranges.length && ranges[at]!.to < range.from - 1) at += 1;
+  let head = ranges[at];
+  while (head !== undefined && head.to < range.from - 1) {
+    at += 1;
+    head = ranges[at];
+  }
   let merged = { ...range };
-  while (at < ranges.length && ranges[at]!.from <= merged.to + 1) {
-    merged = {
-      from: Math.min(merged.from, ranges[at]!.from),
-      to: Math.max(merged.to, ranges[at]!.to),
-    };
+  while (head !== undefined && head.from <= merged.to + 1) {
+    merged = { from: Math.min(merged.from, head.from), to: Math.max(merged.to, head.to) };
     ranges.splice(at, 1);
+    head = ranges[at];
   }
   ranges.splice(at, 0, merged);
 }
@@ -348,7 +350,7 @@ export class StreamGate {
           seq: waiting.seq,
           span: waiting.span,
           update: waiting.update,
-        } as ServerMessage);
+        });
         state.expecting = Math.max(state.expecting, waiting.seq + waiting.span);
         continue;
       }
@@ -412,7 +414,7 @@ export class StreamGate {
           seq: frame.seq,
           span: frame.span,
           update: frame.update,
-        } as ServerMessage);
+        });
       }
       state.expecting = Math.max(state.expecting, frame.seq + frame.span);
     }
