@@ -785,8 +785,8 @@ export class Chat {
   private turnRunning = false;
   /**
    * The prompts the core has said are waiting in the CLI's queue, by the id
-   * they were sent under, each with when this page saw it enter and the words
-   * it carries.
+   * they were sent under, each with when this page saw it enter, the words it
+   * carries and who sent it.
    *
    * **The card in the pile is what draws a waiting prompt, and the chat holds
    * its forged row back.** Both copies of the words arrive at once - the core
@@ -794,8 +794,12 @@ export class Chat {
    * both would put "queued" in the pile under "sent" in the chat, about one
    * prompt. The pile is upstream's own answer to where the words wait, so the
    * chat holds its copy until the prompt starts.
+   *
+   * **The source is what the drain arms the follow on**, and it is the only
+   * copy of that fact the held row's own frame may not carry: the row can be
+   * built from these words alone, so whose they are has to be kept here.
    */
-  private waiting = new Map<string, { since: number; text: string }>();
+  private waiting = new Map<string, { since: number; text: string; source: string | null }>();
   /**
    * Forged rows waiting for their prompt to start, by id - the core's own
    * user turn for words no view typed, held from arrival until the lifecycle
@@ -1765,8 +1769,9 @@ export class Chat {
     if (variant === 'prompt_queued') {
       const uuid = textIn(update, 'prompt_queued', 'uuid');
       const words = textIn(update, 'prompt_queued', 'text');
+      const from = textIn(update, 'prompt_queued', 'source');
       if (uuid !== null) {
-        this.waiting.set(uuid, { since: Date.now(), text: words ?? '' });
+        this.waiting.set(uuid, { since: Date.now(), text: words ?? '', source: from });
         // **The card is what carries a waiting prompt's words, so the send's
         // own mark goes with them.** The mark stands in for the row the words
         // will occupy, and while the prompt waits the pile's card IS that row -
@@ -1798,7 +1803,7 @@ export class Chat {
         // on one carries them to the bottom on the next pass (#1614). Only a
         // person's own send may - `source` says who sent it, and the wire
         // carries it on every queued row.
-        if (textIn(update, 'prompt_queued', 'source') === 'you') this.following(true);
+        if (from === 'you') this.following(true);
         this.retract(uuid);
       }
       return;
@@ -1831,7 +1836,11 @@ export class Chat {
       // Stepped BEFORE the row is written, so a row that opens or grows answers
       // from the new state rather than the one before the frame.
       this.turnRunning = inFlightOf(this.turnRunning, message);
-      this.append(message);
+      // **The source is whose words the frame carries**, and it is what the
+      // follow's arm reads: forge's own machinery forges prose as the reader's
+      // own row on this same frame, and only a person's send may carry them to
+      // the foot (#1614, #2198).
+      this.append(message, textIn(update, 'chat_appended', 'source') === 'you');
       return;
     }
     // The seat changed occupant under this column - a `/new`, a `/resume`, a
@@ -2049,7 +2058,7 @@ export class Chat {
     if (!Array.isArray(queue)) return;
     const listed = new Set<string>();
     for (const row of queue) {
-      const entry = row as { uuid?: unknown; text?: unknown } | null;
+      const entry = row as { uuid?: unknown; text?: unknown; source?: unknown } | null;
       if (typeof entry?.uuid !== 'string' || entry.uuid === '') continue;
       listed.add(entry.uuid);
       if (!fresh) continue;
@@ -2057,6 +2066,9 @@ export class Chat {
       this.waiting.set(entry.uuid, {
         since: Date.now(),
         text: typeof entry.text === 'string' ? entry.text : '',
+        // The snapshot's queue rows carry the source the same way the live
+        // announcement does, so a drain that follows either arming arms alike.
+        source: typeof entry.source === 'string' ? entry.source : null,
       });
       // A page asked before this snapshot landed draws the forged row
       // unfiltered; arming now pulls that copy back into the hold.
@@ -2195,7 +2207,12 @@ export class Chat {
     if (row === undefined) return;
     if (held === undefined) this.plainDrawn.add(uuid);
     const waited = entry === undefined ? 0 : Date.now() - entry.since;
-    this.append(dropped ? row : this.noted(row, waited));
+    // **The drain is the append path's other arm, and it arms the same way**:
+    // the row draws whatever the sender, and only the reader's own prompt
+    // carries them to the foot. The sender is the announcement's, kept in the
+    // hold for this - the row it draws may be built from the announcement's
+    // words alone, with no frame to read a source off.
+    this.append(dropped ? row : this.noted(row, waited), entry?.source === 'you');
   }
 
   /**
@@ -2252,7 +2269,7 @@ export class Chat {
     this.append(message);
   }
 
-  private append(message: unknown): void {
+  private append(message: unknown, own = false): void {
     this.stream((held) => {
       const last = held.turns[held.turns.length - 1];
       // What a row of its own would hold, asked of the fold rather than of the
@@ -2263,12 +2280,18 @@ export class Chat {
       // it arrives on a running seat between one turn and the next.
       const units = fold([message]);
       const draws = units.length > 0;
-      // **A prompt brings the reader back to the end.** It is the one frame
-      // that is the reader's OWN words, and the view this client replaced
-      // engaged its follow on the prompt path for the same reason: they have
-      // just asked for something to arrive, so a column left where they had
-      // scrolled to would hide the very answer they are waiting on.
-      const follow = held.following || units.some((unit) => unit.kind === 'user');
+      // **A prompt brings the reader back to the end.** The view this client
+      // replaced engaged its follow on the prompt path for the same reason:
+      // they have just asked for something to arrive, so a column left where
+      // they had scrolled to would hide the very answer they are waiting on.
+      //
+      // **`own` is what says the words are the reader's, and it is not the
+      // fold's to decide**: the frame a person's send forges is the same frame
+      // forge's own machinery forges prose on - an auto-continue, a worker
+      // kick, a board notice - so a follow armed off the folded shape alone
+      // carries a parked reader to the foot for words that are nobody's
+      // (#1614, #2198). Only the sender's own frame may arm it.
+      const follow = held.following || (own && units.some((unit) => unit.kind === 'user'));
       // **A skill's body belongs to the turn whose `Skill` call loaded it.**
       // The CLI injects the frame mid-turn, but it can arrive above a settled
       // turn, and a row of its own is a second telling of the same thing under

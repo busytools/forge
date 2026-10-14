@@ -329,6 +329,7 @@ async fn showing_a_seat_that_spent_a_mark_re_sends_the_home_the_connection_holds
         key: lead_seat(),
         msg: a_finished_turn(),
         origin: None,
+        source: None,
     });
     assert!(
         snapshot_until(&mut socket, Subject::Home, |data| {
@@ -1783,6 +1784,7 @@ async fn a_turn_finishing_on_a_seat_a_page_holds_asks_the_core_for_a_reading() {
         key: lead_seat(),
         msg: an_assistant_chunk(),
         origin: None,
+        source: None,
     });
     // One window for both negatives: the read that opened the seat asks for
     // nothing, and a frame that is not the turn's end asks for nothing either.
@@ -1796,6 +1798,7 @@ async fn a_turn_finishing_on_a_seat_a_page_holds_asks_the_core_for_a_reading() {
         key: lead_seat(),
         msg: a_finished_turn(),
         origin: None,
+        source: None,
     });
 
     let command = next_agent_command(&mut asked, 5_000).await;
@@ -1830,6 +1833,7 @@ async fn a_turn_finishing_on_a_seat_no_page_holds_asks_for_nothing() {
         key: lead_seat(),
         msg: a_finished_turn(),
         origin: None,
+        source: None,
     });
 
     // The window is the assertion: a probe that wrongly fired lands a
@@ -1847,6 +1851,7 @@ async fn a_turn_finishing_on_a_seat_no_page_holds_asks_for_nothing() {
         key: lead_seat(),
         msg: a_finished_turn(),
         origin: None,
+        source: None,
     });
 
     let command = next_agent_command(&mut asked, 5_000).await;
@@ -1878,6 +1883,7 @@ async fn a_compaction_settling_on_a_seat_a_page_holds_asks_past_the_bound() {
         key: lead_seat(),
         msg: a_finished_turn(),
         origin: None,
+        source: None,
     });
     let refused = next_agent_command(&mut asked, 250).await;
     assert!(
@@ -1889,6 +1895,7 @@ async fn a_compaction_settling_on_a_seat_a_page_holds_asks_past_the_bound() {
         key: lead_seat(),
         msg: a_compaction_settle(),
         origin: None,
+        source: None,
     });
 
     let command = next_agent_command(&mut asked, 5_000).await;
@@ -1920,6 +1927,7 @@ async fn a_compaction_settling_on_a_seat_no_page_holds_still_asks() {
         key: lead_seat(),
         msg: a_compaction_settle(),
         origin: None,
+        source: None,
     });
 
     let command = next_agent_command(&mut asked, 5_000).await;
@@ -1948,6 +1956,7 @@ async fn a_permission_mode_change_is_not_a_settled_compaction() {
         key: lead_seat(),
         msg: a_permission_mode_change(),
         origin: None,
+        source: None,
     });
 
     let command = next_agent_command(&mut asked, 250).await;
@@ -1975,6 +1984,7 @@ async fn a_compaction_settling_inside_the_interval_still_asks() {
         key: lead_seat(),
         msg: a_finished_turn(),
         origin: None,
+        source: None,
     });
     let first = next_agent_command(&mut asked, 5_000).await;
     assert!(
@@ -1988,6 +1998,7 @@ async fn a_compaction_settling_inside_the_interval_still_asks() {
         key: lead_seat(),
         msg: a_compaction_settle(),
         origin: None,
+        source: None,
     });
 
     let second = next_agent_command(&mut asked, 5_000).await;
@@ -2058,6 +2069,7 @@ async fn a_seat_with_no_agent_has_the_refused_ask_recorded() {
         key: lead_seat(),
         msg: a_finished_turn(),
         origin: None,
+        source: None,
     });
 
     // The record lands a scheduling hop after the frame, so the read is repeated
@@ -2098,6 +2110,7 @@ async fn a_burst_of_finished_turns_on_a_reporting_seat_costs_one_probe() {
             key: lead_seat(),
             msg: a_finished_turn(),
             origin: None,
+            source: None,
         });
     }
 
@@ -2199,6 +2212,7 @@ async fn a_dropped_connection_lets_go_of_the_seats_it_attached() {
         }))
         .expect("parse a result message"),
         origin: None,
+        source: None,
     });
 
     // The fold is the transport's own task, so the mark lands a scheduling
@@ -2321,6 +2335,7 @@ async fn a_role_declare_leaves_no_watch_behind() {
         }))
         .expect("parse a result message"),
         origin: None,
+        source: None,
     });
 
     // The fold is the transport's own task, so the mark lands a scheduling hop
@@ -2392,6 +2407,7 @@ async fn a_turn_that_finished_unwatched_marks_its_row() {
         }))
         .expect("parse a result message"),
         origin: None,
+        source: None,
     });
     // That a completion reaches the home as a row change is a property of the
     // FILTER, and this connection watches the home. It says nothing about when
@@ -3348,6 +3364,7 @@ async fn a_subscriber_hears_the_update_it_asked_for_and_not_another_seats() {
         }))
         .expect("parse an assistant message"),
         origin: None,
+        source: None,
     });
     send(
         &mut socket,
@@ -3497,6 +3514,7 @@ fn a_token_append(running: u64, delta: i64) -> SessionUpdate {
     SessionUpdate::ChatAppended {
         key: lead_seat(),
         origin: None,
+        source: None,
         msg: forge_primitives::Message::ThinkingTokens {
             estimated_tokens: running,
             estimated_tokens_delta: delta,
@@ -3902,6 +3920,11 @@ async fn a_prompt_a_client_sends_draws_for_every_client_on_that_seat() {
         matches!(update, SessionUpdate::ChatAppended {
             msg,
             origin: Some(forge_workspace::PromptOrigin::View),
+            // **And the source survives the socket**: a client arms its follow
+            // off this field, so a frame that lost it in transit would draw
+            // the reader's own words without bringing the foot under them
+            // (#2198).
+            source: Some(forge_workspace::PromptSource::You),
             ..
         } if user_text(msg).as_deref() == Some("hello there"))
     };
@@ -4123,6 +4146,7 @@ async fn a_thinking_turn_reaches_a_client_watching_its_seat_frame_for_frame() {
             key: lead_seat(),
             msg: serde_json::from_value(value).expect("parse a frame of the turn"),
             origin: None,
+            source: None,
         });
     }
     // A barrier: every subscriber hears this one, so a read that stops on it

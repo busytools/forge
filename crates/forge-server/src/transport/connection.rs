@@ -2901,6 +2901,7 @@ mod tests {
             key: seat.clone(),
             msg: following.clone(),
             origin: None,
+            source: None,
         });
         for at in 0..5_000_usize {
             let window = conversations.get(&seat).expect("the seat is held");
@@ -2914,6 +2915,7 @@ mod tests {
                 key: seat.clone(),
                 msg: result_frame(at),
                 origin: None,
+                source: None,
             });
         }
         let held = conversations.get(&seat).expect("the seat is held");
@@ -3034,11 +3036,13 @@ mod tests {
             key: seat.clone(),
             msg: unnameable_row(),
             origin: None,
+            source: None,
         });
         conversations.apply(&SessionUpdate::ChatAppended {
             key: seat.clone(),
             msg: resulting_row(9_999),
             origin: None,
+            source: None,
         });
         for at in 0..5_000_usize {
             let window = conversations.get(&seat).expect("the seat is held");
@@ -3050,6 +3054,7 @@ mod tests {
                 key: seat.clone(),
                 msg: result_frame(at),
                 origin: None,
+                source: None,
             });
         }
         let held = conversations.get(&seat).expect("the seat is held");

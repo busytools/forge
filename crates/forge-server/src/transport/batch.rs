@@ -90,7 +90,7 @@ fn coalesce(updates: Vec<SessionUpdate>) -> Vec<SessionUpdate> {
 /// value, the id and the session are that frame's own, and only the counter is
 /// the run's.
 fn merge(last: &mut SessionUpdate, update: &SessionUpdate) -> bool {
-    let SessionUpdate::ChatAppended { key, origin, msg } = update else {
+    let SessionUpdate::ChatAppended { key, origin, source, msg } = update else {
         return false;
     };
     let forge_primitives::Message::ThinkingTokens {
@@ -103,13 +103,18 @@ fn merge(last: &mut SessionUpdate, update: &SessionUpdate) -> bool {
     else {
         return false;
     };
-    let SessionUpdate::ChatAppended { key: held_key, origin: held_origin, msg: held_msg } = last
+    let SessionUpdate::ChatAppended {
+        key: held_key,
+        origin: held_origin,
+        source: held_source,
+        msg: held_msg,
+    } = last
     else {
         return false;
     };
     // The occupant needs no comparing beside the seat: a change of session
     // rides `SessionReplaced`, which is not a counter and breaks the run.
-    if held_key != key || held_origin != origin {
+    if held_key != key || held_origin != origin || held_source != source {
         return false;
     }
     let forge_primitives::Message::ThinkingTokens { estimated_tokens_delta: held_delta, .. } =
@@ -149,14 +154,21 @@ where
     for update in coalesce(updates) {
         // A delivery is drawn as the turn it reaches the model as, and the
         // CLI echoes no prompt back: a client drawing only frames would show
-        // the assistant answering something nobody saw.
+        // the assistant answering something nobody saw. The frame carries the
+        // delivery's own kind, so a reader's follow can tell it from a
+        // person's send (#2198).
         if let Some(key) = update.slot().cloned()
-            && let Some(msg) = delivery_turn(&update, &key)
+            && let Some((msg, source)) = delivery_turn(&update, &key)
         {
             feed(
                 socket,
                 ServerMessage::Update {
-                    update: Box::new(SessionUpdate::ChatAppended { key, msg, origin: None }),
+                    update: Box::new(SessionUpdate::ChatAppended {
+                        key,
+                        msg,
+                        origin: None,
+                        source: Some(source),
+                    }),
                 },
             )
             .await?;
@@ -361,6 +373,7 @@ mod tests {
         SessionUpdate::ChatAppended {
             key: seat.clone(),
             origin: None,
+            source: None,
             msg: forge_primitives::Message::ThinkingTokens {
                 estimated_tokens: running,
                 estimated_tokens_delta: delta,

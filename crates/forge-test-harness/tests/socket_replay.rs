@@ -822,8 +822,15 @@ fn frames_record() -> Value {
     // Rust field is `actions` and the wire name is `hookCount`, and a fold
     // reading the Rust one draws nothing. `Page` is what the client pages on,
     // and an empty page pins nothing about a turn.
-    let update_sample =
-        SessionUpdate::ChatAppended { key: seat.clone(), msg: sample_message(), origin: None };
+    // The sample carries a real sender, not `None`: the field is part of the
+    // `chat_appended` payload a client arms its follow off, so the record has
+    // to show it on the frame shape it walks.
+    let update_sample = SessionUpdate::ChatAppended {
+        key: seat.clone(),
+        msg: sample_message(),
+        origin: None,
+        source: Some(forge_workspace::PromptSource::You),
+    };
     let encoded = serde_json::to_value(&update_sample).expect("the update sample encodes");
     assert_eq!(
         external_tag(&encoded),
