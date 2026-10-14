@@ -311,15 +311,18 @@ The client under `client/` is a Svelte app that connects to a running
 forge and draws it. It is gated like the Rust side rather than beside
 it: `just check` runs Prettier, ESLint on typescript-eslint's
 type-checked configs, `svelte-check`, `tsc --noEmit`, then vitest, then
-the shell crate's android warnings check (`client-android-warnings`: the
+the shell crate's rustfmt check (`client-tauri-fmt`) and its android
+warnings check (`client-android-warnings`: the
 crate compiled for `aarch64-linux-android` with warnings denied, which is
 what catches desktop-only code going dead on Android),
 so one command decides both stacks and its verdict line names the first
 failing step whichever side it is on.
 
 The shell under `client/src-tauri/` is its own workspace root, so
-`just check`'s workspace-side steps and CI's cargo jobs never reach it;
-`client-android-warnings` is the one step of `just check` that does, and
+`just check`'s workspace-side steps never reach it and no CI job compiles
+it beyond the rustfmt check the `cargo fmt --check` job runs against its
+manifest; `client-tauri-fmt` and `client-android-warnings` are the two
+steps of `just check` that do, and
 neither the macOS build nor the shell's tests are in the gate at all. The
 Unicode punctuation gate, which CI runs too, and the client's Prettier
 step do.
