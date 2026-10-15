@@ -924,14 +924,18 @@ fn resolve_anchor(
             return Some(offset);
         }
         if take >= cap || take >= len {
-            tracing::warn!(
+            // **Routine, not forge's own problem.** The frames the CLI
+            // streams and never writes carry ids no row holds (a mid-turn
+            // queued prompt reaches the file only as an attachment naming
+            // it), so a miss is the caller's to walk past rather than a
+            // failure here.
+            tracing::debug!(
                 event_name = "span_read_anchor_unreached",
                 %session_id,
                 row = %anchor.row,
                 len,
                 cap,
-                "the anchor row is further from the file's end than the cap reaches; the page is \
-                 answered empty",
+                "no row in the file names this anchor; the read answers the caller empty",
             );
             return None;
         }

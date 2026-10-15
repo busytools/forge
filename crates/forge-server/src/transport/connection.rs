@@ -1045,50 +1045,65 @@ async fn handle_client(
             // inside a running turn.
             let ask = below_the_floor(before.as_deref(), &held);
             if matches!(ask, Ask::Below(_) | Ask::BelowWindow) {
-                let below = match ask {
-                    Ask::Below(anchor) => Some(anchor),
-                    // A window holding no row names nothing, and the read
-                    // answers with the file's own newest rows, which cannot
-                    // overlap anything the client holds.
-                    Ask::BelowWindow => boundary_of(&held.lock()),
-                    Ask::Held | Ask::Newest => None,
+                // **A page is tried from each boundary the window names, in
+                // turn** (#2280): a front frame the file never wrote passes
+                // every rule and still has no row to resolve, and answering
+                // the whole page empty for it reads as the end of the
+                // history. A window holding no namable row names nothing,
+                // and the read answers with the file's own newest rows,
+                // which cannot overlap anything the client holds.
+                let anchors: Vec<Option<forge_primitives::TranscriptAnchor>> = match ask {
+                    Ask::Below(anchor) => vec![Some(anchor)],
+                    Ask::BelowWindow => match boundary_candidates(&held.lock()) {
+                        candidates if candidates.is_empty() => vec![None],
+                        candidates => candidates.into_iter().map(Some).collect(),
+                    },
+                    Ask::Held | Ask::Newest => Vec::new(),
                 };
-                return match rows_below_floor(state, &seat, &cwd, below, turns).await {
-                    BelowFloor::Page(page) => {
-                        send(
-                            socket,
-                            ServerMessage::Page {
-                                conversation,
-                                turns: page.turns,
-                                cursor: page.cursor,
-                            },
-                        )
-                        .await
+                for anchor in anchors {
+                    match rows_below_floor(state, &seat, &cwd, anchor, turns).await {
+                        BelowFloor::Page(page) => {
+                            return send(
+                                socket,
+                                ServerMessage::Page {
+                                    conversation,
+                                    turns: page.turns,
+                                    cursor: page.cursor,
+                                },
+                            )
+                            .await;
+                        }
+                        BelowFloor::Refused => {
+                            return send(
+                                socket,
+                                ServerMessage::Error {
+                                    what: "more".to_owned(),
+                                    why: format!(
+                                        "the fold over {} did not finish, so this page cannot be \
+                                         answered; asking again may find it",
+                                        seat.display()
+                                    ),
+                                    seat: Some(seat),
+                                    dispatch_id: None,
+                                },
+                            )
+                            .await;
+                        }
+                        BelowFloor::Empty => {
+                            tracing::debug!(
+                                event_name = "page_boundary_unresolved",
+                                slot = %seat.display(),
+                                "a boundary row the transcript does not carry; the walk steps to \
+                                 the next stop the window names"
+                            );
+                        }
                     }
-                    BelowFloor::Empty => {
-                        send(
-                            socket,
-                            ServerMessage::Page { conversation, turns: Vec::new(), cursor: None },
-                        )
-                        .await
-                    }
-                    BelowFloor::Refused => {
-                        send(
-                            socket,
-                            ServerMessage::Error {
-                                what: "more".to_owned(),
-                                why: format!(
-                                    "the fold over {} did not finish, so this page cannot be \
-                                     answered; asking again may find it",
-                                    seat.display()
-                                ),
-                                seat: Some(seat),
-                                dispatch_id: None,
-                            },
-                        )
-                        .await
-                    }
-                };
+                }
+                return send(
+                    socket,
+                    ServerMessage::Page { conversation, turns: Vec::new(), cursor: None },
+                )
+                .await;
             }
             let opening = before.clone();
             let floor = held.lock().dropped();
@@ -1674,9 +1689,9 @@ enum Ask {
 /// cursor (`r:<byte>[:<id>]`) minted from the row it reached. A frame cursor
 /// cannot be resolved to a row, because the frames the CLI streams and never
 /// writes sit between the window's rows, so no arithmetic lines the two
-/// numberings up. It is answered from the window's oldest row instead:
-/// overlap at worst, never a gap, and a walk from any cursor converges on the
-/// same descending chain.
+/// numberings up. It is answered from the window's oldest row the file
+/// resolves instead: overlap at worst, never a gap, and a walk from any
+/// cursor converges on the same descending chain.
 fn below_the_floor(before: Option<&str>, held: &crate::transport::conversation::Held) -> Ask {
     let Some(cursor) = before else {
         return Ask::Newest;
@@ -1705,50 +1720,53 @@ fn row_cursor_of(offset: u64, row: &str) -> String {
     if row.is_empty() { format!("r:{offset}") } else { format!("r:{offset}:{row}") }
 }
 
-/// The row a walk below the window starts from: the window's oldest frame a
-/// transcript row names, stepped forward past any result rows a stop there
-/// would cut in half.
+/// How many of a window's rows a below-floor page tries to start from.
 ///
-/// **The oldest ROW, not the exact frame a cursor named.** A cursor the drops
-/// have passed cannot be resolved to a row - the frames the CLI streams and
-/// never writes sit between the window's rows, so the two numberings cannot be
-/// lined up by arithmetic - and the window's own oldest row is where the page
-/// starts instead: rows between it and the window's front are re-served at
-/// worst, which a client reconciles, while a gap is history it cannot ask for
-/// again. A window holding no row at all names nothing, and the read answers
-/// with the file's own newest rows, which cannot overlap anything the client
-/// holds.
+/// The class that bites is a mid-turn queued prompt: the wire streams its
+/// user frame with a uuid, and the file writes only an attachment naming that
+/// uuid as its source, so the frame has no row and the next written row sits
+/// right behind it. A few names ahead is what skips past one, and each name
+/// the file refuses costs it one bounded search, so the count stays small.
+const BOUNDARY_TRIES: usize = 8;
+
+/// The rows a walk below the window may start from, the walk's own stop
+/// first and the rest of the window behind it.
+///
+/// **Every candidate passes every rule that can be checked without the
+/// file** - `has_a_row` for the forged, the dispatch check for sub-agents -
+/// **and the file has the last word**: frames the CLI streams
+/// and never writes pass every rule and still have no row, so a walk tries
+/// these in turn rather than trusting the first (#2280). Answer one empty
+/// and the client reads `cursor: null` as the end of the history.
 ///
 /// **A stop never lands on a result without its call.** The page below a stop
 /// serves rows strictly older than it, so the row just beneath the stop is
 /// that page's newest: a result there whose call sits beneath it would reach
-/// the fold without its call, drawn with its output nowhere. A stop on a
-/// result row therefore steps to the next row, putting that result inside the
-/// page - an overlap of a row or two at worst, never a gap.
-fn boundary_of(
+/// the fold without its call, drawn with its output nowhere - so the walk
+/// steps past result rows to the first row that is not one. A window holding
+/// nothing but results still names the last of them rather than nothing:
+/// a stop on a result serves it whole, and an unnamed window answers as the
+/// end of the history.
+fn boundary_candidates(
     held: &crate::transport::conversation::Conversation,
-) -> Option<forge_primitives::TranscriptAnchor> {
-    // **Only frames the file carries, and only ones it can be asked for.**
-    // What the seat holds is not what the file holds: a delivery row was
-    // forged here and written nowhere, and a sub-agent's frames are dropped by
-    // the row rule at the read. And what the file carries is not always
-    // namable: a user row the wire sent without a uuid is a row the read has
-    // no search key for. Naming either kind answers the file nothing, and
-    // nothing reads as the end of the history - so the walk steps past them
-    // to the first row that is both, and names nothing at all when the window
-    // holds none.
-    let mut rows = held
+) -> Vec<forge_primitives::TranscriptAnchor> {
+    let rows: Vec<&forge_primitives::Message> = held
         .messages()
         .iter()
-        .filter(|message| held.has_a_row(message) && row_id(message).is_some());
-    let mut anchor = rows.next()?;
-    while carries_a_result(anchor) {
-        let Some(next) = rows.next() else {
-            break;
+        .filter(|message| held.has_a_row(message) && row_id(message).is_some())
+        .collect();
+    let stops: Vec<&forge_primitives::Message> =
+        match rows.iter().position(|m| !carries_a_result(m)) {
+            Some(at) => rows[at..].iter().copied().filter(|m| !carries_a_result(m)).collect(),
+            None => rows.last().copied().into_iter().collect(),
         };
-        anchor = next;
-    }
-    row_id(anchor).map(|row| forge_primitives::TranscriptAnchor { row, offset: None })
+    stops
+        .into_iter()
+        .filter_map(|message| {
+            row_id(message).map(|row| forge_primitives::TranscriptAnchor { row, offset: None })
+        })
+        .take(BOUNDARY_TRIES)
+        .collect()
 }
 
 /// Whether a frame is a user row carrying a tool result - the frame a stop may
@@ -1824,7 +1842,8 @@ async fn rows_below_floor(
         tracing::debug!(
             event_name = "transcript_page_unavailable",
             slot = %seat.display(),
-            "the transcript has no rows for this page; the client is told the history ends here",
+            "the transcript has no rows for this anchor; the walk decides what the empty read \
+             means",
         );
         return BelowFloor::Empty;
     };
@@ -2080,6 +2099,14 @@ mod tests {
 
     use super::*;
     use crate::work::WorkCache;
+
+    /// The oldest boundary a window names, as a walk below the floor starts
+    /// from it - the oldest candidate the file may or may not carry (#2280).
+    fn boundary_of(
+        window: &crate::transport::conversation::Conversation,
+    ) -> Option<forge_primitives::TranscriptAnchor> {
+        super::boundary_candidates(window).into_iter().next()
+    }
 
     /// **The transport is what makes a hand-off's ask claimable.** The
     /// per-connection guard is the only thing that moves the attached count,
