@@ -873,7 +873,12 @@ describe('applyUpdate', () => {
         },
       });
       expect(ended.composer.take).toBeNull();
-      expect(ended.composer.notice).toEqual({ kind: 'landed', text: 'hello', truncated: false });
+      expect(ended.composer.notice).toEqual({
+        kind: 'landed',
+        text: 'hello',
+        truncated: false,
+        generation: 1,
+      });
     });
 
     it('drops a reading that belongs to no take', () => {
@@ -907,6 +912,7 @@ describe('applyUpdate', () => {
         kind: 'line',
         tone: 'q',
         text: 'that was all filler \u{b7} nothing to insert',
+        generation: 1,
       });
     });
 
@@ -945,6 +951,7 @@ describe('applyUpdate', () => {
         kind: 'line',
         tone: 'bad',
         text: 'another client is already dictating on this session \u{b7} dictation did not start',
+        generation: 0,
       });
 
       // **And the state a refusal must never resolve**: a take IS drawn -

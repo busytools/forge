@@ -204,8 +204,15 @@ const TAKE = {
 const LANDED = {
   ...TAKE,
   take: null,
-  notice: { kind: 'landed', text: 'this read is the whole input', truncated: false },
+  notice: { kind: 'landed', text: 'this read is the whole input', truncated: false, generation: 1 },
 };
+
+/** A second take's landing, with words of its own - or the same ones again. */
+const landedAgain = (text: string, generation: number): unknown => ({
+  ...TAKE,
+  take: null,
+  notice: { kind: 'landed', text, truncated: false, generation },
+});
 
 /** One filed round, so the conversation half draws its thread and its reply. */
 const ROUND = { id: 'r1', number: 1, summary: null, created_at: 'x' };
@@ -436,6 +443,90 @@ describe('a landing', () => {
       document.querySelector<HTMLTextAreaElement>('.rv-thread.comment .rv-txarea')?.value,
       'the words of a take the record never showed',
     ).toBe('this read is the whole input');
+  });
+
+  /**
+   * **A landing the record re-hands is not the new take's.** Any write between
+   * the press and the take's own start runs the landing with the PREVIOUS
+   * notice still on the record: skipping that notice rather than spending the
+   * arm on it is what lets the new take's words land (the gate's F1,
+   * 2026-10-15).
+   */
+  it("lands a second take's words with the first landing re-read at its press", async () => {
+    await draw();
+    await openComment();
+    await dictateInto('.rv-thread.comment');
+
+    // The second take's press, with the first landing still on the record -
+    // and a write that hands that same notice over again while it runs.
+    micIn('.rv-thread.comment').click();
+    await vi.waitFor(
+      () => {
+        expect(
+          document.querySelector('.rv-thread.comment .takeline'),
+          "the bar takes the box's line",
+        ).not.toBeNull();
+      },
+      { timeout: 2000 },
+    );
+    push({ wire: record(LANDED), refused: null });
+    flushSync();
+
+    push({ wire: record(landedAgain('and this one lands too', 2)), refused: null });
+    flushSync();
+
+    micIn('.rv-thread.comment').click();
+    await vi.waitFor(
+      () => {
+        expect(document.querySelector('.rv-thread.comment .takeline'), 'the bar goes').toBeNull();
+      },
+      { timeout: 2000 },
+    );
+
+    expect(
+      document.querySelector<HTMLTextAreaElement>('.rv-thread.comment .rv-txarea')?.value,
+      "the second take's words, at the end of the first landing",
+    ).toContain('and this one lands too');
+  });
+
+  /**
+   * **The same words spoken twice are two landings.** The record hands a
+   * notice over on every write, so the take's own number is what tells the
+   * first landing re-read from a second take that spoke the same words - and
+   * the second take here is quick, so no write clears the first notice before
+   * its own lands (the gate's F2, 2026-10-15).
+   */
+  it('lands the same words again when another take spoke them', async () => {
+    await draw();
+    await openComment();
+    await dictateInto('.rv-thread.comment');
+
+    micIn('.rv-thread.comment').click();
+    await vi.waitFor(
+      () => {
+        expect(
+          document.querySelector('.rv-thread.comment .takeline'),
+          "the bar takes the box's line",
+        ).not.toBeNull();
+      },
+      { timeout: 2000 },
+    );
+    // The second take lands the same words, its take's own number and all.
+    push({ wire: record(landedAgain('this read is the whole input', 2)), refused: null });
+    flushSync();
+
+    micIn('.rv-thread.comment').click();
+    await vi.waitFor(
+      () => {
+        expect(document.querySelector('.rv-thread.comment .takeline'), 'the bar goes').toBeNull();
+      },
+      { timeout: 2000 },
+    );
+
+    expect(
+      document.querySelector<HTMLTextAreaElement>('.rv-thread.comment .rv-txarea')?.value,
+      'the same words twice, as two takes spoke them',
+    ).toBe('this read is the whole input this read is the whole input');
   });
 });
 

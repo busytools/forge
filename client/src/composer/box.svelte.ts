@@ -20,6 +20,7 @@ import { SvelteMap } from 'svelte/reactivity';
 import { subjectKey } from '../protocol';
 import type { DictateAxes } from '../session/wire';
 import type { SessionSlot } from '../wire/types';
+import { Landing } from './landing';
 
 /** The key one seat's box is held under, which is the subject the wire addresses it by. */
 export function boxKey(slot: SessionSlot): string {
@@ -88,33 +89,21 @@ export class Box {
   closed = $state<string | null>(null);
   marked = $state(0);
   /**
-   * The words this box holds, as the notice they came from carried them.
+   * This box's landing memory: the arm its own take's press set, the notice it
+   * was set under, and the words this DRAFT took.
    *
-   * The truncated row reads this: it says the take was cut, and it has to keep
-   * saying so on every hand-over AFTER the landing - the arm is spent by then,
-   * so a row that read the arm alone vanished with the words still in the
-   * draft (the gate's failure axis, 2026-10-15). Deliberately not `$state`:
-   * nothing draws from it alone, and a reactive copy would make the landing
-   * effect depend on what it writes.
-   */
-  landed: string | null = null;
-  /**
-   * Whether THIS page's own take is waiting on its outcome.
+   * One per box, which is one per seat: a take that outlives a visit elsewhere
+   * still lands on the seat it began on. The rules live in `landing.ts`, where
+   * the review and document pages keep the same memory; what is this box's own
+   * is only which of its boxes the words went into.
    *
-   * Armed when the take begins and consumed when its notice arrives, whatever
-   * kind, so only a take this page began may put words in this box. Take news
-   * reaches the client that began the take alone, so a notice for a take this
-   * page did not begin is not something the wire sends today: the guard is
-   * safety for a wire that one day shares them further.
+   * **A notice for a take this page did not begin is not something the wire
+   * sends here today** - take news goes to the connection that began the take
+   * - so the guard is load-bearing rather than decorative: nothing stops a
+   * take crossing a route change to another connection, and the memory is what
+   * keeps it out of this box.
    */
-  sawTake = false;
-  /**
-   * The notice the arm was set UNDER - the previous landing's, still on the
-   * record when a new take begins. The landing effect skips a notice equal to
-   * this one rather than consuming the arm on it, and it clears when the
-   * record's notice goes null, which every take's start brings.
-   */
-  armedUnder: string | null = null;
+  landing = new Landing();
   /**
    * Which box a take's words belong to, captured when the take STARTS: the
    * dock when it held the slot with a words row, the composer's draft

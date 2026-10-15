@@ -34,7 +34,7 @@
     signInLine,
     type ComposerProps,
   } from './view';
-  import { advisoriesFrom, agentTypesFrom, filesFrom, type Notice } from './wire';
+  import { advisoriesFrom, agentTypesFrom, filesFrom } from './wire';
   import { DEFAULT_AXES, type DictateAxes } from '../session/wire';
 
   /** How long a landed take's border holds its green beat, which the book states. */
@@ -168,14 +168,15 @@
       lineBox = target;
       target.dictateLine = null;
       // **The arm is set where the take truly begins** - this page's own
-      // capture, at the press. Arming from the record's take missed the
-      // landing whenever the record's update arrived after a quick release
-      // had ended this page's take (Ved, 2026-10-15: nothing landed at all).
+      // capture, at the press - with the notice the record was already showing
+      // when it did, which the memory skips rather than spending the arm on.
       // Where the words go is captured per take, at this same instant - every
       // press reaches here with no take showing, so a guard remembering an
       // earlier capture could only inherit the wrong destination.
-      target.sawTake = true;
-      target.armedUnder = noticeKey(untrack(() => composer.notice));
+      target.landing.arm(
+        boxKey(untrack(() => slot)),
+        untrack(() => composer.notice),
+      );
       target.tookFrom = untrack(() => toDock()) ? 'dock' : 'composer';
     },
     onLine: (line) => {
@@ -184,8 +185,7 @@
       // **A line is the take's FAILURE**: a capture that never opened draws
       // one, and no landing is coming to consume the arm - so it goes with
       // the line rather than standing for whatever notice lands next.
-      target.sawTake = false;
-      target.armedUnder = null;
+      target.landing.drop();
     },
     onRefused: (line) => {
       box.dictateLine = line;
@@ -351,22 +351,16 @@
    * turn to stop, and the core is the one that knows it is running.
    */
   const running = $derived(record.header.turn_in_flight);
-  /**
-   * Whether this box holds the words the record's notice carries.
-   *
-   * The truncated row reads this: it says the take was cut, and it has to keep
-   * saying so on every hand-over AFTER the landing - by then the arm is spent,
-   * so a row that read the arm alone vanished with the words still in the
-   * draft (the gate's failure axis, 2026-10-15).
-   */
-  const holdsWords = $derived(
-    composer.notice !== null && (box.sawTake || box.landed === composer.notice.text),
-  );
-
   // The engine's notice, or what became of a draft that left this box - the
-  // dock's own stand-down, said in the row the dock leaves behind.
+  // dock's own stand-down, said in the row the dock leaves behind. What the
+  // cut row needs to know - whether THIS box took the notice's words - is the
+  // landing memory's own answer.
   const notice = $derived(
-    owns ? (box.dictateLine ?? noticeLine(composer.notice, holdsWords) ?? box.ended) : null,
+    owns
+      ? (box.dictateLine ??
+          noticeLine(composer.notice, box.landing.holds(composer.notice)) ??
+          box.ended)
+      : null,
   );
   const line = $derived(notice !== null && box.dismissed === notice.text ? null : notice);
 
@@ -487,11 +481,6 @@
     if (field !== null) field.focus();
   });
 
-  /** The key a notice is arm-tracked under: kind and words, all it carries. */
-  function noticeKey(held: Notice | null): string | null {
-    return held === null ? null : `${held.kind}:${held.text}`;
-  }
-
   /** What the dock's own box belongs to, which is what its words go with. */
   let ownKey: string | null = null;
 
@@ -533,33 +522,20 @@
    * box takes one green beat.
    *
    * Tracked on the notice alone: the draft is read through `untrack`, so what
-   * this effect writes cannot re-run it.
+   * this effect writes cannot re-run it. What the memory decides - whether
+   * these words are this box's to place at all - is `landing.ts`'s; this is
+   * only where the take began routing them.
    */
   $effect(() => {
     if (!owns) return;
     const held = composer.notice;
     if (held === null) {
-      box.landed = null;
+      box.landing.place(boxKey(slot), null);
       box.dismissed = null;
-      // The record's notice going null is a take's start: the stale notice
-      // the arm was set under is gone with it.
-      box.armedUnder = null;
       return;
     }
-    // **The arm is consumed by the take's OUTCOME** - whatever kind of notice
-    // that is - and that is also what holds the words to one placement when
-    // the record hands the same landing over again. Consuming it on the
-    // notice's absence instead ate the arm the press had just set (Ved,
-    // 2026-10-15). A notice arriving with no arm places nothing.
-    if (!box.sawTake) return;
-    // **A notice the arm was set UNDER is the previous take's, re-read.** The
-    // press unmounts the field, which re-runs this effect while the record
-    // still carries the last landing; consuming the arm on it left the new
-    // take's own words nowhere to go (the worker caught it, 2026-10-15).
-    if (box.armedUnder !== null && noticeKey(held) === box.armedUnder) return;
-    box.sawTake = false;
-    box.armedUnder = null;
-    if (held.kind !== 'landed') return;
+    const words = box.landing.place(boxKey(slot), held);
+    if (words === null) return;
     // **Where the words go is where the take began, checked against what is
     // still on screen.** A take the dock's own row never touched still belongs
     // to the dock when the dock was the box it started under - routing it by
@@ -569,17 +545,17 @@
     if (box.tookFrom === 'dock' && untrack(() => toDock())) {
       dockDraft = joined(
         untrack(() => dockDraft),
-        held.text,
+        words,
       );
-      dockLanded = held.text;
+      dockLanded = words;
     } else {
-      // The words this BOX holds, which its cut row reads: the dock's take
-      // left them in the dock, and a memory set for it here would put a note
-      // about words that never arrived in this draft.
-      box.landed = held.text;
+      // The words THIS DRAFT took, which is what its cut row reads: the dock's
+      // take left them in the dock, and a memory set for it here would put a
+      // note about words that never arrived in this draft.
+      box.landing.placed(held);
       box.draft = joined(
         untrack(() => box.draft),
-        held.text,
+        words,
       );
     }
     box.beatAt = Date.now();
@@ -892,16 +868,16 @@
   /**
    * Abandon a take without submitting it.
    *
-   * **The arm goes with it**: a cancelled take has no notice coming, so an
-   * arm left standing would ride whatever notice arrives next - words this
-   * page's own take never produced.
+   * **The arm goes with it**: a cancel still ends the take at the core - a
+   * `dictate_ended` with no words in it - so nothing lands for it, and an arm
+   * left standing would ride whatever notice arrives next: words this page's
+   * own take never produced.
    */
   function dropTake(): void {
     // The arm lives on the take's OWN box, which may not be the one on screen
     // (a press on seat A, a move to B while the mic opens, Escape).
     const target = lineBox ?? box;
-    target.sawTake = false;
-    target.armedUnder = null;
+    target.landing.drop();
     dictate.act('cancel');
   }
 

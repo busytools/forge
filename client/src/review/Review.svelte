@@ -258,10 +258,9 @@
       takeThread = reply.thread;
       dictateLine = null;
       // The arm this take's landing waits on, set at the press, on the seat
-      // the take belongs to: the record can carry a quick take's start and
-      // end inside one write, and a landing read off it would find no take to
-      // watch.
-      landing.arm(boxKey(slot));
+      // the take belongs to, with the notice the record was already showing -
+      // which the memory skips rather than spending the arm on.
+      landing.arm(boxKey(slot), composer.notice);
     },
     onLine: (line) => {
       // The take's own line belongs to the box it began in, and no landing is
@@ -361,7 +360,11 @@
    */
   $effect(() => {
     const words = landing.place(boxKey(slot), composer.notice);
-    if (words === null || takeIn === null) return;
+    if (words === null) return;
+    // Whose words these are is settled now, open box or not: the record hands
+    // the same notice over on every write.
+    landing.placed(composer.notice);
+    if (takeIn === null) return;
     if (takeIn === 'comment') {
       if (!sameSpot(box.spot, takeSpot)) box.spot = takeSpot;
       if (box.spot === null) return;
@@ -414,7 +417,12 @@
     // connection to send its stop - is not this effect's to cancel: the
     // server would read it as an abandon and drop words the reader kept.
     const live = dictate.take;
-    if (gone && (dictate.opening || (live !== null && !live.submitted))) dictate.act('cancel');
+    if (gone && (dictate.opening || (live !== null && !live.submitted))) {
+      // The arm goes with the cancelled take: no notice is coming for it, and
+      // a standing arm would ride the next one that does.
+      landing.drop();
+      dictate.act('cancel');
+    }
   });
 
   /** Whether two spots are the same place, by value: the object identity of a
@@ -492,6 +500,7 @@
       if (dictate.take !== null || dictate.opening || dictate.held) {
         event.preventDefault();
         event.stopPropagation();
+        landing.drop();
         dictate.act('cancel');
         return;
       }
@@ -976,7 +985,10 @@
                   take={composer.take}
                   wire={rowWire}
                   phase={phaseIn('summary') ?? 'recording'}
-                  oncancel={() => dictate.act('cancel')}
+                  oncancel={() => {
+                    landing.drop();
+                    dictate.act('cancel');
+                  }}
                   spread
                 />
               {:else}

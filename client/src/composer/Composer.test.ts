@@ -2344,6 +2344,33 @@ describe('a sent message', () => {
     );
   });
 
+  /**
+   * **The same words spoken twice are two landings.** The record hands a
+   * notice over on every write, so the take's own number is what tells the
+   * first landing re-read from a second take that spoke the same words - and
+   * this second take is quick, its start folded into one write, so no record
+   * ever clears the first notice before its own lands (the gate's F2,
+   * 2026-10-15).
+   */
+  it('places the same words a second time when another take spoke them', async () => {
+    const harness = open({ dictation: true });
+    await beginTake(harness);
+    harness.page.record = withNotice({ ...LANDED, generation: 1 });
+    flushSync();
+    sendBox();
+
+    // The second take is quick: the press happens under the first landing's
+    // notice, and its own words land without any record clearing it.
+    key('ControlRight', 'keydown');
+    await opened();
+    key('ControlRight', 'keyup');
+    endTake(harness);
+    harness.page.record = withNotice({ ...LANDED, generation: 2 });
+    flushSync();
+
+    expect(field().value, 'the second take lands words of its own').toBe(LANDED.text);
+  });
+
   it('still takes a landing whose words are new', async () => {
     const harness = open({ dictation: true });
     await beginTake(harness);
