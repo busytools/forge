@@ -876,8 +876,9 @@
           <section class="group">
             <h2>Outdated <span class="n">{outdated.length}</span></h2>
             {#each outdated as thread (thread.id)}
-              {@const name =
-                typeof thread.status === 'string' ? thread.status : thread.status.unknown}
+              {@const inRound = rounds.some((round) =>
+                threadsInRound(threads, round.id).some((held) => held.id === thread.id),
+              )}
               <article class="thread parked">
                 <div class="heads">
                   <span class="rv-state outdated">outdated</span>
@@ -894,30 +895,26 @@
                   <ThreadTurn {turn} {rounds} {now} index={i} />
                 {/each}
                 <div class="acts">
+                  {#if inRound}
+                    <!-- Only a thread a round holds draws a reply box on this
+                         half, so the door is offered only where the box is. -->
+                    <button
+                      type="button"
+                      class="rv-a"
+                      disabled={busy}
+                      onclick={() => {
+                        reply.thread = reply.thread === thread.id ? null : thread.id;
+                        reply.draft = '';
+                      }}>respond</button
+                    >
+                  {/if}
                   <button
                     type="button"
                     class="rv-a"
                     disabled={busy}
-                    onclick={() => {
-                      reply.thread = reply.thread === thread.id ? null : thread.id;
-                      reply.draft = '';
-                    }}>respond</button
+                    onclick={() => void resolved(thread)}>resolve</button
                   >
-                  {#if name === 'resolved'}
-                    <button
-                      type="button"
-                      class="rv-a"
-                      disabled={busy}
-                      onclick={() => void reopened(thread)}>reopen</button
-                    >
-                  {:else}
-                    <button
-                      type="button"
-                      class="rv-a"
-                      disabled={busy}
-                      onclick={() => void resolved(thread)}>resolve</button
-                    >
-                  {/if}
+                  {#if drafts.has(thread.id)}<span class="rv-cc">drafted</span>{/if}
                 </div>
               </article>
             {/each}

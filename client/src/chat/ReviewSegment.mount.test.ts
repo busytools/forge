@@ -48,6 +48,12 @@ const withThreads = (
           },
           comments: [
             {
+              author: 'User',
+              text: 'the opening words',
+              at: '2026-01-01T00:00:00Z',
+              review_id: reviewId,
+            },
+            {
               author: { Agent: { label: 'w1' } },
               text: 'answered words',
               at: '2026-01-01T00:00:00Z',
@@ -57,6 +63,8 @@ const withThreads = (
           status: 'Addressed',
           created_at: '2026-01-01T00:00:00Z',
           updated_at: '2026-01-01T00:00:00Z',
+          commit: null,
+          resolution: { state: 'placed', line: 7, moved_from: null },
         },
       ],
     },
@@ -220,5 +228,32 @@ describe("the review panel's placement", () => {
     expect(document.querySelector('.sg-list')?.textContent, 'beside the words').toContain(
       'answered words',
     );
+    expect(
+      document.querySelector('.sg-list')?.textContent,
+      'and the opening turn beside the answer: the whole thread, not just its first',
+    ).toContain('the opening words');
+  });
+
+  it('draws a read that did not land as itself, its reason at rest', () => {
+    // A failed read is a set with no round to expand: the reason draws
+    // plainly rather than the raw read id, which is not a thing a reader
+    // can act on.
+    const failed = {
+      ...record,
+      reviews: reviewsFrom({
+        threads: { outcome: 'failed', value: 'the read timed out' },
+        reviews: { outcome: 'read', value: [] },
+      }),
+    };
+    draw(failed);
+    toggle()?.click();
+    flushSync();
+
+    const list = document.querySelector('.sg-list');
+    expect(list?.textContent, 'the failure is named').toContain('not read');
+    expect(list?.textContent, 'and its reason is drawn, not hidden behind a click').toContain(
+      'the read timed out',
+    );
+    expect(list?.textContent, 'never the raw read id').not.toContain('sets-read');
   });
 });

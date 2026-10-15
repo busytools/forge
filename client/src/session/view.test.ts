@@ -2050,22 +2050,38 @@ describe('the review sets the strip draws', () => {
     };
   }
 
-  function thread(id: string, reviewId: string | null, line: number, state: string): unknown {
+  function thread(
+    id: string,
+    reviewId: string | null,
+    line: number,
+    state: string,
+    placed: { line: number; movedFrom: number | null } | null = null,
+    commit: string | null = null,
+  ): unknown {
     return {
       id,
       anchor: anchored(line, ['captured old a', 'captured old b']),
       comments: [
         { author: { kind: 'user' }, text: `the ${id} words`, at: '', review_id: reviewId },
+        {
+          author: { kind: 'agent', label: 'w1' },
+          text: `the ${id} answer`,
+          at: '',
+          review_id: reviewId,
+        },
       ],
       status: state,
       created_at: '2026-10-15T00:00:00Z',
       updated_at: '2026-10-15T00:00:00Z',
-      commit: null,
-      resolution: null,
+      commit,
+      resolution:
+        placed === null
+          ? null
+          : { state: 'placed', line: placed.line, moved_from: placed.movedFrom },
     };
   }
 
-  function held(threads: unknown[], rounds: unknown[]): SessionRecord {
+  function held(threads: unknown[], rounds: unknown[], files?: unknown[]): SessionRecord {
     return {
       ...record,
       reviews: {
@@ -2076,7 +2092,7 @@ describe('the review sets the strip draws', () => {
         ...record.diff,
         branchAhead: {
           state: 'populated',
-          files: [
+          files: files ?? [
             {
               path: 'src/a.rs',
               oldPath: null,
@@ -2108,7 +2124,10 @@ describe('the review sets the strip draws', () => {
   it('reads the rounds oldest first, with their threads code and states', () => {
     const sets = reviewSets(
       held(
-        [thread('t1', 'r1', 2, 'open'), thread('t2', 'r2', 99, 'resolved')],
+        [
+          thread('t1', 'r1', 2, 'open', { line: 2, movedFrom: null }),
+          thread('t2', 'r2', 99, 'resolved'),
+        ],
         [
           { id: 'r2', number: 2, summary: 'the second round', created_at: '2026-10-15T01:00:00Z' },
           { id: 'r1', number: 1, summary: null, created_at: '2026-10-15T00:00:00Z' },
@@ -2128,8 +2147,11 @@ describe('the review sets the strip draws', () => {
     ).toEqual([{ state: 'open', count: 1 }]);
 
     const first = sets?.[0]?.threads[0];
-    expect(first?.words, "a thread's row leads with its own comment").toBe('the t1 words');
-    expect(first?.code, 'the commented code is the branch diff around the anchor').toEqual([
+    expect(first?.turns, 'a thread carries every turn, the answer included').toEqual([
+      { author: 'you', text: 'the t1 words' },
+      { author: 'w1', text: 'the t1 answer' },
+    ]);
+    expect(first?.code, 'the commented code is the branch diff around the resolved line').toEqual([
       'one',
       'two',
       'three',
@@ -2144,5 +2166,107 @@ describe('the review sets the strip draws', () => {
     ).toEqual(['captured old a', 'captured old b']);
     expect(spanned?.inDiff).toBe(false);
     expect(spanned?.state).toBe('resolved');
+  });
+
+  it('windows a moved thread where the resolution says its code sits now', () => {
+    // Written at line 7, which this diff does not carry; the resolution
+    // placed that content at line 4. The recorded number must not be
+    // searched for in the diff - a line 7 that IS in the diff would be some
+    // other code entirely, and the captured context is the fallback of a
+    // thread the resolution could not place.
+    const sets = reviewSets(
+      held(
+        [thread('t1', 'r1', 7, 'open', { line: 4, movedFrom: 7 })],
+        [{ id: 'r1', number: 1, summary: null, created_at: '2026-10-15T00:00:00Z' }],
+      ),
+      Date.parse('2026-10-15T02:00:00Z'),
+    );
+
+    const moved = sets?.[0]?.threads[0];
+    expect(moved?.code, "the excerpt is the diff at the resolution's own line").toEqual([
+      'two',
+      'three',
+      'four',
+    ]);
+    expect(moved?.inDiff, 'still the current diff, found where it sits').toBe(true);
+  });
+
+  it('draws a commit-scoped thread from its capture, never the branch diff', () => {
+    // A commit's numbering belongs to the commit's own diff: line 2 of the
+    // branch diff is a different line 2.
+    const sets = reviewSets(
+      held(
+        [thread('t1', 'r1', 2, 'open', { line: 2, movedFrom: null }, 'deadbeef')],
+        [{ id: 'r1', number: 1, summary: null, created_at: '2026-10-15T00:00:00Z' }],
+      ),
+      Date.parse('2026-10-15T02:00:00Z'),
+    );
+
+    expect(sets?.[0]?.threads[0]?.code).toEqual(['captured old a', 'captured old b']);
+    expect(sets?.[0]?.threads[0]?.inDiff).toBe(false);
+  });
+
+  it('reads the side the comment was written on, not the first number that matches', () => {
+    // The removed line 4 sits above the new-side line 4; a new-side comment
+    // windows the NEW line's neighbours, never the removed line sharing its
+    // number.
+    const files = [
+      {
+        path: 'src/a.rs',
+        oldPath: null,
+        status: 'modified',
+        binary: false,
+        submodule: false,
+        truncated: false,
+        hunks: [
+          {
+            oldStart: 1,
+            oldCount: 5,
+            newStart: 1,
+            newCount: 4,
+            lines: [
+              { kind: 'removed', text: 'r1', oldLine: 1, newLine: null },
+              { kind: 'removed', text: 'r2', oldLine: 2, newLine: null },
+              { kind: 'added', text: 'a1', oldLine: null, newLine: 1 },
+              { kind: 'context', text: 'c2', oldLine: 3, newLine: 2 },
+              { kind: 'context', text: 'c3', oldLine: 4, newLine: 3 },
+              { kind: 'context', text: 'c4', oldLine: 5, newLine: 4 },
+            ],
+          },
+        ],
+      },
+    ];
+    const sets = reviewSets(
+      held(
+        [thread('t1', 'r1', 4, 'open', { line: 4, movedFrom: null })],
+        [{ id: 'r1', number: 1, summary: null, created_at: '2026-10-15T00:00:00Z' }],
+        files,
+      ),
+      Date.parse('2026-10-15T02:00:00Z'),
+    );
+
+    expect(sets?.[0]?.threads[0]?.code, 'the new-side line 4, not the removed one').toEqual([
+      'c2',
+      'c3',
+      'c4',
+    ]);
+  });
+
+  it('draws a failed read as one set naming the failure, at rest', () => {
+    const failed: SessionRecord = {
+      ...held([], []),
+      reviews: {
+        threads: { outcome: 'failed', value: 'the read timed out' },
+        reviews: { outcome: 'read', value: [] },
+      },
+    };
+
+    const sets = reviewSets(failed, Date.parse('2026-10-15T02:00:00Z'));
+
+    expect(sets, 'a failed read is a set of its own, never no sets').toHaveLength(1);
+    expect(sets?.[0]?.number, 'the read itself, not a round').toBe(0);
+    expect(sets?.[0]?.threads[0]?.turns, 'with the reason on its one turn').toEqual([
+      { author: '', text: 'the read timed out' },
+    ]);
   });
 });

@@ -239,7 +239,9 @@ function connection(): Connection {
     settings: () => null,
     dispatch: (command?: unknown) => {
       sent.push(command);
-      return null;
+      // A dispatch's answer, from the few writes that read one: the seal
+      // reads a round back (inert for every other command).
+      return { id: 'r9', number: 4, summary: null, created_at: '2026-01-01T00:00:00Z' };
     },
     refresh: () => undefined,
     commitDiff: () => undefined,
@@ -489,9 +491,10 @@ describe('a landing', () => {
    * **A parked row is not a dead end** (Ved, 2026-10-15). The Outdated rows
    * used to draw no actions at all - no respond, no resolve - so the one
    * thread the resolver could not place was the one row with no door back.
-   * It takes the same acts as any other.
+   * Here the thread is held by no round, so the reply box - which draws only
+   * under a round's own copy - has nowhere to open: resolve is the door.
    */
-  it('offers respond and resolve on a parked row', async () => {
+  it('offers resolve on a parked thread no round holds', async () => {
     const parked = {
       id: 'parked-1',
       anchor: {
@@ -523,13 +526,10 @@ describe('a landing', () => {
     const acts = [...(row?.querySelectorAll('.acts .rv-a') ?? [])].map((button) =>
       button.textContent?.trim(),
     );
-    expect(acts, 'the parked row carries the same doors as any other').toEqual([
-      'respond',
-      'resolve',
-    ]);
+    expect(acts, 'with resolve, and no respond the page could not honour').toEqual(['resolve']);
 
     sent = [];
-    [...(row?.querySelectorAll<HTMLButtonElement>('.acts .rv-a') ?? [])][1]?.click();
+    [...(row?.querySelectorAll<HTMLButtonElement>('.acts .rv-a') ?? [])][0]?.click();
     flushSync();
     expect(sent, 'and resolve writes the state for the parked thread').toEqual([
       {
@@ -541,6 +541,135 @@ describe('a landing', () => {
         },
       },
     ]);
+  });
+
+  it('offers respond on a parked thread a round holds', async () => {
+    // The parked copy of a thread filed into ROUND: respond is offered
+    // because the reply box it opens draws under that round's own copy.
+    const parked = {
+      id: 'parked-1',
+      anchor: {
+        path: 'src/a.rs',
+        side: 'New',
+        line: 9,
+        content_hash: '1',
+        context: ['captured one', 'captured two'],
+        base_ref: 'main',
+      },
+      comments: [
+        {
+          author: { Agent: { label: 'w1' } },
+          text: 'still open',
+          at: '2026-01-01T00:00:00Z',
+          review_id: 'r1',
+        },
+      ],
+      status: 'Open',
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+      commit: null,
+      resolution: null,
+    };
+    await draw([parked], [ROUND]);
+    await openConversation();
+
+    const row = document.querySelector('.thread.parked');
+    expect(row, 'the thread parked').not.toBeNull();
+    const acts = [...(row?.querySelectorAll('.acts .rv-a') ?? [])].map((button) =>
+      button.textContent?.trim(),
+    );
+    expect(acts, 'respond rides along where the round draws the box').toEqual([
+      'respond',
+      'resolve',
+    ]);
+
+    [...(row?.querySelectorAll<HTMLButtonElement>('.acts .rv-a') ?? [])][0]?.click();
+    flushSync();
+    expect(
+      document.querySelector('.rv-reply'),
+      'and the reply box opens under the round that holds it',
+    ).not.toBeNull();
+  });
+
+  /**
+   * **Done closes the round** (Ved, 2026-10-15): a landed seal closes the
+   * comment and reply boxes and clears the summary - the page is back to the
+   * diff with nothing of the round left open. The mock answers the seal with
+   * a round, which is what `finishRound` reads to call it landed (inert for
+   * every other case, which never reads a dispatch's answer).
+   */
+  it('closes the round when Done seals it', async () => {
+    const live = {
+      id: 't-open',
+      anchor: {
+        path: 'src/a.rs',
+        side: 'New',
+        line: 1,
+        content_hash: '1',
+        context: ['one'],
+        base_ref: 'main',
+      },
+      comments: [
+        {
+          author: { Agent: { label: 'w1' } },
+          text: 'answered words',
+          at: '2026-01-01T00:00:00Z',
+          review_id: 'r1',
+        },
+      ],
+      status: 'Addressed',
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+      commit: null,
+      resolution: { state: 'placed', line: 1, moved_from: null },
+    };
+    await draw([live], [ROUND]);
+    await openComment();
+
+    const box = document.querySelector<HTMLTextAreaElement>('.rv-thread.comment .rv-txarea');
+    if (box === null) throw new Error('the comment box drew no field');
+    box.value = 'a drafted comment';
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    const file = [
+      ...document.querySelectorAll<HTMLButtonElement>('.rv-thread.comment button'),
+    ].find((button) => button.textContent?.trim() === 'comment');
+    if (file === undefined) throw new Error('the comment box drew no comment action');
+    file.click();
+    await settle(() => sent.some((held) => typeof held === 'object' && held !== null));
+
+    await openReply();
+    await openConversation();
+    // The precondition the seal's own assert rests on: the conversation half
+    // is where the reply box is left, and only a round that holds the thread
+    // draws it - without this the assert below passes on a box never drawn.
+    expect(
+      document.querySelector('.rv-reply'),
+      'precondition: the reply box is open on the conversation half',
+    ).not.toBeNull();
+
+    const summaryField = document.querySelector<HTMLInputElement>('.rv-summary');
+    if (summaryField === null) throw new Error('the round drew no summary field');
+    summaryField.value = 'the round summary';
+    summaryField.dispatchEvent(new Event('input', { bubbles: true }));
+    summaryField.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+    );
+    await settle(() => document.body.textContent?.includes('the round summary') === false);
+
+    expect(
+      sent.some((held) => typeof held === 'object' && held !== null && 'submit_review' in held),
+      'the seal went out',
+    ).toBe(true);
+    expect(document.querySelector('.rv-reply'), 'the reply box closed with the round').toBeNull();
+    expect(
+      document.querySelector<HTMLInputElement>('.rv-summary')?.value ?? '',
+      'and the summary is cleared',
+    ).toBe('');
+    // The comment box's own clears in `finish()` are not observable from
+    // here: the seal runs on the conversation half, and the canvas closes
+    // the box when it mounts on the return. They earn their place the day a
+    // Done door draws on the files half.
   });
 
   /**

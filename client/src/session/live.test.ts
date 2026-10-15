@@ -1772,6 +1772,35 @@ describe('the record a page holds over an update stream', () => {
   });
 
   /**
+   * **A review touched on the seat re-reads it.** Reviews ride the record
+   * rather than a frame - the notice carries no field the record has - so the
+   * notice is the one cue to take the read again. The reviewer's own writes
+   * re-read themselves, but a worker's answer arrives only this way (#1776),
+   * and without it the strip's rows and its panel keep saying `open` at
+   * threads just settled.
+   */
+  it('re-reads the seat when a review was touched', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD));
+    const asked = page.reads();
+
+    page.land(
+      updateOf({
+        review_activity_notice: {
+          key: LEAD,
+          branch: 'feat',
+          waiting: 2,
+          message: 'a worker addressed review #4',
+        },
+      }),
+    );
+
+    expect(page.reads(), 'the review notice was never re-read').toBe(asked + 1);
+    page.stop();
+  });
+
+  /**
    * **A page leaving gives its subscription back, and the record it held
    * stays.** A held subscription reads as a SHOWING seat to the server, and
    * showing spends every mark the seat earns - the failure mark and the

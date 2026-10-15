@@ -96,9 +96,10 @@ beside what it is costing, not on the strip.
 **The review row's panel is the review sets.** The filed rounds draw
 oldest first with the latest at the bottom - the conversation's own
 direction - each a summary line and a tally of its threads' states; under
-it a thread collapses to its file, its line and its state, and a click
-opens the commented code (the branch diff around the anchor, or the lines
-captured with the comment where the diff has moved on) beside the words.
+it a thread collapses to its file, its line and its toned state, and a
+click opens the commented code (the branch diff around the line the
+server resolved the anchor to, or the lines captured with the comment
+where it has moved on) beside the whole thread, its turns in order.
 
 ## The states the page can be in
 

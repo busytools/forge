@@ -186,9 +186,10 @@
           <div class="sg-head">nothing under review on this branch yet</div>
         {/if}
         {#each sets as set (set.id)}
+          {@const unread = set.number === 0}
           <div class="sg-grp" role="presentation">
             <div class="sg-it">
-              <span class="nm lead">{set.number > 0 ? `R${set.number}` : set.id}</span>
+              <span class="nm lead">{unread ? 'not read' : `R${set.number}`}</span>
               {#if set.age !== ''}<span class="n">{set.age}</span>{/if}
             </div>
             {#if set.summary !== null && set.summary !== ''}
@@ -201,27 +202,36 @@
                 {/each}
               </div>
             {/if}
-            {#each set.threads as thread (thread.id)}
-              <button
-                type="button"
-                class="sg-thread"
-                aria-expanded={opened.has(thread.id)}
-                onclick={() => toggleThread(thread.id)}
-              >
-                <span class="nm">{thread.where}</span>
-                <span class="n {thread.state}">{thread.state}</span>
-              </button>
-              {#if opened.has(thread.id)}
-                {#if thread.code.length > 0}
-                  <pre class="sg-code" class:captured={!thread.inDiff}>{thread.code.join(
-                      '\n',
-                    )}</pre>
+            {#if unread}
+              <!-- A read that did not land draws as itself, its reason at
+                   rest: there are no rounds to expand. -->
+              <div class="sg-sub">{set.threads[0]?.turns[0]?.text ?? ''}</div>
+            {:else}
+              {#each set.threads as thread (thread.id)}
+                <button
+                  type="button"
+                  class="sg-thread"
+                  aria-expanded={opened.has(thread.id)}
+                  onclick={() => toggleThread(thread.id)}
+                >
+                  <span class="nm">{thread.where}</span>
+                  <span class="n {thread.state}">{thread.state}</span>
+                </button>
+                {#if opened.has(thread.id)}
+                  {#if thread.code.length > 0}
+                    <pre class="sg-code" class:captured={!thread.inDiff}>{thread.code.join(
+                        '\n',
+                      )}</pre>
+                  {/if}
+                  {#each thread.turns as turn, i (i)}
+                    <div class="sg-turn">
+                      {#if turn.author !== ''}<span class="who">{turn.author}</span>{/if}
+                      <div class="sg-sub">{turn.text}</div>
+                    </div>
+                  {/each}
                 {/if}
-                {#if thread.words !== ''}
-                  <div class="sg-sub">{thread.words}</div>
-                {/if}
-              {/if}
-            {/each}
+              {/each}
+            {/if}
           </div>
         {/each}
       </div>

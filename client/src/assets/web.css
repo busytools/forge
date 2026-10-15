@@ -345,7 +345,14 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
 .sg-chips {
   display: flex;
   gap: 6px;
-  padding: 2px 0 4px;
+  padding: 2px 13px 4px;
+}
+/* A second round draws apart from the one above it: one rule, so any number
+   of sets reads as a list of rounds rather than a run of rows. */
+.sg-grp + .sg-grp {
+  border-top: 1px solid var(--line);
+  margin-top: 4px;
+  padding-top: 4px;
 }
 .sg-thread {
   display: flex;
@@ -357,7 +364,7 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
   color: inherit;
   font: inherit;
   text-align: left;
-  padding: 3px 0;
+  padding: 3px 13px;
   cursor: pointer;
 }
 .sg-thread:hover {
@@ -378,8 +385,21 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
   color: var(--dim);
   flex: none;
 }
+/* The page's own tones, word-sized: an answered thread is the one the reader
+   is waiting on, and it reads amber wherever it is drawn. */
+.sg-thread .n.open { color: var(--text); }
+.sg-thread .n.addressed { color: var(--warn); }
+.sg-thread .n.resolved { color: var(--ok); }
+/* One turn of an expanded thread: who wrote it, over what they wrote. */
+.sg-turn .who {
+  display: block;
+  padding: 3px 13px 0 26px;
+  font-family: var(--mono);
+  font-size: var(--fs-label);
+  color: var(--muted);
+}
 .sg-code {
-  margin: 2px 0 4px;
+  margin: 2px 13px 4px;
   padding: 6px 8px;
   /* **Wrapped, not scrolled** (the sheet's scroller guard): a few borrowed
      lines in a narrow lane wrap rather than taking a sideways scroller of
@@ -2144,7 +2164,7 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
   color: var(--bad); }
 /* The retry line's own two parts: which attempt of how many, right-floated,
    and the delay under the line. Nothing else draws these. */
-.conv .notice .chip { float: right; font-family: var(--mono); font-size: 11.5px;
+.conv .notice .chip { float: right; font-family: var(--mono); font-size: 11.5px; color: inherit;
   border: 1px solid rgba(201,161,59,.35); border-radius: 999px; padding: 1px 7px; margin-left: 10px; }
 .conv .notice .sub2 { display: block; color: var(--dim); font-size: 12.5px; margin-top: 2px; }
 

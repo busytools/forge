@@ -31,7 +31,14 @@ import type { Row, RowState } from '../home/view';
 import { FORGE_COMMANDS } from '../composer/forge-commands';
 import type { ComposerRecord } from '../composer/view';
 import { CLIENT_VERSION, PROTOCOL_VERSION } from '../protocol';
-import { ageOf, awaitsReviewer, roundTally, threadsInRound } from '../review/view';
+import {
+  ageOf,
+  authorName,
+  awaitsReviewer,
+  canvasLine,
+  roundTally,
+  threadsInRound,
+} from '../review/view';
 import { hrefForSlot } from '../routes';
 import type { Connection } from '../socket';
 import type {
@@ -1654,13 +1661,15 @@ export interface ReviewSetThread {
   id: string;
   state: string;
   where: string;
-  words: string;
+  /** Every turn of the thread in order, as the page draws them: the
+   *  reviewer's own words, then the agent's answer, then whatever followed. */
+  turns: { author: string; text: string }[];
   /** The borrowed lines: the branch diff around the anchor where it still
    *  holds the spot, else the context captured when the comment was written -
    *  the same borrow the review page's parked section makes. */
   code: string[];
   /** Whether `code` is the current diff's (`false`: the captured lines, so
-   *  the anchored spot has moved under the comment). */
+   *  the anchored spot has moved or cannot be drawn). */
   inDiff: boolean;
 }
 
@@ -1699,7 +1708,12 @@ export function reviewSets(record: SessionRecord | null, now: number): ReviewSet
             id: 'sets-read',
             state: failed.outcome,
             where: 'the sets read',
-            words: failed.outcome === 'failed' ? failed.value.trim() : String(failed.value),
+            turns: [
+              {
+                author: '',
+                text: failed.outcome === 'failed' ? failed.value.trim() : String(failed.value),
+              },
+            ],
             code: [],
             inDiff: false,
           },
@@ -1735,7 +1749,10 @@ export function reviewSets(record: SessionRecord | null, now: number): ReviewSet
             id: thread.id,
             state: typeof thread.status === 'string' ? thread.status : thread.status.unknown,
             where: `${thread.anchor.path.split('/').pop() ?? thread.anchor.path} \u{b7} line ${thread.anchor.line}`,
-            words: thread.comments[0]?.text ?? '',
+            turns: thread.comments.map((turn) => ({
+              author: authorName(turn.author),
+              text: turn.text,
+            })),
             code: excerpt.code,
             inDiff: excerpt.inDiff,
           };
@@ -1747,22 +1764,31 @@ export function reviewSets(record: SessionRecord | null, now: number): ReviewSet
 /** Lines kept either side of an anchored one. */
 const CODE_AROUND = 2;
 
-/** The lines a comment was written against, and which source they are. */
+/**
+ * The lines a comment was written against, and which source they are.
+ *
+ * The spot is the resolution's own line where one landed - where the page's
+ * canvas draws the thread - never the recorded number a moved branch has left
+ * behind. A commit-scoped thread (whose numbering this diff does not carry)
+ * or an unplaced one falls to the captured context.
+ */
 function codeAround(
   record: SessionRecord,
   thread: ReviewThreadRecord,
 ): { code: string[]; inDiff: boolean } {
-  const layer = record.diff.branchAhead;
-  if (layer.state === 'populated') {
-    const file = layer.files.find((held) => held.path === thread.anchor.path);
-    const lines = file?.hunks.flatMap((hunk) => hunk.lines) ?? [];
-    const at = lines.findIndex(
-      (line) => line.newLine === thread.anchor.line || line.oldLine === thread.anchor.line,
-    );
-    if (at >= 0) {
-      const from = Math.max(0, at - CODE_AROUND);
-      const to = Math.min(lines.length, at + CODE_AROUND + 1);
-      return { code: lines.slice(from, to).map((line) => line.text), inDiff: true };
+  const placed = thread.commit === null ? canvasLine(thread) : null;
+  if (placed !== null && record.diff.branchAhead.state === 'populated') {
+    const file = record.diff.branchAhead.files.find((held) => held.path === thread.anchor.path);
+    const side = thread.anchor.side === 'old' ? 'old' : 'new';
+    for (const hunk of file?.hunks ?? []) {
+      const at = hunk.lines.findIndex((line) =>
+        side === 'old' ? line.oldLine === placed.line : line.newLine === placed.line,
+      );
+      if (at >= 0) {
+        const from = Math.max(0, at - CODE_AROUND);
+        const to = Math.min(hunk.lines.length, at + CODE_AROUND + 1);
+        return { code: hunk.lines.slice(from, to).map((line) => line.text), inDiff: true };
+      }
     }
   }
   return { code: thread.anchor.context, inDiff: false };
