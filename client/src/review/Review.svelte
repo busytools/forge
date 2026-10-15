@@ -1337,8 +1337,15 @@
     flex: 1;
     min-width: 0;
   }
-  .rv-summary {
+  /* The field is `Field`'s, and that component's root is the input itself -
+     so these reach into it through :global, or they never match it and the
+     reader gets the browser's raw box (Ved's screenshot, 2026-10-15). */
+  .rv-finishrow :global(.rv-summary) {
     flex: 1;
+    /* The wordline is the flex item; the input fills it - a bare `flex: 1`
+       here is inert inside a plain block and the box keeps its ~20ch
+       intrinsic width. */
+    width: 100%;
     min-width: 0;
     background: var(--s1);
     color: var(--text);
@@ -1348,7 +1355,7 @@
     font-size: var(--fs-base);
     padding: 6px 9px;
   }
-  .rv-summary:focus {
+  .rv-finishrow :global(.rv-summary:focus) {
     outline: none;
     border-color: var(--ctl);
   }
