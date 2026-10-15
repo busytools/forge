@@ -466,7 +466,8 @@ export function connect(url: string): Connection {
       }
       case 'error':
         if (message.what === 'subscribe') refuse(message.why);
-        else report(`the server refused a ${message.what}`, message.why);
+        else
+          report(`the server refused a ${message.what}`, { why: message.why, seat: message.seat });
         return;
       // `page` is the conversation's and `commit_diff` the review canvas': a
       // surface that draws one reads it from `onMessage`.

@@ -60,6 +60,21 @@ interface Range {
 interface StreamState {
   /** The occupant the numbers belong to, off the seal or the answer. */
   epoch: string | null;
+  /**
+   * Whether this connection follows the seat: a snapshot has said where its
+   * stream stands.
+   *
+   * **Frames arrive for seats nothing here follows.** The home watch carries
+   * fleet news per seat - a turn finishing, an occupant changing - numbered
+   * on that seat's own stream, so holding or asking for a seat this
+   * connection never opened demands a history nobody asked for: an awake
+   * seat refuses the ask outright (`Some(id) != None`), which reappears on
+   * the next fleet frame and loops (measured live, 2026-10-15: the client
+   * asked `1..6956` with no occupant every ~30s), and a sleeping one answers
+   * with its whole transcript, megabytes nobody opened. Unanchored, the
+   * frames pass through in arrival order.
+   */
+  anchored: boolean;
   /** The next number the run owes, in strict sequence. */
   expecting: number;
   /**
@@ -96,6 +111,7 @@ function stateOf(streams: Map<string, StreamState>, key: string): StreamState {
   if (state === undefined) {
     state = {
       epoch: null,
+      anchored: false,
       expecting: 1,
       seenThrough: 0,
       missing: [],
@@ -176,6 +192,10 @@ export class StreamGate {
         if (subject?.session === undefined) return [message];
         const key = subjectKey({ session: subject.session });
         const state = stateOf(this.streams, key);
+        // **The snapshot is the anchor.** It is the one message that says
+        // where this seat's stream stands for THIS connection, so a seat is
+        // sequenced only once one has landed for it.
+        state.anchored = true;
         const header = (message.data as { header?: { session_id?: unknown; seq?: unknown } } | null)
           ?.header;
         const occupant = typeof header?.session_id === 'string' ? header.session_id : null;
@@ -203,6 +223,10 @@ export class StreamGate {
         if (slot === null) return [message];
         const key = subjectKey({ session: slot });
         const state = stateOf(this.streams, key);
+        // A seat this connection has not been told the standing of: the
+        // frame is news riding a coarser watch, and ordering it would ask
+        // for a history nobody opened. Arrival order is what it gets.
+        if (!state.anchored) return [message];
 
         const seal = replacer(message.update);
         if (seal !== null) {
@@ -257,7 +281,7 @@ export class StreamGate {
         if (slot === undefined) return [message];
         const key = subjectKey({ session: slot });
         const state = this.streams.get(key);
-        if (state === undefined || this.settled(state)) return [message];
+        if (state === undefined || !state.anchored || this.settled(state)) return [message];
         state.origin = { slot, epoch: message.epoch ?? null };
         for (const frame of message.frames) {
           const carried = frame as { seq: number; span?: unknown };
