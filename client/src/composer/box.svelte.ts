@@ -89,6 +89,19 @@ export class Box {
   closed = $state<string | null>(null);
   marked = $state(0);
   /**
+   * The words this box's draft took, as the notice carried them: what its cut
+   * row reads.
+   *
+   * **The take's own identity, not its words** (`noticeIdentity`): two takes
+   * speaking the same text are two landings, and a text comparison would draw
+   * the row for one whose words went elsewhere. `$state` and not a plain
+   * field, because the row has to appear the moment the words land somewhere
+   * this box re-renders from. The arm used to stand in for that memory and
+   * drew the row on the bare press, which is the Cmd jerk (measured live,
+   * 2026-10-15).
+   */
+  landed = $state<string | null>(null);
+  /**
    * This box's landing memory: the arm its own take's press set, the notice it
    * was set under, and the words this DRAFT took.
    *

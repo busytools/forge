@@ -158,7 +158,8 @@
      fills what the controls leave and wears none of the pill's chrome - the
      surface's ring carries the state. */
   .line.takeline .tc { align-self: center; margin: 0; border: 0; background: none;
-    box-shadow: none; padding: 0; flex: 1 1 auto; min-width: 0; }
+    box-shadow: none; padding: 0; flex: 1 1 auto; min-width: 0;
+    min-height: calc(1.5 * var(--fs-base)); }
   .tc .dot { width: 7px; height: 7px; flex: none; border-radius: 50%;
     background: var(--accent); animation: pulse 1.05s ease-in-out infinite; }
   .tc .spin { width: 11px; height: 11px; flex: none; border-radius: 50%;
@@ -179,6 +180,15 @@
   /* The spread card's graph: one smooth envelope over the same readings, its
      box stretched to the row, so the amplitude scales with it. */
   .tc .wave { flex: 1 1 auto; min-width: 0; height: 26px; align-self: center; }
+  /* The graph eases in where the ready line stood: one fade on everything the
+     first-sample swap mounts. */
+  @keyframes take-in { from { opacity: 0; } }
+  .tc .wave, .tc .bars, .tc .count, .tc .fr, .tc .kb, .tc .pace, .tc .ready,
+  .tc .ticks, .tc .bar {
+    animation: take-in 0.18s ease-out; }
+  /* The takeline card takes the field's own line box, so a take starting or
+     ending moves nothing. */
+  .takeline .tc .wave { height: calc(1.5 * var(--fs-base)); }
   .tc .wave .area { fill: var(--accent); }
   .tc .wave .edge { fill: none; stroke: var(--hot); stroke-width: 1.5px;
     vector-effect: non-scaling-stroke; }

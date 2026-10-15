@@ -593,6 +593,14 @@
                   placeholder="comment on this part..."
                   aria={{ label: 'comment on this part of the document' }}
                   bind:value={commentText}
+                  onkeydown={(event: KeyboardEvent) => {
+                    // **Enter comments**, as the button does, with the button's
+                    // own guard: the same key sends in every box (Ved,
+                    // 2026-10-15).
+                    if (event.key !== 'Enter' || event.shiftKey) return;
+                    event.preventDefault();
+                    if (commentText.trim() !== '') writeComment(row);
+                  }}
                   field={(el: HTMLElement | null) => {
                     field = el;
                   }}

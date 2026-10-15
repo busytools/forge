@@ -155,6 +155,47 @@ describe('the words box', () => {
     expect(at.sent).toEqual([]);
   });
 
+  it('files on Enter, and keeps the newline for Shift+Enter', () => {
+    // The same key sends in every box (Ved, 2026-10-15): Enter is the box's
+    // own action, with the button's own guard on empty words.
+    const at = drawn();
+    at.typed('this read is the whole input');
+    const field = document.querySelector('.rv-txarea');
+    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the box drew no field');
+
+    const shifted = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    field.dispatchEvent(shifted);
+    flushSync();
+    expect(shifted.defaultPrevented, 'Shift+Enter keeps the newline').toBe(false);
+    expect(at.sent, 'and files nothing').toEqual([]);
+
+    const enter = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      bubbles: true,
+      cancelable: true,
+    });
+    field.dispatchEvent(enter);
+    flushSync();
+    expect(enter.defaultPrevented, 'Enter is the box own action').toBe(true);
+    expect(at.sent, 'and files what was typed').toEqual(['this read is the whole input']);
+  });
+
+  it('ignores Enter over an empty box, as its button does', () => {
+    const at = drawn();
+    const field = document.querySelector('.rv-txarea');
+    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the box drew no field');
+    field.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+    );
+    flushSync();
+    expect(at.sent).toEqual([]);
+  });
+
   it('draws the line a take it could not start left behind', () => {
     drawn({ line: { tone: 'bad', text: 'no input device is available' } });
     expect(document.body.textContent).toContain('no input device is available');

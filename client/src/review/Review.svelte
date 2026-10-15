@@ -999,6 +999,14 @@
                   placeholder="summary (optional)"
                   aria={{ label: 'the round summary' }}
                   bind:value={summary}
+                  onkeydown={(event: KeyboardEvent) => {
+                    // **Enter finishes the review**, as its own button does:
+                    // the same key sends everywhere, and the same guard keeps
+                    // a round with nothing filed from sealing (Ved, 2026-10-15).
+                    if (event.key !== 'Enter' || event.shiftKey) return;
+                    event.preventDefault();
+                    if (!busy && drafts.size > 0) void finish();
+                  }}
                   field={(el: HTMLElement | null) => {
                     elements.summary = el;
                   }}

@@ -732,6 +732,57 @@ describe('the box', () => {
   });
 
   /**
+   * **The box is the keyboard's** (Ved, 2026-10-15): the first printable key
+   * with nothing focused lands in the composer, and Tab never walks the pane -
+   * it comes to the box from outside and cycles the box's own controls once
+   * it is there, so a reader typing never watches the focus wander.
+   */
+  it('takes the first typed key and keeps Tab inside the box', () => {
+    open({});
+    // jsdom measures no layout, so every element's offsetParent is null: the
+    // shim is what lets the visibility filter see the box's controls.
+    const sheet = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetParent');
+    Object.defineProperty(HTMLElement.prototype, 'offsetParent', {
+      configurable: true,
+      get(this: HTMLElement) {
+        return this.parentElement;
+      },
+    });
+    try {
+      (document.activeElement as HTMLElement | null)?.blur();
+      window.dispatchEvent(
+        new KeyboardEvent('keydown', { code: 'KeyA', key: 'a', bubbles: true, cancelable: true }),
+      );
+      flushSync();
+      expect(field().value, 'the first key lands in the box').toBe('a');
+
+      const outside = document.createElement('button');
+      document.body.append(outside);
+      outside.focus();
+      flushSync();
+      window.dispatchEvent(
+        new KeyboardEvent('keydown', { code: 'Tab', key: 'Tab', bubbles: true, cancelable: true }),
+      );
+      flushSync();
+      expect(document.activeElement, 'Tab from the pane comes to the box').toBe(field());
+
+      window.dispatchEvent(
+        new KeyboardEvent('keydown', { code: 'Tab', key: 'Tab', bubbles: true, cancelable: true }),
+      );
+      flushSync();
+      const at = document.activeElement;
+      expect(
+        at instanceof HTMLElement && document.querySelector('.comp')?.contains(at) === true,
+        'and from the field it cycles the box, never the pane',
+      ).toBe(true);
+      expect(at, 'off the field, onto one of its controls').not.toBe(field());
+      outside.remove();
+    } finally {
+      if (sheet !== undefined) Object.defineProperty(HTMLElement.prototype, 'offsetParent', sheet);
+    }
+  });
+
+  /**
    * **The landing itself is what moves the keyboard, when it has somewhere to
    * move it to.** The case above lands while the field is unmounted - the take
    * card has its row - so the field mounts back afterwards and its own mount

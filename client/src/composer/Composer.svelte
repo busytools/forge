@@ -12,6 +12,7 @@
   import { report } from '../socket';
   import { mintPromptId } from '../wire/ids';
   import { Boxes, boxKey, type Box } from './box.svelte';
+  import { noticeIdentity } from './landing';
   import Autocomplete from './Autocomplete.svelte';
   import TakeCard from './TakeCard.svelte';
   import DictateControl from './DictateControl.svelte';
@@ -358,7 +359,16 @@
   const notice = $derived(
     owns
       ? (box.dictateLine ??
-          noticeLine(composer.notice, box.landing.holds(composer.notice)) ??
+          // **The words this DRAFT took, not the arm.** A row that read the
+          // arm appeared on the bare press - nothing had landed, the record
+          // still carried the previous notice - and left a 21px row growing
+          // and shrinking the box on every Cmd press (measured live,
+          // 2026-10-15). `box.landed` is the same memory, reactive, set where
+          // the words went into this draft.
+          noticeLine(
+            composer.notice,
+            composer.notice !== null && box.landed === noticeIdentity(composer.notice),
+          ) ??
           box.ended)
       : null,
   );
@@ -531,6 +541,10 @@
     const held = composer.notice;
     if (held === null) {
       box.landing.place(boxKey(slot), null);
+      // The reactive half of the same memory: the row cannot read the
+      // Landing's plain fields and re-render, and the notice's own row must
+      // follow the words the moment they land here.
+      box.landed = null;
       box.dismissed = null;
       return;
     }
@@ -553,6 +567,7 @@
       // take left them in the dock, and a memory set for it here would put a
       // note about words that never arrived in this draft.
       box.landing.placed(held);
+      box.landed = noticeIdentity(held);
       box.draft = joined(
         untrack(() => box.draft),
         words,
@@ -847,6 +862,67 @@
     };
     window.addEventListener('keydown', onDown, true);
     return () => window.removeEventListener('keydown', onDown, true);
+  });
+
+  /**
+   * **The box is the keyboard's** (Ved, 2026-10-15).
+   *
+   * A printable key with the window focused lands in the composer, Tab keeps
+   * the keyboard in the box - cycling its own controls, never walking the
+   * pane - and Enter sends, which the field's own handler already does.
+   * Everything else is the pointer's: a reader typing into the app should
+   * never watch the focus wander. A key pressed while another field has the
+   * keyboard is that field's (the palette's, the dock's), and a composer that
+   * is not drawing a field at all (a take, a blocked state) leaves the key
+   * alone rather than swallowing it.
+   */
+  $effect(() => {
+    const rootOf = (): HTMLElement | null =>
+      field === null ? document.querySelector('.comp') : field.closest('.comp');
+    const tabbables = (): HTMLElement[] => {
+      const at = rootOf();
+      if (at === null) return [];
+      return [
+        ...at.querySelectorAll<HTMLElement>(
+          'textarea, input, button, [href], [tabindex]:not([tabindex="-1"])',
+        ),
+      ].filter((el) => !el.hasAttribute('disabled') && el.offsetParent !== null);
+    };
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.defaultPrevented) return;
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      const active = document.activeElement;
+      const typing =
+        active instanceof HTMLTextAreaElement ||
+        active instanceof HTMLInputElement ||
+        (active instanceof HTMLElement && active.isContentEditable);
+      const at = rootOf();
+      if (event.key === 'Tab') {
+        // A field outside this box keeps its own Tab; inside it - and from
+        // anywhere else on the page - the keyboard cycles the box.
+        if (typing && (at === null || !at.contains(active))) return;
+        const list = tabbables();
+        if (list.length === 0) return;
+        event.preventDefault();
+        const from = list.indexOf(active as HTMLElement);
+        const step = event.shiftKey ? -1 : 1;
+        const next = from === -1 ? 0 : (from + step + list.length) % list.length;
+        list[next]?.focus({ preventScroll: true });
+        return;
+      }
+      if (typing || event.key.length !== 1) return;
+      const element = field;
+      if (element === null) return;
+      const area = element as HTMLTextAreaElement;
+      event.preventDefault();
+      area.focus({ preventScroll: true });
+      const end = area.value.length;
+      area.setSelectionRange(end, end);
+      area.setRangeText(event.key, end, end, 'end');
+      area.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
   });
 
   /**

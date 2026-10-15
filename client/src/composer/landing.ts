@@ -26,7 +26,7 @@ import type { Notice } from './wire';
  * text**, which cannot tell those two apart - accepted, and the reason the
  * number is carried wherever it crosses.
  */
-function noticeIdentity(notice: Notice): string {
+export function noticeIdentity(notice: Notice): string {
   if (notice.generation !== undefined) return `take:${String(notice.generation)}`;
   return notice.kind === 'line' ? `line:${notice.tone}:${notice.text}` : `landed:${notice.text}`;
 }

@@ -2309,6 +2309,13 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
 /* The graph inside the card takes whatever the readings leave: pinned at the
    pill's 116px it read as a bead between the counts rather than as the meter of
    what is being recorded. */
+/* **One row's height in every phase.** The wave is 23.25 and matches the
+   field, but ready and transcribing carry no wave and their tallest child
+   lays out at 18, so the bar stepped 5.25 at the press and back at the
+   release - and in a narrow container above the 44px button floor, where the
+   ladder hides the wave, in every phase. The takeline card reserves the
+   field's own line box (measured offscreen in WebKit, 2026-10-15). */
+.takeline .tc { min-height: calc(1.5 * var(--fs-base)); }
 .takeline .tc .bar, .dock .qrow .tc .bar { flex: 1 1 auto; width: auto; min-width: 0; }
 .takeline .tc .ticks, .dock .qrow .tc .ticks { flex: 1 1 auto; justify-content: space-between; }
 /* **One smooth envelope, a deeper track for it** (Ved, 2026-10-11, on the
@@ -2318,6 +2325,25 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
    card draws the same readings as one path, and the box stretches to the
    row, so the amplitude scales with it. The pill keeps its own bars. */
 .tc .wave { flex: 1 1 auto; min-width: 0; height: 26px; align-self: center; }
+/* **The graph eases in where the ready line stood.** The row swaps its middle
+   at the first real sample, and the pop read as a jump rather than as the
+   take starting (Ved, 2026-10-15). One fade on everything the swap mounts. */
+@keyframes take-in { from { opacity: 0; } }
+.tc .wave,
+.tc .bars,
+.tc .count,
+.tc .fr,
+.tc .kb,
+.tc .pace,
+.tc .ready,
+.tc .ticks,
+.tc .bar { animation: take-in 0.18s ease-out; }
+/* **One row's height, whatever sits in the line.** In the takeline the card
+   takes the field's own line box, so a take starting or ending moves nothing:
+   the wave pinned at 26 made the card 26 against the field's 23 and the whole
+   column shifted on every Cmd press (measured live, 2026-10-15). The dock's
+   qrow keeps its own geometry. */
+.takeline .tc .wave { height: calc(1.5 * var(--fs-base)); }
 .tc .wave .area { fill: var(--accent); }
 .tc .wave .edge { fill: none; stroke: var(--hot); stroke-width: 1.5px;
   vector-effect: non-scaling-stroke; }
@@ -2708,7 +2734,20 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .dock .notes::placeholder { color: var(--dim); }
 
 @media (prefers-reduced-motion: reduce) {
-  .tc .dot, .tc .spin, .tc .bar.sweep > i, .blocked .ring, .dock .blip .dot {
+  .tc .dot,
+  .tc .spin,
+  .tc .bar.sweep > i,
+  .blocked .ring,
+  .dock .blip .dot,
+  .tc .wave,
+  .tc .bars,
+  .tc .count,
+  .tc .fr,
+  .tc .kb,
+  .tc .pace,
+  .tc .ready,
+  .tc .ticks,
+  .tc .bar {
     animation: none;
   }
   .tc .bars i { transition: none; }

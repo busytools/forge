@@ -248,6 +248,22 @@
                 type="text"
                 placeholder="what to change"
                 bind:value={sendBack}
+                onkeydown={(event: KeyboardEvent) => {
+                  // **Enter is the box's own action** (Ved, 2026-10-15): the
+                  // same key that sends everywhere sends this back, and an
+                  // empty box ignores it as the button does.
+                  if (event.key !== 'Enter' || event.shiftKey) return;
+                  event.preventDefault();
+                  if (sendBack.trim() === '') return;
+                  onact({
+                    task_verdict: {
+                      project: task.project_name,
+                      id: task.id,
+                      approve: false,
+                      words: sendBack,
+                    },
+                  });
+                }}
               />
               <button
                 type="button"
@@ -270,6 +286,15 @@
                 type="text"
                 placeholder="your answer"
                 bind:value={answer}
+                onkeydown={(event: KeyboardEvent) => {
+                  // Enter answers, as the button does (Ved, 2026-10-15).
+                  if (event.key !== 'Enter' || event.shiftKey) return;
+                  event.preventDefault();
+                  if (answer.trim() === '') return;
+                  onact({
+                    task_answer: { project: task.project_name, id: task.id, words: answer },
+                  });
+                }}
               />
               <button
                 type="button"
