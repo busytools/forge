@@ -128,10 +128,11 @@ impl AgentHandle {
         cwd: String,
         launch_settings: crate::client::SessionLaunchSettings,
     ) -> Result<(), AgentError> {
-        // Propagate serialise failure instead of silently launching
-        // with `Value::Null` (which the dispatcher then deserialises
-        // to default settings, losing the user's configured model /
-        // permission_mode / effort with no breadcrumb).
+        // Propagate serialise failure instead of launching with `Value::Null`:
+        // the dispatcher now REFUSES a value it cannot decode rather than
+        // deserialising it to default settings, and the refusal is logged, so
+        // a lossy payload stops the spawn with a breadcrumb instead of
+        // dropping the configured model or the blocked-tools denial silently.
         let launch_settings = serde_json::to_value(launch_settings)?;
         self.send(AgentCommand::NewSession { session_id, cwd, launch_settings })
     }
@@ -432,6 +433,7 @@ mod decode_launch_settings_tests {
             "settings": { "model": "haiku" },
             "agent_progress_summaries": true,
             "charter": "worker charter",
+            "extra_args": [["disallowedTools", "Bash"]],
         });
         let decoded = decode_launch_settings(value).expect("the stamped settings decode");
         assert_eq!(
@@ -441,6 +443,32 @@ mod decode_launch_settings_tests {
         );
         assert_eq!(decoded.agent_progress_summaries, Some(true));
         assert_eq!(decoded.charter.as_deref(), Some("worker charter"));
+        assert_eq!(
+            decoded.extra_args,
+            vec![("disallowedTools".to_owned(), Some("Bash".to_owned()))],
+            "the blocked-tools denial's carrier survives the decode"
+        );
+    }
+
+    #[test]
+    fn the_dispatch_refuses_rather_than_defaulting() {
+        // **The property #1183 is about, pinned at the SEAM.** A defaulting
+        // arm (`decode_launch_settings(..).unwrap_or_default()`) compiles and
+        // passes every other test while every spawn launches on defaults with
+        // the denial dropped - so the refusal is asserted where it is used,
+        // not only inside the decoder (Ved refused the spawn, 2026-10-15).
+        let command = forge_primitives::AgentCommand::NewSession {
+            session_id: Some("a-test-seat".to_owned()),
+            cwd: "/tmp".to_owned(),
+            launch_settings: serde_json::json!(42),
+        };
+        let bridge = crate::forge_sdk_bridge::ForgeSdkBridge::default();
+        let error = super::dispatch(command, &bridge)
+            .expect_err("an undecodable payload refuses the dispatch rather than defaulting");
+        assert!(
+            error.to_string().contains("launch settings could not be decoded"),
+            "and the refusal is the decoder's own, not whatever the bridge would say: {error}"
+        );
     }
 
     #[test]
