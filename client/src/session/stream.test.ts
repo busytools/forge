@@ -292,4 +292,27 @@ describe('the stream gate', () => {
     expect(gate.inbound(update(3)), 'a hole in a followed seat is still held').toHaveLength(0);
     expect(asked, 'and it is asked for').toEqual([{ from: 2, to: 2 }]);
   });
+
+  it('a seat the connection lets go stops being sequenced, handing over what it held', () => {
+    const { gate, asked, emitted } = aGate();
+    gate.inbound(snap('occ', 1));
+    gate.inbound(update(1));
+    expect(gate.inbound(update(3)), 'held above the hole').toHaveLength(0);
+    const askedBefore = asked.length;
+    gate.releaseSeat(LEAD);
+    const handed = emitted.flat().map((m) => (m as { seq?: number }).seq);
+    expect(handed, 'the held frame is handed over, not dropped').toContain(3);
+    // Fleet news for a seat nobody follows passes through and asks nothing
+    // (the review's finding: an anchor that outlived its subscription asked
+    // for the whole missed stretch on every next news frame).
+    expect(gate.inbound(update(6957))).toHaveLength(1);
+    expect(asked.length, 'a left seat opens no ask').toBe(askedBefore);
+    // A later subscribe anchors it again from its own snapshot.
+    gate.inbound(snap('occ', 9));
+    expect(gate.inbound(update(20)), 'a hole in the re-anchored seat is held').toHaveLength(0);
+    expect(asked.at(-1), 'and asked for, from the snapshot own number').toEqual({
+      from: 9,
+      to: 19,
+    });
+  });
 });

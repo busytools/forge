@@ -323,6 +323,32 @@ export class StreamGate {
     this.streams.clear();
   }
 
+  /**
+   * Forget a seat this connection has let go: its numbers stop counting, and
+   * the fleet news the coarse watches still deliver for it passes through.
+   *
+   * **An anchor alone outlives the subscription, and that is the cost this
+   * closes.** A seat a reader visited and then left keeps its anchor for the
+   * life of the connection, so the next fleet-news frame for it - a turn
+   * finishing in a project nobody is looking at - opens a hole and asks for
+   * the whole missed stretch; the ring answers only what it still holds
+   * (4,000 frames), and above that the transcript answers with a whole-file
+   * read (found in review, 2026-10-15). Frames held at the moment of release
+   * are handed over rather than dropped, and a later subscribe anchors the
+   * seat again from its own snapshot.
+   */
+  releaseSeat(slot: SessionSlot): void {
+    const key = subjectKey({ session: slot });
+    const state = this.streams.get(key);
+    if (state === undefined) return;
+    this.release(state);
+    this.clear(state);
+    state.anchored = false;
+    state.epoch = null;
+    state.expecting = 1;
+    state.seenThrough = 0;
+  }
+
   /** Whether nothing is in flight for this seat. */
   private settled(state: StreamState): boolean {
     return (
