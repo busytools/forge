@@ -88,10 +88,14 @@ export class Box {
   closed = $state<string | null>(null);
   marked = $state(0);
   /**
-   * The words a landing has already put here, so they land once.
+   * The words this box holds, as the notice they came from carried them.
    *
-   * Deliberately not `$state`: nothing draws from it, and a reactive copy would
-   * make the landing effect depend on what it writes.
+   * The truncated row reads this: it says the take was cut, and it has to keep
+   * saying so on every hand-over AFTER the landing - the arm is spent by then,
+   * so a row that read the arm alone vanished with the words still in the
+   * draft (the gate's failure axis, 2026-10-15). Deliberately not `$state`:
+   * nothing draws from it alone, and a reactive copy would make the landing
+   * effect depend on what it writes.
    */
   landed: string | null = null;
   /**
@@ -112,8 +116,6 @@ export class Box {
    * record's notice goes null, which every take's start brings.
    */
   armedUnder: string | null = null;
-  /** Whether the seat's current take has captured its destination yet. */
-  takeOpen = false;
   /**
    * Which box a take's words belong to, captured when the take STARTS: the
    * dock when it held the slot with a words row, the composer's draft

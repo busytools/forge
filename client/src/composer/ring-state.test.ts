@@ -189,7 +189,8 @@ async function takeLifecycle(page: Page, extraFrame: boolean): Promise<Leg[]> {
   note('landed');
   if (extraFrame) {
     // Inside the beat window: the page hands the same landed notice over
-    // again, as any frame arriving before the window closes does.
+    // again, as any frame arriving before the window closes does. The arm is
+    // spent, so it places nothing twice and the beat keeps its own instant.
     page.record = held({ take: null, notice: { ...LANDED } });
     flushSync();
     note('landed + one more frame');

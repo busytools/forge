@@ -170,16 +170,13 @@
       // **The arm is set where the take truly begins** - this page's own
       // capture, at the press. Arming from the record's take missed the
       // landing whenever the record's update arrived after a quick release
-      // had ended this page's take (Ved, 2026-10-15: nothing landed at all),
-      // and the record can only ever say a take exists, not who began it.
-      // Where the words go is captured per take, at this same instant.
+      // had ended this page's take (Ved, 2026-10-15: nothing landed at all).
+      // Where the words go is captured per take, at this same instant - every
+      // press reaches here with no take showing, so a guard remembering an
+      // earlier capture could only inherit the wrong destination.
       target.sawTake = true;
       target.armedUnder = noticeKey(untrack(() => composer.notice));
-      if (!target.takeOpen) {
-        target.takeOpen = true;
-        tookBox = target;
-        target.tookFrom = untrack(() => toDock()) ? 'dock' : 'composer';
-      }
+      target.tookFrom = untrack(() => toDock()) ? 'dock' : 'composer';
     },
     onLine: (line) => {
       const target = lineBox ?? box;
@@ -356,10 +353,22 @@
    * turn to stop, and the core is the one that knows it is running.
    */
   const running = $derived(record.header.turn_in_flight);
+  /**
+   * Whether this box holds the words the record's notice carries.
+   *
+   * The truncated row reads this: it says the take was cut, and it has to keep
+   * saying so on every hand-over AFTER the landing - by then the arm is spent,
+   * so a row that read the arm alone vanished with the words still in the
+   * draft (the gate's failure axis, 2026-10-15).
+   */
+  const holdsWords = $derived(
+    composer.notice !== null && (box.sawTake || box.landed === composer.notice.text),
+  );
+
   // The engine's notice, or what became of a draft that left this box - the
   // dock's own stand-down, said in the row the dock leaves behind.
   const notice = $derived(
-    owns ? (box.dictateLine ?? noticeLine(composer.notice, box.sawTake) ?? box.ended) : null,
+    owns ? (box.dictateLine ?? noticeLine(composer.notice, holdsWords) ?? box.ended) : null,
   );
   const line = $derived(notice !== null && box.dismissed === notice.text ? null : notice);
 
@@ -480,22 +489,6 @@
     if (field !== null) field.focus();
   });
 
-  /** The box the live take's capture ran on, so the clear reaches it from any seat. */
-  let tookBox: Box | null = null;
-
-  $effect(() => {
-    if (composer.take === null) {
-      // The take is over; its OWN box is cleared, even when another seat is
-      // shown - the box in hand belongs to whoever is on screen, and a flag
-      // left open on the take's own would swallow the next take's capture.
-      const captured = tookBox;
-      if (captured !== null) {
-        captured.takeOpen = false;
-        tookBox = null;
-      }
-    }
-  });
-
   /** The key a notice is arm-tracked under: kind and words, all it carries. */
   function noticeKey(held: Notice | null): string | null {
     return held === null ? null : `${held.kind}:${held.text}`;
@@ -556,10 +549,11 @@
       return;
     }
     // **The arm is consumed by the take's OUTCOME** - whatever kind of notice
-    // that is - so it survives every gap between the release and the landing
-    // (clearing it on the notice's absence ate the arm the press had just
-    // set, Ved, 2026-10-15) and a later notice can never ride it. A notice
-    // arriving with no arm is another client's take and places nothing.
+    // that is - and that is also what holds the words to one placement when
+    // the record hands the same landing over again. Consuming it on the
+    // notice's absence instead ate the arm the press had just set (Ved,
+    // 2026-10-15), and a notice arriving with no arm is another client's take,
+    // which places nothing.
     if (!box.sawTake) return;
     // **A notice the arm was set UNDER is the previous take's, re-read.** The
     // press unmounts the field, which re-runs this effect while the record
@@ -568,7 +562,7 @@
     if (box.armedUnder !== null && noticeKey(held) === box.armedUnder) return;
     box.sawTake = false;
     box.armedUnder = null;
-    if (held.kind !== 'landed' || box.landed === held.text) return;
+    if (held.kind !== 'landed') return;
     box.landed = held.text;
     // **Where the words go is where the take began, checked against what is
     // still on screen.** A take the dock's own row never touched still belongs
@@ -1117,7 +1111,10 @@
              the controls follow it down to the box's bottom edge. An empty bar
              draws none of it - the controls ride the field's own line. -->
           <div class="foot">
-            {#if filled}
+            <!-- The keys only while the field is the row's own: a take in its
+               place unmounts the field, so the hints would promise keys that
+               do nothing. The foot stays either way - that is the height. -->
+            {#if filled && rowPhase === null}
               <span class="hints"><kbd>Shift</kbd> <kbd>Enter</kbd> newline</span>
               <span class="hints"><kbd>Enter</kbd> send</span>
             {/if}
