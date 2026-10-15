@@ -17,7 +17,7 @@ use forge_primitives::usage::{ApiSpend, UsageSnapshot, UsageSourceKind};
 
 use crate::helpers::{
     BaseUrlCredential, MissingBase, OAUTH_TIMEOUT, base_url_credential, parse_retry_after,
-    truncated_body_suffix,
+    redacted_body, redacted_message,
 };
 use crate::{AccountEnv, BillingModel, ProbeError, Provider, ProviderBackend, ProviderHost};
 
@@ -119,7 +119,7 @@ async fn credits_balance(client: &reqwest::Client, base_url: &str, bearer: &str)
                 tracing::warn!(
                     target: "forge_gateway::openrouter",
                     event_name = "openrouter_credits_no_envelope",
-                    body_suffix = %truncated_body_suffix(&body),
+                    body_suffix = %redacted_body(&body, bearer),
                     "200 from the credits endpoint carried no data envelope; balance stays absent",
                 );
             }
@@ -179,9 +179,9 @@ async fn fetch_json<T: DeserializeOwned>(
         .await
         .map_err(|error| OauthUsageError::Network(format!("body read: {error}")))?;
 
-    // Body is logged only on a non-200, and only as a truncated
-    // suffix. A 200 from the key endpoint carries a truncated copy of
-    // the key itself.
+    // Bodies logged here go through the mask: a 200 from the key
+    // endpoint carries a truncated copy of the key, and a host that
+    // echoes the request carries whatever it was sent.
     if status == 200 {
         tracing::trace!(
             target: "forge_gateway::openrouter",
@@ -199,7 +199,7 @@ async fn fetch_json<T: DeserializeOwned>(
             status,
             outcome = "non_ok",
             retry_after_secs = ?retry_after.map(|d| d.as_secs()),
-            body_suffix = %truncated_body_suffix(&body),
+            body_suffix = %redacted_body(&body, bearer),
         );
     }
 
@@ -209,21 +209,24 @@ async fn fetch_json<T: DeserializeOwned>(
                 // A 200 that will not parse is the shape a wrong base url
                 // takes: the bare host answers 200 with an HTML page. Name
                 // the URL and show the body, or the only evidence is a byte
-                // count on a trace line nobody has enabled.
+                // count on a trace line nobody has enabled. Both fields are
+                // masked: the payload carries a copy of the key, and a serde
+                // message quotes the value it was decoding.
+                let said = redacted_message(&error.to_string(), bearer);
                 tracing::warn!(
                     target: "forge_gateway::openrouter",
                     event_name = "openrouter_get_decode_failed",
                     url,
-                    error = %error,
-                    body_suffix = %truncated_body_suffix(&body),
+                    error = %said,
+                    body_suffix = %redacted_body(&body, bearer),
                     "200 did not decode; check the base url is the API root",
                 );
-                OauthUsageError::Decode(error.to_string())
+                OauthUsageError::Decode(said)
             })
         }
         401 | 403 => Err(OauthUsageError::Unauthorized(status)),
         429 => Err(OauthUsageError::RateLimited { retry_after }),
-        _ => Err(OauthUsageError::HttpStatus(status, truncated_body_suffix(&body))),
+        _ => Err(OauthUsageError::HttpStatus(status, redacted_body(&body, bearer))),
     }
 }
 
