@@ -32,7 +32,7 @@ use crate::error::WorkspaceError;
 
 /// The whole `forge.toml`. Unknown keys are rejected so a mistyped
 /// section name fails the load instead of being ignored.
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ForgeToml {
     #[serde(default)]
@@ -114,6 +114,36 @@ struct ForgeToml {
     /// load; the project layer is applied at spawn. Absent -> empty.
     #[serde(default)]
     env: HashMap<String, String>,
+}
+
+/// Hand-written so the global env's values and a stale ignored section's
+/// contents stay out of it; the sections it holds redact themselves.
+impl std::fmt::Debug for ForgeToml {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let env: BTreeMap<&str, &str> =
+            self.env.keys().map(|key| (key.as_str(), "[redacted]")).collect();
+        let ignored = |section: &Option<toml::Value>| section.as_ref().map(|_| "[ignored]");
+        f.debug_struct("ForgeToml")
+            .field("orgs", &self.orgs)
+            .field("accounts", &self.accounts)
+            .field("dictate", &self.dictate)
+            .field("gotify", &self.gotify)
+            .field("systemone", &self.systemone)
+            .field("slack", &self.slack)
+            .field("plugins", &self.plugins)
+            .field("gateway", &self.gateway)
+            .field("server", &self.server)
+            .field("client", &self.client)
+            .field("documents", &self.documents)
+            .field("usage", &self.usage)
+            .field("web", &ignored(&self.web))
+            .field("workers", &ignored(&self.workers))
+            .field("projects", &ignored(&self.projects))
+            .field("selection", &ignored(&self.selection))
+            .field("ui", &ignored(&self.ui))
+            .field("env", &env)
+            .finish()
+    }
 }
 
 /// The ceiling a handed document has to fit under when the
@@ -326,7 +356,7 @@ struct OrgEntry {
     projects: Vec<ProjectEntry>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ProjectEntry {
     name: String,
@@ -363,10 +393,29 @@ struct ProjectEntry {
     env_file: Option<String>,
 }
 
+/// Hand-written because a project's env may carry secrets, which the
+/// derived output would print.
+impl std::fmt::Debug for ProjectEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let env: BTreeMap<&str, &str> =
+            self.env.keys().map(|key| (key.as_str(), "[redacted]")).collect();
+        f.debug_struct("ProjectEntry")
+            .field("name", &self.name)
+            .field("path", &self.path)
+            .field("auto_start", &self.auto_start)
+            .field("model", &self.model)
+            .field("permission_mode", &self.permission_mode)
+            .field("max_workers", &self.max_workers)
+            .field("env", &env)
+            .field("env_file", &self.env_file)
+            .finish()
+    }
+}
+
 /// Unknown fields are rejected so a near-miss key (`providers`) fails
 /// loudly instead of loading and leaving the account probing the wrong
 /// endpoint until preflight hangs on it.
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AccountEntry {
     display_name: String,
@@ -401,6 +450,24 @@ struct AccountEntry {
     /// they are the flat keys' job.
     #[serde(default)]
     env: HashMap<String, String>,
+}
+
+/// Hand-written because the flat token and the env map are credentials.
+impl std::fmt::Debug for AccountEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let env: BTreeMap<&str, &str> =
+            self.env.keys().map(|key| (key.as_str(), "[redacted]")).collect();
+        f.debug_struct("AccountEntry")
+            .field("display_name", &self.display_name)
+            .field("provider", &self.provider)
+            .field("base_url", &self.base_url)
+            .field("token", &self.token.as_ref().map(|_| "[redacted]"))
+            .field("models", &self.models)
+            .field("model_slugs", &self.model_slugs)
+            .field("model_aliases", &self.model_aliases)
+            .field("env", &env)
+            .finish()
+    }
 }
 
 // The loaded account shape lives in forge-primitives: the gateway
@@ -2216,15 +2283,16 @@ base_url = "http://localhost:18765"
         );
     }
 
-    /// A `{:?}` on the whole config must print no credential: the
-    /// accounts' env stamps, a project's env values, the gotify client
-    /// token and the systemone api key all stay out of it.
+    /// A `{:?}` on the loaded config or on the raw `ForgeToml` must
+    /// print no credential: the global env, the accounts' env stamps and
+    /// flat token, a project's env values, the gotify client token and
+    /// the systemone api key all stay out of it.
     #[test]
     fn a_credential_never_reaches_the_config_debug_output() {
-        let dir = tempdir().expect("tempdir");
-        write_config(
-            dir.path(),
-            r#"
+        let toml = r#"
+[env]
+MY_GLOBAL_SECRET = "global-supersecret"
+
 [[orgs]]
 name = "Personal"
 accounts = ["Stargate"]
@@ -2241,6 +2309,8 @@ display_name = "Stargate"
 token = "account-supersecret"
 models = ["claude-sonnet-5"]
 provider = "anthropic"
+[accounts.env]
+MY_ACCOUNT_SECRET = "account-env-supersecret"
 
 [gotify]
 url = "https://notifier.example"
@@ -2250,25 +2320,31 @@ client_token = "gotify-supersecret"
 base_url = "https://api.typesafe.ai"
 api_key = "systemone-supersecret"
 model = "jev-latest"
-"#,
-        );
+"#;
+        let dir = tempdir().expect("tempdir");
+        write_config(dir.path(), toml);
         let config = load_from_dir(dir.path()).expect("the config loads");
-        let rendered = format!("{config:?}");
-        for (carrier, secret) in [
-            ("the account's credential stamp", "account-supersecret"),
-            ("a project env value", "project-supersecret"),
-            ("the gotify client token", "gotify-supersecret"),
-            ("the systemone api key", "systemone-supersecret"),
-        ] {
-            assert!(!rendered.contains(secret), "{carrier} leaked: {rendered}");
-        }
-        for (carrier, readable) in [
-            ("the account name", "Stargate"),
-            ("the project name", "forge"),
-            ("the gotify url", "notifier.example"),
-            ("the systemone base url", "api.typesafe.ai"),
-        ] {
-            assert!(rendered.contains(readable), "{carrier} must stay readable: {rendered}");
+        let parsed: ForgeToml = toml::from_str(toml).expect("the raw config parses");
+        for rendered in [format!("{config:?}"), format!("{parsed:?}")] {
+            for (carrier, secret) in [
+                ("the global env value", "global-supersecret"),
+                ("the account env value", "account-env-supersecret"),
+                ("the account's credential stamp", "account-supersecret"),
+                ("a project env value", "project-supersecret"),
+                ("the gotify client token", "gotify-supersecret"),
+                ("the systemone api key", "systemone-supersecret"),
+            ] {
+                assert!(!rendered.contains(secret), "{carrier} leaked: {rendered}");
+            }
+            for (carrier, readable) in [
+                ("the org name", "Personal"),
+                ("the account name", "Stargate"),
+                ("the project name", "forge"),
+                ("the gotify url", "notifier.example"),
+                ("the systemone base url", "api.typesafe.ai"),
+            ] {
+                assert!(rendered.contains(readable), "{carrier} must stay readable: {rendered}");
+            }
         }
     }
 
