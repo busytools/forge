@@ -141,6 +141,43 @@ fn balance_from_credits(payload: CreditsResponse) -> Option<f64> {
     payload.data.map(|data| data.total_credits - data.total_usage)
 }
 
+/// The body a decode-failure log may carry, with key material masked.
+///
+/// The live `/v1/key` payload includes a copy of the key the request
+/// authenticated with - a truncated one, so it is a leading piece of the
+/// token rather than the whole of it. Two masks cover both shapes: every
+/// quoted run opening with the token's own first characters (whatever the
+/// endpoint does with the tail), and the exact token wherever it appears.
+fn redacted_body(body: &[u8], bearer: &str) -> String {
+    let tag: String = bearer.chars().take(8).collect();
+    let text = truncated_body_suffix(body).replace(bearer, "[redacted]");
+    if tag.is_empty() {
+        return text;
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text.as_str();
+    while let Some(open) = rest.find('"') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('"') else {
+            // Unterminated: nothing past it is safe to print.
+            out.push_str("[redacted]");
+            return out;
+        };
+        let run = &after[..close];
+        if run.starts_with(&tag) {
+            out.push_str("[redacted]");
+        } else {
+            out.push('"');
+            out.push_str(run);
+            out.push('"');
+        }
+        rest = &after[close + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// One authenticated GET, classified like the window probes:
 /// 401 / 403 unauthorized, 429 rate-limited (honouring Retry-After),
 /// any other status carrying a truncated body suffix. Returns the
@@ -215,7 +252,7 @@ async fn fetch_json<T: DeserializeOwned>(
                     event_name = "openrouter_get_decode_failed",
                     url,
                     error = %error,
-                    body_suffix = %truncated_body_suffix(&body),
+                    body_suffix = %redacted_body(&body, bearer),
                     "200 did not decode; check the base url is the API root",
                 );
                 OauthUsageError::Decode(error.to_string())
@@ -319,6 +356,34 @@ mod tests {
     fn openrouter_backend_is_spend() {
         assert_eq!(Openrouter.token(), Provider::Openrouter);
         assert_eq!(Openrouter.billing(), BillingModel::Spend);
+    }
+
+    /// **The decode-failure log never carries key material** (#2268): a 200
+    /// whose body fails to decode is logged with the body as its evidence,
+    /// and the live `/v1/key` payload includes a copy of the key - a
+    /// truncated one, so it is a leading piece of the token rather than the
+    /// whole of it. The body's shape stays; the key does not.
+    #[test]
+    fn the_decode_failure_body_never_carries_the_key() {
+        let bearer = "sk-or-v1-0123456789abcdef";
+
+        // The whole key inside the payload.
+        let whole = br#"{"data":{"key":"sk-or-v1-0123456789abcdef","usage_daily":1.5}}"#;
+        let said = redacted_body(whole, bearer);
+        assert!(!said.contains("0123456789abcdef"), "the key never prints: {said}");
+        assert!(said.contains("usage_daily"), "and the drift's evidence stays: {said}");
+
+        // The truncated copy the endpoint actually carries: a leading piece.
+        let truncated = br#"{"data":{"key":"sk-or-v1-0123456789","usage_daily":1.5}}"#;
+        let said = redacted_body(truncated, bearer);
+        assert!(!said.contains("sk-or-v1-0123456789"), "a truncated copy never prints: {said}");
+        assert!(said.contains("usage_daily"), "and the evidence stays: {said}");
+
+        // An unquoted occurrence in a non-JSON body (a wrong host echoing
+        // what it was sent).
+        let raw = format!("not json: token {bearer} rejected");
+        let said = redacted_body(raw.as_bytes(), bearer);
+        assert!(!said.contains("0123456789abcdef"), "an unquoted token never prints: {said}");
     }
 
     /// The arm-routing pin: a base-url credential earns the spend

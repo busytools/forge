@@ -768,13 +768,62 @@ fn resolve_client(client: ClientConfig, path: &Path) -> Result<ClientConfig, Wor
     Ok(client)
 }
 
+/// Where a parse failure sits in the document, from the byte span the error
+/// carries: ` at line N, column M in <key>`, or empty when it names no span -
+/// no position rather than a confident line 1.
+///
+/// The key is the text left of that line's `=` (serde's own words do not
+/// name it for a value error, and the snippet that used to is gone); the
+/// text right of the `=` is the value, and it never prints.
+fn parse_position(raw: &str, span: Option<std::ops::Range<usize>>) -> String {
+    let Some(span) = span else { return String::new() };
+    let Some(upto) = raw.get(..span.start) else { return String::new() };
+    let line = upto.matches('\n').count() + 1;
+    let column = upto.rsplit('\n').next().map_or(0, |tail| tail.chars().count()) + 1;
+    let key = raw
+        .lines()
+        .nth(line - 1)
+        .and_then(|text| text.split_once('='))
+        .map(|(head, _)| head.trim())
+        .filter(|head| !head.is_empty() && !head.starts_with('['));
+    match key {
+        Some(key) => format!(" at line {line}, column {column} in `{key}`"),
+        None => format!(" at line {line}, column {column}"),
+    }
+}
+
+/// The error's own words with any double-quoted run scrubbed: serde renders
+/// a mismatched value as `invalid type: string "…"`, and a value in this
+/// file can be a token (#2267). A key is backtick-quoted and stays legible.
+fn scrub_quoted(message: &str) -> String {
+    let mut out = String::with_capacity(message.len());
+    let mut rest = message;
+    loop {
+        let Some((before, after)) = rest.split_once('"') else {
+            out.push_str(rest);
+            return out;
+        };
+        out.push_str(before);
+        out.push_str("[redacted]");
+        // Drop the quoted run; an unterminated quote takes the tail with it
+        // rather than printing a value whose end nobody found.
+        match after.split_once('"') {
+            Some((_, tail)) => rest = tail,
+            None => return out,
+        }
+    }
+}
+
 /// Load + validate `forge.toml`. Returns the parsed orgs + projects
 /// with `~` expanded.
 pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, WorkspaceError> {
     let (path, raw) = read_config(config_dir)?;
 
-    let parsed: ForgeToml = toml::from_str(&raw)
-        .map_err(|source| WorkspaceError::ConfigParse { path: path.clone(), source })?;
+    let parsed: ForgeToml = toml::from_str(&raw).map_err(|source| WorkspaceError::ConfigParse {
+        at: parse_position(&raw, source.span()),
+        message: scrub_quoted(source.message()),
+        path: path.clone(),
+    })?;
 
     if parsed.web.is_some() {
         return Err(WorkspaceError::WebSectionRenamed { path });
@@ -3445,6 +3494,41 @@ provider = "anthropic"
         write_config(dir.path(), "not valid = = toml");
         let err = load_from_dir(dir.path()).expect_err("malformed should error");
         assert!(matches!(err, WorkspaceError::ConfigParse { .. }));
+    }
+
+    /// **A parse failure prints neither the line it failed on nor the value
+    /// it read** (#2267): the error used to render `toml`'s snippet of the
+    /// offending line, so a mistyped key on the token's own line echoed the
+    /// token to stderr on the next boot. The key, the reason and the
+    /// position are the three things a reader fixes it with; the value is
+    /// not one of them.
+    #[test]
+    fn a_parse_failure_never_prints_the_value() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            "[[accounts]]\ndisplay_name = \"Stargate\"\nclient_tokenn = \"hunter2secret\"\n",
+        );
+        let err = load_from_dir(dir.path()).expect_err("the near-miss key fails loudly");
+        let said = err.to_string();
+        assert!(said.contains("client_tokenn"), "the key still names what to fix: {said}",);
+        assert!(!said.contains("hunter2secret"), "the value on the line never prints: {said}",);
+        assert!(said.contains("line 3"), "the position says where: {said}");
+    }
+
+    /// The other shape the snippet padded out: serde's own words quote the
+    /// VALUE of a type mismatch (`invalid type: string "…"`), and those
+    /// words survive the snippet's removal - so they are scrubbed too, while
+    /// a key name (backtick-quoted) stays legible.
+    #[test]
+    fn a_type_mismatch_never_prints_the_value_either() {
+        let dir = tempdir().expect("tempdir");
+        write_config(dir.path(), "[server]\nport = \"hunter2secret\"\n");
+        let err = load_from_dir(dir.path()).expect_err("a string port fails to parse");
+        let said = err.to_string();
+        assert!(!said.contains("hunter2secret"), "the mismatched value never prints: {said}",);
+        assert!(said.contains("invalid type"), "and the reason the parse failed survives: {said}",);
+        assert!(said.contains("line 2"), "with the position: {said}");
     }
 
     #[test]

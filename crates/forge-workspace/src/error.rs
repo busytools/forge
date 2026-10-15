@@ -13,12 +13,14 @@ pub enum WorkspaceError {
     )]
     ConfigMissing { path: PathBuf },
 
-    #[error("forge.toml at {} failed to parse: {source}", path.display())]
-    ConfigParse {
-        path: PathBuf,
-        #[source]
-        source: toml::de::Error,
-    },
+    /// The parse failure as a reader acts on it: where it is, and why.
+    /// `message` is the error's own words with any quoted value scrubbed
+    /// and `at` its line and column (empty when it has none) - a value on
+    /// the offending line can be a token, so neither the snippet nor the
+    /// toml error itself (whose Debug carries the whole document) rides
+    /// along (#2267).
+    #[error("forge.toml at {} failed to parse{at}: {message}", path.display())]
+    ConfigParse { path: PathBuf, at: String, message: String },
 
     #[error("forge.toml at {} is otherwise invalid: {message}", path.display())]
     ConfigInvalid { path: PathBuf, message: String },
