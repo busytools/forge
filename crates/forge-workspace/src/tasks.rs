@@ -2232,6 +2232,71 @@ mod tests {
         assert_eq!(ws.tasks_for_project("elsewhere").len(), 1, "and the parked one stayed");
     }
 
+    /// The close guard's two scoping clauses, one control each: a parked
+    /// row in ANOTHER project sharing a doomed row's id must not refuse
+    /// this project's close, and a parked row in the SAME project but
+    /// outside the closing tree must not either. Without them a close
+    /// anywhere refuses on an unrelated row's look, naming a subject the
+    /// caller never touched.
+    #[test]
+    fn a_parked_row_outside_the_closing_tree_does_not_refuse_the_close() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-close-scope");
+        // The tree being closed: a root and its child, both unparked.
+        ws.push_task(sample_task("root", "proj"));
+        ws.push_task(sample_task_with_parent("child", Some("root"), "proj"));
+        // A parked row sharing a doomed id, in another project: a child, so
+        // completing it parks on the look instead of closing a tree of its own.
+        ws.push_task(Task {
+            parent: Some(TaskId::from("epic-e")),
+            verify: Some(Verify::User),
+            ..sample_task("child", "elsewhere")
+        });
+        ws.update_task("elsewhere", &TaskId::from("child"), By::System, |task| {
+            task.status = TaskStatus::Completed;
+        })
+        .expect("no refusal")
+        .expect("the row is there");
+        // And a parked row in this project, outside the tree.
+        ws.push_task(Task {
+            parent: Some(TaskId::from("epic-p")),
+            verify: Some(Verify::User),
+            ..sample_task("outside", "proj")
+        });
+        ws.update_task("proj", &TaskId::from("outside"), By::System, |task| {
+            task.status = TaskStatus::Completed;
+        })
+        .expect("no refusal")
+        .expect("the row is there");
+        // The root's own child is abandoned, so only the parked rows could
+        // stand in the close's way.
+        ws.update_task("proj", &TaskId::from("child"), By::System, |task| {
+            task.status = TaskStatus::Canceled;
+        })
+        .expect("no refusal")
+        .expect("the row is there");
+
+        let closed = ws
+            .update_task(
+                "proj",
+                &TaskId::from("root"),
+                By::Seat(SessionSlot::lead("TestOrg", "proj")),
+                |task| {
+                    task.status = TaskStatus::Completed;
+                },
+            )
+            .expect("neither parked row is the closing tree's to refuse")
+            .expect("the row is there");
+        assert_eq!(closed.status, TaskStatus::Completed, "the root closed");
+        assert_eq!(
+            subjects(&ws.tasks_for_project("proj")),
+            ["subject outside".to_owned()],
+            "the tree went and the parked row outside it stayed",
+        );
+        assert_eq!(ws.tasks_for_project("elsewhere").len(), 1, "and the foreign one stayed");
+    }
+
     /// The close is the other verb that removes rows (#2251's class, found
     /// reviewing the delete's guard): completing a ROOT row archives its
     /// whole tree, and the open-children check sees direct children only -
