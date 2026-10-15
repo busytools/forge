@@ -18,7 +18,8 @@ just check
 ```
 
 That is `cargo fmt --check`, the Unicode punctuation gate, the release
-scripts' tests, the shell crate's rustfmt check (`client-tauri-fmt`), the
+scripts' tests and the client-dependency bootstrap's, the shell crate's
+rustfmt check (`client-tauri-fmt`), the
 client's Prettier check, ESLint, `svelte-check` and
 `tsc --noEmit` and then its vitest run, the shell crate's android warnings
 check (`client-android-warnings`),

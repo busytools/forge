@@ -71,7 +71,8 @@ just check
 ```
 
 That runs, in order: `cargo fmt --check`, the Unicode punctuation gate,
-the release scripts' tests (`script-tests`), the shell crate's rustfmt
+the release scripts' tests and the client-dependency bootstrap's
+(`script-tests`), the shell crate's rustfmt
 check (`client-tauri-fmt`: `cargo fmt --check` against the shell's own
 workspace root), the client's Prettier check,
 its ESLint, `svelte-check` and `tsc --noEmit`

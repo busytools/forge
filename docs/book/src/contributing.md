@@ -13,7 +13,8 @@ just check-feature-configs
 ```
 
 `cargo fmt --check`, the Unicode punctuation gate, the release scripts'
-tests, the shell crate's rustfmt check (`client-tauri-fmt`), the client's
+tests and the client-dependency bootstrap's, the shell crate's rustfmt
+check (`client-tauri-fmt`), the client's
 Prettier check, ESLint, `svelte-check` and
 `tsc --noEmit` and then its vitest run, the shell crate's android
 warnings check (`client-android-warnings`),
@@ -27,9 +28,9 @@ The gate is two commands: `just check`, and `just check-feature-configs`,
 which compiles the configuration `install.sh` builds. Both green before
 you open a pull request.
 
-A fresh worktree has no `client/node_modules`, so the first `just check`
-there stops at the Prettier step with exit 127. `npm --prefix client ci`
-first, and the whole run goes through.
+A fresh worktree has no `client/node_modules`; each client step installs it
+first when it is missing or older than `package-lock.json`, so the first
+`just check` there runs whole rather than stopping at the Prettier step.
 
 The shell under `client/src-tauri/` is its own workspace root, so the
 workspace's cargo steps do not reach it and, in CI, only the `cargo fmt
