@@ -2285,8 +2285,9 @@ base_url = "http://localhost:18765"
 
     /// A `{:?}` on the loaded config or on the raw `ForgeToml` must
     /// print no credential: the global env, the accounts' env stamps and
-    /// flat token, a project's env values, the gotify client token and
-    /// the systemone api key all stay out of it.
+    /// flat token, a project's env values, a stale ignored section's
+    /// value, the gotify client token and the systemone api key all stay
+    /// out of it.
     #[test]
     fn a_credential_never_reaches_the_config_debug_output() {
         let toml = r#"
@@ -2320,6 +2321,10 @@ client_token = "gotify-supersecret"
 base_url = "https://api.typesafe.ai"
 api_key = "systemone-supersecret"
 model = "jev-latest"
+
+[projects.legacy]
+[projects.legacy.env]
+LEGACY_TOKEN = "legacy-supersecret"
 "#;
         let dir = tempdir().expect("tempdir");
         write_config(dir.path(), toml);
@@ -2333,6 +2338,7 @@ model = "jev-latest"
                 ("a project env value", "project-supersecret"),
                 ("the gotify client token", "gotify-supersecret"),
                 ("the systemone api key", "systemone-supersecret"),
+                ("the stale ignored section's value", "legacy-supersecret"),
             ] {
                 assert!(!rendered.contains(secret), "{carrier} leaked: {rendered}");
             }
