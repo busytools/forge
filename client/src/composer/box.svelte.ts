@@ -95,14 +95,23 @@ export class Box {
    */
   landed: string | null = null;
   /**
-   * Whether this box has watched its seat hold a take, ever.
+   * Whether THIS page's own take is waiting on its outcome.
    *
-   * A landed notice is per-seat server state that outlives its take, so a
-   * client that attaches - or reloads - finds one whose words it never saw
-   * land. Only a take this box watched may put words in it, and the trade is
-   * that dictation landing unwatched, and never sent, is not handed back.
+   * Armed when the take begins and consumed when its notice arrives, whatever
+   * kind. A landed notice is per-seat server state that outlives its take, so
+   * a client that attaches - or reloads - finds one whose words it never saw
+   * land; only a take this page began may put words in this box, and the
+   * trade is that dictation landing unwatched, and never sent, is not handed
+   * back.
    */
   sawTake = false;
+  /**
+   * The notice the arm was set UNDER - the previous landing's, still on the
+   * record when a new take begins. The landing effect skips a notice equal to
+   * this one rather than consuming the arm on it, and it clears when the
+   * record's notice goes null, which every take's start brings.
+   */
+  armedUnder: string | null = null;
   /** Whether the seat's current take has captured its destination yet. */
   takeOpen = false;
   /**

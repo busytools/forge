@@ -34,7 +34,7 @@
     signInLine,
     type ComposerProps,
   } from './view';
-  import { advisoriesFrom, agentTypesFrom, filesFrom } from './wire';
+  import { advisoriesFrom, agentTypesFrom, filesFrom, type Notice } from './wire';
   import { DEFAULT_AXES, type DictateAxes } from '../session/wire';
 
   /** How long a landed take's border holds its green beat, which the book states. */
@@ -174,6 +174,7 @@
       // and the record can only ever say a take exists, not who began it.
       // Where the words go is captured per take, at this same instant.
       target.sawTake = true;
+      target.armedUnder = noticeKey(untrack(() => composer.notice));
       if (!target.takeOpen) {
         target.takeOpen = true;
         tookBox = target;
@@ -487,6 +488,11 @@
     }
   });
 
+  /** The key a notice is arm-tracked under: kind and words, all it carries. */
+  function noticeKey(held: Notice | null): string | null {
+    return held === null ? null : `${held.kind}:${held.text}`;
+  }
+
   /** What the dock's own box belongs to, which is what its words go with. */
   let ownKey: string | null = null;
 
@@ -536,6 +542,9 @@
     if (held === null) {
       box.landed = null;
       box.dismissed = null;
+      // The record's notice going null is a take's start: the stale notice
+      // the arm was set under is gone with it.
+      box.armedUnder = null;
       return;
     }
     // **The arm is consumed by the take's OUTCOME** - whatever kind of notice
@@ -544,7 +553,13 @@
     // set, Ved, 2026-10-15) and a later notice can never ride it. A notice
     // arriving with no arm is another client's take and places nothing.
     if (!box.sawTake) return;
+    // **A notice the arm was set UNDER is the previous take's, re-read.** The
+    // press unmounts the field, which re-runs this effect while the record
+    // still carries the last landing; consuming the arm on it left the new
+    // take's own words nowhere to go (the worker caught it, 2026-10-15).
+    if (box.armedUnder !== null && noticeKey(held) === box.armedUnder) return;
     box.sawTake = false;
+    box.armedUnder = null;
     if (held.kind !== 'landed' || box.landed === held.text) return;
     box.landed = held.text;
     // **Where the words go is where the take began, checked against what is
