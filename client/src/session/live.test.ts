@@ -2318,12 +2318,15 @@ describe('the read, and the answer a frame has outrun', () => {
     expect(other.reads(), 'a clean answer was asked for again').toBe(askedOnce);
   });
 
-  it('does not read a take or a notice off the record', () => {
+  it('does not read a take off the record, and does read the notice', () => {
     const connection = drivable();
     const page = watch(connection);
-    // A record from a server that still carried them: the narrowing reads
-    // neither, because a take belongs to the connection that started it and
-    // this client builds its own from that connection's updates.
+    // A take belongs to the connection that started it, so the narrowing
+    // reads none off a record and this client builds its own from that
+    // connection's updates. **The notice it does read** (#1360): the seat
+    // re-hands a landing nobody has sent, which is what brings the words
+    // back to a page that reloaded in between - and the landing memory is
+    // what decides whether a page may place them.
     page.land(
       snapshotOf(LEAD, {
         composer: {
@@ -2339,7 +2342,10 @@ describe('the read, and the answer a frame has outrun', () => {
       page.read().wire?.composer.take,
       "a record-carried take is not this client's",
     ).toBeNull();
-    expect(page.read().wire?.composer.notice).toBeNull();
+    expect(
+      page.read().wire?.composer.notice,
+      "the record's unsent words are, and they are carried through as they came",
+    ).toEqual({ kind: 'landed', text: 'the words', truncated: false });
     page.stop();
   });
 

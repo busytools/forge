@@ -253,6 +253,18 @@
     // A take this page never began (a second dictating client on the seat)
     // places nothing - and must not touch the box the reader has open.
     if (words === null) return;
+    // **The seat's carried words are the composer's to place, not this page's**
+    // (#1360): a document box exists only while a take of THIS page's is in
+    // flight - read off the record, not off the last box the page began -
+    // so the record's re-hand must not open one. The memory stays unmarked
+    // and the composer's own box takes them.
+    if (
+      composer.take === null &&
+      composer.notice?.kind === 'landed' &&
+      composer.notice.carried === true
+    ) {
+      return;
+    }
     // Whose words these are is settled now, open box or not: the record hands
     // the same notice over on every write.
     landing.placed(composer.notice);

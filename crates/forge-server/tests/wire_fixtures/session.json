@@ -17,7 +17,8 @@
     "compacting": false,
     "sign_in": null,
     "bind": "right_cmd",
-    "mode": "auto"
+    "mode": "auto",
+    "notice": null
   },
   "header": {
     "session_id": null,

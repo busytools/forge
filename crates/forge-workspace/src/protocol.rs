@@ -1412,6 +1412,11 @@ pub enum SessionUpdate {
         /// Absent from an older core's frames, so the default carries that.
         #[serde(default)]
         question_index: Option<u64>,
+        /// The words the answer carried, where it carried any: the box's own
+        /// notes, typed or dictated (#1360). `None` for a pick with no words,
+        /// which is most of them.
+        #[serde(default)]
+        answered_with: Option<String>,
     },
     McpOperationError {
         key: SessionSlot,
@@ -2113,10 +2118,11 @@ impl std::fmt::Debug for SessionUpdate {
                 .field("key", key)
                 .field("tool_id", tool_id)
                 .finish_non_exhaustive(),
-            Self::PendingInteractionResolved { key, tool_id, question_index } => f
+            Self::PendingInteractionResolved { key, tool_id, question_index, answered_with } => f
                 .debug_struct("PendingInteractionResolved")
                 .field("key", key)
                 .field("tool_id", tool_id)
+                .field("answered_with", answered_with)
                 .field("question_index", question_index)
                 .finish(),
             Self::McpOperationError { key, .. } => {

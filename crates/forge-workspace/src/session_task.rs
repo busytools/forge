@@ -387,6 +387,7 @@ impl SessionTask {
                             key: self.key.clone(),
                             tool_id,
                             question_index,
+                            answered_with: None,
                         });
                     }
                     // Everything parked for the replaced identity has no
@@ -601,6 +602,7 @@ impl SessionTask {
                             key: self.key.clone(),
                             tool_id: tool_call_id.clone(),
                             question_index: None,
+                            answered_with: None,
                         });
                     }
                     tracing::warn!(
@@ -654,6 +656,7 @@ impl SessionTask {
                             key: self.key.clone(),
                             tool_id: tool_call_id.clone(),
                             question_index: Some(request.question_index),
+                            answered_with: None,
                         });
                     }
                     tracing::warn!(
@@ -936,6 +939,7 @@ impl SessionTask {
                         guard.pending_interactions.remove(&tool_id)
                 {
                     drop(guard);
+                    let answered_with = permission_words(&outcome);
                     if tx.send(outcome).is_err() {
                         tracing::warn!(
                             target: "forge_workspace::session_task",
@@ -948,6 +952,7 @@ impl SessionTask {
                         key: self.key.clone(),
                         tool_id,
                         question_index: None,
+                        answered_with,
                     });
                 } else if let Some(other) = guard.pending_interactions.get(&tool_id) {
                     tracing::warn!(
@@ -978,6 +983,7 @@ impl SessionTask {
                         guard.pending_interactions.remove(&tool_id)
                 {
                     drop(guard);
+                    let answered_with = question_words(&outcome);
                     if tx.send(outcome).is_err() {
                         tracing::warn!(
                             target: "forge_workspace::session_task",
@@ -990,6 +996,7 @@ impl SessionTask {
                         key: self.key.clone(),
                         tool_id,
                         question_index: Some(request.question_index),
+                        answered_with,
                     });
                 } else if let Some(other) = guard.pending_interactions.get(&tool_id) {
                     tracing::warn!(
@@ -1666,6 +1673,26 @@ pub(crate) fn execute_command_via_handle(
             );
             Ok(())
         }
+    }
+}
+
+/// The words a permission answer carried, where it carried any: the box's own
+/// notes, the one field a dictation into the ask lands in (#1360).
+fn permission_words(outcome: &forge_primitives::PermissionOutcome) -> Option<String> {
+    match outcome {
+        forge_primitives::PermissionOutcome::Selected { notes_text, .. } => notes_text.clone(),
+        forge_primitives::PermissionOutcome::Cancelled => None,
+    }
+}
+
+/// The words a question answer carried, where it carried any: its own note,
+/// for the same reason as [`permission_words`].
+fn question_words(outcome: &forge_primitives::QuestionOutcome) -> Option<String> {
+    match outcome {
+        forge_primitives::QuestionOutcome::Answered { annotation, .. } => {
+            annotation.as_ref().and_then(|held| held.notes.clone())
+        }
+        forge_primitives::QuestionOutcome::Cancelled => None,
     }
 }
 

@@ -103,15 +103,37 @@ export class Landing {
       this.#placed = null;
     }
     if (notice === null) {
-      this.#placed = null;
-      if (this.#armed !== null) this.#armed.under = null;
+      // **The placed memory survives the take's start** (#1360). The words it
+      // remembers are still in the box: a carried re-hand of the same notice
+      // must not append them a second time, and the same words spoken into a
+      // NEW take carry a new generation - a new identity - so dictating them
+      // again still lands. (Only the generation-less fallback cannot tell
+      // those apart, the skew its doc already accepts.)
+      //
+      // **The arm keeps the notice it was set under** for the same reason: a
+      // whole-record read can re-hand the seat's unsent words after the
+      // take's start cleared them, and that re-hand is still the notice the
+      // press was made under.
       return null;
     }
     const identity = noticeIdentity(notice);
     if (this.#armed !== null && this.#armed.under === identity) return null;
+    // **A carried notice never belongs to a take in flight** (#1360). The
+    // seat's unsent words are what the press was made OVER, and a read
+    // re-handing them mid-take must not place them over the landing that is
+    // coming - nor spend the arm on them, whatever identity the arm was set
+    // under (an intervening failed take moves `under` off them).
+    if (this.#armed !== null && notice.kind === 'landed' && notice.carried === true) return null;
     const armed = this.#armed !== null && this.#armed.seat === seat;
     if (armed) this.#armed = null;
-    if (!armed || notice.kind !== 'landed' || identity === this.#placed) return null;
+    if (notice.kind !== 'landed' || identity === this.#placed) return null;
+    // **The seat's carried words are any page's to place** (#1360): a page
+    // that reloaded between the landing and the send never armed, and these
+    // are the same words it would have placed live. A LIVE landing stays the
+    // dictating page's own - every other page meets it unarmed and places
+    // nothing (#1358's rule, and what keeps words already sent from coming
+    // back).
+    if (!armed && notice.carried !== true) return null;
     return notice.text;
   }
 

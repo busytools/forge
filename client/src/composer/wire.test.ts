@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { askFrom } from './wire';
+import { askFrom, composerFrom } from './wire';
 
 /** A question as the wire carries one, with whatever the test overrides in its prompt. */
 function question(prompt: Record<string, unknown> = {}): unknown {
@@ -124,5 +124,40 @@ describe('the v6 hand-off read', () => {
       kind: 'browser_hand_off',
       request: { id: 'h2', reason: 'solve the CAPTCHA', profile: 'job-hunt' },
     });
+  });
+});
+
+/**
+ * **The record's re-hand of a landing nobody sent parses as the landing it
+ * is, marked carried** (#1360): the composer reads it off the record with
+ * the same parser the live update's notice uses, and the flag is what makes
+ * a reloaded page place words it never watched arrive.
+ */
+describe('the composer record', () => {
+  it('reads a carried landing off the record', () => {
+    const composer = composerFrom({
+      take: null,
+      notice: {
+        kind: 'landed',
+        text: 'the unsent words',
+        truncated: false,
+        generation: 7,
+        carried: true,
+      },
+      compacting: false,
+      sign_in: null,
+    });
+    expect(composer.notice).toEqual({
+      kind: 'landed',
+      text: 'the unsent words',
+      truncated: false,
+      generation: 7,
+      carried: true,
+    });
+  });
+
+  it('reads no notice as none', () => {
+    const composer = composerFrom({ take: null, notice: null, compacting: false, sign_in: null });
+    expect(composer.notice).toBeNull();
   });
 });
