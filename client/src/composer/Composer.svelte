@@ -898,8 +898,8 @@
         (active instanceof HTMLElement && active.isContentEditable);
       const at = rootOf();
       if (event.key === 'Tab') {
-        // A field outside this box keeps its own Tab; inside it — and from
-        // anywhere else on the page — the keyboard cycles the box.
+        // A field outside this box keeps its own Tab; inside it - and from
+        // anywhere else on the page - the keyboard cycles the box.
         if (typing && (at === null || !at.contains(active))) return;
         const list = tabbables();
         if (list.length === 0) return;
