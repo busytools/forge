@@ -906,11 +906,13 @@ describe('one turn folded into the units a view draws', () => {
   });
 
   it('anchors a running turn on the row that opened it, not on the first assistant', () => {
-    // **The page a mid-turn attach is answered with.** The prompt row is the
-    // one the server stamps as the frame crosses (the CLI sends it with none),
-    // the counter frames a thinking turn is full of carry none of their own,
-    // and the assistant frame the CLI stamped says when IT was written - which
-    // is the end of the thinking, not the start of the turn.
+    // **A regression pin on the FOLD's end of the anchor.** The server stamps
+    // the rows a page is answered with - the prompt row carries the turn's
+    // start, the counter frames a thinking turn is full of carry none of their
+    // own, and the assistant frame the CLI stamped says when IT was written -
+    // and the fold has to read its clock from the first row that carries a
+    // stamp. Re-anchored on the assistant row, a page loaded mid-turn would
+    // read the time since the thinking ended rather than the turn's age.
     const prompt = heard([{ type: 'text', text: 'go' }], {
       timestamp: '2026-10-15T05:18:05.217Z',
     });
