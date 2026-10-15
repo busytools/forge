@@ -318,11 +318,14 @@
    *
    * **An empty bar is one row** (Ved, 2026-10-09): the controls ride the
    * field's own line, so an idle seat is not two rows tall for a stop button
-   * nobody is looking at. A draft needs somewhere for the keys to live - and a
-   * take asks for no second row at all: it takes the draft's OWN line, so the
-   * controls ride the take with it.
+   * nobody is looking at. A draft needs somewhere for the keys to live, and
+   * **the second row STAYS through a take** - the bar takes the draft's own
+   * line under it, so the box's height is the same before, during and after
+   * (a foot that vanished with the take made the whole page jump on every
+   * press, Ved, 2026-10-15). The inline controls stand down exactly when the
+   * foot is up, so the buttons are still drawn once.
    */
-  const secondRow = $derived(filled && composer.take === null);
+  const secondRow = $derived(filled);
 
   /**
    * Whether this seat has a turn to stop.
@@ -459,9 +462,23 @@
   /** The box the live take's capture ran on, so the clear reaches it from any seat. */
   let tookBox: Box | null = null;
 
-  // Holding the seat's take is having seen it, and the flag never clears -
-  // and only the seat's own record arms it: another seat's take, still in the
-  // record in hand between two seats, is not this box having watched anything.
+  /**
+   * The arm goes with the notice, and it clears FIRST.
+   *
+   * The record's notice goes null at every take's start, so this runs before
+   * the arming effect below and the flush resolves both cases in order: a
+   * take of this page's clears and then re-arms, while a take another client
+   * began clears and stays unarmed.
+   */
+  $effect(() => {
+    if (composer.notice === null) box.sawTake = false;
+  });
+
+  // Holding the seat's take is having seen it - and only THIS page's own
+  // capture arms the landing: the record shows any client's take, so arming
+  // on it let a second client on the same seat put the first client's spoken
+  // words into its own draft (Ved, 2026-10-15). Each take arms its own, and a
+  // take this page did not begin never places anything.
   $effect(() => {
     if (composer.take === null) {
       // The take is over; its OWN box is cleared, even when another seat is
@@ -475,6 +492,8 @@
       return;
     }
     if (!owns) return;
+    const mine = dictate.take;
+    if (mine === null || boxKey(mine.seat) !== boxKey(slot)) return;
     box.sawTake = true;
     if (!box.takeOpen) {
       // **Where the take began is where its words go, captured per TAKE.** A
@@ -813,7 +832,9 @@
     bind: () => composer.bind,
     mode: () => composer.mode,
     onBegin: () => {
-      if (focusOf(where) === 'composer') field?.focus();
+      // Never scrolls: the box is already on screen, and a key press that
+      // scrolled the page would move the chat under the reader.
+      if (focusOf(where) === 'composer') field?.focus({ preventScroll: true });
     },
   });
 
@@ -863,7 +884,7 @@
     if (composer.take === null) return;
     if (!untrack(() => fromMic)) return;
     fromMic = false;
-    micEl?.focus();
+    micEl?.focus({ preventScroll: true });
   });
 
   /** Abandon a take without submitting it, which the dock's Escape does. */
@@ -1041,7 +1062,9 @@
               oncancel={() => dictate.act('cancel')}
               spread
             />
-            {@render ctls()}
+            {#if !secondRow}
+              {@render ctls()}
+            {/if}
           {:else}
             <!-- The list belongs to the field rather than being a surface the reader
              Tabs into: the field keeps focus and points at the marked row. The
