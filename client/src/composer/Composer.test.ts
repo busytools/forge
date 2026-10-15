@@ -581,6 +581,77 @@ describe('the box', () => {
     expect(document.querySelector('.stop'), 'no turn, no control').toBeNull();
   });
 
+  /**
+   * **Escape is the stop's other door** (Ved, 2026-10-15). The view this
+   * client replaced bound the key to the same dispatch the button makes, and
+   * this client never wired it - so the key fell through to the OS and left
+   * fullscreen instead. A take consumes the key first: one press is one
+   * command.
+   */
+  it('stops the running turn on Escape, with a take keeping the key before it', () => {
+    const harness = open({
+      dictation: true,
+      record: record({ header: { turn_in_flight: true } }),
+    });
+
+    press('Escape');
+    expect(harness.sent, 'Escape stops the turn the button would').toEqual([
+      {
+        command: { cancel: { key: { org: 'Busytools', project: 'forge', label: 'lead' } } },
+      },
+    ]);
+
+    // A live take keeps the key for itself: the press drops the take, and
+    // the running turn is left alone.
+    harness.sent.length = 0;
+    harness.page.record = record({
+      header: { turn_in_flight: true },
+      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+    });
+    flushSync();
+    press('Escape');
+    expect(
+      harness.sent.some(
+        (sent) => 'command' in sent && 'cancel' in (sent.command as Record<string, unknown>),
+      ),
+      'the turn keeps running: the take took the key',
+    ).toBe(false);
+  });
+
+  /**
+   * **The key is not the dictation toggle's.** An install with dictation off
+   * still has the turn's stop and its Escape must still reach it - that
+   * install is exactly the one whose key fell through to the OS, so the
+   * gate's `!running` half is half the fix.
+   */
+  it('stops the running turn on Escape with dictation off', () => {
+    const harness = open({ record: record({ header: { turn_in_flight: true } }) });
+
+    press('Escape');
+    expect(harness.sent, 'the stop is not behind the dictation toggle').toEqual([
+      {
+        command: { cancel: { key: { org: 'Busytools', project: 'forge', label: 'lead' } } },
+      },
+    ]);
+  });
+
+  /**
+   * **The list under the field keeps its own Escape** (the rule the take
+   * case above states): it closes on a key nobody else took, and the turn -
+   * a stop the reader could also click - is not a claim above a surface they
+   * are reading. One press closes the list and stops nothing.
+   */
+  it('gives Escape to the list rather than to the running turn', () => {
+    const harness = open({ record: record({ header: { turn_in_flight: true } }) });
+    type('/');
+    expect(document.querySelector('.ac'), 'a list is open under the field').not.toBeNull();
+
+    press('Escape');
+
+    expect(harness.sent, 'the turn keeps running: the list took the key').toEqual([]);
+    expect(document.querySelector('.ac'), 'and the list closed').toBeNull();
+  });
+
   it("draws the take on the draft's own line, and takes it away when it resolves", () => {
     const harness = open();
 
@@ -4621,6 +4692,44 @@ describe('the dock', () => {
     // own moves the mark, and the same key read as the dock's answers the
     // prompt - which for a permission is a deny nobody asked for.
     expect(harness.sent, 'a key in the field does not answer the prompt').toEqual([]);
+  });
+
+  /**
+   * **Escape in the dock does not interrupt the parked turn.** A parked ask
+   * holds the turn open - `turn_in_flight` is true exactly then - and the
+   * turn's Escape rung must decline it: interrupting would kill the prompt
+   * and the words the reader typed into it. Same press, same nothing sent.
+   */
+  it('leaves the parked turn alone when Escape steps out of the dock', () => {
+    const harness = open({
+      record: record({ header: { turn_in_flight: true }, pending_asks: [permissionAsk()] }),
+    });
+
+    const own = document.querySelector('.dock textarea.notes');
+    if (!(own instanceof HTMLElement)) throw new Error('the dock drew no words row');
+    own.focus();
+    flushSync();
+
+    press('Escape');
+
+    expect(
+      harness.sent,
+      'the parked prompt and its words survive: this turn is not the reader to stop',
+    ).toEqual([]);
+
+    // And with the keyboard anywhere else - the dock up but nothing in it
+    // focused - the dock's own key answers the prompt, and the rung STILL
+    // declines: no interrupt may ride that press.
+    own.blur();
+    flushSync();
+    harness.sent.length = 0;
+    press('Escape');
+    expect(
+      harness.sent.some(
+        (sent) => 'command' in sent && 'cancel' in (sent.command as Record<string, unknown>),
+      ),
+      'still no interrupt, focus or not: the parked turn is not the reader to stop',
+    ).toBe(false);
   });
 
   /**

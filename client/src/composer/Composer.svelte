@@ -836,15 +836,16 @@
   });
 
   /**
-   * The Escape a live take consumes, and the panel's own: registered on the
+   * The Escape a live take consumes and the panel's own: registered on the
    * window rather than on the field, so it arrives wherever the focus is -
    * the same rule the view this client replaced applied. It stays here rather
    * than moving into the shared mic, because this page draws its dock in the
    * control's place while a prompt holds the slot and the key must keep
-   * working then.
+   * working then. **The running turn's rung is the second listener below**:
+   * a bubble-phase one, so every other door on the page is asked first.
    */
   $effect(() => {
-    if (!dictation) return;
+    if (!dictation && !running) return;
     const onDown = (event: KeyboardEvent): void => {
       if (event.key !== 'Escape') return;
       // A live take consumes Esc: the surfaces under it never see the key, so
@@ -864,8 +865,37 @@
         field?.focus();
       }
     };
+    /**
+     * **The last rung is the turn's** (Ved, 2026-10-15): the view this client
+     * replaced bound Escape to the stop, and the button carries that same
+     * dispatch - so a key every other surface declined stops the running
+     * turn, and with nothing to stop it is left to the OS, which is where
+     * leaving fullscreen lives.
+     *
+     * **It is a bubble-phase listener, and it stays one.** The take and the
+     * panel above claim the key at capture and silence everything under them;
+     * the turn is a stop the reader could also click, so it waits - every
+     * door on the page (the rail, the list, the queue, the segments) marks
+     * its claim with `preventDefault`, and this asks after all of them. It
+     * also declines where the answer is not the reader's to give: a parked
+     * ask holds the turn open, and interrupting it would kill the prompt and
+     * the words the reader typed into it.
+     */
+    const onTurn = (event: KeyboardEvent): void => {
+      if (event.defaultPrevented || event.repeat || event.isComposing) return;
+      if (event.key !== 'Escape') return;
+      if (composer.take !== null || dictate.opening || dictate.panel) return;
+      if (ask !== null || list !== null) return;
+      if (!running) return;
+      event.preventDefault();
+      stop();
+    };
     window.addEventListener('keydown', onDown, true);
-    return () => window.removeEventListener('keydown', onDown, true);
+    window.addEventListener('keydown', onTurn);
+    return () => {
+      window.removeEventListener('keydown', onDown, true);
+      window.removeEventListener('keydown', onTurn);
+    };
   });
 
   /**
