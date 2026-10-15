@@ -60,6 +60,18 @@ pub(crate) enum MoveError {
     /// what is pending, not the row's life, and the board's approve is what
     /// settles it. The row's SUBJECT rides it so the refusal says which look.
     DeletingLook(String),
+    /// Closing a ROOT row would archive a row parked on the user's look:
+    /// removal by close is not a way to settle it either. The row's SUBJECT
+    /// rides it, as the delete's does.
+    ClosingLook(String),
+}
+
+/// Whether a row is parked on the user's look - the verification wait the
+/// gate lands a user-bound completion on. This is the flag both removal
+/// doors refuse to take away; a row merely BOUND by the gate, never parked
+/// on it, is work the caller may abandon.
+fn parked_on_look(task: &Task) -> bool {
+    task.waiting_on.as_ref().is_some_and(|wait| wait.verification)
 }
 
 /// Append the user's words to a row's detail, keeping what was there.
@@ -122,6 +134,11 @@ impl std::fmt::Display for MoveError {
                 f,
                 "\"{subject}\" is waiting on the user's look; the board's approve completes it, \
                  and deleting the row cannot take the look away"
+            ),
+            Self::ClosingLook(subject) => write!(
+                f,
+                "\"{subject}\" is waiting on the user's look; the board's approve completes it, \
+                 and closing the epic cannot take the look away"
             ),
         }
     }
@@ -316,7 +333,8 @@ impl Workspace {
     /// applies and clears - a verify=user one is taken by the gate and
     /// lands on the look instead, its own wait gone; and completing a
     /// ROOT row closes it - the whole tree moves to the archive, refused
-    /// while any child is still open.
+    /// while any child is still open or while any row in the tree is
+    /// parked on the user's look (#2251).
     pub(crate) fn update_task(
         &self,
         project_name: &str,
@@ -419,6 +437,22 @@ impl Workspace {
                             doomed.push(task.id.clone());
                         }
                     }
+                }
+                // The look a row is parked on is not the close's to take
+                // either (#2251's class, found reviewing the delete's
+                // guard): the archive would settle it by removal. The
+                // open-children check above sees direct children only, so
+                // this one walks the whole cascade. The moved row is
+                // exempt by id: its stale copy in `tasks` is not what
+                // closes - `next` is, and the gate refuses a parked
+                // completion (the user's own approve clears the wait).
+                if let Some(task) = tasks.iter().find(|t| {
+                    t.project_name == project_name
+                        && t.id != next.id
+                        && doomed.contains(&t.id)
+                        && parked_on_look(t)
+                }) {
+                    return Err(MoveError::ClosingLook(task.subject.clone()));
                 }
                 removed = tasks
                     .iter()
@@ -838,9 +872,9 @@ impl Workspace {
     /// from under children that would then have nobody to close them.
     ///
     /// A tree holding a row parked on the user's look is refused by name
-    /// (#2251): removal would settle that row by deletion, the same look
-    /// the update path refuses to clear. The check walks the whole cascade,
-    /// so deleting the epic above the row is no way around it.
+    /// (#2251): removal would settle that row by deletion, a look the
+    /// update path refuses to unbind or complete. The check walks the whole
+    /// cascade, so deleting the epic above the row is no way around it.
     pub(crate) fn remove_task_tree(
         &self,
         project_name: &str,
@@ -864,7 +898,7 @@ impl Workspace {
             if let Some(task) = tasks.iter().find(|task| {
                 task.project_name == project_name
                     && doomed.contains(&task.id)
-                    && task.waiting_on.as_ref().is_some_and(|wait| wait.verification)
+                    && parked_on_look(task)
             }) {
                 return Err(MoveError::DeletingLook(task.subject.clone()));
             }
@@ -2173,6 +2207,69 @@ mod tests {
             .remove_task_tree("proj", &TaskId::from("t-1"))
             .expect("no look is pending on an unstarted row");
         assert_eq!(removed.len(), 1, "the row went");
+    }
+
+    /// A parked row in ANOTHER project sharing the named id is not this
+    /// delete's business: the guard's project test is what keeps a foreign
+    /// row from refusing (or being named by) this project's delete.
+    #[test]
+    fn a_parked_row_in_another_project_does_not_refuse_the_delete() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-delete-foreign");
+        ws.push_task(Task { verify: Some(Verify::User), ..sample_task("t-1", "elsewhere") });
+        ws.update_task("elsewhere", &TaskId::from("t-1"), By::System, |task| {
+            task.status = TaskStatus::Completed;
+        })
+        .expect("no refusal")
+        .expect("the row is there");
+        ws.push_task(sample_task("t-1", "proj"));
+
+        let removed = ws
+            .remove_task_tree("proj", &TaskId::from("t-1"))
+            .expect("another project's parked row is not this delete's business");
+        assert_eq!(removed.len(), 1, "this project's row went");
+        assert_eq!(ws.tasks_for_project("elsewhere").len(), 1, "and the parked one stayed");
+    }
+
+    /// The close is the other verb that removes rows (#2251's class, found
+    /// reviewing the delete's guard): completing a ROOT row archives its
+    /// whole tree, and the open-children check sees direct children only -
+    /// so a grandchild parked on the look, under a branch already cancelled,
+    /// used to be archived with its look pending.
+    #[test]
+    fn a_root_close_cannot_take_a_grandchild_waiting_on_the_look() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-close-look");
+        ws.push_task(sample_task("root", "proj"));
+        ws.push_task(sample_task_with_parent("branch", Some("root"), "proj"));
+        ws.push_task(Task {
+            parent: Some(TaskId::from("branch")),
+            verify: Some(Verify::User),
+            ..sample_task("gated", "proj")
+        });
+        let lead = SessionSlot::lead("TestOrg", "proj");
+        // The grandchild reaches the look and is parked on it.
+        ws.update_task("proj", &TaskId::from("gated"), By::System, |task| {
+            task.status = TaskStatus::Completed;
+        })
+        .expect("no refusal")
+        .expect("the row is there");
+        // The branch is abandoned: terminal, so the open-children check passes.
+        ws.update_task("proj", &TaskId::from("branch"), By::Seat(lead.clone()), |task| {
+            task.status = TaskStatus::Canceled;
+        })
+        .expect("no refusal")
+        .expect("the row is there");
+
+        let refused = ws
+            .update_task("proj", &TaskId::from("root"), By::Seat(lead), |task| {
+                task.status = TaskStatus::Completed;
+            })
+            .expect_err("the archive is not a way to settle the parked look");
+        assert_eq!(refused, MoveError::ClosingLook("subject gated".to_owned()));
+        assert_eq!(ws.tasks_for_project("proj").len(), 3, "and nothing was archived");
     }
 
     #[test]
