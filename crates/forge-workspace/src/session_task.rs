@@ -248,6 +248,19 @@ impl SessionTask {
                     },
                 });
             }
+            if let Some(ended) = &moved.turn_ended {
+                match ended {
+                    MovedTurnEnd::Complete { terminal_reason } => {
+                        self.emit(SessionUpdate::TurnComplete {
+                            key: self.key.clone(),
+                            terminal_reason: *terminal_reason,
+                        });
+                    }
+                    MovedTurnEnd::Cancelled => {
+                        self.emit(SessionUpdate::TurnCancelled { key: self.key.clone() });
+                    }
+                }
+            }
         }
 
         // Mirror Connected into the project catalog so the Projects
@@ -1743,6 +1756,19 @@ pub(crate) struct Moved {
     /// A failed turn armed the continuation, which the caller fires the
     /// moment this fold returns.
     pub nudge: bool,
+    /// The seat's turn ended in this event, as the caller announces it.
+    /// `None` while no turn ended here.
+    pub turn_ended: Option<MovedTurnEnd>,
+}
+
+/// What a turn's end was, for the caller to announce.
+pub(crate) enum MovedTurnEnd {
+    /// The turn finished (or failed) on its own; the CLI's terminal reason
+    /// rides where it gave one.
+    Complete { terminal_reason: Option<forge_primitives::runtime::TerminalReason> },
+    /// The reader's own interrupt: the CLI reports it as a failed `Result`
+    /// too, so the cancel flag is what tells the two apart.
+    Cancelled,
 }
 
 /// Apply an [`AgentEvent`] to a [`DomainSession`]. Pure mutation; no
@@ -1764,6 +1790,7 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
     let held_agents = domain.available_agents.clone();
     let held_cards = domain.cards_snapshot.clone();
     let mut nudge = false;
+    let mut turn_ended = None;
     hold_view_facts(domain, event);
     if let AgentEvent::ConnectionFailed { .. } = event {
         // The subprocess is gone - drop the runtime/turn mirrors so the
@@ -1786,13 +1813,21 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
         domain.process_snapshot = None;
     }
     if let AgentEvent::SdkMessage {
-        msg: forge_primitives::Message::Result { is_error, subtype, errors, .. },
+        msg: forge_primitives::Message::Result { is_error, subtype, errors, terminal_reason, .. },
         ..
     } = event
     {
         // The stamp is spent on every outcome: a cancel that raced a turn
         // the CLI had already finished must not exempt the next failure.
         let cancelled = std::mem::take(&mut domain.pending_cancel);
+        // The turn's end is announced (#1486): the frames carry the
+        // Result, but a page's live row reads its liveness from the record
+        // and only this frame asks it to re-read.
+        turn_ended = Some(if cancelled {
+            MovedTurnEnd::Cancelled
+        } else {
+            MovedTurnEnd::Complete { terminal_reason: *terminal_reason }
+        });
         // An errored `Result` marks the slot for the rail, unless the
         // reader asked for the interruption - a cancel ends with the same
         // failed result a genuine error does.
@@ -2078,6 +2113,7 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
         cards: domain.cards_snapshot != held_cards
             && matches!(event, AgentEvent::SdkMessage { .. }),
         nudge,
+        turn_ended,
     }
 }
 
@@ -3264,6 +3300,64 @@ mod tests {
         assert_eq!(waiting, 1, "the replied-to thread now awaits the reviewer");
         assert!(message.contains("review #1"), "the notice names the review: {message}");
         assert!(message.contains("1 replied"), "the tally counts the reply: {message}");
+    }
+
+    /// **A turn's end is announced** (#1486): the frames carry a `Result`
+    /// when a turn ends, but a page's live row reads its liveness from the
+    /// record - and only this frame asks the page to re-read it. Never
+    /// sent, every frame-built turn stayed live for the rest of the
+    /// session.
+    #[tokio::test]
+    async fn a_results_end_announces_the_turn_complete() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("turn-ends");
+        let (mut task, mut update_rx) = review_task_for(&workspace, &key);
+
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "turn-ends".to_owned(),
+            msg: result_message("success", false),
+        });
+
+        let mut said = Vec::new();
+        while let Ok(frame) = update_rx.try_recv() {
+            match frame.update {
+                SessionUpdate::TurnComplete { key, terminal_reason } => {
+                    said.push(("complete", key, terminal_reason));
+                }
+                SessionUpdate::TurnCancelled { key } => said.push(("cancelled", key, None)),
+                _ => {}
+            }
+        }
+        assert_eq!(said.len(), 1, "exactly one end frame, saw {said:?}");
+        assert_eq!(said[0].0, "complete", "an ordinary end, not the cancel's frame");
+        assert_eq!(said[0].1, key, "announced on the seat its turn ended");
+        assert_eq!(said[0].2, None, "the test's Result carries no terminal reason");
+    }
+
+    /// The reader's own interrupt is the other end: the CLI reports it as a
+    /// failed `Result` too, so the cancel flag the arm already spends is
+    /// what tells the two apart.
+    #[tokio::test]
+    async fn a_cancelled_results_end_announces_the_turn_cancelled() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("turn-cancelled");
+        let (mut task, mut update_rx) = review_task_for(&workspace, &key);
+
+        task.domain.lock().pending_cancel = true;
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "turn-cancelled".to_owned(),
+            msg: result_message("error_during_execution", true),
+        });
+
+        let mut said = Vec::new();
+        while let Ok(frame) = update_rx.try_recv() {
+            match frame.update {
+                SessionUpdate::TurnComplete { .. } => said.push("complete"),
+                SessionUpdate::TurnCancelled { .. } => said.push("cancelled"),
+                _ => {}
+            }
+        }
+        assert_eq!(said, ["cancelled"], "the reader's cancel is its own frame");
     }
 
     /// A cancelled turn reaches the same `Message::Result` arm - the CLI
