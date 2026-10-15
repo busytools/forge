@@ -334,9 +334,9 @@ describe('the stream gate', () => {
       emit: () => {},
       follows: () => false,
     });
-    // The tail of a subscription already over: it passes through, and the
-    // fleet news that follows is not sequenced.
-    gate.inbound(snap('occ', 1));
+    // The tail of a subscription already over: it passes through (nothing is
+    // dropped), and the fleet news that follows is not sequenced.
+    expect(gate.inbound(snap('occ', 1)), 'the late snapshot passes through').toHaveLength(1);
     expect(gate.inbound(update(6957))).toHaveLength(1);
     expect(asked, 'nothing is sequenced, nothing is asked').toEqual([]);
   });
