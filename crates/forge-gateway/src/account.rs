@@ -197,8 +197,8 @@ pub struct AccountStateMap {
     pub by_key: std::collections::HashMap<AccountKey, AccountState>,
 }
 
-/// Hand-written because the states it holds carry credential stamps,
-/// which their own redacting Debug keeps out.
+/// Hand-written so a field added later cannot print through it until it
+/// is deliberately listed; the states it holds redact themselves.
 impl std::fmt::Debug for AccountStateMap {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AccountStateMap")
