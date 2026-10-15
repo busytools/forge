@@ -111,6 +111,15 @@
         {placeholder}
         aria={{ label }}
         bind:value={box.draft}
+        onkeydown={(event: KeyboardEvent) => {
+          // **Enter is the box's own action** (Ved, 2026-10-15): the words go
+          // with the same key that sends them everywhere else, Shift+Enter
+          // keeps the newline, and an empty or busy box ignores it exactly as
+          // its button does.
+          if (event.key !== 'Enter' || event.shiftKey) return;
+          event.preventDefault();
+          if (!box.busy && box.draft.trim() !== '') send();
+        }}
         field={(el: HTMLElement | null) => {
           own = el;
           field(el);
