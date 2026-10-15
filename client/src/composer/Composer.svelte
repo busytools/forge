@@ -167,6 +167,18 @@
       const target = boxes.of(boxKey(untrack(() => slot)));
       lineBox = target;
       target.dictateLine = null;
+      // **The arm is set where the take truly begins** - this page's own
+      // capture, at the press. Arming from the record's take missed the
+      // landing whenever the record's update arrived after a quick release
+      // had ended this page's take (Ved, 2026-10-15: nothing landed at all),
+      // and the record can only ever say a take exists, not who began it.
+      // Where the words go is captured per take, at this same instant.
+      target.sawTake = true;
+      if (!target.takeOpen) {
+        target.takeOpen = true;
+        tookBox = target;
+        target.tookFrom = untrack(() => toDock()) ? 'dock' : 'composer';
+      }
     },
     onLine: (line) => {
       (lineBox ?? box).dictateLine = line;
@@ -463,22 +475,18 @@
   let tookBox: Box | null = null;
 
   /**
-   * The arm goes with the notice, and it clears FIRST.
-   *
-   * The record's notice goes null at every take's start, so this runs before
-   * the arming effect below and the flush resolves both cases in order: a
-   * take of this page's clears and then re-arms, while a take another client
-   * began clears and stays unarmed.
+   * The arm goes with the notice: it clears when the record's notice goes -
+   * at every take's start - but only while THIS page holds no take of its
+   * own, so the clear cannot eat the arm a press just set (the notice-null
+   * and the press land in the same instant). A take another client began
+   * clears and stays unarmed, which is what keeps its words out of this box.
    */
   $effect(() => {
-    if (composer.notice === null) box.sawTake = false;
+    if (composer.notice === null && dictate.take === null && !dictate.opening) {
+      box.sawTake = false;
+    }
   });
 
-  // Holding the seat's take is having seen it - and only THIS page's own
-  // capture arms the landing: the record shows any client's take, so arming
-  // on it let a second client on the same seat put the first client's spoken
-  // words into its own draft (Ved, 2026-10-15). Each take arms its own, and a
-  // take this page did not begin never places anything.
   $effect(() => {
     if (composer.take === null) {
       // The take is over; its OWN box is cleared, even when another seat is
@@ -489,23 +497,6 @@
         captured.takeOpen = false;
         tookBox = null;
       }
-      return;
-    }
-    if (!owns) return;
-    const mine = dictate.take;
-    if (mine === null || boxKey(mine.seat) !== boxKey(slot)) return;
-    box.sawTake = true;
-    if (!box.takeOpen) {
-      // **Where the take began is where its words go, captured per TAKE.** A
-      // prompt arriving mid-take does not take words spoken into the reader's
-      // draft, and one already holding the slot owns them even when the caret
-      // was never in its row (a keyboard dictation). One seat can take several
-      // in a row, so the flag closes with each take rather than once per box -
-      // and the box it closed on is remembered, because the take can outlive
-      // the visit to its seat.
-      box.takeOpen = true;
-      tookBox = box;
-      box.tookFrom = untrack(() => toDock()) ? 'dock' : 'composer';
     }
   });
 
