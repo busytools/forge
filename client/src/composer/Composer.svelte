@@ -12,6 +12,7 @@
   import { report } from '../socket';
   import { mintPromptId } from '../wire/ids';
   import { Boxes, boxKey, type Box } from './box.svelte';
+  import { noticeIdentity } from './landing';
   import Autocomplete from './Autocomplete.svelte';
   import TakeCard from './TakeCard.svelte';
   import DictateControl from './DictateControl.svelte';
@@ -366,7 +367,7 @@
           // the words went into this draft.
           noticeLine(
             composer.notice,
-            composer.notice !== null && box.landed === composer.notice.text,
+            composer.notice !== null && box.landed === noticeIdentity(composer.notice),
           ) ??
           box.ended)
       : null,
@@ -566,7 +567,7 @@
       // take left them in the dock, and a memory set for it here would put a
       // note about words that never arrived in this draft.
       box.landing.placed(held);
-      box.landed = held.text;
+      box.landed = noticeIdentity(held);
       box.draft = joined(
         untrack(() => box.draft),
         words,
