@@ -10404,6 +10404,7 @@ provider = "anthropic"
         ws.mark_session_connected_for_test(&key, "s-uuid");
         ws.enable_test_dispatch_intercept();
 
+        let before = time::OffsetDateTime::now_utc();
         ws.dispatch(Command::Prompt {
             key: key.clone(),
             text: "go".to_owned(),
@@ -10411,6 +10412,7 @@ provider = "anthropic"
         })
         .expect("view dispatch");
         ws.dispatch_forged_prompt(&key, "get on with it".to_owned()).expect("forged dispatch");
+        let after = time::OffsetDateTime::now_utc();
 
         let stamps: Vec<Option<String>> = drain_updates(&mut rx)
             .into_iter()
@@ -10425,11 +10427,22 @@ provider = "anthropic"
         assert_eq!(stamps.len(), 2, "both prompt paths forge a row: {stamps:?}");
         let view = stamps[0].as_deref().expect("the row a view's send forges carries a stamp");
         let forged = stamps[1].as_deref().expect("and the row forge's machinery forges does too");
-        for stamp in [view, forged] {
-            assert!(
+
+        // **The code's own clock, not merely a parseable string.** A constant
+        // stamp would draw every forged row a clock years old while a
+        // parse-only pin stayed green, so each has to land where the two
+        // `now_utc`s bracket the dispatches.
+        let slack = time::Duration::seconds(5);
+        for (stamp, path) in [(view, "the view's send"), (forged, "the machinery's")] {
+            let at =
                 time::OffsetDateTime::parse(stamp, &time::format_description::well_known::Rfc3339)
-                    .is_ok(),
-                "each is a time the client can read: {stamp}",
+                    .unwrap_or_else(|error| {
+                        panic!("{path} stamped a time no client can read: {stamp} ({error})")
+                    });
+            assert!(
+                at >= before - slack && at <= after + slack,
+                "the row {path} forges carries the forge's own clock, not a constant: {stamp} \
+                 sits outside {before}..{after}",
             );
         }
     }

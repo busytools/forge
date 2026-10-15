@@ -98,15 +98,26 @@ mod tests {
             uuid: "cap-slack".to_owned(),
         };
 
+        let before = time::OffsetDateTime::now_utc();
         let (turn, _) =
             delivery_turn(&update, &slot).expect("a delivery to this seat forges a turn");
+        let after = time::OffsetDateTime::now_utc();
+
         let value = serde_json::to_value(&turn).expect("encode");
         let stamp =
             value["timestamp"].as_str().expect("the row carries a stamp where a clock reads one");
+        // **The code's own clock, not merely a parseable string**: a constant
+        // stamp would draw this row a clock years old while a parse-only pin
+        // stayed green.
+        let at = time::OffsetDateTime::parse(stamp, &time::format_description::well_known::Rfc3339)
+            .unwrap_or_else(|error| {
+                panic!("the delivery stamped a time no client can read: {stamp} ({error})")
+            });
+        let slack = time::Duration::seconds(5);
         assert!(
-            time::OffsetDateTime::parse(stamp, &time::format_description::well_known::Rfc3339)
-                .is_ok(),
-            "and it is a time the client can read: {stamp}",
+            at >= before - slack && at <= after + slack,
+            "the forged row carries the forge's own clock, not a constant: {stamp} sits outside \
+             {before}..{after}",
         );
     }
 
