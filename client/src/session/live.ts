@@ -150,7 +150,8 @@ interface Seat {
   /**
    * How many answers in a row the frames have outrun, against [`OUTRUN_CAP`]:
    * past the cap the stale answer is dropped and the frames' own record
-   * stands (#1472). Reset whenever an answer is taken and on a new epoch.
+   * stands (#1472). Reset whenever an answer is taken, when one is dropped
+   * past the cap, and on a new epoch.
    */
   outrun: number;
   /**
