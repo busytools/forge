@@ -537,7 +537,10 @@
     return host;
   }
 
-  function threadCard(thread: ReviewThreadRecord, movedFrom: number | null): HTMLElement {
+  function threadCard(
+    thread: ReviewThreadRecord,
+    placed: { line: number; movedFrom: number | null },
+  ): HTMLElement {
     const card = document.createElement('article');
     card.className = 'rv-thread compact';
     const tops = document.createElement('div');
@@ -545,9 +548,11 @@
     tops.append(mark(statusName(thread.status)));
     tops.append(span(`rv-st ${statusName(thread.status)}`, statusName(thread.status)));
     tops.append(
-      span('rv-where', `${thread.anchor.path.split('/').pop() ?? ''} · line ${thread.anchor.line}`),
+      span('rv-where', `${thread.anchor.path.split('/').pop() ?? ''} · line ${placed.line}`),
     );
-    if (movedFrom !== null) tops.append(span('rv-moved', `moved from ${movedFrom}`));
+    if (placed.movedFrom !== null) {
+      tops.append(span('rv-moved', `moved from ${placed.movedFrom}`));
+    }
     card.append(tops);
     thread.comments.forEach((turn, index) => card.append(turnBlock(turn, index)));
     const acts = document.createElement('div');
@@ -641,7 +646,7 @@
       marker.append(span('rv-mk-first', thread.comments[0]?.text ?? ''));
       wrap.append(marker);
     } else {
-      wrap.append(threadCard(thread, placed.movedFrom));
+      wrap.append(threadCard(thread, placed));
     }
     return insertRow(at, side, mode, wrap);
   }

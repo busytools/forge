@@ -84,6 +84,44 @@ const thread: ReviewThreadRecord = {
   resolution: { state: 'placed', line: 1, moved_from: null },
 };
 
+/** A thread the resolver placed at line 4, written at 7: the shape the
+ *  server's Moved arm produces (moved_from is the recorded line). */
+const moved: ReviewThreadRecord = {
+  ...thread,
+  anchor: { ...thread.anchor, line: 7 },
+  resolution: { state: 'placed', line: 4, moved_from: 7 },
+};
+
+/** The same file with every line the moved card needs drawn. */
+const taller: DiffLayerRecord = {
+  state: 'populated',
+  files: [
+    {
+      path: 'src/a.rs',
+      oldPath: null,
+      status: 'modified',
+      binary: false,
+      submodule: false,
+      truncated: false,
+      hunks: [
+        {
+          oldStart: 1,
+          oldCount: 5,
+          newStart: 1,
+          newCount: 5,
+          lines: [
+            { kind: 'context', text: 'one', oldLine: 1, newLine: 1 },
+            { kind: 'context', text: 'two', oldLine: 2, newLine: 2 },
+            { kind: 'context', text: 'three', oldLine: 3, newLine: 3 },
+            { kind: 'context', text: 'four', oldLine: 4, newLine: 4 },
+            { kind: 'context', text: 'five', oldLine: 5, newLine: 5 },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
 let app: Record<string, unknown> | null = null;
 /** The frames the page asked for, run by [`paint`]. */
 let frames: FrameRequestCallback[] = [];
@@ -137,7 +175,7 @@ async function settle(): Promise<void> {
 }
 
 /** The canvas over the thread, as the page mounts it. */
-function draw(): void {
+function draw(held: ReviewThreadRecord = thread, at: DiffLayerRecord = layer): void {
   vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] });
   vi.setSystemTime(new Date(T0));
   const shared = fakeWire();
@@ -192,8 +230,8 @@ function draw(): void {
       slot: SEAT,
       scopeCommit: null,
       mode: 'unified',
-      layer,
-      threads: [thread],
+      layer: at,
+      threads: [held],
       reviews: [],
       busy: false,
       dictate,
@@ -225,5 +263,22 @@ describe('the clock a mounted row draws', () => {
     flushSync();
 
     expect(chip(), 'the age the tick moved').toBe('30m');
+  });
+
+  /**
+   * **A moved card names the line it sits on, and where the words were
+   * written.** The card is inserted at the resolution's line, so `line N`
+   * is that one - the recorded number reads as the move's origin, never
+   * beside it as a second claim (the shape `line 7 · moved from 7` the
+   * badge used to draw).
+   */
+  it('names the moved line the card sits on, and the line it was written at', async () => {
+    draw(moved, taller);
+    await settle();
+
+    const where = document.querySelector('.rv-insert .rv-where')?.textContent ?? '';
+    expect(where, 'the card names the row it sits on').toContain('line 4');
+    const origin = document.querySelector('.rv-insert .rv-moved')?.textContent ?? '';
+    expect(origin, 'and where it was written').toBe('moved from 7');
   });
 });
