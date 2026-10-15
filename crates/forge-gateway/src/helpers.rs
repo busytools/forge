@@ -342,27 +342,39 @@ pub fn redacted_body(body: &[u8], bearer: &str) -> String {
 /// Text with the credential masked, for a field that is not a body - a
 /// serde message beside one, which can quote a value it was decoding.
 pub fn redacted_message(text: &str, bearer: &str) -> String {
-    let tag: String = bearer.chars().take(8).collect();
-    let replaced = text.replace(bearer, "[redacted]");
-    if tag.is_empty() {
-        return replaced;
+    // Below the tag's own width the bearer is a placeholder rather than key
+    // material - the localhost-proxy case, whose bearer `base_url_credential`
+    // leaves empty - and masking the ordinary words that merely contain it
+    // ("local" in a hostname) eats the evidence the line exists for.
+    let tag: String = bearer.chars().take(TAG).collect();
+    if tag.chars().count() < TAG {
+        return text.to_owned();
     }
-    let quoted = mask_quoted_runs(&replaced, &tag);
-    // A copy need not be quoted: a host echoing the request writes it bare,
-    // and the copy a payload carries is truncated - the whole token's
-    // replace cannot see that one. Whitespace runs normalize here.
+    let replaced = text.replace(bearer, "[redacted]");
+    // Every window of the token, not just its opening: a host can break the
+    // key across whitespace or a quote, and the piece that survives still
+    // carries a window of it.
+    let windows: Vec<String> =
+        bearer.chars().collect::<Vec<_>>().windows(TAG).map(|w| w.iter().collect()).collect();
+    let quoted = mask_quoted_runs(&replaced, &windows);
+    // A copy need not be quoted either: a host echoing the request writes it
+    // bare. Whitespace runs normalize here.
     quoted
         .split_whitespace()
-        .map(|word| if word.contains(&tag) { "[redacted]" } else { word })
+        .map(|word| if windows.iter().any(|w| word.contains(w)) { "[redacted]" } else { word })
         .collect::<Vec<_>>()
         .join(" ")
 }
 
-/// Every double-quoted run containing `tag` masked; an unterminated quote
-/// takes its tail with it rather than printing a value whose end nobody
-/// found. A run's spaces stay inside it, which the bare-word pass over it
-/// cannot see.
-fn mask_quoted_runs(text: &str, tag: &str) -> String {
+/// The width of the token piece a mask matches on: long enough that it is
+/// key material rather than a scheme, short enough to survive a truncation.
+const TAG: usize = 8;
+
+/// Every double-quoted run containing a window of the token masked; an
+/// unterminated quote takes its tail with it rather than printing a value
+/// whose end nobody found. A run's spaces stay inside it, which the
+/// bare-word pass over it cannot see.
+fn mask_quoted_runs(text: &str, windows: &[String]) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(open) = rest.find('"') {
@@ -373,7 +385,7 @@ fn mask_quoted_runs(text: &str, tag: &str) -> String {
             return out;
         };
         let run = &after[..close];
-        if run.contains(tag) {
+        if windows.iter().any(|w| run.contains(w)) {
             out.push_str("[redacted]");
         } else {
             out.push('"');
@@ -488,6 +500,50 @@ mod tests {
             "the cap never hides a key from the mask: {said}",
         );
         assert!(said.contains("Token"), "and the evidence before the key stays: {said}");
+
+        // A cut landing INSIDE the token's opening: mask-first means nothing
+        // of the key prints, where capping first would print the fragment.
+        let cut = format!("{} {bearer}", "x".repeat(195));
+        let said = redacted_body(cut.as_bytes(), bearer);
+        assert!(!said.contains("sk-or"), "no fragment of the key survives the cut: {said}");
+
+        // The key broken across whitespace inside a quoted run, which a
+        // wrapping host sends.
+        let split = br#"{"error":"bad sk-or- v1-0123456789abcdef rejected"}"#;
+        let said = redacted_body(split, bearer);
+        assert!(
+            !said.contains("0123456789abcdef"),
+            "a key split across whitespace never prints: {said}",
+        );
+
+        // Broken across a quote boundary.
+        let broken = br#"bad key "sk-"or-v1-0123456789abcdef here"#;
+        let said = redacted_body(broken, bearer);
+        assert!(
+            !said.contains("0123456789abcdef"),
+            "a key broken across a quote never prints: {said}",
+        );
+
+        // A copy keeping only the key's TAIL: the masks cannot assume the
+        // truncation is a lead.
+        let tail = br#"{"data":{"key":"...0123456789abcdef"}}"#;
+        let said = redacted_body(tail, bearer);
+        assert!(!said.contains("0123456789abcdef"), "a tail-only copy never prints: {said}");
+    }
+
+    /// The neighbours a bearer can be, neither a key: an absent one (the
+    /// localhost-proxy default) and a short placeholder. Neither may eat the
+    /// body it is masking.
+    #[test]
+    fn a_placeholder_bearer_never_eats_the_text() {
+        let said = redacted_body(b"upstream refused the request", "");
+        assert_eq!(said, ": upstream refused the request", "an empty bearer masks nothing");
+
+        let said = redacted_body(b"connecting to localhost:18765 failed", "local");
+        assert!(
+            said.contains("localhost:18765"),
+            "a short bearer does not eat the words containing it: {said}",
+        );
     }
 
     /// A serde message beside a body can quote the value it was decoding

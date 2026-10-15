@@ -19,7 +19,7 @@ use forge_primitives::usage::{UsageSnapshot, UsageSourceKind, UsageWindow};
 
 use crate::helpers::{
     BaseUrlCredential, MissingBase, OAUTH_TIMEOUT, base_url_credential, redacted_body,
-    system_time_from_epoch,
+    redacted_message, system_time_from_epoch,
 };
 use crate::{AccountEnv, BillingModel, ProbeError, Provider, ProviderBackend, ProviderHost};
 
@@ -146,7 +146,7 @@ async fn monitor_probe(
     }
 
     match status {
-        200 => quota_from_body(&body),
+        200 => quota_from_body(&body, key),
         401 | 403 => Err(OauthUsageError::Unauthorized(status)),
         429 => Err(OauthUsageError::RateLimited { retry_after: None }),
         _ => Err(OauthUsageError::HttpStatus(status, redacted_body(&body, key))),
@@ -159,16 +159,23 @@ async fn monitor_probe(
 /// 401 (wrong key) surfaces as [`OauthUsageError::Unauthorized`] so it
 /// bails the boot probe like a real auth rejection; every other
 /// failure keeps the envelope's `msg`.
-fn quota_from_body(body: &[u8]) -> Result<QuotaLimitData, OauthUsageError> {
+///
+/// Every string here reaches a log through `ProbeError`'s Display, so the
+/// body it quotes is masked the way the log fields are: a reflecting host
+/// lands the key in `msg` or in a serde message.
+fn quota_from_body(body: &[u8], key: &str) -> Result<QuotaLimitData, OauthUsageError> {
     if String::from_utf8_lossy(body).trim().is_empty() {
         return Err(OauthUsageError::Decode(
             "Z.ai monitor answered 200 with an empty body".to_owned(),
         ));
     }
     let envelope: QuotaLimitResponse = serde_json::from_slice(body).map_err(|error| {
-        OauthUsageError::Decode(format!("Z.ai monitor body did not decode: {error}"))
+        OauthUsageError::Decode(redacted_message(
+            &format!("Z.ai monitor body did not decode: {error}"),
+            key,
+        ))
     })?;
-    let msg = envelope.msg.as_deref().unwrap_or("no msg");
+    let msg = redacted_message(envelope.msg.as_deref().unwrap_or("no msg"), key);
     if !envelope.success {
         if envelope.code == Some(401) {
             return Err(OauthUsageError::Unauthorized(401));
@@ -363,16 +370,18 @@ mod tests {
             },
             "success": true
         }"#;
-        let data = quota_from_body(body).expect("a green envelope parses");
+        let data = quota_from_body(body, "test-key").expect("a green envelope parses");
         assert_eq!(data.limits.len(), 2);
         assert_eq!(data.level.as_deref(), Some("max"));
     }
 
     #[test]
     fn quota_from_body_fails_on_wrong_key_inside_a_200() {
-        let err =
-            quota_from_body(br#"{"code":401,"msg":"token expired or incorrect","success":false}"#)
-                .expect_err("wrong key fails");
+        let err = quota_from_body(
+            br#"{"code":401,"msg":"token expired or incorrect","success":false}"#,
+            "test-key",
+        )
+        .expect_err("wrong key fails");
         assert!(
             matches!(err, OauthUsageError::Unauthorized(401)),
             "a body-level 401 must classify as unauthorized, got {err:?}",
@@ -381,16 +390,30 @@ mod tests {
 
     #[test]
     fn quota_from_body_fails_on_wrong_path_inside_a_200() {
-        let err = quota_from_body(br#"{"code":500,"msg":"404 NOT_FOUND","success":false}"#)
-            .expect_err("a wrong path fails");
+        let err =
+            quota_from_body(br#"{"code":500,"msg":"404 NOT_FOUND","success":false}"#, "test-key")
+                .expect_err("a wrong path fails");
         assert!(err.to_string().contains("404 NOT_FOUND"), "the msg reaches the log: {err}");
+    }
+
+    /// The `msg` a failure keeps reaches a log, so it is masked: a
+    /// reflecting host echoes the key into it.
+    #[test]
+    fn quota_from_body_masks_the_key_in_its_msg() {
+        let err = quota_from_body(
+            br#"{"code":500,"msg":"refused Authorization glm-0123456789abcdef","success":false}"#,
+            "glm-0123456789abcdef",
+        )
+        .expect_err("the refusal fails");
+        assert!(!err.to_string().contains("0123456789abcdef"), "the key never prints: {err}");
+        assert!(err.to_string().contains("refused"), "and the host's own words stay: {err}");
     }
 
     /// A silent empty 200 (observed on the model-usage endpoint) is a
     /// failure, not a bill of zero.
     #[test]
     fn quota_from_body_fails_on_empty_body() {
-        let err = quota_from_body(b"").expect_err("empty body fails");
+        let err = quota_from_body(b"", "test-key").expect_err("empty body fails");
         assert!(err.to_string().contains("empty"), "got {err}");
     }
 
@@ -398,9 +421,11 @@ mod tests {
     /// with the right code but no success flag is not a green envelope.
     #[test]
     fn quota_from_body_requires_the_success_flag() {
-        let err =
-            quota_from_body(br#"{"code":200,"msg":"success","data":{"limits":[],"level":"max"}}"#)
-                .expect_err("no success flag fails");
+        let err = quota_from_body(
+            br#"{"code":200,"msg":"success","data":{"limits":[],"level":"max"}}"#,
+            "test-key",
+        )
+        .expect_err("no success flag fails");
         assert!(matches!(err, OauthUsageError::Decode(_)), "got {err:?}");
     }
 
