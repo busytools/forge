@@ -409,6 +409,19 @@ mod tests {
         assert!(err.to_string().contains("refused"), "and the host's own words stay: {err}");
     }
 
+    /// The other string a decode failure builds: serde quotes the value it
+    /// could not read, so the reason is masked the same way.
+    #[test]
+    fn quota_from_body_masks_the_key_a_serde_message_quotes() {
+        let err = quota_from_body(
+            br#"{"code":"glm-0123456789abcdef","msg":"x","success":true}"#,
+            "glm-0123456789abcdef",
+        )
+        .expect_err("a code of the wrong type fails to decode");
+        assert!(!err.to_string().contains("0123456789abcdef"), "the value never prints: {err}");
+        assert!(err.to_string().contains("invalid type"), "and the reason stays: {err}");
+    }
+
     /// A silent empty 200 (observed on the model-usage endpoint) is a
     /// failure, not a bill of zero.
     #[test]

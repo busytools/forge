@@ -344,11 +344,26 @@ pub fn redacted_body(body: &[u8], bearer: &str) -> String {
 pub fn redacted_message(text: &str, bearer: &str) -> String {
     // Below the tag's own width the bearer is a placeholder rather than key
     // material - the localhost-proxy case, whose bearer `base_url_credential`
-    // leaves empty - and masking the ordinary words that merely contain it
-    // ("local" in a hostname) eats the evidence the line exists for.
+    // leaves empty - so only a word that IS the bearer is masked: masking the
+    // words that merely CONTAIN it eats the evidence the line exists for
+    // ("local" in a hostname), while an exact echo still goes.
     let tag: String = bearer.chars().take(TAG).collect();
     if tag.chars().count() < TAG {
-        return text.to_owned();
+        if bearer.is_empty() {
+            return text.to_owned();
+        }
+        return text
+            .split_whitespace()
+            .map(|word| {
+                // A JSON body carries the token with its punctuation
+                // attached (`"hunter2",`), so the comparison trims the
+                // word's ends of everything a key cannot hold.
+                let bare =
+                    word.trim_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '_');
+                if bare == bearer { "[redacted]" } else { word }
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
     }
     let replaced = text.replace(bearer, "[redacted]");
     // Every window of the token, not just its opening: a host can break the
@@ -533,7 +548,7 @@ mod tests {
 
     /// The neighbours a bearer can be, neither a key: an absent one (the
     /// localhost-proxy default) and a short placeholder. Neither may eat the
-    /// body it is masking.
+    /// body it is masking, and a short bearer's exact echo still goes.
     #[test]
     fn a_placeholder_bearer_never_eats_the_text() {
         let said = redacted_body(b"upstream refused the request", "");
@@ -543,6 +558,12 @@ mod tests {
         assert!(
             said.contains("localhost:18765"),
             "a short bearer does not eat the words containing it: {said}",
+        );
+
+        let said = redacted_message("upstream said: hunter2, apparently", "hunter2");
+        assert_eq!(
+            said, "upstream said: [redacted] apparently",
+            "and a word that IS the short bearer is masked, punctuation and all",
         );
     }
 
