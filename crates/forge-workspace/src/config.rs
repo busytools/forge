@@ -2285,9 +2285,9 @@ base_url = "http://localhost:18765"
 
     /// A `{:?}` on the loaded config or on the raw `ForgeToml` must
     /// print no credential: the global env, the accounts' env stamps and
-    /// flat token, a project's env values, a stale ignored section's
-    /// value, the gotify client token and the systemone api key all stay
-    /// out of it.
+    /// flat token, a project's env values, the stale ignored sections'
+    /// values, the gotify client token and the systemone api key all
+    /// stay out of it.
     #[test]
     fn a_credential_never_reaches_the_config_debug_output() {
         let toml = r#"
@@ -2325,6 +2325,15 @@ model = "jev-latest"
 [projects.legacy]
 [projects.legacy.env]
 LEGACY_TOKEN = "legacy-supersecret"
+
+[workers]
+leftover = "workers-supersecret"
+
+[selection]
+leftover = "selection-supersecret"
+
+[ui]
+leftover = "ui-supersecret"
 "#;
         let dir = tempdir().expect("tempdir");
         write_config(dir.path(), toml);
@@ -2338,7 +2347,10 @@ LEGACY_TOKEN = "legacy-supersecret"
                 ("a project env value", "project-supersecret"),
                 ("the gotify client token", "gotify-supersecret"),
                 ("the systemone api key", "systemone-supersecret"),
-                ("the stale ignored section's value", "legacy-supersecret"),
+                ("the stale projects section's value", "legacy-supersecret"),
+                ("the stale workers section's value", "workers-supersecret"),
+                ("the stale selection section's value", "selection-supersecret"),
+                ("the stale ui section's value", "ui-supersecret"),
             ] {
                 assert!(!rendered.contains(secret), "{carrier} leaked: {rendered}");
             }
@@ -2352,6 +2364,16 @@ LEGACY_TOKEN = "legacy-supersecret"
                 assert!(rendered.contains(readable), "{carrier} must stay readable: {rendered}");
             }
         }
+        // `[web]` is refused at load, so its rendering is checked
+        // through the raw parse alone.
+        let refused: ForgeToml = toml::from_str("[web]\nbind = \"web-supersecret\"\n")
+            .expect("the refused section still parses");
+        let rendered = format!("{refused:?}");
+        assert!(
+            !rendered.contains("web-supersecret"),
+            "the stale web section's value leaked: {rendered}",
+        );
+        assert!(rendered.contains("[ignored]"), "the section still reads as present: {rendered}");
     }
 
     #[test]
