@@ -167,6 +167,20 @@ describe('the session shell as it draws', () => {
   });
 
   /**
+   * **The pane has a door for a finger.** Hover is the mouse's door and
+   * Cmd+Left is the keyboard's, so a phone would have no way to the projects
+   * pane at all without this control (rule 22: no affordance only on hover).
+   * It is drawn for a coarse pointer by the sheet, beside the palette's own
+   * door, and states the pane's own open/closed state.
+   */
+  it('draws the projects pane door a coarse pointer gets', () => {
+    const body = draw();
+    expect(body, 'the pane door').toContain('class="rail-btn"');
+    expect(body, "which says what it opens").toContain('aria-label="open the projects pane"');
+    expect(body, 'and states the pane is closed').toContain('aria-expanded="false"');
+  });
+
+  /**
    * **The chip's click is smart**: exactly one waiting seat goes straight
    * there, and the band leads with it - the seat's own name behind.
    */
@@ -294,6 +308,8 @@ describe('the header brand as both sheets draw it', () => {
     for (const selector of [
       '.needchip',
       '.needchip.calm',
+      '.rail-btn',
+      '.pal-btn',
       '.app .rail.left',
       '.app.rail-open .rail.left',
       '.app.rail-static .rail.left',

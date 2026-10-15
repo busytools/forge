@@ -578,6 +578,25 @@
           <span class="ch-n">{chip.count}</span>
         {/if}
       </a>
+      <!-- The projects pane's door where there is no mouse (a coarse pointer
+           only): hover and Cmd+Left are the mouse's and the keyboard's, so
+           the rail is otherwise unreachable on a phone. The same rail the
+           chip's hover peeks, opened to stay - scrim, history, Back. -->
+      <button
+        class="rail-btn"
+        type="button"
+        aria-label={overlaid ? 'close the projects pane' : 'open the projects pane'}
+        aria-expanded={overlaid}
+        onclick={() => {
+          // The column is already the pane, so the door has nothing to
+          // toggle there (the keyboard door's own guard).
+          if (columned) return;
+          if (overlaid) closeRail();
+          else openRail();
+        }}
+      >
+        <Icon name={overlaid ? 'out' : 'in'} class="ic" />
+      </button>
       <!-- The palette's door where there is no keyboard (a coarse pointer
            only): the same palette Cmd+K opens. -->
       <button

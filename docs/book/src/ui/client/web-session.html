@@ -340,6 +340,19 @@
   .needchip.bad { color: var(--bad); border-color: rgba(224,104,62,.4);
     background: rgba(224,104,62,.08); }
   .needchip.calm { color: var(--muted); border-color: var(--line); background: none; }
+  /* The two touch doors, hidden at this drawing's fine pointer: the palette's
+     (Cmd+K's stand-in) and the projects pane's (hover's and Cmd+Left's).
+     Their rules mirror web.css rule for rule. */
+  .pal-btn { display: none; align-items: center; justify-content: center;
+    width: 30px; height: 30px; flex: none; border-radius: 8px; cursor: pointer;
+    color: var(--muted); background: none; border: 1px solid transparent; padding: 0; }
+  .pal-btn:hover { color: var(--text); background: var(--s2); border-color: var(--line); }
+  .pal-btn .ic { width: 16px; height: 16px; }
+  .rail-btn { display: none; align-items: center; justify-content: center;
+    width: 30px; height: 30px; flex: none; border-radius: 8px; cursor: pointer;
+    color: var(--muted); background: none; border: 1px solid transparent; padding: 0; }
+  .rail-btn:hover { color: var(--text); background: var(--s2); border-color: var(--line); }
+  .rail-btn .ic { width: 16px; height: 16px; }
   /* The org appears only where the fleet makes the seat's name ambiguous
      (#1707): the demo draws the common shape, name alone. */
   .sess .f-org { overflow: hidden; text-overflow: ellipsis; }
@@ -1195,6 +1208,8 @@
     /* The row's chip is a live control, so it keeps the height the rule
        above gives it and takes a width to match. */
     .pr .x, .wk .x { min-width: 44px; position: relative; z-index: 1; } .needchip { min-height: 44px; padding: 0 12px; }
+    .pal-btn { min-width: 44px; min-height: 44px; }
+    .rail-btn { min-width: 44px; min-height: 44px; }
     /* A row's link takes the 44 with the height in the line, and as a block:
        an inline-block box is shrink-to-fit, so under `nowrap` it draws as wide
        as its whole text and the ellipsis never gets an overflow to paint. */
