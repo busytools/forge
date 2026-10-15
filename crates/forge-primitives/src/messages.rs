@@ -3785,14 +3785,17 @@ mod tests_stamp {
     use super::Message;
 
     /// The frames a turn runs as, in the shapes the CLI sends and the shapes
-    /// a transcript read synthesizes.
+    /// a transcript read synthesizes, each with the stamp it must carry once
+    /// the fallback has run.
     ///
     /// **One kind per stamp slot**, since the slot is what the rule decides:
     /// the typed field (user, assistant), the verbatim payload (a generic
     /// system subtype) and the extras every typed variant re-emits - the
     /// counter frame a running turn is full of, the hook summary, the
-    /// boundary, and the result.
-    fn kinds() -> Vec<(&'static str, serde_json::Value, bool)> {
+    /// boundary, and the result. The last two entries are the other half of
+    /// the rule: a frame that already carries a stamp keeps it whichever slot
+    /// the stamp sits in.
+    fn kinds() -> Vec<(&'static str, serde_json::Value, &'static str)> {
         vec![
             (
                 "user",
@@ -3801,7 +3804,7 @@ mod tests_stamp {
                     "message": {"role": "user", "content": [{"type": "text", "text": "hi"}]},
                     "session_id": "s1",
                 }),
-                false,
+                AT,
             ),
             (
                 "assistant",
@@ -3817,7 +3820,7 @@ mod tests_stamp {
                         "content": [{"type": "text", "text": "working"}],
                     },
                 }),
-                true,
+                "2026-10-15T05:18:15.544Z",
             ),
             (
                 "system",
@@ -3827,7 +3830,18 @@ mod tests_stamp {
                     "session_id": "s1",
                     "detail": "an unmodelled subtype",
                 }),
-                false,
+                AT,
+            ),
+            (
+                "system the sender stamped",
+                json!({
+                    "type": "system",
+                    "subtype": "hook_drift_probe",
+                    "session_id": "s1",
+                    "detail": "an unmodelled subtype",
+                    "timestamp": "2026-10-15T05:19:00.100Z",
+                }),
+                "2026-10-15T05:19:00.100Z",
             ),
             (
                 "thinking_tokens",
@@ -3840,7 +3854,7 @@ mod tests_stamp {
                     "session_id": "s1",
                     "user_message_uuid": "u1",
                 }),
-                false,
+                AT,
             ),
             (
                 "stop_hook_summary",
@@ -3858,7 +3872,7 @@ mod tests_stamp {
                     "uuid": "h1",
                     "session_id": "s1",
                 }),
-                false,
+                AT,
             ),
             (
                 "compact_boundary",
@@ -3869,7 +3883,7 @@ mod tests_stamp {
                     "session_id": "s1",
                     "compact_metadata": {"trigger": "auto", "pre_tokens": 10, "post_tokens": 2},
                 }),
-                false,
+                AT,
             ),
             (
                 "result",
@@ -3882,7 +3896,21 @@ mod tests_stamp {
                     "duration_ms": 12000,
                     "duration_api_ms": 9000,
                 }),
-                false,
+                AT,
+            ),
+            (
+                "result the sender stamped",
+                json!({
+                    "type": "result",
+                    "subtype": "success",
+                    "session_id": "s1",
+                    "is_error": false,
+                    "num_turns": 1,
+                    "duration_ms": 12000,
+                    "duration_api_ms": 9000,
+                    "timestamp": "2026-10-15T05:19:40.632Z",
+                }),
+                "2026-10-15T05:19:40.632Z",
             ),
         ]
     }
@@ -3890,20 +3918,19 @@ mod tests_stamp {
     const AT: &str = "2026-10-15T05:18:05.217Z";
 
     /// **Every kind a turn holds comes off the wire with a stamp a client can
-    /// read at the frame's top level** - and a frame the CLI already stamped
-    /// keeps its own, because a receipt is a fallback and never a correction.
+    /// read at the frame's top level** - and a frame that already carries one
+    /// keeps it, because a receipt is a fallback and never a correction.
     ///
     /// The client's fold anchors a running turn's clock on the first frame
     /// that carries one, so a kind that cannot hold a stamp is a turn whose
     /// clock starts at the wrong row - or at no row at all.
     #[test]
     fn every_kind_carries_a_stamp_at_the_top_level_it_is_read_from() {
-        for (kind, raw, stamped) in kinds() {
+        for (kind, raw, want) in kinds() {
             let mut msg: Message = serde_json::from_value(raw).expect("decode");
             msg.stamp_if_absent(AT);
 
             let encoded = serde_json::to_value(&msg).expect("encode");
-            let want = if stamped { "2026-10-15T05:18:15.544Z" } else { AT };
             assert_eq!(
                 encoded["timestamp"].as_str(),
                 Some(want),
