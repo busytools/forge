@@ -18,8 +18,8 @@ use forge_primitives::usage::zai::{QuotaLimitData, QuotaLimitEntry, QuotaLimitRe
 use forge_primitives::usage::{UsageSnapshot, UsageSourceKind, UsageWindow};
 
 use crate::helpers::{
-    BaseUrlCredential, MissingBase, OAUTH_TIMEOUT, base_url_credential, system_time_from_epoch,
-    truncated_body_suffix,
+    BaseUrlCredential, MissingBase, OAUTH_TIMEOUT, base_url_credential, redacted_body,
+    system_time_from_epoch,
 };
 use crate::{AccountEnv, BillingModel, ProbeError, Provider, ProviderBackend, ProviderHost};
 
@@ -141,7 +141,7 @@ async fn monitor_probe(
             event_name = "zai_monitor_response",
             status,
             outcome = "non_ok",
-            body_suffix = %truncated_body_suffix(&body),
+            body_suffix = %redacted_body(&body, key),
         );
     }
 
@@ -149,7 +149,7 @@ async fn monitor_probe(
         200 => quota_from_body(&body),
         401 | 403 => Err(OauthUsageError::Unauthorized(status)),
         429 => Err(OauthUsageError::RateLimited { retry_after: None }),
-        _ => Err(OauthUsageError::HttpStatus(status, truncated_body_suffix(&body))),
+        _ => Err(OauthUsageError::HttpStatus(status, redacted_body(&body, key))),
     }
 }
 

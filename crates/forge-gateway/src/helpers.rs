@@ -245,7 +245,7 @@ pub async fn anthropic_windowed_probe(
             event_name = "oauth_usage_scope_refusal",
             status,
             outcome = "scope_refused",
-            body_suffix = %truncated_body_suffix(&body),
+            body_suffix = %redacted_body(&body, access_token),
         );
     } else {
         tracing::warn!(
@@ -254,17 +254,18 @@ pub async fn anthropic_windowed_probe(
             status,
             outcome = "non_ok",
             retry_after_secs = ?retry_after.map(|d| d.as_secs()),
-            body_suffix = %truncated_body_suffix(&body),
+            body_suffix = %redacted_body(&body, access_token),
         );
     }
 
     match status {
-        200 => serde_json::from_slice::<OauthUsage>(&body)
-            .map_err(|error| OauthUsageError::Decode(error.to_string())),
+        200 => serde_json::from_slice::<OauthUsage>(&body).map_err(|error| {
+            OauthUsageError::Decode(redacted_message(&error.to_string(), access_token))
+        }),
         403 if is_scope_refusal(&body) => Err(OauthUsageError::ScopeInsufficient),
         401 | 403 => Err(OauthUsageError::Unauthorized(status)),
         429 => Err(OauthUsageError::RateLimited { retry_after }),
-        _ => Err(OauthUsageError::HttpStatus(status, truncated_body_suffix(&body))),
+        _ => Err(OauthUsageError::HttpStatus(status, redacted_body(&body, access_token))),
     }
 }
 
@@ -308,20 +309,81 @@ pub fn parse_retry_after(raw: &str) -> Option<Duration> {
     when.duration_since(SystemTime::now()).ok()
 }
 
-/// First 200 chars of a body, as a `": ..."` suffix for log fields.
-pub fn truncated_body_suffix(body: &[u8]) -> String {
+/// A body as a log field's suffix (`": ..."`, capped at 200 chars), with
+/// the request's credential masked.
+///
+/// Every endpoint here is reached with a token and several sit on base urls
+/// the user configures, so a host that echoes the request - or a payload
+/// carrying its own copy of the key, as `/v1/key` does - would put key
+/// material in a warn (#2268). Three masks cover the shapes a copy arrives
+/// in: the token itself wherever it appears, any quoted run containing its
+/// opening characters, and any bare word containing them (a payload's copy
+/// is truncated, so it is a leading piece of the token rather than the
+/// whole of it).
+pub fn redacted_body(body: &[u8], bearer: &str) -> String {
     let text = String::from_utf8_lossy(body).trim().replace('\n', " ");
     if text.is_empty() {
         return String::new();
     }
-    let shortened = if text.chars().count() > 200 {
-        let mut out = text.chars().take(200).collect::<String>();
+    // The mask runs over the whole body, before the cap: a log line shows
+    // the first 200 characters of an already-masked body, so the cut can
+    // never hide key material from the mask.
+    let masked = redacted_message(&text, bearer);
+    let shortened = if masked.chars().count() > 200 {
+        let mut out = masked.chars().take(200).collect::<String>();
         out.push_str("...");
         out
     } else {
-        text
+        masked
     };
     format!(": {shortened}")
+}
+
+/// Text with the credential masked, for a field that is not a body - a
+/// serde message beside one, which can quote a value it was decoding.
+pub fn redacted_message(text: &str, bearer: &str) -> String {
+    let tag: String = bearer.chars().take(8).collect();
+    let replaced = text.replace(bearer, "[redacted]");
+    if tag.is_empty() {
+        return replaced;
+    }
+    let quoted = mask_quoted_runs(&replaced, &tag);
+    // A copy need not be quoted: a host echoing the request writes it bare,
+    // and the copy a payload carries is truncated - the whole token's
+    // replace cannot see that one. Whitespace runs normalize here.
+    quoted
+        .split_whitespace()
+        .map(|word| if word.contains(&tag) { "[redacted]" } else { word })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Every double-quoted run containing `tag` masked; an unterminated quote
+/// takes its tail with it rather than printing a value whose end nobody
+/// found. A run's spaces stay inside it, which the bare-word pass over it
+/// cannot see.
+fn mask_quoted_runs(text: &str, tag: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find('"') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('"') else {
+            out.push_str("[redacted]");
+            return out;
+        };
+        let run = &after[..close];
+        if run.contains(tag) {
+            out.push_str("[redacted]");
+        } else {
+            out.push('"');
+            out.push_str(run);
+            out.push('"');
+        }
+        rest = &after[close + 1..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Map a windowed payload to a snapshot with every window treated as
@@ -375,6 +437,72 @@ pub(crate) fn map_extra_usage(payload: Option<OauthExtraUsage>) -> Option<ExtraU
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A log line never carries key material** (#2268): the payloads
+    /// these probes read include a copy of the key - truncated, so it is a
+    /// leading piece of the token rather than the whole of it - and a host
+    /// that echoes the request carries whatever it was sent. The body's
+    /// shape stays; the key does not, in every shape it can arrive in.
+    #[test]
+    fn a_logged_body_never_carries_the_key() {
+        let bearer = "sk-or-v1-0123456789abcdef";
+
+        // The whole key inside the payload, quoted.
+        let whole = br#"{"data":{"key":"sk-or-v1-0123456789abcdef","usage_daily":1.5}}"#;
+        let said = redacted_body(whole, bearer);
+        assert!(!said.contains("0123456789abcdef"), "the key never prints: {said}");
+        assert!(said.contains("usage_daily"), "and the drift's evidence stays: {said}");
+
+        // The truncated copy the endpoint carries: a leading piece.
+        let truncated = br#"{"data":{"key":"sk-or-v1-0123456789","usage_daily":1.5}}"#;
+        let said = redacted_body(truncated, bearer);
+        assert!(!said.contains("sk-or-v1-0123456789"), "a truncated copy never prints: {said}");
+        assert!(said.contains("usage_daily"), "and the evidence stays: {said}");
+
+        // A copy embedded inside a longer run, which a wrong host echoing
+        // the request sends.
+        let echoed = br#"{"error":"invalid key sk-or-v1-0123456789a rejected"}"#;
+        let said = redacted_body(echoed, bearer);
+        assert!(
+            !said.contains("sk-or-v1-0123456789"),
+            "a copy inside a longer run never prints: {said}",
+        );
+
+        // A bare copy, unquoted, in a non-JSON body.
+        let bare = b"upstream said: bad token sk-or-v1-0123456789a, sorry";
+        let said = redacted_body(bare, bearer);
+        assert!(!said.contains("sk-or-v1"), "a bare truncated copy never prints: {said}");
+        assert!(said.contains("upstream said"), "and the host's words stay: {said}");
+
+        // An unquoted occurrence of the whole token.
+        let raw = format!("not json: token {bearer} rejected");
+        let said = redacted_body(raw.as_bytes(), bearer);
+        assert!(!said.contains("0123456789abcdef"), "an unquoted token never prints: {said}");
+
+        // A key sitting past the 200-char cap: the mask runs before it, or
+        // the cut would hide the key from its own redaction.
+        let padded = format!("{} Token {bearer}", "x".repeat(180));
+        let said = redacted_body(padded.as_bytes(), bearer);
+        assert!(
+            !said.contains("0123456789abcdef"),
+            "the cap never hides a key from the mask: {said}",
+        );
+        assert!(said.contains("Token"), "and the evidence before the key stays: {said}");
+    }
+
+    /// A serde message beside a body can quote the value it was decoding
+    /// (`invalid type: string "..."`), so it is masked by the same rule.
+    #[test]
+    fn a_redacted_message_never_carries_the_key() {
+        let bearer = "sk-or-v1-0123456789abcdef";
+        let said = redacted_message(
+            "invalid type: string \"sk-or-v1-0123456789abcdef\", expected f64 at line 1 column 8",
+            bearer,
+        );
+        assert!(!said.contains("0123456789abcdef"), "the value never prints: {said}");
+        assert!(said.contains("expected f64"), "and the reason stays: {said}");
+        assert!(said.contains("line 1 column 8"), "with the position: {said}");
+    }
 
     #[test]
     fn usage_url_defaults_to_anthropic_host() {

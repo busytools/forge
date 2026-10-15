@@ -772,9 +772,12 @@ fn resolve_client(client: ClientConfig, path: &Path) -> Result<ClientConfig, Wor
 /// carries: ` at line N, column M in <key>`, or empty when it names no span -
 /// no position rather than a confident line 1.
 ///
-/// The key is the text left of that line's `=` (serde's own words do not
-/// name it for a value error, and the snippet that used to is gone); the
-/// text right of the `=` is the value, and it never prints.
+/// The key is the text left of that line's `=` when that text is shaped
+/// like a bare key (serde's own words do not name it for a value error, and
+/// the snippet that used to is gone). A line with no `=` - a malformed
+/// array element, a bare value - names nothing rather than quoting whatever
+/// sits there as a key: the text right of the `=` is the value, and it
+/// never prints.
 fn parse_position(raw: &str, span: Option<std::ops::Range<usize>>) -> String {
     let Some(span) = span else { return String::new() };
     let Some(upto) = raw.get(..span.start) else { return String::new() };
@@ -785,11 +788,16 @@ fn parse_position(raw: &str, span: Option<std::ops::Range<usize>>) -> String {
         .nth(line - 1)
         .and_then(|text| text.split_once('='))
         .map(|(head, _)| head.trim())
-        .filter(|head| !head.is_empty() && !head.starts_with('['));
+        .filter(|head| !head.is_empty() && head.chars().all(is_bare_key_char));
     match key {
         Some(key) => format!(" at line {line}, column {column} in `{key}`"),
         None => format!(" at line {line}, column {column}"),
     }
+}
+
+/// A TOML bare-key character (`a-z A-Z 0-9 _ - .`).
+fn is_bare_key_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.'
 }
 
 /// The error's own words with any double-quoted run scrubbed: serde renders
@@ -3529,6 +3537,33 @@ provider = "anthropic"
         assert!(!said.contains("hunter2secret"), "the mismatched value never prints: {said}");
         assert!(said.contains("invalid type"), "and the reason the parse failed survives: {said}");
         assert!(said.contains("line 2"), "with the position: {said}");
+    }
+
+    /// The position counts characters, not bytes, and a key is named only
+    /// when the line actually has one: a malformed array element or a bare
+    /// value has no `=` (or its head is not key-shaped), and quoting
+    /// whatever sits there would put a value back in the message - the leak
+    /// this change exists to close.
+    #[test]
+    fn the_position_counts_characters_and_names_only_a_key_line() {
+        assert_eq!(parse_position("port = \"x\"\n", Some(8..9)), " at line 1, column 9 in `port`");
+        // A multi-byte character before the span: `é` is two bytes and one
+        // column, and its line has no bare key, so no key prints either.
+        assert_eq!(parse_position("caf\u{e9} = 1\n", Some(8..9)), " at line 1, column 8",);
+        // A line with no `=`, and a head that is not key-shaped: nothing is
+        // named rather than a value quoted as a key.
+        assert_eq!(parse_position("[[accounts]]\n", Some(2..3)), " at line 1, column 3");
+        assert_eq!(parse_position("\"sk-secret=\" = 1\n", Some(15..16)), " at line 1, column 16",);
+    }
+
+    /// An unterminated quote takes its tail with it: the tail is the value
+    /// whose end nobody found.
+    #[test]
+    fn the_scrub_drops_an_unterminated_tail() {
+        assert_eq!(
+            scrub_quoted("invalid type: string \"hunter2secret"),
+            "invalid type: string [redacted]",
+        );
     }
 
     #[test]

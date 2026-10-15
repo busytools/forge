@@ -17,7 +17,7 @@ use forge_primitives::usage::{ApiSpend, UsageSnapshot, UsageSourceKind};
 
 use crate::helpers::{
     BaseUrlCredential, MissingBase, OAUTH_TIMEOUT, base_url_credential, parse_retry_after,
-    truncated_body_suffix,
+    redacted_body, redacted_message,
 };
 use crate::{AccountEnv, BillingModel, ProbeError, Provider, ProviderBackend, ProviderHost};
 
@@ -119,7 +119,7 @@ async fn credits_balance(client: &reqwest::Client, base_url: &str, bearer: &str)
                 tracing::warn!(
                     target: "forge_gateway::openrouter",
                     event_name = "openrouter_credits_no_envelope",
-                    body_suffix = %truncated_body_suffix(&body),
+                    body_suffix = %redacted_body(&body, bearer),
                     "200 from the credits endpoint carried no data envelope; balance stays absent",
                 );
             }
@@ -139,43 +139,6 @@ async fn credits_balance(client: &reqwest::Client, base_url: &str, bearer: &str)
 
 fn balance_from_credits(payload: CreditsResponse) -> Option<f64> {
     payload.data.map(|data| data.total_credits - data.total_usage)
-}
-
-/// The body a decode-failure log may carry, with key material masked.
-///
-/// The live `/v1/key` payload includes a copy of the key the request
-/// authenticated with - a truncated one, so it is a leading piece of the
-/// token rather than the whole of it. Two masks cover both shapes: every
-/// quoted run opening with the token's own first characters (whatever the
-/// endpoint does with the tail), and the exact token wherever it appears.
-fn redacted_body(body: &[u8], bearer: &str) -> String {
-    let tag: String = bearer.chars().take(8).collect();
-    let text = truncated_body_suffix(body).replace(bearer, "[redacted]");
-    if tag.is_empty() {
-        return text;
-    }
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text.as_str();
-    while let Some(open) = rest.find('"') {
-        out.push_str(&rest[..open]);
-        let after = &rest[open + 1..];
-        let Some(close) = after.find('"') else {
-            // Unterminated: nothing past it is safe to print.
-            out.push_str("[redacted]");
-            return out;
-        };
-        let run = &after[..close];
-        if run.starts_with(&tag) {
-            out.push_str("[redacted]");
-        } else {
-            out.push('"');
-            out.push_str(run);
-            out.push('"');
-        }
-        rest = &after[close + 1..];
-    }
-    out.push_str(rest);
-    out
 }
 
 /// One authenticated GET, classified like the window probes:
@@ -216,9 +179,9 @@ async fn fetch_json<T: DeserializeOwned>(
         .await
         .map_err(|error| OauthUsageError::Network(format!("body read: {error}")))?;
 
-    // Body is logged only on a non-200, and only as a truncated
-    // suffix. A 200 from the key endpoint carries a truncated copy of
-    // the key itself.
+    // Bodies logged here go through the mask: a 200 from the key
+    // endpoint carries a truncated copy of the key, and a host that
+    // echoes the request carries whatever it was sent.
     if status == 200 {
         tracing::trace!(
             target: "forge_gateway::openrouter",
@@ -236,7 +199,7 @@ async fn fetch_json<T: DeserializeOwned>(
             status,
             outcome = "non_ok",
             retry_after_secs = ?retry_after.map(|d| d.as_secs()),
-            body_suffix = %truncated_body_suffix(&body),
+            body_suffix = %redacted_body(&body, bearer),
         );
     }
 
@@ -246,21 +209,24 @@ async fn fetch_json<T: DeserializeOwned>(
                 // A 200 that will not parse is the shape a wrong base url
                 // takes: the bare host answers 200 with an HTML page. Name
                 // the URL and show the body, or the only evidence is a byte
-                // count on a trace line nobody has enabled.
+                // count on a trace line nobody has enabled. Both fields are
+                // masked: the payload carries a copy of the key, and a serde
+                // message quotes the value it was decoding.
+                let said = redacted_message(&error.to_string(), bearer);
                 tracing::warn!(
                     target: "forge_gateway::openrouter",
                     event_name = "openrouter_get_decode_failed",
                     url,
-                    error = %error,
+                    error = %said,
                     body_suffix = %redacted_body(&body, bearer),
                     "200 did not decode; check the base url is the API root",
                 );
-                OauthUsageError::Decode(error.to_string())
+                OauthUsageError::Decode(said)
             })
         }
         401 | 403 => Err(OauthUsageError::Unauthorized(status)),
         429 => Err(OauthUsageError::RateLimited { retry_after }),
-        _ => Err(OauthUsageError::HttpStatus(status, truncated_body_suffix(&body))),
+        _ => Err(OauthUsageError::HttpStatus(status, redacted_body(&body, bearer))),
     }
 }
 
@@ -356,34 +322,6 @@ mod tests {
     fn openrouter_backend_is_spend() {
         assert_eq!(Openrouter.token(), Provider::Openrouter);
         assert_eq!(Openrouter.billing(), BillingModel::Spend);
-    }
-
-    /// **The decode-failure log never carries key material** (#2268): a 200
-    /// whose body fails to decode is logged with the body as its evidence,
-    /// and the live `/v1/key` payload includes a copy of the key - a
-    /// truncated one, so it is a leading piece of the token rather than the
-    /// whole of it. The body's shape stays; the key does not.
-    #[test]
-    fn the_decode_failure_body_never_carries_the_key() {
-        let bearer = "sk-or-v1-0123456789abcdef";
-
-        // The whole key inside the payload.
-        let whole = br#"{"data":{"key":"sk-or-v1-0123456789abcdef","usage_daily":1.5}}"#;
-        let said = redacted_body(whole, bearer);
-        assert!(!said.contains("0123456789abcdef"), "the key never prints: {said}");
-        assert!(said.contains("usage_daily"), "and the drift's evidence stays: {said}");
-
-        // The truncated copy the endpoint actually carries: a leading piece.
-        let truncated = br#"{"data":{"key":"sk-or-v1-0123456789","usage_daily":1.5}}"#;
-        let said = redacted_body(truncated, bearer);
-        assert!(!said.contains("sk-or-v1-0123456789"), "a truncated copy never prints: {said}");
-        assert!(said.contains("usage_daily"), "and the evidence stays: {said}");
-
-        // An unquoted occurrence in a non-JSON body (a wrong host echoing
-        // what it was sent).
-        let raw = format!("not json: token {bearer} rejected");
-        let said = redacted_body(raw.as_bytes(), bearer);
-        assert!(!said.contains("0123456789abcdef"), "an unquoted token never prints: {said}");
     }
 
     /// The arm-routing pin: a base-url credential earns the spend
