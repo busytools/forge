@@ -2170,6 +2170,42 @@ describe('the read, and the answer a frame has outrun', () => {
   });
 
   /**
+   * **The re-ask stops at the cap, and the stale answer never reaches the
+   * record** (#1472): a seat framed faster than a round trip outruns every
+   * answer, so an uncapped re-ask asked once per trip forever, a full server
+   * encode apiece. The fourth consecutive outrun is the cap, and there the
+   * answer is DROPPED rather than taken - taking it would roll the record
+   * back to its encode point and rewind the count, and numbers the ring no
+   * longer holds are then never re-fetched (rule 25). The frames' rows must
+   * stand.
+   */
+  it('stops re-asking at the cap, and the drop keeps the frames record', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    // The record exists, taken whole on the seat's first answer.
+    page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }, { seq: 1 }));
+
+    // The live loop, one ask per trip: three answers in a row are refused and
+    // re-asked; the fourth is the cap. Four rounds is the whole run - after
+    // the cap no ask is outstanding, so in life no fifth answer comes.
+    for (let round = 1; round <= 4; round += 1) {
+      page.land(
+        frameOf({ chat_appended: { key: LEAD, msg: spoke(`line ${round}`, `u${round}`) } }, round),
+      );
+      page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }, { seq: 1 }));
+    }
+    // Publishes are paint-gated: the frames' draws are still queued.
+    paint();
+
+    expect(page.reads(), 'the cap never stopped the re-ask').toBe(3);
+    expect(
+      page.read().wire?.conversation.turns,
+      'a stale answer reached the record past the cap',
+    ).toHaveLength(4);
+    page.stop();
+  });
+
+  /**
    * **A refusal names no subject, and this client now holds many seats.** The
    * socket hangs a refusal on the oldest ask the connection has outstanding,
    * and every held seat's listener is handed the error - so a seat whose own
