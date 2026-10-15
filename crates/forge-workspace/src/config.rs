@@ -2285,9 +2285,9 @@ base_url = "http://localhost:18765"
 
     /// A `{:?}` on the loaded config or on the raw `ForgeToml` must
     /// print no credential: the global env, the accounts' env stamps and
-    /// flat token, a project's env values, the stale ignored sections'
-    /// values, the gotify client token and the systemone api key all
-    /// stay out of it.
+    /// flat token, a project's env values, the stale sections' values
+    /// (ignored or refused at load), the gotify client token and the
+    /// systemone api key all stay out of it.
     #[test]
     fn a_credential_never_reaches_the_config_debug_output() {
         let toml = r#"
@@ -2363,6 +2363,15 @@ leftover = "ui-supersecret"
             ] {
                 assert!(rendered.contains(readable), "{carrier} must stay readable: {rendered}");
             }
+        }
+        // Each loaded ghost must render as present, or a fixture stanza
+        // dropped tomorrow leaves its carrier assert above vacuous.
+        let raw = format!("{parsed:?}");
+        for section in ["workers", "projects", "selection", "ui"] {
+            assert!(
+                raw.contains(&format!("{section}: Some(\"[ignored]\")")),
+                "the stale {section} section must still render as present: {raw}",
+            );
         }
         // `[web]` is refused at load, so its rendering is checked
         // through the raw parse alone.
