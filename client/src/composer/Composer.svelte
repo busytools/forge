@@ -182,7 +182,15 @@
       }
     },
     onLine: (line) => {
-      (lineBox ?? box).dictateLine = line;
+      const target = lineBox ?? box;
+      target.dictateLine = line;
+      // **A line is the take's FAILURE**: a capture that never opened draws
+      // one, and no landing is coming for it - so the arm goes with it. Left
+      // standing, the next notice on the seat (another client's take, with
+      // the notice never having gone null because no start reached the
+      // server) would ride it into this draft.
+      target.sawTake = false;
+      target.armedUnder = null;
     },
     onRefused: (line) => {
       box.dictateLine = line;
@@ -895,7 +903,11 @@
    * client on the seat, is another client's words.
    */
   function dropTake(): void {
-    box.sawTake = false;
+    // The arm lives on the take's OWN box, which may not be the one on screen
+    // (a press on seat A, a move to B while the mic opens, Escape).
+    const target = lineBox ?? box;
+    target.sawTake = false;
+    target.armedUnder = null;
     dictate.act('cancel');
   }
 
