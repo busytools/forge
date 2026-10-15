@@ -16,6 +16,8 @@ import android.webkit.WebView
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import app.tauri.annotation.Command
 import app.tauri.annotation.InvokeArg
 import app.tauri.annotation.TauriPlugin
@@ -588,6 +590,20 @@ internal class BrowserEngine(private val activity: Activity) {
     bar.addView(done)
     column.addView(bar)
     frame.addView(column, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+    // **The window is edge-to-edge, so the bar clears the bands itself** -
+    // unpadded, its top 4dp sat under the status bar: the back and Done
+    // buttons occluded by the clock and touch-dead, the same defect the
+    // client's own page had (#2264). The bottom inset pads the column, so
+    // the page above the gesture band matches the client's own.
+    ViewCompat.setOnApplyWindowInsetsListener(frame) { _, insets ->
+      val bars =
+        insets.getInsets(
+          WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout(),
+        )
+      bar.setPadding(dp(6) + bars.left, dp(4) + bars.top, dp(6) + bars.right, dp(4))
+      column.setPadding(0, 0, 0, bars.bottom)
+      insets
+    }
     return frame
   }
 
