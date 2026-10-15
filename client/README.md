@@ -275,7 +275,8 @@ genuinely cannot.
 generates, and it is committed: the manifest, the Kotlin activity and the
 Gradle files are project source rather than build output, so its four
 local edits - the manifest's mic permissions and its
-`REQUEST_INSTALL_PACKAGES`, the activity's back handling, the update plugin
+`REQUEST_INSTALL_PACKAGES`, the activity's back handling and the window
+insets it hands the page, the update plugin
 (`app/src/main/java/dev/vedhavyas/forge/UpdatePlugin.kt`) and the release
 signing block in `app/build.gradle.kts` - survive a clean clone. The browser
 host's own files sit beside them as project source too -

@@ -23,6 +23,19 @@ function captures(text: string, pattern: RegExp): string[] {
   return found;
 }
 
+/**
+ * Every rule body the sheet writes for this exact selector, whitespace-normalised
+ * and with comments stripped: a commented-out declaration is not a declaration,
+ * and the band checks below are `toContain`s a comment would satisfy.
+ */
+function rulesFor(selector: string): string[] {
+  const uncommented = sheet.replace(/\/\*[\s\S]*?\*\//g, ' ');
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return [...uncommented.matchAll(new RegExp(`^\\s*${escaped}\\s*\\{([^}]*)\\}`, 'gm'))].map(
+    (match) => (match[1] ?? '').replace(/\s+/g, ' ').trim(),
+  );
+}
+
 /** A root that records what was hung on it, so no DOM is needed. */
 function stubRoot() {
   const set = new Map<string, string>();
@@ -54,6 +67,12 @@ describe('the palette', () => {
       '--fs-label',
       '--fs-title',
       '--ins',
+      // The window's own edges, declared at root with an `env()` fallback and
+      // written by the Android shell where the platform reports none.
+      '--safe-top',
+      '--safe-right',
+      '--safe-bottom',
+      '--safe-left',
       '--d',
       // The band's open clock, declared on the load rule rather than at root.
       '--arrive',
@@ -92,6 +111,69 @@ describe('the palette', () => {
     const tokens = rootTokens(THEME_NAMES[0]);
     for (const token of ['--syn-key', '--syn-str', '--syn-fn', '--add-bg', '--del-bg']) {
       expect(tokens, `${token} belongs to the server's renderer`).not.toHaveProperty(token);
+    }
+  });
+});
+
+describe('the system bars', () => {
+  /**
+   * **The window's own bands, spent where the page draws.** Android's window
+   * is edge-to-edge and a tap in the status bar's band belongs to the system,
+   * so every page root - and the overlay each of them opens - pads itself by
+   * the four lengths the shell writes onto the root element. A `calc` that
+   * loses one of them, while a padding is being edited for any other reason,
+   * is invisible on the desktop and a dead control on the phone.
+   */
+  it('pads the page roots and every overlay by the bands the shell measures', () => {
+    for (const [what, selector, bands] of [
+      ['the session page', '.app', ['top', 'right', 'bottom', 'left']],
+      ['the projects rail', '.app .rail.left', ['top', 'bottom', 'left']],
+      ['the board drawer', '.dr', ['top', 'right', 'bottom', 'left']],
+      ['the palette panel', '.pal .panel', ['top']],
+    ] as const) {
+      // Every rule for the selector, as one: a box's padding may be spelled
+      // in a rule of its own, and the later ones here carry other properties.
+      const rules = rulesFor(selector);
+      expect(rules.length, `${what} spells no rule at all`).toBeGreaterThan(0);
+      for (const band of bands) {
+        expect(rules.join(' '), `${what} drops the ${band} band`).toContain(`var(--safe-${band})`);
+      }
+    }
+    // The panel's own `top`: a LATER rule for the same selector draws over the
+    // banded one (equal specificity), so the last rule declaring one must be
+    // the rule carrying the band - the sheet's own habit is second rules.
+    const panelTops = rulesFor('.pal .panel').filter((rule) => /(?:^|[;{\s])top:/.test(rule));
+    const panelLast = panelTops[panelTops.length - 1] ?? '';
+    expect(panelLast, 'the palette panel drops the top band in its last top').toContain(
+      'var(--safe-top)',
+    );
+    // Every tier, not one: the phone's own `.wrap` rule overrides the padding
+    // below 760px, and a tier left short a term is the page under a bar.
+    const wraps = rulesFor('.wrap');
+    expect(wraps.length, 'the sheet spells .wrap at more than one width').toBeGreaterThan(1);
+    for (const rule of wraps) {
+      for (const band of ['top', 'right', 'bottom', 'left'] as const) {
+        expect(rule, `a .wrap tier drops the ${band} band`).toContain(`var(--safe-${band})`);
+      }
+    }
+  });
+
+  /**
+   * **The fallback every host without the shell reads.** The four are declared
+   * at root as `env(...)` and read as `calc(n + var(...))`, and only the
+   * Android shell writes them inline; drop a declaration and every `calc`
+   * reading it is invalid at computed-value time - the whole declaration
+   * dies, not just the band - on the DESKTOP and the web half, while Android
+   * stays green because the shell's inline values mask the hole.
+   */
+  it('declares every band at root with an env() fallback', () => {
+    // The base sheet's own rule, not the media blocks': a fallback declared
+    // only under 760px leaves every wider host without one.
+    const root = rulesFor(':root')[0] ?? '';
+    for (const band of ['top', 'right', 'bottom', 'left'] as const) {
+      expect(root, `--safe-${band} has no root declaration`).toContain(
+        `--safe-${band}: env(safe-area-inset-${band}`,
+      );
     }
   });
 });

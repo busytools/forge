@@ -79,3 +79,13 @@ The rail's close chip uncovers on hover, and it is the exception that keeps
 the rule: a touch screen keeps it shown, a keyboard focus reveals it, and
 its rest state takes no pointer - so it is reachable either way, and a tap
 on the row lands on the row.
+
+**The system bars are the window's, and the page gives them their band.**
+The Android window draws edge-to-edge under a transparent status bar and
+gesture bar, and the system claims the bands before the page sees them -
+taps in the status bar's, and swipes in the gesture bar's, which in
+three-button navigation is fully system-owned. So the shell measures both
+and writes the four lengths as
+`--safe-*`, and every page root - plus the overlays that carry their own
+top or bottom edge - pads itself by them. On the desktop and the web the
+four are zero and nothing moves.

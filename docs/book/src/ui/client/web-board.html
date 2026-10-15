@@ -17,6 +17,10 @@
     --text:#c9d1d9; --muted:#8f98a8; --dim:#788294;
     --accent:#f47600; --ok:#82c76b; --bad:#e0683e; --warn:#c9a13b;
     --blue:#61a0e0; --hot:#ffb058; --sel:#20140a;
+    /* The window's own bands, as the sheet declares them; zero anywhere the
+       host is not edge-to-edge, which is every reader of this drawing. */
+    --safe-top: env(safe-area-inset-top, 0px); --safe-right: env(safe-area-inset-right, 0px);
+    --safe-bottom: env(safe-area-inset-bottom, 0px); --safe-left: env(safe-area-inset-left, 0px);
     --ui: "Fira Code", system-ui, -apple-system, "Segoe UI", sans-serif;
     --mono: "Fira Code", ui-monospace, Menlo, monospace;
     --r: 10px;
@@ -182,7 +186,8 @@
 
   .dr-scrim { position: fixed; inset: 0; background: rgba(4,5,10,.55); z-index: 40; }
   .dr {
-    position: fixed; top: 0; right: 0; bottom: 0; width: min(520px, 100%);
+    position: fixed; width: min(520px, calc(100% - var(--safe-right) - var(--safe-left)));
+    inset: var(--safe-top) var(--safe-right) var(--safe-bottom) auto;
     background: var(--s1); border-left: 1px solid var(--line);
     box-shadow: -18px 0 40px rgba(0,0,0,.4); z-index: 41;
     display: flex; flex-direction: column;
