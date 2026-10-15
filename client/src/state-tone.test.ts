@@ -55,6 +55,8 @@ import { readFileSync } from 'node:fs';
 
 import { describe, expect, it } from 'vitest';
 
+import { repoPath } from './repo';
+
 /**
  * The state classes the sheet writes, and the tone each one MEANS.
  *
@@ -155,16 +157,10 @@ function sheetText(raw: string): string {
 /** The sheet the app ships. */
 const SHEET = sheetText(readFileSync(new URL('./assets/web.css', import.meta.url), 'utf8'));
 
-const PAGE = readFileSync(
-  new URL('../../docs/book/src/ui/client/web-session.html', import.meta.url),
-  'utf8',
-);
+const PAGE = readFileSync(repoPath('docs/book/src/ui/client/web-session.html'), 'utf8');
 
 /** The board drawing carries state classes too (the board's own marks). */
-const BOARD_PAGE = readFileSync(
-  new URL('../../docs/book/src/ui/client/web-board.html', import.meta.url),
-  'utf8',
-);
+const BOARD_PAGE = readFileSync(repoPath('docs/book/src/ui/client/web-board.html'), 'utf8');
 
 /**
  * Every `<style>` block in a drawing, joined rather than the first taken: a

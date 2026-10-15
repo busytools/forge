@@ -3,14 +3,12 @@ import { readFileSync } from 'node:fs';
 import { render } from 'svelte/server';
 import { describe, expect, it } from 'vitest';
 
+import { repoPath } from '../repo';
 import Decision from './Decision.svelte';
 import type { Decision as Parsed } from './decisions';
 
 /** The book's own specimen of this block, which draws the same vocabulary. */
-const PAGE = readFileSync(
-  new URL('../../../docs/book/src/ui/client/web-session.html', import.meta.url),
-  'utf8',
-);
+const PAGE = readFileSync(repoPath('docs/book/src/ui/client/web-session.html'), 'utf8');
 
 /** The same page with the entity its separators are written as decoded. */
 const PAGE_TEXT = PAGE.replaceAll('&#183;', '\u{b7}');

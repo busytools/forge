@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 import { homeWire } from '../dev/fixture.data';
 import { PROTOCOL_VERSION } from '../protocol';
+import { repoPath } from '../repo';
 import type { Connection } from '../socket';
 import type { AgentRow, HomeWire } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
@@ -300,10 +301,7 @@ describe('the header brand as both sheets draw it', () => {
    * row rules are.
    */
   it('mirrors the chip and summoned-rail rules in both sheets', () => {
-    const page = readFileSync(
-      new URL('../../../docs/book/src/ui/client/web-session.html', import.meta.url),
-      'utf8',
-    );
+    const page = readFileSync(repoPath('docs/book/src/ui/client/web-session.html'), 'utf8');
     const book = /<style>([\s\S]*?)<\/style>/.exec(page)?.[1] ?? '';
     for (const selector of [
       '.needchip',

@@ -6,6 +6,7 @@ import { FORGE_COMMANDS } from '../composer/forge-commands';
 import { homeWire } from '../dev/fixture.data';
 import session from '../dev/fixtures/session.json';
 import { PROTOCOL_VERSION } from '../protocol';
+import { repoPath } from '../repo';
 import type { AgentRow, CronEntry, HomeWire, ProjectWire, Task } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
 import { applyUpdate } from './apply';
@@ -1084,10 +1085,7 @@ describe("the palette's rows", () => {
    * copy drifts silently, so the pin reads the Rust side.
    */
   it('keeps the command table equal to commands.rs', () => {
-    const rust = readFileSync(
-      new URL('../../../crates/forge-server/src/commands.rs', import.meta.url),
-      'utf8',
-    );
+    const rust = readFileSync(repoPath('crates/forge-server/src/commands.rs'), 'utf8');
     const names = [...rust.matchAll(/name:\s*"(\/[a-z]+)"/g)].map((match) => match[1] ?? '');
     expect(names.length, 'the Rust table parsed to nothing').toBeGreaterThan(0);
     expect(

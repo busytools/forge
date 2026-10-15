@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { render } from 'svelte/server';
 import { describe, expect, it } from 'vitest';
 
+import { repoPath } from '../repo';
 import Forge from './Forge.svelte';
 import type { ForgeCard } from './forge';
 
@@ -16,10 +17,7 @@ import type { ForgeCard } from './forge';
  */
 
 const SHEET = readFileSync(new URL('../assets/web.css', import.meta.url), 'utf8');
-const PAGE = readFileSync(
-  new URL('../../../docs/book/src/ui/client/web-session.html', import.meta.url),
-  'utf8',
-);
+const PAGE = readFileSync(repoPath('docs/book/src/ui/client/web-session.html'), 'utf8');
 
 /** The heading each sheet opens the block with. */
 const HEAD = "/* ---------- a forge call's own card ----------";

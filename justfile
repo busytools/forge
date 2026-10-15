@@ -155,12 +155,14 @@ bench:
 # hand-patched runner on this client: `src/composer/meter.ts` 100%,
 # `src/chat/report.ts` 68%.
 #
-# A full-suite command cannot run in the sandbox: nine test files read outside
-# the client tree (crates/, docs/) and fail there. The command therefore runs
-# `./node_modules/.bin/vitest related` and reads its file list from the
-# `mutate` array at run time, so a module added there is scored against its own
-# tests with no second list to keep in step. A target that is not in the set is
-# refused rather than scored against tests that never import it.
+# The command runs `./node_modules/.bin/vitest related`, reading its file list
+# from the `mutate` array at run time, so a module in that array is scored
+# against its own tests with no second list to keep in step, and a target that
+# is not in the set is refused rather than scored against tests that never
+# import it. `related` is kept because only the tests that import a mutated
+# module run, which is what makes a campaign affordable - not because of the
+# sandbox: the thirteen test files that read outside the client tree (crates/,
+# docs/) resolve the checkout through `src/repo.ts`.
 #
 # Cost is about 2 seconds a mutant, so `just mutate src/composer/meter.ts` is
 # roughly a minute and the whole 4,227-mutant set is hours. Run it per module,

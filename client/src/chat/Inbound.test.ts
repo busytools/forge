@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { render } from 'svelte/server';
 import { describe, expect, it } from 'vitest';
 
+import { repoPath } from '../repo';
 import Inbound from './Inbound.svelte';
 import type { InboundLeaf } from './units';
 
@@ -16,10 +17,7 @@ import type { InboundLeaf } from './units';
  */
 
 const SHEET = readFileSync(new URL('../assets/web.css', import.meta.url), 'utf8');
-const PAGE = readFileSync(
-  new URL('../../../docs/book/src/ui/client/web-session.html', import.meta.url),
-  'utf8',
-);
+const PAGE = readFileSync(repoPath('docs/book/src/ui/client/web-session.html'), 'utf8');
 
 /** The book page's own copy of the rules it draws with. */
 const BOOK = /<style>([\s\S]*?)<\/style>/.exec(PAGE)?.[1] ?? '';

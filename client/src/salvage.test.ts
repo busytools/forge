@@ -2,13 +2,15 @@ import { readdirSync, readFileSync } from 'node:fs';
 
 import { describe, expect, it } from 'vitest';
 
+import { repoPath } from './repo';
+
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8');
 
 /** Where the server writes the fixtures these are copies of. */
-const SERVER_FIXTURES = '../../crates/forge-server/tests/wire_fixtures';
+const SERVER_FIXTURES = repoPath('crates/forge-server/tests/wire_fixtures');
 
 /** The book's client drawings, each with a `:root` of its own. */
-const DRAWINGS = '../../docs/book/src/ui/client';
+const DRAWINGS = repoPath('docs/book/src/ui/client');
 
 /**
  * The copy the client takes from the server, and why it is pinned.
@@ -39,7 +41,7 @@ describe('the salvage copies', () => {
    * a fixture the server starts writing is covered the day it lands.
    */
   it("ships the server's own fixtures, byte for byte", () => {
-    const names = readdirSync(new URL(SERVER_FIXTURES, import.meta.url))
+    const names = readdirSync(SERVER_FIXTURES)
       .filter((name) => name.endsWith('.json'))
       .sort();
 
@@ -203,7 +205,7 @@ describe('the salvage copies', () => {
 
 /** The book's drawings, read in a fixed order so a failure names the same page twice. */
 function drawings(): string[] {
-  const pages = readdirSync(new URL(DRAWINGS, import.meta.url))
+  const pages = readdirSync(DRAWINGS)
     .filter((name) => /^web-.*\.html$/.test(name))
     .sort();
   // A directory that could not be read would make every sweep below pass for
