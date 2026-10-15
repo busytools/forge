@@ -365,17 +365,17 @@ fn dispatch(cmd: AgentCommand, bridge: &ForgeSdkBridge) -> anyhow::Result<()> {
 
     match cmd {
         C::NewSession { session_id, cwd, launch_settings } => {
-            bridge.new_session(session_id, cwd, decode_launch_settings(launch_settings))
+            bridge.new_session(session_id, cwd, decode_launch_settings(launch_settings)?)
         }
         C::ResumeSession { session_id, cwd, launch_settings } => bridge.resume_session(
             session_id.into_string(),
             cwd,
-            decode_launch_settings(launch_settings),
+            decode_launch_settings(launch_settings)?,
         ),
         C::ResumeOrNewSession { session_id, cwd, launch_settings } => bridge.resume_or_new_session(
             session_id.into_string(),
             cwd,
-            decode_launch_settings(launch_settings),
+            decode_launch_settings(launch_settings)?,
         ),
         C::Prompt { session_id, text, uuid } => {
             bridge.prompt_text(session_id.into_string(), text, uuid)
@@ -403,19 +403,21 @@ fn dispatch(cmd: AgentCommand, bridge: &ForgeSdkBridge) -> anyhow::Result<()> {
 }
 
 /// Decode launch settings off the dispatcher channel. Symmetric to the
-/// encode-side `?`-propagation in `AgentHandle::new_session`. A
-/// forward-compat break in `SessionLaunchSettings` - e.g. adding
-/// `#[serde(deny_unknown_fields)]` or splitting a field - would
-/// otherwise silently strip user config; the fallback keeps the spawn
-/// alive on defaults and logs.
-fn decode_launch_settings(value: serde_json::Value) -> crate::client::SessionLaunchSettings {
-    serde_json::from_value(value).unwrap_or_else(|e| {
-        tracing::error!(
-            target: crate::logging::targets::BRIDGE_LIFECYCLE,
-            error = %e,
-            "failed to decode launch_settings on dispatcher receive; falling back to default",
-        );
-        crate::client::SessionLaunchSettings::default()
+/// encode-side `?`-propagation in `AgentHandle::new_session`.
+///
+/// **A failure refuses the spawn** (Ved, 2026-10-15). The settings carry the
+/// blocked-tools denial (`disallowedTools`) among the rest, so a spawn on
+/// defaults would start a session WIDER than the one that was configured -
+/// silently unblocking tools. The error says what happened and the seat stays
+/// without a session until the payload is fixed.
+fn decode_launch_settings(
+    value: serde_json::Value,
+) -> anyhow::Result<crate::client::SessionLaunchSettings> {
+    serde_json::from_value(value).map_err(|e| {
+        anyhow::anyhow!(
+            "the launch settings could not be decoded, so the spawn is refused rather than \
+             started with none of them (the blocked-tools denial rides them): {e}"
+        )
     })
 }
 
@@ -431,7 +433,7 @@ mod decode_launch_settings_tests {
             "agent_progress_summaries": true,
             "charter": "worker charter",
         });
-        let decoded = decode_launch_settings(value);
+        let decoded = decode_launch_settings(value).expect("the stamped settings decode");
         assert_eq!(
             decoded.settings.as_ref().and_then(|s| s.get("model")).and_then(|v| v.as_str()),
             Some("haiku"),
@@ -442,11 +444,15 @@ mod decode_launch_settings_tests {
     }
 
     #[test]
-    fn falls_back_to_defaults_on_an_undecodable_value() {
-        // A forward-compat break (or a corrupt payload) lands here:
-        // the spawn proceeds on defaults instead of silently dropping
-        // the stamped config into a null settings map.
-        let decoded = decode_launch_settings(serde_json::json!(42));
-        assert_eq!(decoded, crate::client::SessionLaunchSettings::default());
+    fn refuses_the_spawn_on_an_undecodable_value() {
+        // The settings carry the blocked-tools denial, so a decode failure
+        // must not start a session on defaults: it refuses, naming the
+        // denial's carrier (Ved, 2026-10-15).
+        let error = decode_launch_settings(serde_json::json!(42))
+            .expect_err("an undecodable value refuses rather than defaults");
+        assert!(
+            error.to_string().contains("blocked-tools denial"),
+            "the refusal names what the settings carry: {error}"
+        );
     }
 }
