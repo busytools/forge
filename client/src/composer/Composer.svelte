@@ -21,7 +21,7 @@
   import { LIST_ID, offer, rowId, type Sources } from './autocomplete';
   import { axesFor, deviceFor, rememberAxes, rememberDevice } from './dictation';
   import { focusOf, type Where } from './editors';
-  import { bindPushToTalk, Dictation, openCapture } from './dictate.svelte';
+  import { bindPushToTalk, Dictation, openCapture, takeCounts, takePhase } from './dictate.svelte';
   import { FORGE_COMMANDS } from './forge-commands';
   import {
     blocked,
@@ -149,13 +149,6 @@
   let lineBox: Box | null = null;
 
   /**
-   * What the take's row can say it is doing, across both capture legs. The
-   * capture's own open is the band's state, not a row state: it is drawn
-   * before there is a take for the row to draw.
-   */
-  type RowPhase = 'ready' | 'recording' | 'transcribing';
-
-  /**
    * The take this page owns.
    *
    * One, not one per seat: the microphone is the client's own, so the box's
@@ -206,8 +199,7 @@
    */
   const wire = $derived.by(() => {
     const shown = boxKey(slot);
-    if (dictate.take !== null)
-      return boxKey(dictate.take.seat) === shown ? dictate.take.wire : null;
+    if (dictate.take !== null) return takeCounts(dictate, slot);
     if (wireDone === null || wireDone.seat !== shown || composer.take === null) return null;
     // No pace past the release: the line's live reading belongs to a take
     // that is still producing. The levels go with them - the section bar holds
@@ -270,22 +262,8 @@
     };
   });
 
-  /**
-   * What the take's row says it is doing, or `null` when there is no row.
-   *
-   * `ready` is a capture that is open and has produced nothing yet - a device
-   * waking, a graph starting - and `recording` begins at the first frame
-   * carrying a real sample, which is the moment the take is actually keeping
-   * a voice (#2159).
-   */
-  const rowPhase = $derived.by((): RowPhase | null => {
-    if (composer.take?.phase === 'transcribing') return 'transcribing';
-    const live = dictate.take;
-    if (live !== null && boxKey(live.seat) === boxKey(slot)) {
-      return live.wire.flowing ? 'recording' : 'ready';
-    }
-    return composer.take !== null ? 'recording' : null;
-  });
+  // The row's phase, read the way every box that draws a take row reads it.
+  const rowPhase = $derived(takePhase(dictate, composer.take, slot));
 
   /** What the reader wrote in the dock's box, which a landed take has to reach. */
   let dockDraft = $state('');

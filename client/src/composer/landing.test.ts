@@ -1,13 +1,12 @@
 /**
- * What a landed take means to the review page: whose words they are, when
- * they have already been placed, and when a fresh landing is the same words
- * again.
+ * What a landed take means to a page: whose words they are, when they have
+ * already been placed, and when a fresh landing is the same words again.
  */
 
 import { describe, expect, it } from 'vitest';
 
-import type { Notice } from '../composer/wire';
-import { Landing } from './dictate';
+import { Landing } from './landing';
+import type { Notice } from './wire';
 
 const words: Notice = { kind: 'landed', text: 'this read is the whole input', truncated: false };
 const other: Notice = { kind: 'landed', text: 'looks good', truncated: false };

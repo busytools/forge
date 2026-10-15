@@ -4,9 +4,8 @@
  */
 
 import type { DocumentKind, ServerMessage } from '../protocol';
-import type { ConnectionStatus } from '../socket';
+import type { Connection, ConnectionStatus } from '../socket';
 import type { SessionSlot } from '../wire/types';
-import type { DocumentConnection } from './live';
 
 export const SLOT: SessionSlot = { org: 'Busytools', project: 'forge', label: 'lead' };
 
@@ -25,7 +24,7 @@ export type DocAnswer =
   | { kind: 'silent' };
 
 interface FakeDoc {
-  connection: DocumentConnection;
+  connection: Connection;
   /** Every read asked for, in order. */
   reads: { slot: SessionSlot; path: string; reviewable: boolean }[];
   /** Every command dispatched through the page, in order. */
@@ -59,7 +58,7 @@ export function fakeDoc(answer: DocAnswer): FakeDoc {
     for (const fn of [...listeners]) fn(message);
   };
   const held: FakeDoc = {
-    connection: undefined as unknown as DocumentConnection,
+    connection: undefined as unknown as Connection,
     reads,
     sent,
     emit,
@@ -93,6 +92,9 @@ export function fakeDoc(answer: DocAnswer): FakeDoc {
       return () => {};
     },
     status: (): ConnectionStatus => 'open',
+    // The page reads the greeting's dictation axes for the panel's defaults;
+    // a fake with none answers as an install that only set `forge.toml`.
+    settings: () => null,
     // A submit answers through a reply, as the server does; everything else
     // the page sends is fire-and-forget and answers `null`.
     dispatch(command: unknown): Promise<unknown> | null {
@@ -104,7 +106,7 @@ export function fakeDoc(answer: DocAnswer): FakeDoc {
       }
       return Promise.resolve(held.submitAnswer.body);
     },
-  } as unknown as DocumentConnection;
+  } as unknown as Connection;
   held.connection = connection;
   return held;
 }

@@ -33,6 +33,7 @@ import { rememberDefaultDevice } from './dictation';
 import { Microphone } from './mic';
 import { openShellMic } from './mic-shell';
 import { busyLine, LocalTake, type MicSource, type TakeConnection } from './take';
+import type { Take } from './wire';
 
 /**
  * How this client opens a microphone, on the platform it runs on.
@@ -119,6 +120,47 @@ export function bindPushToTalk(wiring: PushToTalk): void {
 export interface TakeLine {
   tone: string;
   text: string;
+}
+
+/**
+ * What a take's row says it is doing, or `null` when there is no row.
+ *
+ * `ready` is a capture that is open and has produced nothing yet - a device
+ * waking, a graph starting - and `recording` begins at the first frame
+ * carrying a real sample, which is the moment the take is actually keeping a
+ * voice (#2159). The record's own `transcribing` is the release, and it wins
+ * over this page's take: the server finalised it before the page let go.
+ *
+ * **Shared, so every box that draws a take row says the same thing**: the
+ * composer's own take line, the dock's words row, and the boxes that take a
+ * take of their own. Whatever is on screen, the reader sees one reading.
+ */
+export type RowPhase = 'ready' | 'recording' | 'transcribing';
+
+export function takePhase(
+  dictate: Dictation,
+  shown: Take | null,
+  seat: SessionSlot,
+): RowPhase | null {
+  if (shown?.phase === 'transcribing') return 'transcribing';
+  const live = dictate.take;
+  if (live !== null && boxKey(live.seat) === boxKey(seat)) {
+    return live.wire.flowing ? 'recording' : 'ready';
+  }
+  return shown === null ? null : 'recording';
+}
+
+/**
+ * The counts the row draws, for a take THIS page is capturing on this seat.
+ *
+ * `null` for a take the record shows but this page did not produce: the counts
+ * belong to the side that made the frames, and over a seat this page is not
+ * showing there is nothing of its own to read.
+ */
+export function takeCounts(dictate: Dictation, seat: SessionSlot): LocalTake['wire'] | null {
+  const live = dictate.take;
+  if (live === null || boxKey(live.seat) !== boxKey(seat)) return null;
+  return live.wire;
 }
 
 interface DictationWiring {

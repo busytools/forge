@@ -30,7 +30,7 @@ file tree, and the diff with the threads on their lines.
 | Canvas        | the scope's files as diffs, with each thread inserted under its own line and the composer under the line a comment is being written on                                                                                                                                          | the scope's diff, the threads, and the server's landing per thread |
 | Outdated      | every thread whose code could not be placed, drawn against the lines captured when the comment was written                                                                                                                                                                      | the threads half                                                   |
 | Rounds        | newest first: the round's number, its age, its tally by state, its summary, and each member thread                                                                                                                                                                              | the rounds half                                                    |
-| Finish        | the summary field and `finish review`, live once a comment is drafted                                                                                                                                                                                                           | the page's own drafts                                              |
+| Finish        | the summary field, its mic, and `finish review`, live once a comment is drafted                                                                                                                                                                                                 | the page's own drafts                                              |
 | The chat line | the lines the view this client replaced sent, pushed into the reviewed seat's own chat: `Review #N ready - address it via the review MCP (review__list)` when a round seals, `Reopened a comment in review #N - take another look via the review MCP (review__get)` on a reopen | the page's own dispatch after the write                            |
 
 ## A scope, and where a thread draws
@@ -176,18 +176,33 @@ Every write re-reads the record when it lands, because nothing pushes a
 review change: the drawn round, the drawn thread and the header are always
 the store's own answer rather than the page's guess at what the write did.
 
-**The comment box dictates.** It wears the composer's own mic control - a
-press starts a take, a hold opens what dictation is set to - over the take
-the page owns, so a take begun here is addressed to the seat this review
-belongs to and the server sees an ordinary take on that seat. The words land
-at the end of the box that is open when the take settles; a notice about a
-take this page never watched (a page that attached or reloaded on the
-previous take's words) is not placed at all, and a take that could not start
-says so in the box it was pressed in, for as long as that box is the one
-open - the line belongs to the attempt, not to the next line the reader
-opens. The box honours the push-to-talk key while it is open - the same
-press and release the composer's box reads - and the reply boxes in the two
-halves take typing alone.
+**Every box on the page dictates, the way the composer's box does.** The
+comment box, the reply box in either half and the round's summary field each
+wear the composer's own mic control - a press starts a take, a hold opens
+what dictation is set to - over the page's own take, so a take begun here is
+addressed to the seat this review belongs to and the server sees an ordinary
+take on that seat.
+
+**The visible take bar takes the line of the box that began the take**,
+exactly as the composer's bar takes the draft's own line: the row the words
+would be typed into is the row they arrive on, so nothing is added and
+nothing moves as a take starts or ends, and no other box draws a bar for a
+take that is not its own. The words land at the end of the box that began
+the take, if it is still open when the take settles - a box the reader
+closed has nowhere to put them, and the words are dropped rather than
+written where the reader is not. A notice about a take this page never
+watched (a page that attached or reloaded on the previous take's words) is
+not placed at all, and a take that could not start says so in the box it was
+pressed in - the line belongs to the attempt, not to the next line the
+reader opens.
+
+**The push-to-talk key is one registration for the page**, because the
+microphone is the client's own and every box drives the same take: a
+registration per box would fire the key once per open box. It begins its
+take in the box the reader is in, else the one open, else the summary - the
+same press and release the composer's box reads - and it is offered only
+where a take has somewhere to land, since a take whose words no box can take
+is a take the reader loses.
 
 **The write's outcome is read.** The two commands that answer through a
 reply carry the server's own answer back - the store's yes, or the word a
@@ -219,6 +234,10 @@ reviewed on this branch yet.`; threads drafted with no round filed says how
   failed says that; and an unnamed layer state draws its own word.
 - **A commit being fetched**: `Reading the commit...` until its answer
   lands.
+- **A take running**: the take's bar in the line of the box that began it -
+  the composer's own reading, `ready`, `recording` and `transcribing` - and
+  the mic beside it says `stop dictating`; the words land in that box when
+  the take settles.
 
 ## The strip's row
 

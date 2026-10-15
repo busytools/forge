@@ -22,12 +22,19 @@
   let {
     dictate,
     onpress = () => {},
+    onhold = () => {},
     element = () => {},
   }: {
     /** The take this surface's mic drives. */
     dictate: Dictation;
     /** The reader's last act was on the mic, which is what keeps the caret on it. */
     onpress?: () => void;
+    /**
+     * The settings were opened from this control, which a surface with more
+     * than one box needs: the panel is anchored to whichever box drew the
+     * control, so the box that was held is the one that draws it.
+     */
+    onhold?: () => void;
     /**
      * The button, wherever the surface puts it - the composer moves it between
      * rows, so a surface that keeps the caret on it needs the element itself
@@ -78,6 +85,7 @@
     holdTimer = setTimeout(() => {
       holdTimer = null;
       heldAt = Date.now();
+      onhold();
       dictate.panel = true;
     }, MIC_HOLD_MS);
   }
@@ -111,6 +119,7 @@
     // title so it is discoverable rather than folklore.
     if (event.key === 'Enter' && event.shiftKey) {
       event.preventDefault();
+      onhold();
       dictate.panel = true;
     }
   }}

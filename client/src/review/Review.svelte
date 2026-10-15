@@ -1,17 +1,33 @@
 <script lang="ts">
   import { SvelteSet } from 'svelte/reactivity';
   import { boxKey } from '../composer/box.svelte';
-  import { Dictation, openCapture, type TakeLine } from '../composer/dictate.svelte';
-  import { axesFor, deviceFor } from '../composer/dictation';
+  import {
+    bindPushToTalk,
+    Dictation,
+    openCapture,
+    takeCounts,
+    takePhase,
+    type RowPhase,
+    type TakeLine,
+  } from '../composer/dictate.svelte';
+  import { axesFor, deviceFor, rememberAxes, rememberDevice } from '../composer/dictation';
+  import DictateControl from '../composer/DictateControl.svelte';
+  import DictationPanel from '../composer/DictationPanel.svelte';
+  import Field from '../composer/Field.svelte';
+  import { Landing } from '../composer/landing';
+  import TakeCard from '../composer/TakeCard.svelte';
+  import { noticeLine, joined } from '../composer/view';
   import { hrefForSlot } from '../routes';
-  import { DEFAULT_AXES } from '../session/wire';
+  import { DEFAULT_AXES, type DictateAxes } from '../session/wire';
   import { composerFrom } from '../composer/wire';
   import { watchSession, type SessionRead } from '../session/live';
   import type { SessionRecord } from '../session/wire';
   import type { Connection } from '../socket';
   import type { SessionSlot } from '../wire/types';
   import Canvas from './Canvas.svelte';
+  import type { CommentBox, ReplyBox } from './boxes';
   import ThreadTurn from './ThreadTurn.svelte';
+  import WordsBox from './WordsBox.svelte';
   import {
     ageOf,
     latestRound,
@@ -116,18 +132,101 @@
   /** The last write's refusal, drawn where the reader acted; cleared by the
    *  next write that lands. */
   let refusal = $state<string | null>(null);
-  /** The conversation half's reply box, one thread at a time. */
-  let answering = $state<string | null>(null);
-  let answerText = $state('');
+  /**
+   * The boxes this page's words can go in: the comment box on a diff line,
+   * the reply box under a thread (either half draws the same one), and the
+   * round's summary field.
+   *
+   * **The page holds them all**, because the take's words and its own line
+   * have to reach the box that began the take - a draft a box held itself
+   * would go with the row when the canvas rebuilds it.
+   */
+  type BoxName = 'comment' | 'reply' | 'summary';
+  let box = $state<CommentBox>({
+    spot: null,
+    draft: '',
+    busy: false,
+    line: null,
+    phase: null,
+    panel: false,
+    take: null,
+    wire: null,
+  });
+  let reply = $state<ReplyBox>({
+    thread: null,
+    draft: '',
+    busy: false,
+    line: null,
+    phase: null,
+    panel: false,
+    take: null,
+    wire: null,
+  });
+  let summaryLine = $state<TakeLine | null>(null);
 
   /**
-   * The line a take this page could not start left behind, drawn in the box
-   * the mic was pressed in.
+   * Where a take's words belong: the box whose mic began it.
+   *
+   * Stamped when the take starts - the press's own report only NAMES a box,
+   * and a press that refused, or one that ended a live take, must not move a
+   * landing that belongs to where that take began.
+   */
+  let takeIn = $state<BoxName | null>(null);
+  /** The spot and thread the take's box held when it began: a box that has
+   *  MOVED since is no longer the box the take belongs to, the same way a
+   *  closed one is not. */
+  let takeSpot = $state<CommentBox['spot']>(null);
+  let takeThread = $state<string | null>(null);
+  /** Where the last mic was pressed, or the last key begun a take: the box a
+   *  refusal, or a take's own line, is owed to. */
+  let pressedIn = $state<BoxName | null>(null);
+  /** Where a page line about a take is drawn: the box the attempt was made in. */
+  let lineIn = $state<BoxName | null>(null);
+  /** Which box's mic opened the settings, which is the box that anchors the panel. */
+  let panelIn = $state<BoxName | null>(null);
+
+  /** This page's memory of the seat's takes: which one it watched, and what
+   *  it has placed. A landing is placed once, and the memory is the seat's -
+   *  the record in hand can be another seat's between two reads. */
+  const landing = new Landing();
+
+  /** The boxes' own field elements, so a key or a panel close can put the
+   *  keyboard back in the box that holds the take. */
+  const elements: Record<BoxName, HTMLElement | null> = {
+    comment: null,
+    reply: null,
+    summary: null,
+  };
+
+  /**
+   * The line a take this page could not start left behind, and where it is
+   * drawn - the box the attempt was made in, never the next one opened.
    */
   let dictateLine = $state<TakeLine | null>(null);
 
   /** What `forge.toml` set, which a take with no pick of its own records under. */
   const defaults = $derived(connection.settings()?.dictate ?? DEFAULT_AXES);
+
+  /**
+   * The axes and input this seat dictates with, held here rather than per box:
+   * the seat is the door's key, every box on the page shares it, and a panel
+   * opened from one box must not show another's stale copy.
+   */
+  let axesEdit = $state<DictateAxes | null>(null);
+  let deviceEdit = $state<string | null>(null);
+  const key = $derived(boxKey(slot));
+  const seatAxes = $derived(axesEdit ?? axesFor(key, defaults));
+  const seatDevice = $derived(deviceEdit ?? deviceFor(key));
+
+  function setAxes(next: DictateAxes): void {
+    axesEdit = next;
+    rememberAxes(key, next);
+  }
+
+  function setDevice(next: string | null): void {
+    deviceEdit = next;
+    rememberDevice(key, next);
+  }
 
   /**
    * The seat's composer as the composer itself narrows it: the take a landing
@@ -150,14 +249,254 @@
     device: () => deviceFor(boxKey(slot)),
     capture: openCapture,
     onStart: () => {
+      // A take is being attempted: whatever line the last attempt left is
+      // stale, so a retry does not open under it - and the take belongs to
+      // the box the press named, AT the spot it held then.
+      takeIn = pressedIn;
+      lineIn = pressedIn;
+      takeSpot = box.spot;
+      takeThread = reply.thread;
       dictateLine = null;
     },
     onLine: (line) => {
+      // The take's own line belongs to the box it began in.
+      lineIn = takeIn;
       dictateLine = line;
     },
     onRefused: (line) => {
+      // A refused press belongs to the box that was pressed.
+      lineIn = pressedIn;
       dictateLine = line;
     },
+  });
+
+  /** What the take's row is doing, read the way every surface reads it. */
+  const rowPhase = $derived(takePhase(dictate, composer.take, slot));
+  const rowWire = $derived(takeCounts(dictate, slot));
+
+  /**
+   * What dictation means to this page, built once and handed to every box.
+   *
+   * **One stable object whose fields are getters**, because the canvas mounts
+   * its boxes by hand and a mount reads its props once: a `$derived` object
+   * here would freeze the axes and the device at the box's mount, and the
+   * panel opened off that box would then show stale chips and merge each
+   * click onto the snapshot (the row the reconciler keeps is never rebuilt -
+   * the same rule `composerRow` states for every other live value).
+   */
+  const voice = {
+    dictate,
+    get offered() {
+      return dictation;
+    },
+    get connection() {
+      return connection;
+    },
+    get bind() {
+      return composer.bind;
+    },
+    get mode() {
+      return composer.mode;
+    },
+    get axes() {
+      return seatAxes;
+    },
+    get device() {
+      return seatDevice;
+    },
+    get defaults() {
+      return defaults;
+    },
+    onaxes: setAxes,
+    ondevice: setDevice,
+  };
+
+  /**
+   * One box's own take row, or `null` when the take is another box's: a take
+   * begun at one mic draws its bar there and not at every box on the page.
+   */
+  function phaseIn(at: BoxName): RowPhase | null {
+    return takeIn === at ? rowPhase : null;
+  }
+
+  /**
+   * What the canvas's boxes read off their own state.
+   *
+   * **A mounted row reads its props once**, so everything a take moves has to
+   * reach the box through the proxy the card already reads: the write in
+   * flight (a button that never learned a write had started would file the
+   * same comment twice), the record's take and this page's counts, and the two
+   * per-box readings - what the box's take row says, and whether it is the box
+   * the settings opened off.
+   */
+  $effect(() => {
+    for (const at of ['comment', 'reply'] as const) {
+      const held = at === 'comment' ? box : reply;
+      held.busy = busy;
+      held.take = composer.take;
+      held.wire = rowWire;
+      held.phase = phaseIn(at);
+      held.panel = dictate.panel && panelIn === at;
+    }
+  });
+
+  /**
+   * A landed take puts its words in the box that began it, once.
+   *
+   * **A box that has gone is opened again rather than losing them.** The
+   * words were submitted - the reader pressed finish, or the key went up -
+   * so a box closed or moved between the release and the landing gets its
+   * spot (or its thread) back and takes the words where the reader sees
+   * them, instead of the drop being silent. A notice this page never watched
+   * is still refused by the memory. The box takes the keyboard with them,
+   * the rule the composer's own landing keeps: an immediate Enter sends what
+   * just landed.
+   */
+  $effect(() => {
+    const words = landing.place(boxKey(slot), composer.take !== null, composer.notice);
+    if (words === null || takeIn === null) return;
+    if (takeIn === 'comment') {
+      if (!sameSpot(box.spot, takeSpot)) box.spot = takeSpot;
+      if (box.spot === null) return;
+      box.draft = joined(box.draft, words);
+    } else if (takeIn === 'reply') {
+      if (reply.thread === null || reply.thread !== takeThread) reply.thread = takeThread;
+      if (reply.thread === null) return;
+      reply.draft = joined(reply.draft, words);
+    } else {
+      summary = joined(summary, words);
+    }
+    elements[takeIn]?.focus();
+  });
+
+  /**
+   * The line a take owes, drawn in the box it belongs to: this page's own
+   * line goes to the box the attempt was made in, the record's to the box
+   * the take began in - and to the comment box only when no take of this
+   * page's is in play, where it has drawn since the box was the page's only
+   * one. A record line hard-routed to the comment box would draw nothing at
+   * all for a take that failed in the reply or the summary, whose box is not
+   * the comment box and whose failure the reader would never see.
+   */
+  $effect(() => {
+    const line = dictateLine ?? noticeLine(composer.notice, landing.watched);
+    const at = dictateLine !== null ? lineIn : (takeIn ?? 'comment');
+    box.line = at === 'comment' ? line : null;
+    reply.line = at === 'reply' ? line : null;
+    summaryLine = at === 'summary' ? line : null;
+  });
+
+  /**
+   * **A take goes with its box.** The box that began a LIVE take going -
+   * the reader's cancel, a move to another spot or thread, a scope change,
+   * the canvas going with the tab - ends the take with it: leaving the
+   * microphone capturing into a box nothing draws is a take whose bar is
+   * drawn nowhere. Only a live take is cancelled here; one already submitted
+   * carries its words to the landing, which opens the box again rather than
+   * spending them.
+   */
+  $effect(() => {
+    if (takeIn === null) return;
+    const gone =
+      takeIn === 'summary'
+        ? tab !== 'conversation'
+        : takeIn === 'comment'
+          ? box.spot === null || !sameSpot(box.spot, takeSpot) || tab !== 'files'
+          : !replyDrawn() || reply.thread !== takeThread;
+    // A take already SUBMITTED - draining the capture, or waiting on a
+    // connection to send its stop - is not this effect's to cancel: the
+    // server would read it as an abandon and drop words the reader kept.
+    const live = dictate.take;
+    if (gone && (dictate.opening || (live !== null && !live.submitted))) dictate.act('cancel');
+  });
+
+  /** Whether two spots are the same place, by value: the object identity of a
+   *  rebuilt row is not this test's business. */
+  function sameSpot(at: CommentBox['spot'], held: CommentBox['spot']): boolean {
+    return (
+      at !== null &&
+      held !== null &&
+      at.path === held.path &&
+      at.side === held.side &&
+      at.line === held.line
+    );
+  }
+
+  /**
+   * Whether the reply box's thread is drawn by the half that is up: on the
+   * files half the canvas closes the box when its row goes, and on the
+   * conversation half a thread is drawn only while a round holds it - a
+   * drafted thread is in no round, so no box exists for it there.
+   */
+  function replyDrawn(): boolean {
+    if (reply.thread === null) return false;
+    if (tab === 'files') return true;
+    return rounds.some((round) =>
+      threadsInRound(threads, round.id).some((thread) => thread.id === reply.thread),
+    );
+  }
+
+  /**
+   * The box a key-begun take belongs to: the one the reader is in, else the
+   * one open, else the summary - the conversation half's box that is always
+   * there. `null` when the page has a take with nowhere to land.
+   *
+   * **The canvas's boxes count only while the canvas is what draws them.**
+   * A spot or an open thread outlives the files tab, and a take begun
+   * against one the reader cannot see has no bar drawn anywhere.
+   */
+  function pttBox(): BoxName | null {
+    const held = document.activeElement;
+    if (held !== null && held !== document.body) {
+      for (const at of ['comment', 'reply', 'summary'] as const) {
+        if (elements[at] === held) return at;
+      }
+    }
+    if (tab === 'files' && box.spot !== null) return 'comment';
+    if (replyDrawn()) return 'reply';
+    return tab === 'conversation' ? 'summary' : null;
+  }
+
+  // The push-to-talk key, once for the page: the microphone is the client's
+  // own and every box drives one take, so a registration per box would fire
+  // the key once per open box. It is offered only where a take has somewhere
+  // to land - a take whose words no box can take is a take the reader loses.
+  bindPushToTalk({
+    dictate: () => dictate,
+    offered: () => dictation && pttBox() !== null,
+    bind: () => composer.bind,
+    mode: () => composer.mode,
+    onBegin: () => {
+      const at = pttBox();
+      if (at === null) return;
+      pressedIn = at;
+      elements[at]?.focus();
+    },
+  });
+
+  /**
+   * The key that belongs to this page's boxes: a live take consumes Esc
+   * wherever the focus is, and the settings panel is what the next Escape
+   * closes - the same rule the composer's box applies to its own.
+   */
+  $effect(() => {
+    const onDown = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') return;
+      if (dictate.take !== null || dictate.opening || dictate.held) {
+        event.preventDefault();
+        event.stopPropagation();
+        dictate.act('cancel');
+        return;
+      }
+      if (dictate.panel) {
+        event.preventDefault();
+        event.stopPropagation();
+        dictate.panel = false;
+        if (panelIn !== null) elements[panelIn]?.focus();
+      }
+    };
+    window.addEventListener('keydown', onDown, true);
+    return () => window.removeEventListener('keydown', onDown, true);
   });
 
   /**
@@ -556,8 +895,8 @@
                       class="rv-a"
                       disabled={busy}
                       onclick={() => {
-                        answering = answering === thread.id ? null : thread.id;
-                        answerText = '';
+                        reply.thread = reply.thread === thread.id ? null : thread.id;
+                        reply.draft = '';
                       }}>respond</button
                     >
                     {#if name === 'resolved'}
@@ -577,42 +916,37 @@
                     {/if}
                     {#if drafts.has(thread.id)}<span class="rv-cc">drafted</span>{/if}
                   </div>
-                  {#if answering === thread.id}
-                    <div class="rv-reply">
-                      <textarea
-                        class="rv-txarea"
-                        rows="2"
-                        data-editor="nowhere"
-                        aria-label="your response"
-                        placeholder="Respond to this thread..."
-                        value={answerText}
-                        oninput={(event) => (answerText = event.currentTarget.value)}></textarea>
-                      <div class="acts">
-                        <button
-                          type="button"
-                          class="rv-a on"
-                          disabled={busy || answerText.trim() === ''}
-                          onclick={() => {
-                            const text = answerText.trim();
-                            void replied(thread, text).then((filed) => {
-                              // A refusal keeps the words: the reply is the
-                              // reader's until the server took it.
-                              if (!filed) return;
-                              answering = null;
-                              answerText = '';
-                            });
-                          }}>send</button
-                        >
-                        <button
-                          type="button"
-                          class="rv-a"
-                          onclick={() => {
-                            answering = null;
-                            answerText = '';
-                          }}>cancel</button
-                        >
-                      </div>
-                    </div>
+                  {#if reply.thread === thread.id}
+                    <!-- The same box the canvas mounts under its threads: one
+                         component, so a reply reads and dictates the same in
+                         both halves. -->
+                    <WordsBox
+                      class="rv-reply"
+                      rows={2}
+                      placeholder="Respond to this thread..."
+                      label="your response"
+                      sendLabel="send"
+                      box={reply}
+                      {voice}
+                      onsend={(text: string) => {
+                        void replied(thread, text).then((filed) => {
+                          // A refusal keeps the words: the reply is the
+                          // reader's until the server took it.
+                          if (!filed) return;
+                          reply.thread = null;
+                          reply.draft = '';
+                        });
+                      }}
+                      oncancel={() => {
+                        reply.thread = null;
+                        reply.draft = '';
+                      }}
+                      onpress={() => (pressedIn = 'reply')}
+                      onhold={() => (panelIn = 'reply')}
+                      field={(el: HTMLElement | null) => {
+                        elements.reply = el;
+                      }}
+                    />
                   {/if}
                 </div>
               {/each}
@@ -626,14 +960,32 @@
             Comments written on the diff file into the next round when you finish the review.
           </p>
           <div class="rv-finishrow">
-            <input
-              class="rv-summary"
-              type="text"
-              data-editor="nowhere"
-              placeholder="summary (optional)"
-              value={summary}
-              oninput={(event) => (summary = event.currentTarget.value)}
-            />
+            <!-- The round's own words take a take the way every box does: the
+                 bar in the field's place while it runs, and the words at the
+                 end of what is written. -->
+            <div class="rv-wordline line" class:takeline={phaseIn('summary') !== null}>
+              {#if phaseIn('summary') !== null}
+                <TakeCard
+                  take={composer.take}
+                  wire={rowWire}
+                  phase={phaseIn('summary') ?? 'recording'}
+                  oncancel={() => dictate.act('cancel')}
+                  spread
+                />
+              {:else}
+                <Field
+                  element="input"
+                  editor="nowhere"
+                  class="rv-summary"
+                  placeholder="summary (optional)"
+                  aria={{ label: 'the round summary' }}
+                  bind:value={summary}
+                  field={(el: HTMLElement | null) => {
+                    elements.summary = el;
+                  }}
+                />
+              {/if}
+            </div>
             <button
               type="button"
               class="rv-finish"
@@ -643,7 +995,35 @@
               finish review
               {#if drafts.size > 0}({drafts.size}){/if}
             </button>
+            {#if dictation}
+              <DictateControl
+                {dictate}
+                onpress={() => (pressedIn = 'summary')}
+                onhold={() => (panelIn = 'summary')}
+              />
+            {/if}
+            {#if dictate.panel && panelIn === 'summary'}
+              <div>
+                <DictationPanel
+                  connection={voice.connection}
+                  axes={voice.axes}
+                  defaults={voice.defaults}
+                  bind={voice.bind}
+                  mode={voice.mode}
+                  device={voice.device}
+                  onaxes={voice.onaxes}
+                  ondevice={voice.ondevice}
+                  onclose={() => {
+                    dictate.panel = false;
+                    elements.summary?.focus();
+                  }}
+                />
+              </div>
+            {/if}
           </div>
+          {#if summaryLine !== null}
+            <div class="rv-dictateline {summaryLine.tone}">{summaryLine.text}</div>
+          {/if}
         </section>
       </div>
     {:else}
@@ -657,10 +1037,13 @@
           {threads}
           reviews={reviews.reviews.outcome === 'read' ? reviews.reviews.value : []}
           {busy}
-          {composer}
-          {dictation}
           {dictate}
-          line={dictateLine}
+          bind:box
+          bind:reply
+          {voice}
+          onpress={(at: 'comment' | 'reply') => (pressedIn = at)}
+          onhold={(at: 'comment' | 'reply') => (panelIn = at)}
+          onelement={(at: 'comment' | 'reply', el: HTMLElement | null) => (elements[at] = el)}
           oncomment={commented}
           onreply={replied}
           onresolve={resolved}
@@ -945,6 +1328,14 @@
     display: flex;
     gap: 9px;
     align-items: center;
+    /* The settings panel opens from this row, so this is what it hangs off. */
+    position: relative;
+  }
+  /* The summary's field, or the bar that takes its place: the row's room,
+     the same one the composer's own line takes. */
+  .rv-wordline {
+    flex: 1;
+    min-width: 0;
   }
   .rv-summary {
     flex: 1;
