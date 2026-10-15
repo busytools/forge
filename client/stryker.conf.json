@@ -5,7 +5,15 @@
     "command": "./node_modules/.bin/vitest related --maxWorkers=2 $(node -p 'require(\"./stryker.conf.json\").mutate.join(\" \")')"
   },
   "concurrency": 4,
-  "ignorePatterns": ["node_modules", "dist", "src-tauri", "reports", ".stryker-tmp"],
+  "ignorePatterns": [
+    "node_modules",
+    "dist",
+    "src-tauri/target",
+    "src-tauri/browser-stack",
+    "src-tauri/gen",
+    "reports",
+    ".stryker-tmp"
+  ],
   "mutate": [
     "src/wire/home.ts",
     "src/wire/types.ts",

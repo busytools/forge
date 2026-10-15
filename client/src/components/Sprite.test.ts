@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 
 import { describe, expect, it } from 'vitest';
 
+import { repoPath } from '../repo';
 import { ICONS, SPRITE } from './sprite';
 
 /**
@@ -21,7 +22,7 @@ function captures(text: string, pattern: RegExp): string[] {
 
 /** The ids a mockup asks for, as `<use href="#i-...">`. */
 function idsUsedBy(mock: string): Set<string> {
-  const html = readFileSync(new URL(mock, import.meta.url), 'utf8');
+  const html = readFileSync(repoPath(mock), 'utf8');
   return new Set(captures(html, /href="#i-([a-z0-9-]+)"/g));
 }
 
@@ -46,8 +47,8 @@ describe('the icon sprite', () => {
    */
   it('carries every icon the mockups draw', () => {
     for (const mock of [
-      '../../../docs/book/src/ui/client/web-session.html',
-      '../../../docs/book/src/ui/client/web-composer.html',
+      'docs/book/src/ui/client/web-session.html',
+      'docs/book/src/ui/client/web-composer.html',
     ]) {
       const used = idsUsedBy(mock);
       expect(used.size, `${mock} draws no icons`).toBeGreaterThan(0);

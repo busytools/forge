@@ -18,7 +18,8 @@ just check
 ```
 
 That is `cargo fmt --check`, the Unicode punctuation gate, the release
-scripts' tests, the shell crate's rustfmt check (`client-tauri-fmt`), the
+scripts' tests and the client-dependency bootstrap's, the shell crate's
+rustfmt check (`client-tauri-fmt`), the
 client's Prettier check, ESLint, `svelte-check` and
 `tsc --noEmit` and then its vitest run, the shell crate's android warnings
 check (`client-android-warnings`),
@@ -31,17 +32,23 @@ per feature set (with and without `--all-features`),
 `RUSTFLAGS=-D warnings` on the clippy, test, doctest and doc steps. That
 flag covers the build each step drives, and rustdoc compiles a doctest on
 its own, so it does not deny warnings inside one. This is CI's set minus
-the jobs a checkout cannot carry - CI runs `cargo check --release`, the
-feature-configs builds and the image workflow, which builds and exercises
+the jobs a checkout cannot carry - CI runs `cargo check --release` and the
+image workflow, which builds and exercises
 the web image on the commits that touch it - and plus the android warnings
 check CI cannot run yet (`client-android-warnings`; the vendoring its build
 needs refuses non-macOS hosts, so the CI side is #1959). The piecewise
 client gates
 are `just client-tauri-check`, `just client-android-check` and `just
-web-image-check`. Get it green before you
-open a pull request.
-One command decides both stacks, so its verdict line names the first
-failing step whichever side it is on.
+web-image-check`.
+
+The gate is two commands, not one. Get `just check` green before you open
+a pull request, and `just check-feature-configs` too: it compiles the two
+server configurations nothing else builds - the release one `just install`
+and `install.sh` produce, with the test-only features off, and `testing`
+on its own. `just check` runs with `--all-features`, which turns every
+feature on regardless and so never catches what that configuration leaves
+out. `just check` alone decides both stacks, so its verdict line names the
+first failing step whichever side it is on.
 
 The shell under `client/src-tauri/` is its own workspace root, so the
 workspace's cargo steps do not reach it and, in CI, only the `cargo fmt

@@ -37,7 +37,7 @@ import type { ServerMessage, SessionUpdate, Subject } from '../protocol';
 import { PROTOCOL_VERSION, subjectKey } from '../protocol';
 import type { Route } from '../routes';
 import Router from '../shell/Router.svelte';
-import { connect, type Connection, type ConnectionStatus } from '../socket';
+import { connect, MAX_RETRY_MS, type Connection, type ConnectionStatus } from '../socket';
 import type { Store, StoreState, StoreValue } from '../stores';
 import { DEFAULT_SETTINGS, type SessionSlot } from '../wire/types';
 import { REPLACES } from './apply';
@@ -177,14 +177,66 @@ function text(data: RawData): string {
 /** The page as a reader reads it. */
 const drawn = (): string => document.body.innerHTML;
 
-/** Let a snapshot land: a launch is a promise chain over a socket. */
-async function settle(): Promise<void> {
-  for (let i = 0; i < 60; i += 1) {
+/**
+ * How long a wait may run before it is a failure rather than a slow machine.
+ *
+ * **Every wait here is a socket hop on the loopback plus a paint**, and what
+ * the waits follow is the operating point: a drop resets the client's backoff,
+ * so the re-ask they wait on rides `RETRY_MS` and lands in tens of
+ * milliseconds. The corner the deadline has to clear is a connection that has
+ * failed repeatedly, where the delay has doubled to `MAX_RETRY_MS` - derived
+ * from it rather than restated, so raising that ceiling cannot silently
+ * shorten every wait in this file. The 60 x 5 ms budget this replaces was the
+ * quiet-machine figure, and a loaded `just check` ran it out.
+ */
+const WAIT_MS = MAX_RETRY_MS + 1_000;
+
+/**
+ * How long a claim that nothing was sent is held open: the span a frame needs
+ * to arrive and be recorded, at the 60 x 5 ms the old silent `settle` burned
+ * whether or not anything drew.
+ */
+const QUIET_MS = 300;
+
+// A case can carry several waits in sequence, so the file's deadline is a sum
+// rather than one wait: vitest's five-second default leaves nothing for the
+// test's own work once two of them run long.
+vi.setConfig({ testTimeout: 20_000 });
+
+/**
+ * Let a snapshot land: a launch is a promise chain over a socket.
+ *
+ * The marker is the facts row, which the record's own header draws. The
+ * `data-k="sec-"` rows this waited on went with the inspector on 2026-10-07;
+ * the silent return this replaces hid that they were gone.
+ */
+async function settle(budgetMs: number = WAIT_MS): Promise<void> {
+  const deadline = Date.now() + budgetMs;
+  while (Date.now() < deadline) {
     flushSync();
     await new Promise((resolve) => setTimeout(resolve, 5));
     flushSync();
-    if (document.querySelector('[data-k^="sec-"]') !== null) return;
+    if (document.querySelector('.sess .facts') !== null) return;
   }
+  throw new Error("timed out waiting for the seat's record to draw");
+}
+
+/**
+ * Hold a quiet window, for a claim that nothing was sent.
+ *
+ * **This waits on nothing drawing** - the page is already drawn, and what the
+ * window buys is the span a frame needs to arrive and be recorded, so the
+ * absence asserts about the socket rather than about the instant the read
+ * happened. `settle` cannot serve here: it returns as soon as the record has
+ * drawn, which is a few milliseconds in.
+ */
+async function quiet(ms: number = QUIET_MS): Promise<void> {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    flushSync();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  flushSync();
 }
 
 /**
@@ -193,14 +245,21 @@ async function settle(): Promise<void> {
  * **A `history.back()` is an asynchronous browser event**, and one tick is a
  * race the CI machine schedules differently from a dev machine - the round
  * where the palette's entry hand-off landed passed locally on one tick and
- * failed there. The condition is what is waited on, never the tick.
+ * failed there. The condition is what is waited on, never the tick, and a
+ * budget that runs out is a named failure rather than a silent return.
+ *
+ * The budget is a parameter so a case can bound a wait that is not a hop -
+ * the wait's own self-check below - and every case that waits on the page
+ * takes the file's.
  */
-async function until(ok: () => boolean): Promise<void> {
-  for (let i = 0; i < 60; i += 1) {
+async function until(ok: () => boolean, what: string, budgetMs: number = WAIT_MS): Promise<void> {
+  const deadline = Date.now() + budgetMs;
+  while (Date.now() < deadline) {
     flushSync();
     if (ok()) return;
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
+  throw new Error(`timed out waiting for ${what}`);
 }
 
 let app: Record<string, unknown> | null = null;
@@ -519,11 +578,14 @@ describe('the session page over a socket', () => {
     // The switch subscribes the seat it moves to, and the frame has a socket
     // hop to make - so the count is waited on, never read once.
     route.set({ name: 'session', slot: W1 });
-    await until(() => seatSubscribesOf(W1) === 1);
+    await until(() => seatSubscribesOf(W1) === 1, 'the switch to subscribe w1');
     expect(seatSubscribesOf(W1), 'precondition: the switch subscribed w1').toBe(1);
 
     route.set({ name: 'session', slot: LEAD });
-    await until(() => document.querySelectorAll('.conv .turn').length > 0);
+    await until(
+      () => document.querySelectorAll('.conv .turn').length > 0,
+      "the lead's conversation rows to draw",
+    );
     expect(
       document.querySelector('.sess .nm')?.textContent,
       'precondition: the route never came back to the lead',
@@ -531,7 +593,7 @@ describe('the session page over a socket', () => {
 
     // Frames are written synchronously and land a hop later, so the window a
     // frame would have taken is what makes "nothing was sent" a claim.
-    await settle();
+    await quiet();
     expect(seatSubscribesOf(LEAD), 'the return subscribed the seat again').toBe(1);
     expect(
       seatUnsubscribesOf(LEAD),
@@ -563,7 +625,7 @@ describe('the session page over a socket', () => {
       target: document.body,
       props: { route, props: routerProps() },
     });
-    await until(() => drawn().includes('the lead said this'));
+    await until(() => drawn().includes('the lead said this'), "the lead's words to draw");
 
     const before = seatSubscribesOf(LEAD);
     server?.drop();
@@ -573,15 +635,21 @@ describe('the session page over a socket', () => {
     // before the drop even happens once the seat is subscribed twice, which is
     // the state this change removes - the assertion would then be reading the
     // pre-drop count and claiming a reconnect that never had to happen.
-    await until(() => seatSubscribesOf(LEAD) > before);
+    await until(() => seatSubscribesOf(LEAD) > before, 'the reconnect to re-ask the seat');
     expect(seatSubscribesOf(LEAD), 'the reconnect did not re-ask the seat').toBe(before + 1);
-    await until(() => drawn().includes('the lead said this'));
+    await until(
+      () => drawn().includes('the lead said this'),
+      'the conversation to draw again after the reconnect',
+    );
     expect(drawn(), 'the reconnect left the column without its conversation').toContain(
       'the lead said this',
     );
 
     route.set({ name: 'session', slot: W1 });
-    await until(() => drawn().includes('the worker said this'));
+    await until(
+      () => drawn().includes('the worker said this'),
+      "the worker's words after the switch",
+    );
     expect(drawn(), 'the switch after a reconnect kept the seat it left').not.toContain(
       'the lead said this',
     );
@@ -606,7 +674,7 @@ describe('the session page over a socket', () => {
       target: document.body,
       props: { ...routerProps(), route: { name: 'session', slot: LEAD } },
     });
-    await until(() => drawn().includes('the lead said this'));
+    await until(() => drawn().includes('the lead said this'), "the lead's words to draw");
     expect(drawn(), 'precondition: the seat drew before the page was hidden').toContain(
       'the lead said this',
     );
@@ -692,7 +760,10 @@ describe('the session page over a socket', () => {
     );
 
     route.set({ name: 'session', slot: W1 });
-    await until(() => drawn().includes('the worker said this'));
+    await until(
+      () => drawn().includes('the worker said this'),
+      "the route's seat to draw its own conversation",
+    );
 
     expect(drawn(), 'the chat kept drawing the conversation of the seat it left').not.toContain(
       'the lead said this',
@@ -763,7 +834,7 @@ describe('the session page over a socket', () => {
     );
 
     history.back();
-    await until(() => document.querySelector('.pal') === null);
+    await until(() => document.querySelector('.pal') === null, 'Back to close the palette');
     expect(document.querySelector('.pal'), 'Back left the palette up').toBeNull();
   });
 
@@ -794,7 +865,10 @@ describe('the session page over a socket', () => {
     expect(state?.forgeRail, "the entry on top is not the rail's").toBe('left');
 
     history.back();
-    await until(() => !(document.querySelector('.app')?.className ?? '').includes('rail-open'));
+    await until(
+      () => !(document.querySelector('.app')?.className ?? '').includes('rail-open'),
+      'Back to close the rail',
+    );
     expect(
       document.querySelector('.app')?.className ?? '',
       'one Back did not close the rail',
@@ -838,7 +912,7 @@ describe('the session page over a socket', () => {
     expect(document.querySelector('.pal'), 'Cmd+K drew no palette').not.toBeNull();
 
     history.back();
-    await until(() => document.querySelector('.pal') === null);
+    await until(() => document.querySelector('.pal') === null, 'Back to close the palette');
     expect(document.activeElement, 'the pop left the keyboard nowhere').toBe(chip);
   });
 
@@ -852,11 +926,11 @@ describe('the session page over a socket', () => {
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }));
     flushSync();
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
-    await until(() => document.querySelector('.pal') === null);
+    await until(() => document.querySelector('.pal') === null, 'Escape to close the palette');
 
     const left = (): string | undefined =>
       (history.state as { forgeRail?: string } | null)?.forgeRail;
-    await until(() => left() === undefined);
+    await until(() => left() === undefined, "Escape's route to consume its entry");
     expect(left(), "Escape's route stranded its entry").toBeUndefined();
   });
 
@@ -902,9 +976,10 @@ describe('the session page over a socket', () => {
     expect(seatSubscribes(), 'precondition: the first visit subscribed the seat').toBe(1);
 
     await leave();
-    // The leave sends its unsubscribe over a real socket, so the frame has
-    // a hop to make before the server has it.
-    await settle();
+    // The leave sends its unsubscribe over a real socket, so the frame has a
+    // hop to make before the server has it. The page is unmounted by then, so
+    // the thing waited on is the server's own record of the leave.
+    await until(() => (server?.gone.length ?? 0) > 0, 'the leave to reach the server');
     expect(server?.gone.length, 'the leave took the seat away from the socket').toBe(1);
 
     revisit();
@@ -2479,5 +2554,20 @@ describe('the seat sequence', () => {
 
     expect(connection.reads(), 'the whole record is asked for again').toBeGreaterThan(reads);
     page.stop();
+  });
+});
+
+describe("the file's own waits", () => {
+  /**
+   * **A wait that expires fails by name.** Its 60 x 5 ms predecessor returned
+   * silently, so a load-induced miss surfaced later as an unexplained
+   * assertion that named nothing about what never arrived - the shape
+   * `socket.test.ts`'s waits were already fixed out of.
+   */
+  it('names what it waited for when the budget runs out', async () => {
+    await expect(until(() => false, 'a condition that never holds', 20)).rejects.toThrow(
+      'timed out waiting for a condition that never holds',
+    );
+    await expect(settle(20)).rejects.toThrow("timed out waiting for the seat's record to draw");
   });
 });

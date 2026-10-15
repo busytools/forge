@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 import { CLIENT_VERSION, PROTOCOL_VERSION, releaseOf, skewMessage, skewOf } from './protocol';
+import { repoPath } from './repo';
 import { DEFAULT_SETTINGS } from './wire/types';
 
 /**
@@ -25,10 +26,7 @@ import { DEFAULT_SETTINGS } from './wire/types';
  * that agrees.
  */
 function serverProtocolVersion(): number {
-  const source = readFileSync(
-    new URL('../../crates/forge-server/src/transport.rs', import.meta.url),
-    'utf8',
-  );
+  const source = readFileSync(repoPath('crates/forge-server/src/transport.rs'), 'utf8');
   const declared = /^pub const PROTOCOL_VERSION: u32 = (\d+);$/m.exec(source);
   if (declared === null || declared[1] === undefined) {
     throw new Error(

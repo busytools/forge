@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { render } from 'svelte/server';
 import { describe, expect, it } from 'vitest';
 
+import { repoPath } from '../repo';
 import CompactionPoint from './CompactionPoint.svelte';
 import { tokens } from './numbers';
 
@@ -16,10 +17,7 @@ const draw = (
 ): string =>
   render(CompactionPoint, { props: { trigger, preTokens, postTokens, summary, open } }).body;
 
-const PAGE = readFileSync(
-  new URL('../../../docs/book/src/ui/client/web-session.html', import.meta.url),
-  'utf8',
-);
+const PAGE = readFileSync(repoPath('docs/book/src/ui/client/web-session.html'), 'utf8');
 
 /**
  * The rendered row's own words, with the tags and the markers Svelte leaves

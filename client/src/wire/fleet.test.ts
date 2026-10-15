@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 import type { SessionUpdate } from '../protocol';
+import { repoPath } from '../repo';
 import type { SessionSlot } from './types';
 import {
   BOARD_REFUSAL_PREFIX,
@@ -47,10 +48,7 @@ import {
  * comment naming a variant the wildcard reaches would satisfy it wrongly.
  */
 function serverArms(arm?: 'Redraw' | 'Occupant'): string[] {
-  const source = readFileSync(
-    new URL('../../../crates/forge-server/src/live.rs', import.meta.url),
-    'utf8',
-  );
+  const source = readFileSync(repoPath('crates/forge-server/src/live.rs'), 'utf8');
   const start = source.indexOf('pub fn fleet_news');
   if (start < 0) {
     throw new Error('live.rs no longer holds `fleet_news`, so this mirror is unanchored');
@@ -85,10 +83,7 @@ function snake(name: string): string {
  * recognised as one - so the list is read out of the method that decides it.
  */
 function serverSlots(): { keyed: string[]; seatless: string[]; declared: number } {
-  const source = readFileSync(
-    new URL('../../../crates/forge-workspace/src/protocol.rs', import.meta.url),
-    'utf8',
-  );
+  const source = readFileSync(repoPath('crates/forge-workspace/src/protocol.rs'), 'utf8');
   const start = source.indexOf('pub fn slot(&self)');
   if (start < 0) {
     throw new Error('protocol.rs no longer holds `slot`, so this mirror is unanchored');
@@ -140,10 +135,7 @@ function serverSlots(): { keyed: string[]; seatless: string[]; declared: number 
  * the census green while the wire name has moved.
  */
 function serverVariantNames(): { names: string[]; closed: boolean } {
-  const source = readFileSync(
-    new URL('../../../crates/forge-workspace/src/protocol.rs', import.meta.url),
-    'utf8',
-  );
+  const source = readFileSync(repoPath('crates/forge-workspace/src/protocol.rs'), 'utf8');
 
   const names: string[] = [];
   let closed = false;
@@ -401,10 +393,7 @@ describe('what one update asks of the fleet', () => {
    * would otherwise be a page that quietly stopped saying why.
    */
   it('knows a board refusal by the words the core writes it with', () => {
-    const source = readFileSync(
-      new URL('../../../crates/forge-workspace/src/workspace.rs', import.meta.url),
-      'utf8',
-    );
+    const source = readFileSync(repoPath('crates/forge-workspace/src/workspace.rs'), 'utf8');
     const start = source.indexOf('fn board_edit_refused');
     if (start < 0) {
       throw new Error(

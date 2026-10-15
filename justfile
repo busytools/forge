@@ -24,9 +24,10 @@ unicode-punct-check:
 # outright, would otherwise ship silently. Stdlib python, like the Unicode
 # gate's own script.
 #
-# Run the release scripts' tests.
+# Run the release scripts' tests and the client-dependency bootstrap's.
 script-tests:
     python3 scripts/test_update_manifest.py
+    python3 scripts/test_client_deps.py
 
 # Rewrite files to match rustfmt. The shell is a workspace root of its own,
 # so it takes its own invocation.
@@ -154,12 +155,14 @@ bench:
 # hand-patched runner on this client: `src/composer/meter.ts` 100%,
 # `src/chat/report.ts` 68%.
 #
-# A full-suite command cannot run in the sandbox: nine test files read outside
-# the client tree (crates/, docs/) and fail there. The command therefore runs
-# `./node_modules/.bin/vitest related` and reads its file list from the
-# `mutate` array at run time, so a module added there is scored against its own
-# tests with no second list to keep in step. A target that is not in the set is
-# refused rather than scored against tests that never import it.
+# The command runs `./node_modules/.bin/vitest related`, reading its file list
+# from the `mutate` array at run time, so a module in that array is scored
+# against its own tests with no second list to keep in step, and a target that
+# is not in the set is refused rather than scored against tests that never
+# import it. `related` is kept because only the tests that import a mutated
+# module run, which is what makes a campaign affordable - not because of the
+# sandbox: the thirteen test files that read outside the client tree (crates/,
+# docs/) resolve the checkout through `src/repo.ts`.
 #
 # Cost is about 2 seconds a mutant, so `just mutate src/composer/meter.ts` is
 # roughly a minute and the whole 4,227-mutant set is hours. Run it per module,
@@ -252,18 +255,29 @@ client-tauri-fmt:
 #
 # A Rust-only change pays them too, roughly half a minute on a gate that
 # already runs for minutes.
-client-format:
+client-deps:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # A fresh worktree carries no install, and a lockfile that moved under an
+    # existing one leaves a stale tree; either way the step's own failure reads
+    # as a broken tree. Keyed on the directory's mtime rather than a stamp file.
+    if [ ! -d client/node_modules ] ||
+        [ client/package-lock.json -nt client/node_modules ]; then
+        npm --prefix client ci
+    fi
+
+client-format: client-deps
     npm --prefix client run format:check
 
-client-lint:
+client-lint: client-deps
     npm --prefix client run lint
 
 # The markup tsc never reads, then the TypeScript tree.
-client-typecheck:
+client-typecheck: client-deps
     npm --prefix client run typecheck:markup
     npm --prefix client run typecheck
 
-client-test:
+client-test: client-deps
     npm --prefix client run test
 
 # Compile the desktop shell in the configuration that ships. This is the routine

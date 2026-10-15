@@ -5,27 +5,32 @@ The full contributor guide lives in
 at the repository root. This page is the short version and the
 pointers.
 
-## The one command
+## The gate
 
 ```bash
 just check
+just check-feature-configs
 ```
 
 `cargo fmt --check`, the Unicode punctuation gate, the release scripts'
-tests, the shell crate's rustfmt check (`client-tauri-fmt`), the client's
+tests and the client-dependency bootstrap's, the shell crate's rustfmt
+check (`client-tauri-fmt`), the client's
 Prettier check, ESLint, `svelte-check` and
 `tsc --noEmit` and then its vitest run, the shell crate's android
 warnings check (`client-android-warnings`),
 clippy with warnings denied, `cargo nextest run --workspace --all-features`,
 `cargo test --doc --workspace --all-features`, and `cargo doc`. CI's set
-minus its `cargo check --release` and feature-configs jobs, and plus the
+minus its `cargo check --release` job, and plus the
 android warnings check CI cannot run yet (`client-android-warnings`; its
-vendoring refuses non-macOS hosts - #1959). Green before
+vendoring refuses non-macOS hosts - #1959).
+
+The gate is two commands: `just check`, and `just check-feature-configs`,
+which compiles the configuration `install.sh` builds. Both green before
 you open a pull request.
 
-A fresh worktree has no `client/node_modules`, so the first `just check`
-there stops at the Prettier step with exit 127. `npm --prefix client ci`
-first, and the whole run goes through.
+A fresh worktree has no `client/node_modules`; each client step installs it
+first when it is missing or older than `package-lock.json`, so the first
+`just check` there runs whole rather than stopping at the Prettier step.
 
 The shell under `client/src-tauri/` is its own workspace root, so the
 workspace's cargo steps do not reach it and, in CI, only the `cargo fmt

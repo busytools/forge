@@ -71,7 +71,8 @@ just check
 ```
 
 That runs, in order: `cargo fmt --check`, the Unicode punctuation gate,
-the release scripts' tests (`script-tests`), the shell crate's rustfmt
+the release scripts' tests and the client-dependency bootstrap's
+(`script-tests`), the shell crate's rustfmt
 check (`client-tauri-fmt`: `cargo fmt --check` against the shell's own
 workspace root), the client's Prettier check,
 its ESLint, `svelte-check` and `tsc --noEmit`
@@ -89,14 +90,17 @@ would reject fails locally too; CI sets it once at workflow level
 instead. It covers the build each step drives, and rustdoc compiles a
 doctest on its own, so it does not deny warnings inside one.
 
-Run it before opening a pull request. It is CI's set with three
-differences: CI also runs `cargo check --release` and
-`just check-feature-configs`, both of which `just check` deliberately
-leaves out, while `client-android-warnings` (the shell's android step) is
-in `just check` alone - the vendoring its build needs refuses non-macOS
-hosts, so CI runs no such job yet (issue #1959). The client's steps are in
-here too, so the client is not a second command to remember and a failure
-on either side lands on the same verdict line.
+The gate is two commands: run this one before opening a pull request, and
+`just check-feature-configs` with it. `just check` runs with
+`--all-features`, so it deliberately leaves out the configuration
+`install.sh` builds; the second command is what compiles it. Beyond that
+this is CI's set with two differences: CI also runs
+`cargo check --release`, while `client-android-warnings` (the shell's
+android step) is in `just check` alone - the vendoring its build needs
+refuses non-macOS hosts, so CI runs no such job yet (issue #1959). The
+client's steps are in here too, so the client and the server are not
+separate commands, and a failure on either side lands on the same verdict
+line.
 
 The shell under `client/src-tauri/` is its own workspace root, so the
 workspace's cargo steps do not reach it and, in CI, only the `cargo fmt

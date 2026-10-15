@@ -239,7 +239,11 @@ const ANSWERS_THROUGH_A_REPLY = new Set([
 
 /** How long to wait before the first re-ask, and the ceiling it doubles up to. */
 const RETRY_MS = 50;
-const MAX_RETRY_MS = 2000;
+/**
+ * Exported because `session/live.test.ts` derives its wait deadline from it:
+ * raising the ceiling must not silently shorten every wait in that file.
+ */
+export const MAX_RETRY_MS = 2000;
 
 /**
  * A command's variant name.
