@@ -366,18 +366,14 @@ fn dispatch(cmd: AgentCommand, bridge: &ForgeSdkBridge) -> anyhow::Result<()> {
 
     match cmd {
         C::NewSession { session_id, cwd, launch_settings } => {
-            bridge.new_session(session_id, cwd, decode_launch_settings(launch_settings)?)
+            bridge.new_session(session_id, cwd, launch_settings)
         }
-        C::ResumeSession { session_id, cwd, launch_settings } => bridge.resume_session(
-            session_id.into_string(),
-            cwd,
-            decode_launch_settings(launch_settings)?,
-        ),
-        C::ResumeOrNewSession { session_id, cwd, launch_settings } => bridge.resume_or_new_session(
-            session_id.into_string(),
-            cwd,
-            decode_launch_settings(launch_settings)?,
-        ),
+        C::ResumeSession { session_id, cwd, launch_settings } => {
+            bridge.resume_session(session_id.into_string(), cwd, launch_settings)
+        }
+        C::ResumeOrNewSession { session_id, cwd, launch_settings } => {
+            bridge.resume_or_new_session(session_id.into_string(), cwd, launch_settings)
+        }
         C::Prompt { session_id, text, uuid } => {
             bridge.prompt_text(session_id.into_string(), text, uuid)
         }
@@ -409,9 +405,11 @@ fn dispatch(cmd: AgentCommand, bridge: &ForgeSdkBridge) -> anyhow::Result<()> {
 /// **A failure refuses the spawn** (Ved, 2026-10-15). The settings carry the
 /// blocked-tools denial (`disallowedTools`) among the rest, so a spawn on
 /// defaults would start a session WIDER than the one that was configured -
-/// silently unblocking tools. The error says what happened and the seat stays
-/// without a session until the payload is fixed.
-fn decode_launch_settings(
+/// silently unblocking tools. The decode runs in the BRIDGE, where a refusal
+/// goes on the same event every other spawn failure does (`ConnectionFailed`),
+/// so the seat records the failure and rolls its row instead of sitting at
+/// Spawning with nothing to say.
+pub(crate) fn decode_launch_settings(
     value: serde_json::Value,
 ) -> anyhow::Result<crate::client::SessionLaunchSettings> {
     serde_json::from_value(value).map_err(|e| {
@@ -463,12 +461,23 @@ mod decode_launch_settings_tests {
             launch_settings: serde_json::json!(42),
         };
         let bridge = crate::forge_sdk_bridge::ForgeSdkBridge::default();
+        let mut events = bridge.take_events().expect("a fresh bridge yields its events receiver");
         let error = super::dispatch(command, &bridge)
             .expect_err("an undecodable payload refuses the dispatch rather than defaulting");
         assert!(
             error.to_string().contains("launch settings could not be decoded"),
             "and the refusal is the decoder's own, not whatever the bridge would say: {error}"
         );
+        // **And it goes where every spawn failure goes.** The event is what
+        // the seat's task records the failure by and rolls the row on, so a
+        // refused spawn is visible and retryable, not a seat stuck Spawning.
+        match events.try_recv() {
+            Ok(crate::AgentEvent::ConnectionFailed { message, .. }) => assert!(
+                message.contains("refused"),
+                "the event says the spawn was refused: {message}"
+            ),
+            other => panic!("expected a ConnectionFailed for the refused spawn, got {other:?}"),
+        }
     }
 
     #[test]
