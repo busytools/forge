@@ -16,7 +16,7 @@
 //! collapses to one boolean per account. Every spawn in an org takes
 //! the same walk, so there is no per-session spread.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -426,7 +426,6 @@ pub struct PluginSettings {
 /// `max_workers` override is absent.
 pub(crate) const DEFAULT_MAX_WORKERS_PER_PROJECT: usize = 2;
 
-#[derive(Debug)]
 pub(crate) struct LoadedConfig {
     pub projects: Vec<LoadedProject>,
     /// Index into `projects` for the default startup target -
@@ -472,12 +471,37 @@ pub(crate) struct LoadedConfig {
     pub usage_poll_interval: Duration,
 }
 
+/// Hand-written so a field added later cannot print through it until it
+/// is deliberately listed. Its credential carriers - the accounts' and
+/// projects' env stamps, gotify's token, systemone's key - are redacted
+/// by the structs they live on.
+impl std::fmt::Debug for LoadedConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoadedConfig")
+            .field("projects", &self.projects)
+            .field("default_index", &self.default_index)
+            .field("accounts", &self.accounts)
+            .field("dictate", &self.dictate)
+            .field("gotify", &self.gotify)
+            .field("systemone", &self.systemone)
+            .field("slack", &self.slack)
+            .field("plugins", &self.plugins)
+            .field("gateway_port", &self.gateway_port)
+            .field("gateway_rotation", &self.gateway_rotation)
+            .field("server", &self.server)
+            .field("client", &self.client)
+            .field("document_max_bytes", &self.document_max_bytes)
+            .field("usage_poll_interval", &self.usage_poll_interval)
+            .finish()
+    }
+}
+
 /// The port the gateway's listener binds when `[gateway] port` is
 /// absent. Fixed, not OS-assigned: every session's base URL names it,
 /// so a drift would point children at an address nothing serves.
 pub const DEFAULT_GATEWAY_PORT: u16 = 8787;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct LoadedProject {
     pub name: String,
     pub path: PathBuf,
@@ -516,6 +540,29 @@ pub(crate) struct LoadedProject {
     /// CLI permission mode stamped onto every session this project
     /// spawns. Resolved once at load; absent key resolves to `auto`.
     pub permission_mode: PermissionMode,
+}
+
+/// Hand-written because a project's env may carry secrets (`env_file`
+/// exists so one can live outside forge.toml), which the derived output
+/// would print.
+impl std::fmt::Debug for LoadedProject {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let env: BTreeMap<&str, &str> =
+            self.env.keys().map(|key| (key.as_str(), "[redacted]")).collect();
+        f.debug_struct("LoadedProject")
+            .field("name", &self.name)
+            .field("path", &self.path)
+            .field("display_path", &self.display_path)
+            .field("org", &self.org)
+            .field("accounts", &self.accounts)
+            .field("fallback_accounts", &self.fallback_accounts)
+            .field("auto_start", &self.auto_start)
+            .field("model", &self.model)
+            .field("env", &env)
+            .field("max_workers", &self.max_workers)
+            .field("permission_mode", &self.permission_mode)
+            .finish()
+    }
 }
 
 /// Complete `[env]` < `[accounts.env]` < the project's env,
@@ -2167,6 +2214,62 @@ base_url = "http://localhost:18765"
             Some("http://localhost:18765"),
             "the flat base_url is mapped after the scrub, so it still lands",
         );
+    }
+
+    /// A `{:?}` on the whole config must print no credential: the
+    /// accounts' env stamps, a project's env values, the gotify client
+    /// token and the systemone api key all stay out of it.
+    #[test]
+    fn a_credential_never_reaches_the_config_debug_output() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Stargate"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+auto_start = true
+[orgs.projects.env]
+CLAUDE_CODE_OAUTH_TOKEN = "project-supersecret"
+
+[[accounts]]
+display_name = "Stargate"
+token = "account-supersecret"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+
+[gotify]
+url = "https://notifier.example"
+client_token = "gotify-supersecret"
+
+[systemone]
+base_url = "https://api.typesafe.ai"
+api_key = "systemone-supersecret"
+model = "jev-latest"
+"#,
+        );
+        let config = load_from_dir(dir.path()).expect("the config loads");
+        let rendered = format!("{config:?}");
+        for (carrier, secret) in [
+            ("the account's credential stamp", "account-supersecret"),
+            ("a project env value", "project-supersecret"),
+            ("the gotify client token", "gotify-supersecret"),
+            ("the systemone api key", "systemone-supersecret"),
+        ] {
+            assert!(!rendered.contains(secret), "{carrier} leaked: {rendered}");
+        }
+        for (carrier, readable) in [
+            ("the account name", "Stargate"),
+            ("the project name", "forge"),
+            ("the gotify url", "notifier.example"),
+            ("the systemone base url", "api.typesafe.ai"),
+        ] {
+            assert!(rendered.contains(readable), "{carrier} must stay readable: {rendered}");
+        }
     }
 
     #[test]

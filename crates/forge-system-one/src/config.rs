@@ -21,12 +21,24 @@ pub struct SystemOneSection {
 }
 
 /// An enabled, validated `[systemone]` section.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct SystemOneConfig {
     pub base_url: String,
     pub api_key: Option<String>,
     pub model: String,
     pub timeout_ms: u64,
+}
+
+/// Hand-written because the API key must never be printed.
+impl std::fmt::Debug for SystemOneConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SystemOneConfig")
+            .field("base_url", &self.base_url)
+            .field("api_key", &self.api_key.as_ref().map(|_| "[redacted]"))
+            .field("model", &self.model)
+            .field("timeout_ms", &self.timeout_ms)
+            .finish()
+    }
 }
 
 impl SystemOneSection {
