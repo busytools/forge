@@ -37,32 +37,56 @@ pub(crate) struct PendingCron {
 }
 
 impl Workspace {
-    /// Lock the durable cron list, apply `f`, and persist to the
-    /// machine-local store. Every cron-list mutation routes through here -
-    /// `cron__create` / `cron__delete`, the scheduler's fire-advance, and
-    /// boot catch-up - so the in-memory set and the store never diverge.
+    /// Lock the durable cron list and apply `f`. Every cron-list mutation
+    /// routes through here to take the lock, and the mutation site persists
+    /// what it changed from inside its own closure - a row at a time, never
+    /// the whole in-memory set. A boot read that failed leaves that set
+    /// EMPTY while the db handle stays live, so a whole-set write would
+    /// erase every durable row the read never loaded.
     pub(crate) fn with_crons_mut<R>(
         &self,
         f: impl FnOnce(&mut Vec<forge_primitives::CronEntry>) -> R,
     ) -> R {
         let mut crons = self.crons.lock();
-        let result = f(&mut crons);
-        if let Some(db) = self.db.lock().as_ref()
-            && let Err(error) = crate::store::cron::replace_all(db, &crons)
-        {
-            tracing::error!(
-                target: "forge_workspace::crons",
-                %error,
-                "persisting crons to the store failed; a scheduled cron may be lost on restart",
-            );
-        }
-        result
+        f(&mut crons)
     }
 
-    /// Append a cron and persist. Backs `cron__create`.
+    /// Persist one cron row, replacing any prior record for its id. Called
+    /// from inside the mutation's lock.
+    fn persist_cron(&self, cron: &forge_primitives::CronEntry) {
+        let guard = self.db.lock();
+        let Some(db) = guard.as_ref() else { return };
+        if let Err(error) = crate::store::cron::upsert(db, cron) {
+            tracing::error!(
+                target: "forge_workspace::crons",
+                cron_id = %cron.id,
+                %error,
+                "persisting a cron to the store failed; it may be lost on restart",
+            );
+        }
+    }
+
+    /// Delete one cron row by id. Called from inside the mutation's lock.
+    fn delete_stored_cron(&self, id: &forge_primitives::CronId) {
+        let guard = self.db.lock();
+        let Some(db) = guard.as_ref() else { return };
+        if let Err(error) = crate::store::cron::delete(db, id) {
+            tracing::error!(
+                target: "forge_workspace::crons",
+                cron_id = %id,
+                %error,
+                "deleting a cron from the store failed; it may come back on restart",
+            );
+        }
+    }
+
+    /// Append a cron and persist it. Backs `cron__create`.
     pub(crate) fn push_cron(&self, entry: forge_primitives::CronEntry) {
         let project_name = entry.project_name.clone();
-        self.with_crons_mut(|crons| crons.push(entry));
+        self.with_crons_mut(|crons| {
+            self.persist_cron(&entry);
+            crons.push(entry);
+        });
         self.announce_cron_schedules_changed(&project_name);
     }
 
@@ -74,7 +98,11 @@ impl Workspace {
         let removed = self.with_crons_mut(|crons| {
             let before = crons.len();
             crons.retain(|c| !(c.id == *id && c.project_name == project_name));
-            crons.len() != before
+            let removed = crons.len() != before;
+            if removed {
+                self.delete_stored_cron(id);
+            }
+            removed
         });
         if removed {
             self.announce_cron_schedules_changed(project_name);
@@ -97,7 +125,11 @@ impl Workspace {
             let pos = crons.iter().position(|c| {
                 c.id == *id && c.project_name == project_name && c.team_role.as_deref() == label
             });
-            pos.map(|pos| crons.remove(pos))
+            let removed = pos.map(|pos| crons.remove(pos));
+            if removed.is_some() {
+                self.delete_stored_cron(id);
+            }
+            removed
         });
         if removed.is_some() {
             self.announce_cron_schedules_changed(project_name);
@@ -123,11 +155,19 @@ impl Workspace {
             return;
         };
         let removed = self.with_crons_mut(|crons| {
-            let before = crons.len();
+            let mut removed: Vec<forge_primitives::CronId> = Vec::new();
             crons.retain(|c| {
-                !(c.project_name == project_name && c.team_role.as_deref() == Some(label))
+                let taking =
+                    c.project_name == project_name && c.team_role.as_deref() == Some(label);
+                if taking {
+                    removed.push(c.id.clone());
+                }
+                !taking
             });
-            crons.len() != before
+            for id in &removed {
+                self.delete_stored_cron(id);
+            }
+            !removed.is_empty()
         });
         if removed {
             self.announce_cron_schedules_changed(&project_name);
@@ -185,6 +225,7 @@ impl Workspace {
             match &crons[pos].kind {
                 forge_primitives::CronKind::Once(_) => {
                     crons.remove(pos);
+                    self.delete_stored_cron(id);
                 }
                 forge_primitives::CronKind::Recurring(_) => {
                     if let Some(next) =
@@ -192,6 +233,7 @@ impl Workspace {
                     {
                         crons[pos].last_fire = Some(fired_at);
                         crons[pos].next_fire = next;
+                        self.persist_cron(&crons[pos]);
                     } else {
                         // A recurring expr that parses but never matches
                         // (e.g. "0 0 30 2 *"). Don't drop it silently; the
@@ -209,6 +251,7 @@ impl Workspace {
                             expr = %expr,
                             "recurring cron has no upcoming occurrence; removed it",
                         );
+                        self.delete_stored_cron(id);
                     }
                 }
             }
@@ -366,7 +409,10 @@ impl Workspace {
     /// The store write without the announcement: a fixture seeds state, it
     /// does not perform the write a view is owed a frame for.
     pub fn seed_test_cron(&self, entry: forge_primitives::CronEntry) {
-        self.with_crons_mut(|crons| crons.push(entry));
+        self.with_crons_mut(|crons| {
+            self.persist_cron(&entry);
+            crons.push(entry);
+        });
     }
 }
 
@@ -704,6 +750,72 @@ mod tests {
         assert!(persisted().is_empty(), "removal persisted");
 
         assert!(!ws.remove_cron("forge", &CronId::from("c1")), "removing a gone id reports false");
+    }
+
+    /// The failed-boot-read state: the store holds durable crons, the
+    /// in-memory set is EMPTY (a `list` failure at boot warned and started
+    /// with none), and the db handle is live. Every cron mutation writes
+    /// only what it changed, so the first write after such a boot cannot
+    /// erase the rows the failed read never loaded.
+    ///
+    /// Mutant: have any mutation site (or the shared mutation helper)
+    /// persist the whole in-memory set, where the first write replaces
+    /// both seeded rows with the empty set.
+    #[test]
+    fn cron_mutations_over_a_failed_boot_read_do_not_erase_the_store() {
+        use forge_primitives::cron::CronId;
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-crons-failed-load");
+        let db = crate::store::Db::open(&dir.path().join("db.redb")).expect("open db");
+        // The rows the failed boot read left out of memory: in the store only.
+        crate::store::cron::upsert(&db, &schedule("seed-1", "proj", "one", None)).expect("seed 1");
+        crate::store::cron::upsert(&db, &schedule("seed-2", "proj", "two", None)).expect("seed 2");
+        ws.install_db_for_test(db);
+        let persisted = || {
+            crate::store::cron::list(ws.db.lock().as_ref().expect("db installed")).expect("list")
+        };
+        let seeded = |rows: &[forge_primitives::cron::CronEntry]| {
+            rows.iter().filter(|c| c.id.as_str().starts_with("seed-")).count()
+        };
+
+        ws.push_cron(schedule("created", "proj", "new", None));
+        assert_eq!(
+            seeded(&persisted()),
+            2,
+            "a create writes the row it made, not the empty in-memory set",
+        );
+
+        assert!(
+            !ws.remove_cron("proj", &CronId::from("seed-1")),
+            "precondition: the empty in-memory set holds no such row",
+        );
+        assert_eq!(seeded(&persisted()), 2, "a delete that removed nothing writes nothing");
+
+        assert!(
+            ws.remove_cron_owned_by("proj", &CronId::from("seed-1"), None).is_none(),
+            "precondition: the empty in-memory set holds no such row for that owner either",
+        );
+        assert_eq!(
+            seeded(&persisted()),
+            2,
+            "an owner-scoped delete that matched nothing writes nothing"
+        );
+
+        let key = ws.project_key_for_name("proj").expect("seeded project");
+        ws.delete_crons_for_worker(&key, "worker");
+        assert_eq!(
+            seeded(&persisted()),
+            2,
+            "a worker teardown with no matching crons writes nothing"
+        );
+
+        ws.advance_or_remove_cron(&CronId::from("seed-2"), std::time::SystemTime::now());
+        assert_eq!(
+            seeded(&persisted()),
+            2,
+            "the scheduler's fire-advance over an unloaded set writes nothing",
+        );
     }
 
     #[test]

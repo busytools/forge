@@ -226,21 +226,45 @@ fn effective_verify(tasks: &[Task], index: usize) -> Verify {
 }
 
 impl Workspace {
-    /// Lock the task list, apply `f`, and persist. Every mutation routes
-    /// through here so the in-memory set and the store never diverge.
+    /// Lock the task list and apply `f`. Every mutation routes through here
+    /// to take the lock, and the mutation site persists what it changed from
+    /// inside its own closure - a row at a time, never the whole in-memory
+    /// set. A boot read that failed leaves that set EMPTY while the db
+    /// handle stays live, so a whole-set write would erase every durable
+    /// row the read never loaded.
     pub(crate) fn with_tasks_mut<R>(&self, f: impl FnOnce(&mut Vec<Task>) -> R) -> R {
         let mut tasks = self.tasks.lock();
-        let result = f(&mut tasks);
-        if let Some(db) = self.db.lock().as_ref()
-            && let Err(error) = crate::store::tasks::replace_all(db, &tasks)
-        {
+        f(&mut tasks)
+    }
+
+    /// Persist one task row, replacing any prior record for its id. Called
+    /// from inside the mutation's lock.
+    fn persist_task(&self, task: &Task) {
+        let guard = self.db.lock();
+        let Some(db) = guard.as_ref() else { return };
+        if let Err(error) = crate::store::tasks::upsert(db, task) {
             tracing::error!(
                 target: "forge_workspace::tasks",
+                task_id = %task.id.as_str(),
                 %error,
-                "persisting tasks to the store failed; a task may be lost on restart",
+                "persisting a task to the store failed; it may be lost on restart",
             );
         }
-        result
+    }
+
+    /// Delete one task row by project and id. Called from inside the
+    /// mutation's lock.
+    fn delete_stored_task(&self, project_name: &str, id: &TaskId) {
+        let guard = self.db.lock();
+        let Some(db) = guard.as_ref() else { return };
+        if let Err(error) = crate::store::tasks::delete(db, project_name, id) {
+            tracing::error!(
+                target: "forge_workspace::tasks",
+                task_id = %id.as_str(),
+                %error,
+                "deleting a task from the store failed; it may come back on restart",
+            );
+        }
     }
 
     /// Resolve a caller-stated id to the row it names: an exact id, or a
@@ -261,7 +285,10 @@ impl Workspace {
     pub(crate) fn push_task(&self, task: Task) {
         let project_name = task.project_name.clone();
         let recorded = task.clone();
-        self.with_tasks_mut(|tasks| tasks.push(task));
+        self.with_tasks_mut(|tasks| {
+            self.persist_task(&task);
+            tasks.push(task);
+        });
         self.record_transition(&project_name, &recorded.id, None, recorded.status, By::System);
         self.announce_tasks_changed(&project_name);
     }
@@ -398,8 +425,16 @@ impl Workspace {
             next.updated_at = at;
             if removed.is_empty() {
                 tasks[index] = next.clone();
-            } else if let Some(row) = removed.iter_mut().find(|t| t.id == next.id) {
-                *row = next.clone();
+                self.persist_task(&next);
+            } else {
+                if let Some(row) = removed.iter_mut().find(|t| t.id == next.id) {
+                    *row = next.clone();
+                }
+                // The close took the tree out of the live set: each row
+                // leaves the store with it.
+                for task in &removed {
+                    self.delete_stored_task(project_name, &task.id);
+                }
             }
             Ok(Some((next, prior, removed)))
         })?;
@@ -550,6 +585,10 @@ impl Workspace {
                 tasks[*i].rank = Some(i64::try_from(rank).unwrap_or(i64::MAX));
             }
             tasks[index].updated_at = at;
+            // The queue was renumbered: one write per row it holds.
+            for i in &queue {
+                self.persist_task(&tasks[*i]);
+            }
             Some((tasks[index].clone(), changed))
         });
         if outcome.is_some() {
@@ -637,6 +676,7 @@ impl Workspace {
             tasks[index].status = TaskStatus::InProgress;
             tasks[index].attempt += 1;
             tasks[index].updated_at = SystemTime::now();
+            self.persist_task(&tasks[index]);
             Ok((tasks[index].clone(), prior))
         });
         let (task, prior) = outcome?;
@@ -682,6 +722,7 @@ impl Workspace {
                 Some(Waiting { kind: Some(kind), detail, on, verification: false });
             tasks[index].status = TaskStatus::Waiting;
             tasks[index].updated_at = at;
+            self.persist_task(&tasks[index]);
             Ok((tasks[index].clone(), prior))
         })?;
         let (task, prior) = outcome;
@@ -717,6 +758,9 @@ impl Workspace {
                 task.status = TaskStatus::Pending;
                 task.updated_at = SystemTime::now();
                 released.push(task.clone());
+            }
+            for task in &released {
+                self.persist_task(task);
             }
             released
         });
@@ -807,6 +851,9 @@ impl Workspace {
                 }
                 !taking
             });
+            for task in &removed {
+                self.delete_stored_task(project_name, &task.id);
+            }
             removed
         });
         if !removed.is_empty() {
@@ -865,7 +912,10 @@ impl Workspace {
     /// The store write without the announcement: a fixture seeds state, it
     /// does not perform the write a view is owed a frame for.
     pub fn seed_test_task(&self, task: forge_primitives::tasks::Task) {
-        self.with_tasks_mut(|tasks| tasks.push(task));
+        self.with_tasks_mut(|tasks| {
+            self.persist_task(&task);
+            tasks.push(task);
+        });
     }
 }
 
@@ -1058,6 +1108,96 @@ mod tests {
             ws.tasks_for_project("elsewhere").len(),
             2,
             "another project keeps both of its tasks, one of them sharing a doomed id",
+        );
+    }
+
+    /// The failed-boot-read state for the task store: the store holds
+    /// durable rows, the in-memory set is EMPTY (a `list` failure at boot
+    /// warned and started with none), and the db handle is live. Every
+    /// task mutation writes only what it changed, so the first write after
+    /// such a boot cannot erase the rows the failed read never loaded.
+    ///
+    /// Mutant: have any mutation site (or the shared mutation helper)
+    /// persist the whole in-memory set, where the first write replaces
+    /// both seeded rows with the empty set.
+    #[test]
+    fn task_mutations_over_a_failed_boot_read_do_not_erase_the_store() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-tasks-failed-load");
+        let db = crate::store::Db::open(&dir.path().join("db.redb")).expect("open db");
+        // The rows the failed boot read left out of memory: in the store only.
+        crate::store::tasks::upsert(&db, &sample_task("seed-1", "proj")).expect("seed 1");
+        crate::store::tasks::upsert(&db, &sample_task("seed-2", "proj")).expect("seed 2");
+        ws.install_db_for_test(db);
+        let persisted = || {
+            crate::store::tasks::list(ws.db.lock().as_ref().expect("db installed")).expect("list")
+        };
+        let seeded =
+            |rows: &[Task]| rows.iter().filter(|t| t.id.as_str().starts_with("seed-")).count();
+        let lead = SessionSlot::lead("TestOrg", "proj");
+        let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
+
+        ws.push_task(sample_task("created", "proj"));
+        assert_eq!(
+            seeded(&persisted()),
+            2,
+            "a create writes the row it made, not the empty in-memory set",
+        );
+
+        assert!(
+            ws.update_task("proj", &TaskId::from("seed-1"), By::Seat(lead), |task| {
+                task.status = TaskStatus::Completed;
+            })
+            .expect("no refusal")
+            .is_none(),
+            "precondition: the empty in-memory set holds no such row",
+        );
+        assert_eq!(seeded(&persisted()), 2, "an update naming no loaded row writes nothing");
+
+        assert_eq!(
+            ws.claim_task("proj", &worker, Some(&TaskId::from("seed-1")), None),
+            Err(ClaimError::NotFound),
+            "precondition: the empty in-memory set holds no such row to claim",
+        );
+        assert_eq!(seeded(&persisted()), 2, "a refused claim writes nothing");
+
+        assert_eq!(
+            ws.wait_task(
+                "proj",
+                &TaskId::from("seed-1"),
+                &worker,
+                WaitingKind::Dependency,
+                None,
+                None
+            ),
+            Err(MoveError::NotFound),
+            "precondition: the empty in-memory set holds no such row to wait",
+        );
+        assert_eq!(seeded(&persisted()), 2, "a refused wait writes nothing");
+
+        assert!(
+            ws.rank_task("proj", &TaskId::from("seed-1"), RankMove::Top)
+                .expect("no refusal")
+                .is_none(),
+            "precondition: the empty in-memory set holds no such row to rank",
+        );
+        assert_eq!(seeded(&persisted()), 2, "a rank naming no loaded row writes nothing");
+
+        assert!(
+            ws.remove_task_tree("proj", &TaskId::from("seed-1")).is_empty(),
+            "precondition: the empty in-memory set holds no such tree",
+        );
+        assert_eq!(seeded(&persisted()), 2, "a delete that took nothing writes nothing");
+
+        assert!(
+            ws.resolve_wait_on("proj", &TaskId::from("seed-1")).is_empty(),
+            "precondition: no loaded row waits on it",
+        );
+        assert_eq!(
+            seeded(&persisted()),
+            2,
+            "the wait-release sweep over an unloaded set writes nothing"
         );
     }
 
