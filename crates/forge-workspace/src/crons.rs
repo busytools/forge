@@ -755,15 +755,20 @@ mod tests {
     /// The failed-boot-read state: the store holds durable crons, the
     /// in-memory set is EMPTY (a `list` failure at boot warned and started
     /// with none), and the db handle is live. Every cron mutation writes
-    /// only what it changed, so the first write after such a boot cannot
-    /// erase the rows the failed read never loaded.
+    /// only what it changed - a door that changed nothing writes nothing,
+    /// and a door that changed something writes its own row - so no write
+    /// after such a boot can erase the rows the failed read never loaded.
     ///
-    /// Mutant: have any mutation site (or the shared mutation helper)
-    /// persist the whole in-memory set, where the first write replaces
-    /// both seeded rows with the empty set.
+    /// Both kinds of door are walked on purpose: a whole-set write that
+    /// only fires on a successful mutation would slip past a pin that ran
+    /// the no-op doors alone.
+    ///
+    /// Mutant: have any mutation site (or the shared mutation helper) write
+    /// the whole in-memory set, at a door that changed nothing or one that
+    /// changed something, where either write takes both seeded rows with it.
     #[test]
     fn cron_mutations_over_a_failed_boot_read_do_not_erase_the_store() {
-        use forge_primitives::cron::CronId;
+        use forge_primitives::cron::{CronEntry, CronId, CronKind};
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
         ws.seed_test_project("proj", "/tmp/tp-crons-failed-load");
@@ -778,44 +783,77 @@ mod tests {
         let seeded = |rows: &[forge_primitives::cron::CronEntry]| {
             rows.iter().filter(|c| c.id.as_str().starts_with("seed-")).count()
         };
+        // The one assertion every door below makes: it wrote its own row at
+        // most, never the whole in-memory set.
+        let still_seeded = |door: &str| {
+            assert_eq!(
+                seeded(&persisted()),
+                2,
+                "after {door} the rows the failed read never loaded must still be there",
+            );
+        };
+        let key = ws.project_key_for_name("proj").expect("seeded project");
+        let now = std::time::SystemTime::now();
 
         ws.push_cron(schedule("created", "proj", "new", None));
-        assert_eq!(
-            seeded(&persisted()),
-            2,
-            "a create writes the row it made, not the empty in-memory set",
-        );
+        still_seeded("a create");
 
+        // Doors that change nothing: a write here is news about a row that
+        // never moved.
         assert!(
             !ws.remove_cron("proj", &CronId::from("seed-1")),
             "precondition: the empty in-memory set holds no such row",
         );
-        assert_eq!(seeded(&persisted()), 2, "a delete that removed nothing writes nothing");
+        still_seeded("a delete that removed nothing");
 
         assert!(
             ws.remove_cron_owned_by("proj", &CronId::from("seed-1"), None).is_none(),
             "precondition: the empty in-memory set holds no such row for that owner either",
         );
-        assert_eq!(
-            seeded(&persisted()),
-            2,
-            "an owner-scoped delete that matched nothing writes nothing"
-        );
+        still_seeded("an owner-scoped delete that matched nothing");
 
-        let key = ws.project_key_for_name("proj").expect("seeded project");
         ws.delete_crons_for_worker(&key, "worker");
-        assert_eq!(
-            seeded(&persisted()),
-            2,
-            "a worker teardown with no matching crons writes nothing"
-        );
+        still_seeded("a worker teardown with no matching crons");
 
-        ws.advance_or_remove_cron(&CronId::from("seed-2"), std::time::SystemTime::now());
-        assert_eq!(
-            seeded(&persisted()),
-            2,
-            "the scheduler's fire-advance over an unloaded set writes nothing",
+        ws.advance_or_remove_cron(&CronId::from("seed-2"), now);
+        still_seeded("a fire-advance over an unloaded row");
+
+        // Doors that DO change something, each on a loaded row: a whole-set
+        // write gated behind the change takes the unloaded rows with it.
+        assert!(
+            ws.remove_cron("proj", &CronId::from("created")),
+            "precondition: the loaded row is removed",
         );
+        still_seeded("a delete of a loaded row");
+
+        ws.push_cron(schedule("owned", "proj", "own", None));
+        assert!(
+            ws.remove_cron_owned_by("proj", &CronId::from("owned"), None).is_some(),
+            "precondition: the loaded row is removed through the owner's door",
+        );
+        still_seeded("an owner-scoped delete of a loaded row");
+
+        ws.push_cron(schedule("worker-cron", "proj", "w", Some("worker")));
+        ws.delete_crons_for_worker(&key, "worker");
+        still_seeded("a worker teardown that took a cron");
+
+        ws.push_cron(CronEntry {
+            kind: CronKind::Once(now),
+            ..schedule("once", "proj", "fire", None)
+        });
+        ws.advance_or_remove_cron(&CronId::from("once"), now);
+        still_seeded("a fire that removed a run-once");
+
+        ws.push_cron(schedule("recurring", "proj", "again", None));
+        ws.advance_or_remove_cron(&CronId::from("recurring"), now);
+        still_seeded("a fire that advanced a recurring");
+
+        ws.push_cron(CronEntry {
+            kind: CronKind::Recurring("0 0 30 2 *".to_owned()),
+            ..schedule("never", "proj", "never", None)
+        });
+        ws.advance_or_remove_cron(&CronId::from("never"), now);
+        still_seeded("a fire that removed a never-occurring recurring");
     }
 
     #[test]

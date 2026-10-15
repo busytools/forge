@@ -1114,12 +1114,18 @@ mod tests {
     /// The failed-boot-read state for the task store: the store holds
     /// durable rows, the in-memory set is EMPTY (a `list` failure at boot
     /// warned and started with none), and the db handle is live. Every
-    /// task mutation writes only what it changed, so the first write after
-    /// such a boot cannot erase the rows the failed read never loaded.
+    /// task mutation writes only what it changed - a door that changed
+    /// nothing writes nothing, and a door that changed something writes
+    /// its own row - so no write after such a boot can erase the rows the
+    /// failed read never loaded.
     ///
-    /// Mutant: have any mutation site (or the shared mutation helper)
-    /// persist the whole in-memory set, where the first write replaces
-    /// both seeded rows with the empty set.
+    /// Both kinds of door are walked on purpose: a whole-set write that
+    /// only fires on a successful mutation would slip past a pin that ran
+    /// the no-op doors alone.
+    ///
+    /// Mutant: have any mutation site (or the shared mutation helper) write
+    /// the whole in-memory set, at a door that changed nothing or one that
+    /// changed something, where either write takes both seeded rows with it.
     #[test]
     fn task_mutations_over_a_failed_boot_read_do_not_erase_the_store() {
         let dir = tempdir().expect("tempdir");
@@ -1135,32 +1141,40 @@ mod tests {
         };
         let seeded =
             |rows: &[Task]| rows.iter().filter(|t| t.id.as_str().starts_with("seed-")).count();
+        // The one assertion every door below makes: it wrote its own row at
+        // most, never the whole in-memory set.
+        let still_seeded = |door: &str| {
+            assert_eq!(
+                seeded(&persisted()),
+                2,
+                "after {door} the rows the failed read never loaded must still be there",
+            );
+        };
         let lead = SessionSlot::lead("TestOrg", "proj");
         let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
+        let other = SessionSlot::worker("TestOrg", "proj", "w-2");
 
         ws.push_task(sample_task("created", "proj"));
-        assert_eq!(
-            seeded(&persisted()),
-            2,
-            "a create writes the row it made, not the empty in-memory set",
-        );
+        still_seeded("a create");
 
+        // Doors that change nothing: each names a row the failed read never
+        // loaded, so nothing moves and nothing may be written.
         assert!(
-            ws.update_task("proj", &TaskId::from("seed-1"), By::Seat(lead), |task| {
+            ws.update_task("proj", &TaskId::from("seed-1"), By::Seat(lead.clone()), |task| {
                 task.status = TaskStatus::Completed;
             })
             .expect("no refusal")
             .is_none(),
             "precondition: the empty in-memory set holds no such row",
         );
-        assert_eq!(seeded(&persisted()), 2, "an update naming no loaded row writes nothing");
+        still_seeded("an update naming no loaded row");
 
         assert_eq!(
             ws.claim_task("proj", &worker, Some(&TaskId::from("seed-1")), None),
             Err(ClaimError::NotFound),
             "precondition: the empty in-memory set holds no such row to claim",
         );
-        assert_eq!(seeded(&persisted()), 2, "a refused claim writes nothing");
+        still_seeded("a refused claim");
 
         assert_eq!(
             ws.wait_task(
@@ -1174,7 +1188,7 @@ mod tests {
             Err(MoveError::NotFound),
             "precondition: the empty in-memory set holds no such row to wait",
         );
-        assert_eq!(seeded(&persisted()), 2, "a refused wait writes nothing");
+        still_seeded("a refused wait");
 
         assert!(
             ws.rank_task("proj", &TaskId::from("seed-1"), RankMove::Top)
@@ -1182,23 +1196,89 @@ mod tests {
                 .is_none(),
             "precondition: the empty in-memory set holds no such row to rank",
         );
-        assert_eq!(seeded(&persisted()), 2, "a rank naming no loaded row writes nothing");
+        still_seeded("a rank naming no loaded row");
 
         assert!(
             ws.remove_task_tree("proj", &TaskId::from("seed-1")).is_empty(),
             "precondition: the empty in-memory set holds no such tree",
         );
-        assert_eq!(seeded(&persisted()), 2, "a delete that took nothing writes nothing");
+        still_seeded("a delete that took nothing");
 
         assert!(
             ws.resolve_wait_on("proj", &TaskId::from("seed-1")).is_empty(),
             "precondition: no loaded row waits on it",
         );
+        still_seeded("a wait-release sweep over an unloaded row");
+
+        // Doors that DO change something, each on a loaded row: a whole-set
+        // write gated behind the change takes the unloaded rows with it.
+        ws.claim_task("proj", &worker, Some(&TaskId::from("created")), None)
+            .expect("the loaded row is free");
+        still_seeded("a claim of a loaded row");
+
+        ws.wait_task(
+            "proj",
+            &TaskId::from("created"),
+            &worker,
+            WaitingKind::Dependency,
+            None,
+            None,
+        )
+        .expect("the owner may wait its own row");
+        still_seeded("a wait on a loaded row");
+
+        ws.rank_task("proj", &TaskId::from("created"), RankMove::Top)
+            .expect("no refusal")
+            .expect("the loaded row is there");
+        still_seeded("a rank of a loaded row");
+
+        // The move's two write branches: an update that keeps the row live
+        // (a child), and one that closes a root and takes its tree with it.
+        ws.push_task(sample_task_with_parent("child", Some("ghost-epic"), "proj"));
+        ws.update_task("proj", &TaskId::from("child"), By::Seat(lead.clone()), |task| {
+            task.status = TaskStatus::Completed;
+        })
+        .expect("no refusal")
+        .expect("the loaded row is there");
+        still_seeded("an update of a loaded row");
+
+        ws.push_task(sample_task("root", "proj"));
+        ws.update_task("proj", &TaskId::from("root"), By::Seat(lead.clone()), |task| {
+            task.status = TaskStatus::Completed;
+        })
+        .expect("no refusal")
+        .expect("the loaded row is there");
+        still_seeded("a completed root closing its tree");
+
+        // A released wait: the sweep writes each row it hands back.
+        ws.push_task(sample_task("blocker", "proj"));
+        ws.push_task(sample_task("waiter", "proj"));
+        ws.claim_task("proj", &other, Some(&TaskId::from("waiter")), None)
+            .expect("the loaded row is free");
+        ws.wait_task(
+            "proj",
+            &TaskId::from("waiter"),
+            &other,
+            WaitingKind::Dependency,
+            None,
+            Some(&TaskId::from("blocker")),
+        )
+        .expect("the owner may wait its own row");
+        ws.update_task("proj", &TaskId::from("blocker"), By::Seat(lead.clone()), |task| {
+            task.status = TaskStatus::Canceled;
+        })
+        .expect("no refusal")
+        .expect("the loaded row is there");
+        still_seeded("a blocker ending that releases a wait");
+
+        ws.push_task(sample_task_with_parent("tree-root", None, "proj"));
+        ws.push_task(sample_task_with_parent("tree-child", Some("tree-root"), "proj"));
         assert_eq!(
-            seeded(&persisted()),
+            ws.remove_task_tree("proj", &TaskId::from("tree-root")).len(),
             2,
-            "the wait-release sweep over an unloaded set writes nothing"
+            "precondition: both loaded rows are removed",
         );
+        still_seeded("a delete of a loaded tree");
     }
 
     /// Every task write announces the project's set on the project's lead
