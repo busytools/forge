@@ -358,7 +358,16 @@
   const notice = $derived(
     owns
       ? (box.dictateLine ??
-          noticeLine(composer.notice, box.landing.holds(composer.notice)) ??
+          // **The words this DRAFT took, not the arm.** A row that read the
+          // arm appeared on the bare press - nothing had landed, the record
+          // still carried the previous notice - and left a 21px row growing
+          // and shrinking the box on every Cmd press (measured live,
+          // 2026-10-15). `box.landed` is the same memory, reactive, set where
+          // the words went into this draft.
+          noticeLine(
+            composer.notice,
+            composer.notice !== null && box.landed === composer.notice.text,
+          ) ??
           box.ended)
       : null,
   );
@@ -531,6 +540,10 @@
     const held = composer.notice;
     if (held === null) {
       box.landing.place(boxKey(slot), null);
+      // The reactive half of the same memory: the row cannot read the
+      // Landing's plain fields and re-render, and the notice's own row must
+      // follow the words the moment they land here.
+      box.landed = null;
       box.dismissed = null;
       return;
     }
@@ -553,6 +566,7 @@
       // take left them in the dock, and a memory set for it here would put a
       // note about words that never arrived in this draft.
       box.landing.placed(held);
+      box.landed = held.text;
       box.draft = joined(
         untrack(() => box.draft),
         words,

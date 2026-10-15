@@ -179,6 +179,9 @@
   /* The spread card's graph: one smooth envelope over the same readings, its
      box stretched to the row, so the amplitude scales with it. */
   .tc .wave { flex: 1 1 auto; min-width: 0; height: 26px; align-self: center; }
+  /* The takeline card takes the field's own line box, so a take starting or
+     ending moves nothing. */
+  .takeline .tc .wave { height: calc(1.5 * var(--fs-base)); }
   .tc .wave .area { fill: var(--accent); }
   .tc .wave .edge { fill: none; stroke: var(--hot); stroke-width: 1.5px;
     vector-effect: non-scaling-stroke; }
