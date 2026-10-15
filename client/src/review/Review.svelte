@@ -185,9 +185,9 @@
   /** Which box's mic opened the settings, which is the box that anchors the panel. */
   let panelIn = $state<BoxName | null>(null);
 
-  /** This page's memory of the seat's takes: which one it watched, and what
-   *  it has placed. A landing is placed once, and the memory is the seat's -
-   *  the record in hand can be another seat's between two reads. */
+  /** This page's memory of the seat's takes: the arm its own press set, and
+   *  what it has placed. A landing is placed once, and the memory is the
+   *  seat's - the record in hand can be another seat's between two reads. */
   const landing = new Landing();
 
   /** The boxes' own field elements, so a key or a panel close can put the

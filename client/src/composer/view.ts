@@ -316,7 +316,7 @@ export const TRUNCATED = 'this is what fitted · keep going from the end';
  * else it is a note about words that are not there. `holdsWords` is that box's
  * own answer, and each surface works it out for itself: the composer from its
  * arm and its memory of the words placed, the review and document pages from
- * what their landing memory watched.
+ * their own landing's `holds`.
  */
 export function noticeLine(
   notice: Notice | null,

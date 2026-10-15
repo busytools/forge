@@ -61,18 +61,22 @@ function snap(occupant: string, seq: number): ServerMessage {
 function aGate(): {
   gate: StreamGate;
   asked: { from: number; to: number }[];
+  epochs: (string | null)[];
   emitted: ServerMessage[][];
 } {
   const asked: { from: number; to: number }[] = [];
+  const epochs: (string | null)[] = [];
   const emitted: ServerMessage[][] = [];
   const gate = new StreamGate({
-    ask: (_slot, _epoch, from, to) => {
+    ask: (_slot, epoch, from, to) => {
       asked.push({ from, to });
+      epochs.push(epoch);
       return true;
     },
     emit: (messages) => emitted.push(messages),
+    follows: () => true,
   });
-  return { gate, asked, emitted };
+  return { gate, asked, epochs, emitted };
 }
 
 describe('the stream gate', () => {
@@ -247,7 +251,11 @@ describe('the stream gate', () => {
 
   it('releases the hold when the socket cannot ask', () => {
     const emitted: ServerMessage[][] = [];
-    const gate = new StreamGate({ ask: () => false, emit: (m) => emitted.push(m) });
+    const gate = new StreamGate({
+      ask: () => false,
+      emit: (m) => emitted.push(m),
+      follows: () => true,
+    });
     gate.inbound(snap('occ', 1));
     gate.inbound(update(1));
     expect(gate.inbound(update(3))).toHaveLength(0);
@@ -314,5 +322,40 @@ describe('the stream gate', () => {
       from: 9,
       to: 19,
     });
+  });
+
+  it('a snapshot for a seat the connection has let go anchors nothing', () => {
+    const asked: { from: number; to: number }[] = [];
+    const gate = new StreamGate({
+      ask: (_slot, _epoch, from, to) => {
+        asked.push({ from, to });
+        return true;
+      },
+      emit: () => {},
+      follows: () => false,
+    });
+    // The tail of a subscription already over: it passes through, and the
+    // fleet news that follows is not sequenced.
+    gate.inbound(snap('occ', 1));
+    expect(gate.inbound(update(6957))).toHaveLength(1);
+    expect(asked, 'nothing is sequenced, nothing is asked').toEqual([]);
+  });
+
+  it('a released seat re-anchors without the old occupant', () => {
+    const { gate, epochs, asked } = aGate();
+    gate.inbound(snap('occA', 1));
+    gate.inbound(update(1));
+    gate.releaseSeat(LEAD);
+    // A later subscribe whose answer names no occupant (a seat between
+    // occupants): the released epoch must not survive into asks - a stale one
+    // is refused and re-opens the hole on every next news frame.
+    gate.inbound({
+      kind: 'snapshot',
+      subject: { session: LEAD },
+      data: { header: { seq: 9 } },
+    } as unknown as ServerMessage);
+    expect(gate.inbound(update(20)), 'a hole in the re-anchored seat is held').toHaveLength(0);
+    expect(asked.at(-1), 'and asked for').toEqual({ from: 9, to: 19 });
+    expect(epochs.at(-1), 'the ask carries no occupant, not the released one').toBeNull();
   });
 });

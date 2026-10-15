@@ -104,6 +104,17 @@ export interface GateDeps {
   ask: (slot: SessionSlot, epoch: string | null, from: number, to: number) => boolean;
   /** Hand messages to every consumer, in order. */
   emit: (messages: ServerMessage[]) => void;
+  /**
+   * Whether the connection still holds this seat.
+   *
+   * **A snapshot can land after its own unsubscribe.** A page that opens a
+   * seat and leaves inside one round trip releases it, and the subscribe's
+   * answer is already on the wire - anchoring on it would leave a seat this
+   * connection no longer follows sequenced for the life of the connection,
+   * reopening the whole-history ask `releaseSeat` exists to close (found in
+   * review, 2026-10-15). The connection is the only one that knows.
+   */
+  follows: (slot: SessionSlot) => boolean;
 }
 
 function stateOf(streams: Map<string, StreamState>, key: string): StreamState {
@@ -190,6 +201,10 @@ export class StreamGate {
       case 'snapshot': {
         const subject = message.subject as { session?: SessionSlot };
         if (subject?.session === undefined) return [message];
+        // A snapshot for a seat this connection has let go is the tail of a
+        // subscription that is already over: it passes through and anchors
+        // nothing.
+        if (!this.deps.follows(subject.session)) return [message];
         const key = subjectKey({ session: subject.session });
         const state = stateOf(this.streams, key);
         // **The snapshot is the anchor.** It is the one message that says

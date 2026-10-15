@@ -222,6 +222,7 @@ class RustConnection implements Connection {
     emit: (messages) => {
       for (const message of messages) this.deliver(message);
     },
+    follows: (slot) => this.stores.get({ session: slot }) !== undefined,
   });
 
   private heard(message: ServerMessage): void {

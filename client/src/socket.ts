@@ -631,6 +631,7 @@ export function connect(url: string): Connection {
       emit: (messages) => {
         for (const message of messages) deliver(message);
       },
+      follows: (slot) => held.has(subjectKey({ session: slot })),
     });
     gate = opened;
 
