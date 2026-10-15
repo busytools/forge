@@ -95,7 +95,7 @@ pub enum LoadingState {
     Bailed,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AccountState {
     /// Declared backend from `[[accounts]] provider`. Decides which
     /// endpoint the usage probe hits and which credential it carries.
@@ -157,6 +157,28 @@ pub struct AccountState {
     pub loading: LoadingState,
 }
 
+/// Hand-written because the env map carries the account's credential
+/// stamps, which the derived output would print.
+impl std::fmt::Debug for AccountState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let env: std::collections::BTreeMap<&str, &str> =
+            self.env.keys().map(|key| (key.as_str(), "[redacted]")).collect();
+        f.debug_struct("AccountState")
+            .field("provider", &self.provider)
+            .field("models", &self.models)
+            .field("model_aliases", &self.model_aliases)
+            .field("model_slugs", &self.model_slugs)
+            .field("env", &env)
+            .field("usage", &self.usage)
+            .field("last_error", &self.last_error)
+            .field("next_probe_at", &self.next_probe_at)
+            .field("consecutive_failures", &self.consecutive_failures)
+            .field("override_armed", &self.override_armed)
+            .field("loading", &self.loading)
+            .finish()
+    }
+}
+
 /// `true` when an account declaring `models` serves `model`: it
 /// declares the name, or declares it as an alias of a model it does.
 /// The one home for the rule: the selection walk, the route's binding
@@ -170,10 +192,20 @@ pub fn account_serves<S: std::hash::BuildHasher>(
         || model_aliases.values().flatten().any(|alias| alias == model)
 }
 
-#[derive(Debug)]
 pub struct AccountStateMap {
     pub ordered_keys: Vec<AccountKey>, // forge.toml definition order
     pub by_key: std::collections::HashMap<AccountKey, AccountState>,
+}
+
+/// Hand-written because the states it holds carry credential stamps,
+/// which their own redacting Debug keeps out.
+impl std::fmt::Debug for AccountStateMap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AccountStateMap")
+            .field("ordered_keys", &self.ordered_keys)
+            .field("by_key", &self.by_key)
+            .finish()
+    }
 }
 
 impl AccountStateMap {
@@ -618,6 +650,29 @@ mod tests {
             model_slugs: std::collections::HashMap::new(),
             env: std::collections::HashMap::new(),
         }
+    }
+
+    /// `AccountStateMap::new` copies `LoadedAccount.env` verbatim - the
+    /// live credential included - so neither the state nor the map may
+    /// print a value from it.
+    #[test]
+    fn a_credential_never_reaches_the_account_state_debug_output() {
+        let mut account = make_account("Stargate");
+        account.env.insert("CLAUDE_CODE_OAUTH_TOKEN".to_owned(), "gateway-supersecret".to_owned());
+        let map = AccountStateMap::new(&[account]);
+        let state = map.by_key.values().next().expect("the state is there");
+        let rendered = format!("{state:?}");
+        assert!(
+            !rendered.contains("gateway-supersecret"),
+            "the credential stamp leaked: {rendered}",
+        );
+        assert!(rendered.contains("Anthropic"), "the provider stays readable: {rendered}");
+        let rendered = format!("{map:?}");
+        assert!(
+            !rendered.contains("gateway-supersecret"),
+            "the credential stamp leaked through the map: {rendered}",
+        );
+        assert!(rendered.contains("Stargate"), "the account key stays readable: {rendered}");
     }
 
     /// Default snapshot fixture used by the account-selection tests. The
