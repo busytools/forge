@@ -892,6 +892,7 @@ impl ForgeSdkBridge {
         crate::agent::decode_launch_settings(launch_settings).map_err(|error| {
             tracing::error!(
                 target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                event_name = "launch_settings_decode_failed",
                 session_id = session_id.unwrap_or(""),
                 "failed to decode launch_settings; the spawn is refused rather than started \
                  with none of them",

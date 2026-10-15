@@ -129,10 +129,11 @@ impl AgentHandle {
         launch_settings: crate::client::SessionLaunchSettings,
     ) -> Result<(), AgentError> {
         // Propagate serialise failure instead of launching with `Value::Null`:
-        // the dispatcher now REFUSES a value it cannot decode rather than
-        // deserialising it to default settings, and the refusal is logged, so
-        // a lossy payload stops the spawn with a breadcrumb instead of
-        // dropping the configured model or the blocked-tools denial silently.
+        // the bridge REFUSES a value it cannot decode rather than
+        // deserialising it to default settings, and the refusal is logged and
+        // emitted as a `ConnectionFailed`, so a lossy payload stops the spawn
+        // with a visible failure instead of dropping the configured model or
+        // the blocked-tools denial silently.
         let launch_settings = serde_json::to_value(launch_settings)?;
         self.send(AgentCommand::NewSession { session_id, cwd, launch_settings })
     }
