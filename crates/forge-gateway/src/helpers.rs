@@ -22,10 +22,21 @@ const OAUTH_BETA_HEADER: &str = "oauth-2025-04-20";
 /// The base-url credential an account's `env` carries: the
 /// `ANTHROPIC_BASE_URL` endpoint and the `ANTHROPIC_AUTH_TOKEN` bearer
 /// beside it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct BaseUrlCredential {
     pub base_url: String,
     pub bearer: String,
+}
+
+/// Hand-written because the bearer is the account's live credential,
+/// which the derived output would print.
+impl std::fmt::Debug for BaseUrlCredential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BaseUrlCredential")
+            .field("base_url", &self.base_url)
+            .field("bearer", &"[redacted]")
+            .finish()
+    }
 }
 
 /// The read of a base-url credential that found no usable
@@ -406,6 +417,22 @@ mod tests {
         env.insert("ANTHROPIC_BASE_URL".to_owned(), "  http://localhost:18765  ".to_owned());
         let credential = base_url_credential(&env).expect("credential");
         assert_eq!(credential.base_url, "http://localhost:18765");
+    }
+
+    /// The bearer is the account's live credential, so a `{:?}` must
+    /// never print it; the base url stays readable.
+    #[test]
+    fn a_credential_never_reaches_the_base_url_credential_debug_output() {
+        let mut env = HashMap::new();
+        env.insert("ANTHROPIC_BASE_URL".to_owned(), "https://proxy.example".to_owned());
+        env.insert("ANTHROPIC_AUTH_TOKEN".to_owned(), "bearer-supersecret".to_owned());
+        let credential = base_url_credential(&env).expect("credential");
+        let rendered = format!("{credential:?}");
+        assert!(!rendered.contains("bearer-supersecret"), "the bearer leaked: {rendered}");
+        assert!(
+            rendered.contains("https://proxy.example"),
+            "the base url stays readable: {rendered}",
+        );
     }
 
     /// An absent or blank ANTHROPIC_AUTH_TOKEN must not suppress the
