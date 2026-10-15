@@ -865,6 +865,67 @@
   });
 
   /**
+   * **The box is the keyboard's** (Ved, 2026-10-15).
+   *
+   * A printable key with the window focused lands in the composer, Tab keeps
+   * the keyboard in the box - cycling its own controls, never walking the
+   * pane - and Enter sends, which the field's own handler already does.
+   * Everything else is the pointer's: a reader typing into the app should
+   * never watch the focus wander. A key pressed while another field has the
+   * keyboard is that field's (the palette's, the dock's), and a composer that
+   * is not drawing a field at all (a take, a blocked state) leaves the key
+   * alone rather than swallowing it.
+   */
+  $effect(() => {
+    const rootOf = (): HTMLElement | null =>
+      field === null ? document.querySelector('.comp') : field.closest('.comp');
+    const tabbables = (): HTMLElement[] => {
+      const at = rootOf();
+      if (at === null) return [];
+      return [
+        ...at.querySelectorAll<HTMLElement>(
+          'textarea, input, button, [href], [tabindex]:not([tabindex="-1"])',
+        ),
+      ].filter((el) => !el.hasAttribute('disabled') && el.offsetParent !== null);
+    };
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.defaultPrevented) return;
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      const active = document.activeElement;
+      const typing =
+        active instanceof HTMLTextAreaElement ||
+        active instanceof HTMLInputElement ||
+        (active instanceof HTMLElement && active.isContentEditable);
+      const at = rootOf();
+      if (event.key === 'Tab') {
+        // A field outside this box keeps its own Tab; inside it — and from
+        // anywhere else on the page — the keyboard cycles the box.
+        if (typing && (at === null || !at.contains(active))) return;
+        const list = tabbables();
+        if (list.length === 0) return;
+        event.preventDefault();
+        const from = list.indexOf(active as HTMLElement);
+        const step = event.shiftKey ? -1 : 1;
+        const next = from === -1 ? 0 : (from + step + list.length) % list.length;
+        list[next]?.focus({ preventScroll: true });
+        return;
+      }
+      if (typing || event.key.length !== 1) return;
+      const element = field;
+      if (element === null) return;
+      const area = element as HTMLTextAreaElement;
+      event.preventDefault();
+      area.focus({ preventScroll: true });
+      const end = area.value.length;
+      area.setSelectionRange(end, end);
+      area.setRangeText(event.key, end, end, 'end');
+      area.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  });
+
+  /**
    * **A started take keeps the caret on the mic** (Ved, 2026-10-09).
    *
    * The row gate moves the mic from the field's line down to the bottom row the
