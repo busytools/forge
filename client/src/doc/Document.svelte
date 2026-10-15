@@ -220,9 +220,17 @@
       // one: the mic is drawn only inside a box.
       takeIn = composing;
       dictateLine = null;
+      // The arm this take's landing waits on, set at the press, on the seat
+      // the take belongs to: the record can carry a quick take's start and
+      // end inside one write, and a landing read off it would find no take to
+      // watch.
+      landing.arm(boxKey(slot));
     },
     onLine: (line) => {
+      // No landing is coming for a take that drew a line: the arm goes with
+      // the failure.
       dictateLine = line;
+      landing.drop();
     },
     onRefused: (line) => {
       dictateLine = line;
@@ -242,7 +250,7 @@
    * keyboard with them, the rule the composer's own landing keeps.
    */
   $effect(() => {
-    const words = landing.place(boxKey(slot), composer.take !== null, composer.notice);
+    const words = landing.place(boxKey(slot), composer.notice);
     // A take this page never began (a second dictating client on the seat)
     // places nothing - and must not touch the box the reader has open.
     if (words === null || takeIn === null) return;
@@ -270,7 +278,9 @@
 
   // The line a take owes - this page's own about the attempt, or the record's
   // about a take the page watched - under the box it belongs to.
-  const blockLine = $derived(dictateLine ?? noticeLine(composer.notice, landing.watched));
+  const blockLine = $derived(
+    dictateLine ?? noticeLine(composer.notice, landing.holds(composer.notice)),
+  );
 
   // The push-to-talk key, offered only while the box is open: it is where a
   // take's words land, and a page with no box has nowhere to put them.

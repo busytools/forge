@@ -395,6 +395,48 @@ describe('a landing', () => {
       'the round summary, where the mic was pressed',
     ).toBe('this read is the whole input');
   });
+
+  /**
+   * **A quick take the record never showed still lands.** The record a page
+   * reads is written once per painted frame, so a press and a release can fold
+   * into one write with no take in it at all: the arm is the press's own, and
+   * the words land in the box that began the take all the same (the composer's
+   * own quick-release case, Ved, 2026-10-15).
+   */
+  it('lands a take the record never showed, after a quick release', async () => {
+    await draw();
+    await openComment();
+
+    micIn('.rv-thread.comment').click();
+    await vi.waitFor(
+      () => {
+        expect(
+          document.querySelector('.rv-thread.comment .takeline'),
+          "the bar takes the box's line",
+        ).not.toBeNull();
+      },
+      { timeout: 2000 },
+    );
+
+    // The words land with the record never having shown a take: only the
+    // press knows this take exists on the page's side.
+    push({ wire: record(LANDED), refused: null });
+    flushSync();
+
+    // The release, and the box draws the words.
+    micIn('.rv-thread.comment').click();
+    await vi.waitFor(
+      () => {
+        expect(document.querySelector('.rv-thread.comment .takeline'), 'the bar goes').toBeNull();
+      },
+      { timeout: 2000 },
+    );
+
+    expect(
+      document.querySelector<HTMLTextAreaElement>('.rv-thread.comment .rv-txarea')?.value,
+      'the words of a take the record never showed',
+    ).toBe('this read is the whole input');
+  });
 });
 
 describe("the take's bar", () => {

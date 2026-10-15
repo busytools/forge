@@ -18,10 +18,22 @@ const ELSEWHERE = 'session:Busytools/forge/worker';
 describe('a landing', () => {
   it('places its words once', () => {
     const landing = new Landing();
-    // The record holds the take first, and its notice lands after it.
-    landing.place(SEAT, true, null);
-    expect(landing.place(SEAT, false, words)).toBe('this read is the whole input');
-    expect(landing.place(SEAT, false, words), 'the same notice is not placed twice').toBeNull();
+    // The page's own take begins (the press), and its notice lands after it.
+    landing.arm(SEAT);
+    expect(landing.place(SEAT, words)).toBe('this read is the whole input');
+    expect(landing.place(SEAT, words), 'the same notice is not placed twice').toBeNull();
+  });
+
+  /**
+   * **The quick take the record never showed.** The record a page reads is
+   * written once per painted frame, so a take's start and its end can fold
+   * into one write: the arm is the press's own, and the words land with no
+   * take ever read from the record.
+   */
+  it('places words for a take the record never showed a take for', () => {
+    const landing = new Landing();
+    landing.arm(SEAT);
+    expect(landing.place(SEAT, words)).toBe('this read is the whole input');
   });
 
   /**
@@ -31,41 +43,60 @@ describe('a landing', () => {
    */
   it('places the same words again after a take started, which cleared them', () => {
     const landing = new Landing();
-    landing.place(SEAT, true, null);
-    expect(landing.place(SEAT, false, other)).toBe('looks good');
+    landing.arm(SEAT);
+    expect(landing.place(SEAT, other)).toBe('looks good');
 
-    expect(landing.place(SEAT, true, null), 'a take starting places nothing').toBeNull();
-    expect(landing.place(SEAT, false, other), 'and the same words are a landing of their own').toBe(
+    landing.arm(SEAT);
+    expect(landing.place(SEAT, null), 'a take starting places nothing').toBeNull();
+    expect(landing.place(SEAT, other), 'and the same words are a landing of their own').toBe(
       'looks good',
     );
   });
 
-  it("is not this page's when it never watched the take", () => {
-    // A page that attaches finds the previous take's notice still held; its
-    // words are the box's only if this page saw the take that left them.
+  it("is not this page's when no take of its own is behind it", () => {
+    // A page that attaches has none of its own in flight: the notice's words
+    // are not its to place.
     const landing = new Landing();
-    expect(landing.place(SEAT, false, words)).toBeNull();
-    expect(landing.watched, 'and nothing was watched').toBe(false);
+    expect(landing.place(SEAT, words)).toBeNull();
+    expect(landing.holds(words), 'and it holds none of the words').toBe(false);
   });
 
-  it('forgets the seat it was watching when the page moves to another', () => {
-    // The record in hand can be another seat's between two reads, and a
-    // notice it holds is one this page never watched.
+  it('forgets the seat it was armed on when the page moves to another', () => {
+    // The record in hand can be another seat's between two reads: an arm for
+    // one seat places nothing for another.
     const landing = new Landing();
-    landing.place(SEAT, true, null);
-    expect(landing.place(SEAT, false, words)).toBe('this read is the whole input');
-    expect(landing.place(ELSEWHERE, false, other), 'another seat is unwatched').toBeNull();
+    landing.arm(SEAT);
+    expect(landing.place(SEAT, words)).toBe('this read is the whole input');
+    expect(landing.place(ELSEWHERE, other), 'another seat has no arm of its own').toBeNull();
 
-    landing.place(SEAT, true, null);
-    expect(
-      landing.place(SEAT, false, words),
-      'and on the seat again it is one this page has watched once more',
-    ).toBe('this read is the whole input');
+    landing.arm(SEAT);
+    expect(landing.place(SEAT, words), 'and on the seat again a new arm places').toBe(
+      'this read is the whole input',
+    );
+  });
+
+  /**
+   * **The words the words row reads.** The cut row asks whether this page
+   * holds the notice's words, and it has to hold them on every read after the
+   * landing - the arm is spent by then, so the placed memory is what is left.
+   */
+  it('holds the notice the words it placed, and no other', () => {
+    const landing = new Landing();
+    landing.arm(SEAT);
+    expect(landing.holds(words), 'the arm alone holds them while they land').toBe(true);
+    expect(landing.place(SEAT, words)).toBe('this read is the whole input');
+    expect(landing.holds(words), 'and the placed memory holds them after').toBe(true);
+    expect(landing.holds(other), 'not the next notice').toBe(false);
   });
 
   it('places words only: a line about a take is not words for the box', () => {
     const landing = new Landing();
-    expect(landing.place(SEAT, true, line)).toBeNull();
-    expect(landing.place(SEAT, false, words)).toBe('this read is the whole input');
+    landing.arm(SEAT);
+    expect(landing.place(SEAT, line)).toBeNull();
+    expect(landing.holds(line), 'and the line is not words this page holds').toBe(false);
+    // The line was the take's outcome, so the arm went with it: the next words
+    // need a take of their own.
+    landing.arm(SEAT);
+    expect(landing.place(SEAT, words)).toBe('this read is the whole input');
   });
 });

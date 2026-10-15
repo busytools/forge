@@ -915,6 +915,50 @@ describe("the block's own take", () => {
   });
 
   /**
+   * **A quick take the record never showed still lands.** The record a page
+   * reads is written once per painted frame, so a press and a release can fold
+   * into one write with no take in it at all: the arm is the press's own, and
+   * the words land in the box that began the take all the same (the composer's
+   * own quick-release case, Ved, 2026-10-15).
+   */
+  it('lands a take the record never showed, after a quick release', async () => {
+    drawWithDictation();
+    push(seatRecord(IDLE));
+    blockTarget('line two').click();
+    flushSync();
+
+    composeMic().click();
+    await vi.waitFor(
+      () => {
+        expect(
+          document.querySelector('.doc-compose .takeline'),
+          "the take's bar, in the box's own line",
+        ).not.toBeNull();
+      },
+      { timeout: 2000 },
+    );
+
+    // The words land with the record never having shown a take: only the
+    // press knows this take exists on the page's side.
+    push(seatRecord(LANDED));
+    flushSync();
+
+    // The reader's release: the take ends and the field comes back with the
+    // words in it.
+    composeMic().click();
+    await vi.waitFor(
+      () => {
+        expect(document.querySelector('.doc-compose .takeline'), 'the bar goes').toBeNull();
+      },
+      { timeout: 2000 },
+    );
+    expect(
+      document.querySelector<HTMLTextAreaElement>('.doc-compose textarea')?.value,
+      'the words of a take the record never showed',
+    ).toBe('the second line reads well');
+  });
+
+  /**
    * **A take goes with its box.** Closing the composer mid-take ends the
    * take: without it the microphone keeps capturing into a box nothing
    * draws, and the words land where the reader cannot see them.

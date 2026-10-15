@@ -257,11 +257,18 @@
       takeSpot = box.spot;
       takeThread = reply.thread;
       dictateLine = null;
+      // The arm this take's landing waits on, set at the press, on the seat
+      // the take belongs to: the record can carry a quick take's start and
+      // end inside one write, and a landing read off it would find no take to
+      // watch.
+      landing.arm(boxKey(slot));
     },
     onLine: (line) => {
-      // The take's own line belongs to the box it began in.
+      // The take's own line belongs to the box it began in, and no landing is
+      // coming for it: the arm goes with the failure.
       lineIn = takeIn;
       dictateLine = line;
+      landing.drop();
     },
     onRefused: (line) => {
       // A refused press belongs to the box that was pressed.
@@ -353,7 +360,7 @@
    * just landed.
    */
   $effect(() => {
-    const words = landing.place(boxKey(slot), composer.take !== null, composer.notice);
+    const words = landing.place(boxKey(slot), composer.notice);
     if (words === null || takeIn === null) return;
     if (takeIn === 'comment') {
       if (!sameSpot(box.spot, takeSpot)) box.spot = takeSpot;
@@ -379,7 +386,7 @@
    * the comment box and whose failure the reader would never see.
    */
   $effect(() => {
-    const line = dictateLine ?? noticeLine(composer.notice, landing.watched);
+    const line = dictateLine ?? noticeLine(composer.notice, landing.holds(composer.notice));
     const at = dictateLine !== null ? lineIn : (takeIn ?? 'comment');
     box.line = at === 'comment' ? line : null;
     reply.line = at === 'reply' ? line : null;
