@@ -945,6 +945,12 @@ pub async fn conversation_for(state: &TransportState, slot: &SessionSlot) -> Opt
     if state.conversations.get(slot).is_none()
         && let Some(held) = seed_from_transcript(state, slot).await
     {
+        // **The seed must be the seat's copy too.** Its occupant is the
+        // read's own resolution, which can lag a header that already moved
+        // on: that copy would answer for the run it did not read.
+        if !current(&held) {
+            return None;
+        }
         // **A live session's window is the truer copy** and this is how it
         // lands: the task answers `HistoryReplayed` with the frames it holds,
         // which reseeds the seat over what the file seeded. A seat with
@@ -1006,11 +1012,15 @@ async fn seed_from_transcript(state: &TransportState, slot: &SessionSlot) -> Opt
     if read.messages.is_empty() {
         return None;
     }
-    Some(state.conversations.insert(
-        slot,
+    let mut conversation =
         // A file read, whole: the cap's own drop is what the floor counts.
-        Conversation::new(read.messages, read.compaction_count, 0),
-    ))
+        Conversation::new(read.messages, read.compaction_count, 0);
+    // **The copy says which run it holds** (#2256). A transcript seeded while
+    // the seat ran one occupant must not answer under another: the seal the
+    // fold has not applied yet leaves this copy standing while the header
+    // already names the new run.
+    conversation.set_occupant(read.session_id.map(forge_primitives::SessionId::new));
+    Some(state.conversations.insert(slot, conversation))
 }
 
 /// How many of a conversation's newest turns a subscribe carries.

@@ -173,6 +173,10 @@ pub struct ConversationHistory {
     pub messages: Vec<Message>,
     /// `compact_boundary` rows seen in the transcript.
     pub compaction_count: u32,
+    /// The session this read's rows belong to - the file's own, or the one a
+    /// resume re-stamps them with - so a copy seeded from the read says which
+    /// run it holds (#2256).
+    pub session_id: Option<String>,
 }
 
 /// A span of a session's transcript, read for a page below the window a

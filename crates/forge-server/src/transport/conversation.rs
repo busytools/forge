@@ -415,9 +415,10 @@ impl Held {
 
     /// Whether this copy belongs to the seat's current occupant.
     ///
-    /// **A copy with no occupant matches anything**, so a copy the transcript
-    /// seeded - or one built before an occupant was set - is never discarded
-    /// for lacking a fact nothing ever recorded.
+    /// **A copy with no occupant matches anything, and so does a header
+    /// naming nobody**: a copy the replay route materialised carries no
+    /// occupant, and a sleeping seat's header names no run - neither is
+    /// discarded for lacking a fact nothing ever recorded.
     pub fn holds_occupant(&self, occupant: Option<&forge_primitives::SessionId>) -> bool {
         match (self.lock().occupant.as_ref(), occupant) {
             (Some(held), Some(current)) => held == current,
@@ -824,9 +825,9 @@ mod tests {
     }
 
     /// **A copy with no occupant answers for any occupant.** The arm is
-    /// load-bearing, not defensive: a transcript-seeded copy carries no
-    /// occupant, and reading it as "not the seat's" would drop the history of
-    /// every sleeping seat a client opens.
+    /// load-bearing, not defensive: the replay route materialises a copy
+    /// with no occupant, and reading it as "not the seat's" would drop that
+    /// copy's history.
     #[test]
     fn a_copy_with_no_occupant_matches_any_occupant() {
         let bare = Held::new(Conversation::empty());
