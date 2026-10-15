@@ -103,7 +103,7 @@ export class ShellMic implements MicSource {
    * what that costs is one partial frame, bounded.
    */
   async drain(): Promise<void> {
-    await invoke('client_mic_drain');
+    await invoke('client_mic_drain', { page });
   }
 
   /**
@@ -112,7 +112,7 @@ export class ShellMic implements MicSource {
    */
   stop(): void {
     this.hearing();
-    void invoke('client_mic_stop').catch(() => {
+    void invoke('client_mic_stop', { page }).catch(() => {
       // The shell is gone, and the held device went with it.
     });
   }
