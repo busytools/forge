@@ -148,14 +148,9 @@ interface Seat {
    */
   askedAt: number;
   /**
-   * How many answers in a row the frames have outrun, against
-   * [`OUTRUN_CAP`].
-   *
-   * A seat framed faster than a round trip outruns EVERY answer, so without
-   * this the re-ask re-arms on each trip forever, a full server encode apiece
-   * (measured live, 2026-10-15). The cap takes the merged state the frames
-   * already built after a few tries; the counter resets whenever an answer is
-   * taken.
+   * How many answers in a row the frames have outrun, against [`OUTRUN_CAP`]:
+   * past the cap the stale answer is dropped and the frames' own record
+   * stands (#1472). Reset whenever an answer is taken and on a new epoch.
    */
   outrun: number;
   /**
@@ -226,13 +221,13 @@ const PAINT_WATCHDOG_MS = 250;
 const REPAIR_HELD_CAP = 256;
 
 /**
- * How many answers in a row the frames may outrun before the merged state is
- * taken.
+ * How many answers in a row the frames may outrun before the re-ask stops.
  *
- * A seat framed faster than a round trip outruns every answer, and the re-ask
- * re-arms on each trip: a few tries covers the ordinary race (a frame or two
- * arriving mid-trip), and past them the frames' own state is the better
- * record - one more encode will be outrun too (measured live, 2026-10-15).
+ * A seat framed faster than a round trip outruns every answer, so without a
+ * cap the re-ask re-arms on each trip, a full server encode apiece; a few
+ * tries covers the ordinary race (a frame or two arriving mid-trip), and past
+ * them the record the frames already hold IS the record - one more encode
+ * will be outrun too (#1472, measured live 2026-10-15).
  */
 const OUTRUN_CAP = 3;
 
@@ -797,6 +792,9 @@ function createSeat(
         // Frames held under the old epoch are not the new one's to draw.
         seat.repairHeld.length = 0;
         seat.repairFrom = null;
+        // A new epoch's outruns are its own; the old run's count would
+        // shorten the next burst's grace (the take still terminates).
+        seat.outrun = 0;
       }
       reread();
       return;
@@ -936,13 +934,18 @@ function createSeat(
         // answer that never comes, so it is taken: never a merge, and never a
         // loop.
         const moved = seat.seen !== seat.askedAt;
-        if (
-          reach.seq !== null &&
-          reach.seq - 1 < seat.lastSeq &&
-          moved &&
-          seat.wire !== null &&
-          seat.outrun < OUTRUN_CAP
-        ) {
+        if (reach.seq !== null && reach.seq - 1 < seat.lastSeq && moved && seat.wire !== null) {
+          if (seat.outrun >= OUTRUN_CAP) {
+            // **Past the cap the merged state is the record.** The frames
+            // have carried the record past this answer, and taking the
+            // answer would roll it back to its encode point and rewind the
+            // count - numbers the ring may no longer hold are then never
+            // re-fetched, rows lost (rule 25). So the answer is dropped
+            // rather than taken, the stale body never reaches the store, and
+            // the re-ask stops here (#1472).
+            seat.outrun = 0;
+            return;
+          }
           seat.outrun += 1;
           reread();
           return;
