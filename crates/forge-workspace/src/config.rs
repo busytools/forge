@@ -3511,8 +3511,8 @@ provider = "anthropic"
         );
         let err = load_from_dir(dir.path()).expect_err("the near-miss key fails loudly");
         let said = err.to_string();
-        assert!(said.contains("client_tokenn"), "the key still names what to fix: {said}",);
-        assert!(!said.contains("hunter2secret"), "the value on the line never prints: {said}",);
+        assert!(said.contains("client_tokenn"), "the key still names what to fix: {said}");
+        assert!(!said.contains("hunter2secret"), "the value on the line never prints: {said}");
         assert!(said.contains("line 3"), "the position says where: {said}");
     }
 
@@ -3526,8 +3526,8 @@ provider = "anthropic"
         write_config(dir.path(), "[server]\nport = \"hunter2secret\"\n");
         let err = load_from_dir(dir.path()).expect_err("a string port fails to parse");
         let said = err.to_string();
-        assert!(!said.contains("hunter2secret"), "the mismatched value never prints: {said}",);
-        assert!(said.contains("invalid type"), "and the reason the parse failed survives: {said}",);
+        assert!(!said.contains("hunter2secret"), "the mismatched value never prints: {said}");
+        assert!(said.contains("invalid type"), "and the reason the parse failed survives: {said}");
         assert!(said.contains("line 2"), "with the position: {said}");
     }
 
