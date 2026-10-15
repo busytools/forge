@@ -1801,6 +1801,42 @@ describe('the record a page holds over an update stream', () => {
   });
 
   /**
+   * **The notice's own number is counted like any other frame's.** The cue
+   * it carries is a re-read, not a stop: a branch that returned there would
+   * leave the number unminted, and the frame behind it - the successor of a
+   * number the record never took - would read as a hole and hold every later
+   * frame behind a repair ask for a notice that needed none.
+   */
+  it('counts a review notice in the seat numbering', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD, { conversation: { turns: [], compaction_count: 0 } }, { seq: 1 }));
+    const asked = connection.reads();
+
+    page.land(
+      frameOf(
+        {
+          review_activity_notice: {
+            key: LEAD,
+            branch: 'feat',
+            waiting: 2,
+            message: 'a worker addressed review #4',
+          },
+        },
+        1,
+      ),
+    );
+    expect(connection.reads(), 'the notice never asked for the re-read').toBe(asked + 1);
+
+    // The frame behind it is its successor: no hole, nothing held.
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('after') } }, 2));
+    paint();
+    expect(connection.ranges, 'the successor frame was held behind a repair ask').toEqual([]);
+    expect(page.read().wire?.conversation.turns, 'the successor never drew').toHaveLength(1);
+    page.stop();
+  });
+
+  /**
    * **A page leaving gives its subscription back, and the record it held
    * stays.** A held subscription reads as a SHOWING seat to the server, and
    * showing spends every mark the seat earns - the failure mark and the

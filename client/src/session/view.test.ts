@@ -2189,6 +2189,10 @@ describe('the review sets the strip draws', () => {
       'four',
     ]);
     expect(moved?.inDiff, 'still the current diff, found where it sits').toBe(true);
+    expect(
+      moved?.where,
+      'and the row points where the code is, naming the move as the canvas does',
+    ).toBe('a.rs \u{b7} line 4 \u{b7} moved from 7');
   });
 
   it('draws a commit-scoped thread from its capture, never the branch diff', () => {

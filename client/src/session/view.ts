@@ -1744,11 +1744,12 @@ export function reviewSets(record: SessionRecord | null, now: number): ReviewSet
         age: ageOf(round.created_at, now),
         chips,
         threads: threadsInRound(threads, round.id).map((thread) => {
-          const excerpt = codeAround(record, thread);
+          const placed = thread.commit === null ? canvasLine(thread) : null;
+          const excerpt = codeAround(record, thread, placed);
           return {
             id: thread.id,
             state: typeof thread.status === 'string' ? thread.status : thread.status.unknown,
-            where: `${thread.anchor.path.split('/').pop() ?? thread.anchor.path} \u{b7} line ${thread.anchor.line}`,
+            where: whereOf(thread, placed),
             turns: thread.comments.map((turn) => ({
               author: authorName(turn.author),
               text: turn.text,
@@ -1764,6 +1765,23 @@ export function reviewSets(record: SessionRecord | null, now: number): ReviewSet
 /** Lines kept either side of an anchored one. */
 const CODE_AROUND = 2;
 
+/** Where a thread sits, as the resolution places it; `null` when it cannot
+ *  be placed (a commit-scoped thread keeps its own recorded numbering). */
+type Placed = { line: number; movedFrom: number | null } | null;
+
+/**
+ * Where the row points: the resolution's own line, with the move named the
+ * way the page's canvas names it - the recorded number is the fallback of a
+ * thread with no placement, never a second claim beside one.
+ */
+function whereOf(thread: ReviewThreadRecord, placed: Placed): string {
+  const file = thread.anchor.path.split('/').pop() ?? thread.anchor.path;
+  if (placed === null) return `${file} \u{b7} line ${thread.anchor.line}`;
+  return placed.movedFrom === null
+    ? `${file} \u{b7} line ${placed.line}`
+    : `${file} \u{b7} line ${placed.line} \u{b7} moved from ${placed.movedFrom}`;
+}
+
 /**
  * The lines a comment was written against, and which source they are.
  *
@@ -1775,8 +1793,8 @@ const CODE_AROUND = 2;
 function codeAround(
   record: SessionRecord,
   thread: ReviewThreadRecord,
+  placed: Placed,
 ): { code: string[]; inDiff: boolean } {
-  const placed = thread.commit === null ? canvasLine(thread) : null;
   if (placed !== null && record.diff.branchAhead.state === 'populated') {
     const file = record.diff.branchAhead.files.find((held) => held.path === thread.anchor.path);
     const side = thread.anchor.side === 'old' ? 'old' : 'new';
