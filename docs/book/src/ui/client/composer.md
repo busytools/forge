@@ -81,7 +81,7 @@ the capture is the webview's own, opened per take as it always was.
 |---|---|
 | Idle | the field row alone, placeholder and mic |
 | Typing | the draft, the send joining the controls |
-| Running | the turn's figures leading the strip lane; `stop` beside the mic |
+| Running | the turn's figures leading the strip lane; `stop` beside the mic, and escape its key |
 | A question parked | the dock's lane in place of the field |
 | Sign-in needed | the box stays, with the sign-in line above it: the reader is told where, not blocked |
 | Compacting | `Compacting context...`, a ring, no field |
