@@ -1667,6 +1667,66 @@ mod tests {
         }
     }
 
+    /// **Every row a page serves carries the stamp of the file row it came
+    /// from**, for every kind a turn holds: the prompt, a hoisted queued
+    /// command, an assistant message, the hook summary and the compaction
+    /// boundary.
+    ///
+    /// The stamp is what a page's clock is read from - an open page anchors a
+    /// running turn on the first row carrying one - so a kind that reaches the
+    /// wire without its own stamp is a turn that draws no age, or the wrong
+    /// one, and nothing downstream can recover a fact the read dropped.
+    #[test]
+    fn every_kind_a_turn_holds_reaches_a_page_stamped() {
+        let (messages, rendered) = a_conversation(&[
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"hi"}]},"uuid":"u1","sessionId":"s","timestamp":"2026-10-15T05:18:05.217Z"}"#,
+            r#"{"type":"attachment","attachment":{"type":"queued_command","prompt":"queued words","commandMode":"prompt"},"uuid":"q1","sessionId":"s","timestamp":"2026-10-15T05:19:00.100Z"}"#,
+            r#"{"type":"assistant","message":{"id":"m1","role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"working"}]},"uuid":"a1","sessionId":"s","timestamp":"2026-10-15T05:19:05.544Z"}"#,
+            r#"{"type":"system","subtype":"stop_hook_summary","hookCount":1,"hookInfos":[],"hookErrors":[],"hasOutput":false,"level":"suggestion","preventedContinuation":false,"stopReason":"","toolUseID":"tu1","uuid":"h1","sessionId":"s","timestamp":"2026-10-15T05:19:40.632Z"}"#,
+            r#"{"type":"system","subtype":"compact_boundary","uuid":"b1","sessionId":"s","compactMetadata":{"trigger":"auto","preTokens":1018466,"postTokens":19526},"timestamp":"2026-10-15T05:20:11.004Z"}"#,
+        ]);
+        let served = page(&messages, &rendered, 0, None, u32::MAX);
+
+        let frames: Vec<&Value> =
+            served.turns.iter().flat_map(|turn| turn.messages.iter()).collect();
+        let kinds: Vec<String> = frames
+            .iter()
+            .map(|frame| {
+                let subtype = frame["subtype"].as_str().unwrap_or("");
+                if subtype.is_empty() {
+                    frame["type"].as_str().unwrap_or("?").to_owned()
+                } else {
+                    format!("{}/{subtype}", frame["type"].as_str().unwrap_or("?"))
+                }
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                "user",
+                "user",
+                "assistant",
+                "system/stop_hook_summary",
+                "system/compact_boundary",
+            ],
+            "the page carries every kind the read kept - the denominator this test asserts over",
+        );
+
+        let stamps: Vec<Option<&str>> =
+            frames.iter().map(|frame| frame["timestamp"].as_str()).collect();
+        assert_eq!(
+            stamps,
+            vec![
+                Some("2026-10-15T05:18:05.217Z"),
+                Some("2026-10-15T05:19:00.100Z"),
+                Some("2026-10-15T05:19:05.544Z"),
+                Some("2026-10-15T05:19:40.632Z"),
+                Some("2026-10-15T05:20:11.004Z"),
+            ],
+            "each row carries the row's own stamp, in the row's own order",
+        );
+    }
+
     /// A page of no turns ended where it began - an empty page whose cursor
     /// named the turn it had already opened at - so a client walking back
     /// asked for it forever.

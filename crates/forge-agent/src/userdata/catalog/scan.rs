@@ -326,12 +326,14 @@ fn missing_boundary_facts(value: &Value) -> Vec<&'static str> {
 /// A transcript spells its metadata flat and camelCase (`compactMetadata`,
 /// `preTokens`), while the decoder keys on the wire's nesting - so a row handed
 /// on as read decodes as a generic system frame, and draws bare or half-filled
-/// where a live boundary draws its counts.
+/// where a live boundary draws its counts. The row's own stamp rides with it:
+/// the frame is built here rather than copied, so this is where a page's clock
+/// would lose the one fact only the file has.
 fn compact_boundary_frame(value: &Value) -> Value {
     let metadata = value.get("compactMetadata");
     let field =
         |key: &str| metadata.and_then(|metadata| metadata.get(key)).cloned().unwrap_or(Value::Null);
-    serde_json::json!({
+    let mut frame = serde_json::json!({
         "type": "system",
         "subtype": "compact_boundary",
         "session_id": session_in_row(value),
@@ -341,7 +343,11 @@ fn compact_boundary_frame(value: &Value) -> Value {
             "pre_tokens": field("preTokens"),
             "post_tokens": field("postTokens"),
         },
-    })
+    });
+    if let Some(timestamp) = value.get("timestamp") {
+        frame["timestamp"] = timestamp.clone();
+    }
+    frame
 }
 
 /// Build a `{"role":"user","content":[{queued_command}]}` envelope from
@@ -1948,6 +1954,43 @@ mod tests {
         assert_eq!(hook_infos.len(), 2, "and one entry per hook behind it");
         assert_eq!(hook_infos[0].command, "just fmt", "each naming what it ran");
         assert_eq!(hook_infos[1].duration_ms, Some(62000), "and how long it took");
+    }
+
+    /// **Every row a transcript read keeps reaches the wire stamped**, which
+    /// is what a page's clock is read from: an open page anchors a turn on
+    /// the first row that carries a stamp, and the row that opens a turn is
+    /// the reader's own - so a kind that loses its stamp is a turn that draws
+    /// with no age at all until an assistant frame lands.
+    #[test]
+    fn every_row_a_transcript_read_keeps_reaches_the_wire_stamped() {
+        let jsonl = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"hi"}]},"uuid":"u1","sessionId":"s1","timestamp":"2026-10-15T05:18:05.217Z"}
+{"type":"attachment","attachment":{"type":"queued_command","prompt":"queued words","commandMode":"prompt"},"uuid":"q1","sessionId":"s1","timestamp":"2026-10-15T05:19:00.100Z"}
+{"type":"assistant","message":{"id":"m1","role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"working"}]},"uuid":"a1","sessionId":"s1","timestamp":"2026-10-15T05:19:05.544Z"}
+{"type":"system","subtype":"stop_hook_summary","hookCount":1,"hookInfos":[],"hookErrors":[],"hasOutput":false,"level":"suggestion","preventedContinuation":false,"stopReason":"","toolUseID":"tu1","uuid":"h1","sessionId":"s1","timestamp":"2026-10-15T05:19:40.632Z"}
+{"type":"system","subtype":"compact_boundary","uuid":"b1","sessionId":"s1","compactMetadata":{"trigger":"auto","preTokens":1018466,"postTokens":19526},"timestamp":"2026-10-15T05:20:11.004Z"}
+"#;
+        let history = parse_session_messages(jsonl.as_bytes());
+        let messages = messages_from_rows(history.messages, "s1");
+
+        let stamps: Vec<(String, Option<String>)> = messages
+            .iter()
+            .map(|message| {
+                let value = serde_json::to_value(message).expect("encode");
+                let kind = value["type"].as_str().unwrap_or("?").to_owned();
+                (kind, value["timestamp"].as_str().map(str::to_owned))
+            })
+            .collect();
+        assert_eq!(
+            stamps,
+            vec![
+                ("user".to_owned(), Some("2026-10-15T05:18:05.217Z".to_owned())),
+                ("user".to_owned(), Some("2026-10-15T05:19:00.100Z".to_owned())),
+                ("assistant".to_owned(), Some("2026-10-15T05:19:05.544Z".to_owned())),
+                ("system".to_owned(), Some("2026-10-15T05:19:40.632Z".to_owned())),
+                ("system".to_owned(), Some("2026-10-15T05:20:11.004Z".to_owned())),
+            ],
+            "each kept kind must carry the row's own stamp, in the row's own order",
+        );
     }
 
     #[test]

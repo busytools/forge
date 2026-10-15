@@ -187,6 +187,17 @@ impl SessionTask {
     /// event is terminal for this task and the loop must exit (so the
     /// exit path releases the session and disconnects the subprocess).
     fn translate_event(&mut self, event: AgentEvent) -> bool {
+        // **A frame is stamped as it crosses, before either half reads it.**
+        // The CLI stamps assistant frames and tool results and nothing else -
+        // not the prompt that OPENS a turn, not a system frame, not the result
+        // that ends one - so a page served those rows had no stamp to anchor a
+        // running turn's clock on, and read 0.0s until an assistant frame
+        // landed. The stamp is this task's own receipt: a frame that carries
+        // one keeps it.
+        let mut event = event;
+        if let AgentEvent::SdkMessage { msg, .. } = &mut event {
+            msg.stamp_if_absent(&crate::install::rfc3339_now());
+        }
         // First, update DomainSession in-place.
         let nudge_armed;
         {
@@ -3578,6 +3589,100 @@ mod tests {
                 SessionUpdate::ChatAppended { msg: forge_primitives::Message::User { .. }, .. }
             )),
             "the continuation's words draw in every view: {drawn:?}",
+        );
+    }
+
+    /// **A live frame crosses the task stamped, and the stamp rides both
+    /// places a page reads a row from**: the update a watching client is
+    /// sent, and the window a replay hands one that attached late.
+    ///
+    /// The kinds a turn OPENS with are exactly the ones the CLI does not
+    /// stamp - the prompt frame carries no timestamp at all, and neither do
+    /// the counter or result frames - so a page opening mid-turn had no row
+    /// to anchor its clock on: 0.0s until the first assistant frame, whose
+    /// stamp is the moment it was written rather than the turn's start. The
+    /// receipt is forge's own record of when the row crossed; a frame the
+    /// CLI did stamp keeps its own.
+    #[test]
+    fn a_live_frame_crosses_stamped_and_keeps_the_stamp_it_came_with() {
+        let (workspace, _updates) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("stamp-crossing");
+        let (mut task, mut updates, _to_agent) = nudge_task_for(&workspace, &key);
+        task.conversation = Some((Vec::new(), 0));
+
+        let send = |task: &mut SessionTask, msg: forge_primitives::Message| {
+            task.translate_event(AgentEvent::SdkMessage {
+                session_id: "stamp-crossing".to_owned(),
+                msg,
+            });
+        };
+
+        // The prompt frame as the CLI sends it: no stamp of its own.
+        let prompt: forge_primitives::Message = serde_json::from_value(serde_json::json!({
+            "type": "user",
+            "message": {"role": "user", "content": [{"type": "text", "text": "hi"}]},
+            "session_id": "stamp-crossing",
+        }))
+        .expect("a prompt frame");
+        send(&mut task, prompt);
+
+        // And one the CLI stamped itself.
+        let spoke: forge_primitives::Message = serde_json::from_value(serde_json::json!({
+            "type": "assistant",
+            "uuid": "a1",
+            "timestamp": "2026-10-15T05:18:15.544Z",
+            "session_id": "stamp-crossing",
+            "message": {
+                "id": "m1",
+                "role": "assistant",
+                "model": "claude-opus-5",
+                "content": [{"type": "text", "text": "working"}],
+            },
+        }))
+        .expect("an assistant frame");
+        send(&mut task, spoke);
+
+        let drawn: Vec<forge_primitives::Message> = drain_updates(&mut updates)
+            .into_iter()
+            .filter_map(|update| match update {
+                SessionUpdate::ChatAppended { msg, .. } => Some(msg),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(drawn.len(), 2, "both frames are drawn: {drawn:?}");
+
+        let prompt_stamp = serde_json::to_value(&drawn[0]).expect("encode")["timestamp"]
+            .as_str()
+            .map(str::to_owned)
+            .expect("the prompt row carries a stamp for a clock to anchor on");
+        assert!(
+            time::OffsetDateTime::parse(
+                &prompt_stamp,
+                &time::format_description::well_known::Rfc3339,
+            )
+            .is_ok(),
+            "and it is a time the client can read: {prompt_stamp}",
+        );
+        assert_eq!(
+            serde_json::to_value(&drawn[1]).expect("encode")["timestamp"].as_str(),
+            Some("2026-10-15T05:18:15.544Z"),
+            "while the frame the CLI stamped keeps its own",
+        );
+
+        // The window half: the replay a late page is answered with carries
+        // the same stamps, so a page attaching mid-turn anchors where a page
+        // that watched the turn opens does.
+        let (history, _count) = task.conversation.as_ref().expect("the window is held");
+        let held: Vec<Option<String>> = history
+            .iter()
+            .map(|msg| {
+                serde_json::to_value(msg).expect("encode")["timestamp"].as_str().map(str::to_owned)
+            })
+            .collect();
+        assert_eq!(
+            held,
+            vec![Some(prompt_stamp), Some("2026-10-15T05:18:15.544Z".to_owned())],
+            "the window a replay hands over is what a page folds, stamps and all",
         );
     }
 
