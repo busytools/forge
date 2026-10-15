@@ -336,6 +336,7 @@ impl ViewSurface {
         ConversationHistory {
             messages: crate::transcript::notices_as_blocks(read.messages),
             compaction_count: read.compaction_count,
+            session_id: Some(session_id),
         }
     }
 

@@ -548,7 +548,11 @@ pub(crate) fn load_history_messages(
         crate::userdata::catalog::scan::get_session_messages(config_dir, prev_session_id, dir);
     let compaction_count = history.compaction_count;
     let messages = crate::userdata::catalog::scan::messages_from_rows(history.messages, session_id);
-    forge_primitives::ConversationHistory { messages, compaction_count }
+    forge_primitives::ConversationHistory {
+        messages,
+        compaction_count,
+        session_id: Some(session_id.to_owned()),
+    }
 }
 
 /// Resolve the session id to stamp on an inbound SDK frame. Frames that
@@ -2253,6 +2257,11 @@ mod tests {
         let resumed = super::load_history_messages(config_dir.path(), session_id, "", session_id);
 
         assert_eq!(resumed.compaction_count, 3, "three boundaries reach the Connected event");
+        assert_eq!(
+            resumed.session_id.as_deref(),
+            Some(session_id),
+            "and the read says which session its rows belong to",
+        );
         let boundaries: Vec<forge_primitives::Message> = resumed
             .messages
             .iter()

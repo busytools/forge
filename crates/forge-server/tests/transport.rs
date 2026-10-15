@@ -3497,6 +3497,166 @@ async fn an_answer_inside_the_seal_window_is_not_the_previous_runs_conversation(
     );
 }
 
+/// **A seal the fold has not applied must not be answered with the previous
+/// run's transcript copy** (#2256).
+///
+/// A page opening on a sleeping seat seeds its copy from the transcript on
+/// disk, and that copy carries no occupant - so when the seat is replaced
+/// before the fold applies the seal, the copy still answers: the new epoch's
+/// count beside the replaced run's rows, until the apply reseeds it.
+#[tokio::test]
+async fn a_seal_over_a_transcripts_copy_is_not_answered_with_the_previous_runs_rows() {
+    let (url, fleet, state) = a_server_with_state().await;
+    let seat = lead_seat();
+    wait_for_the_fold(&fleet).await;
+    let rows: Vec<String> = (0..20).map(a_turns_rows).collect();
+    let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
+    fleet
+        .seed_asleep_transcript("TestOrg", "proj", "lead", &borrowed)
+        .expect("the transcript seeds");
+    // First read: the sleeping seat's snapshot seeds the copy from its own
+    // transcript, occupant and all.
+    let mut socket = connect(&url).await;
+    let seeded = snapshot_until(&mut socket, Subject::Session(lead_seat()), |data| {
+        data["conversation"]["turns"].as_array().is_some_and(|turns| {
+            turns.len() == forge_server::transport::wire::SUBSCRIBE_TURNS as usize
+        })
+    })
+    .await;
+    assert!(
+        seeded,
+        "the sleeping seat's transcript must seed the copy before the seal, or the pin \
+         cannot tell a refused copy from one that never existed",
+    );
+
+    // The seat is sealed to a new run with the fold held at the seal.
+    let new = SessionId::from("7d3e4f50-6172-4c83-9940-be2f3a4b5c67");
+    state.conversations.hold_the_fold(true);
+    fleet.emit(SessionUpdate::SessionReplaced {
+        key: seat.clone(),
+        session_id: new.clone(),
+        cwd: "/tmp".to_owned(),
+        current_model: a_current_model(),
+        available_models: Vec::new(),
+        mode: None,
+        history: Vec::new(),
+        dropped: 0,
+        compaction_count: 0,
+    });
+    fleet.seed_view_facts(&seat, ViewFacts { session_id: Some(new), ..Default::default() });
+
+    let mut socket2 = connect(&url).await;
+    send(
+        &mut socket2,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+    let (_, data, _) = snapshot_answering(&mut socket2).await;
+    state.conversations.hold_the_fold(false);
+
+    assert_eq!(
+        data["header"]["seq"].as_u64(),
+        Some(1),
+        "the answer is the new epoch's count: {data}",
+    );
+    assert_eq!(
+        says_times(&data, "reply "),
+        0,
+        "the answer carries the replaced run's transcript rows under the new epoch's count: {data}",
+    );
+    assert_eq!(
+        data["conversation"]["turns"].as_array().map_or(0, Vec::len),
+        0,
+        "and the new run has written nothing yet: {data}",
+    );
+}
+
+/// **A read inside the seal's window answers the new epoch's own conversation,
+/// and never the rows the previous run left.**
+///
+/// The seat has NO copy yet - its fold has never applied a frame for it - so
+/// the read reaches the transcript the previous run left, which an id source
+/// still names. A seat whose header names an occupant is running, and another
+/// run's transcript is not its history.
+#[tokio::test]
+async fn a_read_in_the_seal_window_does_not_answer_the_previous_runs_transcript() {
+    let (url, fleet, state) = a_server_with_state().await;
+    let seat = lead_seat();
+    wait_for_the_fold(&fleet).await;
+    let new = SessionId::from("2a3b4c5d-6e7f-4809-9a1b-234567890abc");
+
+    // The previous run's rows, where a read with no copy to serve reaches
+    // them: its transcript, named by the seat's own session id.
+    fleet
+        .seed_transcript(
+            "TestOrg",
+            "proj",
+            "lead",
+            &[
+                r#"{"type":"user","uuid":"u1","message":{"role":"user","content":"the previous run's row"}}"#,
+                r#"{"type":"assistant","uuid":"a1","message":{"id":"m1","role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"the previous run's reply"}]}}"#,
+                r#"{"type":"result","uuid":"r1","subtype":"success","duration_ms":1,"duration_api_ms":1,"is_error":false,"num_turns":1,"session_id":"s"}"#,
+            ],
+        )
+        .expect("the transcript seeds");
+    // Two frames of the old run, so the number the seal restarts is a real
+    // restart and the answer's 1 is the new epoch's own.
+    for _ in 0..2 {
+        fleet.emit(SessionUpdate::TurnComplete { key: seat.clone(), terminal_reason: None });
+    }
+
+    // The seal is minted while the fold is held, and the header already names
+    // the new occupant - the mint-to-apply window a read lands in.
+    state.conversations.hold_the_fold(true);
+    fleet.emit(SessionUpdate::SessionReplaced {
+        key: seat.clone(),
+        session_id: new.clone(),
+        cwd: "/tmp".to_owned(),
+        current_model: a_current_model(),
+        available_models: Vec::new(),
+        mode: None,
+        history: Vec::new(),
+        dropped: 0,
+        compaction_count: 0,
+    });
+    fleet.seed_view_facts(&seat, ViewFacts { session_id: Some(new.clone()), ..Default::default() });
+
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: true,
+            browser: false,
+            declare: false,
+        },
+    )
+    .await;
+    let (_, data, _) = snapshot_answering(&mut socket).await;
+    state.conversations.hold_the_fold(false);
+
+    assert_eq!(
+        data["header"]["session_id"], "2a3b4c5d-6e7f-4809-9a1b-234567890abc",
+        "the answer names the new occupant",
+    );
+    assert_eq!(
+        data["header"]["seq"], 1,
+        "under the epoch's own first number, restarted at the seal"
+    );
+    assert_eq!(
+        says_times(&data, "the previous run's row"),
+        0,
+        "the answer must be the new epoch's own conversation, and it holds NOTHING yet: the \
+         previous run's transcript is not this run's rows, so a read in the seal's window must \
+         not pair the restarted count with them",
+    );
+}
+
 /// **A range ask after an occupant change reaches the new epoch's frames.**
 ///
 /// The frame that OPENS an epoch is numbered on the run it ends and is not
