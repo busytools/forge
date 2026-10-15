@@ -667,6 +667,22 @@ mod tests {
             1,
             "the marker draws inside the turn it ended, not as one of its own",
         );
+
+        // The prefix alone is not the marker: a truncated row is some other
+        // text and opens a turn as one.
+        let truncated = user(vec![ContentBlock::Text {
+            text: "[Request interrupted by user".to_owned(),
+            extras: serde_json::Map::new(),
+        }]);
+        let rendered = render(&[
+            user(vec![ContentBlock::Text {
+                text: "run the checks".to_owned(),
+                extras: serde_json::Map::new(),
+            }]),
+            tool_call("bash"),
+            truncated,
+        ]);
+        assert_eq!(rendered.turns.len(), 2, "an unterminated prefix is not the marker");
     }
 
     /// A user turn carrying `content`.
@@ -925,6 +941,12 @@ mod tests {
             tool_result("tu1", false),
             dispatched(text("a sub-agent's row")),
             text("sixth prompt"),
+            // The interrupt marker's own carriers (#1323): the plain row the
+            // CLI writes, and one with leading whitespace, which the fold's
+            // trimmed read accepts - the scan must read both as no-heads, or
+            // the window could cut inside the turn the marker stays in.
+            text("[Request interrupted by user]"),
+            text("\n[Request interrupted by user]"),
         ];
 
         let opened: Vec<usize> = render(&messages).turns.iter().map(|span| span.opens_at).collect();
@@ -951,6 +973,15 @@ mod tests {
             opened.contains(&8) && !named.contains(&8),
             "and the queued prompt is where they are meant to differ, the scan leaving it alone: \
              scan {named:?}, fold {opened:?}",
+        );
+        assert!(
+            !named.contains(&27) && !named.contains(&28),
+            "the interrupt marker opens no turn in either walk, leading whitespace included: \
+             scan {named:?}",
+        );
+        assert!(
+            !opened.contains(&27) && !opened.contains(&28),
+            "and the fold keeps both inside the turn it ended: fold {opened:?}",
         );
     }
 

@@ -490,6 +490,10 @@ function opensATurn(message: unknown): boolean {
  * transcript fold keeps (`is_interrupt_marker` in conversation_turns.rs).
  */
 function isInterruptMarker(message: unknown): boolean {
+  // The CLI writes it as the READER's row: an assistant frame whose prose
+  // merely opens with the marker's words is not one - the server's arm is
+  // guarded the same way (`!assistant`).
+  if ((message as { type?: unknown } | null)?.type !== 'user') return false;
   return blocksIn(message).some((block) => {
     const held = block as { type?: unknown; text?: unknown } | null;
     return (
@@ -2400,6 +2404,11 @@ export class Chat {
             turns: [...held.turns.slice(0, -1), grown],
           });
         }
+        // No turn to join: held rather than opening a row of its own, the
+        // way every frame with nothing to attach to is - the interrupt
+        // belongs to a turn this page has not seen yet.
+        this.unturned.push(message);
+        return held;
       }
       // A frame that draws opens a row of its own only where no turn is being
       // written. A row the core says is running is one of those too, whichever

@@ -81,6 +81,16 @@ impl TurnScan {
                             if is_task_notice(text) {
                                 continue;
                             }
+                            // The bracket fallback below would catch the
+                            // interrupt marker only when it opens the string,
+                            // and the fold's own read trims first - so a
+                            // whitespace-led marker would open a turn here and
+                            // none there, and the window could cut inside a
+                            // turn. Read by the predicate, in step with the
+                            // fold.
+                            if is_interrupt_marker(text) {
+                                continue;
+                            }
                             // Every envelope this workspace writes opens with a
                             // bracket, and the parser that tells one from the
                             // reader's own words lives above this crate - so a
@@ -164,7 +174,7 @@ pub fn is_image_note(text: &str) -> bool {
 /// `Result` - so a turn opened for it separates the call from the report
 /// and failure line that answer it. Both folds read it as a plain row of
 /// the open turn (the client mirror is `isInterruptMarker` in its
-/// `units.ts`).
+/// `conversation.ts`).
 pub fn is_interrupt_marker(text: &str) -> bool {
     let held = text.trim_start();
     held.starts_with("[Request interrupted by user") && held.contains(']')
