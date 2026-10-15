@@ -4127,7 +4127,12 @@ mod tests_reader_terminal {
         let mut events = bridge.take_events().expect("fresh bridge yields its events receiver");
 
         bridge
-            .new_session(None, "/tmp".to_owned(), crate::client::SessionLaunchSettings::default())
+            .new_session(
+                None,
+                "/tmp".to_owned(),
+                serde_json::to_value(crate::client::SessionLaunchSettings::default())
+                    .expect("settings serialise"),
+            )
             .expect("dispatch");
 
         // First spawn: Connected#1. The mock completes its handshake
@@ -4146,7 +4151,12 @@ mod tests_reader_terminal {
         // (status snapshots etc.) are fine; a ConnectionFailed between
         // the two Connecteds is not.
         bridge
-            .new_session(None, "/tmp".to_owned(), crate::client::SessionLaunchSettings::default())
+            .new_session(
+                None,
+                "/tmp".to_owned(),
+                serde_json::to_value(crate::client::SessionLaunchSettings::default())
+                    .expect("settings serialise"),
+            )
             .expect("dispatch");
         tokio::time::timeout(spawn_wait(), async {
             while let Some(event) = events.recv().await {
@@ -4223,7 +4233,12 @@ mod tests_reader_terminal {
         let mut events = bridge.take_events().expect("fresh bridge yields its events receiver");
         let started = std::time::Instant::now();
         bridge
-            .new_session(None, "/tmp".to_owned(), crate::client::SessionLaunchSettings::default())
+            .new_session(
+                None,
+                "/tmp".to_owned(),
+                serde_json::to_value(crate::client::SessionLaunchSettings::default())
+                    .expect("settings serialise"),
+            )
             .expect("dispatch");
         let first = tokio::time::timeout(spawn_wait(), events.recv())
             .await

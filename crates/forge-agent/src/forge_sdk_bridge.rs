@@ -877,14 +877,52 @@ impl ForgeSdkBridge {
         )
     }
 
+    /// Decode the launch settings, or report the refusal as the spawn failure
+    /// it is (Ved refused the spawn, 2026-10-15).
+    ///
+    /// **The event is the point of doing it here.** `ConnectionFailed` is what
+    /// the seat's own task records a spawn failure by and rolls the row on, so
+    /// a payload that does not decode leaves a seat that says why and can be
+    /// retried, not one stuck at `Spawning` with nothing to read.
+    fn decode_or_report(
+        &self,
+        session_id: Option<&str>,
+        launch_settings: serde_json::Value,
+    ) -> anyhow::Result<SessionLaunchSettings> {
+        crate::agent::decode_launch_settings(launch_settings).map_err(|error| {
+            tracing::error!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                event_name = "launch_settings_decode_failed",
+                session_id = session_id.unwrap_or(""),
+                "failed to decode launch_settings; the spawn is refused rather than started \
+                 with none of them",
+            );
+            let msg = format!("forge-sdk session spawn refused: {error}");
+            let kind = spawn_failure_kind(&error);
+            if self
+                .event_tx()
+                .send(AgentEvent::ConnectionFailed { message: msg.clone(), kind })
+                .is_err()
+            {
+                tracing::warn!(
+                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                    error = %msg,
+                    "event channel closed; ConnectionFailed dropped",
+                );
+            }
+            error
+        })
+    }
+
     /// Start a session under `session_id`, or under an id the CLI picks
     /// when that is `None`.
     pub(crate) fn new_session(
         &self,
         session_id: Option<String>,
         cwd: String,
-        launch_settings: SessionLaunchSettings,
+        launch_settings: serde_json::Value,
     ) -> anyhow::Result<()> {
+        let launch_settings = self.decode_or_report(session_id.as_deref(), launch_settings)?;
         let bridge = self.clone();
         let span = tracing::info_span!("bridge_new_session", cwd = %cwd);
         tokio::spawn(
@@ -920,8 +958,9 @@ impl ForgeSdkBridge {
         &self,
         session_id: String,
         cwd: String,
-        launch_settings: SessionLaunchSettings,
+        launch_settings: serde_json::Value,
     ) -> anyhow::Result<()> {
+        let launch_settings = self.decode_or_report(Some(&session_id), launch_settings)?;
         let bridge = self.clone();
         let span = tracing::info_span!(
             "bridge_resume_session",
@@ -983,8 +1022,9 @@ impl ForgeSdkBridge {
         &self,
         session_id: String,
         cwd: String,
-        launch_settings: SessionLaunchSettings,
+        launch_settings: serde_json::Value,
     ) -> anyhow::Result<()> {
+        let launch_settings = self.decode_or_report(Some(&session_id), launch_settings)?;
         let bridge = self.clone();
         let span = tracing::info_span!(
             "bridge_resume_or_new_session",

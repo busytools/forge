@@ -128,10 +128,12 @@ impl AgentHandle {
         cwd: String,
         launch_settings: crate::client::SessionLaunchSettings,
     ) -> Result<(), AgentError> {
-        // Propagate serialise failure instead of silently launching
-        // with `Value::Null` (which the dispatcher then deserialises
-        // to default settings, losing the user's configured model /
-        // permission_mode / effort with no breadcrumb).
+        // Propagate serialise failure instead of launching with `Value::Null`:
+        // the bridge REFUSES a value it cannot decode rather than
+        // deserialising it to default settings, and the refusal is logged and
+        // emitted as a `ConnectionFailed`, so a lossy payload stops the spawn
+        // with a visible failure instead of dropping the configured model or
+        // the blocked-tools denial silently.
         let launch_settings = serde_json::to_value(launch_settings)?;
         self.send(AgentCommand::NewSession { session_id, cwd, launch_settings })
     }
@@ -365,18 +367,14 @@ fn dispatch(cmd: AgentCommand, bridge: &ForgeSdkBridge) -> anyhow::Result<()> {
 
     match cmd {
         C::NewSession { session_id, cwd, launch_settings } => {
-            bridge.new_session(session_id, cwd, decode_launch_settings(launch_settings))
+            bridge.new_session(session_id, cwd, launch_settings)
         }
-        C::ResumeSession { session_id, cwd, launch_settings } => bridge.resume_session(
-            session_id.into_string(),
-            cwd,
-            decode_launch_settings(launch_settings),
-        ),
-        C::ResumeOrNewSession { session_id, cwd, launch_settings } => bridge.resume_or_new_session(
-            session_id.into_string(),
-            cwd,
-            decode_launch_settings(launch_settings),
-        ),
+        C::ResumeSession { session_id, cwd, launch_settings } => {
+            bridge.resume_session(session_id.into_string(), cwd, launch_settings)
+        }
+        C::ResumeOrNewSession { session_id, cwd, launch_settings } => {
+            bridge.resume_or_new_session(session_id.into_string(), cwd, launch_settings)
+        }
         C::Prompt { session_id, text, uuid } => {
             bridge.prompt_text(session_id.into_string(), text, uuid)
         }
@@ -403,19 +401,23 @@ fn dispatch(cmd: AgentCommand, bridge: &ForgeSdkBridge) -> anyhow::Result<()> {
 }
 
 /// Decode launch settings off the dispatcher channel. Symmetric to the
-/// encode-side `?`-propagation in `AgentHandle::new_session`. A
-/// forward-compat break in `SessionLaunchSettings` - e.g. adding
-/// `#[serde(deny_unknown_fields)]` or splitting a field - would
-/// otherwise silently strip user config; the fallback keeps the spawn
-/// alive on defaults and logs.
-fn decode_launch_settings(value: serde_json::Value) -> crate::client::SessionLaunchSettings {
-    serde_json::from_value(value).unwrap_or_else(|e| {
-        tracing::error!(
-            target: crate::logging::targets::BRIDGE_LIFECYCLE,
-            error = %e,
-            "failed to decode launch_settings on dispatcher receive; falling back to default",
-        );
-        crate::client::SessionLaunchSettings::default()
+/// encode-side `?`-propagation in `AgentHandle::new_session`.
+///
+/// **A failure refuses the spawn** (Ved, 2026-10-15). The settings carry the
+/// blocked-tools denial (`disallowedTools`) among the rest, so a spawn on
+/// defaults would start a session WIDER than the one that was configured -
+/// silently unblocking tools. The decode runs in the BRIDGE, where a refusal
+/// goes on the same event every other spawn failure does (`ConnectionFailed`),
+/// so the seat records the failure and rolls its row instead of sitting at
+/// Spawning with nothing to say.
+pub(crate) fn decode_launch_settings(
+    value: serde_json::Value,
+) -> anyhow::Result<crate::client::SessionLaunchSettings> {
+    serde_json::from_value(value).map_err(|e| {
+        anyhow::anyhow!(
+            "the launch settings could not be decoded, so the spawn is refused rather than \
+             started with none of them (the blocked-tools denial rides them): {e}"
+        )
     })
 }
 
@@ -430,8 +432,9 @@ mod decode_launch_settings_tests {
             "settings": { "model": "haiku" },
             "agent_progress_summaries": true,
             "charter": "worker charter",
+            "extra_args": [["disallowedTools", "Bash"]],
         });
-        let decoded = decode_launch_settings(value);
+        let decoded = decode_launch_settings(value).expect("the stamped settings decode");
         assert_eq!(
             decoded.settings.as_ref().and_then(|s| s.get("model")).and_then(|v| v.as_str()),
             Some("haiku"),
@@ -439,14 +442,55 @@ mod decode_launch_settings_tests {
         );
         assert_eq!(decoded.agent_progress_summaries, Some(true));
         assert_eq!(decoded.charter.as_deref(), Some("worker charter"));
+        assert_eq!(
+            decoded.extra_args,
+            vec![("disallowedTools".to_owned(), Some("Bash".to_owned()))],
+            "the blocked-tools denial's carrier survives the decode"
+        );
     }
 
     #[test]
-    fn falls_back_to_defaults_on_an_undecodable_value() {
-        // A forward-compat break (or a corrupt payload) lands here:
-        // the spawn proceeds on defaults instead of silently dropping
-        // the stamped config into a null settings map.
-        let decoded = decode_launch_settings(serde_json::json!(42));
-        assert_eq!(decoded, crate::client::SessionLaunchSettings::default());
+    fn the_dispatch_refuses_rather_than_defaulting() {
+        // **The property #1183 is about, pinned at the SEAM.** A defaulting
+        // arm (`decode_launch_settings(..).unwrap_or_default()`) compiles and
+        // passes every other test while every spawn launches on defaults with
+        // the denial dropped - so the refusal is asserted where it is used,
+        // not only inside the decoder (Ved refused the spawn, 2026-10-15).
+        let command = forge_primitives::AgentCommand::NewSession {
+            session_id: Some("a-test-seat".to_owned()),
+            cwd: "/tmp".to_owned(),
+            launch_settings: serde_json::json!(42),
+        };
+        let bridge = crate::forge_sdk_bridge::ForgeSdkBridge::default();
+        let mut events = bridge.take_events().expect("a fresh bridge yields its events receiver");
+        let error = super::dispatch(command, &bridge)
+            .expect_err("an undecodable payload refuses the dispatch rather than defaulting");
+        assert!(
+            error.to_string().contains("launch settings could not be decoded"),
+            "and the refusal is the decoder's own, not whatever the bridge would say: {error}"
+        );
+        // **And it goes where every spawn failure goes.** The event is what
+        // the seat's task records the failure by and rolls the row on, so a
+        // refused spawn is visible and retryable, not a seat stuck Spawning.
+        match events.try_recv() {
+            Ok(crate::AgentEvent::ConnectionFailed { message, .. }) => assert!(
+                message.contains("refused"),
+                "the event says the spawn was refused: {message}"
+            ),
+            other => panic!("expected a ConnectionFailed for the refused spawn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn refuses_the_spawn_on_an_undecodable_value() {
+        // The settings carry the blocked-tools denial, so a decode failure
+        // must not start a session on defaults: it refuses, naming the
+        // denial's carrier (Ved, 2026-10-15).
+        let error = decode_launch_settings(serde_json::json!(42))
+            .expect_err("an undecodable value refuses rather than defaults");
+        assert!(
+            error.to_string().contains("blocked-tools denial"),
+            "the refusal names what the settings carry: {error}"
+        );
     }
 }
