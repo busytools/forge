@@ -321,6 +321,88 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
 .sg-open:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
 @media (pointer: coarse) { .sg-open { min-height: 44px; display: flex; align-items: center; } }
 
+/* The strip's review sets: the rounds' chips (one definition for the review
+   page and the strip alike), the thread rows, and the borrowed code. */
+.chip {
+  font-family: var(--mono);
+  font-size: var(--fs-label);
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 99px;
+  padding: 0 8px;
+}
+.chip.addressed {
+  color: var(--warn);
+  border-color: rgba(201, 161, 59, 0.4);
+}
+.chip.resolved {
+  color: var(--ok);
+  border-color: rgba(130, 199, 107, 0.35);
+}
+.chip.outdated {
+  color: var(--dim);
+}
+.sg-chips {
+  display: flex;
+  gap: 6px;
+  padding: 2px 0 4px;
+}
+.sg-thread {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  width: 100%;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  padding: 3px 0;
+  cursor: pointer;
+}
+.sg-thread:hover {
+  background: var(--s2);
+}
+.sg-thread:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: -2px;
+}
+.sg-thread .nm {
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sg-thread .n {
+  margin-left: auto;
+  color: var(--dim);
+  flex: none;
+}
+.sg-code {
+  margin: 2px 0 4px;
+  padding: 6px 8px;
+  /* **Wrapped, not scrolled** (the sheet's scroller guard): a few borrowed
+     lines in a narrow lane wrap rather than taking a sideways scroller of
+     their own. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--s2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-family: var(--mono);
+  font-size: var(--fs-label);
+  color: var(--text);
+}
+.sg-code.captured {
+  color: var(--dim);
+}
+@media (pointer: coarse) {
+  .sg-thread {
+    min-height: 44px;
+    align-items: center;
+  }
+}
+
 /* ---------- one project's board ---------- */
 
 /* The takeover: a slim bar with back and done, the strip of rows waiting

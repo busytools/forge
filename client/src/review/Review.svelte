@@ -630,6 +630,20 @@
     if (sealed) {
       drafts.clear();
       summary = '';
+      // **Done closes the round** (Ved, 2026-10-15): the boxes, the summary's
+      // panel and any take line go with it, so the page is back to the diff
+      // with nothing of the round left open.
+      box.spot = null;
+      box.line = null;
+      box.draft = '';
+      reply.thread = null;
+      reply.line = null;
+      reply.draft = '';
+      dictateLine = null;
+      lineIn = null;
+      pressedIn = null;
+      panelIn = null;
+      dictate.panel = false;
     }
   }
 
@@ -862,6 +876,8 @@
           <section class="group">
             <h2>Outdated <span class="n">{outdated.length}</span></h2>
             {#each outdated as thread (thread.id)}
+              {@const name =
+                typeof thread.status === 'string' ? thread.status : thread.status.unknown}
               <article class="thread parked">
                 <div class="heads">
                   <span class="rv-state outdated">outdated</span>
@@ -877,6 +893,32 @@
                 {#each thread.comments as turn, i (i)}
                   <ThreadTurn {turn} {rounds} {now} index={i} />
                 {/each}
+                <div class="acts">
+                  <button
+                    type="button"
+                    class="rv-a"
+                    disabled={busy}
+                    onclick={() => {
+                      reply.thread = reply.thread === thread.id ? null : thread.id;
+                      reply.draft = '';
+                    }}>respond</button
+                  >
+                  {#if name === 'resolved'}
+                    <button
+                      type="button"
+                      class="rv-a"
+                      disabled={busy}
+                      onclick={() => void reopened(thread)}>reopen</button
+                    >
+                  {:else}
+                    <button
+                      type="button"
+                      class="rv-a"
+                      disabled={busy}
+                      onclick={() => void resolved(thread)}>resolve</button
+                    >
+                  {/if}
+                </div>
               </article>
             {/each}
           </section>
@@ -1521,25 +1563,8 @@
     display: flex;
     gap: 6px;
   }
-  .chip {
-    font-family: var(--mono);
-    font-size: var(--fs-label);
-    color: var(--muted);
-    border: 1px solid var(--line);
-    border-radius: 99px;
-    padding: 0 8px;
-  }
-  .chip.addressed {
-    color: var(--warn);
-    border-color: rgba(201, 161, 59, 0.4);
-  }
-  .chip.resolved {
-    color: var(--ok);
-    border-color: rgba(130, 199, 107, 0.35);
-  }
-  .chip.outdated {
-    color: var(--dim);
-  }
+  /* The `.chip` set lives in the sheet (web.css): the strip's review panel
+     wears the same chips, and one definition is the rule. */
   .summary {
     font-size: var(--fs-base);
     color: var(--muted);

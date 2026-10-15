@@ -1,19 +1,22 @@
 /**
- * The seat's review threads, as the strip's row draws them.
+ * The seat's review threads, as the strip's row draws them, and the review
+ * SETS its panel draws.
  *
  * Held as the record is: one seat is on screen, so the rows are replaced
  * whole when the record moves. `null` is no row to draw at all - no record
  * yet, or a tree with nothing to state - because the row's visibility is
  * the git row's own (#2203).
  */
-import type { ReviewStripRow } from '../session/view';
+import type { ReviewSetView, ReviewStripRow } from '../session/view';
 
 class Reviews {
   #rows = $state<ReviewStripRow[] | null>(null);
+  #sets = $state<ReviewSetView[] | null>(null);
 
   /** Take the record's read whole: what the wire says is what the row shows. */
-  sync(rows: ReviewStripRow[] | null): void {
+  sync(rows: ReviewStripRow[] | null, sets: ReviewSetView[] | null): void {
     this.#rows = rows === null ? null : rows.map((row) => ({ ...row }));
+    this.#sets = sets === null ? null : sets.map((set) => ({ ...set }));
   }
 
   /** Whether the row draws at all. */
@@ -23,6 +26,11 @@ class Reviews {
 
   rows(): ReviewStripRow[] {
     return this.#rows ?? [];
+  }
+
+  /** The filed rounds, oldest first, with their threads' code and states. */
+  sets(): ReviewSetView[] {
+    return this.#sets ?? [];
   }
 
   /** How many rows are answers the reviewer has not read. */

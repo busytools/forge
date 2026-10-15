@@ -486,6 +486,64 @@ describe('a landing', () => {
   });
 
   /**
+   * **A parked row is not a dead end** (Ved, 2026-10-15). The Outdated rows
+   * used to draw no actions at all - no respond, no resolve - so the one
+   * thread the resolver could not place was the one row with no door back.
+   * It takes the same acts as any other.
+   */
+  it('offers respond and resolve on a parked row', async () => {
+    const parked = {
+      id: 'parked-1',
+      anchor: {
+        path: 'src/a.rs',
+        side: 'New',
+        line: 9,
+        content_hash: '1',
+        context: ['captured one', 'captured two'],
+        base_ref: 'main',
+      },
+      comments: [
+        {
+          author: { Agent: { label: 'w1' } },
+          text: 'still open',
+          at: '2026-01-01T00:00:00Z',
+        },
+      ],
+      status: 'Open',
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+      commit: null,
+      resolution: null,
+    };
+    await draw([parked]);
+    await openConversation();
+
+    const row = document.querySelector('.thread.parked');
+    expect(row, 'the thread parked').not.toBeNull();
+    const acts = [...(row?.querySelectorAll('.acts .rv-a') ?? [])].map((button) =>
+      button.textContent?.trim(),
+    );
+    expect(acts, 'the parked row carries the same doors as any other').toEqual([
+      'respond',
+      'resolve',
+    ]);
+
+    sent = [];
+    [...(row?.querySelectorAll<HTMLButtonElement>('.acts .rv-a') ?? [])][1]?.click();
+    flushSync();
+    expect(sent, 'and resolve writes the state for the parked thread').toEqual([
+      {
+        set_review_thread_status: {
+          project: 'forge',
+          branch: 'b',
+          thread_id: 'parked-1',
+          status: 'Resolved',
+        },
+      },
+    ]);
+  });
+
+  /**
    * **A landing the record re-hands is not the new take's.** Any write between
    * the press and the take's own start runs the landing with the PREVIOUS
    * notice still on the record: skipping that notice rather than spending the

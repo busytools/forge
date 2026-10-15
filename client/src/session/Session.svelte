@@ -38,6 +38,7 @@
     orgNeeded,
     projectOf,
     reviewRows,
+    reviewSets,
     seatConnectorRows,
     seatScheduleRows,
     seatState,
@@ -178,7 +179,7 @@
     monitors.sync(record === null ? null : monitorRows(record.monitors, now));
   });
   $effect(() => {
-    review.sync(reviewRows(record));
+    review.sync(reviewRows(record), reviewSets(record, Date.now()));
   });
   const seat = $derived(seatState(wire, slot));
   /** Whether this seat's name needs its org on the header line (#1707). */

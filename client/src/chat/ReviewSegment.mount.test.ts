@@ -3,7 +3,7 @@ import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import session from '../dev/fixtures/session.json';
-import { reviewRows } from '../session/view';
+import { reviewRows, reviewSets } from '../session/view';
 import { diffFrom, gitFrom, reviewsFrom, sessionFrom, type SessionRecord } from '../session/wire';
 import ReviewSegment from './ReviewSegment.svelte';
 import { review } from './review.svelte';
@@ -24,8 +24,13 @@ const withBranch = (branchAhead: unknown): SessionRecord => ({
   git: gitFrom({ default_branch: 'main', worktree: null, ahead: null }),
 });
 
-/** One thread on committed code, answered by an agent: something to read. */
-const withThreads = (held: SessionRecord): SessionRecord => ({
+/** One thread on committed code, answered by an agent: something to read.
+ *  The round options file it into a round, for the cases that want sets. */
+const withThreads = (
+  held: SessionRecord,
+  rounds: unknown[] = [],
+  reviewId: string | null = null,
+): SessionRecord => ({
   ...held,
   reviews: reviewsFrom({
     threads: {
@@ -46,6 +51,7 @@ const withThreads = (held: SessionRecord): SessionRecord => ({
               author: { Agent: { label: 'w1' } },
               text: 'answered words',
               at: '2026-01-01T00:00:00Z',
+              review_id: reviewId,
             },
           ],
           status: 'Addressed',
@@ -54,7 +60,7 @@ const withThreads = (held: SessionRecord): SessionRecord => ({
         },
       ],
     },
-    reviews: { outcome: 'read', value: [] },
+    reviews: { outcome: 'read', value: rounds },
   }),
 });
 
@@ -64,7 +70,7 @@ afterEach(async () => {
   if (app !== null) await unmount(app);
   app = null;
   document.body.innerHTML = '';
-  review.sync(null);
+  review.sync(null, null);
   vi.useRealTimers();
 });
 
@@ -73,7 +79,7 @@ beforeEach(() => {
 });
 
 function draw(held: SessionRecord, href: string | null = null): void {
-  review.sync(reviewRows(held));
+  review.sync(reviewRows(held), reviewSets(held, Date.now()));
   app = mount(ReviewSegment, { target: document.body, props: { href } });
   flushSync();
 }
@@ -106,7 +112,7 @@ describe("the review row's draw", () => {
   });
 
   it('draws nothing for a read that never landed', () => {
-    review.sync(null);
+    review.sync(null, null);
     app = mount(ReviewSegment, { target: document.body });
     flushSync();
     expect(toggle(), 'no read, no row').toBeNull();
@@ -145,5 +151,74 @@ describe("the review panel's placement", () => {
     vi.advanceTimersByTime(150);
     flushSync();
     expect(document.querySelector('.sg-list'), 'focus inside keeps it').not.toBeNull();
+  });
+
+  /**
+   * **The panel draws the sets: a round, its threads, their code** (Ved,
+   * 2026-10-15). A thread's row is collapsed to its own line until the reader
+   * clicks it - then the commented code and the words arrive, and the row
+   * says it is expanded.
+   */
+  it('draws a round with its threads, and expands a thread to its code', () => {
+    const held = withThreads(
+      withBranch({
+        populated: [
+          {
+            path: 'src/a.rs',
+            old_path: null,
+            status: 'modified',
+            binary: false,
+            submodule: false,
+            truncated: false,
+            hunks: [
+              {
+                old_start: 5,
+                old_count: 3,
+                new_start: 5,
+                new_count: 4,
+                lines: [
+                  { kind: 'context', text: 'one', old_line: 5, new_line: 5 },
+                  { kind: 'context', text: 'two', old_line: 6, new_line: 6 },
+                  { kind: 'added', text: 'three', old_line: null, new_line: 7 },
+                  { kind: 'context', text: 'four', old_line: 7, new_line: 8 },
+                ],
+              },
+            ],
+          },
+        ],
+      }),
+      [
+        {
+          id: 'r1',
+          number: 1,
+          summary: 'the first round',
+          created_at: '2026-01-01T00:00:00Z',
+        },
+      ],
+      'r1',
+    );
+    draw(held);
+    toggle()?.click();
+    flushSync();
+
+    expect(
+      document.querySelector('.sg-list')?.textContent,
+      'the round and its summary draw on the panel',
+    ).toContain('the first round');
+    const row = document.querySelector<HTMLButtonElement>('.sg-thread');
+    expect(row, 'and its thread draws as a row').not.toBeNull();
+    expect(row?.getAttribute('aria-expanded'), 'collapsed to start').toBe('false');
+    expect(document.querySelector('.sg-code'), 'with no code until asked').toBeNull();
+
+    row?.click();
+    flushSync();
+
+    expect(row?.getAttribute('aria-expanded'), 'the click expands it').toBe('true');
+    const code = document.querySelector('.sg-code');
+    expect(code, 'and the commented code arrives').not.toBeNull();
+    expect(code?.textContent, 'borrowed from the branch the record carries').toContain('one');
+    expect(document.querySelector('.sg-list')?.textContent, 'beside the words').toContain(
+      'answered words',
+    );
   });
 });

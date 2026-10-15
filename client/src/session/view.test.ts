@@ -31,6 +31,7 @@ import {
   railMark,
   rankOf,
   reviewRows,
+  reviewSets,
   type RailGroup,
   type RailProject,
   seatConnectorRows,
@@ -2028,5 +2029,120 @@ describe("the project's schedule rows", () => {
 
     expect(rows, 'one row, from the seat project').toHaveLength(1);
     expect(rows[0]?.key, "another project's schedule drew on this seat").toBe('rules sweep');
+  });
+});
+
+/**
+ * **The sets the strip's panel draws** (Ved, 2026-10-15): the filed rounds,
+ * oldest first, each with its threads' COMMENTED CODE - borrowed from the
+ * branch diff while the diff still holds the spot, else the context captured
+ * with the comment - and each thread's state.
+ */
+describe('the review sets the strip draws', () => {
+  function anchored(line: number, context: string[]): Record<string, unknown> {
+    return {
+      path: 'src/a.rs',
+      side: 'new',
+      line,
+      content_hash: '1',
+      context,
+      base_ref: 'main',
+    };
+  }
+
+  function thread(id: string, reviewId: string | null, line: number, state: string): unknown {
+    return {
+      id,
+      anchor: anchored(line, ['captured old a', 'captured old b']),
+      comments: [
+        { author: { kind: 'user' }, text: `the ${id} words`, at: '', review_id: reviewId },
+      ],
+      status: state,
+      created_at: '2026-10-15T00:00:00Z',
+      updated_at: '2026-10-15T00:00:00Z',
+      commit: null,
+      resolution: null,
+    };
+  }
+
+  function held(threads: unknown[], rounds: unknown[]): SessionRecord {
+    return {
+      ...record,
+      reviews: {
+        threads: { outcome: 'read', value: threads },
+        reviews: { outcome: 'read', value: rounds },
+      },
+      diff: {
+        ...record.diff,
+        branchAhead: {
+          state: 'populated',
+          files: [
+            {
+              path: 'src/a.rs',
+              oldPath: null,
+              status: 'modified',
+              binary: false,
+              submodule: false,
+              truncated: false,
+              hunks: [
+                {
+                  oldStart: 1,
+                  oldCount: 4,
+                  newStart: 1,
+                  newCount: 4,
+                  lines: [
+                    { kind: 'context', text: 'one', oldLine: 1, newLine: 1 },
+                    { kind: 'context', text: 'two', oldLine: 2, newLine: 2 },
+                    { kind: 'added', text: 'three', oldLine: null, newLine: 3 },
+                    { kind: 'context', text: 'four', oldLine: 4, newLine: 4 },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      },
+    } as unknown as SessionRecord;
+  }
+
+  it('reads the rounds oldest first, with their threads code and states', () => {
+    const sets = reviewSets(
+      held(
+        [thread('t1', 'r1', 2, 'open'), thread('t2', 'r2', 99, 'resolved')],
+        [
+          { id: 'r2', number: 2, summary: 'the second round', created_at: '2026-10-15T01:00:00Z' },
+          { id: 'r1', number: 1, summary: null, created_at: '2026-10-15T00:00:00Z' },
+        ],
+      ),
+      Date.parse('2026-10-15T02:00:00Z'),
+    );
+
+    expect(
+      sets?.map((set) => set.number),
+      'oldest first, latest at the bottom',
+    ).toEqual([1, 2]);
+    expect(sets?.[1]?.summary, 'the round summary rides its set').toBe('the second round');
+    expect(
+      sets?.[0]?.chips,
+      'and the tally chips are the review page own, only where work is',
+    ).toEqual([{ state: 'open', count: 1 }]);
+
+    const first = sets?.[0]?.threads[0];
+    expect(first?.words, "a thread's row leads with its own comment").toBe('the t1 words');
+    expect(first?.code, 'the commented code is the branch diff around the anchor').toEqual([
+      'one',
+      'two',
+      'three',
+      'four',
+    ]);
+    expect(first?.inDiff, 'and it is the current diff').toBe(true);
+
+    const spanned = sets?.[1]?.threads[0];
+    expect(
+      spanned?.code,
+      'a spot the diff no longer holds falls back to the captured context',
+    ).toEqual(['captured old a', 'captured old b']);
+    expect(spanned?.inDiff).toBe(false);
+    expect(spanned?.state).toBe('resolved');
   });
 });
