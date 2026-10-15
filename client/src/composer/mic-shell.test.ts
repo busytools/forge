@@ -126,12 +126,22 @@ describe('the shell capture', () => {
       shell.invoked.map((call) => call.command),
       "the drain is the shell's own: its pipeline is where the audio waits",
     ).toEqual(['client_mic_start', 'client_mic_drain']);
+    const pages = shell.invoked.map((call) => (call.args as { page?: unknown }).page);
+    expect(
+      pages.at(-1),
+      'and the drain names the page load the press did: one from a page a reload discarded ends nothing when it wakes',
+    ).toEqual(pages[0]);
   });
 
   it('ends the take at once when the audio is being thrown away', async () => {
     const mic = await ShellMic.open(null);
     mic.stop();
     expect(shell.invoked.at(-1)?.command).toBe('client_mic_stop');
+    const pages = shell.invoked.map((call) => (call.args as { page?: unknown }).page);
+    expect(
+      pages.at(-1),
+      'and the stop names the same page load, so one in flight from a discarded page ends nothing',
+    ).toEqual(pages[0]);
     expect(
       shell.hearing.every((entry) => entry.handler === null),
       'and the frames stop reaching a take that is over: the held device stays open',

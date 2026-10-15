@@ -302,11 +302,15 @@ impl Mic {
     /// End the take at once, throwing its audio away. The device stays
     /// open, so the next press records from the press.
     ///
-    /// No page guard here, unlike the hold and the press: one in flight from
-    /// a page that is gone ends whatever records when it lands (#2252).
-    pub fn stop(&self) {
+    /// **One naming a page other than the take's own does nothing** (#2252):
+    /// a stop in flight from a page a reload discarded lands after the next
+    /// page may have begun, and that take is not this one's to throw away.
+    pub fn stop(&self, page: &str) {
         let mut warm = self.warm.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(held) = warm.as_mut() {
+        let Some(held) = warm.as_mut() else {
+            return;
+        };
+        if held.owned_by(page) {
             held.end();
         }
     }
@@ -318,15 +322,19 @@ impl Mic {
     /// finalises the take on the server, so a frame that follows it has no
     /// take to land in.
     ///
-    /// The window it sleeps for is unguarded by page the same way: a drain
-    /// still in flight from a reloaded page ends the take the new page began
-    /// inside those 150 ms (#2252).
-    pub async fn drain(&self) {
+    /// **One naming a page other than the take's own drops its tail without
+    /// ending anything** (#2252): a drain still in flight from a page a
+    /// reload discarded wakes inside the window the page that came back may
+    /// have begun in, and that take's audio is not this one's to throw away.
+    pub async fn drain(&self, page: &str) {
         tokio::time::sleep(Duration::from_millis(DRAIN_MS)).await;
         let mut warm = self.warm.lock().unwrap_or_else(PoisonError::into_inner);
         let Some(held) = warm.as_mut() else {
             return;
         };
+        if !held.owned_by(page) {
+            return;
+        }
         let tail = held.end();
         if !tail.is_empty() {
             held.held.carry().bridge.mic_frame(encode_frame(&tail));
@@ -455,6 +463,8 @@ mod tests {
             mic: Mic,
             log: Arc<Mutex<Vec<String>>>,
             bridge: Arc<Bridge>,
+            /// What the take sent, where a test that watches the wire reads it.
+            frames: tokio::sync::mpsc::UnboundedReceiver<crate::bridge::ClientEvent>,
         }
 
         impl Rig {
@@ -477,8 +487,9 @@ mod tests {
                         }))
                     }),
                 };
-                let bridge = Bridge::new(None, tokio::sync::mpsc::unbounded_channel().0);
-                Self { mic, log, bridge }
+                let (events, frames) = tokio::sync::mpsc::unbounded_channel();
+                let bridge = Bridge::new(None, events);
+                Self { mic, log, bridge, frames }
             }
 
             fn calls(&self) -> Vec<String> {
@@ -510,7 +521,7 @@ mod tests {
 
             // And ending the take does not close it either: the same device
             // serves the next take.
-            rig.mic.stop();
+            rig.mic.stop("page");
             assert_eq!(rig.calls(), vec!["open one"], "the take's end keeps the device open");
             rig.mic
                 .start(&rig.bridge, Some("one".to_owned()), "page")
@@ -548,7 +559,7 @@ mod tests {
             );
             // The hold now follows the pressed device: the pick moves with
             // the take rather than fighting it.
-            rig.mic.stop();
+            rig.mic.stop("page");
             rig.mic.start(&rig.bridge, None, "page").expect("the next plain take is warm");
             assert_eq!(rig.calls().len(), 3, "the second press reuses the take's own capture");
         }
@@ -629,6 +640,88 @@ mod tests {
             }
         }
 
+        /// Run one drain to its end, the way the shell runs it: the window
+        /// it sleeps for is real, so the test waits it out.
+        fn drained(rig: &Rig, page: &str) {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .build()
+                .expect("a runtime")
+                .block_on(rig.mic.drain(page));
+        }
+
+        #[test]
+        fn a_drain_in_flight_when_the_next_take_begins_leaves_it_alone() {
+            let rig = Rig::new();
+            reload(&rig, Some("one".to_owned()));
+
+            // page-a's drain is invoked while it still records, and page-b's
+            // press lands inside the window: the live collision, drain first.
+            tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .build()
+                .expect("a runtime")
+                .block_on(async {
+                    let drain = rig.mic.drain("page-a");
+                    let begin = async {
+                        rig.mic.hold(&rig.bridge, Some("one".to_owned()), "page-b").expect("holds");
+                        rig.mic
+                            .start(&rig.bridge, Some("one".to_owned()), "page-b")
+                            .expect("page-b records");
+                    };
+                    tokio::join!(drain, begin);
+                });
+
+            assert_eq!(
+                rig.mic.start(&rig.bridge, Some("one".to_owned()), "page-b").err().as_deref(),
+                Some("the microphone is already recording"),
+                "the stale drain must not end the take the reloaded page began",
+            );
+        }
+
+        #[test]
+        fn a_stop_from_the_reloaded_page_leaves_the_new_take_alone() {
+            let rig = Rig::new();
+            reload(&rig, Some("one".to_owned()));
+            rig.mic.hold(&rig.bridge, Some("one".to_owned()), "page-b").expect("holds");
+            rig.mic.start(&rig.bridge, Some("one".to_owned()), "page-b").expect("page-b records");
+
+            rig.mic.stop("page-a");
+
+            assert_eq!(
+                rig.mic.start(&rig.bridge, Some("one".to_owned()), "page-b").err().as_deref(),
+                Some("the microphone is already recording"),
+                "the stale stop must not end the take the reloaded page began",
+            );
+        }
+
+        #[test]
+        fn a_drain_from_the_recording_page_ends_its_own_take() {
+            let mut rig = Rig::new();
+            rig.mic.hold(&rig.bridge, Some("one".to_owned()), "page").expect("opens");
+            rig.mic.start(&rig.bridge, Some("one".to_owned()), "page").expect("starts");
+
+            // A partial frame the device left mid-frame: the drain's hand-over.
+            let partial = 8usize;
+            {
+                let warm = rig.mic.warm.lock().unwrap();
+                let held = warm.as_ref().expect("warm");
+                held.held.carry().push(&vec![0.0; partial]);
+            }
+            drained(&rig, "page");
+
+            assert!(
+                matches!(
+                    rig.frames.try_recv(),
+                    Ok(crate::bridge::ClientEvent::Mic(bytes)) if bytes.len() == 1 + partial * 2
+                ),
+                "the page's own drain carries the partial frame it was holding",
+            );
+            rig.mic
+                .start(&rig.bridge, Some("one".to_owned()), "page")
+                .expect("the page's own drain ended its take");
+        }
+
         #[test]
         fn a_pick_that_will_not_open_leaves_the_working_hold_standing() {
             let log: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
@@ -702,7 +795,7 @@ mod tests {
 
         // And ending the take keeps the device: the second take is served by
         // the same capture, which is the whole point of holding it.
-        mic.stop();
+        mic.stop("page");
         let again =
             mic.start(&bridge, None, "page").expect("the next take is served without reopening");
         assert_eq!(again.id, held.id, "the same device, still open");
