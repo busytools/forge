@@ -5450,6 +5450,86 @@ async fn a_more_below_the_floor_is_answered_from_the_transcript() {
     }
 }
 
+/// **A floor whose front frame has no file row still walks** (#2280).
+///
+/// The boundary a below-floor page starts from is the copy's oldest frame a
+/// row rule says the file carries - but the frames the CLI streams and never
+/// writes pass that rule too, and when the window's front was one, the anchor
+/// named a row the file does not hold: the search came up empty and the whole
+/// page answered `cursor: null`, which a client reads as the end of the
+/// history. Live, that made a fresh load of a long seat show only its newest
+/// slice and scrolling back reach nothing.
+#[tokio::test]
+async fn a_more_below_a_floor_whose_front_frame_has_no_row_walks_on() {
+    let (url, fleet, state) = a_server_with_state().await;
+    fleet.start("TestOrg", "proj").expect("a live lead session");
+    // The file: turns 0..199. The copy: one frame the file never carried,
+    // ahead of the newest 100 turns, behind a floor that stands above both.
+    let rows: Vec<String> = (0..200)
+        .map(|at| {
+            format!(
+                "{{\"type\":\"user\",\"uuid\":\"u{at}\",\"session_id\":\"s1\",\
+                 \"message\":{{\"role\":\"user\",\"content\":\"turn {at}\"}}}}"
+            )
+        })
+        .collect();
+    fleet
+        .seed_transcript(
+            "TestOrg",
+            "proj",
+            "lead",
+            &rows.iter().map(String::as_str).collect::<Vec<_>>(),
+        )
+        .expect("the session's transcript");
+
+    let mut messages =
+        vec![a_frame(&a_turn_row("streamed-only-1", "a frame the file never carried"))];
+    messages.extend(
+        (100..200).map(|at| a_frame(&a_turn_row(&format!("u{at}"), &format!("turn {at}")))),
+    );
+    state.conversations.replace(
+        &lead_seat(),
+        forge_server::transport::conversation::Conversation::new(messages, 0, 1_200),
+    );
+    let dropped = state.conversations.get(&lead_seat()).expect("held").lock().dropped();
+    assert_eq!(dropped, 1_200, "precondition: a floor above the copy's own front");
+
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::More {
+            conversation: lead_seat(),
+            before: Some(dropped.to_string()),
+            turns: 4,
+        },
+    )
+    .await;
+    let answer = page_answer(&mut socket).await;
+    if let ServerMessage::Error { what, why, .. } = &answer {
+        panic!("the server refused the more: {what}: {why}");
+    }
+    let ServerMessage::Page { turns: page, cursor, .. } = answer else {
+        panic!("a more below the floor is answered with a page");
+    };
+    let texts: Vec<String> = page
+        .iter()
+        .map(|turn| {
+            turn.messages
+                .first()
+                .and_then(|frame| frame["message"]["content"][0]["text"].as_str())
+                .unwrap_or_default()
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(
+        texts,
+        vec!["turn 96", "turn 97", "turn 98", "turn 99"],
+        "the page below a front frame the file cannot name starts at the oldest row it can",
+    );
+    let cursor = cursor.expect("a cursor below that one, so the walk carries on");
+    assert!(cursor.starts_with("r:"), "a row cursor: {cursor}");
+}
+
 /// One frame, decoded from the shape the wire carries it in.
 fn a_frame(row: &serde_json::Value) -> forge_primitives::Message {
     serde_json::from_value(row.clone()).expect("a frame")
