@@ -726,6 +726,61 @@ impl Message {
             synthetic: false,
         }
     }
+
+    /// Attach `stamp` to a frame that carries none.
+    ///
+    /// **Each kind takes it in the slot the wire's own stamp occupies**, so a
+    /// stamped frame reaches a reader shaped exactly like one the CLI stamped
+    /// itself: the typed field on [`Message::Assistant`] and [`Message::User`],
+    /// the verbatim payload on [`Message::System`] and [`Message::Unknown`],
+    /// and the extras every other variant re-emits at the frame's top level -
+    /// which is where a wire stamp on those already lands.
+    ///
+    /// A frame that carries one is left alone: a receipt is a fallback for a
+    /// row the CLI did not stamp, never a correction of one it did.
+    pub fn stamp_if_absent(&mut self, stamp: &str) {
+        match self {
+            Message::Assistant { timestamp, .. } | Message::User { timestamp, .. } => {
+                if timestamp.is_none() {
+                    *timestamp = Some(stamp.to_owned());
+                }
+            }
+            Message::System { data, .. } | Message::Unknown { raw: data, .. } => {
+                if let Value::Object(map) = data
+                    && !map.contains_key("timestamp")
+                {
+                    map.insert("timestamp".to_owned(), Value::String(stamp.to_owned()));
+                }
+            }
+            // Listed rather than wildcarded so a new variant fails to compile
+            // here until its stamp slot is settled.
+            Message::TaskStarted { extras, .. }
+            | Message::TaskUpdated { extras, .. }
+            | Message::TaskProgress { extras, .. }
+            | Message::TaskNotification { extras, .. }
+            | Message::ToolProgress { extras, .. }
+            | Message::ThinkingTokens { extras, .. }
+            | Message::TurnDuration { extras, .. }
+            | Message::StopHookSummary { extras, .. }
+            | Message::BackgroundTasksChanged { extras, .. }
+            | Message::CommandsChanged { extras, .. }
+            | Message::HookStarted { extras, .. }
+            | Message::HookResponse { extras, .. }
+            | Message::HookProgress { extras, .. }
+            | Message::Notification { extras, .. }
+            | Message::PermissionDenied { extras, .. }
+            | Message::CompactBoundary { extras, .. }
+            | Message::RateLimitEvent { extras, .. }
+            | Message::CommandLifecycle { extras, .. }
+            | Message::Result { extras, .. }
+            | Message::StreamEvent { extras, .. }
+            | Message::Error { extras, .. } => {
+                if !extras.contains_key("timestamp") {
+                    extras.insert("timestamp".to_owned(), Value::String(stamp.to_owned()));
+                }
+            }
+        }
+    }
 }
 
 /// The Anthropic-API-shaped envelope inside an `Assistant` message.
@@ -3720,5 +3775,162 @@ mod tests_message_extras {
 
         let encoded = serde_json::to_value(&msg).expect("encode");
         assert_eq!(encoded["subagent_type"], "general-purpose", "the agent type survives");
+    }
+}
+
+#[cfg(test)]
+mod tests_stamp {
+    use serde_json::json;
+
+    use super::Message;
+
+    /// The frames a turn runs as, in the shapes the CLI sends and the shapes
+    /// a transcript read synthesizes.
+    ///
+    /// **One kind per stamp slot**, since the slot is what the rule decides:
+    /// the typed field (user, assistant), the verbatim payload (a generic
+    /// system subtype) and the extras every typed variant re-emits - the
+    /// counter frame a running turn is full of, the hook summary, the
+    /// boundary, and the result.
+    fn kinds() -> Vec<(&'static str, serde_json::Value, bool)> {
+        vec![
+            (
+                "user",
+                json!({
+                    "type": "user",
+                    "message": {"role": "user", "content": [{"type": "text", "text": "hi"}]},
+                    "session_id": "s1",
+                }),
+                false,
+            ),
+            (
+                "assistant",
+                json!({
+                    "type": "assistant",
+                    "uuid": "a1",
+                    "timestamp": "2026-10-15T05:18:15.544Z",
+                    "session_id": "s1",
+                    "message": {
+                        "id": "m1",
+                        "role": "assistant",
+                        "model": "claude-opus-5",
+                        "content": [{"type": "text", "text": "working"}],
+                    },
+                }),
+                true,
+            ),
+            (
+                "system",
+                json!({
+                    "type": "system",
+                    "subtype": "hook_drift_probe",
+                    "session_id": "s1",
+                    "detail": "an unmodelled subtype",
+                }),
+                false,
+            ),
+            (
+                "thinking_tokens",
+                json!({
+                    "type": "system",
+                    "subtype": "thinking_tokens",
+                    "estimated_tokens": 40,
+                    "estimated_tokens_delta": 40,
+                    "uuid": "t1",
+                    "session_id": "s1",
+                    "user_message_uuid": "u1",
+                }),
+                false,
+            ),
+            (
+                "stop_hook_summary",
+                json!({
+                    "type": "system",
+                    "subtype": "stop_hook_summary",
+                    "hookCount": 1,
+                    "hookInfos": [],
+                    "hookErrors": [],
+                    "hasOutput": false,
+                    "level": "suggestion",
+                    "preventedContinuation": false,
+                    "stopReason": "",
+                    "toolUseID": "tu1",
+                    "uuid": "h1",
+                    "session_id": "s1",
+                }),
+                false,
+            ),
+            (
+                "compact_boundary",
+                json!({
+                    "type": "system",
+                    "subtype": "compact_boundary",
+                    "uuid": "b1",
+                    "session_id": "s1",
+                    "compact_metadata": {"trigger": "auto", "pre_tokens": 10, "post_tokens": 2},
+                }),
+                false,
+            ),
+            (
+                "result",
+                json!({
+                    "type": "result",
+                    "subtype": "success",
+                    "session_id": "s1",
+                    "is_error": false,
+                    "num_turns": 1,
+                    "duration_ms": 12000,
+                    "duration_api_ms": 9000,
+                }),
+                false,
+            ),
+        ]
+    }
+
+    const AT: &str = "2026-10-15T05:18:05.217Z";
+
+    /// **Every kind a turn holds comes off the wire with a stamp a client can
+    /// read at the frame's top level** - and a frame the CLI already stamped
+    /// keeps its own, because a receipt is a fallback and never a correction.
+    ///
+    /// The client's fold anchors a running turn's clock on the first frame
+    /// that carries one, so a kind that cannot hold a stamp is a turn whose
+    /// clock starts at the wrong row - or at no row at all.
+    #[test]
+    fn every_kind_carries_a_stamp_at_the_top_level_it_is_read_from() {
+        for (kind, raw, stamped) in kinds() {
+            let mut msg: Message = serde_json::from_value(raw).expect("decode");
+            msg.stamp_if_absent(AT);
+
+            let encoded = serde_json::to_value(&msg).expect("encode");
+            let want = if stamped { "2026-10-15T05:18:15.544Z" } else { AT };
+            assert_eq!(
+                encoded["timestamp"].as_str(),
+                Some(want),
+                "{kind} must carry its stamp where a reader finds it",
+            );
+        }
+    }
+
+    /// One frame stamped twice keeps the first stamp: the CLI's own is the
+    /// frame's, and forge's receipt only stands in where there is none.
+    #[test]
+    fn a_second_stamp_never_overwrites_the_first() {
+        let mut msg: Message = serde_json::from_value(json!({
+            "type": "user",
+            "message": {"role": "user", "content": [{"type": "text", "text": "hi"}]},
+            "session_id": "s1",
+        }))
+        .expect("decode");
+
+        msg.stamp_if_absent(AT);
+        msg.stamp_if_absent("2026-10-15T06:00:00.000Z");
+
+        let encoded = serde_json::to_value(&msg).expect("encode");
+        assert_eq!(
+            encoded["timestamp"].as_str(),
+            Some(AT),
+            "the first stamp is the row's own; a later one does not walk it forward",
+        );
     }
 }

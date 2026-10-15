@@ -14,6 +14,13 @@ use forge_workspace::PromptSource;
 
 use crate::surface::SessionUpdate;
 
+/// The instant a forged row was minted, in the form the wire stamps rows with.
+fn rfc3339_now() -> String {
+    time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default()
+}
+
 /// The display-only user turn `update` draws as, when it delivers to `slot`,
 /// with the sender the frame that draws it carries.
 /// `None` for every other update, and for a delivery to another seat: the
@@ -63,7 +70,12 @@ pub fn delivery_turn(
     // the duplicate-skip the CLI applies to re-sent uuids is a stdin concern
     // and never sees this frame, and the id is what lets a view hold this row
     // while the prompt waits in the pile.
-    Some((Message::display_only_user(text, uuid.clone()), source))
+    let mut row = Message::display_only_user(text, uuid.clone());
+    // Stamped at the forge, because this row OPENS the turn a delivery starts:
+    // the CLI never echoes a prompt, so a page attaching mid-turn has nothing
+    // else to anchor the running clock on.
+    row.stamp_if_absent(&rfc3339_now());
+    Some((row, source))
 }
 
 #[cfg(test)]
@@ -71,6 +83,32 @@ mod tests {
     use super::*;
     use crate::test_support::logged;
     use forge_primitives::ContentBlock;
+
+    /// **A delivery's row is stamped at the forge.** It opens the turn a cron
+    /// fire, a notification or a peer comm runs - the CLI never echoes a
+    /// prompt - so a page attaching mid-turn anchors its running clock on
+    /// this row, and an unstamped one leaves it reading 0.0s until the turn's
+    /// first wire frame lands.
+    #[test]
+    fn a_delivery_row_carries_the_stamp_a_clock_starts_from() {
+        let slot = SessionSlot::new("TestOrg", "forge", "lead");
+        let update = SessionUpdate::SlackMessageAppended {
+            key: slot.clone(),
+            prose: "[Slack #acme] alice: hello".to_owned(),
+            uuid: "cap-slack".to_owned(),
+        };
+
+        let (turn, _) =
+            delivery_turn(&update, &slot).expect("a delivery to this seat forges a turn");
+        let value = serde_json::to_value(&turn).expect("encode");
+        let stamp =
+            value["timestamp"].as_str().expect("the row carries a stamp where a clock reads one");
+        assert!(
+            time::OffsetDateTime::parse(stamp, &time::format_description::well_known::Rfc3339)
+                .is_ok(),
+            "and it is a time the client can read: {stamp}",
+        );
+    }
 
     /// Prose the parser cannot read draws nothing, while the model still
     /// received it - the one failure this forge can produce that no test

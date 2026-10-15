@@ -4094,7 +4094,12 @@ impl Workspace {
         text: String,
         uuid: String,
     ) -> Result<(), DispatchError> {
-        let frame = Message::display_only_user(text.clone(), uuid.clone());
+        // Stamped at the forge: the CLI never echoes a prompt, so this row
+        // opens every turn the machinery starts - and a page attaching
+        // mid-turn anchors its running clock on the first row that carries a
+        // stamp.
+        let mut frame = Message::display_only_user(text.clone(), uuid.clone());
+        frame.stamp_if_absent(&crate::install::rfc3339_now());
         // One source for both the dispatch and the frame the dispatch forges:
         // the row a view labels and the frame a reader's follow reads arm
         // alike only while they are one fact (#2198).
@@ -4252,9 +4257,15 @@ impl Workspace {
         if outcome.is_ok()
             && let Some((key, text, uuid, source)) = prompt
         {
+            // Stamped at the forge, like the machinery's own: the CLI never
+            // echoes a prompt, so this row is the one that opens every turn a
+            // person starts, and a page attaching mid-turn reads its clock
+            // from the first row that carries a stamp.
+            let mut framed = Message::display_only_user(text, uuid);
+            framed.stamp_if_absent(&crate::install::rfc3339_now());
             let _ = self.update_sender().send(SessionUpdate::ChatAppended {
                 key: key.clone(),
-                msg: Message::display_only_user(text, uuid),
+                msg: framed,
                 origin: Some(origin),
                 source: Some(source),
             });
@@ -10364,6 +10375,63 @@ provider = "anthropic"
             !drain_updates(&mut rx).iter().any(|u| matches!(u, SessionUpdate::ChatAppended { .. })),
             "a delivery's words are drawn by its own envelope update, so this path forges no frame",
         );
+    }
+
+    /// **Both rows that open a turn carry the stamp a clock is read from**:
+    /// the one a view's own send forges, and the one forge's machinery forges.
+    /// The CLI never echoes a prompt, so these rows are the only opening rows
+    /// a turn has - and a page attaching mid-turn anchors its running clock on
+    /// the first row carrying a stamp.
+    #[test]
+    fn a_forged_prompt_row_carries_the_stamp_a_clock_starts_from() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("skey", "/tmp/f-stamped-prompt");
+        let cwd = project_expanded_path(&ws, "skey");
+        ws.record_connected_session(&cwd, "s-uuid", None);
+        let key = SessionSlot::from_str_for_test("s-uuid");
+        let (handle, _agent_rx) = Workspace::testing_stub_handle();
+        ws.pool.lock().insert(
+            key.clone(),
+            PooledAgent {
+                handle: Arc::new(handle),
+                account: AccountKey("test".to_owned()),
+                permission_mode: None,
+                registration: None,
+                session_id: "pooled-session".to_owned(),
+            },
+        );
+        ws.mark_session_connected_for_test(&key, "s-uuid");
+        ws.enable_test_dispatch_intercept();
+
+        ws.dispatch(Command::Prompt {
+            key: key.clone(),
+            text: "go".to_owned(),
+            attachments: Vec::new(),
+        })
+        .expect("view dispatch");
+        ws.dispatch_forged_prompt(&key, "get on with it".to_owned()).expect("forged dispatch");
+
+        let stamps: Vec<Option<String>> = drain_updates(&mut rx)
+            .into_iter()
+            .filter_map(|update| match update {
+                SessionUpdate::ChatAppended { msg, .. } => Some(msg),
+                _ => None,
+            })
+            .map(|msg| {
+                serde_json::to_value(&msg).expect("encode")["timestamp"].as_str().map(str::to_owned)
+            })
+            .collect();
+        assert_eq!(stamps.len(), 2, "both prompt paths forge a row: {stamps:?}");
+        let view = stamps[0].as_deref().expect("the row a view's send forges carries a stamp");
+        let forged = stamps[1].as_deref().expect("and the row forge's machinery forges does too");
+        for stamp in [view, forged] {
+            assert!(
+                time::OffsetDateTime::parse(stamp, &time::format_description::well_known::Rfc3339)
+                    .is_ok(),
+                "each is a time the client can read: {stamp}",
+            );
+        }
     }
 
     /// A forged prompt that never landed draws nothing: the words did not

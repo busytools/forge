@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { cronNames } from './cron-names.svelte';
 import { familyOf } from './families';
+import { runningMs } from './report';
 import {
   fold,
   type HookLeaf,
@@ -902,6 +903,55 @@ describe('one turn folded into the units a view draws', () => {
     expect(settledReports[0]?.kind === 'report' ? settledReports[0].info.running : true).toBe(
       false,
     );
+  });
+
+  it('anchors a running turn on the row that opened it, not on the first assistant', () => {
+    // **The page a mid-turn attach is answered with.** The prompt row is the
+    // one the server stamps as the frame crosses (the CLI sends it with none),
+    // the counter frames a thinking turn is full of carry none of their own,
+    // and the assistant frame the CLI stamped says when IT was written - which
+    // is the end of the thinking, not the start of the turn.
+    const prompt = heard([{ type: 'text', text: 'go' }], {
+      timestamp: '2026-10-15T05:18:05.217Z',
+    });
+    const counter = {
+      type: 'system',
+      subtype: 'thinking_tokens',
+      estimated_tokens: 40,
+      estimated_tokens_delta: 40,
+      uuid: 't1',
+    };
+    const spoke = said([{ type: 'text', text: 'working' }], {
+      timestamp: '2026-10-15T05:19:05.544Z',
+    });
+
+    const reports = fold([prompt, counter, spoke], null, true).filter(
+      (unit) => unit.kind === 'report',
+    );
+    const info = reports[0]?.kind === 'report' ? reports[0].info : null;
+    expect(info?.running, 'the turn is the running one').toBe(true);
+    expect(info?.duration_ms, 'the span the two stamps measure').toBe(60_327);
+    expect(info?.ended_at_utc, 'and the last stamp is where the wait starts').toBe(
+      '2026-10-15T05:19:05.544Z',
+    );
+
+    // The reading 2m26s into the turn: the wait since the last stamp plus that
+    // span is `now - the turn's own start`. Anchored on the assistant row
+    // instead it would read 85.7s - and a turn still thinking carries no
+    // assistant row at all, so the same fold would sit at 0.0s.
+    const now = Date.parse('2026-10-15T05:20:31.217Z');
+    expect(info && runningMs(info, now), 'the turn is 2m26s old').toBe(146_000);
+    expect(
+      info && runningMs(info, Date.parse('2026-10-15T05:19:35.217Z')),
+      'and it counts from the prompt on any now',
+    ).toBe(90_000);
+
+    const thinking = fold([prompt, counter], null, true).filter((unit) => unit.kind === 'report');
+    const ahead = thinking[0]?.kind === 'report' ? thinking[0].info : null;
+    expect(
+      ahead && runningMs(ahead, now),
+      'a turn that has only thought so far reads its true age, not 0.0s',
+    ).toBe(146_000);
   });
 
   it('counts a message once when the CLI repeats it once per content block', () => {
