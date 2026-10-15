@@ -312,16 +312,19 @@ export const TRUNCATED = 'this is what fitted · keep going from the end';
  * the same rule the view this client replaced applied: the words ARE the
  * notice. One that landed part of a capped take says so as well, because the
  * reader has to know the take was cut rather than that they stopped speaking -
- * but a notice this composer never saw a take for draws neither, since its row
- * would be a note about words that are not in the box.
+ * but that row is owed only by the box the words went into, since anywhere
+ * else it is a note about words that are not there. `holdsWords` is that box's
+ * own answer, and each surface works it out for itself: the composer from its
+ * arm and its memory of the words placed, the review and document pages from
+ * what their landing memory watched.
  */
 export function noticeLine(
   notice: Notice | null,
-  sawTake: boolean,
+  holdsWords: boolean,
 ): { tone: string; text: string } | null {
   if (notice === null) return null;
   if (notice.kind === 'line') return { tone: notice.tone, text: notice.text };
-  if (!sawTake) return null;
+  if (!holdsWords) return null;
   return notice.truncated ? { tone: 'warn', text: TRUNCATED } : null;
 }
 

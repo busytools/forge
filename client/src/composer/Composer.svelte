@@ -182,10 +182,8 @@
       const target = lineBox ?? box;
       target.dictateLine = line;
       // **A line is the take's FAILURE**: a capture that never opened draws
-      // one, and no landing is coming for it - so the arm goes with it. Left
-      // standing, the next notice on the seat (another client's take, with
-      // the notice never having gone null because no start reached the
-      // server) would ride it into this draft.
+      // one, and no landing is coming to consume the arm - so it goes with
+      // the line rather than standing for whatever notice lands next.
       target.sawTake = false;
       target.armedUnder = null;
     },
@@ -552,8 +550,7 @@
     // that is - and that is also what holds the words to one placement when
     // the record hands the same landing over again. Consuming it on the
     // notice's absence instead ate the arm the press had just set (Ved,
-    // 2026-10-15), and a notice arriving with no arm is another client's take,
-    // which places nothing.
+    // 2026-10-15). A notice arriving with no arm places nothing.
     if (!box.sawTake) return;
     // **A notice the arm was set UNDER is the previous take's, re-read.** The
     // press unmounts the field, which re-runs this effect while the record
@@ -563,7 +560,6 @@
     box.sawTake = false;
     box.armedUnder = null;
     if (held.kind !== 'landed') return;
-    box.landed = held.text;
     // **Where the words go is where the take began, checked against what is
     // still on screen.** A take the dock's own row never touched still belongs
     // to the dock when the dock was the box it started under - routing it by
@@ -577,6 +573,10 @@
       );
       dockLanded = held.text;
     } else {
+      // The words this BOX holds, which its cut row reads: the dock's take
+      // left them in the dock, and a memory set for it here would put a note
+      // about words that never arrived in this draft.
+      box.landed = held.text;
       box.draft = joined(
         untrack(() => box.draft),
         held.text,
@@ -893,8 +893,8 @@
    * Abandon a take without submitting it.
    *
    * **The arm goes with it**: a cancelled take has no notice coming, so an
-   * arm left standing would ride whatever lands next - which, with a second
-   * client on the seat, is another client's words.
+   * arm left standing would ride whatever notice arrives next - words this
+   * page's own take never produced.
    */
   function dropTake(): void {
     // The arm lives on the take's OWN box, which may not be the one on screen

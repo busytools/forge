@@ -102,11 +102,10 @@ export class Box {
    * Whether THIS page's own take is waiting on its outcome.
    *
    * Armed when the take begins and consumed when its notice arrives, whatever
-   * kind. A landed notice is per-seat server state that outlives its take, so
-   * a client that attaches - or reloads - finds one whose words it never saw
-   * land; only a take this page began may put words in this box, and the
-   * trade is that dictation landing unwatched, and never sent, is not handed
-   * back.
+   * kind, so only a take this page began may put words in this box. Take news
+   * reaches the client that began the take alone, so a notice for a take this
+   * page did not begin is not something the wire sends today: the guard is
+   * safety for a wire that one day shares them further.
    */
   sawTake = false;
   /**

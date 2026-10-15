@@ -2,10 +2,9 @@
  * The memory a page keeps of a seat's takes: which take it watched, and what
  * it has already placed.
  *
- * **A notice about a take this page never watched is not its own.** A landed
- * notice is per-seat server state that outlives its take, so a page that
- * attaches - or reloads - finds one whose words it never saw land; only a
- * take this page watched may put words in the reader's box. The memory is the
+ * **A notice about a take this page never watched is not its own to draw.** A
+ * page attaches, or reloads, with no take of its own behind it; only a take
+ * this page watched may put words in the reader's box. The memory is the
  * SEAT's: the record in hand can be another seat's between two reads, and a
  * notice it holds is one this page never watched.
  *

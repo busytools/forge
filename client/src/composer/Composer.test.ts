@@ -732,10 +732,43 @@ describe('the box', () => {
   });
 
   /**
-   * The server holds a landed notice until the next take starts, so a client
-   * that attaches - or reloads - finds words whose take it never saw. They are
-   * the reader's own, already sent, and the box they come back in is not a
-   * draft: it is the message they wrote, handed to them to send twice.
+   * **The landing itself is what moves the keyboard, when it has somewhere to
+   * move it to.** The case above lands while the field is unmounted - the take
+   * card has its row - so the field mounts back afterwards and its own mount
+   * takes the caret, which leaves the landing's focus untested. A take whose
+   * field is back in the row before its words land (the quick release the
+   * arm-at-press fix was written for) is the shape that reaches it.
+   */
+  it('brings the keyboard to a field the landing found already drawn', async () => {
+    const harness = open({ dictation: true });
+
+    // A press and a release: the take is over on this side before its record
+    // ever shows one, so the field is drawn again by the time the words land.
+    key('ControlRight', 'keydown');
+    await opened();
+    key('ControlRight', 'keyup');
+    endTake(harness);
+    flushSync();
+    expect(document.querySelector('.line textarea'), 'the field is back in the row').not.toBeNull();
+
+    // The caret is somewhere else, as it is after a click away.
+    field().blur();
+    flushSync();
+    expect(document.activeElement, 'and the caret is not in the box').not.toBe(field());
+
+    harness.page.record = withNotice(LANDED);
+    flushSync();
+
+    expect(field().value, 'the words land').toBe(LANDED.text);
+    expect(document.activeElement, 'and the landing brings the keyboard to them').toBe(field());
+  });
+
+  /**
+   * A landing this page never took must not be placed. The words are the
+   * reader's own, already sent, and the box they would come back in is not a
+   * draft: it is the message they wrote, handed to them to send twice. Take
+   * news reaches the client that began the take alone, so this case is the
+   * safety for a page handed a notice it never took.
    */
   it('opens empty over a landed notice the server was already holding', () => {
     open({
@@ -4078,6 +4111,55 @@ describe('the dock', () => {
     expect(field().value, 'the words went to the box that still exists').toContain('orphan words');
   });
 
+  /**
+   * **The cut row belongs to the box the words went into.** A truncated take
+   * begun under the dock leaves its words in the dock's own row, and when the
+   * prompt resolves the composer's draft never held them - so a warn row over
+   * that draft is a note about words that are not there (the gate's round
+   * three, 2026-10-15).
+   */
+  it("draws no cut row over a draft the dock's take never filled", async () => {
+    const harness = open({
+      dictation: true,
+      record: record({ pending_asks: [questionAsk()] }),
+    });
+
+    await beginTake(harness);
+    harness.page.record = record({
+      pending_asks: [questionAsk()],
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'this is what fitted', truncated: true },
+        compacting: false,
+        sign_in: null,
+      },
+    });
+    flushSync();
+
+    const dockBox = document.querySelector('.dock [data-editor="dock"]');
+    expect(
+      dockBox instanceof HTMLTextAreaElement ? dockBox.value : null,
+      'the words went into the dock, where the take began',
+    ).toBe('this is what fitted');
+
+    // The prompt resolves, the notice still on the record.
+    harness.page.record = record({
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'this is what fitted', truncated: true },
+        compacting: false,
+        sign_in: null,
+      },
+    });
+    flushSync();
+
+    expect(field().value, 'the draft never held those words').toBe('');
+    expect(
+      document.querySelector('.notice.warn'),
+      'a cut row over a draft the words never reached',
+    ).toBeNull();
+  });
+
   it('lands in the draft under a permission that offers no words row', async () => {
     const bare = permissionAsk('tu-1', {
       options: [
@@ -5791,9 +5873,9 @@ describe('the autocomplete', () => {
  */
 describe('two clients on one seat', () => {
   /**
-   * A seat's notice is the server's, not the client's, so the client that
-   * never saw the take has no draft those words belong to. Landing them there
-   * is the reader's own message arriving back in a box they did not type it in.
+   * A landing belongs to the client that took it, so one handed a notice it
+   * never took has no draft those words belong to. Landing them there is the
+   * reader's own message arriving back in a box they did not type it in.
    */
   it('leaves the box empty on the client that never saw the take', async () => {
     const { one, other } = openBoth({ dictation: true });
