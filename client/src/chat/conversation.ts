@@ -482,6 +482,29 @@ function opensATurn(message: unknown): boolean {
   return type === 'user';
 }
 
+/**
+ * Whether a frame is the CLI's interrupt marker: a `user` row it writes
+ * INSIDE the turn it ended, right before the failing result. It opens no
+ * turn - a turn opened for it separates the call it killed from the report
+ * and failure line that answer it (#1323) - the same rule the server's
+ * transcript fold keeps (`is_interrupt_marker` in conversation_turns.rs).
+ */
+function isInterruptMarker(message: unknown): boolean {
+  // The CLI writes it as the READER's row: an assistant frame whose prose
+  // merely opens with the marker's words is not one - the server's arm is
+  // guarded the same way (`!assistant`).
+  if ((message as { type?: unknown } | null)?.type !== 'user') return false;
+  return blocksIn(message).some((block) => {
+    const held = block as { type?: unknown; text?: unknown } | null;
+    return (
+      held?.type === 'text' &&
+      typeof held.text === 'string' &&
+      held.text.trimStart().startsWith('[Request interrupted by user') &&
+      held.text.includes(']')
+    );
+  });
+}
+
 /** Whether a frame is a `system` frame, which is a report about a turn rather than part of one. */
 function isSystem(message: unknown): boolean {
   return (message as { type?: unknown } | null)?.type === 'system';
@@ -2365,6 +2388,27 @@ export class Chat {
             turns: [...held.turns.slice(0, at), grown, ...held.turns.slice(at + 1)],
           });
         }
+      }
+      // **The CLI's interrupt marker joins the newest turn** (#1323): it is
+      // the row the interrupt wrote inside the turn it ended, and that turn
+      // is the newest there is - however settled it reads, a page carrying
+      // it has no result frame, so nothing else would keep the marker out of
+      // a row of its own. The server's transcript fold keeps the same rule
+      // (`is_interrupt_marker` in conversation_turns.rs).
+      if (isInterruptMarker(message)) {
+        const newest = held.turns[held.turns.length - 1];
+        if (newest !== undefined) {
+          const grown: Turn = { ...newest, messages: [...newest.messages, message] };
+          return this.answered({
+            ...held,
+            turns: [...held.turns.slice(0, -1), grown],
+          });
+        }
+        // No turn to join: held rather than opening a row of its own, the
+        // way every frame with nothing to attach to is - the interrupt
+        // belongs to a turn this page has not seen yet.
+        this.unturned.push(message);
+        return held;
       }
       // A frame that draws opens a row of its own only where no turn is being
       // written. A row the core says is running is one of those too, whichever
