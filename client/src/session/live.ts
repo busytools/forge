@@ -148,6 +148,17 @@ interface Seat {
    */
   askedAt: number;
   /**
+   * How many answers in a row the frames have outrun, against
+   * [`OUTRUN_CAP`].
+   *
+   * A seat framed faster than a round trip outruns EVERY answer, so without
+   * this the re-ask re-arms on each trip forever, a full server encode apiece
+   * (measured live, 2026-10-15). The cap takes the merged state the frames
+   * already built after a few tries; the counter resets whenever an answer is
+   * taken.
+   */
+  outrun: number;
+  /**
    * The first number the repair in flight is asking for, `null` when none is.
    */
   repairFrom: number | null;
@@ -213,6 +224,17 @@ const PAINT_WATCHDOG_MS = 250;
  * fallback is the arrival order the hold replaced.
  */
 const REPAIR_HELD_CAP = 256;
+
+/**
+ * How many answers in a row the frames may outrun before the merged state is
+ * taken.
+ *
+ * A seat framed faster than a round trip outruns every answer, and the re-ask
+ * re-arms on each trip: a few tries covers the ordinary race (a frame or two
+ * arriving mid-trip), and past them the frames' own state is the better
+ * record - one more encode will be outrun too (measured live, 2026-10-15).
+ */
+const OUTRUN_CAP = 3;
 
 /**
  * Watch one seat.
@@ -416,6 +438,7 @@ function createSeat(
     lastSeq: 0,
     seen: 0,
     askedAt: 0,
+    outrun: 0,
     repairFrom: null,
     repairHeld: [],
     hold,
@@ -897,6 +920,7 @@ function createSeat(
           seat.epoch = reach.epoch;
           seat.lastSeq = reach.seq === null ? 0 : reach.seq - 1;
           seat.seen = seat.lastSeq;
+          seat.outrun = 0;
           read();
           return;
         }
@@ -912,10 +936,19 @@ function createSeat(
         // answer that never comes, so it is taken: never a merge, and never a
         // loop.
         const moved = seat.seen !== seat.askedAt;
-        if (reach.seq !== null && reach.seq - 1 < seat.lastSeq && moved && seat.wire !== null) {
+        if (
+          reach.seq !== null &&
+          reach.seq - 1 < seat.lastSeq &&
+          moved &&
+          seat.wire !== null &&
+          seat.outrun < OUTRUN_CAP
+        ) {
+          seat.outrun += 1;
           reread();
           return;
         }
+        // The answer is taken, so the run of outruns is over.
+        seat.outrun = 0;
         if (reach.seq !== null) {
           seat.lastSeq = reach.seq - 1;
           seat.seen = Math.max(seat.seen, seat.lastSeq);
