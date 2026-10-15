@@ -14,7 +14,8 @@ use forge_primitives::{ContentBlock, Message, StopReason, ToolCallStatus};
 // The row predicates the fold opens a turn by, which the conversation window
 // reads too: they live in the window's crate so the two share one copy.
 use forge_workspace::conversation_turns::{
-    claims_skill_call, is_continuation, is_dispatched, is_image_note, is_task_notice,
+    claims_skill_call, is_continuation, is_dispatched, is_image_note, is_interrupt_marker,
+    is_task_notice,
 };
 
 use crate::envelope::detect_inbound;
@@ -168,6 +169,11 @@ pub fn render(messages: &[Message]) -> Rendered {
                 // and the ending it carries was read in the pre-pass above,
                 // which is the only place that can see across turns.
                 ContentBlock::Text { text, .. } if !assistant && is_task_notice(text) => {}
+                // The CLI's interrupt marker, written as the reader's own row
+                // INSIDE the turn it ended: a turn opened for it separates the
+                // failing `Result` from the call it ended, so the report and
+                // the failure line land in a turn holding no call (#1323).
+                ContentBlock::Text { text, .. } if !assistant && is_interrupt_marker(text) => {}
                 ContentBlock::Text { text, .. } => {
                     // An envelope is not the reader's own words: a peer message
                     // is a user row the CLI answered as a turn of its own, so
@@ -635,6 +641,31 @@ mod tests {
         assert!(
             rendered.turns.is_empty(),
             "a delivery, a fire and a failure each open no turn of their own",
+        );
+    }
+
+    /// The CLI's interrupt marker opens no turn (#1323): it is a `user` row,
+    /// and it arrives INSIDE the turn it ended - the in-flight call, then the
+    /// marker, then the failing `Result` - so a turn opened for it lands the
+    /// report and the failure line in a turn holding no call.
+    #[test]
+    fn the_interrupt_marker_opens_no_turn() {
+        let prompt = user(vec![ContentBlock::Text {
+            text: "run the checks".to_owned(),
+            extras: serde_json::Map::new(),
+        }]);
+        let call = tool_call("bash");
+        let marker = user(vec![ContentBlock::Text {
+            text: "[Request interrupted by user]".to_owned(),
+            extras: serde_json::Map::new(),
+        }]);
+
+        let rendered = render(&[prompt, call, marker]);
+
+        assert_eq!(
+            rendered.turns.len(),
+            1,
+            "the marker draws inside the turn it ended, not as one of its own",
         );
     }
 

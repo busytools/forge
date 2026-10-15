@@ -156,6 +156,20 @@ pub fn is_image_note(text: &str) -> bool {
     text.trim().starts_with("[Image: original ")
 }
 
+/// Whether `text` is the CLI's interrupt marker: the row it writes when the
+/// reader's own interrupt ends a turn.
+///
+/// A `user` row, and not one that opens a turn (#1323): it arrives INSIDE
+/// the turn it ended - the in-flight call, then this, then the failing
+/// `Result` - so a turn opened for it separates the call from the report
+/// and failure line that answer it. Both folds read it as a plain row of
+/// the open turn (the client mirror is `isInterruptMarker` in its
+/// `units.ts`).
+pub fn is_interrupt_marker(text: &str) -> bool {
+    let held = text.trim_start();
+    held.starts_with("[Request interrupted by user") && held.contains(']')
+}
+
 /// Whether `text` is the continuation prompt a compaction leaves behind.
 ///
 /// The CLI sends it as the reader's own user row right after the boundary
