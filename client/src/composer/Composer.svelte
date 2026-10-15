@@ -474,19 +474,6 @@
   /** The box the live take's capture ran on, so the clear reaches it from any seat. */
   let tookBox: Box | null = null;
 
-  /**
-   * The arm goes with the notice: it clears when the record's notice goes -
-   * at every take's start - but only while THIS page holds no take of its
-   * own, so the clear cannot eat the arm a press just set (the notice-null
-   * and the press land in the same instant). A take another client began
-   * clears and stays unarmed, which is what keeps its words out of this box.
-   */
-  $effect(() => {
-    if (composer.notice === null && dictate.take === null && !dictate.opening) {
-      box.sawTake = false;
-    }
-  });
-
   $effect(() => {
     if (composer.take === null) {
       // The take is over; its OWN box is cleared, even when another seat is
@@ -551,7 +538,14 @@
       box.dismissed = null;
       return;
     }
-    if (held.kind !== 'landed' || !box.sawTake || box.landed === held.text) return;
+    // **The arm is consumed by the take's OUTCOME** - whatever kind of notice
+    // that is - so it survives every gap between the release and the landing
+    // (clearing it on the notice's absence ate the arm the press had just
+    // set, Ved, 2026-10-15) and a later notice can never ride it. A notice
+    // arriving with no arm is another client's take and places nothing.
+    if (!box.sawTake) return;
+    box.sawTake = false;
+    if (held.kind !== 'landed' || box.landed === held.text) return;
     box.landed = held.text;
     // **Where the words go is where the take began, checked against what is
     // still on screen.** A take the dock's own row never touched still belongs
@@ -848,7 +842,7 @@
       if (composer.take !== null || dictate.opening) {
         event.preventDefault();
         event.stopPropagation();
-        dictate.act('cancel');
+        dropTake();
       } else if (dictate.panel) {
         // The next Escape belongs to the panel, which is the surface that is
         // open rather than a take that is not.
@@ -878,9 +872,21 @@
     micEl?.focus({ preventScroll: true });
   });
 
+  /**
+   * Abandon a take without submitting it.
+   *
+   * **The arm goes with it**: a cancelled take has no notice coming, so an
+   * arm left standing would ride whatever lands next - which, with a second
+   * client on the seat, is another client's words.
+   */
+  function dropTake(): void {
+    box.sawTake = false;
+    dictate.act('cancel');
+  }
+
   /** Abandon a take without submitting it, which the dock's Escape does. */
   function abandon(): void {
-    dictate.act('cancel');
+    dropTake();
   }
 
   /**
@@ -1046,13 +1052,7 @@
                  would be typed into is the row they arrive on, so nothing is
                  added and nothing moves when a take starts or ends; the
                  controls ride it, and the surface's ring carries the state. -->
-            <TakeCard
-              take={composer.take}
-              {wire}
-              phase={rowPhase}
-              oncancel={() => dictate.act('cancel')}
-              spread
-            />
+            <TakeCard take={composer.take} {wire} phase={rowPhase} oncancel={dropTake} spread />
             {#if !secondRow}
               {@render ctls()}
             {/if}
