@@ -124,6 +124,26 @@ describe('a landing', () => {
     expect(landing.place(SEAT, older)).toBe('this read is the whole input');
     landing.placed(older);
     expect(landing.holds(older), "the words are the box's").toBe(true);
-    expect(landing.place(SEAT, { ...older }), 'and the re-handed notice places again').toBeNull();
+    // A fresh arm (a second take), so the spend cannot be what refuses the
+    // re-handed notice: the fallback cannot tell it from words spoken again,
+    // which is the cost the take's number exists to remove.
+    landing.arm(SEAT, null);
+    expect(landing.place(SEAT, { ...older }), 'the re-handed notice places nothing').toBeNull();
+  });
+
+  it('a take starting clears the placed memory with it', () => {
+    const landing = new Landing();
+    landing.arm(SEAT, null);
+    expect(landing.place(SEAT, words)).toBe('this read is the whole input');
+    landing.placed(words);
+    // The record's notice goes null when the next take starts, before any
+    // landing: the placed memory clears with it, which is what lets the same
+    // words land a second time.
+    expect(landing.place(SEAT, null), 'a take starting places nothing').toBeNull();
+    expect(landing.holds(words), 'and the placed memory is gone with it').toBe(false);
+    landing.arm(SEAT, null);
+    expect(landing.place(SEAT, words), 'so the same words land again').toBe(
+      'this read is the whole input',
+    );
   });
 });

@@ -97,11 +97,11 @@ export class Box {
    * the review and document pages keep the same memory; what is this box's own
    * is only which of its boxes the words went into.
    *
-   * **A notice for a take this page did not begin is not something the wire
-   * sends here today** - take news goes to the connection that began the take
-   * - so the guard is load-bearing rather than decorative: nothing stops a
-   * take crossing a route change to another connection, and the memory is what
-   * keeps it out of this box.
+   * **The guard is load-bearing, not decorative.** Take news goes to the
+   * connection that began the take, and the connection outlives a route
+   * change: a take pressed on one surface keeps running after the reader
+   * moves, and its notice reaches whatever surface is mounted then - this
+   * box's arm is what keeps words this box never began out of its draft.
    */
   landing = new Landing();
   /**

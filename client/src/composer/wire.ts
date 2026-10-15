@@ -30,7 +30,6 @@ export interface Take {
   floorDb: number;
 }
 
-/** What a finished take left behind. */
 /**
  * A notice as the record carries it.
  *
