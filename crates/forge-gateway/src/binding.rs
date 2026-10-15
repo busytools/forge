@@ -36,8 +36,18 @@ pub struct Registration {
 }
 
 /// The env a child is stamped with, in insertion order.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct EnvSet(pub Vec<(String, String)>);
+
+/// Hand-written because the set carries live values for the keys the
+/// gateway does not own; only the key names may print.
+impl std::fmt::Debug for EnvSet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let pairs: Vec<(&str, &str)> =
+            self.0.iter().map(|(key, _)| (key.as_str(), "[redacted]")).collect();
+        f.debug_tuple("EnvSet").field(&pairs).finish()
+    }
+}
 
 impl EnvSet {
     pub fn into_map(self) -> HashMap<String, String> {
@@ -402,5 +412,18 @@ mod tests {
     fn an_unregistered_session_has_no_binding() {
         let bindings = Bindings::default();
         assert_eq!(bindings.binding_for("Busytools", "forge", "ghost"), None);
+    }
+
+    /// The set carries live values for the keys the gateway does not
+    /// own, so only the key names may print.
+    #[test]
+    fn a_value_never_reaches_the_env_set_debug_output() {
+        let set = EnvSet(vec![
+            ("MY_API_KEY".to_owned(), "env-set-supersecret".to_owned()),
+            ("ANTHROPIC_BASE_URL".to_owned(), "http://127.0.0.1:8787/x".to_owned()),
+        ]);
+        let rendered = format!("{set:?}");
+        assert!(!rendered.contains("env-set-supersecret"), "the stamped value leaked: {rendered}");
+        assert!(rendered.contains("MY_API_KEY"), "the key name stays readable: {rendered}");
     }
 }

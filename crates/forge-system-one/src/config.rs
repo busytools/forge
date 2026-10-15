@@ -10,7 +10,7 @@ pub fn systemone_url(base_url: &str) -> String {
 pub const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 
 /// The raw `[systemone]` section as written in forge.toml.
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Clone, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SystemOneSection {
     pub enabled: Option<bool>,
@@ -20,13 +20,38 @@ pub struct SystemOneSection {
     pub timeout_ms: Option<u64>,
 }
 
+/// Hand-written because the raw API key must never be printed.
+impl std::fmt::Debug for SystemOneSection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SystemOneSection")
+            .field("enabled", &self.enabled)
+            .field("base_url", &self.base_url)
+            .field("api_key", &self.api_key.as_ref().map(|_| "[redacted]"))
+            .field("model", &self.model)
+            .field("timeout_ms", &self.timeout_ms)
+            .finish()
+    }
+}
+
 /// An enabled, validated `[systemone]` section.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct SystemOneConfig {
     pub base_url: String,
     pub api_key: Option<String>,
     pub model: String,
     pub timeout_ms: u64,
+}
+
+/// Hand-written because the API key must never be printed.
+impl std::fmt::Debug for SystemOneConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SystemOneConfig")
+            .field("base_url", &self.base_url)
+            .field("api_key", &self.api_key.as_ref().map(|_| "[redacted]"))
+            .field("model", &self.model)
+            .field("timeout_ms", &self.timeout_ms)
+            .finish()
+    }
 }
 
 impl SystemOneSection {

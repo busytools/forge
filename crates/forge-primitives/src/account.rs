@@ -46,7 +46,6 @@ impl Provider {
 /// One account as the config load produces it. The gateway's account
 /// state is built from these, and the spawn path stamps the per-account
 /// env onto the child from here.
-#[derive(Debug)]
 pub struct LoadedAccount {
     pub display_name: String,
     /// Declared backend. Drives the usage probe and the billing shape.
@@ -68,6 +67,24 @@ pub struct LoadedAccount {
     /// switches) plus the derived credential and base-url variable
     /// stamps the gateway and the child read.
     pub env: std::collections::HashMap<String, String>,
+}
+
+/// Hand-written because the env map carries the account's credential
+/// stamps, which the derived output would print.
+impl std::fmt::Debug for LoadedAccount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let env: std::collections::BTreeMap<&str, &str> =
+            self.env.keys().map(|key| (key.as_str(), "[redacted]")).collect();
+        f.debug_struct("LoadedAccount")
+            .field("display_name", &self.display_name)
+            .field("provider", &self.provider)
+            .field("base_url", &self.base_url)
+            .field("models", &self.models)
+            .field("model_slugs", &self.model_slugs)
+            .field("model_aliases", &self.model_aliases)
+            .field("env", &env)
+            .finish()
+    }
 }
 
 /// How an account proves who it is, which is the only thing that
@@ -132,5 +149,29 @@ mod tests {
             Provider::Zai.uses_base_url(),
             "the credential is an ANTHROPIC_AUTH_TOKEN beside an ANTHROPIC_BASE_URL",
         );
+    }
+
+    /// The env map carries the account's credential stamps, so a
+    /// `{:?}` must never print a value from it.
+    #[test]
+    fn a_credential_never_reaches_the_account_debug_output() {
+        let account = LoadedAccount {
+            display_name: "Stargate".to_owned(),
+            provider: Provider::Anthropic,
+            base_url: None,
+            models: vec!["claude-sonnet-5".to_owned()],
+            model_slugs: std::collections::HashMap::new(),
+            model_aliases: std::collections::HashMap::new(),
+            env: std::collections::HashMap::from([(
+                "CLAUDE_CODE_OAUTH_TOKEN".to_owned(),
+                "account-supersecret".to_owned(),
+            )]),
+        };
+        let rendered = format!("{account:?}");
+        assert!(
+            !rendered.contains("account-supersecret"),
+            "the credential stamp leaked: {rendered}",
+        );
+        assert!(rendered.contains("Stargate"), "the account name stays readable: {rendered}");
     }
 }

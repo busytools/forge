@@ -14,13 +14,24 @@ use serde::{Deserialize, Serialize};
 /// forge.toml. One server per v1. Unknown keys are rejected so a
 /// mistyped `client_token` fails the load instead of leaving the
 /// connector tokenless.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GotifyConfig {
     pub url: String,
     /// Client token for the receive stream (`/stream?token=`) and the
     /// `/application` lookup (`X-Gotify-Key`).
     pub client_token: String,
+}
+
+/// Hand-written because the client token must never be printed, the
+/// same reason `SlackConfig` writes its own.
+impl std::fmt::Debug for GotifyConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GotifyConfig")
+            .field("url", &self.url)
+            .field("client_token", &"[redacted]")
+            .finish()
+    }
 }
 
 /// A notification decoded from the Gotify server's WebSocket stream.
