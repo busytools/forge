@@ -308,13 +308,14 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
 .band .dot.bad { background: var(--bad); box-shadow: 0 0 7px rgba(224,104,62,.5); }
 .band .dot.warn { background: var(--warn); }
 
-/* The strip's way into the board, first in the tasks list. */
+/* The strip's way into the board, first in the tasks list; the door's words
+   sit at the panel's right edge, where their arrow points (Ved, 2026-10-15). */
 .sg-open {
   display: block;
   font-family: var(--mono); font-size: var(--fs-label);
   color: var(--blue); text-decoration: none;
   border-bottom: 1px solid var(--line);
-  padding: 8px 10px;
+  padding: 8px 10px; text-align: right;
 }
 .sg-open:hover { background: var(--s2); }
 .sg-open:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
@@ -1049,8 +1050,20 @@ details[open] > summary .arw { transform: rotate(90deg); }
   color: var(--muted); background: none; border: 1px solid transparent; padding: 0; }
 .pal-btn:hover { color: var(--text); background: var(--s2); border-color: var(--line); }
 .pal-btn .ic { width: 16px; height: 16px; }
+/* The projects pane's door for a finger, the palette door's twin: hover and
+   Cmd+Left are the mouse's and the keyboard's, and a phone has neither. */
+.rail-btn { display: none; align-items: center; justify-content: center;
+  width: 30px; height: 30px; flex: none; border-radius: 8px; cursor: pointer;
+  color: var(--muted); background: none; border: 1px solid transparent; padding: 0; }
+.rail-btn:hover { color: var(--text); background: var(--s2); border-color: var(--line); }
+.rail-btn .ic { width: 16px; height: 16px; }
 @media (pointer: coarse) {
   .pal-btn { display: flex; }
+  .rail-btn { display: flex; }
+  /* Where the rail is already the column (a wide tablet), the door has
+     nothing to open: it stays hidden rather than drawing a dead control
+     labelled for a pane that is on screen. */
+  .app.rail-static .rail-btn { display: none; }
   .pal .it { padding: 12px 15px; }
 }
 
@@ -2010,6 +2023,8 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
   button, input, select, textarea, details > summary { min-height: 44px; }
   /* The mag door takes both axes, like the chip beside it. */
   .pal-btn { min-width: 44px; min-height: 44px; }
+  /* And the pane door, its twin. */
+  .rail-btn { min-width: 44px; min-height: 44px; }
   /* A row's own link is the finger's target: its box carries the 44, and the
      row grows with it. The rail's link stretches over the whole row (its
      base rule, as the home rows' does).

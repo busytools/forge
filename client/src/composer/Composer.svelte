@@ -167,9 +167,25 @@
       const target = boxes.of(boxKey(untrack(() => slot)));
       lineBox = target;
       target.dictateLine = null;
+      // **The arm is set where the take truly begins** - this page's own
+      // capture, at the press - with the notice the record was already showing
+      // when it did, which the memory skips rather than spending the arm on.
+      // Where the words go is captured per take, at this same instant - every
+      // press reaches here with no take showing, so a guard remembering an
+      // earlier capture could only inherit the wrong destination.
+      target.landing.arm(
+        boxKey(untrack(() => slot)),
+        untrack(() => composer.notice),
+      );
+      target.tookFrom = untrack(() => toDock()) ? 'dock' : 'composer';
     },
     onLine: (line) => {
-      (lineBox ?? box).dictateLine = line;
+      const target = lineBox ?? box;
+      target.dictateLine = line;
+      // **A line is the take's FAILURE**: a capture that never opened draws
+      // one, and no landing is coming to consume the arm - so it goes with
+      // the line rather than standing for whatever notice lands next.
+      target.landing.drop();
     },
     onRefused: (line) => {
       box.dictateLine = line;
@@ -318,11 +334,14 @@
    *
    * **An empty bar is one row** (Ved, 2026-10-09): the controls ride the
    * field's own line, so an idle seat is not two rows tall for a stop button
-   * nobody is looking at. A draft needs somewhere for the keys to live - and a
-   * take asks for no second row at all: it takes the draft's OWN line, so the
-   * controls ride the take with it.
+   * nobody is looking at. A draft needs somewhere for the keys to live, and
+   * **the second row STAYS through a take** - the bar takes the draft's own
+   * line under it, so the box's height is the same before, during and after
+   * (a foot that vanished with the take made the whole page jump on every
+   * press, Ved, 2026-10-15). The inline controls stand down exactly when the
+   * foot is up, so the buttons are still drawn once.
    */
-  const secondRow = $derived(filled && composer.take === null);
+  const secondRow = $derived(filled);
 
   /**
    * Whether this seat has a turn to stop.
@@ -333,9 +352,15 @@
    */
   const running = $derived(record.header.turn_in_flight);
   // The engine's notice, or what became of a draft that left this box - the
-  // dock's own stand-down, said in the row the dock leaves behind.
+  // dock's own stand-down, said in the row the dock leaves behind. What the
+  // cut row needs to know - whether THIS box took the notice's words - is the
+  // landing memory's own answer.
   const notice = $derived(
-    owns ? (box.dictateLine ?? noticeLine(composer.notice, box.sawTake) ?? box.ended) : null,
+    owns
+      ? (box.dictateLine ??
+          noticeLine(composer.notice, box.landing.holds(composer.notice)) ??
+          box.ended)
+      : null,
   );
   const line = $derived(notice !== null && box.dismissed === notice.text ? null : notice);
 
@@ -456,40 +481,6 @@
     if (field !== null) field.focus();
   });
 
-  /** The box the live take's capture ran on, so the clear reaches it from any seat. */
-  let tookBox: Box | null = null;
-
-  // Holding the seat's take is having seen it, and the flag never clears -
-  // and only the seat's own record arms it: another seat's take, still in the
-  // record in hand between two seats, is not this box having watched anything.
-  $effect(() => {
-    if (composer.take === null) {
-      // The take is over; its OWN box is cleared, even when another seat is
-      // shown - the box in hand belongs to whoever is on screen, and a flag
-      // left open on the take's own would swallow the next take's capture.
-      const captured = tookBox;
-      if (captured !== null) {
-        captured.takeOpen = false;
-        tookBox = null;
-      }
-      return;
-    }
-    if (!owns) return;
-    box.sawTake = true;
-    if (!box.takeOpen) {
-      // **Where the take began is where its words go, captured per TAKE.** A
-      // prompt arriving mid-take does not take words spoken into the reader's
-      // draft, and one already holding the slot owns them even when the caret
-      // was never in its row (a keyboard dictation). One seat can take several
-      // in a row, so the flag closes with each take rather than once per box -
-      // and the box it closed on is remembered, because the take can outlive
-      // the visit to its seat.
-      box.takeOpen = true;
-      tookBox = box;
-      box.tookFrom = untrack(() => toDock()) ? 'dock' : 'composer';
-    }
-  });
-
   /** What the dock's own box belongs to, which is what its words go with. */
   let ownKey: string | null = null;
 
@@ -531,18 +522,20 @@
    * box takes one green beat.
    *
    * Tracked on the notice alone: the draft is read through `untrack`, so what
-   * this effect writes cannot re-run it.
+   * this effect writes cannot re-run it. What the memory decides - whether
+   * these words are this box's to place at all - is `landing.ts`'s; this is
+   * only where the take began routing them.
    */
   $effect(() => {
     if (!owns) return;
     const held = composer.notice;
     if (held === null) {
-      box.landed = null;
+      box.landing.place(boxKey(slot), null);
       box.dismissed = null;
       return;
     }
-    if (held.kind !== 'landed' || !box.sawTake || box.landed === held.text) return;
-    box.landed = held.text;
+    const words = box.landing.place(boxKey(slot), held);
+    if (words === null) return;
     // **Where the words go is where the take began, checked against what is
     // still on screen.** A take the dock's own row never touched still belongs
     // to the dock when the dock was the box it started under - routing it by
@@ -552,13 +545,17 @@
     if (box.tookFrom === 'dock' && untrack(() => toDock())) {
       dockDraft = joined(
         untrack(() => dockDraft),
-        held.text,
+        words,
       );
-      dockLanded = held.text;
+      dockLanded = words;
     } else {
+      // The words THIS DRAFT took, which is what its cut row reads: the dock's
+      // take left them in the dock, and a memory set for it here would put a
+      // note about words that never arrived in this draft.
+      box.landing.placed(held);
       box.draft = joined(
         untrack(() => box.draft),
-        held.text,
+        words,
       );
     }
     box.beatAt = Date.now();
@@ -813,7 +810,9 @@
     bind: () => composer.bind,
     mode: () => composer.mode,
     onBegin: () => {
-      if (focusOf(where) === 'composer') field?.focus();
+      // Never scrolls: the box is already on screen, and a key press that
+      // scrolled the page would move the chat under the reader.
+      if (focusOf(where) === 'composer') field?.focus({ preventScroll: true });
     },
   });
 
@@ -836,7 +835,7 @@
       if (composer.take !== null || dictate.opening) {
         event.preventDefault();
         event.stopPropagation();
-        dictate.act('cancel');
+        dropTake();
       } else if (dictate.panel) {
         // The next Escape belongs to the panel, which is the surface that is
         // open rather than a take that is not.
@@ -863,12 +862,28 @@
     if (composer.take === null) return;
     if (!untrack(() => fromMic)) return;
     fromMic = false;
-    micEl?.focus();
+    micEl?.focus({ preventScroll: true });
   });
+
+  /**
+   * Abandon a take without submitting it.
+   *
+   * **The arm goes with it**: a cancel still ends the take at the core - a
+   * `dictate_ended` with no words in it - so nothing lands for it, and an arm
+   * left standing would ride whatever notice arrives next: words this page's
+   * own take never produced.
+   */
+  function dropTake(): void {
+    // The arm lives on the take's OWN box, which may not be the one on screen
+    // (a press on seat A, a move to B while the mic opens, Escape).
+    const target = lineBox ?? box;
+    target.landing.drop();
+    dictate.act('cancel');
+  }
 
   /** Abandon a take without submitting it, which the dock's Escape does. */
   function abandon(): void {
-    dictate.act('cancel');
+    dropTake();
   }
 
   /**
@@ -1034,14 +1049,10 @@
                  would be typed into is the row they arrive on, so nothing is
                  added and nothing moves when a take starts or ends; the
                  controls ride it, and the surface's ring carries the state. -->
-            <TakeCard
-              take={composer.take}
-              {wire}
-              phase={rowPhase}
-              oncancel={() => dictate.act('cancel')}
-              spread
-            />
-            {@render ctls()}
+            <TakeCard take={composer.take} {wire} phase={rowPhase} oncancel={dropTake} spread />
+            {#if !secondRow}
+              {@render ctls()}
+            {/if}
           {:else}
             <!-- The list belongs to the field rather than being a surface the reader
              Tabs into: the field keeps focus and points at the marked row. The
@@ -1076,7 +1087,10 @@
              the controls follow it down to the box's bottom edge. An empty bar
              draws none of it - the controls ride the field's own line. -->
           <div class="foot">
-            {#if filled}
+            <!-- The keys only while the field is the row's own: a take in its
+               place unmounts the field, so the hints would promise keys that
+               do nothing. The foot stays either way - that is the height. -->
+            {#if filled && rowPhase === null}
               <span class="hints"><kbd>Shift</kbd> <kbd>Enter</kbd> newline</span>
               <span class="hints"><kbd>Enter</kbd> send</span>
             {/if}

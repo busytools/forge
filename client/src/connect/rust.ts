@@ -222,6 +222,7 @@ class RustConnection implements Connection {
     emit: (messages) => {
       for (const message of messages) this.deliver(message);
     },
+    follows: (slot) => this.stores.get({ session: slot }) !== undefined,
   });
 
   private heard(message: ServerMessage): void {
@@ -283,10 +284,14 @@ class RustConnection implements Connection {
 
   unsubscribe(what: Subject): void {
     if (this.stores.get(what) === undefined) return;
-    this.stores.close(what);
+    const last = this.stores.close(what);
     void invoke('client_unsubscribe', { what }).catch((why: unknown) => {
       report('an unsubscribe could not reach the shell', why);
     });
+    // The gate stops sequencing a seat the page let go, same as the websocket
+    // transport: its news passes through rather than opening a hole over a
+    // history nobody is reading.
+    if (last && typeof what !== 'string') this.gate.releaseSeat(what.session);
   }
 
   refresh(what: Subject): void {

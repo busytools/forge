@@ -402,9 +402,14 @@ export const HANDLERS: Record<string, Apply> = {
     if (!('refused' in outcome) && (take === null || !ofThisTake(take, payload))) return held;
     const floor =
       take === null ? FALLBACK_FLOOR_DB : (number(take['floor_db']) ?? FALLBACK_FLOOR_DB);
+    const notice = noticeOf(outcome, floor);
     return {
       ...held,
-      composer: { ...held.composer, take: null, notice: noticeOf(outcome, floor) },
+      composer: {
+        ...held.composer,
+        take: null,
+        notice: notice === null ? null : { ...notice, ...generationOf(payload) },
+      },
     };
   },
 
@@ -856,6 +861,19 @@ function push(take: Record<string, unknown>, peakDb: number): Record<string, unk
   const grown =
     levels.length >= METER_CELLS ? [...levels.slice(1), fraction] : [...levels, fraction];
   return { ...take, levels: grown, peak_db: peakDb };
+}
+
+/**
+ * The take's own number, kept on the notice it produced.
+ *
+ * The record's notice has to say WHICH take left it: two notices with the
+ * same words are the same notice only when this matches, and the landing
+ * memory leans on that to tell a landing the record re-hands from a take the
+ * reader spoke the same words into again (`composer/landing.ts`).
+ */
+function generationOf(payload: Record<string, unknown>): Record<string, unknown> {
+  const generation = number(payload['generation']);
+  return generation === null ? {} : { generation };
 }
 
 /**

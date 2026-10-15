@@ -30,10 +30,17 @@ export interface Take {
   floorDb: number;
 }
 
-/** What a finished take left behind. */
+/**
+ * A notice as the record carries it.
+ *
+ * `generation` is the take's own number, kept where the wire sends one: two
+ * notices with the same words are the same notice only when it matches, which
+ * is what tells a landing the record re-hands from a take that spoke the same
+ * words again (the landing memory's own discriminator, `landing.ts`).
+ */
 export type Notice =
-  | { kind: 'landed'; text: string; truncated: boolean }
-  | { kind: 'line'; tone: string; text: string };
+  | { kind: 'landed'; text: string; truncated: boolean; generation?: number }
+  | { kind: 'line'; tone: string; text: string; generation?: number };
 
 /** The sign-in a seat is waiting on, which makes the hint say which account. */
 export interface SignIn {
@@ -197,10 +204,12 @@ function noticeFrom(value: unknown): Notice | null {
   if (value === null || value === undefined) return null;
   const held = record(value);
   const text_ = text(held['text']) ?? '';
+  const generation = number(held['generation']);
+  const kept = generation === null ? {} : { generation };
   if (held['kind'] === 'landed') {
-    return { kind: 'landed', text: text_, truncated: held['truncated'] === true };
+    return { kind: 'landed', text: text_, truncated: held['truncated'] === true, ...kept };
   }
-  return { kind: 'line', tone: text(held['tone']) ?? 'q', text: text_ };
+  return { kind: 'line', tone: text(held['tone']) ?? 'q', text: text_, ...kept };
 }
 
 function signInFrom(value: unknown): SignIn | null {

@@ -838,7 +838,7 @@ describe("the block's own take", () => {
   };
   const LANDED = {
     ...IDLE,
-    notice: { kind: 'landed', text: 'the second line reads well', truncated: false },
+    notice: { kind: 'landed', text: 'the second line reads well', truncated: false, generation: 1 },
   };
 
   /** The record while the server transcribes a take the page let go. */
@@ -912,6 +912,93 @@ describe("the block's own take", () => {
       document.querySelector<HTMLTextAreaElement>('.doc-compose textarea')?.value,
       'the words, at the end of the box that was open',
     ).toBe('the second line reads well');
+  });
+
+  /**
+   * **A quick take the record never showed still lands.** The record a page
+   * reads is written once per painted frame, so a press and a release can fold
+   * into one write with no take in it at all: the arm is the press's own, and
+   * the words land in the box that began the take all the same (the composer's
+   * own quick-release case, Ved, 2026-10-15).
+   */
+  it('lands a take the record never showed, after a quick release', async () => {
+    drawWithDictation();
+    push(seatRecord(IDLE));
+    blockTarget('line two').click();
+    flushSync();
+
+    composeMic().click();
+    await vi.waitFor(
+      () => {
+        expect(
+          document.querySelector('.doc-compose .takeline'),
+          "the take's bar, in the box's own line",
+        ).not.toBeNull();
+      },
+      { timeout: 2000 },
+    );
+
+    // The words land with the record never having shown a take: only the
+    // press knows this take exists on the page's side.
+    push(seatRecord(LANDED));
+    flushSync();
+
+    // The reader's release: the take ends and the field comes back with the
+    // words in it.
+    composeMic().click();
+    await vi.waitFor(
+      () => {
+        expect(document.querySelector('.doc-compose .takeline'), 'the bar goes').toBeNull();
+      },
+      { timeout: 2000 },
+    );
+    expect(
+      document.querySelector<HTMLTextAreaElement>('.doc-compose textarea')?.value,
+      'the words of a take the record never showed',
+    ).toBe('the second line reads well');
+  });
+
+  /**
+   * **A cancelled take leaves no arm behind.** Closing the box ends the take
+   * and produces no notice: an arm left standing would ride the next landing
+   * on the seat - words this page's own take never produced (the gate's F3,
+   * 2026-10-15).
+   */
+  it('places nothing from a landing after its take was cancelled', async () => {
+    drawWithDictation();
+    push(seatRecord(IDLE));
+    blockTarget('line two').click();
+    flushSync();
+
+    composeMic().click();
+    await vi.waitFor(
+      () => {
+        expect(
+          document.querySelector('.doc-compose .takeline'),
+          "the take's bar, in the box's own line",
+        ).not.toBeNull();
+      },
+      { timeout: 2000 },
+    );
+
+    // The reader closes the box: the take is cancelled, and no notice is
+    // coming for it.
+    const cancel = [
+      ...document.querySelectorAll<HTMLButtonElement>('.doc-compose-acts button'),
+    ].find((button) => button.textContent?.trim() === 'cancel');
+    if (cancel === undefined) throw new Error("the block's box drew no cancel");
+    cancel.click();
+    flushSync();
+
+    // A landing arrives on the seat all the same, and nothing places it: the
+    // box stays closed, and no text of those words is anywhere.
+    push(seatRecord(LANDED));
+    flushSync();
+
+    expect(
+      document.querySelector<HTMLTextAreaElement>('.doc-compose textarea')?.value ?? '',
+      'words from a landing whose take was cancelled',
+    ).toBe('');
   });
 
   /**

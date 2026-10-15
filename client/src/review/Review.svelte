@@ -185,9 +185,9 @@
   /** Which box's mic opened the settings, which is the box that anchors the panel. */
   let panelIn = $state<BoxName | null>(null);
 
-  /** This page's memory of the seat's takes: which one it watched, and what
-   *  it has placed. A landing is placed once, and the memory is the seat's -
-   *  the record in hand can be another seat's between two reads. */
+  /** This page's memory of the seat's takes: the arm its own press set, and
+   *  what it has placed. A landing is placed once, and the memory is the
+   *  seat's - the record in hand can be another seat's between two reads. */
   const landing = new Landing();
 
   /** The boxes' own field elements, so a key or a panel close can put the
@@ -257,11 +257,17 @@
       takeSpot = box.spot;
       takeThread = reply.thread;
       dictateLine = null;
+      // The arm this take's landing waits on, set at the press, on the seat
+      // the take belongs to, with the notice the record was already showing -
+      // which the memory skips rather than spending the arm on.
+      landing.arm(boxKey(slot), composer.notice);
     },
     onLine: (line) => {
-      // The take's own line belongs to the box it began in.
+      // The take's own line belongs to the box it began in, and no landing is
+      // coming for it: the arm goes with the failure.
       lineIn = takeIn;
       dictateLine = line;
+      landing.drop();
     },
     onRefused: (line) => {
       // A refused press belongs to the box that was pressed.
@@ -353,8 +359,12 @@
    * just landed.
    */
   $effect(() => {
-    const words = landing.place(boxKey(slot), composer.take !== null, composer.notice);
-    if (words === null || takeIn === null) return;
+    const words = landing.place(boxKey(slot), composer.notice);
+    if (words === null) return;
+    // Whose words these are is settled now, open box or not: the record hands
+    // the same notice over on every write.
+    landing.placed(composer.notice);
+    if (takeIn === null) return;
     if (takeIn === 'comment') {
       if (!sameSpot(box.spot, takeSpot)) box.spot = takeSpot;
       if (box.spot === null) return;
@@ -379,7 +389,7 @@
    * the comment box and whose failure the reader would never see.
    */
   $effect(() => {
-    const line = dictateLine ?? noticeLine(composer.notice, landing.watched);
+    const line = dictateLine ?? noticeLine(composer.notice, landing.holds(composer.notice));
     const at = dictateLine !== null ? lineIn : (takeIn ?? 'comment');
     box.line = at === 'comment' ? line : null;
     reply.line = at === 'reply' ? line : null;
@@ -407,7 +417,12 @@
     // connection to send its stop - is not this effect's to cancel: the
     // server would read it as an abandon and drop words the reader kept.
     const live = dictate.take;
-    if (gone && (dictate.opening || (live !== null && !live.submitted))) dictate.act('cancel');
+    if (gone && (dictate.opening || (live !== null && !live.submitted))) {
+      // The arm goes with the cancelled take: no notice is coming for it, and
+      // a standing arm would ride the next one that does.
+      landing.drop();
+      dictate.act('cancel');
+    }
   });
 
   /** Whether two spots are the same place, by value: the object identity of a
@@ -485,6 +500,7 @@
       if (dictate.take !== null || dictate.opening || dictate.held) {
         event.preventDefault();
         event.stopPropagation();
+        landing.drop();
         dictate.act('cancel');
         return;
       }
@@ -969,7 +985,10 @@
                   take={composer.take}
                   wire={rowWire}
                   phase={phaseIn('summary') ?? 'recording'}
-                  oncancel={() => dictate.act('cancel')}
+                  oncancel={() => {
+                    landing.drop();
+                    dictate.act('cancel');
+                  }}
                   spread
                 />
               {:else}
@@ -1337,8 +1356,15 @@
     flex: 1;
     min-width: 0;
   }
-  .rv-summary {
+  /* The field is `Field`'s, and that component's root is the input itself -
+     so these reach into it through :global, or they never match it and the
+     reader gets the browser's raw box (Ved's screenshot, 2026-10-15). */
+  .rv-finishrow :global(.rv-summary) {
     flex: 1;
+    /* The wordline is the flex item; the input fills it - a bare `flex: 1`
+       here is inert inside a plain block and the box keeps its ~20ch
+       intrinsic width. */
+    width: 100%;
     min-width: 0;
     background: var(--s1);
     color: var(--text);
@@ -1348,7 +1374,7 @@
     font-size: var(--fs-base);
     padding: 6px 9px;
   }
-  .rv-summary:focus {
+  .rv-finishrow :global(.rv-summary:focus) {
     outline: none;
     border-color: var(--ctl);
   }

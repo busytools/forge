@@ -18,7 +18,27 @@
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, expect, it, vi } from 'vitest';
 
+/**
+ * A microphone that opens without an audio stack, as `Composer.test.ts`'s
+ * stand-in does: jsdom has no `getUserMedia`, and the walk is about the ring
+ * rather than the audio.
+ */
+vi.mock('./mic', () => ({
+  Microphone: {
+    open: () =>
+      Promise.resolve({
+        onFrame: null,
+        flush: () => null,
+        flushWorklet: () => {},
+        stop: () => {},
+      }),
+  },
+  inputs: () => Promise.resolve([]),
+  inputLine: () => 'the inputs could not be listed',
+}));
+
 import Harness from './Harness.svelte';
+import { DRAIN_MS, FLUSH_SETTLE_MS } from './take';
 import { record, take, wire } from './testing';
 import type { ComposerRecord } from './view';
 
@@ -69,6 +89,37 @@ function held(composer: Record<string, unknown>): ComposerRecord {
   return record({ composer: { compacting: false, sign_in: null, ...composer } });
 }
 
+/** The bound key's own event, as the browser delivers it (jsdom reports no platform). */
+function key(code: string, kind: 'keydown' | 'keyup'): void {
+  window.dispatchEvent(new KeyboardEvent(kind, { code, bubbles: true, cancelable: true }));
+  flushSync();
+}
+
+/**
+ * Begin a take in this page's own box, as the bound key does - what arms the
+ * landing at the end of the walk - and let the open settle.
+ *
+ * The release of a tap keeps the take recording, so the press in flight is
+ * done with and the walk can let go of the take separately.
+ */
+async function began(): Promise<void> {
+  key('ControlRight', 'keydown');
+  for (let turn = 0; turn < 4; turn += 1) await Promise.resolve();
+  flushSync();
+  key('ControlRight', 'keyup');
+}
+
+/**
+ * The reader lets go: the release drains the capture and submits, and this
+ * side's take is over before the notice it lands ever comes back.
+ */
+function ended(): void {
+  key('ControlRight', 'keydown');
+  key('ControlRight', 'keyup');
+  vi.advanceTimersByTime(DRAIN_MS + FLUSH_SETTLE_MS + 10);
+  flushSync();
+}
+
 const LANDED = { kind: 'landed', text: 'the words', truncated: false };
 
 /** One step of a walk: what it is, and what the ring and the row were at it. */
@@ -112,13 +163,16 @@ function printed(trace: Leg[]): string {
  * what the live page does: every frame re-creates the record the composer
  * reads, so the landed notice arrives as a NEW object on each hand-over.
  */
-function takeLifecycle(page: Page, extraFrame: boolean): Leg[] {
+async function takeLifecycle(page: Page, extraFrame: boolean): Promise<Leg[]> {
   const trace: Leg[] = [];
   const note = (step: string): void => {
     trace.push({ step, ring: ringClasses(), row: rowState() });
   };
 
   note('idle');
+  // The take this page's own capture begins, which is what arms the landing
+  // at the end of the walk: the record alone no longer arms one.
+  await began();
   page.record = held({ take: take(), notice: null });
   flushSync();
   note('recording · take started');
@@ -128,12 +182,15 @@ function takeLifecycle(page: Page, extraFrame: boolean): Leg[] {
   page.record = held({ take: take({ phase: 'transcribing', progress: [2, 6] }), notice: null });
   flushSync();
   note('transcribing');
+  // The reader lets go before the notice comes back, as they do.
+  ended();
   page.record = held({ take: null, notice: LANDED });
   flushSync();
   note('landed');
   if (extraFrame) {
     // Inside the beat window: the page hands the same landed notice over
-    // again, as any frame arriving before the window closes does.
+    // again, as any frame arriving before the window closes does. The arm is
+    // spent, so it places nothing twice and the beat keeps its own instant.
     page.record = held({ take: null, notice: { ...LANDED } });
     flushSync();
     note('landed + one more frame');
@@ -148,10 +205,10 @@ function takeLifecycle(page: Page, extraFrame: boolean): Leg[] {
   return trace;
 }
 
-it('the control: with no frame inside the window, the landed beat expires on its own', () => {
+it('the control: with no frame inside the window, the landed beat expires on its own', async () => {
   vi.useFakeTimers();
   const page = open();
-  const trace = takeLifecycle(page, false);
+  const trace = await takeLifecycle(page, false);
   console.log(`\n#1523 control (no extra frame)\n${printed(trace)}`);
 
   const walk = steps(trace);
@@ -162,11 +219,15 @@ it('the control: with no frame inside the window, the landed beat expires on its
   expect(at(walk, 'recording · next take').ring, 'the next take is a recording').toContain('rec');
 });
 
-it('a live take owns the ring, not a landed beat still inside its window', () => {
+it('a live take owns the ring, not a landed beat still inside its window', async () => {
   vi.useFakeTimers();
   const page = open();
+  // A take of this page's own, released and closed: that is what arms the
+  // landing, and this side's take has to be over for the beat to paint at all.
+  await began();
   page.record = held({ take: take(), notice: null });
   flushSync();
+  ended();
   page.record = held({ take: null, notice: { ...LANDED } });
   flushSync();
   expect(ringClasses(), 'the landing opens the beat').toContain('done');
@@ -179,10 +240,10 @@ it('a live take owns the ring, not a landed beat still inside its window', () =>
   expect(ringClasses(), 'and the landed beat does not paint over it').not.toContain('done');
 });
 
-it('records the ring across a take whose landed notice keeps being re-handed', () => {
+it('records the ring across a take whose landed notice keeps being re-handed', async () => {
   vi.useFakeTimers();
   const page = open();
-  const trace = takeLifecycle(page, true);
+  const trace = await takeLifecycle(page, true);
   console.log(`\n#1523 instrument (one extra frame inside the window)\n${printed(trace)}`);
 
   const walk = steps(trace);

@@ -60,6 +60,21 @@ interface Range {
 interface StreamState {
   /** The occupant the numbers belong to, off the seal or the answer. */
   epoch: string | null;
+  /**
+   * Whether this connection follows the seat: a snapshot has said where its
+   * stream stands.
+   *
+   * **Frames arrive for seats nothing here follows.** The home watch carries
+   * fleet news per seat - a turn finishing, an occupant changing - numbered
+   * on that seat's own stream, so holding or asking for a seat this
+   * connection never opened demands a history nobody asked for: an awake
+   * seat refuses the ask outright (`Some(id) != None`), which reappears on
+   * the next fleet frame and loops (measured live, 2026-10-15: the client
+   * asked `1..6956` with no occupant every ~30s), and a sleeping one answers
+   * with its whole transcript, megabytes nobody opened. Unanchored, the
+   * frames pass through in arrival order.
+   */
+  anchored: boolean;
   /** The next number the run owes, in strict sequence. */
   expecting: number;
   /**
@@ -89,6 +104,17 @@ export interface GateDeps {
   ask: (slot: SessionSlot, epoch: string | null, from: number, to: number) => boolean;
   /** Hand messages to every consumer, in order. */
   emit: (messages: ServerMessage[]) => void;
+  /**
+   * Whether the connection still holds this seat.
+   *
+   * **A snapshot can land after its own unsubscribe.** A page that opens a
+   * seat and leaves inside one round trip releases it, and the subscribe's
+   * answer is already on the wire - anchoring on it would leave a seat this
+   * connection no longer follows sequenced for the life of the connection,
+   * reopening the whole-history ask `releaseSeat` exists to close (found in
+   * review, 2026-10-15). The connection is the only one that knows.
+   */
+  follows: (slot: SessionSlot) => boolean;
 }
 
 function stateOf(streams: Map<string, StreamState>, key: string): StreamState {
@@ -96,6 +122,7 @@ function stateOf(streams: Map<string, StreamState>, key: string): StreamState {
   if (state === undefined) {
     state = {
       epoch: null,
+      anchored: false,
       expecting: 1,
       seenThrough: 0,
       missing: [],
@@ -174,8 +201,16 @@ export class StreamGate {
       case 'snapshot': {
         const subject = message.subject as { session?: SessionSlot };
         if (subject?.session === undefined) return [message];
+        // A snapshot for a seat this connection has let go is the tail of a
+        // subscription that is already over: it passes through and anchors
+        // nothing.
+        if (!this.deps.follows(subject.session)) return [message];
         const key = subjectKey({ session: subject.session });
         const state = stateOf(this.streams, key);
+        // **The snapshot is the anchor.** It is the one message that says
+        // where this seat's stream stands for THIS connection, so a seat is
+        // sequenced only once one has landed for it.
+        state.anchored = true;
         const header = (message.data as { header?: { session_id?: unknown; seq?: unknown } } | null)
           ?.header;
         const occupant = typeof header?.session_id === 'string' ? header.session_id : null;
@@ -203,6 +238,10 @@ export class StreamGate {
         if (slot === null) return [message];
         const key = subjectKey({ session: slot });
         const state = stateOf(this.streams, key);
+        // A seat this connection has not been told the standing of: the
+        // frame is news riding a coarser watch, and ordering it would ask
+        // for a history nobody opened. Arrival order is what it gets.
+        if (!state.anchored) return [message];
 
         const seal = replacer(message.update);
         if (seal !== null) {
@@ -257,7 +296,7 @@ export class StreamGate {
         if (slot === undefined) return [message];
         const key = subjectKey({ session: slot });
         const state = this.streams.get(key);
-        if (state === undefined || this.settled(state)) return [message];
+        if (state === undefined || !state.anchored || this.settled(state)) return [message];
         state.origin = { slot, epoch: message.epoch ?? null };
         for (const frame of message.frames) {
           const carried = frame as { seq: number; span?: unknown };
@@ -297,6 +336,32 @@ export class StreamGate {
   reset(): void {
     for (const state of this.streams.values()) this.clear(state);
     this.streams.clear();
+  }
+
+  /**
+   * Forget a seat this connection has let go: its numbers stop counting, and
+   * the fleet news the coarse watches still deliver for it passes through.
+   *
+   * **An anchor alone outlives the subscription, and that is the cost this
+   * closes.** A seat a reader visited and then left keeps its anchor for the
+   * life of the connection, so the next fleet-news frame for it - a turn
+   * finishing in a project nobody is looking at - opens a hole and asks for
+   * the whole missed stretch; the ring answers only what it still holds
+   * (4,000 frames), and above that the transcript answers with a whole-file
+   * read (found in review, 2026-10-15). Frames held at the moment of release
+   * are handed over rather than dropped, and a later subscribe anchors the
+   * seat again from its own snapshot.
+   */
+  releaseSeat(slot: SessionSlot): void {
+    const key = subjectKey({ session: slot });
+    const state = this.streams.get(key);
+    if (state === undefined) return;
+    this.release(state);
+    this.clear(state);
+    state.anchored = false;
+    state.epoch = null;
+    state.expecting = 1;
+    state.seenThrough = 0;
   }
 
   /** Whether nothing is in flight for this seat. */

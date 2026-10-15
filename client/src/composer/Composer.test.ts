@@ -36,9 +36,18 @@ const mic = vi.hoisted(() => {
     stops: number;
     asked: number;
     gated: boolean;
+    refuse: boolean;
     release: (() => void) | null;
     resolved: { id: string; label: string } | null;
-  } = { onFrame: null, stops: 0, asked: 0, gated: false, release: null, resolved: null };
+  } = {
+    onFrame: null,
+    stops: 0,
+    asked: 0,
+    gated: false,
+    refuse: false,
+    release: null,
+    resolved: null,
+  };
   const source = {
     get onFrame(): ((bytes: Uint8Array) => void) | null {
       return held.onFrame;
@@ -59,13 +68,19 @@ const mic = vi.hoisted(() => {
   };
   return {
     held,
-    /** Open at once, or wait for `held.release()` while gated. */
-    open: (): Promise<unknown> =>
-      held.gated
+    /**
+     * Open at once, or wait for `held.release()` while gated - or reject
+     * outright while `held.refuse`, which is the permission the reader
+     * refused.
+     */
+    open: (): Promise<unknown> => {
+      if (held.refuse) return Promise.reject(new DOMException('refused', 'NotAllowedError'));
+      return held.gated
         ? new Promise((resolve) => {
             held.release = () => resolve(source);
           })
-        : Promise.resolve(source),
+        : Promise.resolve(source);
+    },
   };
 });
 
@@ -143,6 +158,29 @@ function press(key: string): void {
   const target = document.activeElement;
   if (!(target instanceof HTMLElement)) throw new Error('nothing holds the keyboard');
   target.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+  flushSync();
+}
+
+/**
+ * The bound key's own event, as the browser delivers it.
+ *
+ * jsdom reports no platform, so the box takes the non-mac substitution: the
+ * right Control key is what Cmd's equivalent is where there is no Cmd.
+ */
+function key(code: string, kind: 'keydown' | 'keyup', repeat = false): void {
+  window.dispatchEvent(new KeyboardEvent(kind, { code, repeat, bubbles: true, cancelable: true }));
+  flushSync();
+}
+
+/**
+ * Let a take's start settle.
+ *
+ * Opening the microphone is a promise - the browser's permission round trip -
+ * and the command goes once it resolves, so a test that read the wire on the
+ * same tick would see a take that had not started.
+ */
+async function opened(): Promise<void> {
+  for (let turn = 0; turn < 4; turn += 1) await Promise.resolve();
   flushSync();
 }
 
@@ -243,9 +281,77 @@ function openTurn(): Record<string, unknown> {
   return { type: 'system', subtype: 'init', session_id: 's' };
 }
 
-/** A take the box has seen, which is what arms the landing. */
-function seesTake(harness: { page: { record: ComposerRecord } }): void {
-  harness.page.record = withNotice(null, take());
+/**
+ * Begin a take in THIS composer's own box, as its push-to-talk key does - what
+ * arms its landing - show it on the record, and let the core's own word end
+ * it, so the box a take was drawing is a box again.
+ *
+ * The press is what makes the take this page's own: the landing's notice is
+ * the seat's and reaches every client that reads the record, so the arm has to
+ * come from this page's own capture rather than from what the record shows.
+ */
+async function beginTake(
+  harness: { page: { record: ComposerRecord }; say: (message: ServerMessage) => void },
+  seat: SessionSlot = SLOT,
+): Promise<void> {
+  key('ControlRight', 'keydown');
+  await opened();
+  // A tap's release keeps the take recording, so the press in flight is done
+  // with and the next press begins rather than being swallowed.
+  key('ControlRight', 'keyup');
+  showTake(harness);
+  endTake(harness, seat);
+}
+
+/**
+ * The same on ONE client of a two-client pair, through its own mic.
+ *
+ * The key is a window event: with both clients mounted one press would begin
+ * a take on each, and the pair's whole subject is the take exactly one of
+ * them began.
+ */
+async function beginTakeOn(
+  at: number,
+  harness: { page: { record: ComposerRecord }; say: (message: ServerMessage) => void },
+  seat: SessionSlot = SLOT,
+): Promise<void> {
+  const button = [...document.querySelectorAll('.mic')][at];
+  if (!(button instanceof HTMLElement)) throw new Error(`the client at ${String(at)} drew no mic`);
+  button.click();
+  await opened();
+  showTake(harness);
+  endTake(harness, seat);
+}
+
+/** The record a begun take leaves: the seat's composer showing it. */
+function showTake(harness: { page: { record: ComposerRecord } }): void {
+  const held = harness.page.record;
+  const composer = typeof held.composer === 'object' && held.composer !== null ? held.composer : {};
+  harness.page.record = { ...held, composer: { ...composer, take: take(), notice: null } };
+  flushSync();
+}
+
+/**
+ * The core's own word ends the take, as it does when one lands.
+ *
+ * The outcome is the core's own shape, externally tagged with what the take
+ * produced. The words in it are nobody's here - each case asserts on the
+ * landing it hands over itself - but the frame is the one the core sends.
+ */
+function endTake(
+  harness: { say: (message: ServerMessage) => void },
+  seat: SessionSlot = SLOT,
+): void {
+  harness.say({
+    kind: 'update',
+    update: {
+      dictate_ended: {
+        key: seat,
+        outcome: { landed: { text: 'the words', truncated: false } },
+        generation: 1,
+      },
+    },
+  });
   flushSync();
 }
 
@@ -498,6 +604,39 @@ describe('the box', () => {
     expect(document.querySelector('.line textarea'), 'and the field comes back').not.toBeNull();
   });
 
+  /**
+   * **The second row stays while a take runs over a draft.** The card takes
+   * the draft's own line and the keys foot stays under it, so the box's height
+   * is the same before, during and after a press - a foot that went with the
+   * take made the whole page jump on every press (Ved, 2026-10-15). Every
+   * other take-row case above runs over an EMPTY draft, which is why
+   * `secondRow` could go back to `filled && composer.take === null` and leave
+   * this suite green (the gate's minor, 2026-10-15).
+   */
+  it('keeps the foot under a take over a draft, with the controls drawn once', async () => {
+    const harness = open({ dictation: true });
+    type('fix the');
+
+    // A live take over the draft, which is the press's own state: the capture
+    // is open and the record shows the take.
+    key('ControlRight', 'keydown');
+    await opened();
+    key('ControlRight', 'keyup');
+    showTake(harness);
+
+    expect(document.querySelector('.line .tc'), "the card takes the draft's line").not.toBeNull();
+    expect(document.querySelector('.foot'), 'the foot went with the take').not.toBeNull();
+    expect(document.querySelector('.foot .mic'), 'and the controls are drawn in it').not.toBeNull();
+    expect(
+      document.querySelector('.line .ctls'),
+      'the inline controls stand down, so the buttons are drawn once',
+    ).toBeNull();
+    expect(
+      document.querySelector('.foot .hints'),
+      'the key hints promise keys a field the take unmounted cannot take',
+    ).toBeNull();
+  });
+
   it('draws no wire counts for a take this page did not start', () => {
     const harness = open();
     harness.page.record = withNotice(null, take());
@@ -510,19 +649,16 @@ describe('the box', () => {
     ).toBeNull();
   });
 
-  it("lands a take's words at the caret and takes one green beat before easing back", () => {
+  it("lands a take's words at the caret and takes one green beat before easing back", async () => {
     vi.useFakeTimers();
     try {
-      const harness = open();
+      const harness = open({ dictation: true });
       type('fix the');
 
-      // The take has to be one this composer watched: the words a notice
-      // carries are the take's, and only a take this client saw end is its
+      // The take has to be one this composer began: the words a notice
+      // carries are the take's, and only a take this page started is its
       // own to put in the box.
-      harness.page.record = record({
-        composer: { take: take(), notice: null, compacting: false, sign_in: null },
-      });
-      flushSync();
+      await beginTake(harness);
 
       harness.page.record = record({
         composer: {
@@ -561,7 +697,7 @@ describe('the box', () => {
    * sends - the key went to whatever still held the focus, so he had to click
    * back into the box first.
    */
-  it('moves the keyboard to the box a take landed in, so an immediate Enter sends', () => {
+  it('moves the keyboard to the box a take landed in, so an immediate Enter sends', async () => {
     const harness = open({ dictation: true });
     expect(document.activeElement, 'the field starts with the keyboard').toBe(field());
 
@@ -574,10 +710,10 @@ describe('the box', () => {
       'the mic took it, which is the state the take then lands into',
     ).not.toBe(field());
 
-    harness.page.record = record({
-      composer: { take: take(), notice: null, compacting: false, sign_in: null },
-    });
-    flushSync();
+    // A take this page began, which is what makes the landing below the thing
+    // that runs: without it the field's own remount brings the keyboard back
+    // and the landing asserts nothing.
+    await beginTake(harness);
     harness.page.record = record({
       composer: {
         take: null,
@@ -588,6 +724,7 @@ describe('the box', () => {
     });
     flushSync();
 
+    expect(field().value, 'the words landed').toBe('push it once CI is green');
     expect(
       document.activeElement,
       'and the take brings it back, so an immediate Enter submits',
@@ -595,10 +732,43 @@ describe('the box', () => {
   });
 
   /**
-   * The server holds a landed notice until the next take starts, so a client
-   * that attaches - or reloads - finds words whose take it never saw. They are
-   * the reader's own, already sent, and the box they come back in is not a
-   * draft: it is the message they wrote, handed to them to send twice.
+   * **The landing itself is what moves the keyboard, when it has somewhere to
+   * move it to.** The case above lands while the field is unmounted - the take
+   * card has its row - so the field mounts back afterwards and its own mount
+   * takes the caret, which leaves the landing's focus untested. A take whose
+   * field is back in the row before its words land (the quick release the
+   * arm-at-press fix was written for) is the shape that reaches it.
+   */
+  it('brings the keyboard to a field the landing found already drawn', async () => {
+    const harness = open({ dictation: true });
+
+    // A press and a release: the take is over on this side before its record
+    // ever shows one, so the field is drawn again by the time the words land.
+    key('ControlRight', 'keydown');
+    await opened();
+    key('ControlRight', 'keyup');
+    endTake(harness);
+    flushSync();
+    expect(document.querySelector('.line textarea'), 'the field is back in the row').not.toBeNull();
+
+    // The caret is somewhere else, as it is after a click away.
+    field().blur();
+    flushSync();
+    expect(document.activeElement, 'and the caret is not in the box').not.toBe(field());
+
+    harness.page.record = withNotice(LANDED);
+    flushSync();
+
+    expect(field().value, 'the words land').toBe(LANDED.text);
+    expect(document.activeElement, 'and the landing brings the keyboard to them').toBe(field());
+  });
+
+  /**
+   * A landing this page never took must not be placed. The words are the
+   * reader's own, already sent, and the box they would come back in is not a
+   * draft: it is the message they wrote, handed to them to send twice. Take
+   * news reaches the client that began the take alone, so this case is the
+   * safety for a page handed a notice it never took.
    */
   it('opens empty over a landed notice the server was already holding', () => {
     open({
@@ -641,12 +811,9 @@ describe('the box', () => {
     expect(document.querySelector('.notice.warn'), 'and nothing says they were cut').toBeNull();
   });
 
-  it("lands a truncated take's words and still says the take was cut", () => {
-    const harness = open();
-    harness.page.record = record({
-      composer: { take: take(), notice: null, compacting: false, sign_in: null },
-    });
-    flushSync();
+  it("lands a truncated take's words and still says the take was cut", async () => {
+    const harness = open({ dictation: true });
+    await beginTake(harness);
 
     harness.page.record = record({
       composer: {
@@ -663,6 +830,27 @@ describe('the box', () => {
       document.querySelector('.notice.warn')?.textContent,
       'and the row says the take was cut rather than that they stopped speaking',
     ).toBe(TRUNCATED);
+
+    // The page hands the same landing over again, as every frame does. The
+    // arm is spent by now, so the row has to read the words this box holds
+    // rather than the arm alone: reading the arm, it vanished on this
+    // hand-over with the words still in the draft (the gate's failure axis,
+    // 2026-10-15).
+    harness.page.record = record({
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'this is what fitted', truncated: true },
+        compacting: false,
+        sign_in: null,
+      },
+    });
+    flushSync();
+
+    expect(field().value, 'the words are still there').toBe('this is what fitted');
+    expect(
+      document.querySelector('.notice.warn')?.textContent,
+      'and the row still says the take was cut on the hand-over after the landing',
+    ).toBe(TRUNCATED);
   });
 
   /**
@@ -670,17 +858,14 @@ describe('the box', () => {
    * take that lands behind it. That is the path the notice exists for, and the
    * words still have to be there when the box comes back.
    */
-  it('holds a take that lands while a prompt has the box, and lands its words when the box returns', () => {
-    const harness = open();
+  it('holds a take that lands while a prompt has the box, and lands its words when the box returns', async () => {
+    const harness = open({ dictation: true });
     type('ship it once CI is green');
 
     // **The take starts in the composer's own box** - that is the moment its
     // destination is captured - and the prompt arrives mid-flight, which does
     // not take words that were spoken for the draft the reader was in.
-    harness.page.record = record({
-      composer: { take: take(), notice: null, compacting: false, sign_in: null },
-    });
-    flushSync();
+    await beginTake(harness);
 
     const watching = record({
       pending_asks: [permissionAsk()],
@@ -1233,31 +1418,6 @@ describe('the key', () => {
       composer: { take, notice: null, compacting: false, sign_in: null, bind, mode },
     });
 
-  /**
-   * The bound key's own event, as the browser delivers it.
-   *
-   * jsdom reports no platform, so the box takes the non-mac substitution: the
-   * right Control key is what Cmd's equivalent is where there is no Cmd.
-   */
-  function key(code: string, kind: 'keydown' | 'keyup', repeat = false): void {
-    window.dispatchEvent(
-      new KeyboardEvent(kind, { code, repeat, bubbles: true, cancelable: true }),
-    );
-    flushSync();
-  }
-
-  /**
-   * Let a take's start settle.
-   *
-   * Opening the microphone is a promise - the browser's permission round
-   * trip - and the command goes once it resolves, so a test that read the
-   * wire on the same tick would see a take that had not started.
-   */
-  async function opened(): Promise<void> {
-    for (let turn = 0; turn < 4; turn += 1) await Promise.resolve();
-    flushSync();
-  }
-
   it('brings the keyboard to the box before the take starts', async () => {
     const harness = open({ dictation: true });
     harness.page.record = bound('right_cmd', 'auto');
@@ -1399,6 +1559,33 @@ describe('the key', () => {
       });
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  /**
+   * **A take whose capture never opened takes its arm with it.** A refused
+   * permission draws the line, and no start ever reaches the server - so the
+   * record's notice never goes null, and an arm left standing was ridden by
+   * the next landing on the seat, which is another client's take (the gate's
+   * Important, 2026-10-15).
+   */
+  it('drops the arm of a take whose capture never opened', async () => {
+    const harness = open({ dictation: true });
+    mic.held.refuse = true;
+    try {
+      key('ControlRight', 'keydown');
+      await opened();
+      key('ControlRight', 'keyup');
+
+      expect(drawn(), 'the failure draws its line').toContain('the microphone was refused');
+      expect(harness.sent, 'and nothing reached the server, so no start ever comes').toEqual([]);
+
+      harness.page.record = withNotice(LANDED);
+      flushSync();
+
+      expect(field().value, "the failed take's arm rode a landing that was not its own").toBe('');
+    } finally {
+      mic.held.refuse = false;
     }
   });
 
@@ -2096,8 +2283,9 @@ describe('a sent message', () => {
   /**
    * The composer's own contract, and the one this file can speak for: a
    * landing that is still the record's notice lands ONCE, however many times
-   * the record is handed over. `landed === held.text` is what holds it, and
-   * without that the words would be appended again on every re-render.
+   * the record is handed over. **The spent arm is what holds it** - the words
+   * are placed by the take's own outcome, and there is no arm left to place
+   * them again on a re-hand-over.
    *
    * **What this is not evidence for.** #1411's defect is a whole-record read
    * published while it was older than the frames applied since, which
@@ -2108,9 +2296,9 @@ describe('a sent message', () => {
    * words landed twice, and this test passing says nothing about the page's.
    * The two are separate rules and neither stands for the other.
    */
-  it('lands the words once while the notice is held', () => {
-    const harness = open();
-    seesTake(harness);
+  it('lands the words once while the notice is held', async () => {
+    const harness = open({ dictation: true });
+    await beginTake(harness);
     harness.page.record = withNotice(LANDED);
     flushSync();
     expect(field().value, 'the take lands in the box').toBe(LANDED.text);
@@ -2121,13 +2309,80 @@ describe('a sent message', () => {
     expect(field().value, 'the words land once, not once per record handed over').toBe(LANDED.text);
   });
 
-  it('still takes a landing whose words are new', () => {
-    const harness = open();
-    seesTake(harness);
+  /**
+   * **The arm survives the landing it was set under, re-handed.** The press for
+   * the next take happens while the previous landing still sits on the record
+   * (the notice only goes null when the server's take-start arrives), and any
+   * frame in that window hands that same notice over again as a fresh object:
+   * consuming the arm on it left the new take's own words nowhere to go (Ved,
+   * live, 2026-10-15).
+   */
+  it('places a take pressed under a landing the record re-hands', async () => {
+    const harness = open({ dictation: true });
+    await beginTake(harness);
     harness.page.record = withNotice(LANDED);
     flushSync();
     sendBox();
 
+    // The next take is pressed with that landing still on the record, and the
+    // record hands it over AGAIN before the take's own start.
+    key('ControlRight', 'keydown');
+    await opened();
+    key('ControlRight', 'keyup');
+    harness.page.record = withNotice(LANDED);
+    flushSync();
+
+    // The take's start, then its own landing.
+    harness.page.record = withNotice(null);
+    flushSync();
+    endTake(harness);
+    harness.page.record = withNotice({ ...LANDED, text: 'and run the gate too' });
+    flushSync();
+
+    expect(field().value, 'the take set under a landing still places its own words').toBe(
+      'and run the gate too',
+    );
+  });
+
+  /**
+   * **The same words spoken twice are two landings.** The record hands a
+   * notice over on every write, so the take's own number is what tells the
+   * first landing re-read from a second take that spoke the same words - and
+   * this second take is quick, its start folded into one write, so no record
+   * ever clears the first notice before its own lands (the gate's F2,
+   * 2026-10-15).
+   */
+  it('places the same words a second time when another take spoke them', async () => {
+    const harness = open({ dictation: true });
+    await beginTake(harness);
+    harness.page.record = withNotice({ ...LANDED, generation: 1 });
+    flushSync();
+    sendBox();
+
+    // The second take is quick: the press happens under the first landing's
+    // notice, and its own words land without any record clearing it.
+    key('ControlRight', 'keydown');
+    await opened();
+    key('ControlRight', 'keyup');
+    endTake(harness);
+    harness.page.record = withNotice({ ...LANDED, generation: 2 });
+    flushSync();
+
+    expect(field().value, 'the second take lands words of its own').toBe(LANDED.text);
+  });
+
+  it('still takes a landing whose words are new', async () => {
+    const harness = open({ dictation: true });
+    await beginTake(harness);
+    harness.page.record = withNotice(LANDED);
+    flushSync();
+    sendBox();
+
+    // The next take begins here too, with the previous landing still on the
+    // record at the press: an arm is spent by the landing it placed, so the
+    // words of a take this page never began are not its own, and the notice
+    // already showing must not spend the arm either (Ved, live, 2026-10-15).
+    await beginTake(harness);
     harness.page.record = withNotice({ ...LANDED, text: 'and run the gate too' });
     flushSync();
 
@@ -2147,9 +2402,9 @@ describe('a sent message', () => {
    * landing it has not taken puts back words that were sent before the reader
    * left.
    */
-  it("does not put a sent take's words back when the reader leaves the seat and returns", () => {
-    const harness = open();
-    seesTake(harness);
+  it("does not put a sent take's words back when the reader leaves the seat and returns", async () => {
+    const harness = open({ dictation: true });
+    await beginTake(harness);
     harness.page.record = withNotice(LANDED);
     flushSync();
     // The premise, without which a landing that settles nothing leaves this
@@ -2200,10 +2455,10 @@ describe('the seat the box belongs to', () => {
     );
   });
 
-  it('lands a take only on the seat that watched it, and lands it there', () => {
-    const harness = open();
+  it('lands a take only on the seat that watched it, and lands it there', async () => {
+    const harness = open({ dictation: true });
     // The seat's own take, which is what arms a landing for THIS box.
-    seesTake(harness);
+    await beginTake(harness);
 
     // A landing on another seat is not this box's to take: this box never
     // watched that seat's take, so the words would be put back where nothing of
@@ -2224,20 +2479,21 @@ describe('the seat the box belongs to', () => {
   });
 
   /**
-   * The move itself is not enough when the destination box has watched a take
-   * of its own before, which is every seat the reader dictates on: the flag is
-   * per box and never clears, so what is left stopping the landing is which
-   * seat the record in hand belongs to - and right after a move that record is
-   * still the seat being LEFT's, until the one being moved to answers.
+   * The move itself is not enough when the destination box has taken a take
+   * of its own before, which is every seat the reader dictates on: what stops
+   * this landing is which seat the record in hand belongs to - and right after
+   * a move that record is still the seat being LEFT's, until the one being
+   * moved to answers.
    */
-  it('does not land the left seat take in the box of the seat it moved to', () => {
-    const harness = open();
+  it('does not land the left seat take in the box of the seat it moved to', async () => {
+    const harness = open({ dictation: true });
     // Both seats are the reader's, so both boxes have watched a take: a fresh
     // box would refuse the landing below for the wrong reason.
-    seesTake(harness);
+    await beginTake(harness);
     harness.page.slot = ELSEWHERE;
-    harness.page.record = withNotice(null, take(), ELSEWHERE);
+    harness.page.record = withNotice(null, null, ELSEWHERE);
     flushSync();
+    await beginTake(harness, ELSEWHERE);
 
     // On the first seat a take lands and the reader sends it. The core keeps
     // the landed notice after the take is gone.
@@ -2257,6 +2513,35 @@ describe('the seat the box belongs to', () => {
       field().value,
       "the seat they left's landing was put into the box of the seat they moved to",
     ).toBe('');
+  });
+
+  /**
+   * **The arm lives on the box the take began on, not the one on screen.** A
+   * press on one seat, a move to another while the microphone opens, and the
+   * cancel that follows: clearing the arm on the seat being SHOWN leaves the
+   * take's own box armed, and a landing there is then placed by a take that
+   * was cancelled (the gate's Important, 2026-10-15).
+   */
+  it('drops the arm on the box the take began on, cancelled from another seat', async () => {
+    const harness = open({ dictation: true });
+
+    key('ControlRight', 'keydown');
+    await opened();
+    key('ControlRight', 'keyup');
+
+    // The reader moves on while the take they began is still this page's, and
+    // abandons it there.
+    harness.page.slot = ELSEWHERE;
+    harness.page.record = withNotice(null, take(), ELSEWHERE);
+    flushSync();
+    press('Escape');
+
+    // Back on the seat the take began on, where another client's take lands.
+    harness.page.slot = SLOT;
+    harness.page.record = withNotice(LANDED);
+    flushSync();
+
+    expect(field().value, "the cancelled take's arm rode a landing that was not its own").toBe('');
   });
 
   it('does not mark a refused send on a seat that never sent it', () => {
@@ -3605,8 +3890,11 @@ describe('the dock', () => {
    * is the dock's own field - the composer draws no box of its own here - so
    * words written to the draft land on nothing at all.
    */
-  it("puts a take's words in the box that is actually showing", () => {
-    const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
+  it("puts a take's words in the box that is actually showing", async () => {
+    const harness = open({
+      dictation: true,
+      record: record({ pending_asks: [questionAsk()] }),
+    });
 
     /** The dock's own box, which is the one the reader opened. */
     const dockBox = (): HTMLTextAreaElement | null => {
@@ -3617,16 +3905,14 @@ describe('the dock', () => {
     expect(dockBox()?.value, 'the box the reader opened starts empty').toBe('');
 
     // The reader is in the row, which is what makes this dock the destination.
-    const opened = dockBox();
-    if (opened === null) throw new Error('the dock drew no words row');
-    opened.focus();
+    const row = dockBox();
+    if (row === null) throw new Error('the dock drew no words row');
+    row.focus();
     flushSync();
 
-    harness.page.record = record({
-      pending_asks: [questionAsk()],
-      composer: { take: take(), notice: null, compacting: false, sign_in: null },
-    });
-    flushSync();
+    // The take begins while the dock holds the slot, which is where its words
+    // were spoken to go.
+    await beginTake(harness);
     harness.page.record = record({
       pending_asks: [questionAsk()],
       composer: {
@@ -3653,14 +3939,13 @@ describe('the dock', () => {
    * used to land its words in the composer's draft - a box that is not even
    * drawn while the prompt is up - so the answer could never carry them.
    */
-  it("lands a take's words in the dock when the take began under the question", () => {
-    const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
-
-    harness.page.record = record({
-      pending_asks: [questionAsk()],
-      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+  it("lands a take's words in the dock when the take began under the question", async () => {
+    const harness = open({
+      dictation: true,
+      record: record({ pending_asks: [questionAsk()] }),
     });
-    flushSync();
+
+    await beginTake(harness);
     harness.page.record = record({
       pending_asks: [questionAsk()],
       composer: {
@@ -3684,14 +3969,11 @@ describe('the dock', () => {
    * several in a row, and a capture that never re-runs hands the second take
    * the first one's answer - the headline defect, from take two on.
    */
-  it('gives each take its own destination: a later take under the question lands there', () => {
-    const harness = open();
+  it('gives each take its own destination: a later take under the question lands there', async () => {
+    const harness = open({ dictation: true });
 
     // Take one begins with no prompt, so its words belong to the draft.
-    harness.page.record = record({
-      composer: { take: take(), notice: null, compacting: false, sign_in: null },
-    });
-    flushSync();
+    await beginTake(harness);
     harness.page.record = record({
       composer: {
         take: null,
@@ -3705,11 +3987,7 @@ describe('the dock', () => {
     // Then a question arrives, and take two begins under it.
     harness.page.record = record({ pending_asks: [questionAsk()] });
     flushSync();
-    harness.page.record = record({
-      pending_asks: [questionAsk()],
-      composer: { take: take(), notice: null, compacting: false, sign_in: null },
-    });
-    flushSync();
+    await beginTake(harness);
     harness.page.record = record({
       pending_asks: [questionAsk()],
       composer: {
@@ -3728,15 +4006,14 @@ describe('the dock', () => {
     ).toBe('second words');
   });
 
-  it('gives each take its own destination: a later take begun in the composer stays there', () => {
-    const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
+  it('gives each take its own destination: a later take begun in the composer stays there', async () => {
+    const harness = open({
+      dictation: true,
+      record: record({ pending_asks: [questionAsk()] }),
+    });
 
     // Take one begins under the question and lands in its row.
-    harness.page.record = record({
-      pending_asks: [questionAsk()],
-      composer: { take: take(), notice: null, compacting: false, sign_in: null },
-    });
-    flushSync();
+    await beginTake(harness);
     harness.page.record = record({
       pending_asks: [questionAsk()],
       composer: {
@@ -3751,10 +4028,7 @@ describe('the dock', () => {
     // The question resolves, and take two begins in the composer.
     harness.page.record = record();
     flushSync();
-    harness.page.record = record({
-      composer: { take: take(), notice: null, compacting: false, sign_in: null },
-    });
-    flushSync();
+    await beginTake(harness);
 
     // A question arrives mid-flight; this take's words are still the draft's.
     harness.page.record = record({
@@ -3791,14 +4065,11 @@ describe('the dock', () => {
    * run for that take too: a flag left open swallows the next take's capture,
    * and that take lands by the one before it.
    */
-  it('captures the next take after one ended while another seat was shown', () => {
-    const harness = open();
+  it('captures the next take after one ended while another seat was shown', async () => {
+    const harness = open({ dictation: true });
 
     // Take one begins with no prompt, so its words belong to the draft.
-    harness.page.record = record({
-      composer: { take: take(), notice: null, compacting: false, sign_in: null },
-    });
-    flushSync();
+    await beginTake(harness);
 
     // The reader moves to another seat, and the take ends while they are away.
     harness.page.slot = ELSEWHERE;
@@ -3813,14 +4084,13 @@ describe('the dock', () => {
     });
     flushSync();
 
-    // They come back with a question up and take two ALREADY live under it, in
-    // one frame - nothing this seat's box sees between the two takes.
+    // They come back with a question up, and take two begins under it: the
+    // destination is captured per take, so the one before it cannot hand
+    // this one the prompt that arrived in between.
     harness.page.slot = SLOT;
-    harness.page.record = record({
-      pending_asks: [questionAsk()],
-      composer: { take: take(), notice: null, compacting: false, sign_in: null },
-    });
+    harness.page.record = record({ pending_asks: [questionAsk()] });
     flushSync();
+    await beginTake(harness);
     harness.page.record = record({
       pending_asks: [questionAsk()],
       composer: {
@@ -3844,14 +4114,13 @@ describe('the dock', () => {
    * The capture says where the take began; the landing also checks what is
    * still on screen - a dock that has gone leaves its words to the draft.
    */
-  it('lands in the draft when the question resolved before the take did', () => {
-    const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
-
-    harness.page.record = record({
-      pending_asks: [questionAsk()],
-      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+  it('lands in the draft when the question resolved before the take did', async () => {
+    const harness = open({
+      dictation: true,
+      record: record({ pending_asks: [questionAsk()] }),
     });
-    flushSync();
+
+    await beginTake(harness);
     harness.page.record = record({
       composer: { take: take(), notice: null, compacting: false, sign_in: null },
     });
@@ -3869,20 +4138,65 @@ describe('the dock', () => {
     expect(field().value, 'the words went to the box that still exists').toContain('orphan words');
   });
 
-  it('lands in the draft under a permission that offers no words row', () => {
+  /**
+   * **The cut row belongs to the box the words went into.** A truncated take
+   * begun under the dock leaves its words in the dock's own row, and when the
+   * prompt resolves the composer's draft never held them - so a warn row over
+   * that draft is a note about words that are not there (the gate's round
+   * three, 2026-10-15).
+   */
+  it("draws no cut row over a draft the dock's take never filled", async () => {
+    const harness = open({
+      dictation: true,
+      record: record({ pending_asks: [questionAsk()] }),
+    });
+
+    await beginTake(harness);
+    harness.page.record = record({
+      pending_asks: [questionAsk()],
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'this is what fitted', truncated: true },
+        compacting: false,
+        sign_in: null,
+      },
+    });
+    flushSync();
+
+    const dockBox = document.querySelector('.dock [data-editor="dock"]');
+    expect(
+      dockBox instanceof HTMLTextAreaElement ? dockBox.value : null,
+      'the words went into the dock, where the take began',
+    ).toBe('this is what fitted');
+
+    // The prompt resolves, the notice still on the record.
+    harness.page.record = record({
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'this is what fitted', truncated: true },
+        compacting: false,
+        sign_in: null,
+      },
+    });
+    flushSync();
+
+    expect(field().value, 'the draft never held those words').toBe('');
+    expect(
+      document.querySelector('.notice.warn'),
+      'a cut row over a draft the words never reached',
+    ).toBeNull();
+  });
+
+  it('lands in the draft under a permission that offers no words row', async () => {
     const bare = permissionAsk('tu-1', {
       options: [
         { option_id: 'opt-once', name: 'Allow once', kind: 'allow', action: { kind: 'allow' } },
         { option_id: 'opt-deny', name: 'Deny', kind: 'deny', action: { kind: 'deny' } },
       ],
     });
-    const harness = open({ record: record({ pending_asks: [bare] }) });
+    const harness = open({ dictation: true, record: record({ pending_asks: [bare] }) });
 
-    harness.page.record = record({
-      pending_asks: [bare],
-      composer: { take: take(), notice: null, compacting: false, sign_in: null },
-    });
-    flushSync();
+    await beginTake(harness);
     harness.page.record = record({
       pending_asks: [bare],
       composer: {
@@ -3941,8 +4255,11 @@ describe('the dock', () => {
    * the dock away with it - and a landing then has no box of the dock's to go
    * to, so the words belong to the draft, which is held across the morph.
    */
-  it("keeps a take's words when the blocker takes the dock away before they land", () => {
-    const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
+  it("keeps a take's words when the blocker takes the dock away before they land", async () => {
+    const harness = open({
+      dictation: true,
+      record: record({ pending_asks: [questionAsk()] }),
+    });
 
     expect(
       document.querySelector('.dock [data-editor="dock"]'),
@@ -3953,6 +4270,8 @@ describe('the dock', () => {
     flushSync();
     expect(document.querySelector('.dock'), 'and then the dock is gone').toBeNull();
 
+    // The take begins with no dock on screen, so the draft is its destination.
+    await beginTake(harness);
     harness.page.record = record({
       pending_asks: [questionAsk()],
       composer: { take: take(), notice: null, compacting: false, sign_in: null },
@@ -4187,8 +4506,11 @@ describe('the dock', () => {
    * they land in is the dock's own. Opening that box puts the keyboard in it,
    * so this is the state left after the reader has clicked away from it.
    */
-  it("brings the keyboard back to the dock's box when a take lands in it", () => {
-    const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
+  it("brings the keyboard back to the dock's box when a take lands in it", async () => {
+    const harness = open({
+      dictation: true,
+      record: record({ pending_asks: [questionAsk()] }),
+    });
 
     const own = document.querySelector('.dock textarea.notes');
     if (!(own instanceof HTMLElement)) throw new Error('the dock drew no words row');
@@ -4206,11 +4528,7 @@ describe('the dock', () => {
     flushSync();
     expect(document.activeElement, 'and the keyboard is elsewhere now').not.toBe(box());
 
-    harness.page.record = record({
-      pending_asks: [questionAsk()],
-      composer: { take: take(), notice: null, compacting: false, sign_in: null },
-    });
-    flushSync();
+    await beginTake(harness);
     harness.page.record = record({
       pending_asks: [questionAsk()],
       composer: {
@@ -5582,17 +5900,16 @@ describe('the autocomplete', () => {
  */
 describe('two clients on one seat', () => {
   /**
-   * A seat's notice is the server's, not the client's, so the client that
-   * never saw the take has no draft those words belong to. Landing them there
-   * is the reader's own message arriving back in a box they did not type it in.
+   * A landing belongs to the client that took it, so one handed a notice it
+   * never took has no draft those words belong to. Landing them there is the
+   * reader's own message arriving back in a box they did not type it in.
    */
-  it('leaves the box empty on the client that never saw the take', () => {
-    const { one, other } = openBoth();
+  it('leaves the box empty on the client that never saw the take', async () => {
+    const { one, other } = openBoth({ dictation: true });
 
-    one.page.record = record({
-      composer: { take: take(), notice: null, compacting: false, sign_in: null },
-    });
-    flushSync();
+    // One client begins the take, and is the only one shown it: the other is
+    // handed the landing alone, as a client that attached after the take did.
+    await beginTakeOn(0, one);
 
     const landed = record({
       composer: {
@@ -5607,10 +5924,79 @@ describe('two clients on one seat', () => {
     flushSync();
 
     const [watched, missed] = bothFields();
-    expect(watched?.value, 'the client that watched the take lands it').toBe(
+    expect(watched?.value, 'the client that began the take lands it').toBe(
       'push it once CI is green',
     );
     expect(missed?.value, 'the one that attached after it does not').toBe('');
+  });
+
+  /**
+   * **A landing is this page's to place only when this page began a take, and
+   * the arm it sets is spent by the landing it placed.** A take's landing is
+   * the seat's, so it reaches every client reading that record: a client that
+   * never began the take meets the words with no arm of its own, and one that
+   * did begin a take must not ride a later landing with the spent arm (Ved,
+   * live, 2026-10-15). Take news itself is unicast to its initiator, so these
+   * guards are safety today rather than a live route - they are what the cases
+   * here pin.
+   */
+  it('places a take on the client that began it, and never on the one that watched', async () => {
+    const { one, other } = openBoth({ dictation: true });
+
+    // The first client begins a take and abandons it: a cancelled take has no
+    // notice coming, so the arm goes with it rather than standing for the next
+    // landing - which, here, is another client's words.
+    await beginTakeOn(0, one);
+    const cancel = document.querySelectorAll('.tc button.x')[0];
+    if (!(cancel instanceof HTMLElement)) throw new Error('the take card drew no cancel');
+    cancel.click();
+    flushSync();
+
+    // The core's own end of an abandoned take: the record keeps nothing of it,
+    // and no notice comes of a take nobody submitted.
+    const gone = withNotice(null);
+    one.page.record = gone;
+    other.page.record = gone;
+    flushSync();
+
+    // The other client begins its own, and its landing reaches the seat.
+    await beginTakeOn(1, other);
+    const landed = withNotice(LANDED);
+    one.page.record = landed;
+    other.page.record = landed;
+    flushSync();
+
+    const [afterCancel, owned] = bothFields();
+    expect(afterCancel?.value, "the cancelled take's client placed another client's words").toBe(
+      '',
+    );
+    expect(owned?.value, 'the client that began the take places its own words').toBe(LANDED.text);
+
+    // Round trip: the first client's own take lands, which spends its arm, and
+    // then the other client's take lands - it must not ride the spent arm. The
+    // fields are re-read at each landing: the box is remounted when a take
+    // card takes its place, so a handle taken before one is a detached node.
+    await beginTakeOn(0, one);
+    const own = withNotice({ ...LANDED, text: 'and run the gate too' });
+    one.page.record = own;
+    other.page.record = own;
+    flushSync();
+
+    expect(bothFields()[0]?.value, 'the first client lands its own take').toBe(
+      'and run the gate too',
+    );
+
+    await beginTakeOn(1, other);
+    const theirs = withNotice({ ...LANDED, text: 'a third take' });
+    one.page.record = theirs;
+    other.page.record = theirs;
+    flushSync();
+
+    const [spent, third] = bothFields();
+    expect(spent?.value, "a spent arm rode another client's take").toBe('and run the gate too');
+    expect(third?.value, 'and the client that began that one places it').toBe(
+      `${LANDED.text} a third take`,
+    );
   });
 
   it('draws the same prompt on both, and the answer the core offered is what one sends', () => {

@@ -20,6 +20,7 @@ import { SvelteMap } from 'svelte/reactivity';
 import { subjectKey } from '../protocol';
 import type { DictateAxes } from '../session/wire';
 import type { SessionSlot } from '../wire/types';
+import { Landing } from './landing';
 
 /** The key one seat's box is held under, which is the subject the wire addresses it by. */
 export function boxKey(slot: SessionSlot): string {
@@ -88,23 +89,21 @@ export class Box {
   closed = $state<string | null>(null);
   marked = $state(0);
   /**
-   * The words a landing has already put here, so they land once.
+   * This box's landing memory: the arm its own take's press set, the notice it
+   * was set under, and the words this DRAFT took.
    *
-   * Deliberately not `$state`: nothing draws from it, and a reactive copy would
-   * make the landing effect depend on what it writes.
-   */
-  landed: string | null = null;
-  /**
-   * Whether this box has watched its seat hold a take, ever.
+   * One per box, which is one per seat: a take that outlives a visit elsewhere
+   * still lands on the seat it began on. The rules live in `landing.ts`, where
+   * the review and document pages keep the same memory; what is this box's own
+   * is only which of its boxes the words went into.
    *
-   * A landed notice is per-seat server state that outlives its take, so a
-   * client that attaches - or reloads - finds one whose words it never saw
-   * land. Only a take this box watched may put words in it, and the trade is
-   * that dictation landing unwatched, and never sent, is not handed back.
+   * **The guard is load-bearing, not decorative.** Take news goes to the
+   * connection that began the take, and the connection outlives a route
+   * change: a take pressed on one surface keeps running after the reader
+   * moves, and its notice reaches whatever surface is mounted then - this
+   * box's arm is what keeps words this box never began out of its draft.
    */
-  sawTake = false;
-  /** Whether the seat's current take has captured its destination yet. */
-  takeOpen = false;
+  landing = new Landing();
   /**
    * Which box a take's words belong to, captured when the take STARTS: the
    * dock when it held the slot with a words row, the composer's draft

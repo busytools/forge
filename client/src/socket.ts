@@ -334,6 +334,16 @@ export function connect(url: string): Connection {
   const awaiting: string[] = [];
 
   let socket: WebSocket | null = null;
+  /**
+   * The ordering gate of the connection that is open, or the last one that
+   * was.
+   *
+   * Built with each socket rather than once, because its state is a stream's
+   * and a reconnect's stream starts over; this reference is what lets an
+   * unsubscribe outside the socket's own handler tell the current gate that
+   * a seat has been let go.
+   */
+  let gate: StreamGate | null = null;
   let status: ConnectionStatus = 'connecting';
   let settings: ClientSettings | null = null;
   let protocolSkew: Skew | null = null;
@@ -466,7 +476,8 @@ export function connect(url: string): Connection {
       }
       case 'error':
         if (message.what === 'subscribe') refuse(message.why);
-        else report(`the server refused a ${message.what}`, message.why);
+        else
+          report(`the server refused a ${message.what}`, { why: message.why, seat: message.seat });
         return;
       // `page` is the conversation's and `commit_diff` the review canvas': a
       // surface that draws one reads it from `onMessage`.
@@ -611,7 +622,7 @@ export function connect(url: string): Connection {
         }
       }
     };
-    const gate = new StreamGate({
+    const opened = new StreamGate({
       ask: (slot, epoch, from, to) => {
         if (!isOpen()) return false;
         sendNow({ kind: 'seat_range', slot, epoch, from, to });
@@ -620,7 +631,9 @@ export function connect(url: string): Connection {
       emit: (messages) => {
         for (const message of messages) deliver(message);
       },
+      follows: (slot) => held.has(subjectKey({ session: slot })),
     });
+    gate = opened;
 
     next.onmessage = (event) => {
       if (next !== socket) return;
@@ -640,7 +653,7 @@ export function connect(url: string): Connection {
       // so the ordering lives here rather than in any one of them: a hole
       // holds the frames above it until its repair lands, and every reader
       // sees the same sequence (`session/stream`).
-      for (const ordered of gate.inbound(message)) {
+      for (const ordered of opened.inbound(message)) {
         deliver(ordered);
       }
     };
@@ -650,7 +663,7 @@ export function connect(url: string): Connection {
       socket = null;
       // A dropped socket's holds die with it: the reconnect's answer is the
       // whole record, and the numbers start wherever it says.
-      gate.reset();
+      opened.reset();
       // **The role dies with the connection it belonged to.** The relay keeps
       // the role for the CONNECTION id, not for the page, so a reconnected
       // client is a new one - and a strip that went on saying "this client
@@ -721,7 +734,12 @@ export function connect(url: string): Connection {
     if (isOpen()) sendNow({ kind: 'unsubscribe', what });
     // Dropped only with the last one, so a reconnect re-asks for what is
     // still being watched and not the seat one caller walked away from.
-    if (last) held.delete(subjectKey(what));
+    if (last) {
+      held.delete(subjectKey(what));
+      // And the gate stops sequencing it: a left seat's news passes through
+      // rather than opening a hole over a history nobody is reading.
+      if (typeof what !== 'string') gate?.releaseSeat(what.session);
+    }
   }
 
   function refresh(what: Subject): void {

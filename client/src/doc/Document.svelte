@@ -220,9 +220,16 @@
       // one: the mic is drawn only inside a box.
       takeIn = composing;
       dictateLine = null;
+      // The arm this take's landing waits on, set at the press, on the seat
+      // the take belongs to, with the notice the record was already showing -
+      // which the memory skips rather than spending the arm on.
+      landing.arm(boxKey(slot), composer.notice);
     },
     onLine: (line) => {
+      // No landing is coming for a take that drew a line: the arm goes with
+      // the failure.
       dictateLine = line;
+      landing.drop();
     },
     onRefused: (line) => {
       dictateLine = line;
@@ -242,10 +249,14 @@
    * keyboard with them, the rule the composer's own landing keeps.
    */
   $effect(() => {
-    const words = landing.place(boxKey(slot), composer.take !== null, composer.notice);
+    const words = landing.place(boxKey(slot), composer.notice);
     // A take this page never began (a second dictating client on the seat)
     // places nothing - and must not touch the box the reader has open.
-    if (words === null || takeIn === null) return;
+    if (words === null) return;
+    // Whose words these are is settled now, open box or not: the record hands
+    // the same notice over on every write.
+    landing.placed(composer.notice);
+    if (takeIn === null) return;
     // The words were submitted: a box closed or moved between the release
     // and the landing is opened again at the row that began the take, where
     // the reader sees them, rather than the drop being silent.
@@ -265,12 +276,19 @@
     // A take already SUBMITTED is not this effect's to cancel: the server
     // would read the stop as an abandon and drop words the reader kept.
     const live = dictate.take;
-    if (dictate.opening || (live !== null && !live.submitted)) dictate.act('cancel');
+    if (dictate.opening || (live !== null && !live.submitted)) {
+      // The arm goes with the cancelled take: no notice is coming for it, and
+      // a standing arm would ride the next one that does.
+      landing.drop();
+      dictate.act('cancel');
+    }
   });
 
   // The line a take owes - this page's own about the attempt, or the record's
   // about a take the page watched - under the box it belongs to.
-  const blockLine = $derived(dictateLine ?? noticeLine(composer.notice, landing.watched));
+  const blockLine = $derived(
+    dictateLine ?? noticeLine(composer.notice, landing.holds(composer.notice)),
+  );
 
   // The push-to-talk key, offered only while the box is open: it is where a
   // take's words land, and a page with no box has nowhere to put them.
@@ -293,6 +311,7 @@
       if (dictate.take !== null || dictate.opening || dictate.held) {
         event.preventDefault();
         event.stopPropagation();
+        landing.drop();
         dictate.act('cancel');
         return;
       }
@@ -562,7 +581,10 @@
                   take={composer.take}
                   wire={rowWire}
                   phase={rowPhase}
-                  oncancel={() => dictate.act('cancel')}
+                  oncancel={() => {
+                    landing.drop();
+                    dictate.act('cancel');
+                  }}
                   spread
                 />
               {:else}
