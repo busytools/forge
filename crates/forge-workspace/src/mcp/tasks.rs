@@ -508,7 +508,10 @@ impl Tool for Delete {
     fn description(&self) -> &'static str {
         "Remove a task in YOUR project by id together with its children in the same call, so a \
          parent never leaves subtasks pointing at a task that is gone. Use this to clear work \
-         that is over; nothing is archived. The task is named by its full id or any unique \
+         that is over; nothing is archived. A row waiting on the user's own look is not a \
+         delete's to take - the board's approve completes it, and deleting it (or a tree holding \
+         it) is refused rather than taken as a way around the look. The task is named by its \
+         full id or any unique \
          prefix of one; an exact id wins over any longer id that starts with it, and a prefix \
          matching more than one row is refused with the matching rows named. An unknown id is an \
          error, not a no-op. Returns the removed task and how many descendants went with it. Any \
@@ -1146,6 +1149,29 @@ mod tests {
             assert!(
                 property.contains("unique prefix"),
                 "{name}'s parent property does not carry the rule: {property}",
+            );
+        }
+    }
+
+    /// The delete states the look gate the way the update does (#2251): a
+    /// caller reaching for the verb learns a parked row is not its to take,
+    /// so the refusal is never the first word about it. The update's own
+    /// look clause is the precedent - each description clause the verb
+    /// depends on carries a test that says it is missing.
+    #[test]
+    fn the_delete_description_states_the_look_gate() {
+        let facade = MockTasksFacade::new().into_arc();
+        let slot = lead_slot();
+        let delete = Delete { facade, slot };
+        let description = delete.description();
+        for clause in [
+            "waiting on the user's own look is not a delete's to take",
+            "the board's approve completes it",
+            "refused rather than taken as a way around the look",
+        ] {
+            assert!(
+                description.contains(clause),
+                "tasks__delete does not state the rule ({clause}): {description}",
             );
         }
     }
